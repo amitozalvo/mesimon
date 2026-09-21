@@ -1409,6 +1409,13 @@ pub struct AgentTicketView {
     /// result data instead of permanent context.
     #[serde(default)]
     pub allowed_columns: Vec<String>,
+    /// What the board does to this ticket on its own (T-376): the automove
+    /// rules of the column it sits in NOW, read off `ColumnSettings`. An
+    /// agent that sees `on_done: "REVIEW"` knows ending its turn IS the move,
+    /// and a `move_ticket` is for what these rules do not do. Data only; the
+    /// rules themselves live in `core::automove` and are not changed here.
+    #[serde(default)]
+    pub automove: AgentAutomoveView,
     /// The tags this ticket wears, one per group at most, in group order.
     #[serde(default)]
     pub tags: Vec<AgentTagView>,
@@ -1442,6 +1449,18 @@ pub struct AgentTicketView {
     /// changed since it was read. Read-before-write as a check, not a claim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen: Option<String>,
+}
+
+/// The current column's automove rules, as an agent sees them (T-376): the
+/// column a turn's start drags the ticket to and the column its end drags it
+/// to, or `None` where the column carries no such rule. Both absent on a
+/// column with no rules, and on a wire from before the field.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentAutomoveView {
+    #[serde(default)]
+    pub on_working: Option<String>,
+    #[serde(default)]
+    pub on_done: Option<String>,
 }
 
 /// A ticket's agent as its card shows it (T-411). Words, never a session:
@@ -1910,6 +1929,23 @@ mod tests {
                 assert!(!git.sampled);
             }
             other => panic!("expected board, got {other:?}"),
+        }
+    }
+
+    /// `get_ticket`'s answer from before T-376 carried no `automove`; it
+    /// parses as a column with no rules, which is what an older daemon meant.
+    #[test]
+    fn old_agent_ticket_json_parses() {
+        let old = r#"{"resp":"agent_ticket","ticket":{"key":"T-1","title":"t","column":"VERIFY",
+            "workspace":"shared_checkout","allowed_columns":["TODO"]}}"#;
+        let r: Response = serde_json::from_str(old).unwrap();
+        match r {
+            Response::AgentTicket { ticket } => {
+                assert_eq!(ticket.automove, AgentAutomoveView::default());
+                assert_eq!(ticket.automove.on_working, None);
+                assert_eq!(ticket.automove.on_done, None);
+            }
+            other => panic!("expected agent_ticket, got {other:?}"),
         }
     }
 

@@ -179,26 +179,28 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "move_ticket",
-            "description": "Moves this session's ticket, or with key another ticket (crown \
-                            only), to a column get_ticket lists in allowed_columns; other \
-                            names are refused. Position is priority: before lands above a \
-                            ticket, and the same column reorders.",
+            // At the byte cap: every clause here paid for itself by dropping
+            // one elsewhere (T-376 bought the automove sentence).
+            "description": "Moves this session's ticket, or with key another's (crown only), \
+                            to a column in get_ticket's allowed_columns; others are refused. \
+                            The board itself moves it (get_ticket's automove) when a turn \
+                            starts or ends. Position is priority; the same column reorders.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     // A plain string, NOT an enum: see the module header.
                     "to_column": {
                         "type": "string",
-                        "description": "Destination column, as in allowed_columns.",
+                        "description": "A name from allowed_columns.",
                     },
                     "idempotency_key": {
                         "type": "string",
-                        "description": "Optional. Same key replays the first result.",
+                        "description": "Optional. Same key replays result.",
                     },
                     "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
                     "before": {
                         "type": "string",
-                        "description": "Optional. Land above this key; omitted is the top.",
+                        "description": "Optional. Land above this key; default top.",
                     },
                     "seen": {
                         "type": "string",

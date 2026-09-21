@@ -245,6 +245,10 @@ fn agent_board_tools_tier_and_collisions() {
         t["allowed_columns"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
     assert!(!allowed.contains(&t["column"].as_str().unwrap()), "current column is not a move");
     assert!(allowed.contains(&"REVIEW"));
+    // T-376: the current column's own rules ride along, so the agent can see
+    // what the board will do by itself and leave that move to the board.
+    assert_eq!(t["column"], "TODO");
+    assert_eq!(t["automove"], json!({"on_working": "IN PROGRESS", "on_done": null}));
     assert_eq!(t["tags"], json!([]), "nothing worn yet");
     assert_eq!(t["allowed_tags"], json!([]), "nothing in the registry yet");
     // Before anyone has made a tag there is nothing to wear, and the refusal
@@ -481,6 +485,12 @@ fn agent_board_tools_tier_and_collisions() {
     assert_eq!(moved["column"], "REVIEW");
     assert_eq!(moved["replayed"], false);
     assert_eq!(board_of(c.request(Command::Snapshot)).ticket(ticket).unwrap().column, "REVIEW");
+    // The rules follow the column, not the ticket: in REVIEW it is the
+    // turn's start that moves it, and the end of a turn does nothing.
+    assert_eq!(
+        shim.call_ok("get_ticket", json!({}))["automove"],
+        json!({"on_working": "IN PROGRESS", "on_done": null})
+    );
 
     // The retry after a dropped connection: the same tool-use id must replay
     // the first answer, never move the card a second time.

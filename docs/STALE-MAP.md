@@ -11854,3 +11854,32 @@ and its panes survive, as they do for a `U` reload).
 **Not done.** A feed line for the entries a restart still drops (a `Pane` ask): the card's mark
 simply goes, as before. The auto-memory rule that made the T-251 agent kill the daemon now says
 to look for `queued` marks first and prefer the `U` chip.
+
+## An agent is told what the board will do before it moves a ticket itself (T-376, 2026-09-21)
+
+**What happened (T-373).** The release ticket's agent finished, saw `allowed_columns` (VERIFY
+among them, no DONE on that board), read "verify" as "done, pending your check" and called
+`move_ticket` to VERIFY. IN PROGRESS's `on_done = "REVIEW"` would have taken it at end of turn.
+VERIFY carries no rules, so the ticket parked there until the user noticed — and the move gate,
+which refuses an Automation move that reverses a principal's move inside 60 s, was protecting the
+wrong move. `allowed_columns` is permission, not meaning; the agent's only other signal was a
+column name, so it guessed.
+
+**What shipped.** Data only, no policy change, no new command. `AgentTicketView.automove:
+AgentAutomoveView { on_working, on_done }` (`core/src/command.rs`, `#[serde(default)]`, both
+`Option<String>`), filled in `agent_ticket_view` from `Board::column(&t.column).settings` — the
+same two fields `core::automove::explain` reads, so what the agent is told is exactly what the
+daemon will do. On IN PROGRESS it reads `on_done: "REVIEW"`; on a column with no rules both are
+null, and a wire from before the field parses as the same (`old_agent_ticket_json_parses`).
+`move_ticket`'s description gained one sentence: "The board itself moves it (get_ticket's
+automove) when a turn starts or ends." The tool was at 819 of 820 bytes, so the sentence was paid
+for by shortening four clauses in the same tool (`before`'s "lands above a ticket" was already
+said on the parameter; `to_column`, `idempotency_key` and `before` lost a word each). Asserted in
+`mcp_e2e` at both ends of a move.
+
+**Checked and left alone.** The tier does not cover it: `Annotate` drops `move_ticket` but also
+`create_ticket`, so a board that wants agents filing tickets cannot sit one rung down. The
+`list_board` column rows stay plain names: a ticket `create_ticket` makes has no session, so no
+column rule can fire on it until a person starts one, and the blindness the ticket feared is not
+one the agent can act on. The automove rules themselves, the move gate and `Command::meta` are
+untouched.

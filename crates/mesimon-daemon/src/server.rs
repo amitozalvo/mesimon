@@ -19,9 +19,9 @@ use mesimon_core::board::{
     TagRef, Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    AgentBoardView, AgentStateView, AgentTagView, AgentTicketRow, AgentTicketView, Command,
-    CrownTouch, DiffTarget, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Notice,
-    Resources, Response, TerminalItem, WorktreeItem, PROTOCOL_VERSION,
+    AgentAutomoveView, AgentBoardView, AgentStateView, AgentTagView, AgentTicketRow,
+    AgentTicketView, Command, CrownTouch, DiffTarget, Envelope, Event, ExternalItem, GraceItem,
+    MergeOutcome, Notice, Resources, Response, TerminalItem, WorktreeItem, PROTOCOL_VERSION,
 };
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
@@ -4088,6 +4088,14 @@ impl Daemon {
             branch: self.worktrees.get(&id).map(|b| b.branch.clone()).filter(|b| !b.is_empty()),
             merge_state: self.merge_state_word(id).map(str::to_string),
             allowed_columns: self.agent_allowed_columns(id),
+            automove: self
+                .board
+                .column(&t.column)
+                .map(|c| AgentAutomoveView {
+                    on_working: c.settings.on_working.clone(),
+                    on_done: c.settings.on_done.clone(),
+                })
+                .unwrap_or_default(),
             tags: t
                 .tags
                 .iter()
