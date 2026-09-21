@@ -1510,7 +1510,13 @@ impl Daemon {
                 self.snapshot()
             }
             Command::Subscribe => {
+                let was_headless = !self.git_has_reader();
                 self.subscribers.push(stream.clone());
+                // A headless daemon stopped sampling (T-251): the first board
+                // back gets a fresh header now rather than at the next bucket.
+                if was_headless {
+                    self.queue_git_sample();
+                }
                 Response::Ok
             }
             Command::CreateTicket { column, title, workspace } => {
@@ -1884,7 +1890,12 @@ impl Daemon {
             // The same slow bucket as those flags — the sample is now what
             // lets the train retry a refused merge (T-289), so a test that
             // shortens one has to shorten both or watch the train stay stuck.
-            stage!("queue_git_sample", self.queue_git_sample());
+            // Only while something reads it (T-251): a headless daemon would
+            // otherwise fork `git status` per nested repo every bucket, forever,
+            // for a header nobody has open. `Subscribe` fires the catch-up.
+            if self.git_has_reader() {
+                stage!("queue_git_sample", self.queue_git_sample());
+            }
         }
         if self.ticks % server_guard_ticks() == 0 {
             changed |= stage!("guard_server", self.guard_server());
@@ -4590,6 +4601,14 @@ impl Daemon {
             train_asked,
             train_suspended,
         }
+    }
+
+    /// Whether anything reads the periodic git sample: a subscribed board
+    /// (the header) or an armed merge train (it retries a refused merge on
+    /// the sample's delta, T-289). The train is owned by a connection and
+    /// disarmed when it goes, so a daemon with neither is truly headless.
+    fn git_has_reader(&self) -> bool {
+        !self.subscribers.is_empty() || self.train.is_armed()
     }
 
     /// Sample the checkout's git state on a worker thread — fetching first

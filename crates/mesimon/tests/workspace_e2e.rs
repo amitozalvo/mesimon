@@ -9,7 +9,8 @@
 //! The harness boots on a bare directory and the boot sample sees no repo;
 //! the next sample is the 10 s bucket's, so the census is waited for (a
 //! `GitFetch` press would re-sample at once, but it refuses without an
-//! upstream, and a workspace's meta repo has none).
+//! upstream, and a workspace's meta repo has none). The bucket samples only
+//! while a board is attached (T-251), so the client subscribes first.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
@@ -44,6 +45,7 @@ fn a_workspace_of_repos_stands_on_the_wire() {
     // `.wt/`: a gitfile, whose owner is `web`, never a repo of its own.
     git(&root.join("web"), &["worktree", "add", "-q", "../.wt-web", "-b", "feedback"]);
     let mut c = h.client("workspace");
+    assert!(matches!(c.request(Command::Subscribe), Response::Ok));
 
     // ---- the census and the summed count ----------------------------------
     // Two files in `api` (an edit and a stray), one in `web`, one at the

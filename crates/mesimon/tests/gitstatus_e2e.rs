@@ -75,6 +75,8 @@ fn the_checkout_stands_on_the_wire() {
     let sock = paths.orch_sock();
     fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
     fixture.set_env("MESIMON_CLAUDE_BIN", "/bin/true");
+    // A 1 s bucket, so the headless clause below is asserted in seconds.
+    fixture.set_env("MESIMON_WT_REFRESH_TICKS", "4");
 
     let daemon_repo = repo.clone();
     let daemon = fixture.daemon(&daemon_repo);
@@ -104,18 +106,39 @@ fn the_checkout_stands_on_the_wire() {
     assert_eq!(g.to_push, Some(vec![]));
     assert_eq!(g.to_pull, Some(vec![]));
 
-    // ---- a commit here: push due ------------------------------------------
+    // ---- a commit here, with no board attached: unseen (T-251) -------------
+    // Nobody subscribed and no train is armed, so the bucket forks nothing:
+    // a headless daemon must not run `git status` per repo forever for a
+    // header nobody has open. Two buckets pass and the boot sample stands.
     std::fs::write(repo.join("b.txt"), "two\n").unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "two"]);
-    // A fetch press re-samples at once (the tick would take up to 10 s).
+    std::thread::sleep(Duration::from_millis(2500));
+    let g = git_of(c.request(Command::Snapshot));
+    assert_eq!(g.ahead, 0, "a headless daemon sampled the checkout: {g:?}");
+
+    // ---- a board attaches: the sample catches up, then keeps its bucket ----
+    // A second, subscribed connection stands in for the board; its subscribe
+    // fires one sample at once, and the tick samples for as long as it stays.
+    let mut watcher = TestClient::connect(&sock);
+    assert!(matches!(
+        watcher.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "watch".into()
+        }),
+        Response::Hello { .. }
+    ));
+    assert!(matches!(watcher.request(Command::Subscribe), Response::Ok));
+    let g = wait_git(&mut c, "ahead 1 once a board is attached", |g| g.ahead == 1);
+    assert!(!g.fetching);
+    assert_eq!(g.fetched_at_ms, 0, "no fetch happens on its own: {g:?}");
+
+    // ---- a fetch press: push due, and the remote answered -------------------
+    // `ahead == 1` is already the tick's doing; the fetch is what stamps
+    // `fetched_at_ms`, so wait for the sample the FETCH produced.
     assert!(matches!(c.request(Command::GitFetch), Response::Ok));
-    // `ahead == 1` alone is satisfied by the ORDINARY tick's sample — the
-    // local commit moved that number, and the sample rides the same bucket
-    // the worktree flags do (T-289 shortened it). Waiting on that sample and
-    // then asserting `fetched_at_ms` is a race the fetch loses under load,
-    // so wait for the sample the FETCH produced: the one after it landed.
-    let g = wait_git(&mut c, "ahead 1 after the fetch", |g| g.ahead == 1 && !g.fetching);
+    let g = wait_git(&mut c, "the fetch to land", |g| g.fetched_at_ms > 0 && !g.fetching);
+    assert_eq!(g.ahead, 1, "{g:?}");
     assert_eq!(g.behind, 0);
     let outgoing = g.to_push.as_ref().unwrap();
     assert_eq!(outgoing.len(), 1);
@@ -151,6 +174,7 @@ fn the_checkout_stands_on_the_wire() {
     assert_eq!((g.ahead, g.behind), (1, 1), "{g:?}");
 
     // ---- cleanup ----------------------------------------------------------
+    drop(watcher);
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
 }

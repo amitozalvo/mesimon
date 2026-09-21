@@ -11883,3 +11883,26 @@ said on the parameter; `to_column`, `idempotency_key` and `before` lost a word e
 column rule can fire on it until a person starts one, and the blindness the ticket feared is not
 one the agent can act on. The automove rules themselves, the move gate and `Command::meta` are
 untouched.
+
+## A headless daemon stops sampling git (T-251, 2026-09-22)
+
+- **The 10 s git bucket runs only while something reads the sample.** `Daemon::git_has_reader`
+  is a subscribed board (the header is the sample's one display) or an armed merge train (it
+  retries a refused merge on the sample's delta, T-289). The train is owned by a connection and
+  disarmed in `on_client_gone`, so a daemon with neither is truly headless — and before this it
+  forked `git status --porcelain=v2` for the root and every nested repo every 10 s, forever, on a
+  singleton nobody was looking at (`subscribers` was never consulted). The T-234 simplify pass
+  filed it; the finding's "gitstatus_e2e and workspace_e2e subscribe before asserting" was wrong
+  on both counts — neither did — which is how the train clause was found: the T-289 retry e2e
+  arms the train from an unsubscribed client and waits on the bucket.
+- **`Subscribe` from headless fires one sample at once**, so the first board back gets a fresh
+  header within one fork rather than showing the last sample for a bucket. The boot sample
+  stays (the header is blank until it lands, for doctor's branch line too); `GitFetch` and the
+  ff-merge's re-sample queue directly and never consulted the bucket.
+- **Not changed:** the fetch cadence (`git_fetch_wanted` is still set on the bucket and rides
+  the next sample, so a board that reconnects after an hour fetches on its first sample); the
+  worktree flags, which the train needs and which keep their own guard (`!worktrees.is_empty()`).
+- `gitstatus_e2e` now runs on the 1 s bucket and asserts the headless clause (a commit with no
+  board attached stays unseen for two buckets, and the forced-open gate fails it) and the
+  catch-up (a subscribe lands `ahead 1` with no fetch press). `workspace_e2e` subscribes: its
+  census wait was the bucket's, headless.
