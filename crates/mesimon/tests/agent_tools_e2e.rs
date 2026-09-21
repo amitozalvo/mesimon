@@ -98,7 +98,13 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     // Straight at the daemon, past the shim: the refusal names the tier.
     match c.send(
         Principal::Agent { session: s_read },
-        Command::AgentMoveTicket { to_column: "REVIEW".into(), idempotency_key: None },
+        Command::AgentMoveTicket {
+            to_column: "REVIEW".into(),
+            idempotency_key: None,
+            key: None,
+            before: None,
+            seen: None,
+        },
     ) {
         Response::Err { message } => {
             assert!(message.contains("read") && message.contains("TODO"), "{message}");
@@ -107,7 +113,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     }
     match c.send(
         Principal::Agent { session: s_read },
-        Command::AgentWriteNote { note: None, text: "x".into() },
+        Command::AgentWriteNote { note: None, text: "x".into(), key: None },
     ) {
         Response::Err { message } => assert!(message.contains("read"), "{message}"),
         other => panic!("a read column admits no note: {other:?}"),
@@ -125,7 +131,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     // is the column's NOW, not the spawn's.
     match c.send(
         Principal::Agent { session: s_full },
-        Command::AgentWriteNote { note: None, text: "x".into() },
+        Command::AgentWriteNote { note: None, text: "x".into(), key: None },
     ) {
         Response::Err { message } => assert!(message.contains("read"), "{message}"),
         other => panic!("narrowed at call time: {other:?}"),
@@ -136,7 +142,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     assert!(matches!(
         c.send(
             Principal::Agent { session: s_read },
-            Command::AgentWriteNote { note: None, text: "now allowed".into() },
+            Command::AgentWriteNote { note: None, text: "now allowed".into(), key: None },
         ),
         Response::NoteWritten { .. }
     ));
@@ -149,7 +155,13 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     ));
     match c.send(
         Principal::Agent { session: s_read },
-        Command::AgentMoveTicket { to_column: "REVIEW".into(), idempotency_key: None },
+        Command::AgentMoveTicket {
+            to_column: "REVIEW".into(),
+            idempotency_key: None,
+            key: None,
+            before: None,
+            seen: None,
+        },
     ) {
         Response::Err { message } => assert!(message.contains("annotate"), "{message}"),
         other => panic!("annotate admits no move: {other:?}"),
@@ -165,7 +177,13 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     // move inside a minute, and that is the gate's business, not the tier's.)
     match c.send(
         Principal::Agent { session: s_read },
-        Command::AgentMoveTicket { to_column: "IN PROGRESS".into(), idempotency_key: None },
+        Command::AgentMoveTicket {
+            to_column: "IN PROGRESS".into(),
+            idempotency_key: None,
+            key: None,
+            before: None,
+            seen: None,
+        },
     ) {
         Response::AgentMoved { .. } => {}
         other => panic!("REVIEW is full, so the move is admitted: {other:?}"),

@@ -548,6 +548,7 @@ mod tests {
                 resources: Default::default(),
                 worktrees: Vec::new(),
                 notices: Vec::new(),
+                crown_touches: Vec::new(),
                 shell_env: Default::default(),
                 git: Default::default(),
                 pending: Vec::new(),

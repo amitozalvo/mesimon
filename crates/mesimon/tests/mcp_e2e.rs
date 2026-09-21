@@ -228,7 +228,12 @@ fn agent_board_tools_tier_and_collisions() {
             "write_note",
             "create_ticket",
             "tag_ticket",
-            "raise_hand"
+            "raise_hand",
+            // The crown's three (T-411): listed on every full-tier session,
+            // refused by the daemon on every ticket but the crowned one.
+            "rename_ticket",
+            "set_workspace",
+            "archive_ticket"
         ]
     );
 

@@ -343,6 +343,17 @@ pub(crate) enum Tier {
     Ascii,
 }
 
+/// The crown (T-411): `♛` U+265B, BLACK CHESS QUEEN — East Asian Width N,
+/// one cell, in the Miscellaneous Symbols block every §4.1 font carries —
+/// and `K` where the tier is ASCII. The one card on the board that wears it
+/// is the coordinator's.
+pub(crate) fn crown(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Unicode => "♛",
+        Tier::Ascii => "K",
+    }
+}
+
 /// Does this session's `Running` mean work is in flight? An agent's does. A
 /// shell has no hook stream, so the daemon pins it at `Running` for the
 /// whole life of its pane (D15: "a live pane is all running means") — that

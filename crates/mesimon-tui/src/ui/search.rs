@@ -330,6 +330,12 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         app.owed(ticket.id),
         app.pending_row(ticket.id).as_deref(),
         app.remote_initials(ticket.id).as_deref(),
+        // The holder's mark, never a touch: the preview is a still.
+        if app.board.is_crowned(ticket.id) {
+            super::CrownMark::Holder { flash: false }
+        } else {
+            super::CrownMark::None
+        },
     );
     let w = inner.width as usize;
     let now = now_ms();

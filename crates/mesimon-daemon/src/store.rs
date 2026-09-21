@@ -128,6 +128,12 @@ struct ColumnsFile {
     prompt_merged: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt_note_updated: Option<String>,
+    /// The crowned ticket (`Board::crown`, T-411), a ULID. A scalar, so it
+    /// sits here before the tables; absent — every file before the field —
+    /// means no crown, and a plain default with no bump: a build that drops
+    /// it takes authority away from an agent, never hands any out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    crown: Option<ulid::Ulid>,
     columns: Vec<Column>,
     /// The tag registry (v2). Another array of tables, so it may follow
     /// `columns` but must stay after every scalar.
@@ -420,6 +426,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                     merged: cf.prompt_merged,
                                     note_updated: cf.prompt_note_updated,
                                 },
+                                crown: cf.crown,
                                 ..Default::default()
                             };
                             // v3 → v4 (T-117): the template columns get the
@@ -665,6 +672,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         prompt_rebase: board.prompts.rebase.clone(),
         prompt_merged: board.prompts.merged.clone(),
         prompt_note_updated: board.prompts.note_updated.clone(),
+        crown: board.crown,
         columns: board.columns.clone(),
         tags: board.tags.clone(),
     };
@@ -1836,6 +1844,7 @@ order = "a0"
             prompt_rebase: Some("catch {branch} up to {base}".into()),
             prompt_merged: None,
             prompt_note_updated: None,
+            crown: Some(ulid::Ulid(7)),
             columns: vec![Column {
                 name: "TODO".into(),
                 order: "a0".into(),

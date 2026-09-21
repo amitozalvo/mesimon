@@ -233,6 +233,19 @@ fn worktree_mark(
     })
 }
 
+/// What the crown (T-411) has to say on a card. `Holder` is the one card
+/// wearing it, flashing for a beat right after the crowning; `Touched` is a
+/// card the crown just edited, lit with the word for what was done;
+/// `Residue` is the quiet mark that light leaves until the cursor rests on
+/// the card, the unread done mark's rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CrownMark<'a> {
+    None,
+    Holder { flash: bool },
+    Touched(&'a str),
+    Residue,
+}
+
 #[allow(clippy::too_many_arguments)] // two call sites; a params struct would just rename the args
 pub(super) fn render(
     ctx: &CardCtx,
@@ -253,6 +266,7 @@ pub(super) fn render(
     owed: bool,
     owed_row: Option<&str>,
     editor: Option<&str>,
+    crown: CrownMark<'_>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -362,17 +376,42 @@ pub(super) fn render(
         }
     };
 
-    // ---- line 1: [glyph sp?][title][fill][wt][age] ------------------------
+    // ---- line 1: [glyph sp?][crown sp?][title][fill][wt][crown word | age]
     let wt_mark = worktree_mark(ticket, wt, tier == crate::glyphs::Tier::Ascii);
     let glyph_cells = if glyph.is_some() { 2 } else { 0 };
-    let age_cells = age.as_ref().map(|_| 4).unwrap_or(0); // sp + 3-cell slot
+    // The crown (T-411). Its holder wears the mark before the title — the
+    // one card on the board that does, which is what makes it obvious. A
+    // card the crown just touched says what was done to it where the age
+    // goes, for a beat, and keeps a quiet mark there until the cursor has
+    // rested on it. Never the saturated colour: the crown is status, and
+    // needs-you is the one demand.
+    let crown_glyph = glyphs::crown(tier);
+    let crown_word = match crown {
+        CrownMark::Touched(action) => Some(format!("{crown_glyph} {action}")),
+        _ => None,
+    };
+    let holder_cells = match crown {
+        CrownMark::Holder { .. } => crown_glyph.width() + 1,
+        _ => 0,
+    };
+    let residue_cells = match crown {
+        CrownMark::Residue => crown_glyph.width() + 1,
+        _ => 0,
+    };
+    let age_cells = match (&crown_word, &age) {
+        (Some(w), _) => w.width() + 1,
+        (None, Some(_)) => 4, // sp + 3-cell slot
+        (None, None) => 0,
+    };
     let wt_cells = wt_mark.as_ref().map(|(m, _)| m.width() + 1).unwrap_or(0);
     // A teammate's initials (T-335): who made the card's last change, in the
     // quiet register beside the worktree mark's slot. Off the moment this
     // machine changes the ticket again.
     let editor_cells = editor.map(|e| e.width() + 1).unwrap_or(0);
     // The fixed bar budget is independent of how many tags the ticket wears.
-    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells + editor_cells);
+    let title_budget = t_cells.saturating_sub(
+        glyph_cells + holder_cells + residue_cells + age_cells + wt_cells + editor_cells,
+    );
     // A truncated title on the cursor card reveals itself marquee-style.
     let overflow = ticket.title.width().saturating_sub(title_budget);
     let scroll = match (marquee_ms, overflow) {
@@ -414,6 +453,15 @@ pub(super) fn render(
         theme.move_blink(ctx.spin)
     } else if cursorish {
         Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+    } else if matches!(crown, CrownMark::Holder { .. } | CrownMark::Touched(_)) {
+        // The crowning flash (T-411): the holder's title breathes between
+        // the crown's tint and the quiet ramp for a beat after the
+        // crowning, on the delete flash's cadence — fg repainted on the
+        // redraw clock, never SGR 5. Settled, it holds the tint.
+        match crown {
+            CrownMark::Holder { flash: true } if !theme.delete_lit(ctx.spin) => theme.dim3(),
+            _ => theme.crown_text(),
+        }
     } else {
         Style::default().fg(theme.rest.base)
     };
@@ -439,6 +487,19 @@ pub(super) fn render(
         };
         spans.push(Span::styled(format!("{g} "), gs));
     }
+    if let CrownMark::Holder { flash } = crown {
+        // The mark keeps the tint under the cursor too — the cursor
+        // surface recolours the title, and the crown is the one thing on
+        // the card that must still read as itself there.
+        let cs = if trail || attn_card {
+            quiet_style
+        } else if flash && !theme.delete_lit(ctx.spin) {
+            theme.dim3()
+        } else {
+            theme.crown_text()
+        };
+        spans.push(Span::styled(format!("{crown_glyph} "), cs));
+    }
     spans.push(Span::styled(title, title_style));
     spans.push(Span::raw(" ".repeat(fill)));
     if let Some((m, tone)) = &wt_mark {
@@ -463,8 +524,18 @@ pub(super) fn render(
     if let Some(e) = editor {
         spans.push(Span::styled(format!(" {e}"), quiet_style));
     }
-    if let Some(a) = &age {
-        spans.push(Span::styled(format!(" {a:>3}"), quiet_style));
+    if let Some(w) = &crown_word {
+        // The touched card's beat (T-411): the word for what the crown did
+        // stands where the age does, in the crown's tint.
+        let ws = if trail || attn_card { quiet_style } else { theme.crown_text() };
+        spans.push(Span::styled(format!(" {w}"), ws));
+    } else {
+        if matches!(crown, CrownMark::Residue) {
+            spans.push(Span::styled(format!(" {crown_glyph}"), quiet_style));
+        }
+        if let Some(a) = &age {
+            spans.push(Span::styled(format!(" {a:>3}"), quiet_style));
+        }
     }
     spans.push(Span::raw(" ".to_string()));
     let mut lines = vec![Line::from(spans).style(row_style)];

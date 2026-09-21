@@ -382,6 +382,16 @@ pub enum Command {
         id: ulid::Ulid,
         on: bool,
     },
+    /// Crown a ticket (T-411): its agent may then edit every other ticket
+    /// through the keyed forms of its tools. One crown per board — crowning
+    /// a second ticket displaces the first. A person's gesture (`^o`), and
+    /// the never-tier holds both this and `Uncrown`: an agent that could
+    /// crown itself would be deciding its own tier.
+    CrownTicket {
+        id: ulid::Ulid,
+    },
+    /// Take the crown off whichever ticket wears it.
+    Uncrown,
     /// Re-read the user's shell environment (the Esc menu's shell-env row).
     ///
     /// Deliberately explicit rather than automatic on an rc-file change: the
@@ -661,10 +671,20 @@ pub enum Command {
     // ------------------------------------------------------------------
     /// The caller's own ticket, as `get_ticket` renders it.
     AgentGetTicket,
+    /// ANOTHER ticket, by key, as `get_ticket` renders it with a `key`
+    /// (T-411). The one read the crown admits and nothing else does: the
+    /// daemon refuses it unless the caller's ticket wears the crown, and the
+    /// refusal says how a person grants one. A separate command rather than
+    /// a field on `AgentGetTicket` so a shim from before the crown still
+    /// parses on the wire.
+    AgentReadTicket {
+        key: String,
+    },
     /// Board metadata only. Deliberately NOT `Snapshot`: no session, argv,
     /// transcript path, cwd or cost ever reaches an agent, at any tier.
     AgentListBoard,
-    /// Move the caller's own ticket. `to_column` is validated server-side
+    /// Move the caller's own ticket — or, with `key`, another ticket, which
+    /// only the crown may (T-411). `to_column` is validated server-side
     /// against the board's real columns and the tier's permitted set.
     AgentMoveTicket {
         to_column: String,
@@ -675,6 +695,19 @@ pub enum Command {
         /// the stored result is what stops the retry moving the card twice.
         #[serde(default)]
         idempotency_key: Option<String>,
+        /// The ticket to move, by key; absent means the caller's own. Any
+        /// key that is not the caller's own needs the crown.
+        #[serde(default)]
+        key: Option<String>,
+        /// Land ABOVE this ticket (a key) in the destination — position is
+        /// priority. Absent lands at the top, as every agent move did.
+        #[serde(default)]
+        before: Option<String>,
+        /// The `seen` stamp `get_ticket` returned for the target: the move
+        /// is refused when the ticket changed since it was read. Required
+        /// with `key`, ignored without.
+        #[serde(default)]
+        seen: Option<String>,
     },
     /// One of the caller's own ticket's notes, whole. A `note` id off the
     /// ticket reads as "no such note" — the binding, not the id, is the
@@ -684,6 +717,9 @@ pub enum Command {
     },
     AgentReadNote {
         note: ulid::Ulid,
+        /// Another ticket's note, by key (T-411): the crown's road.
+        #[serde(default)]
+        key: Option<String>,
     },
     /// Create or replace a note on the caller's own ticket (D10 T1 ANNOTATE,
     /// the tier tags never had a home in). Same shape as `WriteNote` minus
@@ -692,6 +728,38 @@ pub enum Command {
         #[serde(default)]
         note: Option<ulid::Ulid>,
         text: String,
+        /// A note on another ticket, by key (T-411): the crown's road.
+        #[serde(default)]
+        key: Option<String>,
+    },
+    /// Retitle another ticket, by key (T-411). Crown only; `seen` is the
+    /// stamp `get_ticket` returned for it. `sanitize_title` at the boundary
+    /// as for the human's `RenameTicket`.
+    AgentRenameTicket {
+        key: String,
+        title: String,
+        #[serde(default)]
+        seen: Option<String>,
+    },
+    /// Choose another ticket's workspace, by key (T-411): `worktree` or
+    /// `shared_checkout`, a WORD validated server-side. Crown only, and the
+    /// human's own lock applies — refused once a pane or a worktree exists
+    /// ("only if pending").
+    AgentSetWorkspace {
+        key: String,
+        workspace: String,
+        #[serde(default)]
+        seen: Option<String>,
+    },
+    /// Archive another ticket, by key, or with `restore` bring it back
+    /// (T-411). Crown only. The reversible spelling of delete, which stays
+    /// in the never-tier: nothing an agent does to a card is final.
+    AgentArchiveTicket {
+        key: String,
+        #[serde(default)]
+        restore: bool,
+        #[serde(default)]
+        seen: Option<String>,
     },
     /// Mint a NEW ticket (`create_ticket`). The one agent command that is
     /// not about the caller's own ticket, and the one place the tier makes a
@@ -736,6 +804,9 @@ pub enum Command {
         group: Option<u8>,
         #[serde(default)]
         remove: bool,
+        /// Another ticket, by key (T-411): the crown's road.
+        #[serde(default)]
+        key: Option<String>,
     },
     /// Ask for a person on the caller's own ticket (`raise_hand`, T-107):
     /// the card wears the needs-you mark and `!N` counts it until somebody
@@ -859,10 +930,15 @@ impl Command {
             | FocusQuiet
             | ReadNote { .. }
             | AgentGetTicket
+            | AgentReadTicket { .. }
             | AgentReadAttachment { .. }
             | ReadAttachment { .. }
             | AgentReadNote { .. }
             | AgentListBoard => m(Read, false, None),
+            // The crown (T-411): a person's gesture the feed answers "who
+            // crowned T-12" with.
+            CrownTicket { id } => m(Mutate, true, Some(*id)),
+            Uncrown => m(Mutate, true, None),
             CreateTicketWithNote { .. } | CreateTicket { .. } => m(Mutate, true, None),
             DiscardAttachmentUploads { .. } | UploadAttachment { .. } => m(Mutate, false, None),
             ImportTicket { .. } => m(Action::ImportContent, true, None),
@@ -960,6 +1036,9 @@ impl Command {
             | AgentWriteNote { .. }
             | AgentCreateTicket { .. }
             | AgentTagTicket { .. }
+            | AgentRenameTicket { .. }
+            | AgentSetWorkspace { .. }
+            | AgentArchiveTicket { .. }
             | AgentRaiseHand { .. } => m(Mutate, false, None),
         }
     }
@@ -1168,6 +1247,11 @@ pub enum Response {
         /// the record. Absent from an older daemon parses as none.
         #[serde(default)]
         terminals: Vec<TerminalItem>,
+        /// The crown's edits of the last ten seconds (T-411), for the board
+        /// to light the touched cards as they happen. Absent from an older
+        /// daemon parses as none.
+        #[serde(default)]
+        crown_touches: Vec<CrownTouch>,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the
@@ -1262,6 +1346,10 @@ pub enum Response {
         /// replayed instead of moving again.
         #[serde(default)]
         replayed: bool,
+        /// The target's fresh `seen` stamp after a keyed move (T-411), so the
+        /// next edit needs no second read. Absent on an own-ticket move.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<String>,
     },
     /// AgentCreateTicket's receipt: the new ticket's key (what an agent
     /// addresses a ticket by) and where it landed.
@@ -1283,6 +1371,9 @@ pub enum Response {
         replaced: Option<String>,
         #[serde(default)]
         board_version: u64,
+        /// The target's fresh `seen` stamp after a keyed tag (T-411).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<String>,
     },
     /// AgentRaiseHand's receipt: the words as the board kept them (scrubbed
     /// and capped, so a long line comes back short) and when they go away.
@@ -1336,6 +1427,47 @@ pub struct AgentTicketView {
     /// Every note, in order, so `read_note`/`write_note` have an id to name.
     #[serde(default)]
     pub notes: Vec<AgentNoteView>,
+    /// Whether THIS ticket wears the crown (T-411) — whether its agent may
+    /// pass a `key` to the tools. False on every other ticket, and said
+    /// explicitly: an absent key would leave the model guessing.
+    #[serde(default)]
+    pub crowned: bool,
+    /// The card's words about the ticket's agent (T-411): the state the
+    /// board shows, never the pane. Absent when the ticket has no agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<AgentStateView>,
+    /// An opaque stamp over everything a keyed edit may assume — column,
+    /// order, title, tags, notes, workspace, the agent's state — returned
+    /// to the daemon by every keyed mutation, which refuses when the ticket
+    /// changed since it was read. Read-before-write as a check, not a claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<String>,
+}
+
+/// A ticket's agent as its card shows it (T-411). Words, never a session:
+/// `agent_state_word`'s vocabulary, how long it has been so, and the raised
+/// hand's own sentence when there is one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentStateView {
+    pub state: String,
+    /// Seconds in that state, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_secs: Option<u64>,
+    /// The agent's `raise_hand` reason, while the hand is up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raised: Option<String>,
+}
+
+/// One of the crown's recent edits (T-411), for the board to light the
+/// touched card: which ticket, what was done (a WORD — `moved`, `renamed`,
+/// `tagged`, `note`, `workspace`, `archived`, `restored` — so an older
+/// client drops what it cannot read), and when. In memory only, pruned
+/// after ten seconds; the feed is the record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrownTouch {
+    pub ticket: ulid::Ulid,
+    pub action: String,
+    pub at_ms: u64,
 }
 
 /// One tag as an agent sees it: the name, and the axis it lives on (the
@@ -1357,13 +1489,21 @@ pub struct AgentNoteView {
     pub edited_at: String,
 }
 
-/// One row of `list_board`. Three fields, and no fourth is coming: a ticket's
-/// session is not an agent's business.
+/// One row of `list_board`. The card's words only: a ticket's session is
+/// not an agent's business, and `state` is the same one word the card
+/// shows (T-411), never anything off the pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTicketRow {
     pub key: String,
     pub title: String,
     pub column: String,
+    /// `person` or `agent`: who filed the card, for a coordinator triaging
+    /// what agents left behind. Absent on a ticket from before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// The ticket's agent, as one word; absent when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
 /// The board as an agent sees it: columns in board order, tickets, nothing
@@ -1375,6 +1515,9 @@ pub struct AgentBoardView {
     pub tickets: Vec<AgentTicketRow>,
     #[serde(default)]
     pub board_version: u64,
+    /// The key of the ticket wearing the crown (T-411), when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crown: Option<String>,
 }
 
 /// A ticket's worktree binding, as the board renders it (M4). Oids stay

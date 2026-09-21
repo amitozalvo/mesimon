@@ -1524,12 +1524,49 @@ pub struct Board {
     /// text every board sent before the field existed.
     #[serde(default, skip_serializing_if = "crate::prompts::PromptSet::is_default")]
     pub prompts: crate::prompts::PromptSet,
+    /// The one ticket whose agent may edit OTHER tickets (T-411, "the
+    /// crown"). Every other agent's tools reach its own card only; the
+    /// crowned ticket's agent may pass a ticket key to the same tools and
+    /// three more. Granted by a person from the board (`CrownTicket`), never
+    /// by a tool — an agent that could crown itself would be writing its own
+    /// tier — and `Option` so exactly one holds it by type. A ULID, never a
+    /// key. Per repo in `columns.toml` with a plain serde default and no
+    /// schema bump: a build that drops it narrows what every agent gets,
+    /// which is the safe direction.
+    ///
+    /// The seat is the mesimatron's: a later daemon rule mints, crowns and
+    /// starts the ticket itself, and nothing about the authority changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crown: Option<ulid::Ulid>,
 }
 
 /// `Board::mcp_tools` defaults ON: a serde default has to be a function, and
 /// this is the whole of it.
 fn yes() -> bool {
     true
+}
+
+/// A session's state as ONE WORD for an agent reading another ticket
+/// (T-411): what the card shows, never what the pane holds. `needs-you` is
+/// the attention set, `working` a turn in flight, `idle` a turn ended,
+/// `background` a parked lead with tasks still live.
+pub fn agent_state_word(state: &SessionState) -> &'static str {
+    match state {
+        SessionState::Spawning => "starting",
+        SessionState::Running => "working",
+        SessionState::RequiresAction { .. } => "needs-you",
+        SessionState::Idle { stop_reason: StopReason::EndTurn } => "idle",
+        SessionState::Idle { stop_reason: StopReason::Interrupted } => "interrupted",
+        SessionState::Idle { stop_reason: StopReason::Background | StopReason::Monitoring } => {
+            "background"
+        }
+        SessionState::Idle { stop_reason: StopReason::Unknown } => "idle",
+        SessionState::Sleeping => "sleeping",
+        SessionState::Exited { .. } => "exited",
+        SessionState::Failed { .. } => "failed",
+        SessionState::Throttled => "throttled",
+        SessionState::Unknown { .. } => "unknown",
+    }
 }
 
 /// Hand-written rather than derived, for one field: `mcp_tools` starts ON, and
@@ -1554,6 +1591,7 @@ impl Default for Board {
             default_column: None,
             follow_up_mode: FollowUpMode::default(),
             prompts: crate::prompts::PromptSet::default(),
+            crown: None,
         }
     }
 }
@@ -1943,6 +1981,18 @@ impl Board {
     /// link recogniser's resolver (T-256); everything else looks up by id.
     pub fn ticket_by_key(&self, key: &str) -> Option<&Ticket> {
         self.tickets.iter().find(|t| t.short_key == key)
+    }
+
+    /// The ticket wearing the crown (T-411), if it is still on the board: a
+    /// crown on a ticket that was deleted or archived under it reads as no
+    /// crown, so every reader asks this and never `crown` itself.
+    pub fn crown_holder(&self) -> Option<&Ticket> {
+        self.crown.and_then(|id| self.ticket(id)).filter(|t| !t.is_archived())
+    }
+
+    /// Does `ticket` hold the crown right now?
+    pub fn is_crowned(&self, ticket: ulid::Ulid) -> bool {
+        self.crown_holder().is_some_and(|t| t.id == ticket)
     }
 
     /// The vocabulary of axis `group`, in registry order — which is creation

@@ -9,21 +9,21 @@
       │   G         bottom of column                            HJKL      move card                              │
       │   enter     go to the agent                             O         new column                             │
       │   space     ticket page                                 r         rename                                 │
-      │   /         search                                      tab       describe                               │
-      │                                                         n         note                                   │
-      │ SESSIONS                                                ^t        tags                                   │
-      │   c         agent                                       a         archive                                │
-      │   x         sleep sessions                              z         snooze                                 │
-      │                                                         d         delete                                 │
-      │ VIEW                                                                                                     │
-      │   !         terminal                                  APP                                                │
-      │   p         show replies                                esc       menu                                   │
-      │   P         show every reply                            q         quit                                   │
+      │   /         search                                      ^o        crown                                  │
+      │                                                         tab       describe                               │
+      │ SESSIONS                                                n         note                                   │
+      │   c         agent                                       ^t        tags                                   │
+      │   x         sleep sessions                              a         archive                                │
+      │                                                         z         snooze                                 │
+      │ VIEW                                                    d         delete                                 │
+      │   !         terminal                                                                                     │
+      │   p         show replies                              APP                                                │
+      │   P         show every reply                            esc       menu                                   │
+      │                                                         q         quit                                   │
       │                                                         ?         keys                                   │
       │                                                         ^L        redraw                                 │
       │                                                         ^Z        suspend mesimon                        │
       ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

@@ -512,6 +512,11 @@ pub enum Verb {
     /// `t` — take the ticket off the merge train, or put it back (T-227).
     /// Flips `Ticket::manual_merge` through `Command::SetManualMerge`.
     ManualMerge,
+    /// `^o` — crown the ticket, or take the crown off it (T-411): its agent
+    /// may then edit every other ticket through the keyed forms of its
+    /// tools. `Command::CrownTicket` / `Command::Uncrown`. A person's
+    /// gesture and nobody else's: the tier refuses both commands.
+    Crown,
     /// The Settings row that cycles the day a week starts on (Monday →
     /// Sunday → Saturday) — what the snooze ring's last rung means by "next
     /// week"; remembered in `prefs.json`.
@@ -1124,6 +1129,9 @@ pub struct Ctx {
     /// The subject ticket wears `manual_merge`: the train leaves it alone,
     /// and `t` puts it back on.
     pub manual_merge: bool,
+    /// The subject ticket wears the crown (T-411): `^o` takes it off rather
+    /// than putting it on.
+    pub crowned: bool,
     // ---- editor ----
     /// The note editor is up. Every editor binding is gated on it.
     pub editing: bool,
@@ -1354,6 +1362,7 @@ impl MenuItem {
                     | Verb::BriefOffer
                     | Verb::ReloadShellEnv
                     | Verb::ManualMerge
+                    | Verb::Crown
             )
         {
             return false;
@@ -1866,6 +1875,27 @@ static BOARD: &[Binding] = &[
         group: Group::Worktree,
         mutates: true,
         prio: 62,
+    },
+    Binding {
+        // The crown (T-411, user: "a 'king' session ... that will allow the
+        // ticket to control ALL tickets of the board" ∙ "key, ctrl +
+        // letter"). One ticket per board wears it; its agent may then edit
+        // every other ticket through the keyed forms of its tools. A toggle
+        // on a Ctrl-letter no shell habit lands on (`^b` is tmux, `^r` is
+        // history, `^w` deletes a word, `^d` is EOF); `o` for coordinator.
+        // Live only where the board hands its agents tools at all — a crown
+        // over no tools is a promise the daemon could not keep — and never
+        // on an archived card, which is off the board. Overlay-only: the
+        // crown is rare, and the card wearing it says so itself.
+        keys: &[Key::Ctrl('o')],
+        verb: Verb::Crown,
+        show: "^o",
+        hint: |c| if c.crowned { "uncrown" } else { "crown" },
+        avail: |c| c.has_ticket && !c.ticket_archived && c.mcp_tools,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 0,
     },
     Binding {
         // `Tab` on a card is the composer's `Tab` a ticket late: the card
@@ -2445,6 +2475,21 @@ static TICKET: &[Binding] = &[
         group: Group::Worktree,
         mutates: true,
         prio: 62,
+    },
+    Binding {
+        // The board's `^o`, on the ticket page (T-411): same verb, same
+        // words. HINTED here where it is overlay-only on the board — the
+        // page's state row is where the crown is read. Late in the footer
+        // (after `n`, before `q`): a rare gesture yields to the daily ones.
+        keys: &[Key::Ctrl('o')],
+        verb: Verb::Crown,
+        show: "^o",
+        hint: |c| if c.crowned { "uncrown" } else { "crown" },
+        avail: |c| c.has_ticket && !c.ticket_archived && c.mcp_tools,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 96,
     },
     Binding {
         // The board's shift+tab, on the ticket page (T-309): same verb, same

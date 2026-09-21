@@ -235,6 +235,7 @@ mod tests {
         ));
         Response::Board {
             board,
+            crown_touches: Vec::new(),
             pending: if in_flight {
                 vec![Pending {
                     ticket: ulid::Ulid(1),

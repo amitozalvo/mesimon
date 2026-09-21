@@ -82,7 +82,7 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
         "nothing to save",
     );
     err_containing(
-        c.request(Command::AgentWriteNote { note: None, text: "x".into() }),
+        c.request(Command::AgentWriteNote { note: None, text: "x".into(), key: None }),
         "agent principal",
     );
 

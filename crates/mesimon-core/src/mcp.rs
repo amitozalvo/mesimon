@@ -149,15 +149,21 @@ pub fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "get_ticket",
-            "description": "Returns the mesimon ticket this session is attached to: key, \
-                            title, current column, workspace mode, branch, merge state, \
-                            the column names move_ticket accepts, the tags it wears, \
-                            every tag the board knows (allowed_tags), the description (its \
-                            first note) and the id, name and author of every note. The \
-                            prompt that starts a session is often the ticket's title \
-                            alone; the description and notes here are the rest of the \
-                            brief, so this is the first call of a session.",
-            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "description": "Returns the mesimon ticket this session is attached to, or with \
+                            key another ticket (crown only): key, title, column, workspace, \
+                            branch, merge state, the column names move_ticket accepts, tags, \
+                            every tag the board knows (allowed_tags), the description (first \
+                            note), every note's id, name and author, the agent's state word \
+                            and a seen stamp keyed edits require. The prompt that starts a \
+                            session is often the ticket's title alone; the description and \
+                            notes are the rest of the brief, so this is a session's first call.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
+                },
+                "additionalProperties": false,
+            },
             "annotations": { "readOnlyHint": true },
         }),
         json!({
@@ -173,21 +179,30 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "move_ticket",
-            "description": "Moves this session's ticket to another column of the mesimon \
-                            board. Accepted destinations are listed by get_ticket as \
-                            allowed_columns; a name outside that set is refused.",
+            "description": "Moves this session's ticket, or with key another ticket (crown \
+                            only), to a column get_ticket lists in allowed_columns; other \
+                            names are refused. Position is priority: before lands above a \
+                            ticket, and the same column reorders.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     // A plain string, NOT an enum: see the module header.
                     "to_column": {
                         "type": "string",
-                        "description": "Destination column name, as spelled in allowed_columns.",
+                        "description": "Destination column, as in allowed_columns.",
                     },
                     "idempotency_key": {
                         "type": "string",
-                        "description": "Optional. Repeating a call with the same key replays \
-                                        the first result instead of moving twice.",
+                        "description": "Optional. Same key replays the first result.",
+                    },
+                    "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
+                    "before": {
+                        "type": "string",
+                        "description": "Optional. Land above this key; omitted is the top.",
+                    },
+                    "seen": {
+                        "type": "string",
+                        "description": "With key: get_ticket's seen stamp; stale refuses.",
                     },
                 },
                 "required": ["to_column"],
@@ -197,11 +212,13 @@ pub fn tools() -> Vec<Value> {
         json!({
             "name": "read_note",
             "description": "Returns the full markdown text of one note on this session's \
-                            ticket. Note ids are listed by get_ticket.",
+                            ticket, or with key another ticket's (crown only). Note ids are \
+                            listed by get_ticket.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "note": { "type": "string", "description": "A note id from get_ticket." },
+                    "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
                 },
                 "required": ["note"],
                 "additionalProperties": false,
@@ -218,9 +235,10 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "write_note",
-            "description": "Creates a markdown note on this session's ticket, or replaces \
-                            the whole text of an existing one. The first note is the \
-                            ticket's description. Empty text deletes an existing note.",
+            "description": "Creates a markdown note on this session's ticket, or with key \
+                            another ticket's (crown only), or replaces the whole text of an \
+                            existing one. The first note is the ticket's description. Empty \
+                            text deletes an existing note.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -230,6 +248,7 @@ pub fn tools() -> Vec<Value> {
                                         creates a new note.",
                     },
                     "text": { "type": "string", "description": "The note's whole markdown text." },
+                    "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
                 },
                 "required": ["text"],
                 "additionalProperties": false,
@@ -274,10 +293,10 @@ pub fn tools() -> Vec<Value> {
         json!({
             "name": "tag_ticket",
             "description": "Puts one of the board's existing tags on this session's ticket, \
-                            or takes one off. Tags come in groups and a ticket wears at most \
-                            one per group, so a tag replaces its groupmate. The names \
-                            accepted are listed by get_ticket as allowed_tags; new tags \
-                            are created on the board, not here.",
+                            or with key another ticket (crown only), or takes one off. A \
+                            ticket wears one tag per group, so a tag replaces its groupmate. \
+                            Names accepted are get_ticket's allowed_tags; new tags are made \
+                            on the board.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -296,6 +315,7 @@ pub fn tools() -> Vec<Value> {
                         "type": "boolean",
                         "description": "Optional. True takes the tag off instead of putting it on.",
                     },
+                    "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
                 },
                 "required": ["name"],
                 "additionalProperties": false,
@@ -318,6 +338,62 @@ pub fn tools() -> Vec<Value> {
                     },
                 },
                 "required": ["reason"],
+                "additionalProperties": false,
+            },
+        }),
+        // The three that exist only for the crown (T-411). They take a key
+        // and a `seen` stamp; the daemon refuses every call from a ticket
+        // that does not wear the crown, and the refusal says how a person
+        // grants one.
+        json!({
+            "name": "rename_ticket",
+            "description": "Retitles another mesimon ticket (crown only). The seen stamp \
+                            get_ticket returned for it is required, and a ticket that changed \
+                            since it was read is refused with its current state.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
+                    "title": { "type": "string", "description": "The new title, one line." },
+                    "seen": { "type": "string", "description": "get_ticket's seen stamp for this ticket." },
+                },
+                "required": ["key", "title", "seen"],
+                "additionalProperties": false,
+            },
+        }),
+        json!({
+            "name": "set_workspace",
+            "description": "Chooses another mesimon ticket's workspace (crown only): a \
+                            worktree of its own or the shared checkout. Refused once the \
+                            ticket has an agent pane or a worktree, the same lock a person \
+                            meets, so it is for a ticket nobody has started.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
+                    // A plain string: `no_column_name_can_reach_a_schema`
+                    // refuses every enum, and these two are words anyway.
+                    "workspace": { "type": "string", "description": "worktree or shared_checkout." },
+                    "seen": { "type": "string", "description": "get_ticket's seen stamp for this ticket." },
+                },
+                "required": ["key", "workspace", "seen"],
+                "additionalProperties": false,
+            },
+        }),
+        json!({
+            "name": "archive_ticket",
+            "description": "Archives another mesimon ticket (crown only), or with restore \
+                            brings an archived one back to its column. Refused while a \
+                            session on it is awake. Agents cannot delete a ticket; this is \
+                            the reversible form, and the person can restore it too.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
+                    "restore": { "type": "boolean", "description": "Optional. True restores instead." },
+                    "seen": { "type": "string", "description": "get_ticket's seen stamp for this ticket." },
+                },
+                "required": ["key", "seen"],
                 "additionalProperties": false,
             },
         }),
@@ -348,21 +424,45 @@ pub fn initialize_result(client_protocol: Option<&str>) -> Value {
 /// ticket even by guessing an id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCall {
-    GetTicket,
+    /// `key` names another ticket (T-411): the crown's road, refused by the
+    /// daemon on every other ticket.
+    GetTicket {
+        key: Option<String>,
+    },
     ListBoard,
     MoveTicket {
         to_column: String,
         idempotency_key: Option<String>,
+        key: Option<String>,
+        before: Option<String>,
+        seen: Option<String>,
     },
     ReadAttachment {
         attachment: ulid::Ulid,
     },
     ReadNote {
         note: ulid::Ulid,
+        key: Option<String>,
     },
     WriteNote {
         note: Option<ulid::Ulid>,
         text: String,
+        key: Option<String>,
+    },
+    RenameTicket {
+        key: String,
+        title: String,
+        seen: String,
+    },
+    SetWorkspace {
+        key: String,
+        workspace: String,
+        seen: String,
+    },
+    ArchiveTicket {
+        key: String,
+        restore: bool,
+        seen: String,
     },
     CreateTicket {
         title: String,
@@ -377,10 +477,27 @@ pub enum ToolCall {
         name: String,
         group: Option<u8>,
         remove: bool,
+        key: Option<String>,
     },
     RaiseHand {
         reason: String,
     },
+}
+
+/// An optional string argument, trimmed: absent, null or blank is `None`;
+/// any other shape is an error the model can read. The keyed tools (T-411)
+/// take their `key`, `before` and `seen` through this.
+fn opt_word(args: &Value, name: &str) -> Result<Option<String>, String> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.trim().to_string()).filter(|s| !s.is_empty())),
+        Some(other) => Err(format!("{name} must be a string, not {other}")),
+    }
+}
+
+/// A required string argument, trimmed and non-empty.
+fn word(args: &Value, name: &str) -> Result<String, String> {
+    opt_word(args, name)?.ok_or_else(|| format!("{name} is required"))
 }
 
 /// Parse a `tools/call` into a `ToolCall`, or produce the message the agent
@@ -388,7 +505,7 @@ pub enum ToolCall {
 /// `tool_reference` for a tool that no longer exists.
 pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
     match name {
-        "get_ticket" => Ok(ToolCall::GetTicket),
+        "get_ticket" => Ok(ToolCall::GetTicket { key: opt_word(args, "key")? }),
         "list_board" => Ok(ToolCall::ListBoard),
         "move_ticket" => {
             let to_column = args
@@ -407,8 +524,31 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty())
                     .map(str::to_string),
+                key: opt_word(args, "key")?,
+                before: opt_word(args, "before")?,
+                seen: opt_word(args, "seen")?,
             })
         }
+        "rename_ticket" => Ok(ToolCall::RenameTicket {
+            key: word(args, "key")?,
+            title: word(args, "title")?,
+            seen: word(args, "seen")?,
+        }),
+        "set_workspace" => Ok(ToolCall::SetWorkspace {
+            key: word(args, "key")?,
+            workspace: word(args, "workspace")?,
+            seen: word(args, "seen")?,
+        }),
+        "archive_ticket" => Ok(ToolCall::ArchiveTicket {
+            key: word(args, "key")?,
+            restore: match args.get("restore") {
+                None | Some(Value::Null) => false,
+                Some(v) => {
+                    v.as_bool().ok_or_else(|| format!("restore must be a boolean, not {v}"))?
+                }
+            },
+            seen: word(args, "seen")?,
+        }),
         "read_attachment" => Ok(ToolCall::ReadAttachment {
             attachment: args
                 .get("attachment")
@@ -419,6 +559,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
         }),
         "read_note" => Ok(ToolCall::ReadNote {
             note: note_id(args, true)?.ok_or("read_note requires a note id")?,
+            key: opt_word(args, "key")?,
         }),
         "write_note" => {
             let text = args
@@ -426,7 +567,11 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                 .and_then(Value::as_str)
                 .ok_or("write_note requires a text string")?
                 .to_string();
-            Ok(ToolCall::WriteNote { note: note_id(args, false)?, text })
+            Ok(ToolCall::WriteNote {
+                note: note_id(args, false)?,
+                text,
+                key: opt_word(args, "key")?,
+            })
         }
         "create_ticket" => {
             let title = args
@@ -497,7 +642,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                     v.as_bool().ok_or_else(|| format!("remove must be a boolean, not {v}"))?
                 }
             };
-            Ok(ToolCall::TagTicket { name, group, remove })
+            Ok(ToolCall::TagTicket { name, group, remove, key: opt_word(args, "key")? })
         }
         "raise_hand" => {
             // A blank reason is an error the model can read, never a silent
@@ -540,10 +685,20 @@ fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Nine tools, nine commands.
+        // The tier. Twelve tools, thirteen commands (`get_ticket` with a
+        // key is its own command on the wire).
         Command::AgentGetTicket
         | Command::AgentListBoard
         | Command::AgentMoveTicket { .. }
+        // The crown's road (T-411): the keyed read and the three keyed
+        // writers. Admitted HERE for every agent — the crown is not a tier,
+        // it is a binding the daemon checks on every call against
+        // `Board::crown`, and an uncrowned caller reads a refusal that says
+        // how a person grants one. What stays out is deciding who wears it.
+        | Command::AgentReadTicket { .. }
+        | Command::AgentRenameTicket { .. }
+        | Command::AgentSetWorkspace { .. }
+        | Command::AgentArchiveTicket { .. }
         // T1 ANNOTATE: notes on the caller's OWN ticket. Unlike a tag, a
         // note is what D10 enumerated a tier for, and it is the one channel
         // through which the ticket's description reaches the agent without
@@ -655,6 +810,11 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // Whether a branch lands on its own is the person's call, never the
         // agent's whose branch it is.
         | Command::SetManualMerge { .. }
+        // Who wears the crown (T-411) is the person's call and nobody
+        // else's: an agent that could crown itself, or a friend, would be
+        // writing its own tier — the one thing this match exists to stop.
+        | Command::CrownTicket { .. }
+        | Command::Uncrown
         | Command::ArchiveAll
         // The environment every future pane gets, board-wide and shared by
         // every session. An agent asking to re-read the user's rc files would
@@ -742,13 +902,21 @@ pub fn agent_allows(cmd: &Command) -> bool {
 pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
     Some(match cmd {
         Command::AgentGetTicket
+        | Command::AgentReadTicket { .. }
         | Command::AgentListBoard
         | Command::AgentReadNote { .. }
         | Command::AgentReadAttachment { .. } => AgentTools::Read,
         Command::AgentWriteNote { .. }
         | Command::AgentTagTicket { .. }
         | Command::AgentRaiseHand { .. } => AgentTools::Annotate,
-        Command::AgentMoveTicket { .. } | Command::AgentCreateTicket { .. } => AgentTools::Full,
+        // The crown's three writers (T-411) sit on the top rung beside the
+        // move: a column that narrowed its agents below `full` narrows the
+        // crown with them.
+        Command::AgentMoveTicket { .. }
+        | Command::AgentCreateTicket { .. }
+        | Command::AgentRenameTicket { .. }
+        | Command::AgentSetWorkspace { .. }
+        | Command::AgentArchiveTicket { .. } => AgentTools::Full,
         _ => return None,
     })
 }
@@ -758,7 +926,9 @@ pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
     Some(match name {
         "get_ticket" | "list_board" | "read_note" | "read_attachment" => AgentTools::Read,
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
-        "move_ticket" | "create_ticket" => AgentTools::Full,
+        "move_ticket" | "create_ticket" | "rename_ticket" | "set_workspace" | "archive_ticket" => {
+            AgentTools::Full
+        }
         _ => return None,
     })
 }
@@ -838,18 +1008,43 @@ mod tests {
         // By name and by command agree, for every command an agent may send.
         let calls = [
             (Command::AgentGetTicket, "get_ticket"),
+            // `get_ticket` with a key is its own command on the wire (T-411)
+            // and sits on the same rung as the tool it rides.
+            (Command::AgentReadTicket { key: "T-1".into() }, "get_ticket"),
             (Command::AgentListBoard, "list_board"),
-            (Command::AgentReadNote { note: ulid::Ulid::nil() }, "read_note"),
+            (Command::AgentReadNote { note: ulid::Ulid::nil(), key: None }, "read_note"),
             (Command::AgentReadAttachment { attachment: ulid::Ulid::nil() }, "read_attachment"),
-            (Command::AgentWriteNote { note: None, text: "x".into() }, "write_note"),
+            (Command::AgentWriteNote { note: None, text: "x".into(), key: None }, "write_note"),
             (
-                Command::AgentTagTicket { name: "x".into(), group: None, remove: false },
+                Command::AgentTagTicket { name: "x".into(), group: None, remove: false, key: None },
                 "tag_ticket",
             ),
             (Command::AgentRaiseHand { reason: "x".into() }, "raise_hand"),
             (
-                Command::AgentMoveTicket { to_column: "X".into(), idempotency_key: None },
+                Command::AgentMoveTicket {
+                    to_column: "X".into(),
+                    idempotency_key: None,
+                    key: None,
+                    before: None,
+                    seen: None,
+                },
                 "move_ticket",
+            ),
+            (
+                Command::AgentRenameTicket { key: "T-1".into(), title: "x".into(), seen: None },
+                "rename_ticket",
+            ),
+            (
+                Command::AgentSetWorkspace {
+                    key: "T-1".into(),
+                    workspace: "worktree".into(),
+                    seen: None,
+                },
+                "set_workspace",
+            ),
+            (
+                Command::AgentArchiveTicket { key: "T-1".into(), restore: false, seen: None },
+                "archive_ticket",
             ),
             (
                 Command::AgentCreateTicket {
@@ -912,9 +1107,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_nine_tools() {
+    fn exactly_twelve_tools() {
         let t = tools();
-        assert_eq!(t.len(), 9);
+        assert_eq!(t.len(), 12);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -927,8 +1122,89 @@ mod tests {
                 "write_note",
                 "create_ticket",
                 "tag_ticket",
-                "raise_hand"
+                "raise_hand",
+                "rename_ticket",
+                "set_workspace",
+                "archive_ticket"
             ]
+        );
+    }
+
+    /// The crown's arguments (T-411): a key is a trimmed word, `seen` is
+    /// required on the three keyed writers, and a wrongly shaped argument
+    /// is an answer the model can read rather than a silent own-ticket call.
+    #[test]
+    fn keyed_tools_parse_and_refuse() {
+        assert_eq!(
+            parse_tool_call("get_ticket", &json!({ "key": " T-4 " })),
+            Ok(ToolCall::GetTicket { key: Some("T-4".into()) })
+        );
+        assert_eq!(
+            parse_tool_call("get_ticket", &json!({ "key": "" })),
+            Ok(ToolCall::GetTicket { key: None })
+        );
+        assert!(parse_tool_call("get_ticket", &json!({ "key": 4 })).is_err());
+        assert_eq!(
+            parse_tool_call(
+                "move_ticket",
+                &json!({ "to_column": "TODO", "key": "T-4", "before": "T-2", "seen": "abc" })
+            ),
+            Ok(ToolCall::MoveTicket {
+                to_column: "TODO".into(),
+                idempotency_key: None,
+                key: Some("T-4".into()),
+                before: Some("T-2".into()),
+                seen: Some("abc".into()),
+            })
+        );
+        assert_eq!(
+            parse_tool_call(
+                "rename_ticket",
+                &json!({ "key": "T-4", "title": " new ", "seen": "abc" })
+            ),
+            Ok(ToolCall::RenameTicket {
+                key: "T-4".into(),
+                title: "new".into(),
+                seen: "abc".into()
+            })
+        );
+        assert!(parse_tool_call("rename_ticket", &json!({ "key": "T-4", "title": "x" })).is_err());
+        assert!(parse_tool_call("rename_ticket", &json!({ "title": "x", "seen": "a" })).is_err());
+        assert_eq!(
+            parse_tool_call(
+                "set_workspace",
+                &json!({ "key": "T-4", "workspace": "worktree", "seen": "abc" })
+            ),
+            Ok(ToolCall::SetWorkspace {
+                key: "T-4".into(),
+                workspace: "worktree".into(),
+                seen: "abc".into()
+            })
+        );
+        assert_eq!(
+            parse_tool_call("archive_ticket", &json!({ "key": "T-4", "seen": "abc" })),
+            Ok(ToolCall::ArchiveTicket { key: "T-4".into(), restore: false, seen: "abc".into() })
+        );
+        assert_eq!(
+            parse_tool_call(
+                "archive_ticket",
+                &json!({ "key": "T-4", "restore": true, "seen": "abc" })
+            ),
+            Ok(ToolCall::ArchiveTicket { key: "T-4".into(), restore: true, seen: "abc".into() })
+        );
+        assert!(parse_tool_call(
+            "archive_ticket",
+            &json!({ "key": "T-4", "restore": "yes", "seen": "a" })
+        )
+        .is_err());
+        assert_eq!(
+            parse_tool_call("tag_ticket", &json!({ "name": "bug", "key": "T-4" })),
+            Ok(ToolCall::TagTicket {
+                name: "bug".into(),
+                group: None,
+                remove: false,
+                key: Some("T-4".into())
+            })
         );
     }
 
@@ -949,16 +1225,16 @@ mod tests {
     fn tag_ticket_parses_and_refuses() {
         assert_eq!(
             parse_tool_call("tag_ticket", &json!({ "name": " bug " })),
-            Ok(ToolCall::TagTicket { name: "bug".into(), group: None, remove: false })
+            Ok(ToolCall::TagTicket { name: "bug".into(), group: None, remove: false, key: None })
         );
         assert_eq!(
             parse_tool_call("tag_ticket", &json!({ "name": "bug", "group": 3, "remove": true })),
-            Ok(ToolCall::TagTicket { name: "bug".into(), group: Some(3), remove: true })
+            Ok(ToolCall::TagTicket { name: "bug".into(), group: Some(3), remove: true, key: None })
         );
         // Null optionals are absent, not errors.
         assert_eq!(
             parse_tool_call("tag_ticket", &json!({ "name": "bug", "group": null, "remove": null })),
-            Ok(ToolCall::TagTicket { name: "bug".into(), group: None, remove: false })
+            Ok(ToolCall::TagTicket { name: "bug".into(), group: None, remove: false, key: None })
         );
         assert!(parse_tool_call("tag_ticket", &json!({})).is_err());
         assert!(parse_tool_call("tag_ticket", &json!({ "name": "  " })).is_err());
@@ -1022,17 +1298,17 @@ mod tests {
         let id = ulid::Ulid::nil();
         assert_eq!(
             parse_tool_call("read_note", &json!({ "note": id.to_string() })),
-            Ok(ToolCall::ReadNote { note: id })
+            Ok(ToolCall::ReadNote { note: id, key: None })
         );
         assert!(parse_tool_call("read_note", &json!({})).is_err());
         assert!(parse_tool_call("read_note", &json!({ "note": "nope" })).is_err());
         assert_eq!(
             parse_tool_call("write_note", &json!({ "text": "hi" })),
-            Ok(ToolCall::WriteNote { note: None, text: "hi".into() })
+            Ok(ToolCall::WriteNote { note: None, text: "hi".into(), key: None })
         );
         assert_eq!(
             parse_tool_call("write_note", &json!({ "note": id.to_string(), "text": "" })),
-            Ok(ToolCall::WriteNote { note: Some(id), text: String::new() })
+            Ok(ToolCall::WriteNote { note: Some(id), text: String::new(), key: None })
         );
         // A malformed id must not silently become "create another".
         assert!(parse_tool_call("write_note", &json!({ "note": "x", "text": "hi" })).is_err());
@@ -1148,7 +1424,13 @@ mod tests {
     fn move_ticket_parses_and_refuses() {
         assert_eq!(
             parse_tool_call("move_ticket", &json!({"to_column": "REVIEW"})).unwrap(),
-            ToolCall::MoveTicket { to_column: "REVIEW".into(), idempotency_key: None }
+            ToolCall::MoveTicket {
+                to_column: "REVIEW".into(),
+                idempotency_key: None,
+                key: None,
+                before: None,
+                seen: None
+            }
         );
         assert_eq!(
             parse_tool_call(
@@ -1156,7 +1438,13 @@ mod tests {
                 &json!({"to_column": " REVIEW ", "idempotency_key": "k"})
             )
             .unwrap(),
-            ToolCall::MoveTicket { to_column: "REVIEW".into(), idempotency_key: Some("k".into()) }
+            ToolCall::MoveTicket {
+                to_column: "REVIEW".into(),
+                idempotency_key: Some("k".into()),
+                key: None,
+                before: None,
+                seen: None
+            }
         );
         assert!(parse_tool_call("move_ticket", &json!({})).is_err());
         assert!(parse_tool_call("move_ticket", &json!({"to_column": "  "})).is_err());
@@ -1165,25 +1453,36 @@ mod tests {
 
     #[test]
     fn no_argument_tools_ignore_arguments() {
+        // `ticket` was never the argument's name: a session cannot address
+        // another ticket by guessing a field. `key` is (T-411), and the
+        // daemon judges it against the crown.
         assert_eq!(
             parse_tool_call("get_ticket", &json!({"ticket": "OTHER-9"})).unwrap(),
-            ToolCall::GetTicket
+            ToolCall::GetTicket { key: None }
         );
         assert_eq!(parse_tool_call("list_board", &json!(null)).unwrap(), ToolCall::ListBoard);
     }
 
     /// Every tool has a command, and every allowed command has a tool. A
     /// command an agent may send that no tool can reach would be a hole nobody
-    /// is looking at.
+    /// is looking at. Thirteen commands for twelve tools: `get_ticket` with
+    /// a key rides its own command (T-411).
     #[test]
-    fn the_tier_is_exactly_nine_commands() {
+    fn the_tier_is_exactly_thirteen_commands() {
         let allowed = [
             Command::AgentGetTicket,
+            Command::AgentReadTicket { key: "T-1".into() },
             Command::AgentListBoard,
-            Command::AgentMoveTicket { to_column: "X".into(), idempotency_key: None },
-            Command::AgentReadNote { note: ulid::Ulid::nil() },
+            Command::AgentMoveTicket {
+                to_column: "X".into(),
+                idempotency_key: None,
+                key: None,
+                before: None,
+                seen: None,
+            },
+            Command::AgentReadNote { note: ulid::Ulid::nil(), key: None },
             Command::AgentReadAttachment { attachment: ulid::Ulid::nil() },
-            Command::AgentWriteNote { note: None, text: "x".into() },
+            Command::AgentWriteNote { note: None, text: "x".into(), key: None },
             Command::AgentCreateTicket {
                 title: "x".into(),
                 column: None,
@@ -1191,13 +1490,20 @@ mod tests {
                 tags: vec![],
                 idempotency_key: None,
             },
-            Command::AgentTagTicket { name: "x".into(), group: None, remove: false },
+            Command::AgentTagTicket { name: "x".into(), group: None, remove: false, key: None },
             Command::AgentRaiseHand { reason: "x".into() },
+            Command::AgentRenameTicket { key: "T-1".into(), title: "x".into(), seen: None },
+            Command::AgentSetWorkspace {
+                key: "T-1".into(),
+                workspace: "worktree".into(),
+                seen: None,
+            },
+            Command::AgentArchiveTicket { key: "T-1".into(), restore: false, seen: None },
         ];
         for c in &allowed {
             assert!(agent_allows(c), "{c:?} should be in the tier");
         }
-        assert_eq!(allowed.len(), tools().len());
+        assert_eq!(allowed.len(), tools().len() + 1);
     }
 
     /// The never-tier, named one command at a time. This is the list a reader
@@ -1266,6 +1572,9 @@ mod tests {
             Command::SnoozeTicket { id: t, until: 1, needs_you: true },
             Command::SeenTicket { id: t },
             Command::SetManualMerge { id: t, on: true },
+            // The crown is the person's to give (T-411).
+            Command::CrownTicket { id: t },
+            Command::Uncrown,
             Command::ArchiveAll,
             Command::AddColumn { name: "QA".into(), after: None },
             Command::RenameColumn { name: "QA".into(), to: "QC".into() },
@@ -1322,6 +1631,14 @@ mod tests {
             Command::ReadNote { ticket: t, note: t },
             Command::WriteNote { ticket: t, note: None, text: "x".into() },
         ];
+        // The tier's other-ticket writers (T-411) are admitted here and
+        // judged by the crown in the daemon; the id-addressed forms above
+        // stay out, key or no key.
+        assert!(agent_allows(&Command::AgentRenameTicket {
+            key: "T-1".into(),
+            title: "x".into(),
+            seen: None
+        }));
         for c in &denied {
             assert!(!agent_allows(c), "{c:?} must stay out of the tier");
         }

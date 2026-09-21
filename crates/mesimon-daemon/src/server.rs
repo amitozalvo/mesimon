@@ -14,14 +14,14 @@ use anyhow::{Context, Result};
 use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::attention::{self, Change, EndKind, Machine, Signal, StartSource};
 use mesimon_core::board::{
-    foreground_of, sanitize_tag, AgentProvider, AgentTools, Archived, Board, Confidence,
-    ExitReason, Provenance, SessionKind, SessionRecord, SessionState, StopReason, Tag, TagRef,
-    Ticket, UnknownReason, WorkspaceStrategy,
+    agent_state_word, foreground_of, sanitize_tag, AgentProvider, AgentTools, Archived, Board,
+    Confidence, ExitReason, Provenance, SessionKind, SessionRecord, SessionState, StopReason, Tag,
+    TagRef, Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    AgentBoardView, AgentTagView, AgentTicketRow, AgentTicketView, Command, DiffTarget, Envelope,
-    Event, ExternalItem, GraceItem, MergeOutcome, Notice, Resources, Response, TerminalItem,
-    WorktreeItem, PROTOCOL_VERSION,
+    AgentBoardView, AgentStateView, AgentTagView, AgentTicketRow, AgentTicketView, Command,
+    CrownTouch, DiffTarget, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Notice,
+    Resources, Response, TerminalItem, WorktreeItem, PROTOCOL_VERSION,
 };
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
@@ -41,6 +41,10 @@ mod mesophon;
 mod teamglue;
 
 const GRACE_SECS: u64 = 9;
+/// How long a crown touch (T-411) rides the snapshot: long enough for the
+/// board to light the card and leave its residue, short enough that a burst
+/// of edits never accumulates. The feed is the record.
+const CROWN_TOUCH_MS: u64 = 10_000;
 const GATE_SESSION: &str = "msmn-gate";
 
 /// Who holds the exclusive focus token (D22): a ticket's session, or the
@@ -442,6 +446,11 @@ pub struct Daemon {
     /// hands the model the literal string `Connection closed` AFTER the move
     /// has been persisted; without this the retry moves the card twice.
     agent_replay: HashMap<(uuid::Uuid, String), AgentReplay>,
+    /// The crown's edits of the last `CROWN_TOUCH_MS` (T-411), one per
+    /// touched ticket, so the board can light the card an agent just
+    /// changed. In memory on purpose, like the move gate's: the feed is the
+    /// record, this is what the next frame needs.
+    crown_touches: HashMap<ulid::Ulid, CrownTouch>,
     /// The user's own shell environment, as their login shell last reported
     /// it. Every spawn hands this to the pane, because a Claude pane is exec'd
     /// directly by tmux and so reads no rc file of its own.
@@ -773,6 +782,7 @@ pub fn run(paths: Paths) -> Result<()> {
         moves: MoveGate::new(),
         board_version: 0,
         agent_replay: HashMap::new(),
+        crown_touches: HashMap::new(),
         shell_env: crate::shellenv::ShellEnv::default(),
         shell_env_capturing: false,
         shell_env_error: None,
@@ -1533,7 +1543,7 @@ impl Daemon {
             }
             Command::NoteToAgent { ticket, note } => self.note_to_agent(ticket, note),
             Command::RestoreTicket { id } => self.restore_ticket(id),
-            Command::ArchiveTicket { id } => self.archive_ticket(id),
+            Command::ArchiveTicket { id } => self.archive_ticket(id, &Principal::Local),
             Command::UnarchiveTicket { id } => self.unarchive_ticket(id),
             Command::SnoozeTicket { id, until, needs_you } => {
                 self.snooze_ticket(id, until, needs_you)
@@ -1541,6 +1551,8 @@ impl Daemon {
             Command::SeenTicket { id } => self.seen_ticket(id),
             Command::LowerHand { id } => self.lower_hand(id),
             Command::SetManualMerge { id, on } => self.set_manual_merge(id, on),
+            Command::CrownTicket { id } => self.crown_ticket(id),
+            Command::Uncrown => self.uncrown(),
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
             Command::SetAgentProvider { provider } => self.set_agent_provider(provider),
             Command::SetParkAfterMinutes { minutes } => self.set_park_after_minutes(minutes),
@@ -1706,6 +1718,7 @@ impl Daemon {
             // sending one of these is either confused or probing; either way
             // the answer is no, not "acts as the agent whose id you guessed".
             Command::AgentGetTicket
+            | Command::AgentReadTicket { .. }
             | Command::AgentListBoard
             | Command::AgentMoveTicket { .. }
             | Command::AgentReadAttachment { .. }
@@ -1713,6 +1726,9 @@ impl Daemon {
             | Command::AgentWriteNote { .. }
             | Command::AgentCreateTicket { .. }
             | Command::AgentTagTicket { .. }
+            | Command::AgentRenameTicket { .. }
+            | Command::AgentSetWorkspace { .. }
+            | Command::AgentArchiveTicket { .. }
             | Command::AgentRaiseHand { .. } => {
                 Response::Err { message: "agent commands require an agent principal".into() }
             }
@@ -3180,6 +3196,23 @@ impl Daemon {
                     None => no_such_ticket(),
                 }
             }
+            // Another ticket, by key (T-411): the crown's one read.
+            Command::AgentReadTicket { key } => {
+                let target = match self.crown_target(ticket, &key, true) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Read, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                match self.agent_ticket_view(target) {
+                    Some(view) => Response::AgentTicket { ticket: view },
+                    None => no_such_ticket(),
+                }
+            }
             Command::AgentListBoard => {
                 let by = Principal::Agent { session };
                 if let Decision::Deny { reason } = authorize(&by, &Action::Read, &Resource::Board) {
@@ -3187,7 +3220,7 @@ impl Daemon {
                 }
                 Response::AgentBoard { board: self.agent_board_view() }
             }
-            Command::AgentMoveTicket { to_column, idempotency_key } => {
+            Command::AgentMoveTicket { to_column, idempotency_key, key, before, seen } => {
                 // Replay before acting. A mid-call transport drop hands the
                 // model the literal string `Connection closed` AFTER the move
                 // has been persisted, so the honest answer to a repeat is the
@@ -3200,11 +3233,30 @@ impl Daemon {
                             column: column.clone(),
                             board_version: self.board_version,
                             replayed: true,
+                            seen: None,
                         };
                     }
                 }
+                // The target: the caller's own ticket, or with a key another
+                // ticket — the crown's road (T-411), judged against the
+                // ticket as it was READ (`seen`).
+                let target = match self.keyed_target(ticket, key.as_deref(), seen.as_deref(), false)
+                {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                // Position is priority: `before` lands above a named ticket
+                // in the destination; nothing named lands at the top, as
+                // every agent move did.
+                let pos = match before {
+                    None => Position::Top,
+                    Some(b) => match self.board.ticket_by_key(&b) {
+                        Some(t) => Position::Before(Some(t.id)),
+                        None => return Response::Err { message: format!("no such ticket: {b}") },
+                    },
+                };
                 let by = Principal::Agent { session };
-                match self.place_ticket(ticket, &to_column, Position::Top, &by, "agent_move") {
+                match self.place_ticket(target, &to_column, pos, &by, "agent_move") {
                     Ok(column) => {
                         if let Some(key) = idempotency_key {
                             self.remember_agent_result(
@@ -3216,17 +3268,20 @@ impl Daemon {
                         // `place_ticket` already saved the ticket file and
                         // broadcast. A move touches no session and no column,
                         // so there is nothing else to persist.
+                        let seen = self.crown_touched(ticket, target, "moved");
                         Response::AgentMoved {
                             column,
                             board_version: self.board_version,
                             replayed: false,
+                            seen,
                         }
                     }
                     Err(message) => Response::Err { message },
                 }
             }
-            // The note tools: the ticket is the binding's, and a note id off
-            // it reads as "no such note" inside the handlers.
+            // The note tools: the ticket is the binding's — or the key's, for
+            // the crown (T-411) — and a note id off it reads as "no such
+            // note" inside the handlers.
             Command::AgentReadAttachment { attachment } => {
                 if let Decision::Deny { reason } = authorize(
                     &Principal::Agent { session },
@@ -3237,27 +3292,132 @@ impl Daemon {
                 }
                 self.read_attachment(ticket, attachment)
             }
-            Command::AgentReadNote { note } => {
+            Command::AgentReadNote { note, key } => {
+                let target = match key {
+                    None => ticket,
+                    Some(k) => match self.crown_target(ticket, &k, true) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    },
+                };
                 let by = Principal::Agent { session };
                 if let Decision::Deny { reason } =
-                    authorize(&by, &Action::Read, &Resource::Ticket { id: ticket })
+                    authorize(&by, &Action::Read, &Resource::Ticket { id: target })
                 {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
-                self.read_note(ticket, note)
+                self.read_note(target, note)
             }
-            Command::AgentWriteNote { note, text } => {
+            Command::AgentWriteNote { note, text, key } => {
+                let target = match key {
+                    None => ticket,
+                    Some(k) => match self.crown_target(ticket, &k, false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    },
+                };
                 let by = Principal::Agent { session };
                 if let Decision::Deny { reason } =
-                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: ticket })
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
                 {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
-                let resp = self.write_note(ticket, note, text, &by);
+                let resp = self.write_note(target, note, text, &by);
                 if matches!(resp, Response::NoteWritten { .. }) {
-                    self.feed.board(by.actor(), "write_note", Some(ticket));
+                    self.feed.board(by.actor(), "write_note", Some(target));
+                    self.crown_touched(ticket, target, "note");
                 }
                 resp
+            }
+            // The crown's three writers (T-411). Each resolves its key
+            // through the same gate, checks `seen`, does what the human's
+            // command does, and answers with the ticket as it stands now —
+            // fresh stamp included, so the next edit needs no second read.
+            Command::AgentRenameTicket { key, title, seen } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                // Trimmed, unlike the composer's: a model's leading blank
+                // is noise, a person's is a choice.
+                let title = mesimon_core::board::sanitize_title(title.trim());
+                if title.trim().is_empty() {
+                    return Response::Err { message: "title is empty".into() };
+                }
+                if let err @ Response::Err { .. } = self.with_ticket(target, |t| t.title = title) {
+                    return err;
+                }
+                self.feed.board(by.actor(), "rename_ticket", Some(target));
+                self.crown_touched(ticket, target, "renamed");
+                self.agent_ticket_view(target)
+                    .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
+            }
+            Command::AgentSetWorkspace { key, workspace, seen } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                let ws = match workspace.as_str() {
+                    "worktree" => WorkspaceStrategy::Worktree,
+                    "shared_checkout" => WorkspaceStrategy::SharedCheckout,
+                    other => {
+                        return Response::Err {
+                            message: format!(
+                                "workspace is worktree or shared_checkout, not {other}"
+                            ),
+                        }
+                    }
+                };
+                if self.worktrees_barred {
+                    return Response::Err { message: self.barred_message("worktrees") };
+                }
+                if let err @ Response::Err { .. } = self.set_workspace(target, Some(ws)) {
+                    return err;
+                }
+                self.feed.board(by.actor(), "set_workspace", Some(target));
+                self.crown_touched(ticket, target, "workspace");
+                self.agent_ticket_view(target)
+                    .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
+            }
+            Command::AgentArchiveTicket { key, restore, seen } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), restore) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                let (resp, word) = if restore {
+                    (self.unarchive_ticket(target), "restored")
+                } else {
+                    (self.archive_ticket(target, &by), "archived")
+                };
+                if let err @ Response::Err { .. } = resp {
+                    return err;
+                }
+                self.feed.board(
+                    by.actor(),
+                    if restore { "unarchive_ticket" } else { "archive_ticket" },
+                    Some(target),
+                );
+                self.crown_touched(ticket, target, word);
+                self.agent_ticket_view(target)
+                    .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
             }
             Command::AgentCreateTicket { title, column, description, tags, idempotency_key } => {
                 // Replay first, for the same reason as a move: a retry after
@@ -3287,16 +3447,239 @@ impl Daemon {
                 }
                 resp
             }
-            Command::AgentTagTicket { name, group, remove } => {
+            Command::AgentTagTicket { name, group, remove, key } => {
+                let target = match key {
+                    None => ticket,
+                    Some(k) => match self.crown_target(ticket, &k, false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    },
+                };
                 let by = Principal::Agent { session };
-                self.agent_tag_ticket(&by, ticket, &name, group, remove)
+                match self.agent_tag_ticket(&by, target, &name, group, remove) {
+                    Response::AgentTagged { tags, replaced, board_version, .. } => {
+                        let seen = self.crown_touched(ticket, target, "tagged");
+                        Response::AgentTagged { tags, replaced, board_version, seen }
+                    }
+                    other => other,
+                }
             }
             Command::AgentRaiseHand { reason } => {
                 let by = Principal::Agent { session };
                 self.agent_raise_hand(&by, ticket, &reason)
             }
-            // Unreachable: `agent_allows` above admits exactly nine commands.
+            // Unreachable: `agent_allows` above admits exactly thirteen commands.
             _ => Response::Err { message: "not available to an agent session".into() },
+        }
+    }
+
+    // ------------------------------------------------------------ the crown
+
+    /// The ticket a keyed call is about (T-411): the caller's own when the
+    /// key names it — a session may always address its own card, crown or
+    /// not — else the key's ticket, for the crown alone. An unknown key is
+    /// an answer; an uncrowned caller reads how a person grants the crown.
+    /// `archived_ok` admits an archived target (a restore's whole point);
+    /// otherwise an archived card is off the board and says so.
+    fn crown_target(
+        &self,
+        own: ulid::Ulid,
+        key: &str,
+        archived_ok: bool,
+    ) -> std::result::Result<ulid::Ulid, String> {
+        let Some(t) = self.board.ticket_by_key(key) else {
+            return Err(format!("no such ticket: {key} (list_board lists every key)"));
+        };
+        if t.id == own {
+            return Ok(own);
+        }
+        if !self.board.is_crowned(own) {
+            return Err(self.crown_refusal(own));
+        }
+        if t.is_archived() && !archived_ok {
+            return Err(format!("{key} is archived; archive_ticket with restore brings it back"));
+        }
+        Ok(t.id)
+    }
+
+    /// `crown_target` plus the freshness check every keyed WRITER makes:
+    /// the `seen` stamp `get_ticket` handed out for the target has to match
+    /// the ticket as it stands, or the write is refused with the current
+    /// state — read-before-write as a check rather than a claim. The
+    /// caller's own ticket needs no stamp; a key that names it is an
+    /// own-ticket call.
+    fn keyed_target(
+        &self,
+        own: ulid::Ulid,
+        key: Option<&str>,
+        seen: Option<&str>,
+        archived_ok: bool,
+    ) -> std::result::Result<ulid::Ulid, String> {
+        let Some(key) = key else { return Ok(own) };
+        let target = self.crown_target(own, key, archived_ok)?;
+        if target == own {
+            return Ok(own);
+        }
+        self.check_seen(target, seen)?;
+        Ok(target)
+    }
+
+    /// The words an uncrowned agent reads when it reaches for another
+    /// ticket: who wears the crown, how a person grants it, and the road
+    /// that puts the ask on the card. Transient result data, so it may
+    /// instruct — the lint that keeps tool text descriptive does not reach
+    /// a refusal, and this one exists to be relayed to the person.
+    fn crown_refusal(&self, own: ulid::Ulid) -> String {
+        let key = self.board.ticket(own).map(|t| t.short_key.clone()).unwrap_or_default();
+        let who = match self.board.crown_holder() {
+            Some(h) => format!("{} wears the crown", h.short_key),
+            None => "no ticket wears the crown".to_string(),
+        };
+        format!(
+            "not the board's coordinator: {who}. Editing another ticket needs the crown, \
+             which only a person grants — on the board, with the cursor on {key}, ^o crowns it. \
+             raise_hand puts this request on the card so the person sees it without opening \
+             the pane."
+        )
+    }
+
+    /// An opaque stamp over everything a keyed edit may assume about a
+    /// ticket: where it sits, what it says, what it wears, and what its
+    /// agent is doing. Recomputed on every read and every check, never
+    /// stored, so a daemon restart simply asks for a fresh read.
+    fn seen_token(&self, id: ulid::Ulid) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        if let Some(t) = self.board.ticket(id) {
+            t.column.hash(&mut h);
+            t.order.hash(&mut h);
+            t.title.hash(&mut h);
+            for r in &t.tags {
+                r.group.hash(&mut h);
+                r.name.hash(&mut h);
+            }
+            for n in &t.notes {
+                n.id.to_string().hash(&mut h);
+                n.rev.hash(&mut h);
+            }
+            t.workspace_strategy().word().hash(&mut h);
+            t.is_archived().hash(&mut h);
+            t.raised.as_ref().map(|r| r.reason.as_str()).hash(&mut h);
+            if let Some(s) = self.board.live_agent(id) {
+                agent_state_word(&s.state).hash(&mut h);
+                s.state_changed_at.hash(&mut h);
+            }
+        }
+        format!("{:016x}", h.finish())
+    }
+
+    fn check_seen(&self, id: ulid::Ulid, seen: Option<&str>) -> std::result::Result<(), String> {
+        let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
+        let Some(seen) = seen.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Err(format!(
+                "seen is required for {key}: read it with get_ticket first and pass the seen stamp it returns"
+            ));
+        };
+        if seen != self.seen_token(id) {
+            let col = self.board.ticket(id).map(|t| t.column.clone()).unwrap_or_default();
+            let state = self
+                .agent_state_view(id)
+                .map(|s| s.state)
+                .unwrap_or_else(|| "no agent".to_string());
+            return Err(format!(
+                "{key} changed since it was read (now in {col}, agent {state}); read it again with get_ticket"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The card's words about a ticket's agent (T-411): one state word, how
+    /// long, and the raised hand's own sentence. Never the pane.
+    fn agent_state_view(&self, id: ulid::Ulid) -> Option<AgentStateView> {
+        let t = self.board.ticket(id)?;
+        let s = self.board.live_agent(id)?;
+        let now = mesimon_core::clock::now_ms();
+        Some(AgentStateView {
+            state: agent_state_word(&s.state).to_string(),
+            since_secs: s.state_changed_at.map(|at| now.saturating_sub(at) / 1000),
+            raised: t.raised.as_ref().map(|r| r.reason.clone()),
+        })
+    }
+
+    /// Record that the crown touched `target` (T-411) so the board lights
+    /// the card, and hand back the target's fresh stamp. An own-ticket
+    /// call is neither: the caller's card already shows its own agent.
+    fn crown_touched(
+        &mut self,
+        own: ulid::Ulid,
+        target: ulid::Ulid,
+        action: &str,
+    ) -> Option<String> {
+        if target == own {
+            return None;
+        }
+        let now = mesimon_core::clock::now_ms();
+        self.crown_touches.retain(|_, t| now.saturating_sub(t.at_ms) < CROWN_TOUCH_MS);
+        self.crown_touches
+            .insert(target, CrownTouch { ticket: target, action: action.to_string(), at_ms: now });
+        Some(self.seen_token(target))
+    }
+
+    /// The touches still worth drawing, for the snapshot.
+    fn recent_crown_touches(&self) -> Vec<CrownTouch> {
+        let now = mesimon_core::clock::now_ms();
+        let mut out: Vec<CrownTouch> = self
+            .crown_touches
+            .values()
+            .filter(|t| now.saturating_sub(t.at_ms) < CROWN_TOUCH_MS)
+            .cloned()
+            .collect();
+        out.sort_by_key(|t| t.at_ms);
+        out
+    }
+
+    /// `Command::CrownTicket` (T-411): one ticket wears it, this one now.
+    /// Persisted with the board's other scalars, so a restart keeps the
+    /// seat; the feed line is the generic dispatch's, with the person as
+    /// actor.
+    fn crown_ticket(&mut self, id: ulid::Ulid) -> Response {
+        let Some(t) = self.board.ticket(id) else { return no_such_ticket() };
+        if t.is_archived() {
+            return Response::Err { message: "ticket archived — restore it first".into() };
+        }
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.crown == Some(id) {
+            return Response::Ok;
+        }
+        self.board.crown = Some(id);
+        self.persist_columns();
+        self.broadcast();
+        Response::Ok
+    }
+
+    fn uncrown(&mut self) -> Response {
+        if self.board.crown.is_none() {
+            return Response::Ok;
+        }
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        self.board.crown = None;
+        self.persist_columns();
+        self.broadcast();
+        Response::Ok
+    }
+
+    /// A crowned ticket leaving the board — deleted, archived — takes the
+    /// crown with it: a seat nobody can see is not a seat. Said in the
+    /// feed as the daemon's own doing.
+    fn drop_crown_if(&mut self, id: ulid::Ulid) {
+        if self.board.crown == Some(id) {
+            self.board.crown = None;
+            self.persist_columns();
+            self.feed.board("automation", "uncrown", Some(id));
         }
     }
 
@@ -3527,7 +3910,7 @@ impl Daemon {
         // The groupmate that came off to make room: only on a put, and only
         // when there was a different one there.
         let replaced = if remove || wearing { None } else { before };
-        Response::AgentTagged { tags, replaced, board_version: self.board_version }
+        Response::AgentTagged { tags, replaced, board_version: self.board_version, seen: None }
     }
 
     /// `raise_hand`, for an agent (T-107): put the needs-you mark on the
@@ -3690,7 +4073,23 @@ impl Daemon {
                     edited_at: n.edited_at.clone(),
                 })
                 .collect(),
+            crowned: self.board.is_crowned(id),
+            state: self.agent_state_view(id),
+            seen: Some(self.seen_token(id)),
         })
+    }
+
+    /// `person` or `agent` off a ticket's `created_by` (T-253), for a
+    /// coordinator triaging what agents filed; a ticket from before the
+    /// field says nothing rather than guessing a person.
+    fn filed_by(t: &Ticket) -> Option<String> {
+        if t.created_by.is_empty() {
+            None
+        } else if t.agent_created() {
+            Some("agent".to_string())
+        } else {
+            Some("person".to_string())
+        }
     }
 
     /// The board as an agent sees it: columns, and tickets' key/title/column.
@@ -3710,10 +4109,17 @@ impl Daemon {
                     key: t.short_key.clone(),
                     title: t.title.clone(),
                     column: t.column.clone(),
+                    by: Self::filed_by(t),
+                    state: self.board.live_agent(t.id).map(|s| agent_state_word(&s.state).into()),
                 })
             })
             .collect();
-        AgentBoardView { columns, tickets, board_version: self.board_version }
+        AgentBoardView {
+            columns,
+            tickets,
+            board_version: self.board_version,
+            crown: self.board.crown_holder().map(|t| t.short_key.clone()),
+        }
     }
 
     /// The one function that moves a ticket between columns.
@@ -4024,6 +4430,7 @@ impl Daemon {
             claude_md: self.claude_md.status(),
             claude_default_mode: user_default_mode(),
             status_top: self.backend.status_top(),
+            crown_touches: self.recent_crown_touches(),
         }
     }
 
@@ -4828,6 +5235,7 @@ impl Daemon {
         self.train.forget(id);
         self.forget_queued(id, "queued_ask_dropped", "local");
         self.inflight.remove(&id);
+        self.drop_crown_if(id);
         // Sessions detach and keep running through the grace band (D21).
         let sessions: Vec<SessionRecord> =
             self.board.sessions.iter().filter(|s| s.ticket == id).cloned().collect();
@@ -6269,7 +6677,7 @@ impl Daemon {
     /// sessions) — and the worktree too, unless its work has landed
     /// (`reclaim_on_archive`). Gated on the ticket holding no pane —
     /// archive means everything is already asleep.
-    fn archive_ticket(&mut self, id: ulid::Ulid) -> Response {
+    fn archive_ticket(&mut self, id: ulid::Ulid, by: &Principal) -> Response {
         match self.board.ticket(id) {
             None => return no_such_ticket(),
             Some(t) if t.is_archived() => {
@@ -6281,9 +6689,12 @@ impl Daemon {
             return Response::Err { message: "sessions still awake — sleep them first".into() };
         }
         let at = now_iso();
+        let by = by.note_author();
         let resp = self.with_ticket(id, |t| {
-            t.archived = Some(Archived { at, by: "local".into(), until: None, needs_you: false })
+            t.archived = Some(Archived { at, by, until: None, needs_you: false })
         });
+        // A crowned ticket leaving the board takes the crown with it (T-411).
+        self.drop_crown_if(id);
         // Re-price now — a taken offer must not linger until the next bucket.
         self.archive_cache = self.archive_figures();
         self.reclaim_on_archive(id);

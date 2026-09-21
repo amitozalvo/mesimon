@@ -194,6 +194,17 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         Span::styled(previous, d2),
         Span::styled(created, d2),
     ];
+    // The crown (T-411): the page says so in the crown's own tint, and
+    // names the key that takes it back.
+    if app.board.is_crowned(ticket.id) {
+        ident_spans.push(Span::styled(
+            format!(
+                " ∙ {} wears the crown ∙ its agent edits every ticket ∙ ^o uncrowns",
+                crate::glyphs::crown(app.theme.glyph_tier())
+            ),
+            app.theme.crown_text(),
+        ));
+    }
     // The m flow's live reply (armed prompt, outcome, refusal) replaces the
     // resting branch-state hint for a beat — same spot, so the conversation
     // with the merge key happens in one place, never in the footer.

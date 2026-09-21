@@ -889,6 +889,14 @@ impl Theme {
             Style::default().add_modifier(Modifier::BOLD)
         }
     }
+    /// The crown's tint (T-411): the last ring colour, low-chroma by the tag
+    /// law, so the one saturated colour stays needs-you's. No bold — the
+    /// mark is the glyph, and one card in a hundred wearing it is what makes
+    /// it read. Below the tinted profiles it is the quiet ramp, and the
+    /// glyph carries it alone.
+    pub fn crown_text(&self) -> Style {
+        Style::default().fg(self.pip(5))
+    }
     /// Ten stable hue identities shared by all themes. Only lightness and
     /// chroma adapt to the surfaces; tags keep their color off the cursor.
     /// Below TrueColor the named chips and underline carry the information.

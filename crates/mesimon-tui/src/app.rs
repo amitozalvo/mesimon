@@ -988,6 +988,11 @@ const SHELL_TAIL_EVERY: Duration = Duration::from_millis(1000);
 /// (`scan_spoke`). One `stat` per card a second at rest; peek.rs's module
 /// doc has the busy-session number.
 const SPOKE_EVERY: Duration = Duration::from_secs(1);
+/// How long a card the crown just touched stays lit with the word for what
+/// was done to it (T-411); the residue stays until the cursor rests there.
+const CROWN_LIT_MS: u64 = 2_000;
+/// How long the crowning flash runs on a newly crowned card (T-411).
+const CROWN_FLASH_MS: u64 = 2_000;
 /// One `pgup`/`pgdn` in the editor body, in lines. The handler cannot see
 /// the rendered height; a screenful is approximated.
 const EDITOR_PAGE: usize = 20;
@@ -1049,6 +1054,15 @@ pub struct App {
     /// The `!` terminals alive on the daemon's tmux, by ticket (T-366): the
     /// ticket page's ghost row and the card's busy spinner read them.
     pub terminals: Vec<mesimon_core::command::TerminalItem>,
+    /// The crown's recent edits (T-411), off the snapshot: the cards to
+    /// light for a beat with the word for what was done to them.
+    pub crown_touches: Vec<mesimon_core::command::CrownTouch>,
+    /// Cards the crown touched that the cursor has not rested on since —
+    /// the residue the light leaves, on the unread done mark's rule.
+    pub crown_residue: std::collections::HashSet<ulid::Ulid>,
+    /// The crown's last change of hands, for the crowning flash: which
+    /// ticket, and when this board saw it.
+    pub crowned_at: Option<(ulid::Ulid, u64)>,
     /// Standing advisories from the daemon — a quarantined state file, a file
     /// a newer mesimon wrote. Refreshed with every snapshot. NOT `status`:
     /// that is cleared by the next keypress, and these stay true until fixed.
@@ -1482,6 +1496,9 @@ impl App {
             tag_flash: None,
             shell_tail: None,
             terminals: Vec::new(),
+            crown_touches: Vec::new(),
+            crown_residue: std::collections::HashSet::new(),
+            crowned_at: None,
             spoke: std::collections::HashMap::new(),
             spoke_polled: None,
             spoke_subject: None,
@@ -1727,6 +1744,7 @@ impl App {
             team,
             mesophon,
             terminals,
+            crown_touches,
         } = snap;
         let was = self.cursor_column().map(|c| c.name.clone());
         // The cursor holds its TICKET across the pass (T-335): a card that
@@ -1734,6 +1752,7 @@ impl App {
         // that left the board lands the cursor where it was.
         let followed = self.selected_ticket().map(|t| t.id);
         let joined_before = self.team.board.as_ref().map(|b| b.role != "owner");
+        let crown_was = self.board.crown;
         self.board = board;
         self.grace = grace;
         self.external = external;
@@ -1750,6 +1769,7 @@ impl App {
         self.team = team;
         self.control = mesophon;
         self.terminals = terminals;
+        self.absorb_crown_touches(crown_touches, crown_was);
         self.seed_team_drafts();
         self.follow_ticket(followed);
         self.clamp_cursor();
@@ -3097,6 +3117,10 @@ impl App {
     /// nobody looked at. The daemon no-ops on any other ticket.
     fn ack_woke(&mut self) -> Result<()> {
         let Some(id) = self.subject() else { return Ok(()) };
+        // The crown's residue (T-411) is discharged by a glance, like the
+        // unread done mark: the cursor resting here is the reader having
+        // seen what the coordinator did to this card. Local state only.
+        self.crown_residue.remove(&id);
         if !self.board.ticket(id).is_some_and(|t| t.is_woke()) {
             return Ok(());
         }
@@ -3104,6 +3128,53 @@ impl App {
             self.status = message;
         }
         self.refresh()
+    }
+
+    /// The crown's touches off a snapshot (T-411): every touched card
+    /// joins the residue until the cursor rests on it, and a crown that
+    /// changed hands since the last snapshot starts the crowning flash on
+    /// its new holder. The touches themselves are replaced whole — the
+    /// daemon prunes them at ten seconds and the light reads its own age.
+    fn absorb_crown_touches(
+        &mut self,
+        touches: Vec<mesimon_core::command::CrownTouch>,
+        crown_was: Option<ulid::Ulid>,
+    ) {
+        let cursor = self.subject();
+        for t in &touches {
+            if cursor != Some(t.ticket) && !self.crown_touches.iter().any(|k| k.at_ms == t.at_ms) {
+                self.crown_residue.insert(t.ticket);
+            }
+        }
+        self.crown_touches = touches;
+        if self.board.crown != crown_was {
+            self.crowned_at = self.board.crown.map(|id| (id, mesimon_core::clock::now_ms()));
+        }
+    }
+
+    /// What the crown has to say on a card (T-411): the holder's mark (with
+    /// its flash for a beat after crowning), the word for a touch still lit,
+    /// the residue a touch left, or nothing.
+    pub(crate) fn crown_mark(&self, id: ulid::Ulid) -> crate::ui::CrownMark<'_> {
+        use crate::ui::CrownMark;
+        let now = mesimon_core::clock::now_ms();
+        if self.board.is_crowned(id) {
+            let flash = self
+                .crowned_at
+                .is_some_and(|(t, at)| t == id && now.saturating_sub(at) < CROWN_FLASH_MS);
+            return CrownMark::Holder { flash };
+        }
+        if let Some(t) =
+            self.crown_touches.iter().filter(|t| t.ticket == id).max_by_key(|t| t.at_ms)
+        {
+            if now.saturating_sub(t.at_ms) < CROWN_LIT_MS {
+                return CrownMark::Touched(&t.action);
+            }
+        }
+        if self.crown_residue.contains(&id) {
+            return CrownMark::Residue;
+        }
+        CrownMark::None
     }
 
     /// The ticket page a raised hand was read on has been LEFT: the mark
@@ -3486,6 +3557,7 @@ impl App {
             manual_merge: subject
                 .and_then(|t| self.board.ticket(t))
                 .is_some_and(|t| t.manual_merge),
+            crowned: subject.is_some_and(|t| self.board.is_crowned(t)),
             // Board-wide, because the ten digits share one binding and `avail`
             // never sees which one was pressed. A digit whose own group is
             // empty says so in the status line instead.
@@ -4132,6 +4204,26 @@ impl App {
                                 format!("{key} merges by hand ∙ t puts it back on the train")
                             } else {
                                 format!("{key} is back on the train")
+                            };
+                        }
+                    }
+                }
+            }
+            Verb::Crown => {
+                if let Some(id) = self.subject() {
+                    let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
+                    let on = !self.board.is_crowned(id);
+                    let cmd = if on { Command::CrownTicket { id } } else { Command::Uncrown };
+                    match self.client.request(cmd)? {
+                        Response::Err { message } => self.status = message,
+                        _ => {
+                            self.refresh()?;
+                            self.status = if on {
+                                format!(
+                                    "{key} wears the crown ∙ its agent may edit every ticket ∙ ^o takes it back"
+                                )
+                            } else {
+                                format!("{key} no longer wears the crown")
                             };
                         }
                     }
@@ -9054,6 +9146,8 @@ struct Snapshot {
     team: mesimon_core::team::TeamInfo,
     mesophon: mesimon_core::mesophon::Info,
     terminals: Vec<mesimon_core::command::TerminalItem>,
+    /// The crown's recent edits (T-411): the cards to light.
+    crown_touches: Vec<mesimon_core::command::CrownTouch>,
 }
 
 impl Snapshot {
@@ -9076,6 +9170,7 @@ impl Snapshot {
                 team,
                 mesophon,
                 terminals,
+                crown_touches,
             } => Some(Self {
                 board,
                 grace,
@@ -9093,6 +9188,7 @@ impl Snapshot {
                 team,
                 mesophon,
                 terminals,
+                crown_touches,
             }),
             _ => None,
         }
@@ -9443,6 +9539,7 @@ pub(crate) mod test_support {
                     team: Default::default(),
                     mesophon: Default::default(),
                     terminals: self.terminals.clone(),
+                    crown_touches: Vec::new(),
                 }),
                 // The column lifecycle (T-117), as the daemon does it — the
                 // refusals included, so the status a test reads is the

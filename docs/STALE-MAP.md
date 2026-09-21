@@ -11675,3 +11675,105 @@ Goldens reminted: `board_peek`, `board_peek_all`, `board_tags_peek`, `board_tags
 `board_snooze_armed` (the armed chord's card gained the row). New test:
 `test_the_peek_names_the_ticket` (off → no key anywhere; on → key after the chips, cell-aligned
 with the age; `P` → an untagged card names itself and two cards' keys share a column).
+
+## The crown: one agent may edit the other tickets (T-411, 2026-09-21, user: "let agents modify other tickets" ∙ "a 'king' session ... that will allow the ticket to control ALL tickets of the board" ∙ "agents should get an error message ... indicating they must be crowned by the user first" ∙ "king actions should be visible live on the board")
+
+**What was asked, and what was argued.** Agents file tickets nobody prioritises, and the user
+wanted agents to move, rename, annotate, tag, archive and re-workspace tickets other than their
+own, with the mesimatron (a board-level coordinator the daemon will one day run itself) in view.
+The first design let every agent edit the tickets it had filed (`created_from`); the user
+replaced it with ONE seat — "to prevent multiple agents messing with the board" — and the seat
+is what shipped. Three decisions taken in discussion: the crown is granted by a person and
+never by a tool (an agent that could crown itself would be writing its own tier, the exact
+thing `SetMcpTools`/`SetColumnSettings` are never-tier for); the keyed tools are LISTED on every
+full-tier session so an uncrowned agent can attempt, read the refusal, and relay it to the
+person (the cost is ~400 tokens of permanent context per request, mostly cache reads; the
+alternative — listing them only on the crowned seat — needs Claude Code to honour
+`tools/list_changed`, unmeasured, and otherwise a sleep/wake before a live session sees them);
+and no per-action approval — a modal per edit recreates the triage queue the crown exists to
+remove, a plan-approval per run is the same cost in a different coat and cannot serve an
+unattended mesimatron (`plan_first` was proposed and cut: a column's `claude_mode: plan`
+already does it for a cautious first run). Scope is every ticket (the `agent_filed` default was
+proposed and the user chose `all`). The proposal and its decisions are a note on T-411.
+
+**What holds now.**
+
+- **`Board.crown: Option<Ulid>`**, a `columns.toml` scalar with a plain serde default and no
+  `COLUMNS_SCHEMA` bump: a build that drops it takes authority away from an agent, never hands
+  any out. `Board::crown_holder()` is the one reader — a crown on a deleted or archived ticket
+  reads as none — and `is_crowned(id)` the one predicate. `CrownTicket { id }` / `Uncrown` are
+  local commands (`meta`: Mutate, logged, so the feed answers "who crowned T-12"); a second
+  crown displaces the first; `delete_ticket` and `archive_ticket` drop it with the ticket
+  (`drop_crown_if`, feed `uncrown` as `automation`). `^o` toggles it on the board (overlay-only)
+  and the ticket page (hinted, prio 96, after `n`), `Verb::Crown`, `Ctx::crowned`; live only
+  with `mcp_tools` on and never on an archived card; a viewer on a joined board never sees it
+  (`Binding::live`'s content-only list). `^o` because no shell habit lands on it (`^b` is
+  tmux, `^r` history, `^w` delete-word, `^d` EOF); "o" for coordinator.
+- **Twelve tools, thirteen commands.** `get_ticket`, `move_ticket`, `read_note`, `write_note`
+  and `tag_ticket` take an optional `key`; `rename_ticket`, `set_workspace` and
+  `archive_ticket` are new and keyed only. `get_ticket` with a key rides its own command,
+  `AgentReadTicket { key }`, so a shim from before the crown still parses at the daemon; the
+  others grew `#[serde(default)]` fields. All three new tools sit on the `Full` rung beside the
+  move — a column that narrowed its agents narrows the crown with them. `agent_allows` admits
+  the four new agent commands (the crown is not a tier; it is a binding the daemon checks) and
+  refuses `CrownTicket`/`Uncrown`. `move_ticket` and `tag_ticket` were trimmed to stay under
+  `MAX_TOOL_BYTES` (891 → 808, 836 → 796).
+- **One chokepoint, `Daemon::crown_target`**: a key naming the caller's own ticket is an
+  own-ticket call, crown or not; any other key needs `Board::is_crowned(own)`, and an unknown
+  key is "no such ticket", never a crown question (so probing for keys tells nothing). The
+  refusal is transient result data and may instruct — it names who wears the crown, how a
+  person grants it ("with the cursor on T-9, ^o crowns it") and that `raise_hand` puts the ask
+  on the card so the person sees it without opening the pane.
+- **Read-before-write as a check, not a claim.** `get_ticket` returns `seen`, an opaque stamp
+  (`Daemon::seen_token`: SipHash over column, order, title, tags, note ids and revs, workspace,
+  archived, the raised reason and the live agent's state word + `state_changed_at`). Every keyed
+  writer takes it and `check_seen` refuses a mismatch with the current state — "T-4 changed
+  since it was read (now in IN PROGRESS, agent working); read it again". Required on move,
+  rename, workspace and archive; a keyed note or tag needs none (additive, idempotent). Receipts
+  hand the fresh stamp back (`AgentMoved.seen`, `AgentTagged.seen`, the three writers answer
+  with the ticket view whole), so a chain of edits needs no second read. Never stored: a daemon
+  restart simply asks for a fresh read.
+- **The card's words, never the pane.** `AgentTicketView.state` is `agent_state_word` (one
+  word: working / needs-you / idle / background / sleeping / …), seconds in it, and the raised
+  hand's reason; `list_board` rows carry the same word and `by: person|agent`; `crowned` on the
+  view and `crown` on the board view. `authorize`'s floor is untouched — Session denied at every
+  action, Board mutate denied — and no transcript is read; the user's own point that a
+  coordinator "would need an option to see the transcript" is parked for a spike week on a real
+  board (the proposal's §4), because a worker's transcript is the cross-agent injection vector.
+- **The board sees every touch as it happens.** The daemon keeps an in-memory map of the
+  crown's last touch per ticket (`crown_touched`, pruned at `CROWN_TOUCH_MS` = 10 s), rides it on
+  the snapshot as `crown_touches: Vec<CrownTouch { ticket, action, at_ms }>` (the action is a
+  WORD per the `Notice::kind` rule), and the TUI lights the touched card for `CROWN_LIT_MS` = 2 s:
+  the title in the crown's tint and the word for what was done — `♛ moved`, `♛ renamed`,
+  `♛ tagged`, `♛ note`, `♛ workspace`, `♛ archived`, `♛ restored` — where the age goes. Then a
+  quiet `♛` stays before the age until the cursor rests on the card (`crown_residue`, cleared
+  in `ack_woke`, the unread done mark's rule). The holder wears `♛ ` before its title, the one
+  card on the board that does, and its title breathes for 2 s after the crowning on the delete
+  flash's cadence (fg repainted on the redraw clock, never SGR 5). `Theme::crown_text` is
+  `pip(5)`, a ring colour low-chroma by the tag law, no bold: the one saturated colour stays
+  needs-you's. `glyphs::crown` is `♛` (U+265B, EAW N) and `K` on the ASCII tier. The ticket
+  page's state row says `♛ wears the crown ∙ its agent edits every ticket ∙ ^o uncrowns`.
+- **Kept out, with the road for each.** Delete (irreversible; archive is its reversible
+  spelling and the tool text says so). Spawn, kill, sleep (D10's money fire; a later
+  `start_agent(key, seen)` behind a spawn budget). Prompting another agent (a person's gesture;
+  when it comes, the T-390 queue with the person pressing send). Columns, the tag registry,
+  settings, merge, diff, sessions (the floor). A dependency field (`blocked_by` is its own
+  ticket; "when can it start" rides notes and column order). Reverting a touch with `u` from the
+  residue (the touch carries no `from` yet). The header clause `♛ T-12` (the fit ladder is
+  crowded; the card and the page carry it).
+- **Mesimatron path.** Same seat, the daemon in the chair: an `Automation` rule mints, crowns
+  and starts the ticket on a trigger, with the same tools, feed lines, gate, `seen` and touch
+  lights. That ticket adds no tool.
+
+**Tests.** `mcp::keyed_tools_parse_and_refuse`, `exactly_twelve_tools`,
+`the_tier_is_exactly_thirteen_commands`, `the_never_tier_holds` (crown commands), the shim's
+receipt tests (`seen` on a keyed move, absent on an own-ticket one), `store` round-trips the
+scalar, keymap validators unchanged. E2e `crown_e2e`: the refusal's words, own-key reads,
+unknown keys, an agent refused the crown, crown/list_board/get_ticket, the stamp required and
+stale, a keyed move with its receipt and the snapshot's touch, `before` as priority, rename with
+the receipt's stamp and the reused one refused, a keyed note authored by the agent, a keyed tag
+with the registry's spelling, workspace on a pending ticket and locked on a paned one, archive
+refused while awake, archive/read/rename-refused/restore, the shim's twelve tools and keyed
+`get_ticket`, uncrown, persistence in `columns.toml`, displacement, and the crown leaving with
+a deleted ticket. Goldens reminted: every ticket-page golden gained `^o crown` at the footer's
+tail, the two help overlays a row. README promise 3 names the crown.

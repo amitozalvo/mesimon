@@ -27,4 +27,4 @@
 
 
 
- enter start agent ∙ shift+tab shared checkout ∙ r rename ∙ d delete ∙ n describe                                ? keys
+ enter start agent ∙ shift+tab shared checkout ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown                     ? keys

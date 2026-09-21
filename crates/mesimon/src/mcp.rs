@@ -113,14 +113,32 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         .map(str::to_string);
 
     let command = match call {
-        ToolCall::GetTicket => Command::AgentGetTicket,
+        // `get_ticket` with a key is its own command on the wire (T-411), so
+        // a shim from before the crown still parses at the daemon.
+        ToolCall::GetTicket { key: None } => Command::AgentGetTicket,
+        ToolCall::GetTicket { key: Some(key) } => Command::AgentReadTicket { key },
         ToolCall::ListBoard => Command::AgentListBoard,
-        ToolCall::MoveTicket { to_column, idempotency_key } => {
-            Command::AgentMoveTicket { to_column, idempotency_key: idempotency_key.or(tool_use_id) }
+        ToolCall::MoveTicket { to_column, idempotency_key, key, before, seen } => {
+            Command::AgentMoveTicket {
+                to_column,
+                idempotency_key: idempotency_key.or(tool_use_id),
+                key,
+                before,
+                seen,
+            }
         }
         ToolCall::ReadAttachment { attachment } => Command::AgentReadAttachment { attachment },
-        ToolCall::ReadNote { note } => Command::AgentReadNote { note },
-        ToolCall::WriteNote { note, text } => Command::AgentWriteNote { note, text },
+        ToolCall::ReadNote { note, key } => Command::AgentReadNote { note, key },
+        ToolCall::WriteNote { note, text, key } => Command::AgentWriteNote { note, text, key },
+        ToolCall::RenameTicket { key, title, seen } => {
+            Command::AgentRenameTicket { key, title, seen: Some(seen) }
+        }
+        ToolCall::SetWorkspace { key, workspace, seen } => {
+            Command::AgentSetWorkspace { key, workspace, seen: Some(seen) }
+        }
+        ToolCall::ArchiveTicket { key, restore, seen } => {
+            Command::AgentArchiveTicket { key, restore, seen: Some(seen) }
+        }
         ToolCall::CreateTicket { title, column, description, tags, idempotency_key } => {
             Command::AgentCreateTicket {
                 title,
@@ -130,8 +148,8 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
                 idempotency_key: idempotency_key.or(tool_use_id),
             }
         }
-        ToolCall::TagTicket { name, group, remove } => {
-            Command::AgentTagTicket { name, group, remove }
+        ToolCall::TagTicket { name, group, remove, key } => {
+            Command::AgentTagTicket { name, group, remove, key }
         }
         ToolCall::RaiseHand { reason } => Command::AgentRaiseHand { reason },
     };
@@ -152,14 +170,26 @@ fn render(resp: Response) -> Value {
     match resp {
         Response::AgentTicket { ticket } => text(&ticket),
         Response::AgentBoard { board } => text(&board),
-        Response::AgentMoved { column, board_version, replayed } => {
-            text(&json!({ "column": column, "board_version": board_version, "replayed": replayed }))
+        Response::AgentMoved { column, board_version, replayed, seen } => {
+            let mut body =
+                json!({ "column": column, "board_version": board_version, "replayed": replayed });
+            // A keyed move (T-411) hands back the target's fresh stamp so the
+            // next edit needs no second read; an own-ticket move carries none.
+            if let Some(seen) = seen {
+                body["seen"] = json!(seen);
+            }
+            text(&body)
         }
         Response::AgentCreated { key, column, board_version, replayed } => text(&json!({
             "key": key, "column": column, "board_version": board_version, "replayed": replayed
         })),
-        Response::AgentTagged { tags, replaced, board_version } => {
-            text(&json!({ "tags": tags, "replaced": replaced, "board_version": board_version }))
+        Response::AgentTagged { tags, replaced, board_version, seen } => {
+            let mut body =
+                json!({ "tags": tags, "replaced": replaced, "board_version": board_version });
+            if let Some(seen) = seen {
+                body["seen"] = json!(seen);
+            }
+            text(&body)
         }
         // The words as the board KEPT them: scrubbed and capped, so a line
         // that came back short says so where the model can see it.
@@ -268,6 +298,7 @@ mod tests {
             tags: vec![mesimon_core::command::AgentTagView { name: "feature".into(), group: 1 }],
             replaced: Some("bug".into()),
             board_version: 4,
+            seen: None,
         });
         assert_eq!(v["isError"], false);
         let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -377,11 +408,22 @@ mod tests {
             column: "REVIEW".into(),
             board_version: 7,
             replayed: true,
+            seen: None,
         });
         assert_eq!(v["isError"], false);
         let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(body["column"], "REVIEW");
         assert_eq!(body["replayed"], true);
+        assert!(body.get("seen").is_none(), "an own-ticket move carries no stamp");
+        // A keyed move (T-411) hands the fresh stamp back.
+        let v = render(Response::AgentMoved {
+            column: "TODO".into(),
+            board_version: 8,
+            replayed: false,
+            seen: Some("ab12".into()),
+        });
+        let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["seen"], "ab12");
     }
 
     #[test]

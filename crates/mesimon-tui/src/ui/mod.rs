@@ -21,6 +21,8 @@ mod tests;
 mod themes;
 mod ticket;
 
+pub(crate) use card::CrownMark;
+
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::text::Line;
