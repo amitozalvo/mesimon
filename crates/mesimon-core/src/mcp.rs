@@ -238,7 +238,8 @@ pub fn tools() -> Vec<Value> {
             "description": "Creates a markdown note on this session's ticket, or with key \
                             another ticket's (crown only), or replaces the whole text of an \
                             existing one. The first note is the ticket's description. Empty \
-                            text deletes an existing note.",
+                            text deletes an existing note. Text past 32 KiB is refused, not \
+                            cut; the refusal names both sizes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -247,7 +248,10 @@ pub fn tools() -> Vec<Value> {
                         "description": "Optional. The id of the note to replace; omitted \
                                         creates a new note.",
                     },
-                    "text": { "type": "string", "description": "The note's whole markdown text." },
+                    "text": {
+                        "type": "string",
+                        "description": "The note's whole markdown text, at most 32 KiB.",
+                    },
                     "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
                 },
                 "required": ["text"],

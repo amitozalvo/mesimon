@@ -2782,6 +2782,10 @@ impl Daemon {
         {
             return false;
         }
+        // The plan is a capture from a hook frame, not a caller who can act
+        // on a refusal: a plan past the note limit lands cut rather than not
+        // at all (the whole plan is in the transcript). Callers are refused.
+        let plan = mesimon_core::board::sanitize_note(&plan);
         let Response::NoteWritten { note: Some(id) } = self.write_note(ticket, existing, plan, &by)
         else {
             return false;
@@ -5884,7 +5888,13 @@ impl Daemon {
         text: String,
         by: &Principal,
     ) -> Response {
-        use mesimon_core::board::{note_name, sanitize_note, NoteMeta};
+        use mesimon_core::board::{note_name, note_size_error, sanitize_note, NoteMeta};
+        // Too long is refused before anything is touched (T-328): the
+        // existing note stays whole and the receipt says why. The cap inside
+        // `sanitize_note` never fires past this line; it is the floor.
+        if let Some(message) = note_size_error(&text) {
+            return Response::Err { message };
+        }
         let text = sanitize_note(&text);
         let blank = text.trim().is_empty();
         let Some(t) = self.board.ticket(ticket) else {

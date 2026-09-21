@@ -1170,6 +1170,25 @@ pub fn sanitize_note(raw: &str) -> String {
     cap_bytes(&scrub_cells(raw, true), NOTE_MAX_BYTES).to_string()
 }
 
+/// Why a note write is refused for its size, or `None` when it fits. A write
+/// past [`NOTE_MAX_BYTES`] is REFUSED, never cut (T-328): `sanitize_note`'s
+/// cap is a floor under a client that lied about its length, not a policy a
+/// caller may lean on, because a document whose tail was dropped on a success
+/// receipt is a document nobody knows is incomplete. Measured on the bytes as
+/// submitted — what the caller sent is what the message names — and a
+/// multi-byte script counts in bytes, not characters, like the file it
+/// becomes. The words carry both numbers so a client can split by them.
+pub fn note_size_error(raw: &str) -> Option<String> {
+    let bytes = raw.len();
+    (bytes > NOTE_MAX_BYTES).then(|| {
+        format!(
+            "note is {bytes} bytes; the limit is {NOTE_MAX_BYTES} bytes ({} KiB). \
+             Split it into parts, or keep a document this long in the repo and link it",
+            NOTE_MAX_BYTES / 1024
+        )
+    })
+}
+
 /// What a note is called: its first non-blank line with any leading `#`
 /// heading marks stripped, capped at [`NOTE_NAME_MAX_BYTES`]. A note has no
 /// separate title field on purpose — the file is the whole record, and the
@@ -2979,6 +2998,31 @@ mod tests {
         assert_eq!(sanitize_title("fix the auth bug"), "fix the auth bug");
         // Control characters go, as on every card row.
         assert_eq!(sanitize_title("fix\u{1b}[31m bug"), "fix[31m bug");
+    }
+
+    /// A note past the limit is refused with both numbers in the words, and
+    /// the boundary is bytes: exactly the limit fits, one byte over does not,
+    /// and a two-byte script hits it at half the characters.
+    #[test]
+    fn a_note_past_the_limit_is_refused_by_the_byte_and_named_in_bytes() {
+        let exact = "x".repeat(NOTE_MAX_BYTES);
+        assert_eq!(note_size_error(&exact), None);
+        assert_eq!(sanitize_note(&exact), exact, "exactly the limit is stored whole");
+        assert_eq!(note_size_error("short"), None);
+        let over = "x".repeat(NOTE_MAX_BYTES + 1);
+        let why = note_size_error(&over).expect("one byte over is refused");
+        assert!(why.contains(&format!("{} bytes", NOTE_MAX_BYTES + 1)), "{why}");
+        assert!(why.contains(&format!("limit is {NOTE_MAX_BYTES} bytes (32 KiB)")), "{why}");
+        // Hebrew is two bytes a letter: the limit in characters is half.
+        let heb_fits = "ש".repeat(NOTE_MAX_BYTES / 2);
+        assert_eq!(note_size_error(&heb_fits), None);
+        let heb_over = "ש".repeat(NOTE_MAX_BYTES / 2 + 1);
+        let why = note_size_error(&heb_over).expect("one character over, two bytes over");
+        assert!(why.contains(&format!("{} bytes", NOTE_MAX_BYTES + 2)), "{why}");
+        // The floor under a lying client still cuts on a character boundary.
+        let cut = sanitize_note(&heb_over);
+        assert_eq!(cut.len(), NOTE_MAX_BYTES);
+        assert!(cut.chars().all(|c| c == 'ש'));
     }
 
     /// The starters are lawful tags: names `sanitize_tag` would pass whole,

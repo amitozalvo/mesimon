@@ -324,3 +324,68 @@ fn an_approved_plan_is_the_agents_note_on_the_ticket() {
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert!(!feed.contains("Plan A") && !feed.contains("leap"), "never the text: {feed}");
 }
+
+/// T-328: a note past 32 KiB is refused, never cut. Exactly the limit is
+/// stored whole; one byte over is refused with both numbers in the words and
+/// leaves the board as it was — no new file on a create, the old text and
+/// revision on a replace — and the boundary is bytes, so a two-byte script
+/// is refused at half the characters.
+#[test]
+fn a_note_past_the_limit_is_refused_and_the_existing_note_stays_whole() {
+    use mesimon_core::board::NOTE_MAX_BYTES;
+    let Some(h) = Harness::boot("notesize", None) else { return };
+    let mut c = h.client("notesize");
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "sized".into(),
+        workspace: None,
+    });
+    let board = c.board();
+    let ticket = board.tickets[0].id;
+    let key = board.tickets[0].short_key.clone();
+    let notes_dir = h.repo.join(".mesimon/board/tickets").join(&key).join("notes");
+
+    // Exactly the limit fits, and lands whole.
+    let exact = format!("# Exact\n{}", "x".repeat(NOTE_MAX_BYTES - "# Exact\n".len()));
+    assert_eq!(exact.len(), NOTE_MAX_BYTES);
+    let id = match c.request(Command::WriteNote { ticket, note: None, text: exact.clone() }) {
+        Response::NoteWritten { note: Some(id) } => id,
+        other => panic!("exactly the limit is accepted: {other:?}"),
+    };
+    let file = notes_dir.join(format!("{id}.md"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), exact);
+
+    // One byte over: refused, with the submitted size and the limit named,
+    // and no second file appears.
+    let over = format!("{exact}y");
+    let Response::Err { message } =
+        c.request(Command::WriteNote { ticket, note: None, text: over.clone() })
+    else {
+        panic!("one byte over is refused")
+    };
+    assert!(message.contains(&format!("note is {} bytes", NOTE_MAX_BYTES + 1)), "{message}");
+    assert!(message.contains(&format!("limit is {NOTE_MAX_BYTES} bytes")), "{message}");
+    assert_eq!(std::fs::read_dir(&notes_dir).unwrap().count(), 1);
+    assert_eq!(c.board().tickets[0].notes.len(), 1);
+
+    // A refused replacement leaves the existing note whole, revision and all.
+    let before = c.board().tickets[0].notes[0].clone();
+    assert!(matches!(
+        c.request(Command::WriteNote { ticket, note: Some(id), text: over }),
+        Response::Err { .. }
+    ));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), exact);
+    let after = c.board().tickets[0].notes[0].clone();
+    assert_eq!(after.rev, before.rev);
+    assert_eq!(after.edited_at, before.edited_at);
+
+    // Bytes, not characters: Hebrew is two bytes a letter.
+    let hebrew = "ש".repeat(NOTE_MAX_BYTES / 2 + 1);
+    let Response::Err { message } =
+        c.request(Command::WriteNote { ticket, note: None, text: hebrew })
+    else {
+        panic!("a multi-byte note over the limit is refused")
+    };
+    assert!(message.contains(&format!("note is {} bytes", NOTE_MAX_BYTES + 2)), "{message}");
+    assert_eq!(c.board().tickets[0].notes.len(), 1);
+}

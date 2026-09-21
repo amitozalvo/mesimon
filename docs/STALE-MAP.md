@@ -11778,3 +11778,39 @@ refused while awake, archive/read/rename-refused/restore, the shim's twelve tool
 `get_ticket`, uncrown, persistence in `columns.toml`, displacement, and the crown leaving with
 a deleted ticket. Goldens reminted: every ticket-page golden gained `^o crown` at the footer's
 tail, the two help overlays a row. README promise 3 names the crown.
+
+## A note past the limit is refused, never cut (T-328, 2026-09-21)
+
+**Shipped.** `write_note` used to run the text through `sanitize_note`, whose 32 KiB cap cut
+the tail on a character boundary, and then answered `NoteWritten` — a success receipt for a
+document nobody knew was incomplete (T-215 lost sources and scenario rows this way, three
+notes in a row). Now `Daemon::write_note` asks `board::note_size_error` first and refuses
+before anything is touched: the existing note keeps its text, `rev` and `edited_at`, a create
+leaves no file, and the message names both numbers — `note is N bytes; the limit is 32768
+bytes (32 KiB). Split it into parts, or keep a document this long in the repo and link it` —
+so a client can split by them. The tool text says it (`Text past 32 KiB is refused, not cut;
+the refusal names both sizes`, and `text` is `at most 32 KiB`), inside the 820-byte cap.
+
+- **The policy is the ceiling as it was, refused instead of cut.** The ceiling was not raised
+  and no multipart or attachment road was added: a note is a markdown file the ticket page
+  renders whole and an agent reads in one tool call, and a document past 32 KiB belongs in the
+  repo (or as parts, which the refusal now says). Raising the number would move the cliff, not
+  remove it; the refusal removes the cliff at any number.
+- **Bytes as submitted.** The check runs on the raw text, before `scrub_cells`, so the size in
+  the message is the size the caller sent; scrubbing only removes, so nothing refused would
+  have fit after it. A multi-byte script counts in bytes, like the file it becomes. The TUI's
+  editor is already capped at the same number (`TextArea::new(NOTE_MAX_BYTES)`), so a person
+  never sees the refusal.
+- **`sanitize_note` keeps its cap as a floor**, not a policy: `teamglue` (a relay body) and
+  `content.rs` (validation) still lean on it, and the daemon's own captures do too — an
+  approved plan past the limit lands cut through `record_plan` rather than not at all, because
+  a hook frame is not a caller who can act on a refusal and the whole plan is in the
+  transcript. `create_ticket` with an oversized description answers `ticket T-N created, but
+  its description was not: <why>` through the road that already existed.
+
+**Tests.** `board::a_note_past_the_limit_is_refused_by_the_byte_and_named_in_bytes` (exact
+fits and is stored whole, one byte over refused with both numbers, Hebrew refused at half the
+characters, the floor still cuts on a character boundary) and e2e
+`notes_e2e::a_note_past_the_limit_is_refused_and_the_existing_note_stays_whole` (exact
+lands whole on disk, one byte over leaves one file and one note, a refused replacement keeps
+text, `rev` and `edited_at`, a multi-byte note is refused on bytes).
