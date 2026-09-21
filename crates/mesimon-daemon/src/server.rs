@@ -6914,8 +6914,7 @@ impl Daemon {
         for (sid, kind) in &awake {
             let Some(rec) = self.board.sessions.iter().find(|s| s.id == *sid) else { continue };
             if let Err(why) = self.sleep_eligible(rec, now, false) {
-                let who = if kind.is_agent() { "agent" } else { "shell" };
-                return Response::Err { message: format!("{who} still awake — {why}") };
+                return Response::Err { message: mesimon_core::quiet::still_awake(*kind, &why) };
             }
         }
         for (sid, _) in &awake {
@@ -8615,16 +8614,10 @@ impl Daemon {
         now: u64,
         enforce_floor: bool,
     ) -> std::result::Result<(), String> {
-        match (rec.kind, &rec.state) {
-            (SessionKind::Claude | SessionKind::Codex, SessionState::Idle { .. }) => {}
-            (SessionKind::Claude | SessionKind::Codex, _) => {
-                return Err("only idle sessions sleep".into())
-            }
-            // Bash has no hook surface: Running IS its only live state, so the
-            // manual path accepts it — guarded by the live-children check.
-            (SessionKind::Bash, SessionState::Running) => {}
-            (SessionKind::Bash, _) => return Err("no live shell to sleep".into()),
-        }
+        // The kind × state clause is core's (`quiet::sleep_eligible`), shared
+        // with the TUI's pre-judgement; what follows is what only the daemon
+        // can see.
+        mesimon_core::quiet::sleep_eligible(rec.kind, &rec.state).map_err(str::to_owned)?;
         if enforce_floor && rec.kind == SessionKind::Codex && rec.observation_hold {
             return Err("Codex observation has not proved this session quiet".into());
         }

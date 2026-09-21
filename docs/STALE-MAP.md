@@ -11989,3 +11989,19 @@ untouched.
   round-trips the five words and parses a sixth as `Unknown`.
 - `App::pending_row` matches the enum exhaustively; the `(other, _) => other.to_string()` arm that
   would have printed a typo on a card is gone. The e2es compare variants, not literals.
+
+## The snooze refusal comes from one predicate in core (T-249, 2026-09-22)
+
+- **`quiet::sleep_eligible(kind, &state) -> Result<(), &'static str>`** is the kind × state
+  clause the daemon's `sleep_eligible` used to spell inline: an agent sleeps only `Idle`, a shell
+  only `Running`. The daemon's gate now starts there and adds only what the board cannot see —
+  the bulk sweep's age floor, the Codex observation hold, a shell's live children.
+- **`quiet::still_awake(kind, why)`** is the one place the sentence `{who} still awake — {why}`
+  is composed, `who` being `keymap::AGENT_WORD` or `shell`. The daemon's `snooze_ticket`, the
+  TUI's `snooze_blocked` (the first `z`) and the TUI's fake daemon all call it, so the literal
+  the T-234 pass found in `app.rs` is gone and a new clause or a reworded refusal lands in every
+  reader at once. Nothing on the wire changed and the goldens did not move.
+- The TUI's pre-judgement widened by one honest case on the way: a shell whose paned state is
+  not `Running` now blocks at the `z` as the daemon would have refused at the Enter. No such
+  record exists today (D15 pins a shell at `Running` for the life of its pane), so it is the same
+  answer, only no longer by coincidence.

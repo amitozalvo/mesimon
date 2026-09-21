@@ -2895,16 +2895,16 @@ impl App {
         }
     }
 
-    /// The board's half of the daemon's snooze gate: a paned claude that is
-    /// not idle will not sleep, so the snooze would be refused. `None` means
-    /// arm — the daemon still judges at the Enter.
+    /// The board's half of the daemon's snooze gate: a paned session that
+    /// `quiet::sleep_eligible` would not sleep means the snooze would be
+    /// refused, in the same words the daemon would use. `None` means arm —
+    /// the daemon still judges at the Enter, with what only it can see.
     fn snooze_blocked(&self, id: ulid::Ulid) -> Option<String> {
-        self.board
-            .sessions
-            .iter()
-            .filter(|s| s.ticket == id && s.state.has_pane())
-            .find(|s| s.kind.is_agent() && !matches!(s.state, SessionState::Idle { .. }))
-            .map(|_| format!("{} still awake — only idle sessions sleep", keymap::AGENT_WORD))
+        self.board.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).find_map(|s| {
+            mesimon_core::quiet::sleep_eligible(s.kind, &s.state)
+                .err()
+                .map(|why| mesimon_core::quiet::still_awake(s.kind, why))
+        })
     }
 
     /// The snooze chord's status: what `z` and Enter do next. Names the
@@ -9728,13 +9728,13 @@ pub(crate) mod test_support {
                         .filter(|(_, s)| s.ticket == id && s.state.has_pane())
                         .map(|(i, _)| i)
                         .collect();
-                    if awake.iter().any(|&i| {
+                    if let Some(message) = awake.iter().find_map(|&i| {
                         let s = &self.board.sessions[i];
-                        s.kind.is_agent() && !matches!(s.state, SessionState::Idle { .. })
+                        mesimon_core::quiet::sleep_eligible(s.kind, &s.state)
+                            .err()
+                            .map(|why| mesimon_core::quiet::still_awake(s.kind, why))
                     }) {
-                        return Ok(Response::Err {
-                            message: "agent still awake — only idle sessions sleep".into(),
-                        });
+                        return Ok(Response::Err { message });
                     }
                     for i in awake {
                         self.board.sessions[i].state = SessionState::Sleeping;

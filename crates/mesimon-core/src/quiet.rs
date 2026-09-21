@@ -73,6 +73,34 @@ pub fn is_mid_turn(s: &SessionRecord) -> bool {
     is_working(s) && !matches!(s.state, SessionState::RequiresAction { .. }) && s.state.has_pane()
 }
 
+/// The pure half of the daemon's sleep gate — kind × state, nothing the
+/// board cannot see. `Err` is the refusal's clause, and the daemon's
+/// `sleep_eligible` starts here before it adds what only it knows (the bulk
+/// sweep's age floor, the Codex observation hold, a shell's live children).
+/// The TUI's `snooze_blocked` asks the same function at the first `z`, so
+/// the chord never arms for an Enter the daemon would refuse and never
+/// refuses in words the daemon would not — a new clause (a pin, a floor)
+/// lands in both at once (T-249).
+pub fn sleep_eligible(kind: SessionKind, state: &SessionState) -> Result<(), &'static str> {
+    match (kind, state) {
+        (SessionKind::Claude | SessionKind::Codex, SessionState::Idle { .. }) => Ok(()),
+        (SessionKind::Claude | SessionKind::Codex, _) => Err("only idle sessions sleep"),
+        // Bash has no hook surface: Running IS its only live state, so the
+        // manual path accepts it — the daemon then checks for live children.
+        (SessionKind::Bash, SessionState::Running) => Ok(()),
+        (SessionKind::Bash, _) => Err("no live shell to sleep"),
+    }
+}
+
+/// The sentence a snooze refuses in, over a session `sleep_eligible` (or
+/// the daemon's fuller gate) would not sleep: `{who} still awake — {why}`.
+/// One place, so the TUI's pre-judgement and the daemon's answer are the
+/// same words.
+pub fn still_awake(kind: SessionKind, why: &str) -> String {
+    let who = if kind.is_agent() { crate::keymap::AGENT_WORD } else { "shell" };
+    format!("{who} still awake — {why}")
+}
+
 /// Tickets with a working claude — deduped, in session order — plus every
 /// ticket in `inflight` (a paste mesimon made whose `UserPromptSubmit` has
 /// not landed: the turn is coming, the hook just has not said so). `cwd`
@@ -115,6 +143,35 @@ pub fn working_tickets(
 mod tests {
     use super::*;
     use crate::board::{Confidence, Provenance, Reason, StopReason};
+
+    /// The kind × state clause the daemon's gate and the TUI's `z` share:
+    /// an agent sleeps only idle, a shell only running, and the refusal
+    /// sentence names who is awake in the board's own word.
+    #[test]
+    fn sleep_eligible_is_kind_times_state_and_names_who() {
+        let idle = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        for kind in [SessionKind::Claude, SessionKind::Codex] {
+            assert_eq!(sleep_eligible(kind, &idle), Ok(()));
+            assert_eq!(
+                sleep_eligible(kind, &SessionState::Running),
+                Err("only idle sessions sleep")
+            );
+            assert_eq!(
+                sleep_eligible(kind, &SessionState::Spawning),
+                Err("only idle sessions sleep")
+            );
+        }
+        assert_eq!(sleep_eligible(SessionKind::Bash, &SessionState::Running), Ok(()));
+        assert_eq!(sleep_eligible(SessionKind::Bash, &idle), Err("no live shell to sleep"));
+        assert_eq!(
+            still_awake(SessionKind::Claude, "only idle sessions sleep"),
+            format!("{} still awake — only idle sessions sleep", crate::keymap::AGENT_WORD)
+        );
+        assert_eq!(
+            still_awake(SessionKind::Bash, "bash has live children (vim)"),
+            "shell still awake — bash has live children (vim)"
+        );
+    }
 
     fn session(
         ticket: ulid::Ulid,
