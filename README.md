@@ -157,6 +157,13 @@ interrupts the agent instead of detaching. `ctrl-5` is bound for exactly that an
 layout; in iTerm2 you can also fix the keystroke itself, leaving Escape alone: Keys → Key
 Bindings → `ctrl-]` → Send Hex Code → `0x1d`.
 
+If `shift-enter` does nothing and `?` does not list it, the terminal never reported the key:
+mesimon asks for it through the kitty keyboard protocol and leaves the key unbound where the
+answer is no. On iTerm2 the usual cause is a key binding on Shift+Enter — Claude Code's
+`/terminal-setup` installs one that sends a plain newline. Delete the `⇧↩` row under Keys → Key
+Bindings and Profiles → Keys, then start mesimon again, in an iTerm2 tab rather than inside your
+own tmux.
+
 `tab` jumps to whatever needs you. The board is deliberately quiet — exactly one saturated colour
 exists, and it means *this session is waiting on you*.
 
