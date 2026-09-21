@@ -12029,3 +12029,19 @@ untouched.
   the scrolled golden did not move because a request draws at rest.
 - `App::set_preview_view` became `preview_measured()`: the draw writes through the pager and
   then dirties the frame's `Ctx`, since `Ctx::preview_scrolls` reads the measurement.
+
+## One `dialog::list` under the framed lists (T-250, 2026-09-22)
+
+- **`dialog::list(f, app, name, scope, idx, &[ListRow { lead, head, right, detail }])`** is the
+  one framed selectable list: the `centred` / `inner_w` arithmetic, the frame, the selected and
+  unselected style pair, the pad-to-width, the dim right edge with its one-cell margin, and the
+  dim detail line with the marquee on the selected row (`dialog::reveal`, which `menu::draw_rows`
+  now calls too). A list is two lines a row when any row carries a detail, one otherwise. The
+  callers build rows and nothing else: the menu, settings and notifications (`menu::draw_list`,
+  now a row builder), the theme picker, the archived list, the links list (which joined the set
+  since T-234) and the External drawer. Every golden held: the refactor moved no cell.
+- **The one colour that moved:** the drawer's preview line was `dim2`, every other detail line
+  `dim3`; it now reads `dim3` with the rest. Goldens are colourless, so that is the one thing
+  the eye review could not see.
+- `menu::words_key` folded into `dialog::reveal`; the marquee clock is still `App::menu_marquee`,
+  keyed on the detail's own words.

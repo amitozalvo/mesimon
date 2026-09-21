@@ -6,107 +6,37 @@
 //! name, one line about it, and which slot each pick is saved in. Words,
 //! never a mark: `◦` belongs to the suggestion chip and nothing else.
 
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap::Scope;
 
 use crate::app::App;
-use crate::text::truncate;
 use crate::theme::Flavor;
 
-use super::dialog;
+use super::dialog::{self, ListRow};
 
 pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
-    let theme = &app.theme;
     let ctx = app.frame_ctx();
-    let rows = app.theme_rows();
-    let idx = idx.min(rows - 1);
-
-    let area = dialog::centred(f.area(), rows as u16 * 2, dialog::MAX_W);
-    let inner_w = area.width.saturating_sub(2) as usize;
-    let inner = dialog::frame(
-        f,
-        app,
-        area,
-        None,
-        &theme.rest,
-        dialog::Edges {
-            title: dialog::title(
-                &theme.rest,
-                format!("THEME ∙ for a {} terminal", ctx.theme_slot_word),
-            ),
-            tail: dialog::keys(app, Scope::Theme, &theme.rest, inner_w.saturating_sub(4)),
-        },
-    );
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut rows: Vec<ListRow> = Vec::with_capacity(app.theme_rows());
     // Board scope puts an inherit row first (T-361): its "flavor" is the
     // machine's pick for this ground, and choosing it drops the board's.
-    let inherit = usize::from(app.settings_board_scope);
-    if inherit == 1 {
-        let selected = idx == 0;
-        let style = if selected {
-            theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
-        } else {
-            theme.base()
-        };
-        let row_style = if selected { theme.selected_row() } else { Style::default() };
-        let text = truncate("inherit", inner_w.saturating_sub(4));
-        let pad = inner_w.saturating_sub(3 + text.width() + 1);
-        lines.push(
-            Line::from(vec![
-                Span::styled("   ", style),
-                Span::styled(text, style),
-                Span::raw(" ".repeat(pad)),
-                Span::raw(" "),
-            ])
-            .style(row_style),
-        );
+    if app.settings_board_scope {
         let machine = app.machine_prefs.for_ground(app.ground).name();
-        let text = format!(
-            "     {}",
-            truncate(&format!("the machine's pick: {machine}"), inner_w.saturating_sub(6))
-        );
-        let pad = inner_w.saturating_sub(text.width());
-        lines.push(
-            Line::from(vec![Span::styled(text, theme.dim3()), Span::raw(" ".repeat(pad))])
-                .style(row_style),
-        );
+        rows.push(ListRow {
+            lead: "   ".into(),
+            head: "inherit".into(),
+            right: String::new(),
+            detail: Some(format!("the machine's pick: {machine}")),
+        });
     }
-    for (i, flavor) in Flavor::ALL.into_iter().enumerate() {
-        let selected = i + inherit == idx;
-        // The flavor's own ground sits where the menu puts a key: it is the
-        // one fact a preview cannot show while the popup covers the board.
-        let tag = flavor.ground().word();
-        let lead = "   ";
-        let text = truncate(flavor.name(), inner_w.saturating_sub(tag.width() + lead.width() + 1));
-        let pad = inner_w.saturating_sub(lead.width() + text.width() + tag.width() + 1);
-        let style = if selected {
-            theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
-        } else {
-            theme.base()
-        };
-        let row_style = if selected { theme.selected_row() } else { Style::default() };
-        lines.push(
-            Line::from(vec![
-                Span::styled(lead, style),
-                Span::styled(text, style),
-                Span::raw(" ".repeat(pad)),
-                Span::styled(tag, theme.dim2()),
-                Span::raw(" "),
-            ])
-            .style(row_style),
-        );
-        let text = format!("     {}", truncate(flavor.blurb(), inner_w.saturating_sub(6)));
-        let pad = inner_w.saturating_sub(text.width());
-        lines.push(
-            Line::from(vec![Span::styled(text, theme.dim3()), Span::raw(" ".repeat(pad))])
-                .style(row_style),
-        );
-    }
-    f.render_widget(Paragraph::new(lines), inner);
+    // The flavor's own ground sits where the menu puts a key: it is the one
+    // fact a preview cannot show while the popup covers the board.
+    rows.extend(Flavor::ALL.into_iter().map(|flavor| ListRow {
+        lead: "   ".into(),
+        head: flavor.name().into(),
+        right: flavor.ground().word().into(),
+        detail: Some(flavor.blurb().into()),
+    }));
+    let name = format!("THEME ∙ for a {} terminal", ctx.theme_slot_word);
+    dialog::list(f, app, &name, Scope::Theme, idx, &rows);
 }

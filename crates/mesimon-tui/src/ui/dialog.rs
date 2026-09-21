@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthStr;
 use mesimon_core::keymap::{self, Scope};
 
 use crate::app::App;
-use crate::text::truncate;
+use crate::text::{marquee_offset, marquee_window, truncate};
 use crate::theme::Ramp;
 
 use super::chrome;
@@ -158,16 +158,40 @@ fn fit(spans: Vec<Span<'static>>, budget: usize) -> Vec<Span<'static>> {
     out
 }
 
-/// The archived-tickets dialog: restore or open.
-pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
+/// One row of a framed selectable list — what the menu, the settings and
+/// notifications lists, the theme picker, the archived list, the links list
+/// and the External drawer differ in, and nothing else.
+pub(super) struct ListRow {
+    /// The cells before the head: the menu's suggestion mark, or spaces.
+    /// Drawn a step quieter than the head unless the row is selected, so a
+    /// marked row reads as a label with a mark, never as a bulleted list.
+    pub lead: String,
+    pub head: String,
+    /// What sits at the right edge, dim — a key, a ground word — or `""`.
+    pub right: String,
+    /// A dim line under the head. A list is two lines a row when any row
+    /// carries one, and the selected row's detail marquee-reveals when it
+    /// overflows.
+    pub detail: Option<String>,
+}
+
+/// A centred framed list: `name` in the top edge, `scope`'s keys in the
+/// bottom one, one selected row. Nothing to draw when `rows` is empty.
+pub(super) fn list(
+    f: &mut Frame,
+    app: &App,
+    name: &str,
+    scope: Scope,
+    idx: usize,
+    rows: &[ListRow],
+) {
     let theme = &app.theme;
-    let archived = app.board.archived_tickets();
-    if archived.is_empty() {
+    if rows.is_empty() {
         return;
     }
-    let idx = idx.min(archived.len() - 1);
-    let now = mesimon_core::clock::now_ms();
-    let area = centred(f.area(), archived.len() as u16, MAX_W);
+    let idx = idx.min(rows.len() - 1);
+    let tall = rows.iter().any(|r| r.detail.is_some());
+    let area = centred(f.area(), rows.len() as u16 * if tall { 2 } else { 1 }, MAX_W);
     let inner_w = area.width.saturating_sub(2) as usize;
     let inner = frame(
         f,
@@ -176,37 +200,111 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
         None,
         &theme.rest,
         Edges {
-            title: title(&theme.rest, format!("ARCHIVED ∙ {}", archived.len())),
-            tail: keys(app, Scope::Archived, &theme.rest, inner_w.saturating_sub(4)),
+            title: title(&theme.rest, name),
+            tail: keys(app, scope, &theme.rest, inner_w.saturating_sub(4)),
         },
     );
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, t) in archived.iter().enumerate() {
-        // A snoozed ticket says when it comes back; a plain archive says how
-        // long it has been gone. Unparsable stamps show nothing.
-        let age = match t.snooze_until_secs() {
-            Some(until) => format!("wakes {}", crate::text::until_word(now, until * 1000)),
-            None => t
-                .archived
-                .as_ref()
-                .and_then(|a| mesimon_core::board::stamp_secs(&a.at))
-                .map(|secs| crate::text::age_slot(now, secs * 1000, false))
-                .unwrap_or_default(),
-        };
-        let head = format!(" {}  {} ∙ {} ∙ {}", t.short_key, truncate(&t.title, 28), t.column, age);
-        let pad = inner_w.saturating_sub(head.width());
-        let style = if i == idx {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let selected = i == idx;
+        let style = if selected {
             theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
         } else {
             theme.base()
         };
-        let row_style = if i == idx { theme.selected_row() } else { Style::default() };
-        lines.push(
-            Line::from(vec![Span::styled(head, style), Span::raw(" ".repeat(pad))])
-                .style(row_style),
-        );
+        let row_style = if selected { theme.selected_row() } else { Style::default() };
+        let lead_style = if selected { style } else { theme.dim3() };
+        // The right edge keeps one cell of margin after it.
+        let edge = if row.right.is_empty() { 0 } else { row.right.width() + 1 };
+        let head = truncate(&row.head, inner_w.saturating_sub(row.lead.width() + edge));
+        let pad = inner_w.saturating_sub(row.lead.width() + head.width() + edge);
+        let mut spans = vec![
+            Span::styled(row.lead.clone(), lead_style),
+            Span::styled(head, style),
+            Span::raw(" ".repeat(pad)),
+        ];
+        if edge > 0 {
+            spans.push(Span::styled(row.right.clone(), theme.dim2()));
+            spans.push(Span::raw(" "));
+        }
+        lines.push(Line::from(spans).style(row_style));
+        if tall {
+            let detail = row.detail.as_deref().unwrap_or("");
+            let budget = inner_w.saturating_sub(6);
+            let body =
+                if selected { reveal(app, detail, budget) } else { truncate(detail, budget) };
+            let text = format!("     {body}");
+            let pad = inner_w.saturating_sub(text.width());
+            lines.push(
+                Line::from(vec![Span::styled(text, theme.dim3()), Span::raw(" ".repeat(pad))])
+                    .style(row_style),
+            );
+        }
     }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The selected row's detail, marquee-revealed when it overflows `budget`
+/// — the board card title's clock, its reveal and its one pass. A menu
+/// row's detail is where a preference says what it will do, so `~` was
+/// cutting the half that matters. The clock is keyed on the words
+/// themselves: a toggle that rewrites its own detail restarts the reveal,
+/// and a list that reorders under the cursor cannot carry a half-scrolled
+/// clock onto somebody else's words.
+pub(super) fn reveal(app: &App, detail: &str, budget: usize) -> String {
+    let overflow = detail.width().saturating_sub(budget);
+    if overflow == 0 {
+        return truncate(detail, budget);
+    }
+    let key = crate::text::hash64(detail);
+    let ms = match app.menu_marquee.get() {
+        Some((k, epoch)) if k == key => epoch.elapsed().as_millis() as u64,
+        _ => {
+            app.menu_marquee.set(Some((key, std::time::Instant::now())));
+            0
+        }
+    };
+    let scroll = marquee_offset(ms, overflow);
+    if scroll > 0 {
+        marquee_window(detail, budget, scroll)
+    } else {
+        truncate(detail, budget)
+    }
+}
+
+/// The archived-tickets dialog: restore or open.
+pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
+    let archived = app.board.archived_tickets();
+    let now = mesimon_core::clock::now_ms();
+    let rows: Vec<ListRow> = archived
+        .iter()
+        .map(|t| {
+            // A snoozed ticket says when it comes back; a plain archive says
+            // how long it has been gone. Unparsable stamps show nothing.
+            let age = match t.snooze_until_secs() {
+                Some(until) => format!("wakes {}", crate::text::until_word(now, until * 1000)),
+                None => t
+                    .archived
+                    .as_ref()
+                    .and_then(|a| mesimon_core::board::stamp_secs(&a.at))
+                    .map(|secs| crate::text::age_slot(now, secs * 1000, false))
+                    .unwrap_or_default(),
+            };
+            ListRow {
+                lead: " ".into(),
+                head: format!(
+                    "{}  {} ∙ {} ∙ {}",
+                    t.short_key,
+                    truncate(&t.title, 28),
+                    t.column,
+                    age
+                ),
+                right: String::new(),
+                detail: None,
+            }
+        })
+        .collect();
+    list(f, app, &format!("ARCHIVED ∙ {}", rows.len()), Scope::Archived, idx, &rows);
 }
 
 /// The links dialog (T-256): what the ticket's notes point at, one row per
@@ -220,119 +318,68 @@ pub(super) fn draw_links(
     links: &[crate::app::TicketLink],
     idx: usize,
 ) {
-    let theme = &app.theme;
-    if links.is_empty() {
-        return;
-    }
-    let idx = idx.min(links.len() - 1);
     let key = app.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
-    let area = centred(f.area(), links.len() as u16, MAX_W);
-    let inner_w = area.width.saturating_sub(2) as usize;
-    let inner = frame(
-        f,
-        app,
-        area,
-        None,
-        &theme.rest,
-        Edges {
-            title: title(&theme.rest, format!("LINKS ∙ {key} ∙ {}", links.len())),
-            tail: keys(app, Scope::Links, &theme.rest, inner_w.saturating_sub(4)),
-        },
-    );
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, l) in links.iter().enumerate() {
-        let body = match (&l.target, &l.label) {
-            (crate::app::LinkTarget::Ticket(id), _) => {
-                let title = app.board.ticket(*id).map(|t| t.title.as_str()).unwrap_or("");
-                format!("{} ∙ {title}", l.text)
-            }
-            (crate::app::LinkTarget::Attachment { ticket, attachment }, label) => {
-                let label = label.as_deref().unwrap_or("Picture");
-                let available = app.board.ticket(*ticket).is_some_and(|t| {
-                    app.repo_root
-                        .join(".mesimon/board/tickets")
-                        .join(&t.short_key)
-                        .join("attachments")
-                        .join(format!("{attachment}.png"))
-                        .is_file()
-                });
-                if available {
-                    format!("[{label}]")
-                } else {
-                    format!("[{label}] ∙ image unavailable on this machine")
+    let rows: Vec<ListRow> = links
+        .iter()
+        .map(|l| {
+            let body = match (&l.target, &l.label) {
+                (crate::app::LinkTarget::Ticket(id), _) => {
+                    let title = app.board.ticket(*id).map(|t| t.title.as_str()).unwrap_or("");
+                    format!("{} ∙ {title}", l.text)
                 }
+                (crate::app::LinkTarget::Attachment { ticket, attachment }, label) => {
+                    let label = label.as_deref().unwrap_or("Picture");
+                    let available = app.board.ticket(*ticket).is_some_and(|t| {
+                        app.repo_root
+                            .join(".mesimon/board/tickets")
+                            .join(&t.short_key)
+                            .join("attachments")
+                            .join(format!("{attachment}.png"))
+                            .is_file()
+                    });
+                    if available {
+                        format!("[{label}]")
+                    } else {
+                        format!("[{label}] ∙ image unavailable on this machine")
+                    }
+                }
+                (_, Some(label)) => format!("{label} ∙ {}", l.text),
+                (_, None) => l.text.clone(),
+            };
+            ListRow {
+                lead: " ".into(),
+                head: format!("{:<6} {}", l.kind(), crate::text::one_line(&body)),
+                right: String::new(),
+                detail: None,
             }
-            (_, Some(label)) => format!("{label} ∙ {}", l.text),
-            (_, None) => l.text.clone(),
-        };
-        let head = format!(" {:<6} {}", l.kind(), crate::text::one_line(&body));
-        let head = truncate(&head, inner_w);
-        let pad = inner_w.saturating_sub(head.width());
-        let style = if i == idx {
-            theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
-        } else {
-            theme.base()
-        };
-        let row_style = if i == idx { theme.selected_row() } else { Style::default() };
-        lines.push(
-            Line::from(vec![Span::styled(head, style), Span::raw(" ".repeat(pad))])
-                .style(row_style),
-        );
-    }
-    f.render_widget(Paragraph::new(lines), inner);
+        })
+        .collect();
+    list(f, app, &format!("LINKS ∙ {key} ∙ {}", rows.len()), Scope::Links, idx, &rows);
 }
 
 /// The External drawer (19 §4): discovered foreign sessions, observe/resume.
 pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
-    let theme = &app.theme;
-    if app.external.is_empty() {
-        return;
-    }
     let now = mesimon_core::clock::now_ms();
-    let area = centred(f.area(), app.external.len() as u16 * 2, MAX_W);
-    let inner_w = area.width.saturating_sub(2) as usize;
-    let inner = frame(
-        f,
-        app,
-        area,
-        None,
-        &theme.rest,
-        Edges {
-            title: title(&theme.rest, format!("EXTERNAL ∙ {}", app.external.len())),
-            tail: keys(app, Scope::Drawer, &theme.rest, inner_w.saturating_sub(4)),
-        },
-    );
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, item) in app.external.iter().enumerate() {
-        let name = item.name.clone().unwrap_or_else(|| item.id.to_string()[..8].to_string());
-        let mut badges = format!("  ∙ {}", item.provider.label());
-        if item.running_elsewhere {
-            badges.push_str("  ∙ running elsewhere");
-        }
-        let head = format!(
-            " {}  {}{badges}",
-            truncate(&name, 24),
-            crate::text::age_slot(now, item.mtime_ms, false)
-        );
-        let selected = i == idx;
-        let style = if selected {
-            theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
-        } else {
-            theme.base()
-        };
-        let row_style = if selected { theme.selected_row() } else { Style::default() };
-        let pad = inner_w.saturating_sub(head.width());
-        lines.push(
-            Line::from(vec![Span::styled(head, style), Span::raw(" ".repeat(pad))])
-                .style(row_style),
-        );
-        let preview = item.preview.as_deref().unwrap_or("");
-        let text = format!("     {}", truncate(preview, inner_w.saturating_sub(6)));
-        let pad = inner_w.saturating_sub(text.width());
-        lines.push(
-            Line::from(vec![Span::styled(text, theme.dim2()), Span::raw(" ".repeat(pad))])
-                .style(row_style),
-        );
-    }
-    f.render_widget(Paragraph::new(lines), inner);
+    let rows: Vec<ListRow> = app
+        .external
+        .iter()
+        .map(|item| {
+            let name = item.name.clone().unwrap_or_else(|| item.id.to_string()[..8].to_string());
+            let mut badges = format!("  ∙ {}", item.provider.label());
+            if item.running_elsewhere {
+                badges.push_str("  ∙ running elsewhere");
+            }
+            ListRow {
+                lead: " ".into(),
+                head: format!(
+                    "{}  {}{badges}",
+                    truncate(&name, 24),
+                    crate::text::age_slot(now, item.mtime_ms, false)
+                ),
+                right: String::new(),
+                detail: Some(item.preview.clone().unwrap_or_default()),
+            }
+        })
+        .collect();
+    list(f, app, &format!("EXTERNAL ∙ {}", rows.len()), Scope::Drawer, idx, &rows);
 }
