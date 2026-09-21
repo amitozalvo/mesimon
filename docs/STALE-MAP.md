@@ -11973,3 +11973,19 @@ untouched.
 - Doctor's `claude.md` line still ignores `claude_md_ignored` on purpose (it is the one door
   "never" does not close) and still samples with its own `Sampler`: it has no daemon to ask.
   What it no longer does is disagree with the chip about the switches.
+
+## Pending.action is a wire enum, not a string (T-248, 2026-09-22)
+
+- **`Pending.action` is `PendingAction { Ask, Start, Wake, Merge, Rebase, Unknown }`**, serde
+  `snake_case`, so the wire bytes are the five words the string carried and no schema moves. The
+  T-234 pass filed it when the vocabulary was three words; it was five by the time it shipped
+  (T-294's seats), which is the cost the ticket named. The daemon's `QueuedSeat::action()` mints
+  the seat's variant beside `word()`, which stays a `&str` because the feed's
+  `queued_<word>_restored` is a feed word, not a wire one.
+- **`Notice::kind` stays a word, and this enum honours the same rule** with `#[serde(other)]
+  Unknown`: a newer daemon's variant parses on an older TUI instead of failing the whole
+  `Response::Board` (which the client would drop, blanking the board). The owed row says
+  `owed ∙ next` for it and `is_queued_ask` says no; the `U` reload is the cure. A core test
+  round-trips the five words and parses a sixth as `Unknown`.
+- `App::pending_row` matches the enum exhaustively; the `(other, _) => other.to_string()` arm that
+  would have printed a typo on a card is gone. The e2es compare variants, not literals.

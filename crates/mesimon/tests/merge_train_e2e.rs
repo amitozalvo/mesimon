@@ -20,7 +20,7 @@ use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, SessionState, WorkspaceStrategy};
-use mesimon_core::command::{AutomationStatus, Command, Response, WorktreeItem};
+use mesimon_core::command::{AutomationStatus, Command, PendingAction, Response, WorktreeItem};
 
 fn git_ok(repo: &Path, args: &[&str]) -> bool {
     Proc::new("git")
@@ -200,10 +200,10 @@ fn a_grinding_worktree_does_not_hold_another_tickets_merge() {
     ));
     // The card does not claim to be waiting on B: nothing holds this merge.
     wait_until(Duration::from_secs(10), "A to be owed a merge", || {
-        pending_of(&mut c, Some(a)).iter().any(|p| p.action == "merge")
+        pending_of(&mut c, Some(a)).iter().any(|p| p.action == PendingAction::Merge)
     });
     let owed = pending_of(&mut c, Some(a));
-    let merge = owed.iter().find(|p| p.action == "merge").unwrap();
+    let merge = owed.iter().find(|p| p.action == PendingAction::Merge).unwrap();
     assert!(merge.waits_on.is_empty(), "a worktree bystander is not a wait: {merge:?}");
 
     // And it merges, with B still running.
@@ -433,13 +433,14 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     assert!(automation_of(&mut c).train_asked.is_empty(), "rebased past a blocked merge");
     assert!(!feed().contains("merge_train_rebase_asked"));
     let rebase = pending_of(&mut c, Some(b));
-    let rebase = rebase.iter().find(|p| p.action == "rebase").expect("B is owed a rebase");
+    let rebase =
+        rebase.iter().find(|p| p.action == PendingAction::Rebase).expect("B is owed a rebase");
     assert_eq!(rebase.waits_on, vec![c.board().ticket(a).unwrap().short_key.clone()]);
     // The row carries the reason, and the board says it in a sentence.
     let owed = pending_of(&mut c, Some(a));
     let merge = owed
         .iter()
-        .find(|p| p.action == "merge")
+        .find(|p| p.action == PendingAction::Merge)
         .unwrap_or_else(|| panic!("a merge row: {owed:?}"));
     let why = merge.text.clone().expect("the refusal travels with the row");
     assert!(why.contains("uncommitted changes"), "{why}");
@@ -464,7 +465,7 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
     });
     wait_until(Duration::from_secs(5), "the notice to go with it", || {
-        !pending_of(&mut c, Some(a)).iter().any(|p| p.action == "merge")
+        !pending_of(&mut c, Some(a)).iter().any(|p| p.action == PendingAction::Merge)
     });
     wait_until(Duration::from_secs(15), "B to be asked after A merges", || {
         automation_of(&mut c).train_asked.iter().any(|ask| ask.ticket == b && ask.current)

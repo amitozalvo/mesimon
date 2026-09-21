@@ -239,7 +239,7 @@ mod tests {
             pending: if in_flight {
                 vec![Pending {
                     ticket: ulid::Ulid(1),
-                    action: "ask".into(),
+                    action: mesimon_core::command::PendingAction::Ask,
                     waits_on: vec![],
                     text: None,
                     in_flight: true,

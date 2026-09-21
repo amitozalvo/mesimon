@@ -1542,14 +1542,37 @@ pub struct AgentBoardView {
 /// A ticket's worktree binding, as the board renders it (M4). Oids stay
 /// daemon-side; the client gets words, flags, and (M4b) the worktree path —
 /// carried solely so `!` on the diff screen can open a shell there.
+/// What mesimon owes a ticket (`Pending::action`). On the wire it is the
+/// snake_case word it always was (`ask` | `start` | `wake` | `merge` |
+/// `rebase`), so no schema moves (T-248). `Notice::kind` stays a word
+/// because an unknown variant fails the whole `Response::Board` and the
+/// client drops a line it cannot parse; `Unknown` is how this enum keeps
+/// that promise — a word a newer daemon mints lands here on an older
+/// client, and the card says `owed` until the `U` reload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingAction {
+    /// Words parked for a live pane.
+    Ask,
+    /// Words (or none) parked for an empty seat: the delivery starts a claude.
+    Start,
+    /// Words parked for a parked claude: the delivery wakes it.
+    Wake,
+    /// The train will merge this ticket's branch.
+    Merge,
+    /// The train will ask this ticket's claude to rebase.
+    Rebase,
+    /// A word this build does not know.
+    #[serde(other)]
+    Unknown,
+}
+
 /// One thing mesimon owes a ticket and will do on its own clock — the
 /// card's slow mark and the cursor card's `queued ∙ after T-12` row read this.
-/// `action` is a WORD (`ask` | `merge` | `rebase`), `Notice::kind`'s rule: a
-/// client that cannot parse a snapshot line drops it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pending {
     pub ticket: ulid::Ulid,
-    pub action: String,
+    pub action: PendingAction,
     /// Short keys of the tickets whose claudes still hold the checkout (or
     /// the board, for the train); may include this ticket's own key.
     #[serde(default)]
@@ -1570,10 +1593,10 @@ impl Pending {
     /// Is this row a queued ASK — words parked for the ticket's claude,
     /// whatever seat it is in? `ask` is a live pane, `wake` a parked claude
     /// the delivery wakes, `start` an empty seat where the delivery starts
-    /// one (T-294). The three words live here so no screen spells the
-    /// vocabulary itself; the train's `merge` and `rebase` rows are not asks.
+    /// one (T-294). The three live here so no screen spells the vocabulary
+    /// itself; the train's `merge` and `rebase` rows are not asks.
     pub fn is_queued_ask(&self) -> bool {
-        matches!(self.action.as_str(), "ask" | "start" | "wake")
+        matches!(self.action, PendingAction::Ask | PendingAction::Start | PendingAction::Wake)
     }
 }
 
@@ -1909,6 +1932,28 @@ pub enum Event {
 
 #[cfg(test)]
 mod tests {
+
+    /// `Pending::action` is the wire word it was as a string (T-248): the
+    /// five words round-trip byte for byte, and a word this build does not
+    /// know parses as `Unknown` rather than failing the snapshot.
+    #[test]
+    fn pending_action_is_the_same_wire_word_and_tolerates_a_new_one() {
+        use super::PendingAction::*;
+        for (a, w) in
+            [(Ask, "ask"), (Start, "start"), (Wake, "wake"), (Merge, "merge"), (Rebase, "rebase")]
+        {
+            assert_eq!(serde_json::to_string(&a).unwrap(), format!("\"{w}\""));
+            assert_eq!(
+                serde_json::from_str::<super::PendingAction>(&format!("\"{w}\"")).unwrap(),
+                a
+            );
+        }
+        let p: super::Pending =
+            serde_json::from_str(r#"{"ticket":"01ARZ3NDEKTSV4RRFFQ69G5FAV","action":"squash"}"#)
+                .unwrap();
+        assert_eq!(p.action, Unknown);
+        assert!(!p.is_queued_ask());
+    }
     use super::*;
 
     /// Every clause of the brief offer, one at a time (T-247: computed here,

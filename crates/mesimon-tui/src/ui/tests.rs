@@ -3490,7 +3490,7 @@ fn golden_queued_start_open_120() {
     let mut app = app_graphite(fixture(false));
     app.pending = vec![mesimon_core::command::Pending {
         ticket: ulid_n(1),
-        action: "start".into(),
+        action: mesimon_core::command::PendingAction::Start,
         waits_on: vec!["T-3".into()],
         text: None,
         in_flight: false,
@@ -3505,7 +3505,7 @@ fn golden_queued_start_open_120() {
 fn pending_ask(ticket: u128, waits_on: &[&str]) -> mesimon_core::command::Pending {
     mesimon_core::command::Pending {
         ticket: ulid_n(ticket),
-        action: "ask".into(),
+        action: mesimon_core::command::PendingAction::Ask,
         waits_on: waits_on.iter().map(|s| s.to_string()).collect(),
         text: Some("commit what you have".into()),
         in_flight: false,
@@ -3570,14 +3570,14 @@ fn golden_train_120() {
     app.pending = vec![
         mesimon_core::command::Pending {
             ticket: ulid_n(5),
-            action: "merge".into(),
+            action: mesimon_core::command::PendingAction::Merge,
             waits_on: vec!["T-3".into(), "T-4".into()],
             text: None,
             in_flight: false,
         },
         mesimon_core::command::Pending {
             ticket: ulid_n(6),
-            action: "rebase".into(),
+            action: mesimon_core::command::PendingAction::Rebase,
             waits_on: vec!["T-3".into(), "T-4".into()],
             text: None,
             in_flight: false,
@@ -3621,7 +3621,7 @@ fn golden_train_blocked_120() {
     )];
     app.pending = vec![mesimon_core::command::Pending {
         ticket: ulid_n(5),
-        action: "merge".into(),
+        action: mesimon_core::command::PendingAction::Merge,
         waits_on: vec!["T-3".into()],
         text: Some("uncommitted changes in the main checkout — commit or stash them first".into()),
         in_flight: false,
@@ -3764,7 +3764,7 @@ fn golden_train_manual_120() {
     }];
     let candidate = mesimon_core::command::Pending {
         ticket: ulid_n(5),
-        action: "merge".into(),
+        action: mesimon_core::command::PendingAction::Merge,
         waits_on: vec!["T-3".into(), "T-4".into()],
         text: None,
         in_flight: false,
@@ -3872,7 +3872,7 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
     app.cursor_row = Some(0);
     app.pending = vec![mesimon_core::command::Pending {
         ticket: ulid_n(3),
-        action: "ask".into(),
+        action: mesimon_core::command::PendingAction::Ask,
         waits_on: vec!["T-1".into()],
         text: Some("commit it".into()),
         in_flight: false,

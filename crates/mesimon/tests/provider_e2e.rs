@@ -12,7 +12,7 @@ use std::time::Duration;
 use mesimon_core::board::{
     AgentProvider, SessionKind, SessionRecord, SessionState, StopReason, WorkspaceStrategy,
 };
-use mesimon_core::command::{Command, Response};
+use mesimon_core::command::{Command, PendingAction, Response};
 use mesimon_core::Principal;
 use serde_json::{json, Value};
 
@@ -911,7 +911,7 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
     warning(c.request(Command::ResumeSession { id, confirm: true }));
     let parked = pending_of(&mut c, Some(waiting));
     assert_eq!(parked.len(), 1, "the queued start survives the restart: {parked:?}");
-    assert_eq!(parked[0].action, "start");
+    assert_eq!(parked[0].action, PendingAction::Start);
     assert!(c.board().live_agent(waiting).is_none(), "and still waits on the cleanup");
     assert_eq!(session(&mut c, id).codex_generation, old.codex_generation);
     assert!(session(&mut c, id).codex_stopping);

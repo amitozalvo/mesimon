@@ -21,7 +21,8 @@ use mesimon_core::board::{
 use mesimon_core::command::{
     AgentAutomoveView, AgentBoardView, AgentStateView, AgentTagView, AgentTicketRow,
     AgentTicketView, Command, CrownTouch, DiffTarget, Envelope, Event, ExternalItem, GraceItem,
-    MergeOutcome, Notice, Resources, Response, TerminalItem, WorktreeItem, PROTOCOL_VERSION,
+    MergeOutcome, Notice, Pending, PendingAction, Resources, Response, TerminalItem, WorktreeItem,
+    PROTOCOL_VERSION,
 };
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
@@ -1162,13 +1163,22 @@ enum QueuedSeat {
 }
 
 impl QueuedSeat {
-    /// The word the snapshot carries for this seat (`Pending::action`), which
-    /// is what makes the card say `claude starts` rather than `queued`.
+    /// The feed's word for this seat (`queued_<word>_restored`).
     fn word(&self) -> &'static str {
         match self {
             QueuedSeat::Pane(_) => "ask",
             QueuedSeat::Wake(_) => "wake",
             QueuedSeat::Start(_) => "start",
+        }
+    }
+
+    /// What the snapshot carries for this seat (`Pending::action`), which
+    /// is what makes the card say `claude starts` rather than `queued`.
+    fn action(&self) -> PendingAction {
+        match self {
+            QueuedSeat::Pane(_) => PendingAction::Ask,
+            QueuedSeat::Wake(_) => PendingAction::Wake,
+            QueuedSeat::Start(_) => PendingAction::Start,
         }
     }
 }
@@ -4427,9 +4437,10 @@ impl Daemon {
         // per distinct reason, naming its tickets in board order.
         let mut blocked: Vec<(&str, Vec<String>)> = Vec::new();
         for p in &pending {
-            let (Some(detail), Some(t)) =
-                (p.text.as_deref().filter(|_| p.action == "merge"), self.board.ticket(p.ticket))
-            else {
+            let (Some(detail), Some(t)) = (
+                p.text.as_deref().filter(|_| p.action == PendingAction::Merge),
+                self.board.ticket(p.ticket),
+            ) else {
                 continue;
             };
             match blocked.iter_mut().find(|(d, _)| *d == detail) {
@@ -4515,17 +4526,16 @@ impl Daemon {
     /// What mesimon owes each ticket (see `Pending`). Empty until the queued
     /// ask and the merge train land; kept in one place so the snapshot road
     /// forks no git.
-    fn pending_items(&self) -> Vec<mesimon_core::command::Pending> {
-        use mesimon_core::command::Pending;
+    fn pending_items(&self) -> Vec<Pending> {
         let mut out: Vec<Pending> = self
             .queue_order()
             .into_iter()
             .map(|i| &self.queued[i])
-            .map(|q| mesimon_core::command::Pending {
+            .map(|q| Pending {
                 ticket: q.ticket,
                 // The seat's own word, so the card can say a session will
                 // START rather than that words are queued (T-294).
-                action: q.seat.word().into(),
+                action: q.seat.action(),
                 waits_on: self.ask_waits_on(q.ticket),
                 text: (!q.text.is_empty()).then(|| q.text.clone()),
                 in_flight: false,
@@ -4533,9 +4543,9 @@ impl Daemon {
             .collect();
         for (t, (_, word)) in &self.inflight {
             if *word == "queued_ask_delivered" {
-                out.push(mesimon_core::command::Pending {
+                out.push(Pending {
                     ticket: *t,
-                    action: "ask".into(),
+                    action: PendingAction::Ask,
                     waits_on: Vec::new(),
                     text: None,
                     in_flight: true,
@@ -4561,7 +4571,7 @@ impl Daemon {
                 let tip = self.wt_tip.get(&t).cloned().unwrap_or_default();
                 out.push(Pending {
                     ticket: t,
-                    action: "merge".into(),
+                    action: PendingAction::Merge,
                     waits_on: waits_on.clone(),
                     text: self.train.refusal(t, &tip, &self.base_tip).map(String::from),
                     in_flight: false,
@@ -4570,7 +4580,7 @@ impl Daemon {
             for t in plan.rebase {
                 out.push(Pending {
                     ticket: t,
-                    action: "rebase".into(),
+                    action: PendingAction::Rebase,
                     waits_on: rebase_waits_on.clone(),
                     text: None,
                     in_flight: false,

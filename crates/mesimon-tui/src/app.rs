@@ -3081,10 +3081,11 @@ impl App {
             [one] => Some(format!("after {one}")),
             [one, rest @ ..] => Some(format!("after {one} +{}", rest.len())),
         };
-        Some(match (p.action.as_str(), after) {
-            ("ask", _) if p.in_flight => "queued ∙ sending".into(),
-            ("ask", None) => "queued ∙ sends next".into(),
-            ("ask", Some(a)) => format!("queued ∙ {a}"),
+        use mesimon_core::command::PendingAction as A;
+        Some(match (p.action, after) {
+            (A::Ask, _) if p.in_flight => "queued ∙ sending".into(),
+            (A::Ask, None) => "queued ∙ sends next".into(),
+            (A::Ask, Some(a)) => format!("queued ∙ {a}"),
             // A queued ask whose seat is empty or parked says what will
             // HAPPEN to the card, not only that words are waiting (T-294):
             // a session is about to exist here, which is louder than a paste
@@ -3092,10 +3093,10 @@ impl App {
             // No subject — the card is the subject, and `claude starts ∙
             // after T-3` is 25 cells where the row has 22. The status line,
             // which has a whole row, names it (`App::commit_prompt`).
-            ("start", None) => "starts next".into(),
-            ("start", Some(a)) => format!("starts ∙ {a}"),
-            ("wake", None) => "wakes next".into(),
-            ("wake", Some(a)) => format!("wakes ∙ {a}"),
+            (A::Start, None) => "starts next".into(),
+            (A::Start, Some(a)) => format!("starts ∙ {a}"),
+            (A::Wake, None) => "wakes next".into(),
+            (A::Wake, Some(a)) => format!("wakes ∙ {a}"),
             // The checkout refused this merge (T-289) — a dirty tree the
             // ff would overwrite, almost always. It outranks what the row
             // waits on, because a blocked merge does not happen when the
@@ -3103,14 +3104,16 @@ impl App {
             // comes, which is what a person read as the train hanging. WHY
             // is the advisory row's — that is a sentence and this is 22
             // cells.
-            ("merge", _) if p.text.is_some() => "auto-merge ∙ blocked".into(),
+            (A::Merge, _) if p.text.is_some() => "auto-merge ∙ blocked".into(),
             // "auto-": the row is the one place a card says the merge is
             // mesimon's to make, and `merge ∙ next` read as a hand's (T-227).
-            ("merge", None) => "auto-merge ∙ next".into(),
-            ("merge", Some(a)) => format!("auto-merge ∙ {a}"),
-            ("rebase", None) => "rebase ask ∙ next".into(),
-            ("rebase", Some(a)) => format!("rebase ask ∙ {a}"),
-            (other, _) => other.to_string(),
+            (A::Merge, None) => "auto-merge ∙ next".into(),
+            (A::Merge, Some(a)) => format!("auto-merge ∙ {a}"),
+            (A::Rebase, None) => "rebase ask ∙ next".into(),
+            (A::Rebase, Some(a)) => format!("rebase ask ∙ {a}"),
+            // A newer daemon's word: the mark is right, the row is generic.
+            (A::Unknown, None) => "owed ∙ next".into(),
+            (A::Unknown, Some(a)) => format!("owed ∙ {a}"),
         })
     }
 
@@ -9517,25 +9520,26 @@ pub(crate) mod test_support {
                     });
                 }
                 Command::PromptSession { ticket, queued, .. } => {
+                    use mesimon_core::command::PendingAction;
                     let seat = if self.board.pane_target(ticket).is_some() {
-                        "ask"
+                        PendingAction::Ask
                     } else if self.board.live_agent(ticket).is_some() {
-                        "wake"
+                        PendingAction::Wake
                     } else {
-                        "start"
+                        PendingAction::Start
                     };
                     self.pending.retain(|p| p.ticket != ticket);
                     if queued {
                         self.pending.push(mesimon_core::command::Pending {
                             ticket,
-                            action: seat.into(),
+                            action: seat,
                             waits_on: vec!["T-9".into()],
                             text: None,
                             in_flight: false,
                         });
                         return Ok(Response::Queued { behind: vec!["T-9".into()] });
                     }
-                    if seat == "ask" {
+                    if seat == PendingAction::Ask {
                         return Ok(Response::Ok);
                     }
                     if let Some(rec) =
@@ -12982,7 +12986,7 @@ mod tests {
         app.rich_keys = true;
         app.pending = vec![mesimon_core::command::Pending {
             ticket: ulid::Ulid(1),
-            action: "ask".into(),
+            action: mesimon_core::command::PendingAction::Ask,
             waits_on: vec!["T-3".into()],
             text: Some("commit it\nthen push".into()),
             in_flight: false,
@@ -13012,7 +13016,7 @@ mod tests {
         app.refresh().unwrap();
         app.pending = vec![mesimon_core::command::Pending {
             ticket: ulid::Ulid(1),
-            action: "ask".into(),
+            action: mesimon_core::command::PendingAction::Ask,
             waits_on: vec!["T-3".into()],
             text: Some("commit it".into()),
             in_flight: false,
@@ -13066,10 +13070,11 @@ mod tests {
     #[test]
     fn the_owed_row_names_what_it_waits_on() {
         let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
-        let row = |app: &mut App, waits_on: Vec<&str>, in_flight: bool, action: &str| {
+        use mesimon_core::command::PendingAction::{Ask, Merge, Rebase};
+        let row = |app: &mut App, waits_on: Vec<&str>, in_flight: bool, action| {
             app.pending = vec![mesimon_core::command::Pending {
                 ticket: ulid::Ulid(1),
-                action: action.into(),
+                action,
                 waits_on: waits_on.into_iter().map(String::from).collect(),
                 text: None,
                 in_flight,
@@ -13077,31 +13082,31 @@ mod tests {
             app.pending_row(ulid::Ulid(1)).unwrap()
         };
         let own = app.board.tickets[0].short_key.clone();
-        assert_eq!(row(&mut app, vec![], false, "ask"), "queued ∙ sends next");
-        assert_eq!(row(&mut app, vec![&own], false, "ask"), "queued ∙ after its turn");
-        assert_eq!(row(&mut app, vec!["T-3", &own], false, "ask"), "queued ∙ after T-3");
-        assert_eq!(row(&mut app, vec!["T-3", "T-4", "T-5"], false, "ask"), "queued ∙ after T-3 +2");
-        assert_eq!(row(&mut app, vec![], true, "ask"), "queued ∙ sending");
-        assert_eq!(row(&mut app, vec![], false, "merge"), "auto-merge ∙ next");
-        assert_eq!(row(&mut app, vec!["T-3"], false, "merge"), "auto-merge ∙ after T-3");
-        assert_eq!(row(&mut app, vec![], false, "rebase"), "rebase ask ∙ next");
-        assert_eq!(row(&mut app, vec!["T-3", "T-4"], false, "rebase"), "rebase ask ∙ after T-3 +1");
+        assert_eq!(row(&mut app, vec![], false, Ask), "queued ∙ sends next");
+        assert_eq!(row(&mut app, vec![&own], false, Ask), "queued ∙ after its turn");
+        assert_eq!(row(&mut app, vec!["T-3", &own], false, Ask), "queued ∙ after T-3");
+        assert_eq!(row(&mut app, vec!["T-3", "T-4", "T-5"], false, Ask), "queued ∙ after T-3 +2");
+        assert_eq!(row(&mut app, vec![], true, Ask), "queued ∙ sending");
+        assert_eq!(row(&mut app, vec![], false, Merge), "auto-merge ∙ next");
+        assert_eq!(row(&mut app, vec!["T-3"], false, Merge), "auto-merge ∙ after T-3");
+        assert_eq!(row(&mut app, vec![], false, Rebase), "rebase ask ∙ next");
+        assert_eq!(row(&mut app, vec!["T-3", "T-4"], false, Rebase), "rebase ask ∙ after T-3 +1");
         // A merge the checkout refused (T-289): the reason travels on `text`
         // and outranks what the row waits on — quiet is not what it needs.
         // The ask's own `text` is its words, and must not read as a refusal.
-        let blocked = |app: &mut App, waits_on: Vec<&str>, action: &str| {
+        let blocked = |app: &mut App, waits_on: Vec<&str>, action| {
             app.pending = vec![mesimon_core::command::Pending {
                 ticket: ulid::Ulid(1),
-                action: action.into(),
+                action,
                 waits_on: waits_on.into_iter().map(String::from).collect(),
                 text: Some("uncommitted changes in the main checkout".into()),
                 in_flight: false,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };
-        assert_eq!(blocked(&mut app, vec![], "merge"), "auto-merge ∙ blocked");
-        assert_eq!(blocked(&mut app, vec!["T-3", "T-4"], "merge"), "auto-merge ∙ blocked");
-        assert_eq!(blocked(&mut app, vec!["T-3"], "ask"), "queued ∙ after T-3");
+        assert_eq!(blocked(&mut app, vec![], Merge), "auto-merge ∙ blocked");
+        assert_eq!(blocked(&mut app, vec!["T-3", "T-4"], Merge), "auto-merge ∙ blocked");
+        assert_eq!(blocked(&mut app, vec!["T-3"], Ask), "queued ∙ after T-3");
         app.pending.clear();
         assert!(app.pending_row(ulid::Ulid(1)).is_none());
         assert!(!app.owed(ulid::Ulid(1)));

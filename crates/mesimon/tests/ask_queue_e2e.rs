@@ -20,7 +20,7 @@ use common::*;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, SessionState};
-use mesimon_core::command::{Command, Response};
+use mesimon_core::command::{Command, PendingAction, Response};
 
 #[test]
 fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first() {
@@ -112,7 +112,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     let p = pending_of(&mut c, None);
     assert_eq!(p.len(), 1);
     assert_eq!(p[0].ticket, b);
-    assert_eq!(p[0].action, "ask");
+    assert_eq!(p[0].action, PendingAction::Ask);
     assert_eq!(p[0].waits_on, vec![a_key.clone()]);
     assert_eq!(p[0].text.as_deref(), Some("mesimon-probe-51 commit what you have"));
     assert!(!p[0].in_flight);
@@ -231,7 +231,11 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     ));
     let p = pending_of(&mut c, Some(b));
     assert_eq!(p.len(), 1);
-    assert_eq!(p[0].action, "wake", "the card says a session will wake, not that words wait");
+    assert_eq!(
+        p[0].action,
+        PendingAction::Wake,
+        "the card says a session will wake, not that words wait"
+    );
     // Take it back off: the wake's own road is the test below, and this one
     // is about to free the checkout.
     assert!(matches!(c.request(Command::DropQueuedAsk { ticket: b }), Response::Ok));
@@ -296,7 +300,7 @@ fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
     }
     let p = pending_of(&mut c, Some(b));
     assert_eq!(p.len(), 1);
-    assert_eq!(p[0].action, "start");
+    assert_eq!(p[0].action, PendingAction::Start);
     assert_eq!(p[0].waits_on, vec![a_key]);
     assert_eq!(p[0].text.as_deref(), Some("mesimon-probe-71 read the ticket"));
     std::thread::sleep(Duration::from_millis(1500));
@@ -620,7 +624,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
     let p = pending_of(&mut c, None);
     assert_eq!(p.len(), 1, "the start came back and the pane ask did not: {p:?}");
     assert_eq!(p[0].ticket, b);
-    assert_eq!(p[0].action, "start");
+    assert_eq!(p[0].action, PendingAction::Start);
     assert_eq!(p[0].text.as_deref(), Some("mesimon-probe-418 read the ticket"));
     std::thread::sleep(Duration::from_millis(1500));
     assert!(

@@ -22,7 +22,7 @@ use common::*;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, SessionState};
-use mesimon_core::command::{Command, Response};
+use mesimon_core::command::{Command, PendingAction, Response};
 
 #[test]
 fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
@@ -194,8 +194,8 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
     }
     let p = pending_of(&mut c, None);
     assert_eq!(p.len(), 3, "{p:?}");
-    assert_eq!(p.iter().filter(|p| p.action == "ask").count(), 2, "{p:?}");
-    assert_eq!(p.iter().filter(|p| p.action == "start").count(), 1, "{p:?}");
+    assert_eq!(p.iter().filter(|p| p.action == PendingAction::Ask).count(), 2, "{p:?}");
+    assert_eq!(p.iter().filter(|p| p.action == PendingAction::Start).count(), 1, "{p:?}");
     assert!(p.iter().all(|p| !p.in_flight), "{p:?}");
     assert!(p.iter().all(|p| p.text.as_deref() == Some("mesimon-probe-82 rebase onto main")));
     std::thread::sleep(Duration::from_millis(1500));
