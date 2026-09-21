@@ -140,6 +140,9 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
             Command::AgentArchiveTicket { key, restore, seen: Some(seen) }
         }
         ToolCall::StartAgent { key, seen } => Command::AgentStartTicket { key, seen: Some(seen) },
+        ToolCall::AskAgent { key, text, seen } => {
+            Command::AgentAskTicket { key, text, seen: Some(seen) }
+        }
         ToolCall::CreateTicket { title, column, description, tags, idempotency_key } => {
             Command::AgentCreateTicket {
                 title,
@@ -202,6 +205,14 @@ fn render(resp: Response) -> Value {
         Response::AgentStarted { key, session_started, budget_left } => text(&json!({
             "key": key, "session_started": session_started, "budget_left": budget_left
         })),
+        // The crown's ask (T-413): held on the card until a person sends it.
+        Response::AgentAsked { key, replaced, seen } => {
+            let mut body = json!({ "key": key, "replaced": replaced, "held_for_person": true });
+            if let Some(seen) = seen {
+                body["seen"] = json!(seen);
+            }
+            text(&body)
+        }
 
         // The body as the text block itself: markdown inside a JSON string is
         // a worse read, and the metadata already travels in `get_ticket`.

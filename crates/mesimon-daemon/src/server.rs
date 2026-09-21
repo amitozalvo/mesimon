@@ -651,7 +651,14 @@ pub fn run(paths: Paths) -> Result<()> {
                     (QueuedSeat::Start(provider), paths.repo_root.display().to_string())
                 }
             };
-            Some(QueuedAsk { ticket: e.ticket, seat, cwd, text: e.text, queued_at: e.queued_at })
+            Some(QueuedAsk {
+                ticket: e.ticket,
+                seat,
+                cwd,
+                text: e.text,
+                queued_at: e.queued_at,
+                by: None,
+            })
         })
         .collect();
     if !worktrees.is_empty() {
@@ -1150,6 +1157,12 @@ struct QueuedAsk {
     text: String,
     #[allow(dead_code)]
     queued_at: u64,
+    /// The crown ticket whose agent queued these words (T-413). `Some` is a
+    /// HELD ask: `drain_queue` never takes it, only a person's send
+    /// (`SendQueuedAsk`) delivers it and a take-back returns it — the road
+    /// that keeps a person between one session and another's turn. Never
+    /// persisted: it dies with the daemon, and the crown may ask again.
+    by: Option<ulid::Ulid>,
 }
 
 /// Where a prompt's claude is (`Daemon::seat_of`), and therefore how it is
@@ -1795,6 +1808,7 @@ impl Daemon {
             | Command::AgentSetWorkspace { .. }
             | Command::AgentArchiveTicket { .. }
             | Command::AgentStartTicket { .. }
+            | Command::AgentAskTicket { .. }
             | Command::AgentRaiseHand { .. } => {
                 Response::Err { message: "agent commands require an agent principal".into() }
             }
@@ -3497,6 +3511,62 @@ impl Daemon {
             // The crown's start (T-412): an ask to spawn, judged here. The
             // budget and the seat rule are the daemon's; the agent names a
             // ticket and nothing else — no kind, no prompt, no session.
+            Command::AgentAskTicket { key, text, seen } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                if target == ticket {
+                    return Response::Err {
+                        message: format!(
+                            "{key} is this session's own ticket; ask_agent is for another ticket"
+                        ),
+                    };
+                }
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                // A seat to receive the words: a pane or a parked agent. An
+                // empty seat is `start_agent`'s (T-412), never a start on
+                // the crown's words — the title is the person's prompt.
+                let seat = self.seat_of(target);
+                if matches!(seat, QueuedSeat::Start(_)) {
+                    return Response::Err {
+                        message: format!(
+                            "{key} has no agent to receive the words; start_agent first"
+                        ),
+                    };
+                }
+                if self
+                    .board
+                    .live_agent(target)
+                    .is_some_and(|rec| rec.provenance == Provenance::Adopted && rec.argv.is_empty())
+                {
+                    return Response::Err {
+                        message: format!("{key}'s session is external; a person resumes it first"),
+                    };
+                }
+                // Sanitized by subtraction alone, as the person's own words
+                // are: nothing is added, and blank words queue nothing.
+                let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
+                    return Response::Err { message: "nothing to send".into() };
+                };
+                let replaced =
+                    self.queued.iter().any(|q| q.ticket == target && q.by == Some(ticket));
+                if let Err(message) = self.park_ask(target, seat, text, Some(ticket)) {
+                    return Response::Err { message };
+                }
+                self.broadcast();
+                let seen = self.crown_touched(ticket, target, "asked");
+                Response::AgentAsked {
+                    key: self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key),
+                    replaced,
+                    seen,
+                }
+            }
             Command::AgentStartTicket { key, seen } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
@@ -4657,6 +4727,7 @@ impl Daemon {
                 waits_on: self.ask_waits_on(q.ticket),
                 text: (!q.text.is_empty()).then(|| q.text.clone()),
                 in_flight: false,
+                by: q.by.and_then(|c| self.board.ticket(c)).map(|c| c.short_key.clone()),
             })
             .collect();
         for (t, (_, word)) in &self.inflight {
@@ -4667,6 +4738,7 @@ impl Daemon {
                     waits_on: Vec::new(),
                     text: None,
                     in_flight: true,
+                    by: None,
                 });
             }
         }
@@ -4693,6 +4765,7 @@ impl Daemon {
                     waits_on: waits_on.clone(),
                     text: self.train.refusal(t, &tip, &self.base_tip).map(String::from),
                     in_flight: false,
+                    by: None,
                 });
             }
             for t in plan.rebase {
@@ -4702,6 +4775,7 @@ impl Daemon {
                     waits_on: rebase_waits_on.clone(),
                     text: None,
                     in_flight: false,
+                    by: None,
                 });
             }
         }
@@ -4877,6 +4951,11 @@ impl Daemon {
             .queued
             .iter()
             .filter_map(|q| {
+                // A held ask (T-413) is memory-only, like a pane ask: the
+                // crown's words never wait in a file for a restart to send.
+                if q.by.is_some() {
+                    return None;
+                }
                 let seat = match q.seat {
                     QueuedSeat::Pane(_) => return None,
                     QueuedSeat::Wake(session) => crate::askqueue::PersistedSeat::Wake { session },
@@ -6297,7 +6376,7 @@ impl Daemon {
             // since T-294, which never offers the toggle on that seat.
             let now_anyway = starts && !self.shared_checkout(ticket);
             if queued && !now_anyway {
-                match self.park_ask(ticket, seat, text) {
+                match self.park_ask(ticket, seat, text, None) {
                     Ok(()) => parked.push((ticket, word)),
                     Err(message) => {
                         eprintln!("mesimon: column ask could not park: {message}");
@@ -6470,7 +6549,7 @@ impl Daemon {
     /// Empty shared-checkout seats retain the queued-start behavior.
     fn enqueue_ask(&mut self, ticket: ulid::Ulid, seat: QueuedSeat, text: String) -> Response {
         let word = seat.word();
-        if let Err(message) = self.park_ask(ticket, seat, text) {
+        if let Err(message) = self.park_ask(ticket, seat, text, None) {
             return Response::Err { message };
         }
         self.drain_queue(now_ms());
@@ -6498,17 +6577,29 @@ impl Daemon {
     /// worth of asks (T-378) can be parked in one pass and drained once,
     /// with one broadcast, instead of N of each. `enqueue_ask` is this plus
     /// the drain and the receipt.
+    ///
+    /// `by` is the crown ticket when the words are its agent's (T-413): the
+    /// entry is then HELD for a person's send, and it may replace only the
+    /// crown's own earlier ask — a person's queued words are never
+    /// overwritten by an agent's. A person's ask replaces either.
     fn park_ask(
         &mut self,
         ticket: ulid::Ulid,
         seat: QueuedSeat,
         text: String,
+        by: Option<ulid::Ulid>,
     ) -> Result<(), String> {
         let Some(t) = self.board.ticket(ticket) else {
             return Err("no such ticket".into());
         };
         if t.is_archived() {
             return Err("ticket archived — restore it first".into());
+        }
+        if by.is_some() && self.queued.iter().any(|q| q.ticket == ticket && q.by.is_none()) {
+            return Err(format!(
+                "{} already has a person's ask queued; it goes first",
+                t.short_key
+            ));
         }
         // An empty worktree has no resolved checkout yet. Starting it does
         // not interrupt a turn; provisioning retains its existing path.
@@ -6540,6 +6631,12 @@ impl Daemon {
         }
         let now = now_ms();
         let word = seat.word();
+        // The feed names the author and never the words: a person's ask is
+        // `queued_ask`, the crown's is `ask_agent` with actor `agent`.
+        let (actor, fresh, replaced) = match by {
+            Some(_) => ("agent", "ask_agent".to_string(), "ask_agent_replaced"),
+            None => ("local", format!("queued_{word}"), "queued_ask_replaced"),
+        };
         if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == ticket) {
             q.text = text;
             // Editing queued words does not reinterpret the accepted start
@@ -6548,10 +6645,11 @@ impl Daemon {
                 q.seat = seat;
             }
             q.cwd = cwd;
-            self.feed.board("local", "queued_ask_replaced", Some(ticket));
+            q.by = by;
+            self.feed.board(actor, replaced, Some(ticket));
         } else {
-            self.queued.push(QueuedAsk { ticket, seat, cwd, text, queued_at: now });
-            self.feed.board("local", &format!("queued_{word}"), Some(ticket));
+            self.queued.push(QueuedAsk { ticket, seat, cwd, text, queued_at: now, by });
+            self.feed.board(actor, &fresh, Some(ticket));
         }
         self.persist_queue();
         Ok(())
@@ -6594,6 +6692,10 @@ impl Daemon {
         let Some(q) = self.queued.iter().find(|q| q.ticket == ticket) else {
             return Vec::new();
         };
+        // A held ask (T-413) waits on a person, not the checkout.
+        if q.by.is_some() {
+            return Vec::new();
+        }
         let mut ids = self.checkout_holders(&q.cwd);
         if !self.queued_target_ready(q) && !ids.contains(&ticket) {
             ids.push(ticket);
@@ -6603,7 +6705,7 @@ impl Daemon {
             if ahead.ticket == ticket {
                 break;
             }
-            if ahead.cwd == q.cwd && !ids.contains(&ahead.ticket) {
+            if ahead.by.is_none() && ahead.cwd == q.cwd && !ids.contains(&ahead.ticket) {
                 ids.push(ahead.ticket);
             }
         }
@@ -6631,6 +6733,11 @@ impl Daemon {
         let mut seen: Vec<String> = Vec::new();
         let mut take: Vec<usize> = Vec::new();
         for i in self.queue_order() {
+            // A held ask (T-413) is a person's to send; it neither goes nor
+            // takes the checkout's turn from the ask behind it.
+            if self.queued[i].by.is_some() {
+                continue;
+            }
             let cwd = self.queued[i].cwd.clone();
             let quiet = !seen.contains(&cwd)
                 && self.checkout_holders(&cwd).is_empty()

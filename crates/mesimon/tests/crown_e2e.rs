@@ -6,7 +6,8 @@
 //! board to light; and the crown leaves with its ticket. The crown's one
 //! start (T-412) sits behind the board's spawn budget: a seat it started
 //! is counted while held, the cap names its holders, and a crown-started
-//! ticket can never be crowned.
+//! ticket can never be crowned. The crown's ask (T-413) is words HELD on
+//! another ticket's card: nothing reaches the pane until a person's send.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -61,7 +62,10 @@ fn touches(c: &mut TestClient) -> Vec<CrownTouch> {
 
 #[test]
 fn the_crown_lets_one_agent_edit_the_others() {
-    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+    // The stub records what reaches its stdin, so the held ask can be
+    // shown to land only on the person's send.
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     // No starter tags (the registry is built by hand), and the archive offer
     // prices a ticket the moment it is untouched rather than after an hour,
     // so the offer's road can be driven at the end.
@@ -80,7 +84,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let d = create(&mut c, "later");
     let (ka, kb, kd) = (key_of(&mut c, a), key_of(&mut c, b), key_of(&mut c, d));
     let sa = spawn(&mut c, a);
-    let _sb = spawn(&mut c, b);
+    let sb = spawn(&mut c, b);
 
     // ---- uncrowned: another ticket is refused, and the refusal teaches ----
     let refusal = read(&mut c, sa, &kb).expect_err("no crown yet");
@@ -438,12 +442,124 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     assert!(c.board().live_agent(e4).is_none());
 
-    // ---- the shim: thirteen tools, and `get_ticket` with a key ----------------
+    // ---- ask_agent: words held on the card until a person sends them ----
+    let got = h.dir.join("got.txt");
+    let landed = |probe: &str| std::fs::read_to_string(&got).unwrap_or_default().contains(probe);
+    let ask =
+        |c: &mut TestClient, from: uuid::Uuid, key: &str, text: &str, seen: Option<String>| {
+            c.send(
+                Principal::Agent { session: from },
+                Command::AgentAskTicket { key: key.into(), text: text.into(), seen },
+            )
+        };
+    // Refused: an uncrowned session, the crown's own ticket, no stamp, a
+    // ticket with no agent to receive the words, and blank words.
+    let bv = read(&mut c, sa, &kb).unwrap();
+    match ask(&mut c, sb, &ka, "mesimon-probe-61 never", None) {
+        Response::Err { message } => assert!(message.contains("crown"), "{message}"),
+        other => panic!("an uncrowned ask: {other:?}"),
+    }
+    match ask(&mut c, sa, &ka, "mesimon-probe-61 never", None) {
+        Response::Err { message } => assert!(message.contains("own ticket"), "{message}"),
+        other => panic!("an ask at the crown's own ticket: {other:?}"),
+    }
+    match ask(&mut c, sa, &kb, "mesimon-probe-61 never", None) {
+        Response::Err { message } => assert!(message.contains("seen is required"), "{message}"),
+        other => panic!("an ask without the stamp: {other:?}"),
+    }
+    let dv = read(&mut c, sa, &kd).unwrap();
+    match ask(&mut c, sa, &kd, "mesimon-probe-61 never", dv.seen) {
+        Response::Err { message } => assert!(message.contains("start_agent"), "{message}"),
+        other => panic!("an ask at an empty seat: {other:?}"),
+    }
+    match ask(&mut c, sa, &kb, "   \n ", bv.seen.clone()) {
+        Response::Err { message } => assert!(message.contains("nothing to send"), "{message}"),
+        other => panic!("a blank ask: {other:?}"),
+    }
+    // The ask: held on B's card, authored by A, delivered to nobody.
+    let seen_after = match ask(&mut c, sa, &kb, "mesimon-probe-62 commit it", bv.seen) {
+        Response::AgentAsked { key, replaced, seen } => {
+            assert_eq!(key, kb);
+            assert!(!replaced);
+            seen.expect("a fresh stamp rides back")
+        }
+        other => panic!("the ask: {other:?}"),
+    };
+    let p = pending_of(&mut c, Some(b));
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert_eq!(p[0].action, mesimon_core::command::PendingAction::Ask);
+    assert_eq!(p[0].by.as_deref(), Some(ka.as_str()), "the card names the author");
+    assert_eq!(p[0].text.as_deref(), Some("mesimon-probe-62 commit it"));
+    assert!(p[0].waits_on.is_empty(), "it waits on a person, not the checkout: {p:?}");
+    assert_eq!(touches(&mut c).iter().find(|t| t.ticket == b).unwrap().action, "asked");
+    // The drain runs on the tick and at every settle; a held ask is not its.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(!landed("mesimon-probe-62"), "held words must not reach the pane on their own");
+    // A second ask replaces the first, and says so.
+    match ask(&mut c, sa, &kb, "mesimon-probe-63 then push", Some(seen_after)) {
+        Response::AgentAsked { replaced, .. } => assert!(replaced),
+        other => panic!("the second ask: {other:?}"),
+    }
+    // Take-back hands the crown's words to the person, like any queued ask.
+    match c.request(Command::TakeQueuedAsk { ticket: b }) {
+        Response::PromptTakenBack { text } => assert_eq!(text, "mesimon-probe-63 then push"),
+        other => panic!("take-back: {other:?}"),
+    }
+    assert!(pending_of(&mut c, Some(b)).is_empty());
+    // A person's own queued ask is never overwritten by the crown's.
+    match c.request(Command::PromptSession {
+        ticket: b,
+        text: "mesimon-probe-64 the person's".into(),
+        queued: true,
+    }) {
+        Response::Queued { .. } | Response::Ok => {}
+        other => panic!("the person's queued ask: {other:?}"),
+    }
+    if pending_of(&mut c, Some(b)).iter().any(|p| p.by.is_none() && !p.in_flight) {
+        let bv = read(&mut c, sa, &kb).unwrap();
+        match ask(&mut c, sa, &kb, "mesimon-probe-65 over it", bv.seen) {
+            Response::Err { message } => assert!(message.contains("person's ask"), "{message}"),
+            other => panic!("the crown over a person's ask: {other:?}"),
+        }
+        assert!(matches!(c.request(Command::DropQueuedAsk { ticket: b }), Response::Ok));
+    }
+    wait_until(std::time::Duration::from_secs(5), "B's queue to clear", || {
+        pending_of(&mut c, Some(b)).is_empty()
+    });
+    // The person's send is the one road to the pane.
+    let bv = read(&mut c, sa, &kb).unwrap();
+    match ask(&mut c, sa, &kb, "mesimon-probe-66 now go", bv.seen) {
+        Response::AgentAsked { replaced, .. } => assert!(!replaced),
+        other => panic!("the third ask: {other:?}"),
+    }
+    assert!(!landed("mesimon-probe-66"));
+    assert!(matches!(c.request(Command::SendQueuedAsk { ticket: b }), Response::Ok));
+    wait_until(std::time::Duration::from_secs(10), "the sent words to land", || {
+        landed("mesimon-probe-66 now go")
+    });
+    assert!(pending_of(&mut c, Some(b)).is_empty());
+    // The feed names the tool and the actor, never the words; the words are
+    // in no state file either.
+    wait_until(std::time::Duration::from_secs(5), "the ask_agent feed line", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| l.contains("\"ask_agent\"") && l.contains("\"actor\":\"agent\""))
+        })
+    });
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert!(!feed.contains("mesimon-probe-6"), "the feed never carries the words");
+    let sessions = std::fs::read_to_string(h.paths.state_dir.join("sessions.json")).unwrap();
+    assert!(!sessions.contains("mesimon-probe-6"), "sessions.json never carries the words");
+    let queue = std::fs::read_to_string(h.paths.queue_file()).unwrap_or_default();
+    assert!(!queue.contains("mesimon-probe-6"), "a held ask is never persisted");
+
+    // ---- the shim: fourteen tools, and `get_ticket` with a key ----------------
     let mut shim = Shim::start(&sock, sa);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
     let listed = shim.rpc("tools/list", json!({}));
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 13);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 14);
+    let r = shim.call("ask_agent", json!({ "key": kb, "text": "x" }));
+    assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
     let r = shim.call("start_agent", json!({ "key": k4 }));
     assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
 

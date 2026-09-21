@@ -779,6 +779,20 @@ pub enum Command {
         #[serde(default)]
         seen: Option<String>,
     },
+    /// Queue words for another ticket's agent, by key (T-413): the crown's
+    /// road into the T-390 follow-up queue. The entry is HELD — never
+    /// drained by the daemon's own clock — until a person presses send
+    /// (`SendQueuedAsk`) or takes it back (`TakeQueuedAsk`), so no session
+    /// ever steers another's turn without a person between them; the
+    /// direct `PromptSession` stays in the never-tier. Crown only; refused
+    /// on a ticket with no agent seat (`start_agent` first) and on the
+    /// crown's own.
+    AgentAskTicket {
+        key: String,
+        text: String,
+        #[serde(default)]
+        seen: Option<String>,
+    },
     /// Mint a NEW ticket (`create_ticket`). The one agent command that is
     /// not about the caller's own ticket, and the one place the tier makes a
     /// second card: an agent that finds work outside its ticket's scope
@@ -1059,6 +1073,7 @@ impl Command {
             | AgentSetWorkspace { .. }
             | AgentArchiveTicket { .. }
             | AgentStartTicket { .. }
+            | AgentAskTicket { .. }
             | AgentRaiseHand { .. } => m(Mutate, false, None),
         }
     }
@@ -1412,6 +1427,16 @@ pub enum Response {
         #[serde(default)]
         budget_left: u8,
     },
+    /// AgentAskTicket's receipt (T-413): which ticket holds the words,
+    /// whether they replaced an earlier ask of the crown's, and the
+    /// target's fresh stamp. The words wait for a person's send.
+    AgentAsked {
+        key: String,
+        #[serde(default)]
+        replaced: bool,
+        #[serde(default)]
+        seen: Option<String>,
+    },
 }
 
 /// The caller's own ticket, as an agent sees it.
@@ -1617,6 +1642,13 @@ pub struct Pending {
     /// Pasted, waiting on the agent's `UserPromptSubmit` ack.
     #[serde(default)]
     pub in_flight: bool,
+    /// The short key of the crown ticket whose agent queued these words
+    /// (T-413). `Some` is a HELD ask: the daemon never delivers it on its
+    /// own clock, only a person's send does, and the card says who wrote
+    /// it so the person reads the words before they reach a pane. `None`
+    /// is a person's own ask.
+    #[serde(default)]
+    pub by: Option<String>,
 }
 
 impl Pending {

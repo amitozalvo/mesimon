@@ -3495,6 +3495,7 @@ fn golden_queued_start_open_120() {
         waits_on: vec!["T-3".into()],
         text: None,
         in_flight: false,
+        by: None,
     }];
     app.cursor_col = 0;
     app.cursor_row = Some(0);
@@ -3510,6 +3511,7 @@ fn pending_ask(ticket: u128, waits_on: &[&str]) -> mesimon_core::command::Pendin
         waits_on: waits_on.iter().map(|s| s.to_string()).collect(),
         text: Some("commit what you have".into()),
         in_flight: false,
+        by: None,
     }
 }
 
@@ -3575,6 +3577,7 @@ fn golden_train_120() {
             waits_on: vec!["T-3".into(), "T-4".into()],
             text: None,
             in_flight: false,
+            by: None,
         },
         mesimon_core::command::Pending {
             ticket: ulid_n(6),
@@ -3582,6 +3585,7 @@ fn golden_train_120() {
             waits_on: vec!["T-3".into(), "T-4".into()],
             text: None,
             in_flight: false,
+            by: None,
         },
     ];
     app.cursor_col = 2;
@@ -3626,6 +3630,7 @@ fn golden_train_blocked_120() {
         waits_on: vec!["T-3".into()],
         text: Some("uncommitted changes in the main checkout — commit or stash them first".into()),
         in_flight: false,
+        by: None,
     }];
     app.cursor_col = 2;
     app.cursor_row = Some(0);
@@ -3769,6 +3774,7 @@ fn golden_train_manual_120() {
         waits_on: vec!["T-3".into(), "T-4".into()],
         text: None,
         in_flight: false,
+        by: None,
     };
     app.pending = vec![candidate.clone()];
     app.cursor_col = 2;
@@ -3877,6 +3883,7 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
         waits_on: vec!["T-1".into()],
         text: Some("commit it".into()),
         in_flight: false,
+        by: None,
     }];
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {

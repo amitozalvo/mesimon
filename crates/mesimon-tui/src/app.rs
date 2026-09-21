@@ -3204,6 +3204,12 @@ impl App {
             [one, rest @ ..] => Some(format!("after {one} +{}", rest.len())),
         };
         use mesimon_core::command::PendingAction as A;
+        // The crown's ask (T-413) waits on a person, not the checkout, and
+        // the row says whose words they are — the person reads them on the
+        // ticket page before ^y puts them in front of the agent.
+        if let Some(by) = p.by.as_deref().filter(|_| p.is_queued_ask() && !p.in_flight) {
+            return Some(format!("queued by {by}'s agent"));
+        }
         Some(match (p.action, after) {
             (A::Ask, _) if p.in_flight => "queued ∙ sending".into(),
             (A::Ask, None) => "queued ∙ sends next".into(),
@@ -9597,6 +9603,7 @@ pub(crate) mod test_support {
                             waits_on: vec!["T-9".into()],
                             text: None,
                             in_flight: false,
+                            by: None,
                         });
                         return Ok(Response::Queued { behind: vec!["T-9".into()] });
                     }
@@ -13073,6 +13080,7 @@ mod tests {
             waits_on: vec!["T-3".into()],
             text: Some("commit it\nthen push".into()),
             in_flight: false,
+            by: None,
         }];
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         let ed = editor(&app);
@@ -13103,6 +13111,7 @@ mod tests {
             waits_on: vec!["T-3".into()],
             text: Some("commit it".into()),
             in_flight: false,
+            by: None,
         }];
         assert!(app.ctx().ticket_queued);
         assert_eq!(
@@ -13161,6 +13170,7 @@ mod tests {
                 waits_on: waits_on.into_iter().map(String::from).collect(),
                 text: None,
                 in_flight,
+                by: None,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };
@@ -13170,6 +13180,17 @@ mod tests {
         assert_eq!(row(&mut app, vec!["T-3", &own], false, Ask), "queued ∙ after T-3");
         assert_eq!(row(&mut app, vec!["T-3", "T-4", "T-5"], false, Ask), "queued ∙ after T-3 +2");
         assert_eq!(row(&mut app, vec![], true, Ask), "queued ∙ sending");
+        // The crown's held ask (T-413) names its author and waits on nobody.
+        app.pending = vec![mesimon_core::command::Pending {
+            ticket: ulid::Ulid(1),
+            action: Ask,
+            waits_on: vec!["T-3".into()],
+            text: Some("commit it".into()),
+            in_flight: false,
+            by: Some("T-411".into()),
+        }];
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued by T-411's agent"));
+        assert!(app.ticket_queued(ulid::Ulid(1)), "^y and ^u apply to it");
         assert_eq!(row(&mut app, vec![], false, Merge), "auto-merge ∙ next");
         assert_eq!(row(&mut app, vec!["T-3"], false, Merge), "auto-merge ∙ after T-3");
         assert_eq!(row(&mut app, vec![], false, Rebase), "rebase ask ∙ next");
@@ -13184,6 +13205,7 @@ mod tests {
                 waits_on: waits_on.into_iter().map(String::from).collect(),
                 text: Some("uncommitted changes in the main checkout".into()),
                 in_flight: false,
+                by: None,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };

@@ -243,6 +243,7 @@ mod tests {
                     waits_on: vec![],
                     text: None,
                     in_flight: true,
+                    by: None,
                 }]
             } else {
                 vec![]

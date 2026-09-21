@@ -12092,3 +12092,50 @@ crown's own and without the stamp, a start with its receipt / record / touch / p
 `started_by`, the seat refusing a second start, the started ticket refused the crown, the cap
 naming the number and the holders, a killed seat freeing one, the feed line, budget zero, and
 the shim listing thirteen tools with `seen` required.
+
+## The crown asks agents through the follow-up queue, and a person sends (T-413, 2026-09-22)
+
+**Shipped.** The fourteenth tool, `ask_agent { key, text, seen }` (crown only, `Full` rung):
+words for another ticket's agent, landing in that ticket's T-390 queue as a HELD ask. The
+direct `PromptSession` stays in the never-tier — one session steering another's turn with no
+person between them is the sharpest thing D10 exists to stop — so the road is the queue with a
+person's send at its end: `^y` delivers, `^u` takes the words back into the person's editor,
+and nothing reaches a pane before that. `AgentAskTicket` reuses `park_ask` with the agent
+principal and `sanitize_prompt` (subtraction alone, README promise 3 untouched), then
+`crown_touched(target, "asked")`.
+
+- **Held is a new state of a queue entry, not a new queue.** `QueuedAsk.by: Option<Ulid>` is
+  the crown ticket; `drain_queue` skips an entry with it (and does not let it take the
+  checkout's turn from the ask behind it), `ask_waits_on` is empty for it (it waits on a
+  person, not the checkout), `persist_queue` never writes it — a held ask on a `Wake` seat is
+  memory-only like a pane ask, so a restart never sends the crown's words on its own and the
+  crown simply asks again. The T-390 queue was a wait-for-idle with an auto-deliver, which the
+  ticket's "not delivered until a person presses send" could not ride unchanged; this is the
+  one addition that made it fit.
+- **The card names the author.** `Pending.by: Option<String>` (the crown's short key) rides
+  the snapshot; `App::pending_row` says `queued by T-411's agent` on the card and the ticket
+  page, and `ticket_queued` is true for it, so the page's `^y send now ∙ ^u take back` hint
+  and both keys work unchanged. `Pending.text` carries the words to the local socket only, as
+  a person's ask does.
+- **Refusals, in order:** the crown refusal (uncrowned), the crown's own ticket, the stamp
+  (`seen` required, `keyed_target`), an empty seat (`start_agent` first, T-412 — a start on
+  the crown's words would make them the ticket's first prompt, which is the person's), an
+  external adopted session, blank words, and a ticket where a PERSON's ask is already queued
+  ("it goes first") — the crown may replace only its own earlier ask, and the receipt
+  (`Response::AgentAsked { key, replaced, seen }`) says when it did. A person's queued ask
+  replaces a held one the other way, as their words should.
+- **The feed** records `ask_agent` / `ask_agent_replaced` with actor `agent` and the target
+  ticket, never the text; the delivery lines are the queue's own. A person prompting the agent
+  directly while a held ask waits drops it (`ack_owed`), as it drops their own — the feed says
+  `queued_ask_dropped`.
+- **Reserved, not built:** a board setting `crown_sends: bool` (default off) that would let the
+  crown deliver without the send, for the mesimatron. No field exists yet; the name is taken.
+
+**Tests.** `mcp`: `exactly_fourteen_tools`, `the_tier_is_exactly_fifteen_commands`, the tier
+table and the parse test; `the_owed_row_names_what_it_waits_on` gained the held row;
+`crown_e2e` extended: an uncrowned ask refused, the crown's own ticket, no stamp, an empty
+seat, blank words, an ask held with author / text / empty `waits_on` / `asked` touch and not
+landing on the tick, a second ask replacing with `replaced: true`, take-back returning the
+words, the crown refused over a person's queued ask, `^y` landing the words on the stub's
+stdin, the feed line with actor `agent` and no words in the feed, `sessions.json` or
+`queue.json`, and the shim listing fourteen tools with `seen` required.

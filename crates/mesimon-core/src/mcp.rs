@@ -422,6 +422,28 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        // The crown's ask (T-413): words for another ticket's agent, held on
+        // its card until a person sends them. The direct prompt stays in the
+        // never-tier; this is its road through a person.
+        json!({
+            "name": "ask_agent",
+            "description": "Queues words for another mesimon ticket's agent (crown only). \
+                            They wait on that ticket's card, marked as this agent's, until \
+                            a person sends them (^y) or takes them back (^u); nothing \
+                            reaches the agent before that. One ask per ticket: a second \
+                            replaces the first. Refused on a ticket with no agent, and on \
+                            this session's own ticket.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
+                    "text": { "type": "string", "description": "The words, as a person would type them." },
+                    "seen": { "type": "string", "description": "get_ticket's seen stamp for this ticket." },
+                },
+                "required": ["key", "text", "seen"],
+                "additionalProperties": false,
+            },
+        }),
     ]
 }
 
@@ -491,6 +513,11 @@ pub enum ToolCall {
     },
     StartAgent {
         key: String,
+        seen: String,
+    },
+    AskAgent {
+        key: String,
+        text: String,
         seen: String,
     },
     CreateTicket {
@@ -581,6 +608,15 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
         "start_agent" => {
             Ok(ToolCall::StartAgent { key: word(args, "key")?, seen: word(args, "seen")? })
         }
+        "ask_agent" => Ok(ToolCall::AskAgent {
+            key: word(args, "key")?,
+            text: args
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or("ask_agent requires a text string")?
+                .to_string(),
+            seen: word(args, "seen")?,
+        }),
         "read_attachment" => Ok(ToolCall::ReadAttachment {
             attachment: args
                 .get("attachment")
@@ -717,7 +753,7 @@ fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Thirteen tools, fourteen commands (`get_ticket` with a
+        // The tier. Fourteen tools, fifteen commands (`get_ticket` with a
         // key is its own command on the wire).
         Command::AgentGetTicket
         | Command::AgentListBoard
@@ -736,6 +772,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // stays below, in the never-tier — no agent names a kind, a prompt
         // or a session id.
         | Command::AgentStartTicket { .. }
+        // The crown's ask (T-413): words HELD on another ticket's card until
+        // a person sends them. `PromptSession` itself stays below: the
+        // person's send is the road, and there is no other.
+        | Command::AgentAskTicket { .. }
         // T1 ANNOTATE: notes on the caller's OWN ticket. Unlike a tag, a
         // note is what D10 enumerated a tier for, and it is the one channel
         // through which the ticket's description reaches the agent without
@@ -955,7 +995,8 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
         | Command::AgentRenameTicket { .. }
         | Command::AgentSetWorkspace { .. }
         | Command::AgentArchiveTicket { .. }
-        | Command::AgentStartTicket { .. } => AgentTools::Full,
+        | Command::AgentStartTicket { .. }
+        | Command::AgentAskTicket { .. } => AgentTools::Full,
         _ => return None,
     })
 }
@@ -966,7 +1007,7 @@ pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
         "get_ticket" | "list_board" | "read_note" | "read_attachment" => AgentTools::Read,
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket" | "create_ticket" | "rename_ticket" | "set_workspace" | "archive_ticket"
-        | "start_agent" => AgentTools::Full,
+        | "start_agent" | "ask_agent" => AgentTools::Full,
         _ => return None,
     })
 }
@@ -1086,6 +1127,10 @@ mod tests {
             ),
             (Command::AgentStartTicket { key: "T-1".into(), seen: None }, "start_agent"),
             (
+                Command::AgentAskTicket { key: "T-1".into(), text: "x".into(), seen: None },
+                "ask_agent",
+            ),
+            (
                 Command::AgentCreateTicket {
                     title: "x".into(),
                     column: None,
@@ -1146,9 +1191,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_thirteen_tools() {
+    fn exactly_fourteen_tools() {
         let t = tools();
-        assert_eq!(t.len(), 13);
+        assert_eq!(t.len(), 14);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -1165,7 +1210,8 @@ mod tests {
                 "rename_ticket",
                 "set_workspace",
                 "archive_ticket",
-                "start_agent"
+                "start_agent",
+                "ask_agent"
             ]
         );
     }
@@ -1231,6 +1277,13 @@ mod tests {
         );
         assert!(parse_tool_call("start_agent", &json!({ "key": "T-4" })).is_err());
         assert!(parse_tool_call("start_agent", &json!({ "seen": "abc" })).is_err());
+        assert_eq!(
+            parse_tool_call("ask_agent", &json!({ "key": " T-4 ", "text": "go", "seen": "abc" })),
+            Ok(ToolCall::AskAgent { key: "T-4".into(), text: "go".into(), seen: "abc".into() })
+        );
+        assert!(parse_tool_call("ask_agent", &json!({ "key": "T-4", "text": "go" })).is_err());
+        assert!(parse_tool_call("ask_agent", &json!({ "key": "T-4", "seen": "abc" })).is_err());
+        assert!(parse_tool_call("ask_agent", &json!({ "text": "go", "seen": "abc" })).is_err());
         assert_eq!(
             parse_tool_call(
                 "archive_ticket",
@@ -1511,10 +1564,10 @@ mod tests {
 
     /// Every tool has a command, and every allowed command has a tool. A
     /// command an agent may send that no tool can reach would be a hole nobody
-    /// is looking at. Fourteen commands for thirteen tools: `get_ticket` with
+    /// is looking at. Fifteen commands for fourteen tools: `get_ticket` with
     /// a key rides its own command (T-411).
     #[test]
-    fn the_tier_is_exactly_fourteen_commands() {
+    fn the_tier_is_exactly_fifteen_commands() {
         let allowed = [
             Command::AgentGetTicket,
             Command::AgentReadTicket { key: "T-1".into() },
@@ -1546,6 +1599,7 @@ mod tests {
             },
             Command::AgentArchiveTicket { key: "T-1".into(), restore: false, seen: None },
             Command::AgentStartTicket { key: "T-1".into(), seen: None },
+            Command::AgentAskTicket { key: "T-1".into(), text: "x".into(), seen: None },
         ];
         for c in &allowed {
             assert!(agent_allows(c), "{c:?} should be in the tier");
