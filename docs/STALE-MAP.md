@@ -12139,3 +12139,35 @@ landing on the tick, a second ask replacing with `replaced: true`, take-back ret
 words, the crown refused over a person's queued ask, `^y` landing the words on the stub's
 stdin, the feed line with actor `agent` and no words in the feed, `sessions.json` or
 `queue.json`, and the shim listing fourteen tools with `seen` required.
+
+## A filed ticket is worked by its own session (T-415, 2026-09-22, user on T-411: "you suggest building the ticket task yourself instead of letting the ticket run its own session? because it's not the mesimon intended behaviour")
+
+**Shipped.** After filing three follow-ups with `create_ticket`, T-411's agent offered to build
+T-412 inside T-411's session. Nothing mesimon hands an agent said otherwise: `create_ticket`
+said a ticket is "a work unit to pick up" and that "the user chooses tickets", the brief said
+only to read the ticket first. Work for ticket B done in ticket A's session is off the board
+(no session on B, no automove, no card), lands in A's worktree or the shared checkout and
+mixes two tickets' commits — the exact scope creep `create_ticket` exists to route around. Two
+channels now say WHO works a filed ticket, because a session with the tools off has no tool
+text to read and a session with the brief off has no brief:
+
+- **`create_ticket`'s first clause** is now "Creates a ticket for a session of its own, not
+  this one." Paid for under `MAX_TOOL_BYTES` by "returns key" (the result carries it) and one
+  word off two schema descriptions; the five guidance concepts survive and
+  `ticket_creation_guidance_is_bounded_and_descriptive` asserts the new one. `list_board`'s
+  text was not touched — each tool has its own cap, so trimming it buys `create_ticket`
+  nothing. "never" is a banned atom in tool text, so the tool says "not this one" where the
+  brief says "never this one".
+- **The brief (`brief::TEXT`) and its CLAUDE.md twin (`claudemd::SNIPPET`)** gained the same
+  sentence: "Work stays on this ticket; a ticket filed from here is worked by a session of its
+  own, never this one." Seven lines now, still under `WRAP` 56; golden `brief_120x30` grew two
+  rows; `brief_e2e` carries the new bytes on the argv; `doctor` prints them. README's "five-line
+  sentence" became "seven-line paragraph" (promise 3's paragraph, not promise 1).
+
+**Consent: no re-offer.** `Board.system_prompt` is a bool — consent to *mesimon's brief*, whose
+current words are in the offer dialog, in Settings and in `doctor`, not to a byte string. The
+new sentence narrows what an agent does and enables nothing, so an already-on board sends the
+seven lines on its next spawn without asking again. A re-offer would need a consented-text
+stamp in the board file and a dialog that says what changed; the day a line is added that
+*widens* what the brief asks for, build that first. `has_marker` means a CLAUDE.md that
+already carries the old snippet is left as it is.

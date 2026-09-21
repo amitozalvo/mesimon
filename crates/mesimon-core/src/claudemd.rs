@@ -44,7 +44,9 @@ When `MESIMON_TICKET` is set, this session is working a
 mesimon ticket. FIRST, before reading code or planning,
 call `get_ticket` and read the ticket's description and
 notes: they are the brief, and the prompt is often only
-the ticket's title. Do not start work without them.
+the ticket's title. Do not start work without them. Work
+stays on this ticket; a ticket filed from here is worked
+by a session of its own, never this one.
 ";
 
 /// The column the snippet is authored to. The dialog's inner width is

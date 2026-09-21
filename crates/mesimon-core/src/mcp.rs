@@ -262,12 +262,16 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "create_ticket",
-            "description": "Creates a sessionless ticket; returns key. One ticket is \
-                            a work unit to pick up, not an idea/list row; findings on one \
-                            surface share a ticket with a list. list_board checks \
-                            scope/duplicates first. Research belongs in this ticket's \
-                            notes; the user chooses tickets. Agents cannot delete \
-                            tickets; cleanup costs the user.",
+            // At the byte cap: the first clause says WHO works a filed ticket
+            // (T-415 — an agent offered to build a sibling ticket in its own
+            // session), paid for by "returns key" (the result carries it) and
+            // two schema descriptions losing a word.
+            "description": "Creates a ticket for a session of its own, not this one. \
+                            One ticket is a work unit to pick up, not an idea/list \
+                            row; findings on one surface share a ticket with a list. \
+                            list_board checks scope/duplicates first. Research belongs \
+                            in this ticket's notes; the user chooses tickets. Agents \
+                            cannot delete tickets; cleanup costs the user.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -285,11 +289,11 @@ pub fn tools() -> Vec<Value> {
                     "tags": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "get_ticket allowed_tags; one per group.",
+                        "description": "allowed_tags; one per group.",
                     },
                     "idempotency_key": {
                         "type": "string",
-                        "description": "Same key replays result.",
+                        "description": "Same key replays.",
                     },
                 },
                 "required": ["title"],
@@ -1432,6 +1436,7 @@ mod tests {
             (
                 "create_ticket",
                 vec![
+                    "for a session of its own, not this one",
                     "work unit to pick up, not an idea/list row",
                     "findings on one surface share a ticket with a list",
                     "list_board checks scope/duplicates first",

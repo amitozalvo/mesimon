@@ -61,7 +61,7 @@ reported as unavailable there.
 
 
    And there is one line you can choose to add. The *agent brief* is off until you turn it on:
-   a five-line sentence in the system prompt of the agent sessions mesimon starts in this repo
+   a seven-line paragraph in the system prompt of the agent sessions mesimon starts in this repo
    — only those, never a session you started yourself — telling the agent to read its ticket
    before it starts work. The dialog that offers it shows the exact text first, `mesimon doctor`
    prints it, and *Settings › Agent brief* turns it off again. Together with the tool registry

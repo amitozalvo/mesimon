@@ -346,7 +346,7 @@ pub enum Mode {
     /// The agent-brief dialog, the one modal confirmation in mesimon. Every
     /// other one is a chord tail (`d`, `a`, `z`) or the `m` key's arm, which
     /// say their question in the status line and draw nothing; none of them
-    /// can show five lines of text, and showing the exact words before they
+    /// can show a paragraph of text, and showing the exact words before they
     /// go into every agent's system prompt is the whole point of this one.
     /// Reached from the offer (chip or menu row) OR from the Settings row
     /// when the brief is off — a switch that adds to a system prompt is never

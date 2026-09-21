@@ -6,7 +6,6 @@
 
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
 
-
                            ╭─ AGENT BRIEF ──────────────────────────────────────────────────╮
                            │ in the system prompt of agent sessions mesimon starts here     │
                            │ only those ∙ nothing written to disk ∙ Settings turns it off   │
@@ -15,10 +14,11 @@
                            │   before reading code or planning, call the get_ticket         │
                            │   tool and read the ticket's description and notes: they       │
                            │   are the brief, and the prompt is often only the ticket's     │
-                           │   title. Do not start work without them.                       │
+                           │   title. Do not start work without them. Work stays on         │
+                           │   this ticket; a ticket filed from here is worked by a         │
+                           │   session of its own, never this one.                          │
                            │                                                                │
                            ╰───── enter turn on ∙ c copy ∙ i never ask again ∙ esc not now ─╯
-
 
 
 

@@ -190,7 +190,7 @@ pub enum Scope {
     /// prompt by T-224): the text every claude mesimon starts would carry,
     /// shown verbatim, over the board. The one modal confirmation in mesimon
     /// — every other one is a chord tail or the `m` key's arm, and neither
-    /// can show five lines of text. Enter and Esc are the list dialogs' own
+    /// can show a paragraph of text. Enter and Esc are the list dialogs' own
     /// `Act`/`Back`; `c` and `i` are its two extra answers.
     Brief,
     /// The release notes, reached from a menu row: `CHANGELOG.md` compiled

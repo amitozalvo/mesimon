@@ -32,7 +32,9 @@ This session was started by mesimon on a ticket. FIRST,
 before reading code or planning, call the get_ticket
 tool and read the ticket's description and notes: they
 are the brief, and the prompt is often only the ticket's
-title. Do not start work without them.";
+title. Do not start work without them. Work stays on
+this ticket; a ticket filed from here is worked by a
+session of its own, never this one.";
 
 #[cfg(test)]
 mod tests {

@@ -4,7 +4,7 @@
 //! mesimon's one modal confirmation, and the reason it exists: every other
 //! confirm in the board is a chord tail (`d`, `a`, `z`) or the `m` key's arm,
 //! which put their question in the status line and draw nothing. None of them
-//! can show five lines of text — and README promise 3 says mesimon adds no
+//! can show a paragraph of text — and README promise 3 says mesimon adds no
 //! token to a conversation, so the one consented exception goes on the screen,
 //! verbatim, before it goes on any argv.
 //!
