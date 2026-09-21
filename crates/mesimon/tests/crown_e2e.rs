@@ -59,8 +59,14 @@ fn touches(c: &mut TestClient) -> Vec<CrownTouch> {
 #[test]
 fn the_crown_lets_one_agent_edit_the_others() {
     const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
-    let Some(h) = Harness::boot_with_env("crown", Some(STUB), &[("MESIMON_NO_TAG_SEED", "1")])
-    else {
+    // No starter tags (the registry is built by hand), and the archive offer
+    // prices a ticket the moment it is untouched rather than after an hour,
+    // so the offer's road can be driven at the end.
+    let Some(h) = Harness::boot_with_env(
+        "crown",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_ARCHIVE_SUGGEST_MS", "0")],
+    ) else {
         return;
     };
     let sock = h.paths.orch_sock();
@@ -352,6 +358,26 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::Ok
     ));
     assert!(c.board().crown.is_none(), "the crown left with its ticket");
+    let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
+    assert!(!file.contains("crown ="), "{file}");
+
+    // ---- the header's archive offer drops it too, like `a a` ------------------
+    // A sessionless ticket in the template's DONE column (reclaim on) is what
+    // the offer prices; taking the offer archives it and the crown goes with
+    // it — the one road that had skipped the drop.
+    let e = create(&mut c, "shipped");
+    assert!(matches!(c.request(Command::CrownTicket { id: e }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: e, column: "DONE".into(), before: None }),
+        Response::Ok
+    ));
+    assert!(c.board().is_crowned(e));
+    match c.request(Command::ArchiveAll) {
+        Response::Archived { archived, .. } => assert!(archived >= 1, "the offer took E"),
+        other => panic!("archive all: {other:?}"),
+    }
+    assert!(c.board().ticket(e).unwrap().is_archived());
+    assert!(c.board().crown.is_none(), "the offer's archive drops the crown");
     let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
     assert!(!file.contains("crown ="), "{file}");
 }

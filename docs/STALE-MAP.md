@@ -11703,8 +11703,9 @@ proposed and the user chose `all`). The proposal and its decisions are a note on
   any out. `Board::crown_holder()` is the one reader — a crown on a deleted or archived ticket
   reads as none — and `is_crowned(id)` the one predicate. `CrownTicket { id }` / `Uncrown` are
   local commands (`meta`: Mutate, logged, so the feed answers "who crowned T-12"); a second
-  crown displaces the first; `delete_ticket` and `archive_ticket` drop it with the ticket
-  (`drop_crown_if`, feed `uncrown` as `automation`). `^o` toggles it on the board (overlay-only)
+  crown displaces the first; `delete_ticket`, `archive_ticket` and the header's `archive_all` drop
+  it with the ticket (`drop_crown_if`, feed `uncrown` as `automation`); a snooze keeps it — that
+  absence is temporary, and `crown_holder` reads none while the ticket is off the board. `^o` toggles it on the board (overlay-only)
   and the ticket page (hinted, prio 96, after `n`), `Verb::Crown`, `Ctx::crowned`; live only
   with `mcp_tools` on and never on an archived card; a viewer on a joined board never sees it
   (`Binding::live`'s content-only list). `^o` because no shell habit lands on it (`^b` is

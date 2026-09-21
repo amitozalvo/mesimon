@@ -4830,6 +4830,10 @@ impl Daemon {
                 let _ = store::save_ticket(&self.paths, &t);
                 archived += 1;
             }
+            // The offer archives like `a a` does: a crowned ticket leaving
+            // the board takes the crown with it (T-411). A snooze is the one
+            // archive that keeps it — that absence is temporary.
+            self.drop_crown_if(id);
         }
         self.archive_cache = self.archive_figures();
         (archived, skipped)
