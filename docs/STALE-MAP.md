@@ -11932,3 +11932,24 @@ untouched.
   spoke scan reads through `peek_fresh`, which never waits: it is the once-a-second bound on how
   late a reply can show, and its stat renews the entry for the frames after it. Tests that
   rewrite a transcript and redraw at once call `expire()`.
+
+## The checkout list reads a bounded number of bytes for its badges (T-254, 2026-09-22)
+
+- **`diff::UNTRACKED_BADGE_BUDGET` (16 MiB) caps what one checkout list reads from disk for its
+  untracked-file `+N` badges, in total.** `MAX_UNTRACKED_ROWS` capped the rows, and two thousand
+  rows under `MAX_PATCH_BYTES` each was four gigabytes of `std::fs::read` on a connection thread
+  for one `v` press on a checkout with an unignored build tree (the T-234 simplify pass filed
+  it). `BadgeBudget` is threaded through `checkout_entries` and is ONE budget per
+  `checkout_diff_list` — a workspace's root and nested repos share it — charged by a file's
+  LENGTH before a byte is read, so the bound is on what the list will read, not what it did.
+  Past it a row keeps `adds: None`, the count-less row the TUI already draws for a binary or an
+  oversized file, and `DiffFile` still opens it through `--no-index`.
+- **`untracked_adds` streams.** 64 KiB chunks, newlines counted as they pass, the NUL sniff on
+  the first `BINARY_SNIFF_BYTES` only — so a binary costs its first chunk rather than its whole
+  length and no file is held in memory at once. Same answers as before (`stray.txt` is 3, the
+  last line counts without its newline; a binary is `None`).
+- **The file road reads no badges at all**: `checkout_diff_file_one` only needs the list's
+  PATHS to refuse a name the list never had, so it passes `BadgeBudget::none()` and opening one
+  file no longer reads every other untracked file on the way.
+- Not a `Snapshot` field, not a `Ctx` field, no wire change: the budget is invisible except as
+  a missing badge on a pathological checkout.

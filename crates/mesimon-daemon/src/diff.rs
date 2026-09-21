@@ -26,6 +26,41 @@ pub const MAX_UNTRACKED_ROWS: usize = 2000;
 /// git's own binary heuristic: a NUL inside the first 8000 bytes.
 const BINARY_SNIFF_BYTES: usize = 8000;
 
+/// The bytes one checkout list may read from disk for its untracked-file
+/// badges, in total (T-254). `MAX_UNTRACKED_ROWS` caps the ROWS, and two
+/// thousand rows under `MAX_PATCH_BYTES` each is four gigabytes of reads on
+/// a connection thread for one `v` press; past this the row keeps
+/// `adds: None`, the count-less row the TUI already draws, and opening the
+/// file still works. A workspace shares one budget across its repos.
+pub const UNTRACKED_BADGE_BUDGET: u64 = 16 * 1024 * 1024;
+
+/// What is left of `UNTRACKED_BADGE_BUDGET` for the list being built.
+struct BadgeBudget {
+    remaining: u64,
+}
+
+impl BadgeBudget {
+    fn new() -> Self {
+        Self { remaining: UNTRACKED_BADGE_BUDGET }
+    }
+
+    /// No badges at all: the file road only needs the list's PATHS, so it
+    /// reads no other file's bytes on the way to the one it opens.
+    fn none() -> Self {
+        Self { remaining: 0 }
+    }
+
+    /// Charge a file's length up front, before a byte of it is read: the
+    /// budget bounds what the list will read in total, not what it did.
+    fn take(&mut self, len: u64) -> bool {
+        if len > self.remaining {
+            return false;
+        }
+        self.remaining -= len;
+        true
+    }
+}
+
 /// Read-path git, bytes out. `--no-optional-locks` always.
 fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     git_bytes_ok(repo, args, |code| code == 0)
@@ -213,18 +248,40 @@ fn worktree_mode(path: &Path) -> Option<String> {
 
 /// The adds badge for an untracked file, without forking git — its whole
 /// content is the diff. `None` where git would print `Binary files … differ`,
-/// or past the patch ceiling, which are the two rows that get no count anyway.
-fn untracked_adds(path: &Path, max_bytes: u64) -> Option<u32> {
+/// past the patch ceiling, or once the list's byte budget is spent, which are
+/// the rows that get no count anyway. The read streams and stops at the first
+/// NUL inside the sniff window, so a binary costs its first chunk, never its
+/// whole length, and no file is ever held in memory at once.
+fn untracked_adds(path: &Path, max_bytes: u64, budget: &mut BadgeBudget) -> Option<u32> {
+    use std::io::Read;
     let md = std::fs::metadata(path).ok()?;
-    if md.len() > max_bytes {
+    if md.len() > max_bytes || !budget.take(md.len()) {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.iter().take(BINARY_SNIFF_BYTES).any(|b| *b == 0) {
-        return None;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut seen = 0usize;
+    let mut n = 0u32;
+    let mut last = b'\n';
+    loop {
+        let got = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(got) => got,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
+        let chunk = &buf[..got];
+        if seen < BINARY_SNIFF_BYTES {
+            let window = &chunk[..got.min(BINARY_SNIFF_BYTES - seen)];
+            if window.contains(&0) {
+                return None;
+            }
+        }
+        seen = seen.saturating_add(got);
+        n += chunk.iter().filter(|b| **b == b'\n').count() as u32;
+        last = chunk[got - 1];
     }
-    let mut n = bytes.iter().filter(|b| **b == b'\n').count() as u32;
-    if bytes.last().is_some_and(|b| *b != b'\n') {
+    if last != b'\n' {
         n += 1;
     }
     Some(n)
@@ -236,7 +293,10 @@ fn untracked_adds(path: &Path, max_bytes: u64) -> Option<u32> {
 /// One `status` call carries three answers (branch, HEAD oid, the flags), so
 /// the branch name costs no extra fork and a detached HEAD reads as the short
 /// oid, the same convention `gitstatus` and the header already use.
-fn checkout_entries(repo: &Path) -> Result<(String, String, Vec<mesimon_core::diff::FileEntry>)> {
+fn checkout_entries(
+    repo: &Path,
+    budget: &mut BadgeBudget,
+) -> Result<(String, String, Vec<mesimon_core::diff::FileEntry>)> {
     // `-uall`, not `-unormal`: `-unormal` collapses an untracked directory to
     // one `? dir/` row, and `git diff --no-index` cannot open a directory, so
     // that row could never be read. Ignored files stay out either way.
@@ -292,7 +352,7 @@ fn checkout_entries(repo: &Path) -> Result<(String, String, Vec<mesimon_core::di
             f.status = "A".to_string();
             f.old_mode = "000000".to_string();
             f.new_mode = mode;
-            f.adds = untracked_adds(&repo.join(&f.path), MAX_PATCH_BYTES);
+            f.adds = untracked_adds(&repo.join(&f.path), MAX_PATCH_BYTES, budget);
             f.dels = f.adds.map(|_| 0);
         }
         true
@@ -306,8 +366,9 @@ fn checkout_entries(repo: &Path) -> Result<(String, String, Vec<mesimon_core::di
 /// is the header's summed count spelled out, row by row.
 pub fn checkout_diff_list(root: &Path) -> Result<Response> {
     let repos = crate::gitstatus::census(root);
+    let mut budget = BadgeBudget::new();
     if repos.is_empty() {
-        let (branch, base_oid, files) = checkout_entries(root)?;
+        let (branch, base_oid, files) = checkout_entries(root, &mut budget)?;
         return Ok(Response::DiffList {
             branch,
             base_oid,
@@ -321,7 +382,7 @@ pub fn checkout_diff_list(root: &Path) -> Result<Response> {
     // and the list is its children's. A meta repo contributes its rows minus
     // the one `? child/` sighting git leaves for a nested repository it will
     // not descend into — that child's rows follow, under its name.
-    let (root_branch, mut files, base_oid) = match checkout_entries(root) {
+    let (root_branch, mut files, base_oid) = match checkout_entries(root, &mut budget) {
         Ok((branch, base, mut rows)) => {
             rows.retain(|f| !repos.iter().any(|r| f.path.trim_end_matches('/') == r));
             (Some(branch), rows, base)
@@ -330,7 +391,9 @@ pub fn checkout_diff_list(root: &Path) -> Result<Response> {
     };
     let mut child_branches = Vec::new();
     for name in &repos {
-        let Ok((branch, _, rows)) = checkout_entries(&root.join(name)) else { continue };
+        let Ok((branch, _, rows)) = checkout_entries(&root.join(name), &mut budget) else {
+            continue;
+        };
         child_branches.push(branch);
         files.extend(rows.into_iter().map(|mut f| {
             f.path = format!("{name}/{}", f.path);
@@ -378,7 +441,7 @@ pub fn checkout_diff_file(root: &Path, path: &str, context: u32) -> Result<FileD
 /// not name is refused — which is also what keeps `--no-index`, whose two
 /// operands are plain paths, from being pointed anywhere but at this checkout.
 fn checkout_diff_file_one(repo: &Path, path: &str, context: u32) -> Result<FileDiff> {
-    let (_, base, files) = checkout_entries(repo)?;
+    let (_, base, files) = checkout_entries(repo, &mut BadgeBudget::none())?;
     let Some(entry) = files.iter().find(|f| f.path == path) else {
         bail!("no such file in this diff");
     };
@@ -677,6 +740,61 @@ mod tests {
         assert_eq!(stray.dels, Some(0));
         assert_eq!(by("blob.bin").adds, None, "a binary stray gets no count");
         assert_eq!(by("link.txt").new_mode, "120000");
+    }
+
+    #[test]
+    fn untracked_adds_streams_and_stops_at_a_nul() {
+        let dir = std::env::temp_dir().join(format!("msmn-diff-adds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Longer than one read chunk, so a newline count that only looked at
+        // the first chunk would come up short.
+        let text = "a line\n".repeat(20_000);
+        std::fs::write(dir.join("long.txt"), &text).unwrap();
+        std::fs::write(dir.join("tail.txt"), "x\ny").unwrap();
+        std::fs::write(dir.join("empty.txt"), "").unwrap();
+        let mut bin = vec![b'z'; 100];
+        bin.push(0);
+        bin.extend_from_slice(b"\n\n\n");
+        std::fs::write(dir.join("bin"), &bin).unwrap();
+
+        let mut budget = BadgeBudget::new();
+        assert_eq!(
+            untracked_adds(&dir.join("long.txt"), MAX_PATCH_BYTES, &mut budget),
+            Some(20_000)
+        );
+        assert_eq!(untracked_adds(&dir.join("tail.txt"), MAX_PATCH_BYTES, &mut budget), Some(2));
+        assert_eq!(untracked_adds(&dir.join("empty.txt"), MAX_PATCH_BYTES, &mut budget), Some(0));
+        assert_eq!(untracked_adds(&dir.join("bin"), MAX_PATCH_BYTES, &mut budget), None);
+        assert_eq!(
+            budget.remaining,
+            UNTRACKED_BADGE_BUDGET - text.len() as u64 - 3 - bin.len() as u64,
+            "every file read is charged by its length, the binary included"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn untracked_adds_stops_counting_once_the_budget_is_spent() {
+        let dir = std::env::temp_dir().join(format!("msmn-diff-budget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "three\n").unwrap();
+        let mut budget = BadgeBudget { remaining: 8 };
+        assert_eq!(untracked_adds(&dir.join("a.txt"), MAX_PATCH_BYTES, &mut budget), Some(2));
+        assert_eq!(
+            untracked_adds(&dir.join("b.txt"), MAX_PATCH_BYTES, &mut budget),
+            None,
+            "past the budget the row keeps no count rather than reading on"
+        );
+        assert_eq!(budget.remaining, 0, "a refused file is not charged");
+        assert_eq!(
+            untracked_adds(&dir.join("b.txt"), MAX_PATCH_BYTES, &mut BadgeBudget::none()),
+            None,
+            "the file road's budget reads nothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
