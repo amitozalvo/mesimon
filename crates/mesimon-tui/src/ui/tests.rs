@@ -2987,7 +2987,7 @@ fn test_tag_count_keeps_the_title_editor_aligned() {
     {
         let theme = crate::theme::Theme::new(Flavor::Graphite, profile);
         for width in [12, 29, 48] {
-            let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0 };
+            let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0, names_key: true };
             let mut previous = None;
             for n in 0..=2 {
                 let worn: Vec<_> =
@@ -3084,12 +3084,52 @@ fn test_a_crowded_peek_row_names_them_all() {
     let lines = render(&app, 120, 30);
     let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
     let names = &lines[title + 1];
-    // Four tags on a 28-cell card: the long one gives up cells, the short
-    // ones keep theirs.
-    for tag in ["BUG", "ST", "auth", "p1"] {
+    // Four tags on a 28-cell card, with the key holding the row's last
+    // cells (T-410): the long one gives up cells, the short ones keep
+    // theirs, and the one that will not go drops from the tail — the mark
+    // under the card still carries the count. The key is never cut.
+    for tag in ["BUG", "ST", "auth"] {
         assert!(names.contains(tag), "{tag} went unnamed in {names:?}");
     }
+    assert!(names.trim_end().ends_with("T-3"), "the key closes the row: {names:?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The peek names the ticket too (T-410). A session says "T-3" and a resting
+/// card never did, so the id was one focus away on every card. With `p` on,
+/// the cursor card's meta row closes with its short key, right-aligned under
+/// the age slot — tags or no tags — and under `P` every card's key lands in
+/// that one column, the way the ages do, so a reader holding an id scans a
+/// column rather than every row.
+#[test]
+fn test_the_peek_names_the_ticket() {
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    // Off: the key is nowhere on the board.
+    let lines = render(&app, 120, 30);
+    assert!(!lines.iter().any(|l| l.contains("T-3")), "no key before `p`");
+    app.peek = true;
+    let lines = render(&app, 120, 30);
+    let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
+    let row = &lines[title + 1];
+    assert!(row.contains("BUG") && row.trim_end().ends_with("T-3"), "key after the chips: {row:?}");
+    // Cells, not bytes: the glyph before the title is one cell of three bytes.
+    let cells_to = |l: &str, end: usize| UnicodeWidthStr::width(&l[..end]);
+    let at = lines[title].find("Fix OSC-11").expect("title");
+    let age_end = cells_to(&lines[title], at + lines[title][at..].find(">1y").expect("age") + 3);
+    let key_end = cells_to(row, row.rfind("T-3").expect("key") + 3);
+    assert_eq!(key_end, age_end, "the key sits under the age slot");
+    // `P`: a card with no tags still names itself, and the keys line up.
+    app.peek_all = true;
+    let lines = render(&app, 120, 30);
+    let t2 = lines.iter().position(|l| l.contains("Keymap validator")).expect("untagged card");
+    let row2 = &lines[t2 + 1];
+    assert!(row2.contains("T-2"), "an untagged card still names itself: {row2:?}");
+    let t1 = lines.iter().position(|l| l.contains("Decay treatments")).expect("card 1");
+    let k1 = lines[t1 + 1].find("T-1").expect("key 1");
+    let k2 = row2.find("T-2").expect("key 2");
+    assert_eq!(k1, k2, "keys in one column under P");
 }
 
 #[test]

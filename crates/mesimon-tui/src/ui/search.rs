@@ -297,7 +297,13 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         &theme.rest,
         Edges { title: dialog::title(&theme.rest, ticket.short_key.clone()), tail: Vec::new() },
     );
-    let ctx = CardCtx { theme, width: inner.width, now_ms: now_ms(), spin: app.spin_frame() };
+    let ctx = CardCtx {
+        theme,
+        width: inner.width,
+        now_ms: now_ms(),
+        spin: app.spin_frame(),
+        names_key: false,
+    };
     let sessions: Vec<&SessionRecord> =
         app.board.sessions.iter().filter(|r| r.ticket == ticket.id && r.state.is_live()).collect();
     let painted_tags = crate::tags::painted(&app.board, &ticket.tags);

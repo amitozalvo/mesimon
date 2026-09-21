@@ -72,7 +72,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     };
     let count = rows.len() + ghost.map(|_| 1).unwrap_or(0);
 
-    let ctx = CardCtx { theme, width: area.width, now_ms: now_ms(), spin: app.spin_frame() };
+    let ctx = CardCtx {
+        theme,
+        width: area.width,
+        now_ms: now_ms(),
+        spin: app.spin_frame(),
+        names_key: true,
+    };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
     let marquee_ms = |t: &Ticket| -> u64 {

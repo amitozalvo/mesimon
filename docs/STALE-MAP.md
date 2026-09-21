@@ -11642,3 +11642,36 @@ Validation: `cargo ut`, clippy clean, `state_lab_e2e` (a new step: an unarmed mo
 after a shell park lands on `EndTurn`), a new replay scenario `ambient-artifact-watch`
 (capture-derived, expects `end_turn` and the move to REVIEW), and `dormant-monitor` rewritten
 to arm its watch through the Monitor tool first.
+
+## The peek names the ticket (T-410, 2026-09-21)
+
+A session says "T-410" and a resting card never did: the short key lived on the ticket page,
+the search preview's frame and the dialog headers, and nowhere on the board, so a reader holding
+an id from a pane had to enter every candidate card to match it (author: "sessions reference
+ticket ids but it's not visible enough"). Shipped:
+
+- **An open card's meta row closes with its short key.** The row that named the tags is now the
+  ticket's meta row (`card.rs`: `meta_row = open`, was `tag_row = open && !tags.is_empty()`), and
+  it exists whenever the card is open — `p` on the cursor card, `P` on every card, a quick-tag
+  flash, the armed `z` chord — tags or no tags. The key is drawn in `dim1`, right-aligned under
+  the age slot, after the chips.
+- **Right, not left, and this is the argument.** The chips are indented by the glyph column and
+  the key is not about the glyph: right-aligned, every card's key under `P` lands in ONE column,
+  the way the ages do, and a reader scans that column instead of every row. Leading the row
+  with the key would have put it two cells further right on a session card than on a
+  session-less one.
+- **Overflow: the key is never cut; the chips get what it leaves.** `tags::chips` keeps its
+  longest-gives-first rule inside `inner - key - 1`, and the tail drops as it always did — the
+  mark under the card still carries the count. `test_a_crowded_peek_row_names_them_all` now
+  loses its fourth chip on the 28-cell card and asserts the key instead.
+- **The search preview does not repeat it.** `CardCtx::names_key` is false there, because the
+  frame is titled with the key already; a preview card with no tags shows no meta row at all
+  (`meta_row = open && (names_key || !tags.is_empty())`). The board passes true. The three
+  search goldens are byte-identical.
+- **Hints unchanged.** `p` still reads `show replies` and `P` `show every reply`; the key rides
+  the same toggle and needed no vocabulary of its own.
+
+Goldens reminted: `board_peek`, `board_peek_all`, `board_tags_peek`, `board_tags_peek_sessionless`,
+`board_snooze_armed` (the armed chord's card gained the row). New test:
+`test_the_peek_names_the_ticket` (off → no key anywhere; on → key after the chips, cell-aligned
+with the age; `P` → an untagged card names itself and two cards' keys share a column).

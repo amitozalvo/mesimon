@@ -32,6 +32,10 @@ pub(super) struct CardCtx<'a> {
     pub now_ms: u64,
     /// Redraw-clock frame for the working spinner (`App::spin_frame`).
     pub spin: usize,
+    /// Does an open card's meta row close with the ticket's short key
+    /// (T-410)? True on the board, where nothing else names it; false where
+    /// the frame around the card already does (the search preview).
+    pub names_key: bool,
 }
 
 /// Render the in-place title editor as a card line (create + rename share it).
@@ -469,15 +473,18 @@ pub(super) fn render(
         return lines;
     }
 
-    // ---- accordion (07 §4.3; session rows only — short keys are hidden
-    // from the UI for now, author 2026-08-30) -------------------------------
+    // ---- accordion (07 §4.3) ---------------------------------------------
     //
-    // The tag row is the TICKET's own metadata, so an open card earns it
-    // whether or not there is a transcript to peek — a backlog ticket has no
-    // session at all, and that is exactly the card a quick-tag digit lands
-    // on. Before this the row was gated on `peek.is_some()`, which is a claim
-    // about the AGENT, and the commonest tagged card could never show it.
-    let tag_row = open && !tags.is_empty();
+    // The meta row is the TICKET's own metadata — its short key, and the
+    // tags it wears — so an open card earns it whether or not there is a
+    // transcript to peek: a backlog ticket has no session at all, and that
+    // is exactly the card a quick-tag digit lands on. Before this the row
+    // was gated on `peek.is_some()`, which is a claim about the AGENT, and
+    // the commonest tagged card could never show it. The key rides the same
+    // row (T-410): a session says "T-410" and a resting card never did, so
+    // the id was one focus away on every card; with `p` on, the cursor card
+    // names its own, and `P` names every card's.
+    let meta_row = open && (ctx.names_key || !tags.is_empty());
     // The cursor card's accordion, or — under `P` (T-237) — a resting card
     // open on its own ground: the tag row and the reply, on the resting ramp,
     // no surface. The session list, the armed snooze and the owed row stay
@@ -489,11 +496,11 @@ pub(super) fn render(
     let raised_row = ticket.raised.as_ref().map(|r| r.reason.as_str());
     let accordion = selected
         && (!sessions.is_empty()
-            || tag_row
+            || meta_row
             || snooze.is_some()
             || owed_row.is_some()
             || raised_row.is_some());
-    let opened = !selected && open && (tag_row || peek.is_some());
+    let opened = !selected && meta_row;
     if accordion || opened {
         let acc_style = if doomed {
             theme.delete_row()
@@ -524,6 +531,14 @@ pub(super) fn render(
         // where a glyph precedes the title, flush where none does — a
         // session-less card has no glyph column, and indenting its chips
         // past a title that starts at the bar hung them in the air.
+        //
+        // The short key closes the row, right-aligned under the age slot
+        // (T-410). On the right rather than before the chips because the
+        // chips are indented by the glyph column and the key is not about
+        // the glyph: under `P` every card's key then lands in ONE column, the
+        // way the ages do, and a reader holding "T-410" from a session scans
+        // that column instead of every row. The key is never cut; the chips
+        // get what it leaves and drop from the tail as they always did.
         // The armed snooze names its preset first: it is what the next key
         // does to this card, before what the card is.
         if let Some(words) = snooze.filter(|_| selected) {
@@ -543,9 +558,22 @@ pub(super) fn render(
             let words = truncate(words, t_cells.saturating_sub(glyph_cells));
             push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, faint)]);
         }
-        if tag_row {
+        if meta_row {
+            let inner = t_cells.saturating_sub(glyph_cells);
+            let key =
+                if ctx.names_key { truncate(&ticket.short_key, inner) } else { String::new() };
+            let key_cells = key.width();
             let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
-            row.extend(crate::tags::chips(theme, tags, t_cells.saturating_sub(glyph_cells)));
+            let chips = if tags.is_empty() {
+                Vec::new()
+            } else {
+                let gap = if key_cells > 0 { 1 } else { 0 };
+                crate::tags::chips(theme, tags, inner.saturating_sub(key_cells + gap))
+            };
+            let used = super::spans_width(&chips);
+            row.extend(chips);
+            row.push(Span::raw(" ".repeat(inner.saturating_sub(used + key_cells))));
+            row.push(Span::styled(key, dim));
             push(row);
         }
 
