@@ -12743,3 +12743,43 @@ names. `server::ticket_crumb` is the one place the crumb is spelled: the key rid
 title's 48-char cap, both pass `tmux_text`, and an empty title leaves no trailing space. The TUI
 header is untouched — its chip already carries the key. Test: `status_line_tests::
 the_ticket_crumb_leads_with_the_key`.
+
+## The merge dialog (T-431, 2026-09-23, user: "users expect m to merge / ask rebase immediately but are surprised they need to press m again to confirm … the current hint doesn't work … maybe a small dialog? since we don't want the user to leave ticket page while merging")
+
+The m flow's first press changed one clause of the identity line — `merge 2 commit(s) of msmn/… ?
+m confirms` — and nobody read a clause as a question. They pressed `m` expecting the merge and got
+the ask, then pressed `m` again with no idea what changed. The wait after the confirm was a frozen
+frame with a note on it (T-352): legible if you were looking at that row, invisible if you were not.
+
+**The two presses stay; the question gets a frame.** The first `m` opens `App::merge_dialog`, a
+chord tail (`Scope::MergeChord`: parent `None`, every key its own) drawn by `dialog::draw_merge`
+over the ticket page: `MERGE ∙ T-n` in the top edge, two rows of body — what the next `m` does and
+*stay on this page: when it lands, m tells the agent* — and the scope's own keys in the bottom
+edge, `m merge ∙ esc cancel`. `m` is `Verb::MergeConfirm`, Esc and `q` are `Verb::Cancel`, and a
+stray key cancels with a status word (`merge cancelled`, `rebase not asked`, `agent not told`),
+the delete chord's rule. The row under the dialog drops its `m` offer while the dialog holds it
+(`merge_stage_word` answers `None`), so the key is named in one place.
+
+**The merge runs detached, and the dialog is the animation.** `Transport::request_detached`
+answers through a channel: the default (the test fakes) is the synchronous request with its reply
+already in the channel; the real `Client` opens a second connection by the observer's road
+(`open_existing`, no spawn, no lock wait) on a thread of its own, so the board's connection is
+never the one held. The confirm sets `MergeDialog::running` and returns; the loop keeps drawing
+with the working spinner in front of `merging 2 commits of msmn/…`; `App::poll_merge` takes the
+reply on the tick. Through the wait `Ctx::merge_confirm` is empty, which withholds every key of the
+dialog (its bottom edge goes quiet), and `handle_key_inner` drops every keypress — a press aimed
+at a running merge is neither an answer nor a way out, and the page cannot be left mid-merge.
+`tick` also stays off the wire while the merge is out (`wire`): the daemon's writer is inside the
+merge (T-352's synchronous flags refresh stays, unchanged), so a snapshot would hold the loop the
+way the keypress used to. `lib.rs::run_pending_merge`/`drop_typeahead` are gone with the hold they
+served.
+
+**`Merged` turns the dialog over instead of closing it.** The reply's words take the first row
+(`merged 2 commit(s)`), the second asks *the agent has not been told — tell it?*, the edge reads
+`m tell the agent ∙ esc not now`. `NeedsRebase` (main moved between snapshot and keypress) turns
+it into the rebase ask the same way; a refusal or a transport error closes it with the daemon's
+words on the identity line, where the flow's refusals always went. The rebase ask and the merged
+notice — the other two first presses — open the same dialog and send from its `m`, closing with
+`waiting for rebase` / `agent notified` on the row; an outstanding ask (`merge_outstanding`) is
+said in the body (*rebase already requested — ask the agent again?*) and the key reads `ask
+again`, never the same ask offered as new.

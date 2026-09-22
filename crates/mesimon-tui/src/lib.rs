@@ -284,23 +284,6 @@ fn reexec(repo_root: &Path) -> Result<()> {
     Err(anyhow::anyhow!("exec of the new binary failed: {err}"))
 }
 
-/// Keys typed while a blocking request held the loop are not consent: the
-/// frame they were aimed at is gone by the time they land, and the press acts
-/// on a state the user never saw. `m` held down through a multi-second merge
-/// fired the merged notice into the agent on the press after it (T-352).
-/// Focus reports are not typeahead and are kept.
-fn drop_typeahead(app: &App) {
-    use ratatui::crossterm::event::{poll, read, Event};
-    while matches!(poll(std::time::Duration::from_millis(0)), Ok(true)) {
-        match read() {
-            Ok(Event::FocusGained) => app.saw_focus(true),
-            Ok(Event::FocusLost) => app.saw_focus(false),
-            Ok(_) => {}
-            Err(_) => break,
-        }
-    }
-}
-
 fn event_loop(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
@@ -314,17 +297,6 @@ fn event_loop(
         {
             let _held = console.as_deref().map(crate::notify::Console::drawing);
             terminal.draw(|f| ui::draw(f, app))?;
-        }
-
-        // The confirmed ff-merge, run with its "merging…" note already on the
-        // screen (T-352): the request holds this loop for as long as git takes
-        // — the merge plus a synchronous flags sample over every worktree —
-        // and the frame that stood through that wait used to still read
-        // "m confirms". Here, and not inside the keypress, because the draw
-        // above is what makes the wait legible.
-        if app.pending_merge.is_some() {
-            app.run_pending_merge()?;
-            drop_typeahead(app);
         }
 
         app.tick()?;

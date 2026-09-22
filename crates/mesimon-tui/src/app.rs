@@ -7,6 +7,7 @@ mod images;
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -957,16 +958,44 @@ const TRAIN_PUSH_BACKOFF: Duration = Duration::from_secs(30);
 /// preference pushed again, not on every snapshot.
 const STATUS_PUSH_BACKOFF: Duration = TRAIN_PUSH_BACKOFF;
 
-/// The m key's staged progression (author 2026-08-30): each press shows what
-/// the next press does. Stage is derived from git state, never stored.
+/// The m key's staged progression (author 2026-08-30): the first press
+/// opens the dialog that names what the next press does (T-431), and the
+/// second performs it. Stage is derived from git state, never stored.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum MergeStage {
+pub(crate) enum MergeStage {
     /// ff possible — next m merges.
     Merge,
     /// default branch moved — next m asks the agent to rebase + test.
     Rebase,
     /// merged — next m tells the agent.
     Notify,
+}
+
+/// The merge dialog (T-431): the m flow's question, its wait and its answer
+/// in one frame over the ticket page. The first `m` used to change one
+/// clause of the identity line — `merge 2 commit(s) of msmn/… ? m confirms`
+/// — and nobody read it as a question: they pressed `m` expecting the merge
+/// and got the ask. The dialog is the same two presses with a frame around
+/// the question, and it stays up through the merge itself, spinner turning,
+/// so the wait is legible and the page cannot be left mid-merge. When the
+/// merge lands the dialog turns into the next question (`m tells the
+/// agent`) instead of closing, which is what keeps the reader here for the
+/// press that matters.
+pub(crate) struct MergeDialog {
+    pub ticket: ulid::Ulid,
+    pub stage: MergeStage,
+    /// The branch and how far ahead it stood when the dialog opened.
+    pub branch: String,
+    pub ahead: u32,
+    /// The ask is already with the agent (`App::merge_outstanding`): the
+    /// dialog says so, and its `m` asks again.
+    pub outstanding: bool,
+    /// The running merge's reply, still to come (`App::poll_merge`). While
+    /// this is `Some` the dialog holds every key.
+    pub running: Option<Receiver<Result<Response>>>,
+    /// The daemon's words for what just happened — the merge that landed,
+    /// or main moving under it — shown above the next question.
+    pub outcome: String,
 }
 
 /// The most recent undoable action, for `u`. A delete carries its own
@@ -1239,9 +1268,10 @@ pub struct App {
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
     resume_refused: Option<uuid::Uuid>,
-    /// The m flow's armed stage: a first `m` names what the next `m` does;
-    /// the second performs it. Any other key disarms.
-    merge_armed: Option<(ulid::Ulid, MergeStage)>,
+    /// The m flow's dialog (T-431): open from the first `m` until the
+    /// second performs what it names, Esc declines, or a stray key cancels
+    /// — never while a merge is running inside it.
+    pub(crate) merge_dialog: Option<MergeDialog>,
     /// Enter on the terminal's ghost row armed adoption of this ticket's
     /// terminal (T-366): the next Enter adopts, any other key stands down.
     /// Two presses because adoption grows a session record that the archive
@@ -1251,13 +1281,6 @@ pub struct App {
     /// notice) — what keeps the identity line from offering the same ask
     /// again the moment `merge_note` clears. See `merge_outstanding`.
     merge_sent: Option<(ulid::Ulid, MergeStage, Instant)>,
-    /// The confirmed ff-merge, held for one frame so the "merging…" note is
-    /// on the screen for the whole wait. The request blocks the loop for as
-    /// long as git takes — the merge plus a synchronous flags sample over
-    /// every worktree — and through that wait the old frame stood, still
-    /// reading "m confirms", which is what got `m` pressed twice (T-352).
-    /// `lib.rs`'s loop draws, then runs `run_pending_merge`.
-    pub(crate) pending_merge: Option<ulid::Ulid>,
     /// When `SetAutomation` was last pushed: the reconcile on every snapshot
     /// re-arms the train after a daemon restart, and this is its back-off.
     train_pushed_at: Option<Instant>,
@@ -1605,10 +1628,9 @@ impl App {
             mesophon_available: false,
             theme,
             resume_refused: None,
-            merge_armed: None,
+            merge_dialog: None,
             adopt_armed: None,
             merge_sent: None,
-            pending_merge: None,
             train_pushed_at: None,
             status_pushed_at: None,
             merge_note: String::new(),
@@ -2294,11 +2316,17 @@ impl App {
             dirty = true;
         }
         self.watch_flavor()?;
+        // The merge in flight (T-431): its reply lands here, and until it
+        // does nothing else on this loop touches the wire — the daemon's
+        // writer is inside the merge (T-352), so a snapshot now would hold
+        // the loop the way the keypress used to, spinner and all.
+        dirty |= self.poll_merge()?;
+        let wire = !self.merge_in_flight();
         // Async board-changed events from the daemon.
         while self.client.poll_event() {
             dirty = true;
         }
-        if dirty {
+        if dirty && wire {
             self.refresh()?;
         }
         // Reconnect cadence: the daemon went away (update restart, crash).
@@ -2307,7 +2335,8 @@ impl App {
             self.note_daemon_down();
             dirty = true;
         }
-        if self.daemon_down
+        if wire
+            && self.daemon_down
             && self.last_reconnect.is_none_or(|t| t.elapsed() >= Duration::from_secs(2))
         {
             self.last_reconnect = Some(Instant::now());
@@ -2316,8 +2345,10 @@ impl App {
         }
         // The ticket page's preview zone, on its own slow cadence — it is
         // the one thing on screen the daemon does not push.
-        dirty |= self.poll_shell_tail();
-        dirty |= self.poll_notes();
+        if wire {
+            dirty |= self.poll_shell_tail();
+            dirty |= self.poll_notes();
+        }
         // The spoke marks: a redraw, never a snapshot — nothing on the wire
         // knows what an agent said, only its transcript does.
         dirty |= self.poll_spoke();
@@ -3583,6 +3614,9 @@ impl App {
         if self.snooze_armed.is_some() {
             return Scope::SnoozeChord;
         }
+        if self.merge_dialog.is_some() {
+            return Scope::MergeChord;
+        }
         if self.diff.as_ref().is_some_and(|d| d.z_armed) && matches!(self.screen, Screen::Diff) {
             return Scope::DiffView;
         }
@@ -3790,6 +3824,7 @@ impl App {
                 .is_some_and(|t| t.workspace_strategy() == WorkspaceStrategy::Worktree),
             merge_actionable: merge.is_some(),
             merge_word: merge.unwrap_or("merge"),
+            merge_confirm: self.merge_confirm_word(),
             checkout_diff: self.diff.as_ref().is_some_and(|d| !d.is_branch()),
             git_commits: self.diff.as_ref().is_some_and(|d| d.commits),
             two_pane: self.diff_two_pane.get(),
@@ -4008,6 +4043,11 @@ impl App {
     /// mirrors `merge_key`'s stage derivation; `merge_stage_matches_key` holds
     /// the two together.
     fn merge_stage_word(&self, ticket: ulid::Ulid) -> Option<&'static str> {
+        // The dialog is where the offer lives while it is open (T-431): the
+        // row under it does not say `m merge` a second time.
+        if self.merge_dialog.is_some() {
+            return None;
+        }
         let w = self.wt_item(ticket)?;
         if w.branch.is_empty() || w.status != "attached" {
             return None;
@@ -4092,6 +4132,12 @@ impl App {
     }
 
     fn handle_key_inner(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // A merge in flight holds every key (T-431): the dialog says what is
+        // happening, and a press aimed at it is neither an answer nor a way
+        // out. Bounded by the wire's own timeout.
+        if self.merge_in_flight() {
+            return Ok(());
+        }
         // Even an atom the terminal adapter cannot represent cancels the chord.
         if self.duplicate_armed.is_some() && (code != KeyCode::Char('y') || !mods.is_empty()) {
             self.duplicate_armed = None;
@@ -4162,9 +4208,6 @@ impl App {
         if scope != Scope::SnoozeChord {
             self.snooze_armed = None;
         }
-        if !matches!(key, Key::Char('m')) {
-            self.merge_armed = None;
-        }
         // The fresh-ticket window lives exactly one Enter long — and so
         // does the terminal's adoption (T-366).
         if !matches!(key, Key::Enter) {
@@ -4181,6 +4224,8 @@ impl App {
                 self.status = "archive cancelled".into();
             } else if scope == Scope::SnoozeChord {
                 self.status = "snooze cancelled".into();
+            } else if scope == Scope::MergeChord {
+                self.close_merge_dialog();
             } else if scope == Scope::DiffView {
                 if let Some(d) = self.diff.as_mut() {
                     d.z_armed = false;
@@ -5101,6 +5146,7 @@ impl App {
                     self.merge_key(id)?;
                 }
             }
+            Verb::MergeConfirm => self.merge_confirm()?,
             // One verb, two subjects, and the SCREEN is what answers which:
             // the board is the repo's screen, the ticket page is the ticket's.
             Verb::OpenDiff => match self.screen {
@@ -5183,6 +5229,7 @@ impl App {
                 }
             }
             // ---- move ------------------------------------------------------
+            Verb::Cancel if scope == Scope::MergeChord => self.close_merge_dialog(),
             Verb::Cancel => self.mode = Mode::Normal,
             // ---- view / lists ----------------------------------------------
             // The two rungs of one ladder (off / cursor / all), a preference
@@ -8413,15 +8460,17 @@ impl App {
     }
 
     /// The m state machine: stage derives from git state; the first press
-    /// names what the next press does, the second performs it.
+    /// opens the dialog that names what the next press does (T-431), and
+    /// `merge_confirm` — the dialog's `m` — performs it.
     ///
-    ///   ahead + ff-able   m → "merge N? m"        → m → ff merge
-    ///   default moved     m → "m asks rebase"      → m → inject rebase+test
-    ///   merged            m → "m notifies agent"   → m → inject notice
+    ///   ahead + ff-able   m → "merge N commits?"    → m → ff merge, then "m tells the agent"
+    ///   default moved     m → "ask for a rebase?"   → m → inject rebase+test
+    ///   merged            m → "tell the agent?"     → m → inject notice
     fn merge_key(&mut self, ticket: ulid::Ulid) -> Result<()> {
-        // Every reply of this flow goes to `merge_note` — the ticket screen's
-        // identity line, right where the branch state already announces `m`.
-        // The footer never talks about the merge (author 2026-08-30).
+        // A refusal goes to `merge_note` — the ticket screen's identity line,
+        // right where the branch state already announces `m`. The footer
+        // never talks about the merge (author 2026-08-30). A question opens
+        // the dialog.
         let Some(w) = self.wt_item(ticket) else {
             self.merge_note = "no worktree on this ticket".into();
             return Ok(());
@@ -8432,45 +8481,48 @@ impl App {
             return Ok(());
         };
         // Quiet-tickets rule, surfaced up front: the daemon refuses a merge
-        // under a working agent, so the first press says so instead of arming
-        // a confirm the second press can only lose.
+        // under a working agent, so the first press says so instead of
+        // opening a question the second press can only lose.
         if stage == MergeStage::Merge && self.ticket_busy(ticket) {
-            self.merge_armed = None;
             self.merge_note = "agent still working — wait for it to finish".into();
             return Ok(());
         }
-        if self.merge_armed != Some((ticket, stage)) {
-            self.merge_armed = Some((ticket, stage));
-            // The key stays live while the ask is outstanding (muscle memory
-            // gets an answer, never silence), but the answer says so: a
-            // second delivery is the user's choice, not a hint's.
-            let outstanding = self.merge_outstanding(ticket).is_some();
-            self.merge_note = match stage {
-                MergeStage::Merge => format!("merge {ahead} commit(s) of {branch}? m confirms"),
-                MergeStage::Rebase if outstanding => {
-                    "rebase already requested — m asks again".into()
-                }
-                MergeStage::Rebase => "main moved — m asks the agent to rebase + test".into(),
-                MergeStage::Notify if outstanding => {
-                    "agent already notified — m tells it again".into()
-                }
-                MergeStage::Notify => "merged ∙ m tells the agent".into(),
-            };
+        // The key stays live while the ask is outstanding (muscle memory
+        // gets an answer, never silence), but the dialog says so: a second
+        // delivery is the user's choice, not a hint's.
+        let outstanding = self.merge_outstanding(ticket).is_some();
+        self.merge_dialog = Some(MergeDialog {
+            ticket,
+            stage,
+            branch,
+            ahead,
+            outstanding,
+            running: None,
+            outcome: String::new(),
+        });
+        Ok(())
+    }
+
+    /// The dialog's `m`: perform the stage it names. A merge is sent on a
+    /// detached request and the dialog stays up with its spinner until
+    /// `poll_merge` hears back; the two pastes (rebase ask, merged notice)
+    /// are quick and close the dialog with their reply on the identity line.
+    fn merge_confirm(&mut self) -> Result<()> {
+        let Some(d) = self.merge_dialog.as_ref() else { return Ok(()) };
+        if d.running.is_some() {
             return Ok(());
         }
-        self.merge_armed = None;
+        let (ticket, stage) = (d.ticket, d.stage);
         match stage {
-            // Not here: the ff-merge is the one reply of this flow that keeps
-            // the loop waiting, and a frame that still reads "m confirms"
-            // through it is an invitation to press `m` again (T-352). The
-            // note below is drawn first, and `run_pending_merge` — called by
-            // `lib.rs`'s loop straight after that draw — sends the command.
             MergeStage::Merge => {
-                self.pending_merge = Some(ticket);
-                self.merge_note = format!("merging {ahead} commit(s)…");
+                let rx = self.client.request_detached(Command::MergeTicket { id: ticket });
+                if let Some(d) = self.merge_dialog.as_mut() {
+                    d.running = Some(rx);
+                }
                 return Ok(());
             }
             MergeStage::Rebase => {
+                self.merge_dialog = None;
                 match self.req(Command::MergeToAgent {
                     id: ticket,
                     request: mesimon_core::command::MergeRequest::Rebase,
@@ -8484,6 +8536,7 @@ impl App {
                 }
             }
             MergeStage::Notify => {
+                self.merge_dialog = None;
                 match self.req(Command::MergeToAgent {
                     id: ticket,
                     request: mesimon_core::command::MergeRequest::MergedNotice,
@@ -8500,35 +8553,131 @@ impl App {
         self.refresh()
     }
 
-    /// The merge the last `m` confirmed, sent a frame later so the
-    /// "merging…" note is on the screen for the whole wait. Every reply still
-    /// lands in `merge_note` — the identity line is where this flow talks —
-    /// and the keys typed through the wait are dropped by the caller, since a
-    /// press aimed at a frame that is already gone is not a second answer.
-    pub(crate) fn run_pending_merge(&mut self) -> Result<()> {
-        let Some(ticket) = self.pending_merge.take() else { return Ok(()) };
-        match self.req(Command::MergeTicket { id: ticket }) {
-            Response::Merge { outcome, detail } => {
-                self.merge_note = match outcome {
-                    // The note promises the next press notifies, so arm that
-                    // stage now — same as the NeedsRebase race below.
-                    MergeOutcome::Merged => {
-                        self.merge_armed = Some((ticket, MergeStage::Notify));
-                        format!("{detail} ∙ m tells the agent")
-                    }
-                    MergeOutcome::AlreadyMerged => detail,
-                    // Raced: main moved between snapshot and keypress.
-                    MergeOutcome::NeedsRebase => {
-                        self.merge_armed = Some((ticket, MergeStage::Rebase));
-                        format!("{detail} ∙ m asks the agent to rebase + test")
-                    }
-                    MergeOutcome::Refused => detail,
-                };
-            }
-            Response::Err { message } => self.merge_note = message,
-            _ => {}
+    /// Esc, `q` or a stray key on the dialog: close it and say what did not
+    /// happen, the chord tails' rule. Inert while the merge runs — the
+    /// caller never gets here then (`handle_key_inner`).
+    fn close_merge_dialog(&mut self) {
+        let Some(d) = self.merge_dialog.take() else { return };
+        self.status = match d.stage {
+            MergeStage::Merge => "merge cancelled",
+            MergeStage::Rebase => "rebase not asked",
+            MergeStage::Notify => "agent not told",
         }
-        self.refresh()
+        .into();
+    }
+
+    /// A merge is on the wire and the dialog is holding the keys.
+    pub(crate) fn merge_in_flight(&self) -> bool {
+        self.merge_dialog.as_ref().is_some_and(|d| d.running.is_some())
+    }
+
+    /// The dialog's `m` hint, in the keymap's words — empty while the merge
+    /// runs, which withholds every key of the dialog (`Ctx::merge_confirm`).
+    fn merge_confirm_word(&self) -> &'static str {
+        match self.merge_dialog.as_ref() {
+            None => "",
+            Some(d) if d.running.is_some() => "",
+            Some(d) => match d.stage {
+                MergeStage::Merge => "merge",
+                MergeStage::Rebase if d.outstanding => "ask again",
+                MergeStage::Rebase => "ask the agent to rebase",
+                MergeStage::Notify if d.outstanding => "tell it again",
+                MergeStage::Notify => "tell the agent",
+            },
+        }
+    }
+
+    /// The dialog's body: what the next `m` does, and the one reason to stay
+    /// on this page. Two rows, so the frame is the same size in every stage
+    /// and the words are what change. `running` is drawn by the caller as
+    /// the spinner in front of the first row.
+    pub(crate) fn merge_dialog_rows(&self) -> Vec<String> {
+        let Some(d) = self.merge_dialog.as_ref() else { return Vec::new() };
+        let n = match d.ahead {
+            1 => "1 commit".to_string(),
+            n => format!("{n} commits"),
+        };
+        match d.stage {
+            MergeStage::Merge if d.running.is_some() => vec![
+                format!("merging {n} of {}…", d.branch),
+                "stay on this page: when it lands, m tells the agent".into(),
+            ],
+            MergeStage::Merge => vec![
+                format!("merge {n} of {}?", d.branch),
+                "stay on this page: when it lands, m tells the agent".into(),
+            ],
+            MergeStage::Rebase => vec![
+                if d.outcome.is_empty() {
+                    format!("main moved under {}", d.branch)
+                } else {
+                    d.outcome.clone()
+                },
+                if d.outstanding {
+                    "rebase already requested — ask the agent again?".into()
+                } else {
+                    "ask the agent to rebase + test?".into()
+                },
+            ],
+            MergeStage::Notify => vec![
+                if d.outcome.is_empty() {
+                    format!("{} is merged", d.branch)
+                } else {
+                    d.outcome.clone()
+                },
+                if d.outstanding {
+                    "the agent was told already — tell it again?".into()
+                } else {
+                    "the agent has not been told — tell it?".into()
+                },
+            ],
+        }
+    }
+
+    /// The merge's reply, when it comes (`tick`). `Merged` turns the dialog
+    /// into the next question — `m tells the agent` — rather than closing
+    /// it; `NeedsRebase` (main moved between snapshot and keypress) into the
+    /// rebase ask; a refusal or an error closes it with the daemon's words
+    /// on the identity line. Returns whether the screen needs a redraw:
+    /// true for the whole wait, which is what paces the spinner.
+    pub(crate) fn poll_merge(&mut self) -> Result<bool> {
+        let Some(d) = self.merge_dialog.as_mut() else { return Ok(false) };
+        let Some(rx) = d.running.as_ref() else { return Ok(false) };
+        let reply = match rx.try_recv() {
+            Ok(reply) => reply,
+            Err(TryRecvError::Empty) => return Ok(true),
+            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("merge request lost")),
+        };
+        d.running = None;
+        match reply {
+            Ok(Response::Merge { outcome, detail }) => match outcome {
+                MergeOutcome::Merged => {
+                    d.stage = MergeStage::Notify;
+                    d.outstanding = false;
+                    d.outcome = detail;
+                }
+                MergeOutcome::NeedsRebase => {
+                    d.stage = MergeStage::Rebase;
+                    d.outstanding = false;
+                    d.outcome = detail;
+                }
+                MergeOutcome::AlreadyMerged | MergeOutcome::Refused => {
+                    self.merge_dialog = None;
+                    self.merge_note = detail;
+                }
+            },
+            Ok(Response::Err { message }) => {
+                self.merge_dialog = None;
+                self.merge_note = message;
+            }
+            Ok(_) => self.merge_dialog = None,
+            Err(_) => {
+                self.merge_dialog = None;
+                self.note_daemon_down();
+                self.merge_note = "daemon unreachable ∙ reconnecting".into();
+            }
+        }
+        self.refresh()?;
+        Ok(true)
     }
 
     fn focus_kind_or_spawn(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
@@ -15035,20 +15184,23 @@ mod tests {
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
         press(&mut app, 'm');
         assert_eq!(app.merge_note, "agent still working — wait for it to finish");
-        assert!(app.merge_armed.is_none(), "the flow never arms under a working agent");
+        assert!(app.merge_dialog.is_none(), "the flow never opens under a working agent");
         press(&mut app, 'm');
         assert!(!sent_contains(&sent, "MergeTicket"));
-        // An idle agent lifts the gate: the first m arms as usual.
+        // An idle agent lifts the gate: the first m opens the dialog as usual.
         app.board.sessions[0].state =
             SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
         press(&mut app, 'm');
-        assert!(app.merge_armed.is_some());
+        assert!(app.merge_dialog.is_some());
+        assert_eq!(app.scope(), Scope::MergeChord);
     }
 
     #[test]
-    fn merged_note_arms_notify_so_one_m_delivers() {
-        // The post-merge note promises "m tells the agent" — that press must
-        // notify, not re-arm a confirm the note already gave (author 2026-08-30).
+    fn merged_dialog_turns_into_the_notify_question_so_one_m_delivers() {
+        // The post-merge dialog promises "m tells the agent" — that press must
+        // notify, not re-open a confirm the dialog already gave (author
+        // 2026-08-30). And the dialog never closes under the reader between
+        // the merge landing and that press (T-431).
         let (mut app, sent, _sid) = app_with_claude(
             SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn },
             false,
@@ -15069,20 +15221,68 @@ mod tests {
         };
         app.worktrees.push(wt(false, 2));
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
-        press(&mut app, 'm'); // arms the merge confirm
-        press(&mut app, 'm'); // confirms — the send waits one frame (T-352)
-        assert_eq!(app.merge_note, "merging 2 commit(s)…");
-        assert!(!sent_contains(&sent, "MergeTicket"), "the key only queues the merge");
-        app.run_pending_merge().unwrap(); // the loop's call, after the draw
+        press(&mut app, 'm'); // opens the dialog: "merge 2 commits of …?"
+        assert_eq!(app.merge_dialog_rows()[0], "merge 2 commits of msmn/T-1-work?");
+        assert_eq!(app.ctx().merge_confirm, "merge");
+        assert!(!app.ctx().merge_actionable, "the row under the dialog stops offering");
+        press(&mut app, 'm'); // confirms — sent detached, the dialog holds
         assert!(sent_contains(&sent, "MergeTicket"));
-        assert!(app.merge_note.ends_with("∙ m tells the agent"));
-        assert_eq!(app.merge_armed, Some((ulid::Ulid(1), MergeStage::Notify)));
+        assert!(app.merge_in_flight());
+        assert_eq!(app.merge_dialog_rows()[0], "merging 2 commits of msmn/T-1-work…");
+        assert_eq!(app.ctx().merge_confirm, "", "no key while git works");
+        // Every key is held through the wait: not an answer, not a way out.
+        press(&mut app, 'm');
+        press(&mut app, 'q');
+        assert!(app.merge_in_flight());
+        assert!(!sent_contains(&sent, "MergedNotice"));
+        // The reply lands on the tick: the dialog turns into the next question.
+        assert!(app.poll_merge().unwrap());
+        assert!(!app.merge_in_flight());
+        let d = app.merge_dialog.as_ref().expect("the dialog stays up");
+        assert_eq!(d.stage, MergeStage::Notify);
+        assert_eq!(app.merge_dialog_rows()[0], "merged 2 commit(s)");
+        assert_eq!(app.ctx().merge_confirm, "tell the agent");
         // The refresh's snapshot now carries the merged binding (the fake
         // transport returns none, so restore it by hand).
         app.worktrees.push(wt(true, 0));
         press(&mut app, 'm');
         assert!(sent_contains(&sent, "MergedNotice"), "one m after the merge notifies");
         assert_eq!(app.merge_note, "agent notified");
+        assert!(app.merge_dialog.is_none());
+    }
+
+    #[test]
+    fn esc_or_a_stray_key_closes_the_merge_dialog_and_says_so() {
+        let (mut app, sent, _sid) = app_with_claude(
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn },
+            false,
+        );
+        app.worktrees.push(WorktreeItem {
+            ticket: ulid::Ulid(1),
+            branch: "msmn/T-1-work".into(),
+            status: "attached".into(),
+            merged: false,
+            merged_in: String::new(),
+            merged_oid: String::new(),
+            conflict: false,
+            ahead: 1,
+            needs_rebase: false,
+            detail: None,
+            path: None,
+            repos: vec![],
+        });
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        press(&mut app, 'm');
+        assert_eq!(app.merge_dialog_rows()[0], "merge 1 commit of msmn/T-1-work?");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(app.merge_dialog.is_none());
+        assert_eq!(app.status, "merge cancelled");
+        assert_eq!(app.scope(), Scope::Ticket, "esc closes the dialog, not the page");
+        press(&mut app, 'm');
+        press(&mut app, 'j'); // a stray key cancels, the chord tails' rule
+        assert!(app.merge_dialog.is_none());
+        assert_eq!(app.status, "merge cancelled");
+        assert!(!sent_contains(&sent, "MergeTicket"));
     }
 
     #[test]
@@ -15126,9 +15326,13 @@ mod tests {
         assert!(app.merge_note.is_empty());
         assert_eq!(app.merge_outstanding(ulid::Ulid(1)), Some("waiting for rebase"));
         assert!(!app.ctx().merge_actionable, "no offer while the ask is outstanding");
-        // The key itself stays live, and says so instead of re-arming blind.
+        // The key itself stays live, and the dialog says so instead of
+        // asking blind.
         press(&mut app, 'm');
-        assert_eq!(app.merge_note, "rebase already requested — m asks again");
+        assert_eq!(app.merge_dialog_rows()[1], "rebase already requested — ask the agent again?");
+        assert_eq!(app.ctx().merge_confirm, "ask again");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.status, "rebase not asked");
         // A minute later, idle: offered again (main may have moved again).
         let (t, stage, _) = app.merge_sent.unwrap();
         app.merge_sent = Some((t, stage, Instant::now() - MERGE_ASK_COOLDOWN));

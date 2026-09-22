@@ -357,6 +357,53 @@ pub(super) fn draw_links(
     list(f, app, &format!("LINKS ∙ {key} ∙ {}", rows.len()), Scope::Links, idx, &rows);
 }
 
+/// The merge dialog (T-431). Two rows under a `MERGE ∙ T-n` title: what the
+/// next `m` does and the reason to stay on this page, with the keys in the
+/// bottom edge from the `MergeChord` scope — which go quiet while the merge
+/// runs, when the working spinner in front of the first row is the one thing
+/// moving. The same frame every stage, so a merge landing turns the words
+/// over in place instead of closing the dialog under the reader.
+pub(super) fn draw_merge(f: &mut Frame, app: &App, d: &crate::app::MergeDialog) {
+    let theme = &app.theme;
+    let key = app.board.ticket(d.ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+    let rows = app.merge_dialog_rows();
+    if rows.is_empty() {
+        return;
+    }
+    let area = centred(f.area(), rows.len() as u16, MAX_W);
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner = frame(
+        f,
+        app,
+        area,
+        None,
+        &theme.rest,
+        Edges {
+            title: title(&theme.rest, format!("MERGE ∙ {key}")),
+            tail: keys(app, Scope::MergeChord, &theme.rest, inner_w.saturating_sub(4)),
+        },
+    );
+    let lead = if d.running.is_some() {
+        format!(" {} ", crate::glyphs::spinner(theme.glyph_tier(), app.spin_frame()))
+    } else {
+        " ".to_string()
+    };
+    let lines: Vec<Line<'static>> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let (head, style) = if i == 0 {
+                (lead.clone(), theme.calm_text())
+            } else {
+                (" ".to_string(), theme.dim2())
+            };
+            let body = truncate(row, inner_w.saturating_sub(head.width() + 1));
+            Line::from(vec![Span::styled(head, theme.calm_text()), Span::styled(body, style)])
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 /// The External drawer (19 §4): discovered foreign sessions, observe/resume.
 pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
     let now = mesimon_core::clock::now_ms();

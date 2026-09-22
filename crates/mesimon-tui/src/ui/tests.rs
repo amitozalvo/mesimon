@@ -3735,12 +3735,11 @@ fn golden_merged_upstream_120() {
     );
 }
 
-/// The confirmed merge says it is merging (T-352). The request holds the
-/// client's loop for as long as git takes — the ff-merge plus a flags sample
-/// over every worktree — and the frame that stands through that wait used to
-/// still read "m confirms", which is an invitation to press `m` again. The
-/// second press now only queues the merge; this is the frame the loop draws
-/// before it sends.
+/// The merge dialog (T-431) asks in a frame, and the confirmed merge says it
+/// is merging there while it runs (T-352): the request rides a detached
+/// connection, so the loop keeps drawing the spinner, and nothing on the
+/// page still offers `m` for the merge — the row under the dialog drops its
+/// offer while the dialog holds it.
 #[test]
 fn a_confirmed_merge_says_it_is_merging() {
     let mut app = app_graphite(fixture(false));
@@ -3761,23 +3760,21 @@ fn a_confirmed_merge_says_it_is_merging() {
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     press(&mut app, 'm');
     let lines = render(&app, 120, 30);
-    assert!(
-        lines.iter().any(|l| l.contains("m confirms")),
-        "the first press asks:\n{}",
-        lines.join("\n")
-    );
+    let text = lines.join("\n");
+    assert!(text.contains("MERGE ∙ T-5"), "the first press opens the dialog:\n{text}");
+    assert!(text.contains("merge 2 commits of msmn/T-5-grapheme-truncation?"), "{text}");
+    assert!(text.contains("m merge"), "the frame's edge names the key:\n{text}");
+    assert!(text.contains("esc cancel"), "{text}");
+    assert!(!text.contains("m confirms"), "{text}");
     press(&mut app, 'm');
-    assert_eq!(app.pending_merge, Some(ulid_n(5)), "the key queues the merge, never sends it");
+    assert!(app.merge_in_flight(), "the key sends the merge detached and holds");
     let lines = render(&app, 120, 30);
+    let text = lines.join("\n");
+    assert!(text.contains("merging 2 commits of msmn/T-5-grapheme-truncation…"), "{text}");
+    assert!(text.contains("stay on this page: when it lands, m tells the agent"), "{text}");
     assert!(
-        lines.iter().any(|l| l.contains("∙ merging 2 commit(s)…")),
-        "the wait says what it is:\n{}",
-        lines.join("\n")
-    );
-    assert!(
-        !lines.iter().any(|l| l.contains("m confirms") || l.contains("to merge")),
-        "and nothing on the page still asks for the key:\n{}",
-        lines.join("\n")
+        !text.contains("m merge") && !text.contains("esc cancel"),
+        "no key is offered while git works:\n{text}"
     );
 }
 

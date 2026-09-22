@@ -146,6 +146,14 @@ pub enum Scope {
     /// key) cancels. A snooze is an archive with a deadline, so like the
     /// archive chord it costs a deliberate second press.
     SnoozeChord,
+    /// After `m` on the ticket page (T-431): the merge dialog. A chord tail
+    /// drawn as a framed dialog, because the first `m` used to change one
+    /// clause of the identity line and nobody read it as a question — they
+    /// pressed `m` expecting the merge and got the ask. `m` again performs
+    /// what the dialog names (merge, ask for a rebase, tell the agent), Esc
+    /// declines, any stray key cancels; while the merge itself runs the
+    /// dialog holds every key, so the page cannot be left mid-merge.
+    MergeChord,
     /// After `^t` on the board, the ticket screen, or inside the composer —
     /// a chord tail, not a screen. `^t` rather than `t` because this must
     /// work while a title is being typed, and a Ctrl-letter is the only
@@ -243,7 +251,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 27] = [
+    pub const ALL: [Scope; 28] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -271,6 +279,7 @@ impl Scope {
         Scope::DuplicateChord,
         Scope::Search,
         Scope::Sharing,
+        Scope::MergeChord,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -302,7 +311,8 @@ impl Scope {
             | Scope::TagChord
             | Scope::Input
             | Scope::Editor
-            | Scope::Search => None,
+            | Scope::Search
+            | Scope::MergeChord => None,
         }
     }
 
@@ -317,6 +327,7 @@ impl Scope {
             Scope::DeleteChord => "DELETE",
             Scope::ArchiveChord => "ARCHIVE",
             Scope::SnoozeChord => "SNOOZE",
+            Scope::MergeChord => "MERGE",
             Scope::TagChord => "TAG",
             Scope::Move => "MOVE",
             Scope::Menu => "MENU",
@@ -654,6 +665,8 @@ pub enum Verb {
     /// the digit already has inside `^t`, minus the chord.
     TagCycle,
     Merge,
+    /// The merge dialog's `m` (T-431): performs the stage the dialog names.
+    MergeConfirm,
     OpenDiff,
     // ---- diff ----
     ScrollDown,
@@ -1023,6 +1036,11 @@ pub struct Ctx {
     /// `m` would actually do something on the next press.
     pub merge_actionable: bool,
     pub merge_word: &'static str,
+    /// The merge dialog's verb (T-431): what its `m` performs — `merge`,
+    /// `ask the agent`, `tell the agent` — and empty while the merge itself
+    /// is running, which is what withholds every key of the dialog until
+    /// git answers.
+    pub merge_confirm: &'static str,
     // ---- diff ----
     pub two_pane: bool,
     pub worktree_present: bool,
@@ -1402,6 +1420,7 @@ impl MenuItem {
                     | Verb::BriefOffer
                     | Verb::ReloadShellEnv
                     | Verb::ManualMerge
+                    | Verb::MergeConfirm
                     | Verb::Crown
             )
         {
@@ -2948,6 +2967,39 @@ static ARCHIVE: &[Binding] = &[Binding {
     mutates: true,
     prio: 10,
 }];
+
+/// The merge dialog's keys (T-431). `m` performs what the dialog names —
+/// the second `m` of the old two-press flow, now with a frame around the
+/// question — Esc and `q` decline. Nothing else is bound: a stray key
+/// cancels, the chord tails' rule. Every key is withheld while the merge
+/// runs (`merge_confirm` empty), so the bottom edge goes quiet for exactly
+/// the seconds git takes, and the answer to "did it hear me" is the spinner.
+static MERGE_CHORD: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('m')],
+        verb: Verb::MergeConfirm,
+        show: "m",
+        hint: |c| c.merge_confirm,
+        avail: |c| !c.merge_confirm.is_empty(),
+        class: Class::Plain,
+        group: Group::Worktree,
+        mutates: true,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Esc, Key::Char('q')],
+        verb: Verb::Cancel,
+        show: "esc",
+        // A merge not yet made is cancelled; an ask not yet sent is "not
+        // now" — the agent can still be told from the row afterwards.
+        hint: |c| if c.merge_confirm == "merge" { "cancel" } else { "not now" },
+        avail: |c| !c.merge_confirm.is_empty(),
+        class: Class::Plain,
+        group: Group::Worktree,
+        mutates: false,
+        prio: 20,
+    },
+];
 
 /// The `z` chord tail (T-74). A tail you stay in: `z` walks the preset
 /// ring, Enter takes the pick, Esc leaves — and, like the other chords, a
@@ -5642,6 +5694,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::DeleteChord => DELETE,
         Scope::ArchiveChord => ARCHIVE,
         Scope::SnoozeChord => SNOOZE,
+        Scope::MergeChord => MERGE_CHORD,
         Scope::TagChord => TAG,
         Scope::Move => MOVE,
         Scope::Menu => MENU,
@@ -5979,6 +6032,7 @@ mod tests {
                 Scope::DuplicateChord => 24,
                 Scope::Search => 25,
                 Scope::Sharing => 26,
+                Scope::MergeChord => 27,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -7393,6 +7447,31 @@ mod tests {
         assert_eq!(shown, vec!["j", "enter", "esc", "?"]);
     }
 
+    /// The merge dialog (T-431) is a chord tail: `m` performs what it names,
+    /// Esc and `q` decline, anything else resolves to nothing (and cancels).
+    /// Every key is withheld while `merge_confirm` is empty — the merge is
+    /// running — so the frame's edge goes quiet for exactly that wait.
+    #[test]
+    fn the_merge_dialog_is_a_barrier_with_one_verb_and_a_way_out() {
+        let open = Ctx { merge_confirm: "merge", ..Default::default() };
+        assert_eq!(resolve(Scope::MergeChord, Key::Char('m'), &open), Some(Verb::MergeConfirm));
+        assert_eq!(hint_for(Scope::MergeChord, Verb::MergeConfirm, &open), Some(("m", "merge")));
+        assert_eq!(resolve(Scope::MergeChord, Key::Esc, &open), Some(Verb::Cancel));
+        assert_eq!(resolve(Scope::MergeChord, Key::Char('q'), &open), Some(Verb::Cancel));
+        assert_eq!(hint_for(Scope::MergeChord, Verb::Cancel, &open), Some(("esc", "cancel")));
+        let told = Ctx { merge_confirm: "tell the agent", ..Default::default() };
+        assert_eq!(hint_for(Scope::MergeChord, Verb::Cancel, &told), Some(("esc", "not now")));
+        for k in [Key::Char('j'), Key::Char('?'), Key::Enter, Key::Char('d')] {
+            assert_eq!(resolve(Scope::MergeChord, k, &open), None, "{k:?} is a barrier");
+        }
+        let running = Ctx::default();
+        assert_eq!(resolve(Scope::MergeChord, Key::Char('m'), &running), None);
+        assert_eq!(resolve(Scope::MergeChord, Key::Esc, &running), None);
+        assert!(footer_items(Scope::MergeChord, &running).is_empty());
+        assert_eq!(Scope::MergeChord.word(), "MERGE");
+        assert_eq!(Scope::MergeChord.parent(), None);
+    }
+
     #[test]
     fn wake_header_navigation_and_settings_target_follow_the_selection() {
         let git = Ctx { git_repo: true, keep_awake: true, ..Default::default() };
@@ -8070,6 +8149,7 @@ mod tests {
                     | Scope::DeleteChord
                     | Scope::ArchiveChord
                     | Scope::SnoozeChord
+                    | Scope::MergeChord
                     | Scope::TagChord
             ) {
                 continue; // chord tails, pending move and text fields own every key

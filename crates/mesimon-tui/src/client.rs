@@ -20,6 +20,16 @@ use semver::Version;
 /// canned fake under test (the TestBackend harness never spawns a daemon).
 pub trait Transport {
     fn request(&mut self, command: Command) -> Result<Response>;
+    /// The same request, answered through a channel instead of the return
+    /// (T-431): the caller keeps drawing while the daemon works. The default
+    /// is the synchronous request with its reply already in the channel —
+    /// what the fakes get — and the real client opens a second connection
+    /// on a thread, so the board's own connection is never the one held.
+    fn request_detached(&mut self, command: Command) -> Receiver<Result<Response>> {
+        let (tx, rx) = channel();
+        let _ = tx.send(self.request(command));
+        rx
+    }
     /// Non-blocking: true when an async board-changed event has arrived.
     fn poll_event(&mut self) -> bool;
     /// False when the connection is known dead (the app enters its slow
@@ -168,6 +178,22 @@ impl Transport for Client {
             self.legacy_daemon = false;
         }
         res
+    }
+
+    /// A second connection, opened by the observer's road (no spawn, no
+    /// lock wait) on a thread of its own, sends the command and dies with
+    /// its reply. The board's own connection stays free for the loop that
+    /// is drawing the wait — which is the whole point: `Conn::request`
+    /// blocks, and a merge holds the daemon's writer for the merge plus a
+    /// flags sample over every worktree (T-352).
+    fn request_detached(&mut self, command: Command) -> Receiver<Result<Response>> {
+        let (tx, rx) = channel();
+        let repo_root = self.repo_root.clone();
+        std::thread::spawn(move || {
+            let reply = open_existing(&repo_root).and_then(|mut c| c.request(command));
+            let _ = tx.send(reply);
+        });
+        rx
     }
 
     fn poll_event(&mut self) -> bool {
