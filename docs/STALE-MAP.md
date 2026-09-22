@@ -12472,9 +12472,9 @@ the send by hand.
 
 ## T-427: the rebase ask's receipt says who acts (2026-09-23)
 
+## T-427: the rebase ask's receipt names no key (2026-09-23, user: "m merges feels like it's possible now")
+
 The note after `m` sent a rebase ask read "rebase request sent — m merges once it lands".
-Users read it as mesimon merging on its own, and "it lands" named neither the agent nor the
-rebase. It now reads **"agent asked to rebase + test ∙ when it is done, m merges"**: the
-same words as the offer that armed it ("m asks the agent to rebase + test"), the agent as the
-one who acts next, and `m` as the user's key after that — the board's "m <verb>" idiom.
-Nothing merges by itself here; the auto-merge column setting is a separate road.
+Any "m <verb>" on that line reads as an offer available now, but `m` cannot merge until the
+agent has rebased. It now reads **"waiting for rebase"** and names no key; the merge offer
+returns on its own once the branch no longer needs a rebase.
