@@ -578,7 +578,7 @@ stands then, ANDed with `Board.mcp_tools`; `agent_allowed_columns` is empty belo
 as `spawn_session(.., Claude, submit_prompt: true)`, feed `auto_run_started` /
 `auto_run_refused:<why>` with actor `automation`, `Response::Created { started }` so the composer
 starts no second; never on a move, an agent's `create_ticket`, a wake, an unarchive. For that the
-brief is read at PASTE time (`retry_pending_submits` reads `description_body` when `Parked.brief`),
+brief is read at PASTE time (`settle_owed` reads `description_body` when `Parked.brief`),
 so a description written after the spawn still travels, and the composer's workspace rides
 `CreateTicket { workspace }`. `DeleteColumn` refuses live tickets (`move its N tickets first`) and
 the last column; `SortColumn` is one-shot and `SortBy` is its five orders — newest arrival,
@@ -710,7 +710,7 @@ The composer's Shift+Enter is the one gesture that also presses Enter — it min
 spawns claude, submits the title as the first prompt, and stays on the board (no handover; the
 card is how you watch it). **And since T-224 (2026-09-05) the description goes with it**: on every
 road where mesimon presses the Enter (`submit_prompt`), `spawn_session` parks `notes[0]`'s body
-in `pending_prompt` as a `Parked { brief: true }` and the first tick after `SessionStart` pastes
+in `owed` as a `Parked { brief: true }` and the first tick after `SessionStart` pastes
 it under the typed title (`paste_text`, the wake-and-ask shape — never typed ahead), so the first
 prompt is the whole brief; the plain-Enter road stays title-only because the user is about to
 edit the box. Agents skipped `get_ticket` however CLAUDE.md asked (the snippet is now imperative
@@ -721,7 +721,7 @@ described ticket without either (`SessionState::has_prompted`). README promise 3
 E2e `brief_e2e`. (STALE-MAP "The brief travels with the title".) It travels as `Command::SpawnSession { submit_prompt }` →
 `SessionRecord.pending_submit` → `send-keys Enter`, started on the
 `SessionStart{source: Startup}` frame and **repeated every 500 ms until the `UserPromptSubmit`
-ack** (`deliver_pending_submit` / `retry_pending_submits` / `ack_pending_submit`). The retry is
+ack** (`arm_owed` / `settle_owed` / `ack_owed`, one `owed` ledger since T-244). The retry is
 not belt-and-braces: Claude fires SessionStart *during* startup, so a single press on that edge
 loses a race it lost in the first real use. Two other traps are measured, not assumed: an Enter
 sent *with* the text is swallowed by Claude's paste detection, and the prompt must never ride
@@ -744,11 +744,11 @@ on sleeping agent auto wakes it for the user"): the field opens as on a paned cl
 ask claude`), and `Daemon::prompt_sleeping` — the road `prompt_session` takes when `prompt_target`
 finds no pane — runs `resume_session` (its guards intact, `Spawned { fresh }` back so the status can
 say `woke claude ∙ asked` or that a fresh conversation started), parks the words in the in-memory
-`pending_prompt` map and sets `pending_submit` (the launching arc); the `SessionStart` edge —
+`owed` map and sets `pending_submit` (the launching arc); the `SessionStart` edge —
 `Startup` OR `Resume` now — starts the retry clock without pressing, and the FIRST tick pastes the
 words through `paste_text` (bracketed paste + Enter, the live-pane shape; never typed ahead — a pty
 in canonical mode keeps 1 KiB), with the later ticks the ordinary Enter retries until the
-`UserPromptSubmit` ack. A restart drops the parked words like it drops `submit_retry`. `prompt_e2e`
+`UserPromptSubmit` ack. A restart drops the parked words with the whole `owed` ledger. `prompt_e2e`
 drives it with a 2.5 KB prompt (its stub runs `stty -icanon`: a canonical tty keeps 1 KiB of a
 line). The same test found the wake racing the sleep's own `pane-died` — the notify names only the
 sid16 the new pane reuses — so `Daemon::pane_reborn` drops a death frame for a `Spawning` record
@@ -780,7 +780,7 @@ queued ask rides `PromptSession { queued: true }` into the daemon's in-memory
 `queued` list and is delivered by `drain_queue` when `checkout_holders(cwd)` is empty —
 `core/src/quiet.rs::working_tickets`: no claude with the same `cwd` Spawning / Running /
 RequiresAction / Idle{Background} / `pending_submit` / a paste of ours still owed its ack
-(`Daemon::inflight`); a shell never counts — hooked beside `auto_move` in `apply_change`, on the
+(`Daemon::owed`, T-244); a shell never counts — hooked beside `auto_move` in `apply_change`, on the
 1 s bucket, and at enqueue (a quiet checkout sends at once); one per checkout per pass, **in
 BOARD order — column order, then top to bottom, the merge train's walk** (`Daemon::queue_order`,
 T-263, 2026-09-06: the user sorts the queue by moving the cards; `waits_on` names the holders and
@@ -792,7 +792,7 @@ it) prefills the field on the next Shift+Enter (Esc keeps, a blank Enter drops v
 `DropQueuedAsk`), feeds the card's owed mark (`glyphs::queued`, slow cadence, over still marks
 only — `queued_over`) and the cursor card's `queued ∙ after T-12` row (`App::pending_row`, the
 snooze row's slot; the ticket page's state row reads the same). A restart drops the queue like
-`pending_prompt`. E2e `ask_queue_e2e`. (STALE-MAP "The board's ask can wait for a quiet
+`owed`. E2e `ask_queue_e2e`. (STALE-MAP "The board's ask can wait for a quiet
 checkout".)
 
 **And what waits may be the SESSION (T-294, 2026-09-06, user: "shift+enter on non started sessions
@@ -803,7 +803,7 @@ queued ask needs an awake claude"). Now `Daemon::seat_of` answers `Pane | Wake |
 `Daemon::deliver` is the ONE road every ask takes — a send-now `PromptSession` and `drain_queue`
 alike, so a queued ask and a sent one can never disagree about what "the ticket's claude" means:
 paste, or `prompt_sleeping`, or `spawn_session(.., submit_prompt: true, prompt)`, whose words ride
-UNDER the brief in `Parked` (`retry_pending_submits` composes description then user, and
+UNDER the brief in `Parked` (`settle_owed` composes description then user, and
 `spawn_session` takes the prompt so `pending_spawns` can replay it after provisioning). A `Start`
 entry's `text` may be EMPTY — there the prompt is the ticket's own title, so `sanitize_prompt`'s
 blank refusal is lifted for that seat alone (the Enter lands on the title the spawn types, which is

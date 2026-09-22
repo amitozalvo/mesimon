@@ -5,7 +5,7 @@
 //!
 //! Only the seats a restart can still honour are written. A `Pane` entry is
 //! words owed to a pane the next daemon "no longer understands"
-//! (`Daemon::pending_prompt`'s argument): the pane's state is re-derived at
+//! (`Daemon::owed`'s parked words): the pane's state is re-derived at
 //! Low confidence and the paste may land in a box mid-turn, so it dies with
 //! the process as before. A `Start` has no pane at all — the title and the
 //! words are the whole entry — and a `Wake` names a parked record that

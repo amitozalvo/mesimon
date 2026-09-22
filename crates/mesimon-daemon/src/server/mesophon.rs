@@ -1161,9 +1161,7 @@ impl Daemon {
         let Ok(ticket) = ulid::Ulid::from_string(ticket) else {
             return Reply::Rejected { message: "invalid ticket".into() };
         };
-        if self.pending_prompt.contains_key(&id)
-            || self.board.sessions.iter().any(|s| s.id == id && s.pending_submit)
-        {
+        if self.parked(id) || self.board.sessions.iter().any(|s| s.id == id && s.pending_submit) {
             return Reply::Rejected {
                 message: "a prompt is already waiting for this session".into(),
             };
@@ -1178,11 +1176,11 @@ impl Daemon {
                 self.control_cancel(id);
                 return Reply::Rejected { message };
             }
-            self.drain_queue(now_ms());
+            self.drain_queue();
             self.broadcast();
             return if self.queued.iter().any(|q| q.ticket == ticket) {
                 Reply::Delivery { status: "queued".into() }
-            } else if self.pending_prompt.contains_key(&id) {
+            } else if self.parked(id) {
                 Reply::Delivery { status: "awaiting_delivery".into() }
             } else {
                 self.control
@@ -1193,9 +1191,9 @@ impl Daemon {
                     .unwrap_or(Reply::Delivery { status: "unknown".into() })
             };
         }
-        match self.paste_to_ticket(ticket, &text) {
+        match self.paste_to_ticket(ticket, &text, Ack::PROMPT) {
             Ok(()) => {
-                let waiting = self.pending_prompt.contains_key(&id);
+                let waiting = self.parked(id);
                 if waiting {
                     // This composer supplies exactly the user's words, without
                     // any outstanding initial ticket prefill.
@@ -1273,12 +1271,7 @@ impl Daemon {
             match self.send_queued_ask(ticket) {
                 Response::Err { message } => Reply::Rejected { message },
                 _ => Reply::Delivery {
-                    status: if self.pending_prompt.contains_key(&id) {
-                        "awaiting_delivery"
-                    } else {
-                        "submitted"
-                    }
-                    .into(),
+                    status: if self.parked(id) { "awaiting_delivery" } else { "submitted" }.into(),
                 },
             }
         } else {
@@ -1345,9 +1338,8 @@ impl Daemon {
     pub(super) fn control_cancel(&mut self, id: uuid::Uuid) {
         if let Some(p) = self.control.pending.remove(&id) {
             self.queued.retain(|q| !matches!(q.seat, QueuedSeat::Pane(s) if s == id));
-            self.pending_prompt.remove(&id);
             self.codex_input_due.remove(&id);
-            self.clear_pending_submit(id);
+            self.drop_owed(id);
             if let Some((grant, _, command)) = p.send_now_receipt {
                 self.control.remember(
                     grant,

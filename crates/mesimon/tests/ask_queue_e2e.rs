@@ -575,6 +575,10 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
     wait_until(Duration::from_secs(5), "send now during turn", || {
         text().contains("idle-queue-send-now")
     });
+    // The by-hand send is a paste of mesimon's own and owes its ack like
+    // every other (T-244): until Claude takes it the checkout is busy, so
+    // the ack lands here as it would in a real pane.
+    hook_send(&hooks, &sid.to_string(), "UserPromptSubmit", "{}");
     queue(&mut c, "idle-queue-taken-back");
     assert!(
         matches!(c.request(Command::TakeQueuedAsk { ticket }), Response::PromptTakenBack { text } if text == "idle-queue-taken-back")

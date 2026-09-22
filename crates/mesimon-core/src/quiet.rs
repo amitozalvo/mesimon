@@ -102,14 +102,15 @@ pub fn still_awake(kind: SessionKind, why: &str) -> String {
 }
 
 /// Tickets with a working claude — deduped, in session order — plus every
-/// ticket in `inflight` (a paste mesimon made whose `UserPromptSubmit` has
-/// not landed: the turn is coming, the hook just has not said so). `cwd`
+/// ticket in `owed` (the daemon's one ledger of pastes it made whose
+/// `UserPromptSubmit` has not landed, T-244: the turn is coming, the hook
+/// just has not said so). `cwd`
 /// narrows it to one checkout by string equality: every shared-checkout
 /// session carries the same resolved repo root, and a worktree's sessions
 /// carry its own path.
 pub fn working_tickets(
     board: &Board,
-    inflight: &HashSet<ulid::Ulid>,
+    owed: &HashSet<ulid::Ulid>,
     cwd: Option<&str>,
 ) -> Vec<ulid::Ulid> {
     let mut out: Vec<ulid::Ulid> = Vec::new();
@@ -127,7 +128,7 @@ pub fn working_tickets(
         }
     }
     // A set has no order; the snapshot's `waits_on` must not shuffle.
-    let mut flying: Vec<ulid::Ulid> = inflight.iter().copied().collect();
+    let mut flying: Vec<ulid::Ulid> = owed.iter().copied().collect();
     flying.sort();
     for t in flying {
         let same_checkout =
@@ -409,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn the_checkout_filter_is_the_cwd_string_and_inflight_rides_along() {
+    fn the_checkout_filter_is_the_cwd_string_and_owed_rides_along() {
         let a = ulid::Ulid::new();
         let b = ulid::Ulid::new();
         let c = ulid::Ulid::new();
@@ -429,13 +430,13 @@ mod tests {
         assert_eq!(working_tickets(&board, &none, Some("/repo")), vec![a]);
         assert_eq!(working_tickets(&board, &none, Some("/wt/b")), vec![b]);
         assert!(working_tickets(&board, &none, Some("/elsewhere")).is_empty());
-        let inflight: HashSet<ulid::Ulid> = [c].into_iter().collect();
-        assert_eq!(working_tickets(&board, &inflight, Some("/repo")), vec![a, c]);
+        let owed: HashSet<ulid::Ulid> = [c].into_iter().collect();
+        assert_eq!(working_tickets(&board, &owed, Some("/repo")), vec![a, c]);
         assert_eq!(
-            working_tickets(&board, &inflight, Some("/wt/b")),
+            working_tickets(&board, &owed, Some("/wt/b")),
             vec![b],
             "c's paste is in another checkout"
         );
-        assert_eq!(working_tickets(&board, &inflight, None), vec![a, b, c]);
+        assert_eq!(working_tickets(&board, &owed, None), vec![a, b, c]);
     }
 }

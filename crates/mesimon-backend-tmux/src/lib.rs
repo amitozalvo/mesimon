@@ -377,7 +377,7 @@ impl TmuxBackend {
     /// `paste_text` splits its Enter out: a CR arriving in the same byte burst
     /// as the text is absorbed as pasted content and never submits (T-5's
     /// negative test, reconfirmed 2026-08-31 against a fresh Claude pane).
-    /// The caller owns the timing — see `Daemon::deliver_pending_submit`.
+    /// The caller owns the timing — see `Daemon::arm_owed` and `settle_owed`.
     pub fn send_enter(&self, sid16: &str) -> Result<()> {
         self.run(&["send-keys", "-t", sid16, "Enter"])?;
         Ok(())

@@ -5849,6 +5849,7 @@ what the board does; the tests, the goldens and the e2e suite ran unchanged (919
   agent's atomic `AgentCreateTicket` — a wire change; the partial-failure window is real. Shipped as T-243 (2026-09-23).
 - The two owed-paste ledgers (`pending_prompt` + `pending_submit` + `submit_retry` vs
   `inflight`) — one `owed` map keyed by session would be the design, not a cleanup.
+  Closed by T-244 (2026-09-23).
 - `pane_reborn`'s tmux fork: passing `#{pane_id}` in the `pane-died` hook and matching by
   pane identity is the deeper fix (a hook + record change).
 - One `Pager` for the diff, PREVIEW and RELEASES scroll states; the daemon computing
@@ -12608,3 +12609,53 @@ the second (2026-09-23, two throwaway `-p` calls). So the daemon's `history::mis
 searches every project dir, agrees with Claude Code's own lookup. A `Sleeping` record sends no
 frames and corrects itself only when its agent next does something.
 
+## One owed-paste ledger keyed by session (T-244, 2026-09-23, user: "verify still needed … if verified and easy, move to in progress and implement" ∙ "plan this")
+
+**Finding (T-234's altitude pass).** "mesimon put words in a pane and is waiting for its
+`UserPromptSubmit`" was tracked twice in `server.rs`: per session (`submit_retry`,
+`pending_prompt`, the record's `pending_submit`) and per ticket (`inflight`). Both were set by
+a paste of ours, both cleared by the same hook at two sites, both expired on the tick, and
+`quiet::working_tickets` read both. Every paste road added since (T-294's queued wake and
+start, T-418's `queue.json`, the mesophon send-now, the crown's wake, T-420's send-after-plan)
+had to pick a ledger. The difference — one presses Enter, one does not — is a count, not a
+kind. Verified real on 2026-09-22 against current main before the plan.
+
+**Shipped.** `Daemon::owed: HashMap<Uuid, Owed>` — `{ ticket, parked: Option<Parked>,
+presses, next_press, expires, ack }` — replaces all three. `paste_to_ticket(ticket, text,
+ack)` is the one place a paste of ours is entered: a Claude pane's goes in with its Enter and
+waits `INFLIGHT_MS` for the ack; a Codex pane's is parked for `drive_codex_inputs`, which
+pastes on its own clock, and carries no expiry because the record's `pending_submit` hold is
+its clock. The launch roads park through `park` (the composed spawn, the wake-and-ask, a
+provisioned wake's replay) with `SUBMIT_ATTEMPTS` presses and no expiry. `arm_owed` on the
+`SessionStart` edge starts the presses; `settle_owed` on the tick expires and presses;
+`ack_owed(session)` on `UserPromptSubmit` and on Codex's new-turn edge settles — one site, one
+feed line, then the queued-ask drop. `Ack { by, word }` is the feed line a paste earns:
+`Ack::PROMPT` for anything a person asked for, `Ack::QUEUED` for the queue's own paste (the
+one word `Pending::in_flight` and the ask receipts read), the train's and the crown's words
+for theirs. `working()` passes one set. `SessionRecord.pending_submit` stays: it is the
+persisted Codex hold and the snapshot mirror the launching arc reads, set for launch entries
+only.
+
+**Behaviour that changed, on purpose.**
+- A `p` prompt, a manual `m` merge request, a note's nudge and the by-hand `^y` send of a
+  queued ask now owe their ack like every other paste: the ticket is working until
+  `UserPromptSubmit` (≈100 ms) or `INFLIGHT_MS`, the card says `queued ∙ sending` for the
+  `^y` case, and the feed gets `prompt_submitted` / `queued_ask_delivered` on the ack. Before,
+  those roads held nothing and the next queued ask could go out under an unacked paste.
+- A queued ask to a Codex pane no longer emits `paste_unacked` at 10 s while the record still
+  holds the checkout; the hold is the clock.
+- A Claude record persisted with `pending_submit` across a daemon restart is cleared at
+  startup (`prompt_submit_abandoned`), because the ledger that would press and ack it is
+  memory. Before, the flag held `is_working` and the launching arc until a kill or a wake.
+  The one thing lost is a restart mid-spawn, where the late `SessionStart` used to get its
+  Enter; the title sits in the box as a plain spawn leaves it.
+- The ack is session-keyed, so only the pasted session's `UserPromptSubmit` settles the entry;
+  a ticket has one claude, so in practice the same session as before.
+- Unchanged: the cadence (500 ms × 10), the `pressable()` rule (stop outside
+  Spawning/Idle/Running, never answer a modal), paste-then-separate-Enter, the brief's assembly
+  on both agent kinds, and the mesophon receipts (`awaiting_delivery` is `parked(id)`).
+
+**Tests.** `quiet.rs`'s `working_tickets` test renamed for its parameter; `ask_queue_e2e` and
+`crown_e2e` now send the `UserPromptSubmit` a real pane sends after a by-hand send, since the
+send owes it. `prompt_e2e`, `hook_e2e`, `brief_e2e`, `auto_run_e2e`, `column_ask_e2e`,
+`merge_train_e2e`, `provider_e2e`, `external_provider_e2e` unchanged and green.

@@ -538,7 +538,14 @@ fn the_crown_lets_one_agent_edit_the_others() {
     wait_until(std::time::Duration::from_secs(10), "the sent words to land", || {
         landed("mesimon-probe-66 now go")
     });
-    assert!(pending_of(&mut c, Some(b)).is_empty());
+    // The by-hand send is a paste of mesimon's own and owes its ack like
+    // every other (T-244): the card says `sending` until Claude takes it.
+    let p = pending_of(&mut c, Some(b));
+    assert!(p.iter().all(|p| p.in_flight), "only the paste's own mark remains: {p:?}");
+    hook_send(&h.paths.hook_sock(), &sb.to_string(), "UserPromptSubmit", "{}");
+    wait_until(std::time::Duration::from_secs(5), "the paste's ack to clear it", || {
+        pending_of(&mut c, Some(b)).is_empty()
+    });
     // The feed names the tool and the actor, never the words; the words are
     // in no state file either.
     wait_until(std::time::Duration::from_secs(5), "the ask_agent feed line", || {

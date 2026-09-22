@@ -400,7 +400,7 @@ pub(crate) fn is_working(rec: &SessionRecord) -> bool {
 /// still pressing Enter on a 500 ms cadence and the turn has not begun.
 ///
 /// It mirrors the daemon's own `pressable` predicate (server.rs
-/// `retry_pending_submits`) — the launch mark is shown exactly while the
+/// `settle_owed`) — the launch mark is shown exactly while the
 /// daemon still expects the prompt to land — minus its `Running` arm, which
 /// the spinner outranks here: once work is in flight the fast arc is the
 /// truthful one. A stale flag cannot strand the mark: the daemon clears it on
