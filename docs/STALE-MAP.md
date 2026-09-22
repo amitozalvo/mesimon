@@ -12602,9 +12602,9 @@ is gone, the record follows. Identity still never travels; a copy beside a still
 original changes nothing; a record with no path is `SessionStart`'s to fill. CLAUDE.md now says
 never to call `EnterWorktree` — the workspace setting is how a ticket gets a worktree.
 
-**Left open.** A wake replays `--resume` from the ticket's cwd; whether Claude Code finds a
-session filed under another project dir from there is unverified. The daemon's own
-`history::missing` searches every project dir, so mesimon would attempt the resume rather than
-mint a fresh conversation. A `Sleeping` record sends no frames and corrects itself only when
-its agent next does something.
+**Measured after.** A wake is safe: `claude -p --resume <uuid>` run from a second directory
+continued a conversation filed under the first directory's project dir, and left no copy under
+the second (2026-09-23, two throwaway `-p` calls). So the daemon's `history::missing`, which
+searches every project dir, agrees with Claude Code's own lookup. A `Sleeping` record sends no
+frames and corrects itself only when its agent next does something.
 
