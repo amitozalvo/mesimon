@@ -133,6 +133,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         /// The offset is not always 0: a rename edits the card's first line,
         /// a prompt edits a row appended under the whole card.
         edit_cursor: Option<(usize, u16)>,
+        /// The refusal shake's offset this frame (T-423): the whole card is
+        /// drawn this many cells off its place, bar and all. 0 at rest.
+        shake: i16,
     }
     let mut groups: Vec<Group> = Vec::new();
     let mut push_card = |t: &Ticket, selected: bool, held: bool| {
@@ -148,6 +151,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 cursor: true,
                 waiting,
                 edit_cursor: Some((0, x_off)),
+                shake: 0,
             });
             return;
         }
@@ -239,7 +243,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             }
             (at, x_off)
         });
-        groups.push(Group { lines, cursor: selected || held, waiting, edit_cursor });
+        groups.push(Group {
+            lines,
+            cursor: selected || held,
+            waiting,
+            edit_cursor,
+            shake: app.shake_dx(t.id),
+        });
     };
     match ghost {
         Some((gid, gidx)) => {
@@ -288,6 +298,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 cursor: true,
                 waiting: false,
                 edit_cursor: Some((0, x_off)),
+                shake: 0,
             });
         }
     }
@@ -298,10 +309,15 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut card_ranges: Vec<(usize, usize, bool)> = Vec::new(); // (start, end, waiting)
     let mut cursor_range: Option<(usize, usize)> = None;
     let mut edit_at: Option<(usize, u16)> = None; // (flat line idx, x offset)
+                                                  // The card mid-shake, if any: its flat line range and its offset.
+    let mut shaken: Option<(usize, usize, i16)> = None;
     for g in &groups {
         let start = lines.len();
         lines.extend(g.lines.iter().cloned());
         let end = lines.len();
+        if g.shake != 0 {
+            shaken = Some((start, end, g.shake));
+        }
         // One blank row between cards (06 §5.5 — reinstated after dogfood:
         // contiguous one-line cards were hard to separate by eye).
         lines.push(Line::default());
@@ -532,6 +548,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     debug_assert_eq!(out.len(), head_rows);
 
     // ---- body -------------------------------------------------------------
+    let mut shaken_rows: Option<(u16, Vec<Line<'static>>, i16)> = None;
     if lines.is_empty() {
         // Empty column: a legal cursor position (07 §16.2) — the hint shows
         // only under the cursor (author 2026-08-30).
@@ -548,6 +565,23 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             out.push(Line::default());
         }
         out.extend(lines[content_start..content_end].iter().cloned());
+        // The shaken card's rows are left blank here and drawn after the
+        // column, one cell off (T-423): a card that moves has to leave its
+        // place, and the gutter either side of a column is the one cell it
+        // moves into. Only the rows on screen; a cut card shakes its
+        // visible part.
+        if let Some((cs, ce, dx)) = shaken {
+            let lo = cs.max(content_start);
+            let hi = ce.min(content_end);
+            if lo < hi {
+                let at = head_rows + usize::from(top.is_some()) * 2 + (lo - content_start);
+                let rows: Vec<Line<'static>> = out[at..at + (hi - lo)].to_vec();
+                for l in &mut out[at..at + (hi - lo)] {
+                    *l = Line::default();
+                }
+                shaken_rows = Some((at as u16, rows, dx));
+            }
+        }
         if bottom.is_some() {
             // Keep the cue at the viewport edge even when a tall hidden card
             // leaves unused rows after the final complete visible card.
@@ -557,6 +591,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     }
 
     f.render_widget(Paragraph::new(out), area);
+    if let Some((row, rows, dx)) = shaken_rows {
+        // `LPAD`, `GUT` and `RPAD` are each a cell, so one cell either way is
+        // always inside the frame; the clamp is for a geometry that is not.
+        let x = (i32::from(area.x) + i32::from(dx)).clamp(0, i32::from(f.area().right()) - 1);
+        let width = area.width.min(f.area().right().saturating_sub(x as u16));
+        let rect = Rect { x: x as u16, y: area.y + row, width, height: rows.len() as u16 };
+        f.render_widget(Paragraph::new(rows), rect);
+    }
 
     // The hardware cursor sits in the edited title (06 §5.7: visible bar in
     // any text input — never a drawn glyph).

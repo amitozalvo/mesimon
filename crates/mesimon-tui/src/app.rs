@@ -1163,6 +1163,13 @@ const SPOKE_EVERY: Duration = Duration::from_secs(1);
 const CROWN_LIT_MS: u64 = 2_000;
 /// How long the crowning flash runs on a newly crowned card (T-411).
 const CROWN_FLASH_MS: u64 = 2_000;
+/// The refusal shake (T-423): a card a chord refused to act on shakes its
+/// head — one cell left and right, three times — and settles. One step per
+/// entry, `SHAKE_STEP` each; after the last the card is back where it was.
+/// Colourless on purpose: the delete's red is a deletion's and the move
+/// blink is a card in hand, and a refusal is neither.
+const SHAKE_OFFSETS: [i16; 6] = [1, -1, 1, -1, 1, -1];
+const SHAKE_STEP: Duration = Duration::from_millis(60);
 /// One `pgup`/`pgdn` in the editor body, in lines. The handler cannot see
 /// the rendered height; a screenful is approximated.
 const EDITOR_PAGE: usize = 20;
@@ -1373,6 +1380,10 @@ pub struct App {
     /// then lets go. Keyed to the TICKET: moving the cursor ends the reveal,
     /// because a flash is about the card you just tagged and no other.
     pub tag_flash: Option<(ulid::Ulid, Instant)>,
+    /// The last card a chord refused to act on, and when (T-423): the card
+    /// shakes for `SHAKE_OFFSETS` from that instant. Board-side and per
+    /// board, like `tag_flash` — a refusal is about the card you pressed on.
+    pub refused: Option<(ulid::Ulid, Instant)>,
     /// The ticket page's preview zone: the selected shell's pane tail, and
     /// when it was fetched. Per-view and in memory only — a shell has no
     /// transcript file to read the way `peek_cache` reads an agent's, so
@@ -1663,6 +1674,7 @@ impl App {
             peek_cache: crate::peek::PeekCache::default(),
             searcher: std::cell::RefCell::new(None),
             tag_flash: None,
+            refused: None,
             shell_tail: None,
             terminals: Vec::new(),
             crown_touches: Vec::new(),
@@ -1749,11 +1761,38 @@ impl App {
     }
 
     /// Whether something on screen is mid-motion and wants the next frame
-    /// sooner than the spinner's cadence: the composer dialog growing, or
-    /// the screen's reading zone turning a page.
+    /// sooner than the spinner's cadence: the composer dialog growing, the
+    /// screen's reading zone turning a page, or a refused card shaking.
     pub fn animating(&self) -> bool {
         matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
             || self.pager().is_some_and(Pager::animating)
+            || self.shaking()
+    }
+
+    /// A chord refused to act on `ticket`: shake it (T-423). The status line
+    /// still says why; this is the "no" on the card itself, where the eye
+    /// is. Restarts on every refusal, so a repeated press is a repeated no.
+    pub fn shake(&mut self, ticket: ulid::Ulid) {
+        self.refused = Some((ticket, Instant::now()));
+    }
+
+    /// Is a refusal shake still running?
+    fn shaking(&self) -> bool {
+        self.refused.is_some_and(|(_, at)| at.elapsed() < SHAKE_STEP * SHAKE_OFFSETS.len() as u32)
+    }
+
+    /// How far `ticket` is drawn off its place this frame: the refusal
+    /// shake's offset in cells, 0 for every card that is not mid-shake. The
+    /// board card moves whole (bar and all) and the ticket page's title
+    /// row moves within its band.
+    pub fn shake_dx(&self, ticket: ulid::Ulid) -> i16 {
+        match self.refused {
+            Some((t, at)) if t == ticket => {
+                let step = (at.elapsed().as_millis() / SHAKE_STEP.as_millis()) as usize;
+                SHAKE_OFFSETS.get(step).copied().unwrap_or(0)
+            }
+            _ => 0,
+        }
     }
 
     /// The reading zone the screen's `{ }` and `j`/`k` move (T-246): the
@@ -8749,17 +8788,25 @@ impl App {
     /// Archive with the advisory pre-check (the daemon gates again): archive
     /// means everything is already asleep — the same predicate the header
     /// suggestion prices.
+    /// Archive `id`, or refuse: the status says why and the card shakes its
+    /// head (T-423) — both refusal roads, the board's own awake check and
+    /// the daemon's word, so a session that woke between the two presses
+    /// is refused the same way.
     fn archive_gated(&mut self, id: ulid::Ulid) -> Result<()> {
         if self.board.ticket_awake_sessions(id) > 0 {
             let how = keymap::hint_for(Scope::Board, Verb::Sleep, &self.ctx())
                 .map(|(show, _)| format!(" ({show})"))
                 .unwrap_or_default();
             self.status = format!("its sessions are awake — sleep them first{how}");
+            self.shake(id);
             return Ok(());
         }
         let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
         match self.req(Command::ArchiveTicket { id }) {
-            Response::Err { message } => self.status = message,
+            Response::Err { message } => {
+                self.status = message;
+                self.shake(id);
+            }
             _ => {
                 self.last_undo = Some(LastUndo::Archive(id));
                 self.status = format!("archived {key} ∙ u undoes it");
@@ -16802,6 +16849,14 @@ mod tests {
         press(&mut app, 'a');
         assert_eq!(app.status, "its sessions are awake — sleep them first (x)");
         assert!(app.archive_armed.is_none(), "never arm a confirm we would only refuse");
+        // And the card itself says no (T-423): the shake starts on the press
+        // and asks for fast frames while it runs.
+        assert_eq!(app.shake_dx(ulid::Ulid(1)), 1, "the shake starts at once");
+        assert_eq!(app.shake_dx(ulid::Ulid(2)), 0, "bystanders hold still");
+        assert!(app.animating(), "a shake wants the 16 ms frame");
+        app.refused = Some((ulid::Ulid(1), Instant::now() - SHAKE_STEP * 7));
+        assert_eq!(app.shake_dx(ulid::Ulid(1)), 0, "settled after the last step");
+        assert!(!app.animating(), "and stops asking for fast frames");
         // Advisory fired client-side; nothing was sent, nothing archived.
         assert_eq!(app.board.column_tickets("todo").len(), 2);
         assert!(app.board.archived_tickets().is_empty());

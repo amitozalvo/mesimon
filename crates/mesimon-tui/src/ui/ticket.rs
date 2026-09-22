@@ -160,6 +160,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     } else {
         Style::default().fg(ink.base).add_modifier(Modifier::BOLD)
     };
+    // `a` refused here too (T-423): the title row is the page's card, and it
+    // shakes within its band — the pad before the title is what moves.
+    let pad = (1 + i32::from(app.shake_dx(ticket_id))).clamp(0, 2) as usize;
     let title_row = match editing {
         Some(buf) => {
             let budget = title_budget.saturating_sub(1);
@@ -168,7 +171,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             Line::from(vec![Span::raw(" "), Span::styled(shown, title_style)])
         }
         None => Line::from(vec![
-            Span::raw(" "),
+            Span::raw(" ".repeat(pad)),
             Span::styled(truncate(&ticket.title, title_budget), title_style),
         ]),
     };

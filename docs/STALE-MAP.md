@@ -12874,3 +12874,38 @@ accepts would deadlock. Pressing the accepts from `prompt_column` itself — the
 shared-checkout tickets both at `Plan`: one Enter lands, the second's row names the first, the
 second Enter only after the first agent's approved turn ends; then a column accept with the
 flag, receipt `accepts: 2`, the same order).
+
+## A refused archive shakes the card (T-423, 2026-09-23, user: "show indication when archive impossible on the ticket itself" ∙ "animate the ticket to indicate can't do somehow, think UX")
+
+**Shipped.** `a` on a ticket whose sessions are awake was refused in the status line only
+(`its sessions are awake — sleep them first (x)`), and the card it was pressed on looked like
+every other cursor card — the eye is on the card, the answer was a screen-width away. Now the
+card shakes its head: drawn one cell right, then left, three times on a 60 ms step
+(`SHAKE_OFFSETS`, `SHAKE_STEP` in `app.rs`; 360 ms in all), then back in its place. The
+board card moves WHOLE — bar, title, accordion rows — into the gutter cell either side of the
+column (`LPAD`, `GUT` and `RPAD` are each a cell, so the cell is always there); the ticket
+page's title row, that page's card, moves within its band. The status line still says why.
+
+**Why a shake and not a colour.** The board already spends its two chord motions: the
+delete's red-tinted square wave is a deletion's ("The armed delete flashes the card") and the
+move blink is a card in hand, borrowed by the armed snooze. A refusal is neither, and a third
+colour would have been one more thing to learn. A sideways shake is the refusal gesture every
+login field already taught, it reads in mono, and it touches no colour law — the goldens are
+colourless and the cells that move keep their styles. It is a MOTION, not a phase: it starts
+on the press and ends on its own, unlike the chord flashes that hold until the second press.
+
+**Mechanics.** `App::refused: Option<(Ulid, Instant)>` is the state, `App::shake(id)` sets it
+(every refusal restarts it, so a repeated press is a repeated no), `App::shake_dx(id)` is the
+offset this frame and `App::animating` asks for the 16 ms frame while it runs. `ui/board.rs`
+leaves the shaken card's rows blank in the column's paragraph and draws them after it at
+`area.x + dx` — a card that moves has to leave its place; blanking is what keeps the vacated
+cell empty. `ui/ticket.rs` pads the title by `1 + dx`. `archive_gated` shakes on both refusal
+roads, the board's own awake check and the daemon's `Err`, so a session that woke between the
+two presses is refused the same way. Nothing else calls `shake` yet: the snooze's first-press
+refusal (`snooze_blocked`) and the DONE gate's are the same shape and the natural next callers.
+
+**Tests.** `archive_refused_while_sessions_awake` (the shake starts on the press, bystanders
+still, settled and quiet after the last step); `test_archive_refused_shakes_the_card` (step 0
+one cell right with the bar's ground moved, step 1 one cell left, settled at rest, bystanders
+still; `board_archive_refused_120x30` pins the first step);
+`test_archive_refused_shakes_the_ticket_title`.

@@ -6856,6 +6856,82 @@ fn test_snooze_armed_blinks_the_ticket_title() {
     assert_eq!(fg_at(&app), theme.sel.dim3);
 }
 
+/// A refused archive shakes the card (T-423, user: "show indication when
+/// archive impossible on the ticket itself"): `a` on a ticket whose sessions
+/// are awake is refused in the status line as before, and the card itself
+/// says no — drawn one cell right, then left, three times, bar and all, on
+/// the `SHAKE_STEP` clock, and back in its place after the last step.
+/// Bystanders hold still. Colourless, so it is neither the delete's red nor
+/// the move blink, and the golden pins the first step.
+#[test]
+fn test_archive_refused_shakes_the_card() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1; // in progress: T-3 holds a running claude and a shell
+    app.cursor_row = Some(0);
+    let at = |app: &App, needle: &str| -> (u16, u16) {
+        let buf = cells(app, 120, 30);
+        for y in 0..30u16 {
+            let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(ix) = row.find(needle) {
+                return (row[..ix].chars().count() as u16, y);
+            }
+        }
+        panic!("{needle} not on screen");
+    };
+    let (rest, y) = at(&app, "Fix OSC-11");
+    let bystander = at(&app, "Adopt drawer");
+    // bar(2) + pad + glyph + pad precede the title of a card with sessions.
+    // The bar is a painted cell: its ground is what moves.
+    let bar_x = rest - 5;
+    let bar = cells(&app, 120, 30)[(bar_x, y)].bg;
+    assert_ne!(bar, ratatui::style::Color::Reset, "the cursor card wears its bar");
+    press(&mut app, 'a');
+    assert_eq!(app.status, "its sessions are awake — sleep them first (x)");
+    let id = ulid_n(3);
+    let seed = |app: &mut App, ms: u64| {
+        app.refused = Some((id, std::time::Instant::now() - std::time::Duration::from_millis(ms)));
+    };
+    seed(&mut app, 30); // step 0: one cell right
+    assert_eq!(at(&app, "Fix OSC-11"), (rest + 1, y), "first step is one cell right");
+    let buf = cells(&app, 120, 30);
+    assert_ne!(buf[(bar_x, y)].bg, bar, "the bar moved with the card");
+    assert_eq!(buf[(bar_x + 1, y)].bg, bar, "and stands one cell right");
+    assert_eq!(at(&app, "Adopt drawer"), bystander, "bystanders hold still");
+    golden("board_archive_refused_120x30", &render(&app, 120, 30));
+    seed(&mut app, 90); // step 1: one cell left, into the gutter
+    assert_eq!(at(&app, "Fix OSC-11"), (rest - 1, y), "second step is one cell left");
+    assert_eq!(at(&app, "Adopt drawer"), bystander, "bystanders hold still");
+    seed(&mut app, 400); // past the last step: settled
+    assert_eq!(at(&app, "Fix OSC-11"), (rest, y), "settled back in place");
+    assert!(!app.animating(), "a settled shake no longer asks for fast frames");
+}
+
+/// And the ticket page's title row, that page's card, shakes within its band.
+#[test]
+fn test_archive_refused_shakes_the_ticket_title() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let x_at = |app: &App| -> u16 {
+        let buf = cells(app, 120, 30);
+        let row: String = (0..120u16).map(|x| buf[(x, 2u16)].symbol()).collect();
+        row.find("Fix OSC-11").expect("title row") as u16
+    };
+    let rest = x_at(&app);
+    press(&mut app, 'a');
+    assert_eq!(app.status, "its sessions are awake — sleep them first (x)");
+    let id = ulid_n(3);
+    let seed = |app: &mut App, ms: u64| {
+        app.refused = Some((id, std::time::Instant::now() - std::time::Duration::from_millis(ms)));
+    };
+    seed(&mut app, 30);
+    assert_eq!(x_at(&app), rest + 1);
+    seed(&mut app, 90);
+    assert_eq!(x_at(&app), rest - 1);
+    seed(&mut app, 400);
+    assert_eq!(x_at(&app), rest);
+}
+
 /// The ticket page's title row is that page's card: `d` there flashes it the
 /// same way.
 #[test]
