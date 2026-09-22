@@ -1794,6 +1794,7 @@ mod tests {
                 column: "TODO".into(),
                 text: "do the thing".into(),
                 queued: true,
+                accept_plan: false,
             },
             Command::DropQueuedAsk { ticket: t },
             Command::TakeQueuedAsk { ticket: t },

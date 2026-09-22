@@ -31,7 +31,7 @@
 
 use std::collections::HashSet;
 
-use crate::board::{Board, SessionKind, SessionRecord, SessionState, StopReason};
+use crate::board::{Board, Reason, SessionKind, SessionRecord, SessionState, StopReason};
 
 /// An agent whose turn is in progress, owed, or cannot be proved quiet.
 pub fn is_working(s: &SessionRecord) -> bool {
@@ -49,6 +49,18 @@ pub fn is_working(s: &SessionRecord) -> bool {
                     | SessionState::RequiresAction { .. }
                     | SessionState::Idle { stop_reason: StopReason::Background }
             ))
+}
+
+/// A session that holds its checkout AGAINST A PLAN ACCEPT (T-429):
+/// `is_working` minus a session parked on its own plan dialog. A dialog
+/// writes nothing, and three agents each waiting on theirs would otherwise
+/// hold the checkout against each other forever — the board's "accept all"
+/// would press none of them. Written in terms of `is_working` so the two
+/// can only ever disagree about the dialog, never about what a turn is. A
+/// press already in flight is the daemon's to add: the record stays at
+/// `Plan` until the harness confirms it, and it is a writer from the Enter.
+pub fn holds_against_accept(s: &SessionRecord) -> bool {
+    is_working(s) && s.state != (SessionState::RequiresAction { reason: Reason::Plan })
 }
 
 /// A turn actually IN PROGRESS: `is_working` minus the two clauses that
@@ -113,6 +125,18 @@ pub fn working_tickets(
     owed: &HashSet<ulid::Ulid>,
     cwd: Option<&str>,
 ) -> Vec<ulid::Ulid> {
+    working_tickets_by(board, owed, cwd, is_working)
+}
+
+/// `working_tickets` under another reading of "working": the plan accept's
+/// (`holds_against_accept`, T-429) is the one other caller. The owed pastes
+/// count whatever the predicate says — an Enter of ours is a writer.
+pub fn working_tickets_by(
+    board: &Board,
+    owed: &HashSet<ulid::Ulid>,
+    cwd: Option<&str>,
+    working: fn(&SessionRecord) -> bool,
+) -> Vec<ulid::Ulid> {
     let mut out: Vec<ulid::Ulid> = Vec::new();
     let mut push = |t: ulid::Ulid| {
         if !out.contains(&t) {
@@ -123,7 +147,7 @@ pub fn working_tickets(
         if cwd.is_some_and(|c| c != s.cwd) {
             continue;
         }
-        if is_working(s) {
+        if working(s) {
             push(s.ticket);
         }
     }
@@ -438,5 +462,59 @@ mod tests {
             "c's paste is in another checkout"
         );
         assert_eq!(working_tickets(&board, &owed, None), vec![a, b, c]);
+    }
+
+    /// T-429: against a plan accept, a session on its own plan dialog holds
+    /// nothing — the dialog writes nothing — while every other working
+    /// clause holds as it does for a paste, and an owed Enter of ours holds
+    /// whatever the state says. So three agents on three dialogs in one
+    /// checkout leave it quiet, and one implementing beside them does not.
+    #[test]
+    fn a_plan_dialog_holds_nothing_against_an_accept() {
+        let plan = SessionState::RequiresAction { reason: Reason::Plan };
+        let on_dialog = session(ulid::Ulid::new(), SessionKind::Claude, "/repo", plan.clone());
+        assert!(is_working(&on_dialog), "a dialog is still the turn, for a paste");
+        assert!(!holds_against_accept(&on_dialog));
+        for state in [
+            SessionState::Spawning,
+            SessionState::Running,
+            SessionState::RequiresAction { reason: Reason::Permission },
+            SessionState::RequiresAction { reason: Reason::Question },
+            SessionState::Idle { stop_reason: StopReason::Background },
+        ] {
+            let s = session(ulid::Ulid::new(), SessionKind::Claude, "/repo", state.clone());
+            assert!(holds_against_accept(&s), "{state:?}");
+        }
+        let idle = session(
+            ulid::Ulid::new(),
+            SessionKind::Claude,
+            "/repo",
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        );
+        assert!(!holds_against_accept(&idle));
+        let codex = session(ulid::Ulid::new(), SessionKind::Codex, "/repo", plan.clone());
+        assert!(!holds_against_accept(&codex), "codex on its dialog: the same dialog");
+
+        let (a, b, c, d) =
+            (ulid::Ulid::new(), ulid::Ulid::new(), ulid::Ulid::new(), ulid::Ulid::new());
+        let board = board_with(vec![
+            session(a, SessionKind::Claude, "/repo", plan.clone()),
+            session(b, SessionKind::Claude, "/repo", plan.clone()),
+            session(c, SessionKind::Claude, "/repo", plan),
+            session(d, SessionKind::Claude, "/wt/d", SessionState::Running),
+        ]);
+        let none = HashSet::new();
+        assert_eq!(working_tickets(&board, &none, Some("/repo")), vec![a, b, c]);
+        assert!(
+            working_tickets_by(&board, &none, Some("/repo"), holds_against_accept).is_empty(),
+            "three dialogs hold nothing against each other"
+        );
+        let owed: HashSet<ulid::Ulid> = [b].into_iter().collect();
+        assert_eq!(
+            working_tickets_by(&board, &owed, Some("/repo"), holds_against_accept),
+            vec![b],
+            "an Enter of ours holds"
+        );
+        assert_eq!(working_tickets_by(&board, &none, Some("/wt/d"), holds_against_accept), vec![d]);
     }
 }

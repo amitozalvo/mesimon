@@ -125,6 +125,7 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
             column: "NOWHERE".into(),
             text: "x".into(),
             queued: false,
+            accept_plan: false,
         }),
         "no such column",
     );
@@ -135,8 +136,9 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
         column: column.clone(),
         text: "mesimon-probe-81 commit what you have".into(),
         queued: false,
+        accept_plan: false,
     }) {
-        Response::Asked { sent, woke, started, queued, skipped, failed } => {
+        Response::Asked { sent, woke, started, queued, skipped, failed, .. } => {
             assert_eq!((sent, woke, started, queued, skipped, failed), (1, 1, 1, 0, 0, 0));
         }
         other => panic!("expected the column's receipt: {other:?}"),
@@ -187,8 +189,9 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
         column: column.clone(),
         text: "mesimon-probe-82 rebase onto main".into(),
         queued: true,
+        accept_plan: false,
     }) {
-        Response::Asked { sent, woke, started, queued, skipped, failed } => {
+        Response::Asked { sent, woke, started, queued, skipped, failed, .. } => {
             assert_eq!((sent, woke, started, queued, skipped, failed), (0, 0, 0, 3, 0, 0));
         }
         other => panic!("expected the column's receipt: {other:?}"),
@@ -245,8 +248,9 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
         column: "TODO".into(),
         text: "   ".into(),
         queued: false,
+        accept_plan: false,
     }) {
-        Response::Asked { sent, woke, started, queued, skipped, failed } => {
+        Response::Asked { sent, woke, started, queued, skipped, failed, .. } => {
             assert_eq!((sent, woke, started, queued, skipped, failed), (0, 0, 1, 0, 1, 0));
         }
         other => panic!("expected the column's receipt: {other:?}"),
@@ -264,6 +268,7 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
             column: "TODO".into(),
             text: "  ".into(),
             queued: false,
+            accept_plan: false,
         }),
         "nothing to send",
     );

@@ -318,12 +318,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // The column's ask field (T-378) hangs UNDER THE HEADER the way a
     // ticket's hangs under its card: the header is what names where the
     // words go, so it stays whole and the field takes rows from the body.
-    let column_ask: Option<(&EditBuffer, bool)> = match editing {
-        Some((InputPurpose::Prompt { target: AskTarget::Column(n), queued, .. }, buf))
-            if n == name =>
-        {
-            Some((buf, *queued))
-        }
+    let column_ask: Option<(&EditBuffer, bool, bool)> = match editing {
+        Some((
+            InputPurpose::Prompt { target: AskTarget::Column(n), queued, accept_plan, .. },
+            buf,
+        )) if n == name => Some((buf, *queued, *accept_plan)),
         _ => None,
     };
     let column_ask_toggle = column_ask.is_some() && app.column_ask_queueable(name);
@@ -504,13 +503,19 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 
     let mut out: Vec<Line<'static>> = vec![head_line];
     let mut header_cursor_y: u16 = 0;
-    if let Some((buf, queued)) = column_ask {
+    if let Some((buf, queued, accept_plan)) = column_ask {
         // The empty field says what it is for in the key's own words — or,
         // where the column holds a seat a blank Enter would fill, what that
         // Enter does (T-405), the plural of the card's `start on the title`
-        // and by the same rule `commit_input` judges it.
-        let placeholder =
-            if app.column_starts(name) { "start on the titles" } else { "ask every agent" };
+        // and by the same rule `commit_input` judges it. At `accept plan`
+        // (T-429) a blank Enter accepts every plan in the column.
+        let placeholder = if accept_plan {
+            "enter accepts the plans"
+        } else if app.column_starts(name) {
+            "start on the titles"
+        } else {
+            "ask every agent"
+        };
         let (line, x_off) = card::render_prompt(&ctx, buf, placeholder);
         out.push(line);
         header_cursor_x = Some(x_off);
@@ -518,7 +523,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         if column_ask_toggle {
             out.push(card::render_ask_mode(
                 &ctx,
-                crate::app::App::ask_mode_word(false, queued, false),
+                crate::app::App::ask_mode_word(accept_plan, queued, false),
                 true,
             ));
         }

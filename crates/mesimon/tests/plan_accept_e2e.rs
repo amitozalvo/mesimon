@@ -193,3 +193,185 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
 
     let _ = c.request(Command::Shutdown);
 }
+
+/// The dialog again, each line echoed with the pane's ticket key in front
+/// (`MESIMON_TICKET`, which every spawn gets), so two panes writing one
+/// file can be told apart.
+const STUB_KEYED: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
+printf ' Would you like to proceed?\\n\\n ❯ 1. Yes, and use auto mode\\n   2. Yes, manually approve edits\\n   3. No, keep planning\\n   4. Tell Claude what to change\\n'\n\
+while IFS= read -r line; do \
+  printf 'got:%s:%s\\n' \"$MESIMON_TICKET\" \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+
+/// T-429: accepts obey the checkout. Two shared-checkout tickets, both on
+/// their plan dialogs, both accepted from the board: ONE Enter lands — the
+/// first in board order — and the second's row names the first
+/// (`accepts plan ∙ after T-1`). The second press goes only when the first
+/// agent's approved turn has ended, never while it implements. Then the
+/// column's own accept: `PromptColumn` with the flag parks both, and the
+/// presses go the same way, the first now and the other as the checkout
+/// goes quiet. Worktree tickets are unaffected — their checkout is their
+/// own — and that is `checkout_holders`' cwd clause, not tested again here.
+#[test]
+fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
+    let Some(h) = Harness::boot_with_env(
+        "planq",
+        Some(STUB_KEYED),
+        &[("MESIMON_PANE_QUIET_MS", "600000"), ("MESIMON_SLEEP_MIN_AGE_MS", "0")],
+    ) else {
+        return;
+    };
+    let hooks = h.paths.hook_sock();
+    let mut c = h.client("planq");
+    let text = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
+
+    let mut make = |title: &str| match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let (ta, tb) = (make("planA"), make("planB"));
+    let board = c.board();
+    let key = |t: ulid::Ulid| board.ticket(t).unwrap().short_key.clone();
+    let (ka, kb) = (key(ta), key(tb));
+    // An Enter of the daemon's submits whatever the box holds: the title
+    // prefill the first time, nothing after. Counted per pane.
+    let presses = |k: &str| {
+        let own = format!("got:{k}:");
+        text()
+            .lines()
+            .filter(|l| {
+                l.strip_prefix(own.as_str()).is_some_and(|rest| {
+                    matches!(rest, "" | "planA" | "planA " | "planB" | "planB ")
+                })
+            })
+            .count()
+    };
+    let spawn = |c: &mut TestClient, ticket| match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let (sa, sb) = (spawn(&mut c, ta), spawn(&mut c, tb));
+    let plan = r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"# Plan"}}"##;
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hooks, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hooks, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let plan_ready = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hooks, &sid.to_string(), "PreToolUse", plan);
+        c.await_state(sid, "plan ready", |s| {
+            *s == SessionState::RequiresAction { reason: Reason::Plan }
+        });
+    };
+    let approved = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hooks, &sid.to_string(), "PostToolUse", plan);
+        c.await_state(sid, "running on the plan", |s| *s == SessionState::Running);
+    };
+    let accept = |c: &mut TestClient, ticket| {
+        assert!(matches!(
+            c.request(Command::PromptSession {
+                ticket,
+                text: String::new(),
+                queued: false,
+                accept_plan: true,
+                plan: false
+            }),
+            Response::Queued { .. }
+        ));
+    };
+    // Let both stubs paint, then walk each through a turn so the checkout
+    // starts quiet (a stub emits no `SessionStart`, so a fresh record sits
+    // at `Spawning`, which is WORKING).
+    std::thread::sleep(Duration::from_millis(800));
+    for sid in [sa, sb] {
+        start(&mut c, sid);
+        stop(&mut c, sid);
+    }
+    // One column, A above B: the presses go in board order.
+    let column = c.board().ticket(ta).unwrap().column.clone();
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: tb, column: column.clone(), before: None }),
+        Response::Ok
+    ));
+
+    // (1) Both dialogs up, both accepted from the board. A's Enter goes;
+    // B's waits on A and its row says so.
+    plan_ready(&mut c, sa);
+    plan_ready(&mut c, sb);
+    accept(&mut c, ta);
+    accept(&mut c, tb);
+    wait_until(Duration::from_secs(10), "A's Enter", || presses(&ka) == 1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(presses(&kb), 0, "B waits on A's press in flight: {:?}", text());
+    let pb = pending_of(&mut c, Some(tb));
+    assert!(pb.iter().any(|p| p.accept_plan && p.waits_on == vec![ka.clone()]), "{pb:?}");
+    // A's approval is confirmed and A implements: still B's checkout is
+    // held, by a working agent now.
+    approved(&mut c, sa);
+    wait_until(Duration::from_secs(5), "A's entry to leave the queue", || {
+        pending_of(&mut c, Some(ta)).is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(presses(&kb), 0, "B waits while A implements: {:?}", text());
+    let pb = pending_of(&mut c, Some(tb));
+    assert!(pb.iter().any(|p| p.accept_plan && p.waits_on == vec![ka.clone()]), "{pb:?}");
+    // A's turn ends: B's press goes.
+    stop(&mut c, sa);
+    wait_until(Duration::from_secs(10), "B's Enter after A's turn", || presses(&kb) == 1);
+    assert_eq!(presses(&ka), 1, "A was pressed once: {:?}", text());
+    approved(&mut c, sb);
+    wait_until(Duration::from_secs(5), "B's entry to leave the queue", || {
+        pending_of(&mut c, Some(tb)).is_empty()
+    });
+    stop(&mut c, sb);
+
+    // (2) The column accepts every plan (T-429): both on their dialogs
+    // again, one `PromptColumn` with the flag and no words parks both —
+    // the receipt counts them — and the presses go as before: A's now, B's
+    // when A's approved turn has ended.
+    plan_ready(&mut c, sa);
+    plan_ready(&mut c, sb);
+    // Automove carried both cards on as their turns ended; put B under A
+    // again so the order is the test's, not the automove's.
+    let column = c.board().ticket(ta).unwrap().column.clone();
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: tb, column: column.clone(), before: None }),
+        Response::Ok
+    ));
+    match c.request(Command::PromptColumn {
+        column: column.clone(),
+        text: String::new(),
+        queued: true,
+        accept_plan: true,
+    }) {
+        Response::Asked { accepts, sent, woke, started, skipped, failed, .. } => {
+            assert_eq!((accepts, sent, woke, started, skipped, failed), (2, 0, 0, 0, 0, 0));
+        }
+        other => panic!("{other:?}"),
+    }
+    wait_until(Duration::from_secs(10), "A's second Enter", || presses(&ka) == 2);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(presses(&kb), 1, "B waits on A again: {:?}", text());
+    approved(&mut c, sa);
+    stop(&mut c, sa);
+    wait_until(Duration::from_secs(10), "B's second Enter", || presses(&kb) == 2);
+    approved(&mut c, sb);
+    wait_until(Duration::from_secs(5), "the queue to empty", || {
+        pending_of(&mut c, None).is_empty()
+    });
+    // No Enter went anywhere it was not owed.
+    assert_eq!((presses(&ka), presses(&kb)), (2, 2), "{:?}", text());
+
+    let _ = c.request(Command::Shutdown);
+}

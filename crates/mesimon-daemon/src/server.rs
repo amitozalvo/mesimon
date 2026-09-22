@@ -1826,8 +1826,8 @@ impl Daemon {
             Command::PromptSession { ticket, text, queued, accept_plan, plan } => {
                 self.prompt_session(ticket, text, queued, accept_plan, plan)
             }
-            Command::PromptColumn { column, text, queued } => {
-                self.prompt_column(&column, text, queued)
+            Command::PromptColumn { column, text, queued, accept_plan } => {
+                self.prompt_column(&column, text, queued, accept_plan)
             }
             Command::DropQueuedAsk { ticket } => self.drop_queued_ask(ticket),
             Command::SendQueuedAsk { ticket } => self.send_queued_ask(ticket),
@@ -7221,24 +7221,43 @@ impl Daemon {
     /// that refusal was the odd one out and this is it lifted. What holds a
     /// burst back is the queued default (`drain_queue` takes one per quiet
     /// checkout per pass) and `spawn_gate`, not a refusal here.
-    fn prompt_column(&mut self, column: &str, text: String, queued: bool) -> Response {
+    fn prompt_column(
+        &mut self,
+        column: &str,
+        text: String,
+        queued: bool,
+        accept_plan: bool,
+    ) -> Response {
         if self.board.column(column).is_none() {
             return Response::Err { message: format!("no such column: {column}") };
         }
         let ids: Vec<ulid::Ulid> = self.board.column_tickets(column).iter().map(|t| t.id).collect();
+        // The seats the flag reaches (T-429): a pane on its dialog or known
+        // to be planning. Every other seat takes the words as the ordinary
+        // column ask, and off a pane the flag is nothing, as it is for the
+        // single ask.
+        let accepts: Vec<ulid::Ulid> = if accept_plan {
+            ids.iter().copied().filter(|t| self.plan_able_seat(*t).is_some()).collect()
+        } else {
+            Vec::new()
+        };
         // Blank in, nothing out — with the EMPTY SEAT exception `prompt_session`
         // already makes (T-294): there the Enter lands on the ticket title the
         // spawn types, which is a turn the user did write. So a blank column ask
         // reaches the empty seats and skips every agent already sitting in one;
-        // with no empty seat to take it, it is the refusal it always was.
+        // with no empty seat to take it, it is the refusal it always was. A
+        // blank ACCEPT is the other exception: "accept the plans, ask nothing".
         let words = mesimon_core::command::sanitize_prompt(&text);
-        if words.is_none() && !ids.iter().any(|t| matches!(self.seat_of(*t), QueuedSeat::Start(_)))
+        if words.is_none()
+            && accepts.is_empty()
+            && !ids.iter().any(|t| matches!(self.seat_of(*t), QueuedSeat::Start(_)))
         {
             return Response::Err { message: "nothing to send".into() };
         }
         self.feed.board("local", "prompt_column", None);
         let (mut sent, mut woke, mut started, mut skipped, mut failed) = (0, 0, 0, 0, 0);
         let mut parked: Vec<(ulid::Ulid, &'static str)> = Vec::new();
+        let mut accepting = 0;
         for ticket in ids {
             let external = self
                 .board
@@ -7246,12 +7265,27 @@ impl Daemon {
                 .is_some_and(|rec| rec.provenance == Provenance::Adopted && rec.argv.is_empty());
             let seat = self.seat_of(ticket);
             let starts = matches!(seat, QueuedSeat::Start(_));
-            if external || (words.is_none() && !starts) {
+            let accept = accepts.contains(&ticket);
+            if external || (words.is_none() && !starts && !accept) {
                 skipped += 1;
                 continue;
             }
             let word = seat.word();
             let text = words.clone().unwrap_or_default();
+            // An accept is always a QUEUED entry (T-420): the press is the
+            // clock's, one per quiet checkout (`service_plan_accepts`), so
+            // the first goes now and the rest follow as each implementation
+            // ends. The column's toggle does not reach it.
+            if accept {
+                match self.park_ask(ticket, seat, text, None, true, false) {
+                    Ok(()) => accepting += 1,
+                    Err(message) => {
+                        eprintln!("mesimon: column accept could not park: {message}");
+                        failed += 1;
+                    }
+                }
+                continue;
+            }
             // A worktree ticket's checkout is its own, so there is nobody to
             // wait for and `park_ask` refuses a start there outright. It goes
             // now whatever the column's toggle says — the single ask's rule
@@ -7291,6 +7325,11 @@ impl Daemon {
             }
         }
         let mut still_queued = 0;
+        // An accept's press is the 1 s bucket's (`service_plan_accepts`);
+        // the rows show now.
+        if accepting > 0 && parked.is_empty() {
+            self.broadcast();
+        }
         if !parked.is_empty() {
             self.drain_queue();
             self.broadcast();
@@ -7313,7 +7352,15 @@ impl Daemon {
                 }
             }
         }
-        Response::Asked { sent, woke, started, queued: still_queued, skipped, failed }
+        Response::Asked {
+            sent,
+            woke,
+            started,
+            queued: still_queued,
+            skipped,
+            failed,
+            accepts: accepting,
+        }
     }
 
     /// Where the ticket's claude is, for a prompt: in a pane, parked, or not
@@ -7425,19 +7472,57 @@ impl Daemon {
 
     /// The working tickets, on one checkout (`Some(cwd)`) or the whole board.
     fn working(&self, cwd: Option<&str>) -> Vec<ulid::Ulid> {
+        self.working_by(cwd, mesimon_core::quiet::is_working)
+    }
+
+    /// `working` under another reading of the word — the plan accept's
+    /// (T-429) — over the same three ledgers: the board's sessions, the owed
+    /// pastes, and the grace band's frozen records.
+    fn working_by(
+        &self,
+        cwd: Option<&str>,
+        working: fn(&mesimon_core::board::SessionRecord) -> bool,
+    ) -> Vec<ulid::Ulid> {
         let owed: std::collections::HashSet<ulid::Ulid> =
             self.owed.values().map(|o| o.ticket).collect();
-        let mut out = mesimon_core::quiet::working_tickets(&self.board, &owed, cwd);
+        let mut out = mesimon_core::quiet::working_tickets_by(&self.board, &owed, cwd, working);
         for g in self.grace.values() {
             if !out.contains(&g.ticket.id)
-                && g.sessions
-                    .iter()
-                    .any(|s| cwd.is_none_or(|c| s.cwd == c) && mesimon_core::quiet::is_working(s))
+                && g.sessions.iter().any(|s| cwd.is_none_or(|c| s.cwd == c) && working(s))
             {
                 out.push(g.ticket.id);
             }
         }
         out
+    }
+
+    /// Tickets holding a checkout AGAINST A PLAN ACCEPT (T-429):
+    /// `checkout_holders` minus the sessions parked on their own plan
+    /// dialog (`quiet::holds_against_accept` — a dialog writes nothing, and
+    /// three agents on three dialogs would otherwise hold the checkout
+    /// against each other forever), plus every ticket whose press is IN
+    /// FLIGHT: its record stays at `Plan` until the harness confirms the
+    /// Enter, and from the Enter on it is a writer. A worktree ticket's
+    /// checkout is its own, so there the list is only ever itself.
+    fn accept_holders(&self, cwd: &str) -> Vec<ulid::Ulid> {
+        let mut out = self.working_by(Some(cwd), mesimon_core::quiet::holds_against_accept);
+        for s in &self.board.sessions {
+            if s.cwd == cwd && self.plan_accept.contains_key(&s.id) && !out.contains(&s.ticket) {
+                out.push(s.ticket);
+            }
+        }
+        out
+    }
+
+    /// The pane seat of a ticket that can take an `accept plan` (T-420): its
+    /// agent is on the plan dialog, or known to be planning by the one
+    /// fact the board holds about a mode, the launch argv. The daemon's read
+    /// of the TUI's `ticket_plan_able`, for the column's press (T-429).
+    fn plan_able_seat(&self, ticket: ulid::Ulid) -> Option<uuid::Uuid> {
+        let s = self.board.pane_target(ticket)?;
+        let on_dialog = s.state == (SessionState::RequiresAction { reason: Reason::Plan });
+        let planning = s.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan");
+        (on_dialog || planning).then_some(s.id)
     }
 
     fn keys_of(&self, ids: &[ulid::Ulid]) -> Vec<String> {
@@ -7623,6 +7708,32 @@ impl Daemon {
         if q.by.is_some() || q.held.is_some() {
             return Vec::new();
         }
+        // A flagged ask (T-429) waits on the accept's holders — the tickets
+        // working in its checkout, a dialog not among them, a press in
+        // flight among them — and on the flagged asks ahead of it there
+        // whose dialog is up, since `service_plan_accepts` presses those
+        // first. Its own press in flight lists itself, which the card
+        // reads as `accepting plan`.
+        if q.accept_plan || q.send_on_accept {
+            let mut ids = self.accept_holders(&q.cwd);
+            for i in self.queue_order() {
+                let ahead = &self.queued[i];
+                if ahead.ticket == ticket {
+                    break;
+                }
+                let at_plan = matches!(ahead.seat, QueuedSeat::Pane(id)
+                    if self.session_at_plan(id));
+                if ahead.accept_plan
+                    && ahead.held.is_none()
+                    && ahead.cwd == q.cwd
+                    && at_plan
+                    && !ids.contains(&ahead.ticket)
+                {
+                    ids.push(ahead.ticket);
+                }
+            }
+            return self.keys_of(&ids);
+        }
         let mut ids = self.checkout_holders(&q.cwd);
         if !self.queued_target_ready(q) && !ids.contains(&ticket) {
             ids.push(ticket);
@@ -7665,6 +7776,13 @@ impl Daemon {
             s.id == id
                 && matches!(s.state, SessionState::Idle { stop_reason } if stop_reason != StopReason::Background)
                 && !mesimon_core::quiet::is_working(s)
+        })
+    }
+
+    /// Is this session parked on its plan dialog — the `≡`?
+    fn session_at_plan(&self, id: uuid::Uuid) -> bool {
+        self.board.sessions.iter().any(|s| {
+            s.id == id && s.state == (SessionState::RequiresAction { reason: Reason::Plan })
         })
     }
 
@@ -7904,23 +8022,38 @@ impl Daemon {
     /// unflagged one does. An entry with no words leaves the queue on the
     /// press — "accept the plan, ask nothing" — and one with words keeps
     /// waiting for the idle that follows the accepted turn.
+    ///
+    /// The press obeys the checkout (T-429): one flagged ask per QUIET
+    /// checkout per pass, in board order, the way `drain_queue` pastes —
+    /// an accepted plan is an implementation starting, and two of those in
+    /// one index is what the queue exists to prevent. Quiet is
+    /// `accept_holders`' word: a dialog holds nothing, a press in flight
+    /// does, and a checkout that cannot be proved quiet is not. The rule
+    /// gates WHEN the press goes, never whether the dialog is recognised —
+    /// "never a blind Enter" is `accept_plan`'s, unchanged. Worktree
+    /// tickets have their own checkout and press on their own clock.
     fn service_plan_accepts(&mut self, _now: u64) -> bool {
-        let due: Vec<(ulid::Ulid, uuid::Uuid)> = self
-            .queued
-            .iter()
-            .filter(|q| q.accept_plan && q.held.is_none())
-            .filter_map(|q| match q.seat {
-                QueuedSeat::Pane(id) => Some((q.ticket, id)),
-                _ => None,
-            })
-            .filter(|(_, id)| {
-                !self.plan_accept.contains_key(id)
-                    && self.board.sessions.iter().any(|s| {
-                        s.id == *id
-                            && s.state == (SessionState::RequiresAction { reason: Reason::Plan })
-                    })
-            })
-            .collect();
+        let mut seen: Vec<String> = Vec::new();
+        let mut due: Vec<(ulid::Ulid, uuid::Uuid)> = Vec::new();
+        for i in self.queue_order() {
+            let q = &self.queued[i];
+            if !q.accept_plan || q.held.is_some() {
+                continue;
+            }
+            let QueuedSeat::Pane(id) = q.seat else { continue };
+            if self.plan_accept.contains_key(&id) || !self.session_at_plan(id) {
+                continue;
+            }
+            if seen.contains(&q.cwd) {
+                continue;
+            }
+            let quiet = self.accept_holders(&q.cwd).is_empty() && !self.checkout_unresolved(&q.cwd);
+            if !quiet {
+                continue;
+            }
+            seen.push(q.cwd.clone());
+            due.push((q.ticket, id));
+        }
         let mut changed = false;
         for (ticket, id) in due {
             let principal = Principal::Automation { rule: "queued_ask".into() };

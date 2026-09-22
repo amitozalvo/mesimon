@@ -301,6 +301,16 @@ pub enum Command {
         /// Shared-checkout prompts are serialized in board order.
         #[serde(default)]
         queued: bool,
+        /// Accept every plan in the column (T-429): each seat whose agent is
+        /// on its plan dialog or known to be planning parks with the flag
+        /// `PromptSession.accept_plan` carries, and the presses go one per
+        /// quiet checkout as it goes quiet — the first now, the rest as each
+        /// implementation ends. A seat that is not plan-able takes the words
+        /// as the ordinary column ask. Blank words are legal with it where
+        /// they are for the single ask. Absent from an older client = no
+        /// accept.
+        #[serde(default)]
+        accept_plan: bool,
     },
     /// Release uncommitted uploads owned by this connection.
     DiscardAttachmentUploads {
@@ -1160,8 +1170,13 @@ mod meta_tests {
         assert_eq!(m, Meta { action: Action::Mutate, logged: true, subject: Some(id) });
         // A column's ask names no single ticket, so the handler logs per
         // ticket itself (T-378) and the chokepoint logs nothing.
-        let m =
-            Command::PromptColumn { column: "TODO".into(), text: "x".into(), queued: true }.meta();
+        let m = Command::PromptColumn {
+            column: "TODO".into(),
+            text: "x".into(),
+            queued: true,
+            accept_plan: false,
+        }
+        .meta();
         assert_eq!(m, Meta { action: Action::Mutate, logged: false, subject: None });
     }
 
@@ -1170,10 +1185,10 @@ mod meta_tests {
     #[test]
     fn a_bare_asked_receipt_reads_as_all_zero() {
         let r: Response = serde_json::from_str(r#"{"resp":"asked"}"#).unwrap();
-        let Response::Asked { sent, woke, started, queued, skipped, failed } = r else {
+        let Response::Asked { sent, woke, started, queued, skipped, failed, accepts } = r else {
             panic!("not asked: {r:?}");
         };
-        assert_eq!((sent, woke, started, queued, skipped, failed), (0, 0, 0, 0, 0, 0));
+        assert_eq!((sent, woke, started, queued, skipped, failed, accepts), (0, 0, 0, 0, 0, 0, 0));
     }
 }
 
@@ -1276,6 +1291,10 @@ pub enum Response {
         skipped: usize,
         #[serde(default)]
         failed: usize,
+        /// Parked to accept a plan (T-429): pressed this tick or waiting on
+        /// the checkout, which the cards tell apart.
+        #[serde(default)]
+        accepts: usize,
     },
     Board {
         board: Board,

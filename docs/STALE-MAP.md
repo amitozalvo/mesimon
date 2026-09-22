@@ -12814,3 +12814,63 @@ E2e `merge_train_e2e::a_ticket_in_its_rebase_turn_holds_the_next_ask_until_it_me
 REVIEW tickets, A merges, B is asked and lands its git step without ending its turn; C is not
 asked across three flag refreshes and its row waits on B; B's turn ends, B merges, C is asked
 once. It fails on the old gate at the "C asked while B's rebase turn runs" assertion.
+
+## Plan accepts obey the checkout, and a column accepts every plan (T-429, 2026-09-23, user: "I want to accept all from board and have the first accept immediately and the other two queue")
+
+**What was asked.** T-420's accept pressed Enter the moment a flagged ask's pane was at `Plan`,
+and asked nothing about the checkout: three `≡` cards accepted from the board started three
+implementations in one shared checkout within a second — exactly the second-writer-in-one-index
+the ask queue (T-294) exists to prevent. And the column header's field had no `accept plan`
+stop, so "accept all" was three presses on three cards.
+
+**What shipped.**
+
+- **One press per quiet checkout per pass.** `service_plan_accepts` walks `queue_order` (board
+  order) and takes the first flagged ask per checkout whose pane is on its dialog and whose
+  checkout is quiet, the way `drain_queue` pastes. Quiet is a NEW word here:
+  `Daemon::accept_holders(cwd)` = `working_by(cwd, quiet::holds_against_accept)` — every
+  `checkout_holders` clause minus a session parked on its own plan dialog (a dialog writes
+  nothing; three agents on three dialogs would otherwise hold the checkout against each other
+  forever and "accept all" would press none) — PLUS every ticket whose press is in flight
+  (`plan_accept`): its record stays at `Plan` until the harness confirms, and from the Enter on
+  it is a writer. `checkout_unresolved` bars it as it bars a paste. `quiet::holds_against_accept`
+  is written in terms of `is_working`, so the two can only disagree about the dialog. The rule
+  gates WHEN the press goes, never whether the dialog is recognised: `accept_plan`'s matcher and
+  its `PLAN_ACCEPT_TRIES` are untouched, and the tries count only passes on which a press was
+  attempted. A worktree ticket's checkout lists only itself, so it presses on its own clock.
+- **The row names the wait.** `ask_waits_on` for a flagged ask (or one whose press is in
+  flight, `send_on_accept`) is `accept_holders` plus the flagged asks ahead of it in board order
+  in the same checkout whose dialog is up — those press first. `App::pending_row`: with the
+  dialog up, `accepts plan ∙ after T-3` when another ticket holds the checkout, `accepting plan`
+  only when its press is the next tick's (its own press in flight lists itself, and that is
+  `accepting`); `queued ∙ accepts plan` while it still plans, as before.
+- **The column accepts every plan.** `PromptColumn.accept_plan` (`#[serde(default)]`). The
+  header's field opens at `accept plan` when any seat in the column is plan-able
+  (`Ctx::col_plan_able` = `App::column_plan_able`, on the dialog or known to be planning); the
+  header's hint reads `accept plans + ask`; Shift+Tab keeps the three-stop ring there
+  (`ask_plan_able` on a column target; `ask_plan_ready` never — a column is not on ONE dialog,
+  and the other seats can still take words now or queued). A blank Enter commits. The daemon's
+  `prompt_column` parks each plan-able seat (`plan_able_seat`: the daemon's read of the TUI's
+  predicate, the argv for "known to be planning") with the flag through `park_ask`, whatever the
+  column's toggle says — an accept is always a queued entry, and with the rule above the first
+  presses now and the rest follow as each implementation ends. Every other seat takes the words
+  as the ordinary column ask, and a blank ask still starts the empty seats. The receipt gains
+  `accepts` (`#[serde(default)]`), the status reads `accepts plan 2 ∙ queued 1`; which pressed
+  now and which wait is each card's row.
+
+**Refused on the way.** Counting a dialog as a holder (the first cut of "quiet") — three
+accepts would deadlock. Pressing the accepts from `prompt_column` itself — the press is the
+1 s bucket's on purpose (T-420: the dialog may not have painted when the hook lands the `≡`).
+
+**Measured on the way.** Automove reorders cards between the two halves of the e2e (IN PROGRESS
+→ REVIEW on idle inserts at the top), so a test that assumes "A above B" must pin it with a
+`MoveTicket` before each press — the daemon was right and the test's order was wrong.
+
+**Tests.** quiet `a_plan_dialog_holds_nothing_against_an_accept`; keymap header hint in
+`a_header_offers_exactly_the_column_verbs`; TUI
+`shift_enter_on_a_header_over_a_ready_plan_accepts_every_plan`,
+`the_accept_row_names_the_ticket_it_waits_on`; e2e
+`plan_accept_e2e::accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan` (two
+shared-checkout tickets both at `Plan`: one Enter lands, the second's row names the first, the
+second Enter only after the first agent's approved turn ends; then a column accept with the
+flag, receipt `accepts: 2`, the same order).

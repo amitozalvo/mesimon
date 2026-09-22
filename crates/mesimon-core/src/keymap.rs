@@ -1251,6 +1251,11 @@ pub struct Ctx {
     pub col_delete_armed: bool,
     /// Live tickets in the dialog's column: a delete is refused while any.
     pub col_live: usize,
+    /// A seat in the cursor's column can take an `accept plan` (T-429): its
+    /// agent is on the plan dialog or known to be planning. The header's
+    /// field then opens at `accept plan` and offers the stop, and every
+    /// plan-able seat in the column parks with the flag on Enter.
+    pub col_plan_able: bool,
     // ---- terminal ----
     /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
     /// distinguishable from `Enter`. False on the legacy floor, where every
@@ -1663,7 +1668,11 @@ static BOARD: &[Binding] = &[
             // column — paned, parked, or empty and started on them (T-405):
             // the same sentence, plural — a column is not one ticket's seat.
             if c.col_header {
-                return "ask every agent";
+                // A seat on its plan dialog in the column (T-429): the
+                // field opens at `accept plan`, and every such seat takes
+                // the press — the first now, the rest as the checkout
+                // goes quiet.
+                return if c.col_plan_able { "accept plans + ask" } else { "ask every agent" };
             }
             // A parked agent has no box to type into, and until 2026-09-04
             // that left the key inert there — `c`, wait, come back, ask.
@@ -7406,6 +7415,13 @@ mod tests {
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &codex),
             Some(("shift+enter", "ask every agent"))
+        );
+        // A seat on its plan dialog in the column (T-429): the hint says
+        // the extra thing the press does, the way a card's does.
+        let plans = Ctx { col_plan_able: true, ..rich.clone() };
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &plans),
+            Some(("shift+enter", "accept plans + ask"))
         );
         let empty_column = Ctx { col_live: 0, ..rich.clone() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &empty_column), None);
