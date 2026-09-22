@@ -8348,7 +8348,8 @@ impl App {
                 }) {
                     Response::Ok => {
                         self.merge_sent = Some((ticket, MergeStage::Rebase, Instant::now()));
-                        self.merge_note = "rebase request sent — m merges once it lands".into()
+                        self.merge_note =
+                            "agent asked to rebase + test ∙ when it is done, m merges".into()
                     }
                     Response::Err { message } => self.merge_note = message,
                     _ => {}
@@ -14673,7 +14674,7 @@ mod tests {
         press(&mut app, 'm');
         press(&mut app, 'm');
         assert!(sent_contains(&sent, "Rebase"));
-        assert_eq!(app.merge_note, "rebase request sent — m merges once it lands");
+        assert_eq!(app.merge_note, "agent asked to rebase + test ∙ when it is done, m merges");
         // The send's refresh took a snapshot the fake transport leaves empty;
         // main is still moved, so put the binding back.
         app.worktrees.push(wt());

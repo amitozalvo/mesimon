@@ -12469,3 +12469,12 @@ queued before the plan presses on the `≡` and delivers the words on the idle a
 screen gives the flag up with the feed line and no blind Enter); `ask_queue_e2e`'s idle-queue
 test now proves the permission wait, the `^y` refusal on a dialog, the hold on a question and
 the send by hand.
+
+## T-427: the rebase ask's receipt says who acts (2026-09-23)
+
+The note after `m` sent a rebase ask read "rebase request sent — m merges once it lands".
+Users read it as mesimon merging on its own, and "it lands" named neither the agent nor the
+rebase. It now reads **"agent asked to rebase + test ∙ when it is done, m merges"**: the
+same words as the offer that armed it ("m asks the agent to rebase + test"), the agent as the
+one who acts next, and `m` as the user's key after that — the board's "m <verb>" idiom.
+Nothing merges by itself here; the auto-merge column setting is a separate road.
