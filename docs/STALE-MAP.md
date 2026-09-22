@@ -12477,4 +12477,7 @@ the send by hand.
 The note after `m` sent a rebase ask read "rebase request sent — m merges once it lands".
 Any "m <verb>" on that line reads as an offer available now, but `m` cannot merge until the
 agent has rebased. It now reads **"waiting for rebase"** and names no key; the merge offer
-returns on its own once the branch no longer needs a rebase.
+returns on its own once the branch no longer needs a rebase. The identity line's word for
+the outstanding ask (`merge_outstanding`, hand ask and train ask alike) is the same
+"waiting for rebase", so the note clearing on the next keypress changes nothing the user
+reads.

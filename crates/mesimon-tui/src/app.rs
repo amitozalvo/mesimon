@@ -3955,12 +3955,12 @@ impl App {
     /// landed request stops holding at once.
     pub(crate) fn merge_outstanding(&self, ticket: ulid::Ulid) -> Option<&'static str> {
         // The train's asks are the daemon's memory, not this TUI's: an ask
-        // recorded at the CURRENT base tip reads `rebase requested` here the
+        // recorded at the CURRENT base tip reads `waiting for rebase` here the
         // way a hand one does, until the branch catches up (2026-09-04).
         if self.automation.train_asked.iter().any(|a| a.ticket == ticket && a.current)
             && Self::merge_stage(self.wt_item(ticket)?) == Some(MergeStage::Rebase)
         {
-            return Some("rebase requested");
+            return Some("waiting for rebase");
         }
         let (t, stage, at) = self.merge_sent?;
         if t != ticket || Self::merge_stage(self.wt_item(ticket)?) != Some(stage) {
@@ -3970,7 +3970,7 @@ impl App {
             return None;
         }
         match stage {
-            MergeStage::Rebase => Some("rebase requested"),
+            MergeStage::Rebase => Some("waiting for rebase"),
             MergeStage::Notify => Some("agent notified"),
             MergeStage::Merge => None,
         }
@@ -12841,7 +12841,7 @@ mod tests {
             at_ms: 1,
             by: "train".into(),
         }];
-        assert_eq!(app.merge_outstanding(t), Some("rebase requested"));
+        assert_eq!(app.merge_outstanding(t), Some("waiting for rebase"));
         assert_eq!(app.merge_stage_word(t), None, "no `m` hint while it stands");
         app.automation.train_asked[0].current = false;
         assert_eq!(app.merge_outstanding(t), None, "the base moved on: askable again");
@@ -14681,7 +14681,7 @@ mod tests {
         // stands instead.
         app.on_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
         assert!(app.merge_note.is_empty());
-        assert_eq!(app.merge_outstanding(ulid::Ulid(1)), Some("rebase requested"));
+        assert_eq!(app.merge_outstanding(ulid::Ulid(1)), Some("waiting for rebase"));
         assert!(!app.ctx().merge_actionable, "no offer while the ask is outstanding");
         // The key itself stays live, and says so instead of re-arming blind.
         press(&mut app, 'm');
@@ -14693,7 +14693,7 @@ mod tests {
         assert!(app.ctx().merge_actionable);
         // A minute later, still working on it: held.
         app.board.sessions[0].state = SessionState::Running;
-        assert_eq!(app.merge_outstanding(ulid::Ulid(1)), Some("rebase requested"));
+        assert_eq!(app.merge_outstanding(ulid::Ulid(1)), Some("waiting for rebase"));
         // The rebase landed: the stage moved on, so the record stops matching
         // at once, however fresh it is.
         app.merge_sent = Some((t, stage, Instant::now()));
