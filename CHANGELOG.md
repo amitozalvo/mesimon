@@ -6,6 +6,62 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.24 — 2026-09-22
+
+### Added
+
+- **A crowned agent can start agents on other tickets.** The new `start_agent`
+  tool (crown only) starts the board's agent on another ticket the way
+  Shift+Enter does: the title and description become its first prompt, and a
+  worktree ticket gets its worktree. A crowned agent may have at most 3 such
+  agents running or sleeping at once; `Settings › Agents` cycles the number for
+  the current board, `crown_budget` in `columns.toml` holds it, and `0` turns
+  the tool off. A ticket started this way cannot itself be crowned. The card
+  shows `♛ started`, and the feed records `start_agent`.
+- **A crowned agent can queue words for another ticket's agent.** The new
+  `ask_agent` tool (crown only) parks the text on that ticket's card, marked
+  `queued by T-N's agent`; nothing reaches the other agent until you press
+  `Ctrl+Y` on the ticket page to send it, and `Ctrl+U` takes it back. One ask
+  per ticket, and a daemon restart discards it. The feed records the ask but
+  never the words.
+- **`get_ticket` now tells an agent what the board's automatic moves will
+  do.** The reply carries the current column's on-working and on-done rules
+  under `automove`, and the `move_ticket` text says the board itself moves a
+  ticket when a turn starts or ends. This is guidance in the tool text, not
+  enforcement.
+
+### Changed
+
+- **The `create_ticket` tool text and the agent brief say a filed ticket is
+  worked by its own session.** An agent that files a sibling ticket is told
+  not to build it in the current session. A brief you already accepted is not
+  offered again.
+- **A headless daemon no longer runs `git status` every 10 seconds.** The
+  sample runs only while a board is open or a merge is waiting to retry, and
+  the first board to open after a quiet stretch gets one fresh sample.
+- **Drawing the board and the ticket page does less work per frame.** The
+  frame now builds its key-availability context once instead of three to six
+  times, and a card's peek statistics are reused for a quarter second. The
+  checkout list reads at most 16 MiB of file content per listing for its
+  line-count badges; a larger checkout shows no badge on the rows past the
+  budget.
+
+### Fixed
+
+- **Queued agent starts and wakes now survive a daemon restart.** Starting a
+  column with Shift+Enter parks the tickets that share a checkout; when the
+  daemon restarted, every parked start after the first was lost with no line
+  in the feed. The queue is now saved to `queue.json` under the state
+  directory and restored at boot, and the feed records each
+  `queued_start_restored`. A queued follow-up prompt is still memory-only.
+- **`write_note` refuses a note over 32 KiB instead of silently cutting it.**
+  The existing note keeps its text, a new note is not created, and the error
+  names the submitted size and the limit in bytes. Plan notes captured from
+  hooks are still cut at the limit.
+- **A page into the diff, the preview or the release notes no longer
+  carries into the next document you open.** Each reading position is kept
+  per document, and the release notes now glide like the other two.
+
 ## v0.1.0-alpha.23 — 2026-09-21
 
 ### Added
