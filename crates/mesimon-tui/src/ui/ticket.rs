@@ -1244,7 +1244,8 @@ fn draw_rail(
         } else {
             let mut badges: Vec<&str> = Vec::new();
             if s.provenance == Provenance::Adopted && s.argv.is_empty() {
-                badges.push("external");
+                // In a ticket's shell (T-369), or imported from the drawer.
+                badges.push(if s.host.is_some() { "in shell" } else { "external" });
             }
             if matches!(s.state, SessionState::Exited { .. }) {
                 badges.push("enter resumes");

@@ -9,7 +9,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use mesimon_core::adopt::{assistant_text, cwd_matches, parse_transcript_head, SessionsPidFile};
+use mesimon_core::adopt::{
+    assistant_text, cwd_matches, pane_session, parse_transcript_head, SessionsPidFile,
+};
 use mesimon_core::command::ExternalItem;
 
 const HEAD_BYTES: usize = 8 * 1024;
@@ -122,27 +124,55 @@ fn live_pid_file(home: &Path, session_id: uuid::Uuid) -> Option<(PathBuf, i32)> 
     None
 }
 
-struct PidEntry {
-    name: Option<String>,
-    alive: bool,
+pub(crate) struct PidEntry {
+    pub(crate) name: Option<String>,
+    pub(crate) alive: bool,
+    pub(crate) cwd: Option<String>,
+    /// The tmux session the process sits in (`SessionsPidFile::tmux`, read
+    /// by `pane_session`) — the T-369 join to a shell record's `sid16`.
+    pub(crate) pane: Option<String>,
 }
 
 /// `~/.claude/sessions/<pid>.json` — enrichment only, joined on the file's
-/// `sessionId`, never the filename pid (11 §11.3).
-fn read_pid_files(dir: &Path) -> HashMap<uuid::Uuid, PidEntry> {
-    let mut map = HashMap::new();
+/// `sessionId`, never the filename pid (11 §11.3). A resumed conversation
+/// leaves the old process's file beside the live one under the same
+/// `sessionId`; the live one wins, so `alive` and `pane` are the running
+/// process's.
+pub(crate) fn read_pid_files(dir: &Path) -> HashMap<uuid::Uuid, PidEntry> {
+    let mut map: HashMap<uuid::Uuid, PidEntry> = HashMap::new();
     let Ok(files) = std::fs::read_dir(dir) else { return map };
     for f in files.flatten() {
         let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
         let Ok(pf) = serde_json::from_str::<SessionsPidFile>(&text) else { continue };
         let Some(sid) = pf.session_id else { continue };
         let alive = pf.pid.is_some_and(|pid| pid > 0 && unsafe { libc::kill(pid, 0) } == 0);
-        map.insert(sid, PidEntry { name: pf.name, alive });
+        if !alive && map.get(&sid).is_some_and(|prev| prev.alive) {
+            continue;
+        }
+        let pane = pf.tmux.as_deref().and_then(pane_session).map(str::to_string);
+        map.insert(sid, PidEntry { name: pf.name, alive, cwd: pf.cwd, pane });
     }
     map
 }
 
-fn candidate(
+/// The transcript of one session, by its filename `<id>.jsonl` under any
+/// project directory — the same walk `history::missing` makes, because a
+/// conversation moves with its cwd. Several (a cross-directory resume) is
+/// the newest by mtime.
+pub(crate) fn transcript_for(home: &Path, session_id: uuid::Uuid) -> Option<PathBuf> {
+    let name = format!("{session_id}.jsonl");
+    let dirs = std::fs::read_dir(home.join("projects")).ok()?;
+    dirs.flatten()
+        .map(|d| d.path().join(&name))
+        .filter_map(|p| {
+            let modified = std::fs::metadata(&p).ok()?.modified().ok()?;
+            Some((modified, p))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, p)| p)
+}
+
+pub(crate) fn candidate(
     path: &Path,
     roots: &[PathBuf],
     pid_files: &HashMap<uuid::Uuid, PidEntry>,
@@ -312,6 +342,50 @@ mod tests {
         );
         std::fs::write(&p, format!("{head}{tail}")).unwrap();
         p
+    }
+
+    #[test]
+    fn transcript_for_finds_the_newest_copy_by_filename() {
+        let home = tmp("transcript-for");
+        let sid: uuid::Uuid = SID_A.parse().unwrap();
+        assert!(transcript_for(&home, sid).is_none(), "no projects dir");
+        let old = write_transcript(&home, "-first-dir", &format!("{SID_A}.jsonl"), SID_A, "/a", "");
+        write_transcript(&home, "-first-dir", &format!("{SID_B}.jsonl"), SID_B, "/a", "");
+        assert_eq!(transcript_for(&home, sid), Some(old.clone()));
+        let new = write_transcript(&home, "-later-dir", &format!("{SID_A}.jsonl"), SID_A, "/b", "");
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::open(&new).unwrap().set_modified(later).unwrap();
+        assert_eq!(transcript_for(&home, sid), Some(new));
+        assert!(transcript_for(&home, SID_C.parse().unwrap()).is_none());
+    }
+
+    #[test]
+    fn a_live_pid_file_outranks_a_dead_one_for_the_same_session() {
+        let home = tmp("pid-files");
+        let dir = home.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let me = std::process::id();
+        // Read order is the directory's; both orders must give the live one.
+        std::fs::write(
+            dir.join("1.json"),
+            format!(r#"{{"pid":999999,"sessionId":"{SID_A}","tmux":"deadbeef00000000:@1.%1"}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("2.json"),
+            format!(r#"{{"pid":{me},"sessionId":"{SID_A}","cwd":"/x","tmux":"2c54cd15159348e4:@30.%30"}}"#),
+        )
+        .unwrap();
+        std::fs::write(dir.join("3.json"), format!(r#"{{"pid":999998,"sessionId":"{SID_B}"}}"#))
+            .unwrap();
+        let map = read_pid_files(&dir);
+        let a = &map[&SID_A.parse::<uuid::Uuid>().unwrap()];
+        assert!(a.alive);
+        assert_eq!(a.pane.as_deref(), Some("2c54cd15159348e4"));
+        assert_eq!(a.cwd.as_deref(), Some("/x"));
+        let b = &map[&SID_B.parse::<uuid::Uuid>().unwrap()];
+        assert!(!b.alive);
+        assert_eq!(b.pane, None);
     }
 
     #[test]

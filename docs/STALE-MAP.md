@@ -12233,3 +12233,63 @@ crown-started worker's `Stop` lands the sentence on the crown's stub, the `woke`
 working crown make one row and one sentence; a hand's wake carries no reason; a person's queued
 ask lands first and the wake follows the crown's next turn; `Uncrown` drops the row and an
 uncrowned board queues nothing.
+
+## A claude in a ticket's shell is bound to the ticket (T-369, 2026-09-22)
+
+T-366's deferred half: a `claude` typed into a ticket's adopted shell had no `--session-id`,
+hooks or MCP, so the board saw a busy shell — no attention, no peek, no sleep/wake, and `s`
+would start a second claude on the ticket. The ticket asked for name recognition and a census
+over the shell's cwd. Two measurements refuted both before a line was written.
+
+**The process name is useless.** tmux names a native-install claude by its versioned binary —
+`pane_current_command` said `2.1.280` on the author's board — and an npm install `node`. The
+T-366 row read `$ 2.1.280`. **The cwd road is wrong for `shared_checkout`.** Every such
+ticket's shell has the repo root as cwd, so "newest jsonl under the shell's cwd" would bind
+another ticket's session. **Claude Code says where it sits.** `~/.claude/sessions/<pid>.json`
+carries `tmux: "<session name>:@<window>.%<pane>"` (2.1.280: `2c54cd15159348e4:@30.%30`), and
+for a pane of ours the session name is the record's `sid16`. That is the join: exact,
+name-free, cwd-free. `adopt::pane_session` reads it; `census::read_pid_files` keeps it (and now
+lets a live file outrank a dead one under the same `sessionId`); `census::transcript_for`
+finds `<projects>/*/<id>.jsonl` the way `history::missing` walks. The pid file's doc grew the
+word PLACEMENT beside name and running-elsewhere; state is still the transcript's.
+
+**Two records, linked.** The Bash record stays the shell. The claude is an ordinary observe-only
+Claude record of the same ticket — `attach_external`'s tail became `attach_item`, and the
+drawer and the binding both end there — plus `SessionRecord.host: Option<Uuid>` naming the
+shell. Everything the observe tier does applies unchanged: the transcript poll every 2 s, the
+peek from the jsonl, the seat (`s` says "already has an agent"), MCP and paste refused. The
+one-record shape (the Bash record carrying the claude's state) was rejected: `SessionKind::Bash`
+fails `is_agent()` in `live_agent`, `pane_target`, the peek, the recovery adapters and the
+glyphs — a dozen predicates to re-teach for one row.
+
+**`bind_shell_agents`** runs before `refresh_panes` on the tail-poll bucket, one pid-file read
+for two passes. Attach: a live pid file placed in a shell record's pane whose session is not on
+the board → `attach_item` with `host` set, once the transcript exists (Claude writes it at the
+first prompt); a parked record with the same identity (`/exit` then `claude --resume` by hand)
+re-enters at `Unknown`/`Low` with a fresh machine. Park: a hosted record whose placement is
+gone (file gone, pid dead, or the file naming another session after `/clear`) →
+`park_hosted`: `Sleeping` at `Low`, `host` cleared, transcript copied as `sleep_one` copies it
+— exactly where `resume_session` takes over (`Claude::resume` with empty argv → a pane of its
+own with `--settings`, `--mcp-config`, `--resume <id>`; hooks and MCP from then on; `host`
+cleared on the spawn). Ctrl+Z keeps the pid alive, so it is not an exit.
+
+**Host deltas, three.** `focus_start` on a hosted record attaches the host's pane instead of
+"resume it to take over" (the TUI's `focus_session` stops treating a hosted record as
+resume-first); `refresh_panes` relabels a hosting shell's foreground `claude`; the badge says
+`in shell` instead of `external`. The Status channel (`~/.claude/sessions` idle/busy, Medium)
+now polls hosted records too — `needs_poll`'s one clause.
+
+**Not done.** Codex: no placement file, and the cwd road is the ambiguous one. A claude in an
+UNADOPTED `!` terminal: its pid file says `msmn-term-<ulid>`, but there is no record to host it —
+adopt first (Enter twice). Automove: the bound record's state is `Low` (transcript) or `Medium`
+(status file), and automove moves on `High` only. `CHANGELOG.md` gets its line at the next
+bump: Added — a claude started in a ticket's shell is bound to the ticket (attention, peek,
+the seat), parks when it exits and wakes with `--resume`.
+
+Tests: `shell_claude_e2e` (adopt, fabricated transcript + pid file placed in the shell's pane
+→ bound with `host`, `$ claude`, spawn refused, focus lands in the shell's pane, `host` on
+disk, pid file gone → `Sleeping` with `host` cleared and the shell row clear, `ResumeSession`
+→ `Spawning` with `--resume <sid>`); `pane_session_is_the_name_before_the_colon` (core);
+`transcript_for_finds_the_newest_copy_by_filename` and
+`a_live_pid_file_outranks_a_dead_one_for_the_same_session` (census); golden
+`ticket_shell_claude_120x30`.

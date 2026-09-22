@@ -258,6 +258,13 @@ pub struct SessionRecord {
     /// live pane, and a restart re-learns it on the first poll.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground: Option<String>,
+    /// The shell record whose pane this agent runs in (T-369): a claude the
+    /// user typed into a ticket's shell is an observe-only record of the
+    /// ticket (no hooks, no MCP — the transcript is its only voice) that
+    /// borrows its host's pane for focus. Cleared when the process leaves
+    /// (the record parks) and when a resume gives it a pane of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<uuid::Uuid>,
     #[serde(default)]
     pub confidence: Confidence,
     #[serde(default)]
@@ -409,6 +416,7 @@ impl SessionRecord {
             title: None,
             started_by: None,
             foreground: None,
+            host: None,
             confidence: Confidence::default(),
             provenance: Provenance::default(),
             claude_session_id: None,

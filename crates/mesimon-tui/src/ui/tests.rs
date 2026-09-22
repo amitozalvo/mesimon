@@ -1594,6 +1594,27 @@ fn golden_ticket_shell_busy_120() {
     golden("ticket_shell_busy_120x30", &lines);
 }
 
+/// A claude typed into the ticket's shell (T-369): bound as an observe-only
+/// record hosted by the shell, its row wears the `in shell` badge and the
+/// shell's row says `$ claude` whatever tmux named the process.
+#[test]
+fn golden_ticket_shell_claude_120() {
+    let mut app = app_graphite(fixture(true));
+    let t3 = ulid_n(3);
+    let agent = app.board.sessions.iter_mut().find(|s| s.id == uuid_n(31)).unwrap();
+    agent.argv.clear();
+    agent.provenance = mesimon_core::board::Provenance::Adopted;
+    agent.host = Some(uuid_n(32));
+    agent.detail = Some("typed in the shell".into());
+    app.board.sessions.iter_mut().find(|s| s.id == uuid_n(32)).unwrap().foreground =
+        Some("claude".into());
+    app.screen = Screen::Ticket { ticket: t3, rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("in shell")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("$ claude")), "{lines:#?}");
+    golden("ticket_shell_claude_120x30", &lines);
+}
+
 #[test]
 fn golden_ticket_previous_column() {
     let mut app = app_graphite(fixture(true));
