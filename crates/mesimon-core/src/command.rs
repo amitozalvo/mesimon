@@ -5,7 +5,9 @@
 use crate::authorize::Action;
 use serde::{Deserialize, Serialize};
 
-use crate::board::{AgentProvider, Board, ColumnSettings, SessionKind, SortBy, WorkspaceStrategy};
+use crate::board::{
+    AgentProvider, Board, ColumnSettings, SessionKind, SortBy, TagRef, WorkspaceStrategy,
+};
 use crate::Principal;
 
 // Codex session variants and provider settings must not be sent to a v1
@@ -310,13 +312,25 @@ pub enum Command {
         text: String,
         uploads: Vec<ulid::Ulid>,
     },
-    /// Publish pictures and description before starting any column automation.
+    /// The composer's mint (T-243): title, workspace, tags, description and
+    /// its pictures in one command, so the ticket exists with all of it or
+    /// not at all, and a column's auto-run spawns onto a card that already
+    /// carries its brief. `CreateTicket` is the thin form for a title alone.
     CreateTicketWithNote {
         column: String,
         title: String,
+        #[serde(default)]
         workspace: Option<crate::board::WorkspaceStrategy>,
+        /// The description, the ticket's first note. Empty means no note.
+        #[serde(default)]
         text: String,
+        #[serde(default)]
         uploads: Vec<ulid::Ulid>,
+        /// Registry references picked in the composer, worn at mint time.
+        /// Two on one group are refused — the wearer rule, judged where the
+        /// ticket is made rather than mirrored by the client.
+        #[serde(default)]
+        tags: Vec<TagRef>,
     },
     /// One note's body, read whole. Bodies never ride the snapshot (a note
     /// can be 32 KiB and the board is cloned on every event), so the ticket

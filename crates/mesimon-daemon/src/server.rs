@@ -37,6 +37,45 @@ use crate::paths::Paths;
 use crate::store;
 use crate::worktree::{self, Binding, BindingStatus};
 
+/// Pictures a note references, prepared and ready to write: their metadata
+/// and their bytes.
+type Images = Vec<(mesimon_core::attachment::Attachment, Vec<u8>)>;
+
+/// What a ticket is minted with — the argument to `Daemon::mint_full`, the
+/// one builder every minting road shares (T-243).
+pub(crate) struct Mint {
+    pub column: String,
+    pub title: String,
+    /// Absent means the column's own default.
+    pub workspace: Option<WorkspaceStrategy>,
+    /// The ticket an agent filed this one from; a person's mint has none.
+    pub from: Option<ulid::Ulid>,
+    /// Registry references, spelled by the caller; one per group.
+    pub tags: Vec<TagRef>,
+    /// The description and the pictures it references, already prepared.
+    /// Blank text is no note.
+    pub note: Option<(String, Images)>,
+}
+
+/// The composer's draft as `CreateTicketWithNote` carries it: what
+/// `create_ticket_with_note` turns into a `Mint`.
+pub(crate) struct Draft {
+    pub column: String,
+    pub title: String,
+    pub workspace: Option<WorkspaceStrategy>,
+    pub text: String,
+    pub uploads: Vec<ulid::Ulid>,
+    pub tags: Vec<TagRef>,
+}
+
+impl Mint {
+    /// A title alone in a column: the thin `CreateTicket` and the adoption
+    /// of an external session.
+    fn bare(column: String, title: String, workspace: Option<WorkspaceStrategy>) -> Self {
+        Mint { column, title, workspace, from: None, tags: Vec::new(), note: None }
+    }
+}
+
 mod attachments;
 mod mesophon;
 mod teamglue;
@@ -1731,9 +1770,11 @@ impl Daemon {
             Command::SaveNoteWithAttachments { ticket, note, text, uploads } => {
                 self.save_note_with_attachments(stream, ticket, note, text, uploads)
             }
-            Command::CreateTicketWithNote { column, title, workspace, text, uploads } => {
-                self.create_ticket_with_note(stream, column, title, workspace, text, uploads)
-            }
+            Command::CreateTicketWithNote { column, title, workspace, text, uploads, tags } => self
+                .create_ticket_with_note(
+                    stream,
+                    Draft { column, title, workspace, text, uploads, tags },
+                ),
             Command::ReadNote { ticket, note } => self.read_note(ticket, note),
             Command::WriteNote { ticket, note, text } => {
                 self.write_note(ticket, note, text, &Principal::Local)
@@ -4268,40 +4309,26 @@ impl Daemon {
         {
             return Response::Err { message: format!("denied: {reason}") };
         }
-        if self.columns_barred {
-            return Response::Err { message: self.barred_message("columns") };
-        }
-        let title = mesimon_core::board::sanitize_title(&title);
-        if title.trim().is_empty() {
-            return Response::Err { message: "title is empty".into() };
-        }
         let tags = match self.resolve_agent_tags(&tags) {
             Ok(refs) => refs,
             Err(message) => return Response::Err { message },
         };
-        let id = self.mint_ticket(by, Some(from), column.clone(), title, None);
-        if !tags.is_empty() {
-            if let Some(t) = self.board.ticket_mut(id) {
-                for r in tags {
-                    t.set_tag(r.group, Some(r.name));
-                }
-                let t = t.clone();
-                let _ = store::save_ticket(&self.paths, &t);
-            }
-        }
-        self.persist_and_notify();
+        // One mint (T-243): a description the daemon would refuse refuses the
+        // ticket with it, so the receipt never has to say "created, but".
+        let mint = Mint {
+            column: column.clone(),
+            title,
+            workspace: None,
+            from: Some(from),
+            tags,
+            note: description.map(|text| (text, Vec::new())),
+        };
+        let id = match self.mint_full(by, mint) {
+            Ok(id) => id,
+            Err(message) => return Response::Err { message },
+        };
         self.feed.board(by.actor(), "create_ticket", Some(id));
         let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
-        if let Some(text) = description {
-            if let Response::Err { message } = self.write_note(id, None, text, by) {
-                // The ticket exists either way; the honest receipt says both.
-                return Response::Err {
-                    message: format!(
-                        "ticket {key} created, but its description was not: {message}"
-                    ),
-                };
-            }
-        }
         Response::AgentCreated { key, column, board_version: self.board_version, replayed: false }
     }
 
@@ -5599,23 +5626,71 @@ impl Daemon {
         title: String,
         workspace: Option<WorkspaceStrategy>,
     ) -> Response {
-        // A barred columns.toml means next_key cannot be persisted, so a new
-        // ticket's short_key would regress on the next start and save_ticket
-        // would write over an existing ticket directory. Judged here, at the
-        // same depth as the agent's mint (`agent_create_ticket`).
-        if self.columns_barred {
-            return Response::Err { message: self.barred_message("columns") };
+        match self.mint_full(by, Mint::bare(column, title, workspace)) {
+            Ok(id) => {
+                let started = self.auto_run(id);
+                Response::Created { id, started }
+            }
+            Err(message) => Response::Err { message },
         }
-        if !self.board.columns.iter().any(|c| c.name == column) {
-            return Response::Err { message: format!("no such column: {column}") };
+    }
+
+    /// The composer's mint (T-243): tags, description and pictures ride the
+    /// one command, so a refusal — a full group, a note past its limit, a
+    /// barred store — leaves no half-made ticket, and the column's auto-run
+    /// spawns onto a card that already carries its brief. Tag names are
+    /// registered on the fly, the way `set_tag` does for the picker: using a
+    /// name is what puts it in the vocabulary, and a name is registered
+    /// whether or not the mint then goes through — the picker's own
+    /// register-then-wear order.
+    pub(super) fn create_ticket_with_note(
+        &mut self,
+        stream: &Arc<Mutex<UnixStream>>,
+        draft: Draft,
+    ) -> Response {
+        let Draft { column, title, workspace, text, uploads, tags } = draft;
+        let mut refs = Vec::with_capacity(tags.len());
+        for tag in tags {
+            let Some(name) = sanitize_tag(&tag.name) else {
+                return Response::Err { message: "empty tag name".into() };
+            };
+            if !(1..=10).contains(&tag.group) {
+                return Response::Err { message: "tag group must be 1-10".into() };
+            }
+            refs.push(TagRef { group: tag.group, name });
         }
-        // A title is user text on a card row; scrubbed and bounded here, at
-        // the boundary — the composer's own cap is a courtesy a client can lift.
-        let title = mesimon_core::board::sanitize_title(&title);
-        let id = self.mint_ticket(by, None, column, title, workspace);
-        self.persist_and_notify();
-        let started = self.auto_run(id);
-        Response::Created { id, started }
+        if text.trim().is_empty() && !uploads.is_empty() {
+            return Response::Err { message: "pictures need a description".into() };
+        }
+        let images = if text.trim().is_empty() {
+            Vec::new()
+        } else {
+            match self.uploads.prepare(stream, &uploads, &text) {
+                Ok(images) => images,
+                Err(e) => {
+                    return Response::Err { message: format!("could not save pictures: {e:#}") }
+                }
+            }
+        };
+        let mut registered = false;
+        for r in &refs {
+            registered |= self.board.register_tag(r.group, &r.name).is_ok();
+        }
+        if registered {
+            self.persist_columns();
+        }
+        let mint =
+            Mint { column, title, workspace, from: None, tags: refs, note: Some((text, images)) };
+        match self.mint_full(&Principal::Local, mint) {
+            Ok(id) => {
+                self.uploads.committed(&uploads);
+                let started = self.auto_run(id);
+                Response::Created { id, started }
+            }
+            Err(message) => {
+                Response::Err { message: format!("could not create ticket: {message}") }
+            }
+        }
     }
 
     /// Owner-delegated local adapter intake. The adapter, not this command,
@@ -5842,29 +5917,81 @@ impl Daemon {
     /// own default is stamped onto the ticket (T-117) — the ticket field
     /// stays the truth, so a later change to the column is never
     /// retroactive.
-    fn mint_ticket(
-        &mut self,
-        by: &Principal,
-        from: Option<ulid::Ulid>,
-        column: String,
-        title: String,
-        workspace: Option<WorkspaceStrategy>,
-    ) -> ulid::Ulid {
+    /// The one place a `Ticket` is built (T-243). Every road that mints —
+    /// the thin `CreateTicket`, the composer's `CreateTicketWithNote`, the
+    /// agent's `create_ticket`, an adopted external session — passes a
+    /// `Mint` through here, so a ticket exists with its title, workspace,
+    /// tags, description and pictures, or not at all. Every refusal comes
+    /// before anything touches disk; a failed write deletes the ticket's
+    /// directory and the board never sees it. Tags arrive as registry
+    /// references already spelled by the caller (the human road registers
+    /// them on the fly, the agent road resolves them and never registers);
+    /// the wearer rule — one tag per group — is judged here, where the
+    /// ticket is, instead of mirrored by a client whose picks are on no
+    /// ticket yet. Persists and notifies; the caller adds its own feed
+    /// line, auto-run or upload commit.
+    fn mint_full(&mut self, by: &Principal, mint: Mint) -> Result<ulid::Ulid, String> {
+        let Mint { column, title, workspace, from, tags, note } = mint;
+        // A barred columns.toml means next_key cannot be persisted, so a new
+        // ticket's short_key would regress on the next start and save_ticket
+        // would write over an existing ticket directory.
+        if self.columns_barred {
+            return Err(self.barred_message("columns"));
+        }
+        if self.board.column(&column).is_none() {
+            return Err(format!("no such column: {column}"));
+        }
+        // A title is user text on a card row; scrubbed and bounded here, at
+        // the boundary — the composer's own cap is a courtesy a client can lift.
+        let title = mesimon_core::board::sanitize_title(&title);
+        if title.trim().is_empty() {
+            return Err("a ticket needs a title".into());
+        }
+        for (i, tag) in tags.iter().enumerate() {
+            if !(1..=10).contains(&tag.group) {
+                return Err("tag group must be 1-10".into());
+            }
+            if let Some(other) = tags[..i].iter().find(|o| o.group == tag.group) {
+                return Err(format!(
+                    "one tag per group: {} and {} are both on group {}",
+                    other.name, tag.name, tag.group
+                ));
+            }
+        }
+        let note = match note {
+            Some((text, images)) if !text.trim().is_empty() => {
+                if let Some(message) = mesimon_core::board::note_size_error(&text) {
+                    return Err(message);
+                }
+                if mesimon_core::board::sanitize_note(&text) != text {
+                    return Err("invalid note text".into());
+                }
+                Some((text, images))
+            }
+            _ => None,
+        };
+        // Reserve the key on disk before the ticket exists, so a crash between
+        // the two cannot hand the same key to the next mint.
         self.board.next_key += 1;
+        if let Err(e) = store::save_columns(&self.paths, &self.board) {
+            return Err(format!("could not reserve a ticket key: {e:#}"));
+        }
         let workspace =
             workspace.or_else(|| self.board.column(&column).and_then(|c| c.settings.workspace));
         let last =
             self.board.column_tickets(&column).last().map(|t| t.order.clone()).unwrap_or_default();
-        let t = Ticket {
+        let now = now_iso();
+        let author = by.note_author();
+        let mut ticket = Ticket {
             id: ulid::Ulid::new(),
             short_key: format!("{}{}", mesimon_core::board::KEY_PREFIX, self.board.next_key),
             title,
             column,
             order: fracindex::between(&last, ""),
-            created_at: now_iso(),
-            created_by: by.note_author(),
+            created_at: now.clone(),
+            created_by: author.clone(),
             created_from: from,
-            entered_at: Some(now_iso()),
+            entered_at: Some(now.clone()),
             previous_column: None,
             woke_at: None,
             manual_merge: false,
@@ -5876,10 +6003,37 @@ impl Daemon {
             notes: Vec::new(),
             archived: None,
         };
-        let id = t.id;
-        let _ = store::save_ticket(&self.paths, &t);
-        self.board.tickets.push(t);
-        id
+        for tag in tags {
+            ticket.set_tag(tag.group, Some(tag.name));
+        }
+        if let Some((text, _)) = &note {
+            ticket.notes.push(mesimon_core::board::NoteMeta {
+                id: ulid::Ulid::new(),
+                name: mesimon_core::board::note_name(text),
+                rev: 1,
+                created_at: now.clone(),
+                edited_at: now,
+                created_by: author.clone(),
+                edited_by: author,
+            });
+        }
+        let saved = (|| -> Result<()> {
+            if let Some((text, images)) = &note {
+                for (meta, bytes) in images {
+                    crate::attachments::save(&self.paths, &ticket.short_key, meta, bytes)?;
+                }
+                store::save_note(&self.paths, &ticket.short_key, ticket.notes[0].id, text)?;
+            }
+            store::save_ticket(&self.paths, &ticket)
+        })();
+        if let Err(error) = saved {
+            let cleanup = store::delete_ticket_dir(&self.paths, &ticket.short_key);
+            return Err(format!("ticket save failed: {error:#}; cleanup: {cleanup:?}"));
+        }
+        let id = ticket.id;
+        self.board.tickets.push(ticket);
+        self.persist_and_notify();
+        Ok(id)
     }
 
     fn delete_ticket(&mut self, id: ulid::Ulid, discard_worktree: bool) -> Response {
@@ -9236,7 +9390,7 @@ impl Daemon {
                     .or_else(|| item.preview.clone())
                     .unwrap_or_else(|| item.id.to_string()[..8].to_string());
                 let title: String = title.chars().take(48).collect();
-                self.mint_ticket(by, None, column, title, None)
+                self.mint_full(by, Mint::bare(column, title, None))?
             }
         };
         let id = uuid::Uuid::new_v4();

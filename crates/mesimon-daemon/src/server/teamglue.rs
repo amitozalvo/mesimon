@@ -1366,6 +1366,7 @@ fn viewer_edit(command: &Command) -> bool {
     if matches!(
         command,
         Command::CreateTicket { .. }
+            | Command::CreateTicketWithNote { .. }
             | Command::ImportTicket { .. }
             | Command::MoveTicket { .. }
             | Command::ArchiveAll
@@ -1424,6 +1425,14 @@ mod tests {
         let id = ulid::Ulid::new();
         let edits = [
             Command::CreateTicket { column: "TODO".into(), title: "x".into(), workspace: None },
+            Command::CreateTicketWithNote {
+                column: "TODO".into(),
+                title: "x".into(),
+                workspace: None,
+                text: String::new(),
+                uploads: Vec::new(),
+                tags: Vec::new(),
+            },
             Command::RenameTicket { id, title: "y".into() },
             Command::MoveTicket { id, column: "DOING".into(), before: None },
             Command::ArchiveTicket { id },

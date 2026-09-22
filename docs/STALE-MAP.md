@@ -3206,7 +3206,7 @@ desyncs; no soft-wrap in v1, the cursor row scrolls under `edit_window`) — wit
 `Compose` is the one-line composer in a bigger room: `Tab` (`Verb::Describe`, composer-only)
 carries the title over, `^t` and Shift+Tab keep working (`compose_tags()` reads the picks off
 whichever composer is open), `^s` mints ticket + workspace + tags + description as `notes[0]`
-(`App::mint_ticket`, which the one-line composer now calls with no body), and Shift+Enter
+(`App::mint_ticket_with_images`, which the one-line composer now calls with no body), and Shift+Enter
 mints and starts claude on the TITLE ONLY — the agent reads the description through
 `get_ticket`, so the paste path is untouched. It is not a fourth Shift+Enter home: same verb,
 same moment, second surface, and `shift_enter_asks_claude_at_every_stage` now says so and
@@ -5846,7 +5846,7 @@ what the board does; the tests, the goldens and the e2e suite ran unchanged (919
 
 **Deferred, by design (do not re-derive):**
 - The composer's four round-trips (`CreateTicket`, `SetWorkspace`, tags, `WriteNote`) vs the
-  agent's atomic `AgentCreateTicket` — a wire change; the partial-failure window is real.
+  agent's atomic `AgentCreateTicket` — a wire change; the partial-failure window is real. Shipped as T-243 (2026-09-23).
 - The two owed-paste ledgers (`pending_prompt` + `pending_submit` + `submit_retry` vs
   `inflight`) — one `owed` map keyed by session would be the design, not a cleanup.
 - `pane_reborn`'s tmux fork: passing `#{pane_id}` in the `pane-died` hook and matching by
@@ -12486,3 +12486,49 @@ returns on its own once the branch no longer needs a rebase. The identity line's
 the outstanding ask (`merge_outstanding`, hand ask and train ask alike) is the same
 "waiting for rebase", so the note clearing on the next keypress changes nothing the user
 reads.
+
+## T-243: the composer mints a ticket in one command (2026-09-23)
+
+The composer minted a ticket in up to three round-trips on the no-picture road:
+`CreateTicket`, then one `SetTag` per pick (errors dropped), then `WriteNote` for the
+description (its error alone reached the status line). A refusal on a later trip left a
+half-made ticket. The picture road already had `CreateTicketWithNote` (atomic, with file
+cleanup) but replayed tags after it. Three daemon minters built a `Ticket` three ways.
+
+**Shipped.** `CreateTicketWithNote` widened with `tags: Vec<TagRef>`, `text` allowed empty (no
+note), every added field `#[serde(default)]`; the composer always sends it and replays nothing.
+`Daemon::mint_full` is now the one place a `Ticket` is built — `create_ticket`, the composer's
+`create_ticket_with_note`, the agent's `agent_create_ticket` and the external-session adoption
+all pass a `Mint` through it. Every refusal (barred store, no column, blank title, two tags on
+one group, a note past 32 KiB or failing `sanitize_note`) comes before the key is spent or a
+byte is written; a failed write deletes the ticket directory and the board never sees it.
+
+**Two fixes it carried.** The column's `auto_run` fired inside `CreateTicket`, before the
+composer's tags and note arrived — the brief reached the agent only because the spawn reads it
+at paste time. It now spawns onto a card that already wears its pips and carries its note
+(`auto_run_e2e` has both orders: the one-command mint and a late `WriteNote`). And
+`teamglue::viewer_edit` refused `CreateTicket` for a viewer but not `CreateTicketWithNote`, so a
+viewer could mint through the picture road; both are refused now.
+
+**Chosen against widening `CreateTicket`** (the T-234 brief's shape): that variant has 72
+struct-literal call sites in the e2e suite, and serde defaults help a wire client, not a Rust
+caller. The thin form stays for a title alone; the composer's form carries everything.
+
+**Not what the brief said.** The "wearer mirror" the composer keeps is the `MoveTag`-while-
+composing guard (`composing_wearer` in `app.rs`), which protects picks that live in the
+composer's memory until Enter; unifying the mint does not remove it. Mint-time wearer judgment
+(one tag per group) is the daemon's, in `mint_full`. Tag names on the human road are registered
+on the fly before the mint, the picker's own register-then-wear order, so a name can outlive a
+refused mint the way `RegisterTag` then a cancelled composer would leave it. The agent road
+still resolves against the registry and never registers.
+
+**Receipts.** The agent's "ticket created, but its description was not" receipt is gone: a
+description the daemon would refuse refuses the ticket with it. The activity feed's line for a
+composer mint is `create_ticket_with_note` (the wire name) where it was `create_ticket` plus a
+`set_tag` per pick plus `write_note`. The thin `CreateTicket` now refuses a blank title, as the
+other two roads always did.
+
+**Checks.** `compose_e2e` (whole-or-nothing, refusals spend no key and leave no directory, blank
+text is no note, on-the-fly registration), `auto_run_e2e` (both orders), the reshaped
+`editor_save_*` app tests, `composer_tags_ride_the_mint`, `a_refused_mint_keeps_the_draft`,
+and the teamglue viewer test.

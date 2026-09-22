@@ -1640,6 +1640,7 @@ mod tests {
                 workspace: None,
                 text: "x".into(),
                 uploads: vec![],
+                tags: vec![],
             },
             Command::SetAgentProvider { provider: crate::board::AgentProvider::Codex },
             Command::SetParkAfterMinutes { minutes: 30 },

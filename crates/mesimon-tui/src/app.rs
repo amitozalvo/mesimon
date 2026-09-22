@@ -1011,9 +1011,10 @@ pub enum InputPurpose {
     /// name (M4 layering): None = the board default (shared checkout).
     Create {
         workspace: Option<WorkspaceStrategy>,
-        /// Tags picked with `^t` before the ticket exists. Sent as
-        /// `SetTag` commands once `Response::Created` gives us an id — the
-        /// same shape the workspace selector uses.
+        /// Tags picked with `^t` before the ticket exists. They ride the
+        /// mint itself (`CreateTicketWithNote`, T-243), so the daemon
+        /// judges the one-per-group rule and a refusal leaves no half-made
+        /// ticket — the same shape the workspace selector uses.
         tags: Vec<TagRef>,
         /// The description written in the grown editor and kept by its `^s`
         /// (2026-09-04): `Tab` reopens the editor on it, and the mint writes
@@ -8691,11 +8692,12 @@ impl App {
         let with_images = images
             .iter()
             .any(|i| description.as_deref().unwrap_or("").contains(&crate::image_paste::marker(i)));
-        let command = if with_images {
+        // One command carries the whole draft (T-243): the daemon mints the
+        // ticket with its tags, description and pictures or refuses it
+        // whole, and the refusal comes back to a composer still holding it.
+        let (text, uploads) = if with_images {
             match self.upload_draft(description.as_deref().unwrap_or(""), &images) {
-                Ok((text, _, uploads)) => {
-                    Command::CreateTicketWithNote { column, title, workspace, text, uploads }
-                }
+                Ok((text, _, uploads)) => (text, uploads),
                 Err(e) => {
                     self.status = format!("could not save pictures: {e}");
                     self.mode = recovery;
@@ -8703,31 +8705,21 @@ impl App {
                 }
             }
         } else {
-            Command::CreateTicket { column, title, workspace }
+            (description.unwrap_or_default(), Vec::new())
         };
-        let uploads = match &command {
-            Command::CreateTicketWithNote { uploads, .. } => uploads.clone(),
-            _ => Vec::new(),
-        };
-        let response = self.req(command);
+        let response = self.req(Command::CreateTicketWithNote {
+            column,
+            title,
+            workspace,
+            text,
+            uploads: uploads.clone(),
+            tags,
+        });
         if !uploads.is_empty() {
             let _ = self.req(Command::DiscardAttachmentUploads { uploads });
         }
         match response {
             Response::Created { id, started } => {
-                // Tags picked with `^t` while the ticket was still
-                // being named, replayed now that it has an id.
-                for tag in tags {
-                    let _ =
-                        self.req(Command::SetTag { id, group: tag.group, name: Some(tag.name) });
-                }
-                if let Some(text) = description.filter(|_| !with_images) {
-                    if let Response::Err { message } =
-                        self.req(Command::WriteNote { ticket: id, note: None, text })
-                    {
-                        self.status = message;
-                    }
-                }
                 self.refresh()?;
                 self.select_ticket(id);
                 // The column started a claude on it already (T-117): the
@@ -9553,10 +9545,39 @@ pub(crate) mod test_support {
         pub sent: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
         /// Make FocusStart answer Err (the daemon refusing a focus).
         pub refuse_focus: bool,
+        /// Make the composer's mint answer Err (the daemon refusing a
+        /// ticket whole, T-243).
+        pub refuse_mint: bool,
         /// Note bodies by id, the daemon's files stood in for.
         pub notes: std::collections::HashMap<ulid::Ulid, String>,
         /// The `!` terminals the fake daemon reports alive (T-366).
         pub terminals: Vec<mesimon_core::command::TerminalItem>,
+    }
+
+    /// The fake daemon's fresh ticket: always `T-999` at the bottom of the
+    /// column, which is what the "just created" tests select by.
+    fn fake_ticket(column: String, title: String, workspace: Option<WorkspaceStrategy>) -> Ticket {
+        Ticket {
+            id: ulid::Ulid(999),
+            short_key: "T-999".into(),
+            title,
+            column,
+            order: "zzzz".into(),
+            created_at: "1970-01-01T00:00:00Z".into(),
+            created_by: String::new(),
+            created_from: None,
+            entered_at: None,
+            previous_column: None,
+            woke_at: None,
+            manual_merge: false,
+            execution_policy: Default::default(),
+            import_origin: None,
+            raised: None,
+            workspace,
+            tags: Vec::new(),
+            notes: Vec::new(),
+            archived: None,
+        }
     }
 
     impl Transport for FakeTransport {
@@ -9568,13 +9589,32 @@ pub(crate) mod test_support {
                         upload: upload.unwrap_or_else(ulid::Ulid::new),
                     })
                 }
-                Command::CreateTicketWithNote { column, title, workspace, text, .. } => {
-                    let created =
-                        self.request(Command::CreateTicket { column, title, workspace })?;
-                    if let Response::Created { id, .. } = created {
-                        self.request(Command::WriteNote { ticket: id, note: None, text })?;
+                // The composer's mint (T-243): the fake wears the tags and
+                // files the note the way the daemon does, in one step.
+                Command::CreateTicketWithNote { column, title, workspace, text, tags, .. } => {
+                    if self.refuse_mint {
+                        return Ok(Response::Err { message: "could not create ticket".into() });
                     }
-                    return Ok(created);
+                    let mut ticket = fake_ticket(column, title, workspace);
+                    for tag in tags {
+                        ticket.set_tag(tag.group, Some(tag.name));
+                    }
+                    if !text.trim().is_empty() {
+                        let id = ulid::Ulid(900);
+                        ticket.notes.push(mesimon_core::board::NoteMeta {
+                            id,
+                            name: mesimon_core::board::note_name(&text),
+                            rev: 1,
+                            created_at: "1970-01-01T00:00:00Z".into(),
+                            edited_at: "1970-01-01T00:00:00Z".into(),
+                            created_by: "local".into(),
+                            edited_by: "local".into(),
+                        });
+                        self.notes.insert(id, text);
+                    }
+                    let id = ticket.id;
+                    self.board.tickets.push(ticket);
+                    return Ok(Response::Created { id, started: false });
                 }
                 Command::DuplicateTicket { id } => {
                     let Some(mut ticket) = self.board.ticket(id).cloned() else {
@@ -9588,28 +9628,9 @@ pub(crate) mod test_support {
                     return Ok(Response::Created { id, started: false });
                 }
                 Command::CreateTicket { column, title, workspace } => {
-                    let id = ulid::Ulid(999);
-                    self.board.tickets.push(Ticket {
-                        id,
-                        short_key: "T-999".into(),
-                        title,
-                        column,
-                        order: "zzzz".into(),
-                        created_at: "1970-01-01T00:00:00Z".into(),
-                        created_by: String::new(),
-                        created_from: None,
-                        entered_at: None,
-                        previous_column: None,
-                        woke_at: None,
-                        manual_merge: false,
-                        execution_policy: Default::default(),
-                        import_origin: None,
-                        raised: None,
-                        workspace,
-                        tags: Vec::new(),
-                        notes: Vec::new(),
-                        archived: None,
-                    });
+                    let ticket = fake_ticket(column, title, workspace);
+                    let id = ticket.id;
+                    self.board.tickets.push(ticket);
                     return Ok(Response::Created { id, started: false });
                 }
                 Command::GateStatus => {
@@ -10114,6 +10135,7 @@ pub(crate) mod test_support {
                 claude_md: Default::default(),
                 sent: sent.clone(),
                 refuse_focus,
+                refuse_mint: false,
                 notes: std::collections::HashMap::new(),
                 terminals: Vec::new(),
             };
@@ -10321,6 +10343,7 @@ mod tests {
             },
             sent,
             refuse_focus: false,
+            refuse_mint: false,
             notes: std::collections::HashMap::new(),
             terminals: Vec::new(),
         };
@@ -10598,6 +10621,7 @@ mod tests {
             status_top: false,
             sent: sent.clone(),
             refuse_focus: false,
+            refuse_mint: false,
             notes,
             terminals: Vec::new(),
         };
@@ -10658,6 +10682,7 @@ mod tests {
             status_top: false,
             sent: sent.clone(),
             refuse_focus: false,
+            refuse_mint: false,
             notes,
             terminals: Vec::new(),
         };
@@ -10922,14 +10947,14 @@ mod tests {
         assert_eq!(editor(&app).body.as_str(), "why\nand how");
         assert!(!editor(&app).dirty());
         ctrl(&mut app, 's');
-        // Enter on the small composer mints with the description.
+        // Enter on the small composer mints with the description — one
+        // command carrying it (T-243), no note written afterwards.
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);
         let log = sent.borrow().join("\n");
-        let create = log.find("CreateTicket").expect("minted");
-        let note = log.find("WriteNote").expect("described");
-        assert!(create < note, "the ticket before its note: {log}");
-        assert!(log.contains("why\\nand how"), "newlines survive: {log}");
+        let create = log.find("CreateTicketWithNote").expect("minted");
+        assert!(log[create..].contains("why\\nand how"), "the description rides the mint: {log}");
+        assert!(!log.contains("WriteNote"), "no second trip for the note: {log}");
         assert!(!log.contains("SpawnSession"), "Enter asks nothing: {log}");
         assert!(app.status.contains("enter starts agent"), "{}", app.status);
     }
@@ -10981,13 +11006,15 @@ mod tests {
         app.handle_key(KeyCode::Char('S'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap();
         assert_eq!(app.mode, Mode::Normal);
         let log = sent.borrow().join("\n");
-        let create = log.find("CreateTicket").expect("minted");
-        let note = log.find("WriteNote").expect("described");
+        let create = log.find("CreateTicketWithNote").expect("minted");
         let spawn = log.find("SpawnSession").expect("asked");
-        assert!(create < note, "the ticket before its note: {log}");
-        assert!(note < spawn, "the note before the agent reads it: {log}");
+        assert!(create < spawn, "the ticket, with its note, before the agent reads it: {log}");
+        assert!(
+            log[create..spawn].contains("why\\nand how"),
+            "the description rides the mint: {log}"
+        );
+        assert!(!log.contains("WriteNote"), "no second trip for the note: {log}");
         assert!(log.contains("submit_prompt: true"), "the title is submitted: {log}");
-        assert!(log.contains("why\\nand how"), "newlines survive: {log}");
         assert_eq!(app.screen, Screen::Board, "stays on the board");
         assert!(app.status.contains("agent started"), "{}", app.status);
         assert_eq!(app.just_created, None, "no Enter window: the agent is already on it");
@@ -13929,7 +13956,7 @@ mod tests {
         press(&mut app, 'o');
         press(&mut app, 'n');
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert!(sent_contains(&sent, "CreateTicket"));
+        assert!(sent_contains(&sent, "CreateTicketWithNote"));
         assert!(
             sent_contains(&sent, "submit_prompt: true"),
             "the title is submitted, not merely prefilled: {:?}",
@@ -13956,6 +13983,86 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(!sent_contains(&sent, "CreateTicket"), "the key is inert, not half-bound");
         assert!(matches!(app.mode, Mode::Input { .. }), "still composing");
+    }
+
+    /// Tags picked with `^t` while composing ride the mint itself (T-243):
+    /// one `CreateTicketWithNote` carries them and nothing is replayed as
+    /// `SetTag` once the ticket has an id — the daemon wears them as it
+    /// mints, so the card lands with its pips.
+    #[test]
+    fn composer_tags_ride_the_mint() {
+        let mut board = board_three_columns();
+        board.register_tag(1, "BUG").expect("registered");
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        press(&mut app, 'o');
+        press(&mut app, 'n');
+        ctrl(&mut app, 't');
+        assert_eq!(app.tag_cell().map(|(g, n, _)| (g, n)), Some((1, "BUG".to_string())));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!sent_contains(&sent, "SetTag"), "no ticket to tag yet: {:?}", sent.borrow());
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        let mint = sent
+            .borrow()
+            .iter()
+            .find(|s| s.starts_with("CreateTicketWithNote"))
+            .cloned()
+            .expect("minted");
+        assert!(mint.contains("\"BUG\""), "the pick rides the mint: {mint}");
+        assert!(!sent_contains(&sent, "SetTag"), "nothing replayed: {:?}", sent.borrow());
+        let card = app.board.tickets.iter().find(|t| t.short_key == "T-999").expect("landed");
+        assert_eq!(card.tags.len(), 1, "wearing it on arrival: {:?}", card.tags);
+        assert_eq!(card.tags[0].name, "BUG");
+    }
+
+    /// A refused mint — a full group, a note past its limit, a barred store —
+    /// leaves no half-made ticket and hands the draft back (T-243): the
+    /// composer reopens holding the title and the description, the daemon's
+    /// reason on the status line.
+    #[test]
+    fn a_refused_mint_keeps_the_draft() {
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let fake = super::test_support::FakeTransport {
+            board: board_three_columns(),
+            grace: vec![],
+            external: vec![],
+            resources: Resources::default(),
+            shell_env: Default::default(),
+            git: Default::default(),
+            pending: Vec::new(),
+            automation: Default::default(),
+            status_top: false,
+            claude_md: Default::default(),
+            sent: sent.clone(),
+            refuse_focus: false,
+            refuse_mint: true,
+            notes: std::collections::HashMap::new(),
+            terminals: Vec::new(),
+        };
+        let mut app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
+            .expect("fake transport snapshot");
+        press(&mut app, 'o');
+        press(&mut app, 'n');
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        for c in "why".chars() {
+            press(&mut app, c);
+        }
+        ctrl(&mut app, 's');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "CreateTicketWithNote"), "{:?}", sent.borrow());
+        match &app.mode {
+            Mode::Input { purpose: InputPurpose::Create { description, .. }, buffer } => {
+                assert_eq!(buffer.as_str(), "n", "the title is back");
+                assert_eq!(description.as_deref(), Some("why"), "and the description");
+            }
+            other => panic!("the draft is gone: {other:?}"),
+        }
+        assert_eq!(app.status, "could not create ticket");
+        assert_eq!(app.just_created, None);
+        assert!(app.board.tickets.iter().all(|t| t.title != "n"), "no half-made ticket");
+        assert!(!sent_contains(&sent, "WriteNote"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "SetTag"), "{:?}", sent.borrow());
     }
 
     fn ctrl(app: &mut App, c: char) {
@@ -16650,6 +16757,7 @@ mod tests {
             status_top: false,
             sent: sent.clone(),
             refuse_focus: false,
+            refuse_mint: false,
             notes,
             terminals: Vec::new(),
         };
