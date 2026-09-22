@@ -3207,11 +3207,12 @@ impl App {
     }
 
     /// Shift+Tab in the ask field: the two-stop ring (`now` / `queued`)
-    /// everywhere, and a three-stop one on a seat whose agent is on its
-    /// plan dialog or known to be planning (T-420): `accept plan` →
-    /// `queued` → `now` → `accept plan`. On the dialog itself `now` is
-    /// skipped — a paste there lands in the dialog, not in front of the
-    /// agent.
+    /// everywhere, and a three-stop one on a seat whose agent is known to
+    /// be planning (T-420): `accept plan` → `queued` → `now` → `accept
+    /// plan`. On the dialog itself there is ONE stop, `accept plan`, and
+    /// the key is inert (the keymap already withholds it): a paste there
+    /// lands in the dialog, and `queued` beside a dialog reads as a choice
+    /// that is not one.
     pub(crate) fn cycle_ask_mode(
         &self,
         target: &AskTarget,
@@ -3222,13 +3223,16 @@ impl App {
             AskTarget::Ticket(t) => (self.ticket_plan_able(*t), self.ticket_plan_ready(*t)),
             AskTarget::Column(_) => (false, false),
         };
-        if !able {
+        if ready {
+            *accept_plan = true;
+            *queued = true;
+        } else if !able {
             *accept_plan = false;
             *queued = !*queued;
         } else if *accept_plan {
             *accept_plan = false;
             *queued = true;
-        } else if *queued && !ready {
+        } else if *queued {
             *queued = false;
         } else {
             *accept_plan = true;
@@ -3786,6 +3790,16 @@ impl App {
                 | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
                     match target {
                         AskTarget::Ticket(t) => self.ticket_plan_able(*t),
+                        AskTarget::Column(_) => false,
+                    }
+                }
+                _ => false,
+            },
+            ask_plan_ready: match &self.mode {
+                Mode::Input { purpose: InputPurpose::Prompt { target, .. }, .. }
+                | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
+                    match target {
+                        AskTarget::Ticket(t) => self.ticket_plan_ready(*t),
                         AskTarget::Column(_) => false,
                     }
                 }
@@ -13247,11 +13261,11 @@ mod tests {
     /// T-420: on a card whose agent sits on its plan dialog, Shift+Enter
     /// opens the field at `accept plan`, a blank Enter sends the accept —
     /// a `PromptSession` with the flag and no words — and the status says
-    /// what the card will: `accepting plan`. Shift+Tab walks the ring past
-    /// `queued` and back, never to `now`: a paste into a dialog is an
-    /// answer, not an ask.
+    /// what the card will: `accepting plan`. Shift+Tab does nothing there:
+    /// on the dialog the field has one stop, and `queued` beside a dialog
+    /// would read as a choice that is not one.
     #[test]
-    fn shift_enter_on_a_ready_plan_accepts_it_and_the_ring_skips_now() {
+    fn shift_enter_on_a_ready_plan_accepts_it_and_shift_tab_is_inert() {
         use mesimon_core::board::Reason;
         let (mut app, sent, _) =
             app_with_claude(SessionState::RequiresAction { reason: Reason::Plan }, false);
@@ -13276,9 +13290,12 @@ mod tests {
             mesimon_core::keymap::hint_for(Scope::Input, Verb::Save, &app.ctx()),
             Some(("enter", "accept plan"))
         );
-        // The ring: accept plan → queued → accept plan (no `now` here).
-        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert!(app.ctx().ask_queued && !app.ctx().ask_accepts_plan);
+        // One stop: Shift+Tab is unbound and unhinted here.
+        assert!(app.ctx().ask_plan_ready);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Input, Verb::CycleWorkspace, &app.ctx()),
+            None
+        );
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(app.ctx().ask_queued && app.ctx().ask_accepts_plan);
         // A blank Enter is the accept itself.

@@ -227,6 +227,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 lines.push(card::render_ask_mode(
                     &ctx,
                     crate::app::App::ask_mode_word(accept_plan, queued),
+                    !app.ticket_plan_ready(t.id),
                 ));
             }
             (at, x_off)
@@ -508,7 +509,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         header_cursor_x = Some(x_off);
         header_cursor_y = 1;
         if column_ask_toggle {
-            out.push(card::render_ask_mode(&ctx, crate::app::App::ask_mode_word(false, queued)));
+            out.push(card::render_ask_mode(
+                &ctx,
+                crate::app::App::ask_mode_word(false, queued),
+                true,
+            ));
         }
     }
     out.push(Line::default());

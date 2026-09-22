@@ -455,7 +455,8 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             }
             ctx_spans
                 .push(Span::styled(crate::app::App::ask_mode_word(*accept_plan, *queued), dim1));
-            if app.frame_ctx().ask_queueable {
+            let fc = app.frame_ctx();
+            if fc.ask_queueable && !fc.ask_plan_ready {
                 ctx_spans.push(Span::styled("  shift+tab".to_string(), dim2));
             }
         }

@@ -152,13 +152,17 @@ pub(super) fn render_workspace_selector(
 /// said ` ∙ blank enter drops` on a reopened ask until T-241 (2026-09-05):
 /// 39 cells, cut to `dr` on a narrow column. The emptied field's
 /// placeholder carries that word now (`render_prompt`).
-pub(super) fn render_ask_mode(ctx: &CardCtx, word: &'static str) -> Line<'static> {
+/// `cycles` is whether Shift+Tab is live on the row (T-420: not on a plan
+/// dialog, where the one stop is `accept plan`); the hint goes with it.
+pub(super) fn render_ask_mode(ctx: &CardCtx, word: &'static str, cycles: bool) -> Line<'static> {
     let theme = ctx.theme;
-    let spans = vec![
+    let mut spans = vec![
         Span::raw(" ".repeat(BAR_WIDTH + 1)),
         Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),
-        Span::styled("  shift+tab".to_string(), Style::default().fg(theme.sel.dim2)),
     ];
+    if cycles {
+        spans.push(Span::styled("  shift+tab".to_string(), Style::default().fg(theme.sel.dim2)));
+    }
     Line::from(spans).style(theme.selected_row())
 }
 

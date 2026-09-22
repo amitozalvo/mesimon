@@ -12446,7 +12446,11 @@ and the queued flag on by default only when the session is known to be planning.
   `accepting plan` while the agent is on the dialog and the press is the next tick's,
   `queued ∙ accepts plan` while it still plans, `held ∙ agent asked`. The field's placeholder at
   `accept plan` reads `enter accepts the plan`; the room and the card's delivery row say
-  `accept plan` through `App::ask_mode_word`. The board's status on Enter: `accepting plan`,
+  `accept plan` through `App::ask_mode_word`. **Amended 2026-09-23** (user: "queued doesn't
+  make sense here and can confuse users"): on the dialog itself the field has ONE stop —
+  Shift+Tab is inert and unhinted (`Ctx::ask_plan_ready`; the row drops its `shift+tab`) and
+  `cycle_ask_mode` holds `accept plan`. A seat merely known to be planning keeps the three-stop
+  ring, since there the words can still wait or go now. The board's status on Enter: `accepting plan`,
   `queued ∙ accepts plan`, or the ordinary queued receipt prefixed `accepting plan ∙` /
   `accepts plan ∙`.
 

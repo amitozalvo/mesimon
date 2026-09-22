@@ -1047,6 +1047,11 @@ pub struct Ctx {
     /// is on the dialog or known to be planning, so Shift+Tab's ring has
     /// three stops, not two.
     pub ask_plan_able: bool,
+    /// The ask field's target is ON its plan dialog (T-420): the field can
+    /// do one thing there, accept, so Shift+Tab is inert and unhinted —
+    /// `queued` beside a dialog reads as a choice and is not one (user,
+    /// 2026-09-23: "queued doesn't make sense here and can confuse users").
+    pub ask_plan_ready: bool,
     /// A claude is mid-turn in the subject ticket's shared checkout, so a
     /// press that would START or WAKE a session there stops and asks first
     /// (T-294). The TUI's own read of `quiet::is_working`, and a HINT: it
@@ -4959,7 +4964,7 @@ static INPUT: &[Binding] = &[
                 "shared checkout / own worktree"
             }
         },
-        avail: |c| c.composing || (c.prompting && c.ask_queueable),
+        avail: |c| c.composing || (c.prompting && c.ask_queueable && !c.ask_plan_ready),
         class: Class::Plain,
         group: Group::Worktree,
         mutates: false,
@@ -6165,7 +6170,9 @@ mod tests {
     /// says what its field will do — accept the plan, then ask — and the
     /// field's Enter says `accept plan` while the toggle sits there. A
     /// waiting ask still wins the hint: editing it is the only way to
-    /// change the flag it carries.
+    /// change the flag it carries. On the dialog itself Shift+Tab is
+    /// inert and unhinted (one stop is no ring); a seat merely KNOWN to be
+    /// planning keeps the three-stop ring.
     #[test]
     fn shift_enter_accepts_a_ready_plan_and_the_field_says_so() {
         let plan = Ctx {
@@ -6190,16 +6197,20 @@ mod tests {
             ask_queued: true,
             ask_accepts_plan: true,
             ask_plan_able: true,
+            ask_plan_ready: true,
             ask_queueable: true,
             rich_keys: true,
             ..Default::default()
         };
         assert_eq!(hint_for(Scope::Input, Verb::Save, &accepting), Some(("enter", "accept plan")));
+        assert_eq!(hint_for(Scope::Input, Verb::CycleWorkspace, &accepting), None);
+        assert_eq!(resolve(Scope::Input, Key::BackTab, &accepting), None);
+        let planning = Ctx { ask_plan_ready: false, ..accepting.clone() };
         assert_eq!(
-            hint_for(Scope::Input, Verb::CycleWorkspace, &accepting),
+            hint_for(Scope::Input, Verb::CycleWorkspace, &planning),
             Some(("shift+tab", "accept plan / queued / now"))
         );
-        let plain = Ctx { ask_accepts_plan: false, ask_plan_able: false, ..accepting };
+        let plain = Ctx { ask_accepts_plan: false, ask_plan_able: false, ..planning };
         assert_eq!(hint_for(Scope::Input, Verb::Save, &plain), Some(("enter", "queue")));
         assert_eq!(
             hint_for(Scope::Input, Verb::CycleWorkspace, &plain),
