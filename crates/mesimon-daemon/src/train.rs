@@ -31,6 +31,12 @@ pub struct AskRecord {
     pub base_oid: String,
     pub at_ms: u64,
     pub by_hand: bool,
+    /// The turn the ask started has ended (T-435): the ticket's agent left
+    /// its working state after the ask landed. Until then the ticket is in
+    /// its rebase turn — the git step may have landed, the tests may still
+    /// be running — and the train holds for it (`train_busy`); after, a
+    /// later turn at the same tip is a bystander like any other.
+    pub turn_over: bool,
 }
 
 #[derive(Default)]
@@ -77,7 +83,7 @@ impl Train {
         by_hand: bool,
         now: Instant,
     ) -> bool {
-        self.asked.insert(ticket, AskRecord { base_oid, at_ms, by_hand });
+        self.asked.insert(ticket, AskRecord { base_oid, at_ms, by_hand, turn_over: false });
         if by_hand {
             return false;
         }
@@ -114,6 +120,18 @@ impl Train {
 
     pub fn asked(&self) -> &HashMap<ulid::Ulid, AskRecord> {
         &self.asked
+    }
+
+    /// The ticket's agent stopped working: whatever ask it was in is over.
+    pub fn settle(&mut self, ticket: ulid::Ulid) {
+        if let Some(r) = self.asked.get_mut(&ticket) {
+            r.turn_over = true;
+        }
+    }
+
+    /// Asked at `base_tip` and still in the turn that ask started.
+    pub fn in_rebase_turn(&self, ticket: ulid::Ulid, base_tip: &str) -> bool {
+        self.asked.get(&ticket).is_some_and(|r| !r.turn_over && r.base_oid == base_tip)
     }
 
     /// Ticket → the base tip it was last asked at, the planner's shape.

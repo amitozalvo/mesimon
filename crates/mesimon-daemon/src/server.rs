@@ -3453,6 +3453,11 @@ impl Daemon {
         }
         let snapshot = rec.clone();
         self.feed.session_state(&snapshot, &change.from, hook);
+        // A turn ending settles the ticket's rebase ask (T-435): the train's
+        // hold for a ticket in its rebase turn lasts exactly that turn.
+        if change.from != change.to && !mesimon_core::quiet::is_working(&snapshot) {
+            self.train.settle(snapshot.ticket);
+        }
         // A raised hand is answered by the NEXT turn beginning (T-311), not
         // by the one that raised it ending — that half is T-107's whole
         // design and is untouched. `UserPromptSubmit` was the only turn-start
@@ -7391,20 +7396,27 @@ impl Daemon {
     /// over-cautious at worst, and the alternative is reading the checkout's
     /// branch on a road whose whole point is that it forks no git (T-289).
     ///
-    /// The one board-wide wait that survives: a ticket MID-REBASE at this
-    /// base tip — asked by us, flag still saying it is behind, turn still
-    /// running. Advancing the base under it lands its rebase on a stale one
-    /// and earns it a fresh ask, and six of those in two hours suspend the
-    /// train for that ticket.
+    /// The one board-wide wait that survives: a ticket IN ITS REBASE TURN at
+    /// this base tip — asked by us at it, turn still running. Advancing the
+    /// base under it lands its rebase on a stale one and earns it a fresh
+    /// ask, and six of those in two hours suspend the train for that ticket.
+    /// The hold lasts the whole turn, not the git step (T-435): the words
+    /// end "run the tests … before we merge", so the turn runs on after
+    /// `needs_rebase` clears, and in that window the ticket was neither
+    /// mid-rebase nor a merge candidate — the pass fell through and asked
+    /// the next behind ticket onto the same tip. Three REVIEW tickets
+    /// behind one hand merge were asked 31 s apart, and each merge then
+    /// re-asked the rest: N(N+1)/2 turns for N. One ask outstanding per
+    /// tip is the rule; the turn ending settles it (`apply_change` →
+    /// `Train::settle`), so a LATER turn at the same tip is a bystander
+    /// (T-351) and not a hold, and the merge that follows moves the tip.
     fn train_busy(&self) -> Vec<ulid::Ulid> {
         let mut out = self.checkout_holders(&self.paths.repo_root.to_string_lossy());
         for t in self.working(None) {
             if out.contains(&t) {
                 continue;
             }
-            let mid_rebase = self.wt_needs_rebase.get(&t).copied().unwrap_or(false)
-                && self.train.asked().get(&t).is_some_and(|r| r.base_oid == self.base_tip_of(t));
-            if mid_rebase {
+            if self.train.in_rebase_turn(t, self.base_tip_of(t)) {
                 out.push(t);
             }
         }

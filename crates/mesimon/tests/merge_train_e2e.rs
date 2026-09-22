@@ -198,11 +198,10 @@ fn a_grinding_worktree_does_not_hold_another_tickets_merge() {
     let _ = c.request(Command::Shutdown);
 }
 
-#[test]
-fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
-    // Idle animation must not block a rebase: session state decides whether
-    // the agent is working, not the time since its terminal last repainted.
-    const STUB: &str = r#"#!/usr/bin/env python3
+/// A stub that appends every byte it reads to `got.txt` beside itself and
+/// repaints while idle: session state decides whether the agent is working,
+/// not the time since its terminal last repainted.
+const LOGGING_STUB: &str = r#"#!/usr/bin/env python3
 import os, select, sys, tty
 from pathlib import Path
 tty.setcbreak(sys.stdin.fileno())
@@ -216,10 +215,13 @@ while True:
         with got.open('ab') as output:
             output.write(data)
 "#;
+
+#[test]
+fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     // The flags (and the train) on a 1 s cadence; the quiet probe kept out.
     let Some(h) = Harness::boot_with_env(
         "train",
-        Some(STUB),
+        Some(LOGGING_STUB),
         &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -356,6 +358,106 @@ while True:
         text()
     );
     let _ = c2.request(Command::Shutdown);
+}
+
+/// One rebase ask outstanding per base tip (T-435). Three REVIEW tickets
+/// behind one hand merge were asked 31 s apart: the hold for a mid-rebase
+/// ticket read `needs_rebase`, which the git step clears twenty seconds into
+/// a turn whose words end "run the tests … before we merge", so the pass
+/// fell through and asked the next ticket onto the same tip — and every
+/// merge then re-asked the rest. Here B is asked, lands its rebase and keeps
+/// its turn: C is not asked and its owed row says it waits on B. B's turn
+/// ends, B merges, and only then is C asked — once, onto the tip B moved.
+#[test]
+fn a_ticket_in_its_rebase_turn_holds_the_next_ask_until_it_merges() {
+    let Some(h) = Harness::boot_with_env(
+        "train-turn",
+        Some(LOGGING_STUB),
+        &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let got = h.dir.join("got.txt");
+    let text = || std::fs::read_to_string(&got).unwrap_or_default();
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    let tmux_sock = h.paths.tmux_sock();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("train-turn");
+
+    let (a, sa, branch_a, _wt_a) = ready(&mut c, "alpha");
+    let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
+    let (cid, sc, branch_c, wt_c) = ready(&mut c, "gamma");
+    wait_until(Duration::from_secs(15), "three panes", || {
+        tmux(&tmux_sock)
+            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= 3)
+            .unwrap_or(false)
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let asks = |branch: &str| {
+        text()
+            .lines()
+            .filter(|l| l.contains(&format!("Rebase your current branch {branch}")))
+            .count()
+    };
+    // C, B, then A: automove parks each on top, so REVIEW reads A, B, C.
+    for sid in [sc, sb, sa] {
+        start(&mut c, sid);
+        stop(&mut c, sid);
+    }
+    wait_until(Duration::from_secs(5), "all three in REVIEW", || {
+        let board = c.board();
+        [a, b, cid].iter().all(|t| board.ticket(*t).unwrap().column == "REVIEW")
+    });
+
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    // A merges; B and C fall behind; B, first in board order, is asked.
+    wait_until(Duration::from_secs(15), "A to be merged", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+    });
+    wait_until(Duration::from_secs(15), "B to be asked to rebase", || asks(&branch_b) == 1);
+    assert_eq!(asks(&branch_c), 0, "C is behind B in board order");
+
+    // B takes the turn and lands the git step at once — the tests run on.
+    start(&mut c, sb);
+    git(&wt_b, &["rebase", "-q", "main"]);
+    // Three flag refreshes: the old hold read `needs_rebase`, which is now
+    // false for B, and the pass asked C onto the same tip within one.
+    std::thread::sleep(Duration::from_millis(3500));
+    assert_eq!(asks(&branch_c), 0, "C asked while B's rebase turn runs: {}", text());
+    let owed = pending_of(&mut c, Some(cid));
+    let rebase = owed.iter().find(|p| p.action == PendingAction::Rebase).unwrap();
+    let key_b = c.board().ticket(b).unwrap().short_key.clone();
+    assert_eq!(rebase.waits_on, vec![key_b], "C's row names B: {rebase:?}");
+
+    // B's turn ends: B merges, main moves, and C is asked onto the new tip.
+    stop(&mut c, sb);
+    wait_until(Duration::from_secs(15), "B to be merged after its rebase", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
+    });
+    wait_until(Duration::from_secs(15), "C to be asked to rebase", || asks(&branch_c) == 1);
+    start(&mut c, sc);
+    git(&wt_c, &["rebase", "-q", "main"]);
+    stop(&mut c, sc);
+    wait_until(Duration::from_secs(15), "C to be merged after its rebase", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"])
+    });
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!((asks(&branch_b), asks(&branch_c)), (1, 1), "one ask each: {}", text());
+    let _ = c.request(Command::Shutdown);
 }
 
 /// A merge the CHECKOUT refuses (T-289). An untracked `alpha.txt` sits where

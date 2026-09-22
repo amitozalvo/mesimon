@@ -12783,3 +12783,34 @@ notice — the other two first presses — open the same dialog and send from it
 `waiting for rebase` / `agent notified` on the row; an outstanding ask (`merge_outstanding`) is
 said in the body (*rebase already requested — ask the agent again?*) and the key reads `ask
 again`, never the same ask offered as new.
+
+## One rebase ask outstanding per base tip (T-435, 2026-09-23, user: "merge train began rebase ask for 3 agents together — is this the intended behaviour? seems like a waste")
+
+A hand merge of T-428 moved main under three REVIEW tickets. The train asked T-430 to rebase,
+its `git rebase` landed 20 s into the turn while the tests still ran, and the next pass asked
+T-423 onto the same tip, then T-425 43 s later. Main moved again before the first two merged,
+so both were owed a second ask: N tickets behind one merge cost N(N+1)/2 rebase turns, and past
+six in flight the last ticket trips its own fuse from the train's re-asking.
+
+**The gap.** T-351's "one board-wide wait that survives" was a ticket asked at this tip whose
+`needs_rebase` flag was still true and whose turn still ran. The flag is what made it
+self-clearing — and it clears at the git step, not at the end of the turn the words ask for
+("run the tests … before we merge"). In that window the ticket was neither mid-rebase nor a merge
+candidate (seat busy), so `train_pass` found `plan.merge` empty and fell through to the next
+`plan.rebase` entry. The 2026-09-11 hold covers only a *pending merge candidate*; here none
+existed yet because every candidate needed the rebase.
+
+**The rule.** The hold lasts the rebase TURN: `AskRecord.turn_over` is false from the ask until
+the ticket's agent leaves a working state (`apply_change` calls `Train::settle` on any
+`from != to` change whose result `quiet::is_working` denies), and `train_busy` holds for a
+working ticket asked at the current tip whose ask is not yet over (`Train::in_rebase_turn`). A
+LATER turn at the same tip — the user prompting the agent again after it rebased — is settled
+and so a bystander, which is what T-351 asked for. The pass therefore goes merge A → ask B →
+(B's turn ends, B in REVIEW, ff) merge B → ask C: N asks for N tickets. `pending_items` reads the
+same gate, so C's owed row says `after T-B` while B's turn runs. The in-memory record dies with
+the daemon like the rest of `Train`, so a restart falls back to the old shape once, at worst.
+
+E2e `merge_train_e2e::a_ticket_in_its_rebase_turn_holds_the_next_ask_until_it_merges`: three
+REVIEW tickets, A merges, B is asked and lands its git step without ending its turn; C is not
+asked across three flag refreshes and its row waits on B; B's turn ends, B merges, C is asked
+once. It fails on the old gate at the "C asked while B's rebase turn runs" assertion.
