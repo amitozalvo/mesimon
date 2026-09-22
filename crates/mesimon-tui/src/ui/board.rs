@@ -107,13 +107,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // the title line the way a rename does: the ticket is not what is being
     // edited here, it is who the text is going to — so it has to stay whole
     // and stay on screen while the sentence is typed.
-    let prompt_of = |t: &Ticket| -> Option<(&EditBuffer, bool)> {
+    let prompt_of = |t: &Ticket| -> Option<(&EditBuffer, bool, bool)> {
         match editing {
-            Some((InputPurpose::Prompt { target: AskTarget::Ticket(ticket), queued, .. }, buf))
-                if *ticket == t.id =>
-            {
-                Some((buf, *queued))
-            }
+            Some((
+                InputPurpose::Prompt {
+                    target: AskTarget::Ticket(ticket), queued, accept_plan, ..
+                },
+                buf,
+            )) if *ticket == t.id => Some((buf, *queued, *accept_plan)),
             _ => None,
         }
     };
@@ -201,13 +202,16 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
-        let edit_cursor = prompt_of(t).map(|(buf, queued)| {
+        let edit_cursor = prompt_of(t).map(|(buf, queued, accept_plan)| {
             // What a blank Enter would do, in the seat's own words, and by
             // the same rule `commit_input` judges it: drop the entry that is
             // waiting, start the agent on the title where the seat is empty and
             // the toggle says now (T-294), or nothing at all.
             let starts = app.board.live_agent(t.id).is_none();
-            let placeholder = if app.ticket_queued(t.id) && !(starts && !queued) {
+            // At `accept plan` (T-420) a blank Enter IS the accept.
+            let placeholder = if accept_plan {
+                "enter accepts the plan"
+            } else if app.ticket_queued(t.id) && !(starts && !queued) {
                 "enter drops"
             } else if starts {
                 "start on the title"
@@ -220,7 +224,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             // The delivery row, where the ask can wait (2026-09-04): after
             // the field, so the cursor row is unchanged.
             if app.ask_queueable(t.id) {
-                lines.push(card::render_ask_mode(&ctx, queued));
+                lines.push(card::render_ask_mode(
+                    &ctx,
+                    crate::app::App::ask_mode_word(accept_plan, queued),
+                ));
             }
             (at, x_off)
         });
@@ -501,7 +508,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         header_cursor_x = Some(x_off);
         header_cursor_y = 1;
         if column_ask_toggle {
-            out.push(card::render_ask_mode(&ctx, queued));
+            out.push(card::render_ask_mode(&ctx, crate::app::App::ask_mode_word(false, queued)));
         }
     }
     out.push(Line::default());

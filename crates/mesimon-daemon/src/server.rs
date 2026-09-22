@@ -15,8 +15,8 @@ use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::attention::{self, Change, EndKind, Machine, Signal, StartSource};
 use mesimon_core::board::{
     agent_state_word, foreground_of, sanitize_tag, AgentProvider, AgentTools, Archived, Board,
-    Confidence, ExitReason, Provenance, SessionKind, SessionRecord, SessionState, StopReason, Tag,
-    TagRef, Ticket, UnknownReason, WorkspaceStrategy,
+    Confidence, ExitReason, Provenance, Reason, SessionKind, SessionRecord, SessionState,
+    StopReason, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
     AgentAutomoveView, AgentBoardView, AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow,
@@ -119,6 +119,12 @@ const TAIL_POLL_TICKS: u64 = 8;
 /// ~94 ms, so 500 ms is a wide margin, and 10 attempts covers ~5 s of Claude
 /// startup — well past the ~1 s at which a fresh pane starts reading.
 const SUBMIT_RETRY_MS: u64 = 500;
+/// How long a plan-dialog Enter of ours (T-420) has to be confirmed by the
+/// harness's own hooks before the feed calls it unconfirmed.
+const PLAN_ACCEPT_CONFIRM_MS: u64 = 8_000;
+/// Passes (one per second) a flagged ask keeps looking for a dialog it
+/// recognises on a pane at `Plan` before it drops the flag (T-420).
+const PLAN_ACCEPT_TRIES: u8 = 10;
 const SUBMIT_ATTEMPTS: u8 = 10;
 const REAP_GRACE: Duration = Duration::from_secs(5);
 /// How long after a pane is born a death frame naming its session may still
@@ -333,6 +339,22 @@ pub struct Daemon {
     /// ticket here counts as WORKING (`quiet::working_tickets`), which is
     /// what keeps a second paste out of the same checkout in the same pass.
     inflight: HashMap<ulid::Ulid, (u64, &'static str)>,
+    /// Panes mesimon pressed Enter into on their PLAN DIALOG (T-420), by
+    /// session, with the ms deadline by which the harness's own hooks must
+    /// have moved the record off `Plan`. The press is a person's — the
+    /// board's Shift+Enter, or a queued ask they flagged — and the harness
+    /// confirms it: Claude's `PostToolUse ExitPlanMode`, Codex's next turn.
+    /// Past the deadline the feed says `plan_accept_unconfirmed` and the
+    /// card keeps its `≡`, because the card never claims an approval the
+    /// hooks did not see. Memory-only: a restart forgets a press in flight
+    /// and the next daemon reads the pane as it is.
+    plan_accept: HashMap<uuid::Uuid, u64>,
+    /// Ticks on which a flagged ask found its pane at `Plan` but not
+    /// showing a dialog it recognised (T-420). The dialog paints after the
+    /// hook, so the first few are expected; past `PLAN_ACCEPT_TRIES` the
+    /// flag is dropped, the feed says `plan_accept_unrecognised`, and the
+    /// ask waits behind the `≡` the way an unflagged one does.
+    plan_accept_tries: HashMap<uuid::Uuid, u8>,
     /// The merge train (2026-09-04): armed by a connection, what it asked,
     /// its fuse. See `crate::train`.
     train: crate::train::Train,
@@ -682,6 +704,8 @@ pub fn run(paths: Paths) -> Result<()> {
                 text: e.text,
                 queued_at: e.queued_at,
                 by: None,
+                accept_plan: false,
+                held: None,
             })
         })
         .collect();
@@ -795,6 +819,8 @@ pub fn run(paths: Paths) -> Result<()> {
         pending_prompt: HashMap::new(),
         queued,
         inflight: HashMap::new(),
+        plan_accept: HashMap::new(),
+        plan_accept_tries: HashMap::new(),
         train: Default::default(),
         ticks: 0,
         feed,
@@ -1197,6 +1223,18 @@ struct QueuedAsk {
     /// that keeps a person between one session and another's turn. Never
     /// persisted: it dies with the daemon, and the crown may ask again.
     by: Option<ulid::Ulid>,
+    /// Accept the agent's plan on the way (T-420): when the pane it was
+    /// queued at reaches its plan dialog, `service_plan_accepts` presses the
+    /// harness's default and clears this. Pane seats only — the flag is
+    /// about a dialog, and only a pane shows one — so it never rides
+    /// `queue.json`.
+    accept_plan: bool,
+    /// `Some` is an ask the daemon HELD (T-420): the agent stopped on a
+    /// question after these words were queued, and the answer may change
+    /// what they should say. `drain_queue` skips it the way it skips a
+    /// crown's ask; a person's `^y` sends it, and reopening the field on it
+    /// re-queues it clean. The word is the card's (`agent asked`).
+    held: Option<&'static str>,
 }
 
 /// One thing the crown has yet to hear about (T-414): an agent it started
@@ -1665,8 +1703,8 @@ impl Daemon {
             Command::MergeToAgent { id, request } => {
                 self.merge_to_agent(id, request, &Principal::Local)
             }
-            Command::PromptSession { ticket, text, queued } => {
-                self.prompt_session(ticket, text, queued)
+            Command::PromptSession { ticket, text, queued, accept_plan } => {
+                self.prompt_session(ticket, text, queued, accept_plan)
             }
             Command::PromptColumn { column, text, queued } => {
                 self.prompt_column(&column, text, queued)
@@ -1962,6 +2000,8 @@ impl Daemon {
             // went without a state change of its own).
             changed |= stage!("sweep_queue", self.sweep_queue());
             changed |= stage!("expire_inflight", self.expire_inflight(now));
+            changed |= stage!("settle_plan_accepts", self.settle_plan_accepts(now));
+            changed |= stage!("service_plan_accepts", self.service_plan_accepts(now));
             changed |= stage!("drain_queue", self.drain_queue(now));
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes(now));
             let a = stage!("archive_figures", self.archive_figures());
@@ -2615,6 +2655,12 @@ impl Daemon {
             let signal = if state
                 == (SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan })
             {
+                // An Enter of ours is in flight on this dialog (T-420): the
+                // composer coming back is the accepted plan's turn starting,
+                // not a dismissal, and the observation stream says which.
+                if self.plan_accept.contains_key(&id) {
+                    continue;
+                }
                 let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
                     continue;
                 };
@@ -3266,6 +3312,20 @@ impl Daemon {
         {
             self.note_crown_wake(snapshot.ticket, WakeCause::Finished, snapshot.state_changed_at);
         }
+        // The agent stopped on a question (T-420): the answer may change
+        // what a queued follow-up should say, so the words wait for a
+        // person's `^y` rather than going after the turn. A permission
+        // prompt is not this — allowing a tool changes nothing about the
+        // follow-up — and a plan dialog holds only an unflagged ask, the
+        // way it always did (`queued_target_ready`).
+        if matches!(
+            change.to,
+            SessionState::RequiresAction {
+                reason: Reason::Question | Reason::Secret | Reason::Elicitation
+            }
+        ) {
+            self.hold_queued_on_question(id);
+        }
         // A turn ended, or a target died: the queued asks look again. The
         // settle that lands `Idle{EndTurn}` comes through here from the
         // tick, and so does the shutdown flush — the words go out on the
@@ -3656,7 +3716,7 @@ impl Daemon {
                 };
                 let replaced =
                     self.queued.iter().any(|q| q.ticket == target && q.by == Some(ticket));
-                if let Err(message) = self.park_ask(target, seat, text, Some(ticket)) {
+                if let Err(message) = self.park_ask(target, seat, text, Some(ticket), false) {
                     return Response::Err { message };
                 }
                 self.broadcast();
@@ -5003,6 +5063,8 @@ impl Daemon {
                 text: (!q.text.is_empty()).then(|| q.text.clone()),
                 in_flight: false,
                 by: q.by.and_then(|c| self.board.ticket(c)).map(|c| c.short_key.clone()),
+                accept_plan: q.accept_plan,
+                held: q.held.map(str::to_string),
             })
             .collect();
         for (t, (_, word)) in &self.inflight {
@@ -5014,6 +5076,8 @@ impl Daemon {
                     text: None,
                     in_flight: true,
                     by: None,
+                    accept_plan: false,
+                    held: None,
                 });
             }
         }
@@ -5032,6 +5096,8 @@ impl Daemon {
                 text: Some(self.crown_wake_text()),
                 in_flight: false,
                 by: None,
+                accept_plan: false,
+                held: None,
             });
         }
         // What the train will do once its gate is clear — said before it
@@ -5058,6 +5124,8 @@ impl Daemon {
                     text: self.train.refusal(t, &tip, self.base_tip_of(t)).map(String::from),
                     in_flight: false,
                     by: None,
+                    accept_plan: false,
+                    held: None,
                 });
             }
             for t in plan.rebase {
@@ -5068,6 +5136,8 @@ impl Daemon {
                     text: None,
                     in_flight: false,
                     by: None,
+                    accept_plan: false,
+                    held: None,
                 });
             }
         }
@@ -5245,7 +5315,7 @@ impl Daemon {
             .filter_map(|q| {
                 // A held ask (T-413) is memory-only, like a pane ask: the
                 // crown's words never wait in a file for a restart to send.
-                if q.by.is_some() {
+                if q.by.is_some() || q.held.is_some() {
                     return None;
                 }
                 let seat = match q.seat {
@@ -6716,7 +6786,13 @@ impl Daemon {
     /// (`sanitize_prompt`), so the README's zero-prompt-injection promise
     /// holds for it in the strongest form the promise has: mesimon does not
     /// add a token, and here it does not author one either.
-    fn prompt_session(&mut self, ticket: ulid::Ulid, text: String, queued: bool) -> Response {
+    fn prompt_session(
+        &mut self,
+        ticket: ulid::Ulid,
+        text: String,
+        queued: bool,
+        accept_plan: bool,
+    ) -> Response {
         if self
             .board
             .live_agent(ticket)
@@ -6732,13 +6808,24 @@ impl Daemon {
         // there the Enter lands on the ticket title the spawn types, which
         // is a turn the user did write — it is the composed start, asked for
         // through the same field.
+        // An `accept plan` (T-420) is about a dialog, and only a pane shows
+        // one: off a pane the flag is nothing. On a pane it is always a
+        // QUEUED entry, even with the dialog up right now — the dialog may
+        // not have painted yet when the hook lands the `≡` (PreToolUse
+        // fires before it renders), so the press is the clock's
+        // (`service_plan_accepts`), one tick away, and the card says
+        // `accepting plan` until the harness confirms.
+        let accept_plan = accept_plan && matches!(seat, QueuedSeat::Pane(_));
         let text = match (mesimon_core::command::sanitize_prompt(&text), &seat) {
             (Some(text), _) => text,
             (None, QueuedSeat::Start(_)) => String::new(),
+            // "Accept the plan, ask nothing": the entry carries the flag
+            // and no words, and goes the moment the press is in.
+            (None, QueuedSeat::Pane(_)) if accept_plan => String::new(),
             (None, _) => return Response::Err { message: "nothing to send".into() },
         };
-        if queued {
-            return self.enqueue_ask(ticket, seat, text);
+        if queued || accept_plan {
+            return self.enqueue_ask(ticket, seat, text, accept_plan);
         }
         // Sending now while an ask waits is the user talking to the agent
         // ahead of it: the waiting words are theirs to drop, and they just
@@ -6797,7 +6884,7 @@ impl Daemon {
             // since T-294, which never offers the toggle on that seat.
             let now_anyway = starts && !self.shared_checkout(ticket);
             if queued && !now_anyway {
-                match self.park_ask(ticket, seat, text, None) {
+                match self.park_ask(ticket, seat, text, None, false) {
                     Ok(()) => parked.push((ticket, word)),
                     Err(message) => {
                         eprintln!("mesimon: column ask could not park: {message}");
@@ -6968,9 +7055,15 @@ impl Daemon {
     /// Park one prompt per ticket until its target is idle and its checkout
     /// is quiet. A second ask replaces the words; a quiet target sends now.
     /// Empty shared-checkout seats retain the queued-start behavior.
-    fn enqueue_ask(&mut self, ticket: ulid::Ulid, seat: QueuedSeat, text: String) -> Response {
+    fn enqueue_ask(
+        &mut self,
+        ticket: ulid::Ulid,
+        seat: QueuedSeat,
+        text: String,
+        accept_plan: bool,
+    ) -> Response {
         let word = seat.word();
-        if let Err(message) = self.park_ask(ticket, seat, text, None) {
+        if let Err(message) = self.park_ask(ticket, seat, text, None, accept_plan) {
             return Response::Err { message };
         }
         self.drain_queue(now_ms());
@@ -7009,6 +7102,7 @@ impl Daemon {
         seat: QueuedSeat,
         text: String,
         by: Option<ulid::Ulid>,
+        accept_plan: bool,
     ) -> Result<(), String> {
         let Some(t) = self.board.ticket(ticket) else {
             return Err("no such ticket".into());
@@ -7067,9 +7161,22 @@ impl Daemon {
             }
             q.cwd = cwd;
             q.by = by;
+            // Re-queued by hand: the person read the words again, so a
+            // hold is answered, and the flag is whatever the field said.
+            q.accept_plan = accept_plan;
+            q.held = None;
             self.feed.board(actor, replaced, Some(ticket));
         } else {
-            self.queued.push(QueuedAsk { ticket, seat, cwd, text, queued_at: now, by });
+            self.queued.push(QueuedAsk {
+                ticket,
+                seat,
+                cwd,
+                text,
+                queued_at: now,
+                by,
+                accept_plan,
+                held: None,
+            });
             self.feed.board(actor, &fresh, Some(ticket));
         }
         self.persist_queue();
@@ -7113,8 +7220,8 @@ impl Daemon {
         let Some(q) = self.queued.iter().find(|q| q.ticket == ticket) else {
             return Vec::new();
         };
-        // A held ask (T-413) waits on a person, not the checkout.
-        if q.by.is_some() {
+        // A held ask (T-413, T-420) waits on a person, not the checkout.
+        if q.by.is_some() || q.held.is_some() {
             return Vec::new();
         }
         let mut ids = self.checkout_holders(&q.cwd);
@@ -7126,7 +7233,11 @@ impl Daemon {
             if ahead.ticket == ticket {
                 break;
             }
-            if ahead.by.is_none() && ahead.cwd == q.cwd && !ids.contains(&ahead.ticket) {
+            if ahead.by.is_none()
+                && ahead.held.is_none()
+                && ahead.cwd == q.cwd
+                && !ids.contains(&ahead.ticket)
+            {
                 ids.push(ahead.ticket);
             }
         }
@@ -7163,8 +7274,9 @@ impl Daemon {
         let mut take: Vec<usize> = Vec::new();
         for i in self.queue_order() {
             // A held ask (T-413) is a person's to send; it neither goes nor
-            // takes the checkout's turn from the ask behind it.
-            if self.queued[i].by.is_some() {
+            // takes the checkout's turn from the ask behind it. The same
+            // for one the daemon held on a question (T-420).
+            if self.queued[i].by.is_some() || self.queued[i].held.is_some() {
                 continue;
             }
             let cwd = self.queued[i].cwd.clone();
@@ -7357,10 +7469,162 @@ impl Daemon {
         response
     }
 
+    /// The agent of `session` stopped on a question: hold the ask queued at
+    /// its pane (T-420). A crown's ask is held already; an ask in flight has
+    /// left the queue. Idempotent, so a re-asserted state costs nothing.
+    fn hold_queued_on_question(&mut self, session: uuid::Uuid) {
+        let Some(q) = self.queued.iter_mut().find(|q| {
+            matches!(q.seat, QueuedSeat::Pane(id) if id == session)
+                && q.by.is_none()
+                && q.held.is_none()
+        }) else {
+            return;
+        };
+        q.held = Some("agent asked");
+        let ticket = q.ticket;
+        self.feed.board("automation", "queued_ask_held_question", Some(ticket));
+    }
+
+    /// Press Enter on the plan dialog `session`'s pane is showing, at the
+    /// row the harness highlights by default (T-420). Refuses, naming why,
+    /// when the pane is not on a dialog it recognises or the cursor is not
+    /// on that row — the safe side is the dialog left up. The harness
+    /// confirms the press through its own hooks; `settle_plan_accepts` is
+    /// the deadline on that.
+    fn accept_plan(&mut self, session: uuid::Uuid, actor: &str) -> Result<(), &'static str> {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+            return Err("no such session");
+        };
+        if rec.state != (SessionState::RequiresAction { reason: Reason::Plan }) {
+            return Err("no plan waiting");
+        }
+        if self.plan_accept.contains_key(&session) {
+            return Err("accepting the plan");
+        }
+        let sid = rec.sid16();
+        let kind = rec.kind;
+        let ticket = rec.ticket;
+        let screen = self
+            .backend
+            .capture_input_screen(&sid)
+            .map_err(|_| crate::plan_dialog::NOT_RECOGNISED)?;
+        match kind {
+            SessionKind::Claude => crate::plan_dialog::claude_at_default(&screen.lines)?,
+            SessionKind::Codex => crate::plan_dialog::codex_at_default(&screen)?,
+            _ => return Err("no plan waiting"),
+        }
+        self.backend.send_enter(&sid).map_err(|_| "could not press enter")?;
+        self.plan_accept.insert(session, now_ms() + PLAN_ACCEPT_CONFIRM_MS);
+        self.plan_accept_tries.remove(&session);
+        self.feed.board(actor, "plan_accepted", Some(ticket));
+        Ok(())
+    }
+
+    /// The flagged asks (T-420): a pane at `Plan` with an `accept_plan`
+    /// entry queued gets the press, once. The dialog paints after the hook
+    /// that lands the `≡`, so a miss is retried on the next pass, up to
+    /// `PLAN_ACCEPT_TRIES`; then the flag goes and the ask waits as an
+    /// unflagged one does. An entry with no words leaves the queue on the
+    /// press — "accept the plan, ask nothing" — and one with words keeps
+    /// waiting for the idle that follows the accepted turn.
+    fn service_plan_accepts(&mut self, _now: u64) -> bool {
+        let due: Vec<(ulid::Ulid, uuid::Uuid)> = self
+            .queued
+            .iter()
+            .filter(|q| q.accept_plan && q.held.is_none())
+            .filter_map(|q| match q.seat {
+                QueuedSeat::Pane(id) => Some((q.ticket, id)),
+                _ => None,
+            })
+            .filter(|(_, id)| {
+                !self.plan_accept.contains_key(id)
+                    && self.board.sessions.iter().any(|s| {
+                        s.id == *id
+                            && s.state == (SessionState::RequiresAction { reason: Reason::Plan })
+                    })
+            })
+            .collect();
+        let mut changed = false;
+        for (ticket, id) in due {
+            let principal = Principal::Automation { rule: "queued_ask".into() };
+            if authorize(&principal, &Action::Mutate, &Resource::Session { id }).denied() {
+                continue;
+            }
+            match self.accept_plan(id, "automation") {
+                Ok(()) => {
+                    if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == ticket) {
+                        q.accept_plan = false;
+                        if q.text.is_empty() {
+                            self.queued.retain(|q| q.ticket != ticket);
+                        }
+                    }
+                    changed = true;
+                }
+                Err(why) => {
+                    let tries = self.plan_accept_tries.entry(id).or_insert(0);
+                    *tries += 1;
+                    if *tries >= PLAN_ACCEPT_TRIES {
+                        self.plan_accept_tries.remove(&id);
+                        if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == ticket) {
+                            q.accept_plan = false;
+                            if q.text.is_empty() {
+                                self.queued.retain(|q| q.ticket != ticket);
+                            }
+                        }
+                        eprintln!("mesimon: plan accept on {ticket} gave up: {why}");
+                        self.feed.board("automation", "plan_accept_unrecognised", Some(ticket));
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// A press in flight is confirmed by the harness moving the record off
+    /// `Plan` (T-420) — Claude's `PostToolUse ExitPlanMode`, Codex's next
+    /// turn — and forgotten then. Past the deadline still at `Plan`, the feed
+    /// says so and the `≡` stays: the card never claims what the hooks did
+    /// not see.
+    fn settle_plan_accepts(&mut self, now: u64) -> bool {
+        let mut changed = false;
+        let pressed: Vec<(uuid::Uuid, u64)> =
+            self.plan_accept.iter().map(|(k, v)| (*k, *v)).collect();
+        for (id, deadline) in pressed {
+            let at_plan = self.board.sessions.iter().any(|s| {
+                s.id == id && s.state == (SessionState::RequiresAction { reason: Reason::Plan })
+            });
+            if !at_plan {
+                self.plan_accept.remove(&id);
+            } else if now >= deadline {
+                self.plan_accept.remove(&id);
+                let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
+                self.feed.board("automation", "plan_accept_unconfirmed", ticket);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     fn send_queued_ask(&mut self, ticket: ulid::Ulid) -> Response {
         let Some(i) = self.queued.iter().position(|q| q.ticket == ticket) else {
             return Response::Err { message: "nothing queued on this ticket".into() };
         };
+        // A pane on a dialog takes a paste as an ANSWER (T-420): the words
+        // would land in the question, or the plan's revise row. The person
+        // answers in the pane first; the ask keeps waiting.
+        if let QueuedSeat::Pane(id) = self.queued[i].seat {
+            if self
+                .board
+                .sessions
+                .iter()
+                .any(|s| s.id == id && matches!(s.state, SessionState::RequiresAction { .. }))
+            {
+                return Response::Err {
+                    message: "the agent is waiting on you ∙ answer it in the pane first".into(),
+                };
+            }
+        }
         let q = self.queued.remove(i);
         self.persist_queue();
         if !self.seat_stands(ticket, &q.seat) {

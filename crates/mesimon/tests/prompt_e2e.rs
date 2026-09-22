@@ -82,7 +82,12 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     // Blank in, nothing out: an empty prompt must never press Enter on a turn
     // the user did not write. The title is still sitting unsubmitted in the
     // box, so a stray Enter here would submit somebody else's words.
-    match c.request(Command::PromptSession { ticket, text: "   ".into(), queued: false }) {
+    match c.request(Command::PromptSession {
+        ticket,
+        text: "   ".into(),
+        queued: false,
+        accept_plan: false,
+    }) {
         Response::Err { message } => assert!(message.contains("nothing to send"), "{message}"),
         other => panic!("a blank prompt must refuse: {other:?}"),
     }
@@ -91,7 +96,8 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         c.request(Command::PromptSession {
             ticket,
             text: "mesimon-probe-42 run the tests".into(),
-            queued: false
+            queued: false,
+            accept_plan: false
         }),
         Response::Ok
     ));
@@ -129,7 +135,8 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         c.request(Command::PromptSession {
             ticket,
             text: "mesimon-probe-44 first line\r\nmesimon-probe-44 second line".into(),
-            queued: false
+            queued: false,
+            accept_plan: false
         }),
         Response::Ok
     ));
@@ -167,7 +174,12 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
 
     let long = format!("mesimon-probe-43 {}", "carry on where you left off ".repeat(90));
     assert!(long.len() > 2048, "{}", long.len());
-    match c.request(Command::PromptSession { ticket, text: long.clone(), queued: false }) {
+    match c.request(Command::PromptSession {
+        ticket,
+        text: long.clone(),
+        queued: false,
+        accept_plan: false,
+    }) {
         Response::Spawned { id, fresh } => {
             assert_eq!(id, sid, "the wake re-enters the record — never a second claude");
             assert!(fresh, "a stub has no transcript, so the wake starts fresh");
@@ -219,7 +231,12 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     wait_until(Duration::from_secs(10), "the killed record to leave the seat", || {
         c.board().sessions.iter().all(|s| s.id != sid || !s.state.is_live())
     });
-    match c.request(Command::PromptSession { ticket, text: "   ".into(), queued: false }) {
+    match c.request(Command::PromptSession {
+        ticket,
+        text: "   ".into(),
+        queued: false,
+        accept_plan: false,
+    }) {
         Response::Spawned { id, .. } => {
             assert_ne!(id, sid, "a new session, never the corpse");
             assert!(

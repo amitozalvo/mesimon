@@ -432,7 +432,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         // the dialog's bottom edge does not repeat it. A ticket's ask names
         // the ticket by its key; a column's names the seats the words reach
         // — every seat in it, since T-405 starts the empty ones.
-        EditorPurpose::Ask { target, queued } => {
+        EditorPurpose::Ask { target, queued, accept_plan } => {
             if !framed {
                 ctx_spans.push(Span::styled(format!("{} ∙ ", heading(app, ed)), dim2));
             }
@@ -453,7 +453,8 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                     ctx_spans.push(Span::styled(" ∙ ".to_string(), dim2));
                 }
             }
-            ctx_spans.push(Span::styled(if *queued { "queued" } else { "now" }, dim1));
+            ctx_spans
+                .push(Span::styled(crate::app::App::ask_mode_word(*accept_plan, *queued), dim1));
             if app.frame_ctx().ask_queueable {
                 ctx_spans.push(Span::styled("  shift+tab".to_string(), dim2));
             }

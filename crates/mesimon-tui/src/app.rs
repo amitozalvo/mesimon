@@ -775,7 +775,7 @@ pub enum EditorPurpose {
     /// nothing is saved — `^s` sends it through the field's own road. The
     /// title row is the destination, read-only: the ticket's title, or the
     /// column's name.
-    Ask { target: AskTarget, queued: bool },
+    Ask { target: AskTarget, queued: bool, accept_plan: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1046,6 +1046,12 @@ pub enum InputPurpose {
         /// until the ticket's checkout is quiet (2026-09-04). Shift+Tab
         /// cycles it; `now` every time the field opens fresh.
         queued: bool,
+        /// The row says `accept plan` (T-420): Enter presses the harness's
+        /// default on the agent's plan dialog — now if it is up, when it
+        /// comes if the agent is still planning — and parks the words for
+        /// the turn after. Implies `queued`. Shift+Tab's ring has this stop
+        /// only on a seat that can take it (`ask_plan_able`).
+        accept_plan: bool,
     },
 }
 
@@ -3164,6 +3170,72 @@ impl App {
     /// An ask is waiting on this ticket — not yet delivered. Any seat: the
     /// words may be bound for a pane, a parked claude or a session that does
     /// not exist yet (`Pending::is_queued_ask`).
+    /// The ticket's paned agent sits on its plan dialog (T-420): the `≡`.
+    pub(crate) fn ticket_plan_ready(&self, ticket: ulid::Ulid) -> bool {
+        self.board.pane_target(ticket).is_some_and(|s| {
+            s.state == (SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan })
+        })
+    }
+
+    /// The ticket's paned agent was launched in plan mode (T-420) and is
+    /// not on the dialog yet: a queued ask there defaults to accepting the
+    /// plan it ends on. Read off the argv — the one place plan mode is a
+    /// fact the board holds; a session that entered it from inside its
+    /// pane is not known to be planning, and its field opens at the
+    /// board's default.
+    pub(crate) fn ticket_planning(&self, ticket: ulid::Ulid) -> bool {
+        self.board.pane_target(ticket).is_some_and(|s| {
+            !self.ticket_plan_ready(ticket)
+                && s.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan")
+        })
+    }
+
+    /// The ask field's ring has an `accept plan` stop for this ticket.
+    pub(crate) fn ticket_plan_able(&self, ticket: ulid::Ulid) -> bool {
+        self.ticket_plan_ready(ticket) || self.ticket_planning(ticket)
+    }
+
+    /// The word on the ask field's delivery row (T-420 added the first).
+    pub(crate) fn ask_mode_word(accept_plan: bool, queued: bool) -> &'static str {
+        if accept_plan {
+            "accept plan"
+        } else if queued {
+            "queued"
+        } else {
+            "now"
+        }
+    }
+
+    /// Shift+Tab in the ask field: the two-stop ring (`now` / `queued`)
+    /// everywhere, and a three-stop one on a seat whose agent is on its
+    /// plan dialog or known to be planning (T-420): `accept plan` →
+    /// `queued` → `now` → `accept plan`. On the dialog itself `now` is
+    /// skipped — a paste there lands in the dialog, not in front of the
+    /// agent.
+    pub(crate) fn cycle_ask_mode(
+        &self,
+        target: &AskTarget,
+        queued: &mut bool,
+        accept_plan: &mut bool,
+    ) {
+        let (able, ready) = match target {
+            AskTarget::Ticket(t) => (self.ticket_plan_able(*t), self.ticket_plan_ready(*t)),
+            AskTarget::Column(_) => (false, false),
+        };
+        if !able {
+            *accept_plan = false;
+            *queued = !*queued;
+        } else if *accept_plan {
+            *accept_plan = false;
+            *queued = true;
+        } else if *queued && !ready {
+            *queued = false;
+        } else {
+            *accept_plan = true;
+            *queued = true;
+        }
+    }
+
     pub(crate) fn ticket_queued(&self, ticket: ulid::Ulid) -> bool {
         self.pending_of(ticket).is_some_and(|p| p.is_queued_ask() && !p.in_flight)
     }
@@ -3209,6 +3281,22 @@ impl App {
         // ticket page before ^y puts them in front of the agent.
         if let Some(by) = p.by.as_deref().filter(|_| p.is_queued_ask() && !p.in_flight) {
             return Some(format!("queued by {by}'s agent"));
+        }
+        // Held on a question (T-420): the same seat as the crown's ask, a
+        // person's `^y` away, and the row says why it stopped.
+        if let Some(why) = p.held.as_deref().filter(|_| p.is_queued_ask() && !p.in_flight) {
+            return Some(format!("held ∙ {why}"));
+        }
+        // Flagged to accept the plan (T-420): `accepting plan` once the
+        // agent is on the dialog and the press is the next tick's, and
+        // `accepts plan` while it is still planning. No words queued at
+        // all is the same row — the accept IS the ask.
+        if p.accept_plan && p.action == A::Ask && !p.in_flight {
+            return Some(if self.ticket_plan_ready(ticket) {
+                "accepting plan".into()
+            } else {
+                "queued ∙ accepts plan".into()
+            });
         }
         Some(match (p.action, after) {
             (A::Ask, _) if p.in_flight => "queued ∙ sending".into(),
@@ -3685,7 +3773,27 @@ impl App {
                 Mode::Input { purpose: InputPurpose::Prompt { queued: true, .. }, .. }
                     | Mode::Editor(Editor { purpose: EditorPurpose::Ask { queued: true, .. }, .. })
             ),
+            ask_accepts_plan: matches!(
+                self.mode,
+                Mode::Input { purpose: InputPurpose::Prompt { accept_plan: true, .. }, .. }
+                    | Mode::Editor(Editor {
+                        purpose: EditorPurpose::Ask { accept_plan: true, .. },
+                        ..
+                    })
+            ),
+            ask_plan_able: match &self.mode {
+                Mode::Input { purpose: InputPurpose::Prompt { target, .. }, .. }
+                | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
+                    match target {
+                        AskTarget::Ticket(t) => self.ticket_plan_able(*t),
+                        AskTarget::Column(_) => false,
+                    }
+                }
+                _ => false,
+            },
             ticket_queued: subject.is_some_and(|t| self.ticket_queued(t)),
+            ticket_plan_ready: subject.is_some_and(|t| self.ticket_plan_ready(t)),
+            ticket_planning: subject.is_some_and(|t| self.ticket_planning(t)),
             tag_naming: self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some()),
             tag_on_entry: tag_cell.is_some(),
             tag_worn: tag_cell.is_some_and(|(g, n, _)| {
@@ -4525,10 +4633,19 @@ impl App {
             }
             Verb::TakeBackAsk => {
                 if let Some(ticket) = self.subject() {
+                    // The flag comes back with the words (T-420): a
+                    // take-back is an edit, not a change of mind about
+                    // the plan.
+                    let accept_plan = self.pending_of(ticket).is_some_and(|p| p.accept_plan);
                     match self.req(Command::TakeQueuedAsk { ticket }) {
                         Response::Err { message } => self.status = message,
                         Response::PromptTakenBack { text } => {
-                            self.mode = Mode::Editor(self.ask_room(AskTarget::Ticket(ticket), true, &text));
+                            self.mode = Mode::Editor(self.ask_room(
+                                AskTarget::Ticket(ticket),
+                                true,
+                                accept_plan,
+                                &text,
+                            ));
                             self.status = "taken back ∙ edit or close to discard".into();
                         }
                         _ => {}
@@ -4779,6 +4896,7 @@ impl App {
                                 target: AskTarget::Column(name),
                                 walk: None,
                                 queued,
+                                accept_plan: false,
                             },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
@@ -4792,14 +4910,23 @@ impl App {
                         // back — so they reopen in the room, as they were.
                         let text =
                             self.pending_of(id).and_then(|p| p.text.clone()).unwrap_or_default();
+                        // The flag it carries reopens with it (T-420): a
+                        // held ask comes back clean on Enter, and one
+                        // waiting to accept a plan keeps waiting to.
+                        let accept_plan = self.pending_of(id).is_some_and(|p| p.accept_plan);
                         let target = AskTarget::Ticket(id);
                         if text.contains('\n') {
-                            let mut ed = self.ask_room(target, true, &text);
+                            let mut ed = self.ask_room(target, true, accept_plan, &text);
                             ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
                             self.mode = Mode::Editor(ed);
                         } else {
                             self.mode = Mode::Input {
-                                purpose: InputPurpose::Prompt { target, walk: None, queued: true },
+                                purpose: InputPurpose::Prompt {
+                                    target,
+                                    walk: None,
+                                    queued: true,
+                                    accept_plan,
+                                },
                                 buffer: EditBuffer::from_text(
                                     text,
                                     mesimon_core::command::PROMPT_MAX_BYTES,
@@ -4807,11 +4934,25 @@ impl App {
                             };
                         }
                     } else if ctx.ticket_has_agent {
-                        let queued = if ctx.ticket_promptable {
-                            self.board.follow_up_mode == mesimon_core::board::FollowUpMode::Queue
-                        } else { ctx.checkout_busy };
+                        // On the plan dialog, or known to be planning
+                        // (T-420), the field opens at `accept plan`: a
+                        // blank Enter accepts, words wait for the turn
+                        // after. Shift+Tab walks to `queued` and `now`.
+                        let accept_plan = ctx.ticket_plan_ready || ctx.ticket_planning;
+                        let queued = accept_plan
+                            || if ctx.ticket_promptable {
+                                self.board.follow_up_mode
+                                    == mesimon_core::board::FollowUpMode::Queue
+                            } else {
+                                ctx.checkout_busy
+                            };
                         self.mode = Mode::Input {
-                            purpose: InputPurpose::Prompt { target: AskTarget::Ticket(id), walk: None, queued },
+                            purpose: InputPurpose::Prompt {
+                                target: AskTarget::Ticket(id),
+                                walk: None,
+                                queued,
+                                accept_plan,
+                            },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
                     } else {
@@ -4828,6 +4969,7 @@ impl App {
                                 target: AskTarget::Ticket(id),
                                 walk: None,
                                 queued: ctx.checkout_busy,
+                                accept_plan: false,
                             },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
@@ -6842,8 +6984,8 @@ impl App {
                         }
                         editor
                     }
-                    InputPurpose::Prompt { target, queued, .. } => {
-                        self.ask_room(target, queued, buffer.as_str())
+                    InputPurpose::Prompt { target, queued, accept_plan, .. } => {
+                        self.ask_room(target, queued, accept_plan, buffer.as_str())
                     }
                     other => {
                         self.mode = Mode::Input { purpose: other, buffer };
@@ -6868,7 +7010,10 @@ impl App {
                 InputPurpose::Create { workspace, .. } => *workspace = cycled_workspace(*workspace),
                 // In the ask field the same key cycles the DELIVERY: now, or
                 // parked until the checkout is quiet (2026-09-04).
-                InputPurpose::Prompt { queued, .. } => *queued = !*queued,
+                InputPurpose::Prompt { target, queued, accept_plan, .. } => {
+                    let target = target.clone();
+                    self.cycle_ask_mode(&target, queued, accept_plan)
+                }
                 InputPurpose::Rename { .. } | InputPurpose::RenameColumn { .. } => {}
             },
             // The ask history, shell-style. `↑` from the ordinary field keeps
@@ -7299,7 +7444,7 @@ impl App {
     /// title, or the column's name) and `text` as the body with the cursor
     /// at its end — pasted rather than opened on, so the sentence continues
     /// where the field left it.
-    fn ask_room(&self, target: AskTarget, queued: bool, text: &str) -> Editor {
+    fn ask_room(&self, target: AskTarget, queued: bool, accept_plan: bool, text: &str) -> Editor {
         let title = match &target {
             AskTarget::Ticket(t) => {
                 self.board.ticket(*t).map(|t| t.title.clone()).unwrap_or_default()
@@ -7309,7 +7454,7 @@ impl App {
         let mut body = TextArea::new(mesimon_core::command::PROMPT_MAX_BYTES);
         body.paste(text);
         Editor::new(
-            EditorPurpose::Ask { target, queued },
+            EditorPurpose::Ask { target, queued, accept_plan },
             EditBuffer::from_text(title, mesimon_core::board::TITLE_MAX_BYTES),
             body,
             Field::Body,
@@ -7321,12 +7466,12 @@ impl App {
     /// field held, so nothing is lost on the way back — a body that grew
     /// lines is dirty, and dirty takes the two-press discard.
     fn fold_ask(&mut self, ed: Editor) {
-        let EditorPurpose::Ask { target, queued } = ed.purpose else {
+        let EditorPurpose::Ask { target, queued, accept_plan } = ed.purpose else {
             self.mode = Mode::Normal;
             return;
         };
         self.mode = Mode::Input {
-            purpose: InputPurpose::Prompt { target, walk: None, queued },
+            purpose: InputPurpose::Prompt { target, walk: None, queued, accept_plan },
             buffer: history_field(ed.body.as_str()),
         };
     }
@@ -7336,18 +7481,18 @@ impl App {
     /// seat's word, the receipt in the status — line breaks and all. A blank
     /// room sends nothing and stays open; the daemon would refuse it too.
     fn editor_send(&mut self, ed: Editor) -> Result<()> {
-        let EditorPurpose::Ask { target, queued } = ed.purpose.clone() else {
+        let EditorPurpose::Ask { target, queued, accept_plan } = ed.purpose.clone() else {
             self.mode = Mode::Normal;
             return Ok(());
         };
         let text = ed.body.as_str().trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() && !accept_plan {
             self.status = "nothing to ask".into();
             self.mode = Mode::Editor(ed);
             return Ok(());
         }
         self.mode = Mode::Normal;
-        self.commit_prompt(InputPurpose::Prompt { target, walk: None, queued }, text)
+        self.commit_prompt(InputPurpose::Prompt { target, walk: None, queued, accept_plan }, text)
     }
 
     /// The grown composer folds back into the one-line field it grew out of,
@@ -8443,8 +8588,18 @@ impl App {
                 }
                 return Ok(());
             }
-            if let InputPurpose::Prompt { target: AskTarget::Ticket(ticket), queued, .. } = purpose
+            if let InputPurpose::Prompt {
+                target: AskTarget::Ticket(ticket),
+                queued,
+                accept_plan,
+                ..
+            } = purpose
             {
+                // A blank field at `accept plan` (T-420) is the accept
+                // itself — "accept the plan, ask nothing" — and commits.
+                if accept_plan {
+                    return self.commit_prompt(purpose, title);
+                }
                 // An EMPTY seat can commit a blank field: there the prompt is
                 // the ticket's own title and brief, which is what the press
                 // does with no field at all on a quiet checkout (T-294).
@@ -8603,7 +8758,7 @@ impl App {
     /// ticket's own title and brief, which is what the press does with no
     /// field at all on a quiet checkout.
     fn commit_prompt(&mut self, purpose: InputPurpose, text: String) -> Result<()> {
-        let InputPurpose::Prompt { target, queued, .. } = purpose else {
+        let InputPurpose::Prompt { target, queued, accept_plan, .. } = purpose else {
             return Ok(());
         };
         if !text.is_empty() {
@@ -8613,6 +8768,10 @@ impl App {
             AskTarget::Ticket(ticket) => ticket,
             AskTarget::Column(name) => return self.commit_column_prompt(name, text, queued),
         };
+        // An accept (T-420) is always a queued entry on the daemon — the
+        // press is its clock's — so the receipt is `Queued`, and the status
+        // says what the card will: accepting now, or when the plan comes.
+        let accept_now = accept_plan && self.ticket_plan_ready(ticket);
         let had = self.ticket_queued(ticket);
         // Which seat the words are bound for, asked BEFORE they travel: the
         // daemon's answer comes back as a `Response` that cannot tell a
@@ -8626,7 +8785,8 @@ impl App {
             (_, true) => (format!("{word} wakes"), format!("{word} wakes next")),
             _ => ("queued".into(), "queued ∙ sends next".into()),
         };
-        self.status = match self.req(Command::PromptSession { ticket, text, queued }) {
+        let blank = text.is_empty();
+        self.status = match self.req(Command::PromptSession { ticket, text, queued, accept_plan }) {
             // Deliberately not "sent to the agent": what is provably
             // true is that it went into the box and Enter was
             // pressed. Whether the agent took it is the card's to
@@ -8636,6 +8796,16 @@ impl App {
             // the daemon did, and the status says so.
             Response::Ok if !queued && had => "asked ∙ queued ask dropped".into(),
             Response::Ok => "asked".into(),
+            Response::Queued { .. } if accept_plan && blank && accept_now => {
+                "accepting plan".into()
+            }
+            Response::Queued { .. } if accept_plan && blank => "queued ∙ accepts plan".into(),
+            Response::Queued { behind } if accept_now => {
+                format!("accepting plan ∙ {}", queued_status(&lead, &first, &behind, &own))
+            }
+            Response::Queued { behind } if accept_plan => {
+                format!("accepts plan ∙ {}", queued_status(&lead, &first, &behind, &own))
+            }
             // Parked: name what it waits on, the way the card does.
             Response::Queued { behind } => queued_status(&lead, &first, &behind, &own),
             // A parked claude: the daemon woke it and holds the
@@ -9585,7 +9755,10 @@ pub(crate) mod test_support {
                         failed: 0,
                     });
                 }
-                Command::PromptSession { ticket, queued, .. } => {
+                Command::PromptSession { ticket, queued, accept_plan, .. } => {
+                    // An accept (T-420) is always a queued entry, its flag
+                    // on the row until the daemon presses.
+                    let queued = queued || accept_plan;
                     use mesimon_core::command::PendingAction;
                     let seat = if self.board.pane_target(ticket).is_some() {
                         PendingAction::Ask
@@ -9603,6 +9776,8 @@ pub(crate) mod test_support {
                             text: None,
                             in_flight: false,
                             by: None,
+                            accept_plan,
+                            held: None,
                         });
                         return Ok(Response::Queued { behind: vec!["T-9".into()] });
                     }
@@ -11883,6 +12058,7 @@ mod tests {
                 target: AskTarget::Ticket(ulid::Ulid(1)),
                 walk: None,
                 queued: false,
+                accept_plan: false,
             },
             buffer: EditBuffer::new(PROMPT_MAX_BYTES),
         };
@@ -12855,7 +13031,7 @@ mod tests {
         let ed = editor(&app);
         assert!(matches!(
             &ed.purpose,
-            EditorPurpose::Ask { target: AskTarget::Column(n), queued: true } if n == "todo"
+            EditorPurpose::Ask { target: AskTarget::Column(n), queued: true, .. } if n == "todo"
         ));
         assert_eq!(ed.title.as_str(), "TODO");
         assert!(app.ctx().ask_queueable);
@@ -13068,6 +13244,108 @@ mod tests {
         ));
     }
 
+    /// T-420: on a card whose agent sits on its plan dialog, Shift+Enter
+    /// opens the field at `accept plan`, a blank Enter sends the accept —
+    /// a `PromptSession` with the flag and no words — and the status says
+    /// what the card will: `accepting plan`. Shift+Tab walks the ring past
+    /// `queued` and back, never to `now`: a paste into a dialog is an
+    /// answer, not an ask.
+    #[test]
+    fn shift_enter_on_a_ready_plan_accepts_it_and_the_ring_skips_now() {
+        use mesimon_core::board::Reason;
+        let (mut app, sent, _) =
+            app_with_claude(SessionState::RequiresAction { reason: Reason::Plan }, false);
+        app.rich_keys = true;
+        assert!(app.ctx().ticket_plan_ready);
+        assert!(!app.ctx().ticket_planning);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
+            Some(("shift+enter", "accept plan + ask"))
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(matches!(
+            app.mode,
+            Mode::Input {
+                purpose: InputPurpose::Prompt { queued: true, accept_plan: true, .. },
+                ..
+            }
+        ));
+        assert!(app.ctx().ask_accepts_plan);
+        assert!(app.ctx().ask_plan_able);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Input, Verb::Save, &app.ctx()),
+            Some(("enter", "accept plan"))
+        );
+        // The ring: accept plan → queued → accept plan (no `now` here).
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued && !app.ctx().ask_accepts_plan);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued && app.ctx().ask_accepts_plan);
+        // A blank Enter is the accept itself.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "accept_plan: true"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "text: \"\""), "{:?}", sent.borrow());
+        assert_eq!(app.status, "accepting plan");
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("accepting plan"));
+        // Reopened, the field carries the flag back.
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_accepts_plan);
+    }
+
+    /// T-420: an agent launched in plan mode and still working is KNOWN to
+    /// be planning, so the field opens at `accept plan` too — the ring
+    /// then has all three stops — and words sent there queue with the
+    /// flag: the card says `queued ∙ accepts plan`. A held ask reads
+    /// `held ∙ agent asked`. A session not launched in plan mode opens at
+    /// the board's default and has no `accept plan` stop.
+    #[test]
+    fn a_planning_agent_queues_with_the_flag_and_a_held_ask_says_why() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        assert!(!app.ctx().ticket_planning);
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_accepts_plan && !app.ctx().ask_plan_able);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+
+        app.board.sessions[0].argv =
+            vec!["claude".into(), "--permission-mode".into(), "plan".into()];
+        assert!(app.ctx().ticket_planning);
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_accepts_plan);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Input, Verb::CycleWorkspace, &app.ctx()),
+            Some(("shift+tab", "accept plan / queued / now"))
+        );
+        // accept plan → queued → now → accept plan.
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued && !app.ctx().ask_accepts_plan);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queued && !app.ctx().ask_accepts_plan);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued && app.ctx().ask_accepts_plan);
+        for ch in "after".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "accept_plan: true"), "{:?}", sent.borrow());
+        assert!(app.status.starts_with("accepts plan ∙ "), "{}", app.status);
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued ∙ accepts plan"));
+
+        app.pending = vec![mesimon_core::command::Pending {
+            ticket: ulid::Ulid(1),
+            action: mesimon_core::command::PendingAction::Ask,
+            waits_on: vec![],
+            text: Some("after".into()),
+            in_flight: false,
+            by: None,
+            accept_plan: false,
+            held: Some("agent asked".into()),
+        }];
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("held ∙ agent asked"));
+        assert!(app.ctx().ticket_queued, "a held ask is still edited and sent from the board");
+    }
+
     /// A waiting ask written in the room (T-380) has lines, and reopens in
     /// the room as it was — a one-line field would flatten it. `^s`
     /// re-queues it, lines and all.
@@ -13082,6 +13360,8 @@ mod tests {
             text: Some("commit it\nthen push".into()),
             in_flight: false,
             by: None,
+            accept_plan: false,
+            held: None,
         }];
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         let ed = editor(&app);
@@ -13113,6 +13393,8 @@ mod tests {
             text: Some("commit it".into()),
             in_flight: false,
             by: None,
+            accept_plan: false,
+            held: None,
         }];
         assert!(app.ctx().ticket_queued);
         assert_eq!(
@@ -13172,6 +13454,8 @@ mod tests {
                 text: None,
                 in_flight,
                 by: None,
+                accept_plan: false,
+                held: None,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };
@@ -13189,6 +13473,8 @@ mod tests {
             text: Some("commit it".into()),
             in_flight: false,
             by: Some("T-411".into()),
+            accept_plan: false,
+            held: None,
         }];
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued by T-411's agent"));
         assert!(app.ticket_queued(ulid::Ulid(1)), "^y and ^u apply to it");
@@ -13207,6 +13493,8 @@ mod tests {
                 text: Some("uncommitted changes in the main checkout".into()),
                 in_flight: false,
                 by: None,
+                accept_plan: false,
+                held: None,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };

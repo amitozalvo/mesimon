@@ -3315,6 +3315,7 @@ fn golden_prompt_field_120() {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: false,
+            accept_plan: false,
         },
         buffer,
     };
@@ -3352,6 +3353,7 @@ fn golden_prompt_field_queued_120() {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: true,
+            accept_plan: false,
         },
         buffer,
     };
@@ -3382,6 +3384,7 @@ fn golden_column_prompt_field_120() {
             target: crate::app::AskTarget::Column("in progress".into()),
             walk: None,
             queued: true,
+            accept_plan: false,
         },
         buffer,
     };
@@ -3416,6 +3419,7 @@ fn golden_column_prompt_field_now_120() {
             target: crate::app::AskTarget::Column("in progress".into()),
             walk: None,
             queued: false,
+            accept_plan: false,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
@@ -3451,6 +3455,7 @@ fn golden_column_prompt_field_start_120() {
             target: crate::app::AskTarget::Column("todo".into()),
             walk: None,
             queued: true,
+            accept_plan: false,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
@@ -3475,6 +3480,7 @@ fn golden_prompt_field_start_120() {
             target: crate::app::AskTarget::Ticket(ulid_n(1)),
             walk: None,
             queued: true,
+            accept_plan: false,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
@@ -3501,6 +3507,8 @@ fn golden_queued_start_open_120() {
         text: None,
         in_flight: false,
         by: None,
+        accept_plan: false,
+        held: None,
     }];
     app.cursor_col = 0;
     app.cursor_row = Some(0);
@@ -3517,6 +3525,8 @@ fn pending_ask(ticket: u128, waits_on: &[&str]) -> mesimon_core::command::Pendin
         text: Some("commit what you have".into()),
         in_flight: false,
         by: None,
+        accept_plan: false,
+        held: None,
     }
 }
 
@@ -3583,6 +3593,8 @@ fn golden_train_120() {
             text: None,
             in_flight: false,
             by: None,
+            accept_plan: false,
+            held: None,
         },
         mesimon_core::command::Pending {
             ticket: ulid_n(6),
@@ -3591,6 +3603,8 @@ fn golden_train_120() {
             text: None,
             in_flight: false,
             by: None,
+            accept_plan: false,
+            held: None,
         },
     ];
     app.cursor_col = 2;
@@ -3636,6 +3650,8 @@ fn golden_train_blocked_120() {
         text: Some("uncommitted changes in the main checkout — commit or stash them first".into()),
         in_flight: false,
         by: None,
+        accept_plan: false,
+        held: None,
     }];
     app.cursor_col = 2;
     app.cursor_row = Some(0);
@@ -3783,6 +3799,8 @@ fn golden_train_manual_120() {
         text: None,
         in_flight: false,
         by: None,
+        accept_plan: false,
+        held: None,
     };
     app.pending = vec![candidate.clone()];
     app.cursor_col = 2;
@@ -3892,12 +3910,15 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
         text: Some("commit it".into()),
         in_flight: false,
         by: None,
+        accept_plan: false,
+        held: None,
     }];
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: true,
+            accept_plan: false,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
@@ -3931,6 +3952,7 @@ fn test_the_prompt_field_moves_no_text() {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: false,
+            accept_plan: false,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
@@ -5103,6 +5125,7 @@ fn golden_editor_ask_120() {
         crate::app::EditorPurpose::Ask {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             queued: false,
+            accept_plan: false,
         },
         "Fix OSC-11 detection",
         "rebase onto main\n\nthen run the suite and report the first failure, nothing else",
@@ -5135,6 +5158,7 @@ fn golden_editor_ask_column_120() {
         crate::app::EditorPurpose::Ask {
             target: crate::app::AskTarget::Column("in progress".into()),
             queued: true,
+            accept_plan: false,
         },
         "IN PROGRESS",
         "commit what you have",
@@ -5848,6 +5872,7 @@ fn test_no_banned_sgr() {
                         target: crate::app::AskTarget::Ticket(ulid_n(3)),
                         walk: None,
                         queued: false,
+                        accept_plan: false,
                     },
                     buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
@@ -6124,6 +6149,7 @@ fn test_no_drawn_structure() {
                     target: crate::app::AskTarget::Ticket(ulid_n(3)),
                     walk: None,
                     queued: false,
+                    accept_plan: false,
                 },
                 buffer: buf,
             };
@@ -6982,6 +7008,7 @@ fn test_overflow_keeps_a_tall_cards_prompt_visible() {
             target: crate::app::AskTarget::Ticket(ulid_n(7)),
             walk: None,
             queued: false,
+            accept_plan: false,
         },
         buffer: crate::text::EditBuffer::from_text("continue here".into(), 100),
     };

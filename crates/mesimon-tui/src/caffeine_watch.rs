@@ -244,6 +244,8 @@ mod tests {
                     text: None,
                     in_flight: true,
                     by: None,
+                    accept_plan: false,
+                    held: None,
                 }]
             } else {
                 vec![]

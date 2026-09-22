@@ -244,6 +244,17 @@ pub enum Command {
         /// Absent from an older client = send now.
         #[serde(default)]
         queued: bool,
+        /// Accept the agent's plan on the way (T-420): the daemon presses
+        /// Enter on the harness's own plan dialog, at the row the harness
+        /// highlights by default — it chooses no option label — and the
+        /// words (if any) wait for the turn that follows. Meaningful only
+        /// on a live pane: the flag is parked with the ask and spent on the
+        /// dialog when it shows, so an ask queued while the agent is still
+        /// planning accepts the plan it ends on. Blank words are legal
+        /// with it: "accept the plan, ask nothing". Absent from an older
+        /// client = no accept.
+        #[serde(default)]
+        accept_plan: bool,
     },
     /// Atomically remove a waiting prompt and return its words for editing.
     TakeQueuedAsk {
@@ -1098,7 +1109,13 @@ mod meta_tests {
             Meta { action: Action::Read, logged: false, subject: None }
         );
         let id = ulid::Ulid::new();
-        let m = Command::PromptSession { ticket: id, text: "x".into(), queued: false }.meta();
+        let m = Command::PromptSession {
+            ticket: id,
+            text: "x".into(),
+            queued: false,
+            accept_plan: false,
+        }
+        .meta();
         assert_eq!(m, Meta { action: Action::Mutate, logged: true, subject: Some(id) });
         // A column's ask names no single ticket, so the handler logs per
         // ticket itself (T-378) and the chokepoint logs nothing.
@@ -1670,6 +1687,18 @@ pub struct Pending {
     /// is a person's own ask.
     #[serde(default)]
     pub by: Option<String>,
+    /// The ask will accept the agent's plan on the way (T-420) and has not
+    /// yet: the card says `accepts plan` while the agent works and
+    /// `accepting plan` once the dialog is up. Spent — false — the moment
+    /// the daemon has pressed.
+    #[serde(default)]
+    pub accept_plan: bool,
+    /// `Some` is an ask the daemon HELD because the agent stopped on a
+    /// question (T-420): the answer may change what the follow-up should
+    /// say, so the words wait for a person's `^y` the way a crown's ask
+    /// does, and the reason is the row's word (`agent asked`).
+    #[serde(default)]
+    pub held: Option<String>,
 }
 
 impl Pending {

@@ -1040,6 +1040,13 @@ pub struct Ctx {
     pub ask_queueable: bool,
     /// The ask field's toggle sits at `queued` — Enter parks the words.
     pub ask_queued: bool,
+    /// The ask field's toggle sits at `accept plan` (T-420): Enter accepts
+    /// the agent's plan, and parks the words for the turn after it.
+    pub ask_accepts_plan: bool,
+    /// The ask field's target can take an `accept plan` (T-420): its agent
+    /// is on the dialog or known to be planning, so Shift+Tab's ring has
+    /// three stops, not two.
+    pub ask_plan_able: bool,
     /// A claude is mid-turn in the subject ticket's shared checkout, so a
     /// press that would START or WAKE a session there stops and asks first
     /// (T-294). The TUI's own read of `quiet::is_working`, and a HINT: it
@@ -1049,6 +1056,15 @@ pub struct Ctx {
     /// The subject ticket has an ask waiting (not yet pasted): Shift+Enter
     /// reopens the field on it, and a blank Enter there drops it.
     pub ticket_queued: bool,
+    /// The subject ticket's agent sits on its plan dialog — `≡` on the card
+    /// (T-420): Shift+Enter's field opens at `accept plan`, and a blank
+    /// Enter there presses the harness's own default on the dialog.
+    pub ticket_plan_ready: bool,
+    /// The subject ticket's agent is KNOWN to be planning without a dialog
+    /// up yet: its argv carries plan mode (T-420). A queued ask there
+    /// defaults to accepting the plan it ends on; Shift+Tab flips it. A
+    /// session that entered plan mode from inside its pane is not known.
+    pub ticket_planning: bool,
     // ---- search (T-349) ----
     /// The picker is up. Every binding in its scope is gated on it, so a bare
     /// `Ctx` hints none of them — the tag picker's `tag_naming` rule.
@@ -1617,6 +1633,13 @@ static BOARD: &[Binding] = &[
             // does. Live but paneless is exactly Sleeping.
             if c.ticket_queued {
                 "edit the queued ask"
+            } else if c.ticket_plan_ready {
+                // The agent is on its plan dialog (T-420): the field opens
+                // at `accept plan`, a blank Enter presses the harness's
+                // default, words wait for the turn after. The same shape
+                // as `start + ask`: the extra thing the press does, then
+                // the ask.
+                "accept plan + ask"
             } else if c.ticket_has_agent && !c.ticket_promptable {
                 "wake + ask agent"
             } else if c.ticket_has_agent {
@@ -4815,7 +4838,9 @@ static INPUT: &[Binding] = &[
         // actually does, or the footer is teaching the wrong screen.
         hint: |c| {
             if c.prompting {
-                if c.ask_queued {
+                if c.ask_accepts_plan {
+                    "accept plan"
+                } else if c.ask_queued {
                     "queue"
                 } else {
                     "send"
@@ -4925,7 +4950,15 @@ static INPUT: &[Binding] = &[
         // (2026-09-04); one binding, because a key is bound once per scope,
         // and one gesture: shift+tab is "the other way" for whatever the
         // field is about.
-        hint: |c| if c.prompting { "now / queued" } else { "shared checkout / own worktree" },
+        hint: |c| {
+            if c.prompting && c.ask_plan_able {
+                "accept plan / queued / now"
+            } else if c.prompting {
+                "now / queued"
+            } else {
+                "shared checkout / own worktree"
+            }
+        },
         avail: |c| c.composing || (c.prompting && c.ask_queueable),
         class: Class::Plain,
         group: Group::Worktree,
@@ -6125,6 +6158,52 @@ mod tests {
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &onboard),
             Some(("shift+enter", "edit the queued ask"))
+        );
+    }
+
+    /// T-420: on a card whose agent sits on its plan dialog the same key
+    /// says what its field will do — accept the plan, then ask — and the
+    /// field's Enter says `accept plan` while the toggle sits there. A
+    /// waiting ask still wins the hint: editing it is the only way to
+    /// change the flag it carries.
+    #[test]
+    fn shift_enter_accepts_a_ready_plan_and_the_field_says_so() {
+        let plan = Ctx {
+            has_ticket: true,
+            ticket_has_agent: true,
+            ticket_promptable: true,
+            ticket_plan_ready: true,
+            rich_keys: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &plan),
+            Some(("shift+enter", "accept plan + ask"))
+        );
+        let queued = Ctx { ticket_queued: true, ..plan.clone() };
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &queued),
+            Some(("shift+enter", "edit the queued ask"))
+        );
+        let accepting = Ctx {
+            prompting: true,
+            ask_queued: true,
+            ask_accepts_plan: true,
+            ask_plan_able: true,
+            ask_queueable: true,
+            rich_keys: true,
+            ..Default::default()
+        };
+        assert_eq!(hint_for(Scope::Input, Verb::Save, &accepting), Some(("enter", "accept plan")));
+        assert_eq!(
+            hint_for(Scope::Input, Verb::CycleWorkspace, &accepting),
+            Some(("shift+tab", "accept plan / queued / now"))
+        );
+        let plain = Ctx { ask_accepts_plan: false, ask_plan_able: false, ..accepting };
+        assert_eq!(hint_for(Scope::Input, Verb::Save, &plain), Some(("enter", "queue")));
+        assert_eq!(
+            hint_for(Scope::Input, Verb::CycleWorkspace, &plain),
+            Some(("shift+tab", "now / queued"))
         );
     }
 

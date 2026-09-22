@@ -12373,3 +12373,99 @@ Three facts survive the revert, for whoever builds that:
   project directory fail that parse, so the external drawer under-lists. Beside it:
   `read_pid_files` keeps whichever file it reads last under a `sessionId`, so a dead
   process's file can shadow the live one's `alive`.
+
+## The board accepts an agent's plan (T-420, 2026-09-22, user: "shift+Enter will accept the plan and move to auto mode for claude and the same behaviour in codex (don't hardcode, use default behaviours of both harnesses)" ∙ "go recommended")
+
+**What was asked.** A `≡` card meant attach, read the dialog, press Enter, detach. The
+ticket asked for that Enter from the board, for an ask queued while the agent still plans to
+accept the plan it ends on, and for a queued ask to drop when the agent asks a question. The
+proposal (a note on T-420) put three decisions to the user, who took the recommended answer on
+each: a field with a blank Enter rather than a bare press, HOLD on a question rather than drop,
+and the queued flag on by default only when the session is known to be planning.
+
+**What shipped.**
+
+- **One key, one verb.** Shift+Enter stays `Verb::Prompt`. On a card whose paned agent is at
+  `RequiresAction{Plan}` (`Ctx::ticket_plan_ready`) the hint is `accept plan + ask` and the
+  field opens with its row at `accept plan`; a blank Enter is the accept, words + Enter accept
+  and park the words for the idle after. Shift+Tab's ring (`App::cycle_ask_mode`) has three stops
+  on a seat that can take it (`Ctx::ask_plan_able`): `accept plan` → `queued` → `now`, and
+  `now` is skipped while the dialog is up — a paste there is an answer. A session whose argv
+  carries `--permission-mode plan` and is not on the dialog yet is *known to be planning*
+  (`Ctx::ticket_planning`); its field opens at `accept plan` too. A session that entered plan
+  mode from inside its pane is not known, and opens at the board's default: mesimon never reads
+  a permission mode off a payload, and the argv is the one fact it holds.
+- **The wire is a field, not a command.** `PromptSession.accept_plan` (`#[serde(default)]`).
+  On a pane seat the flag makes the entry a QUEUED one always, dialog up or not — `PreToolUse`
+  lands the `≡` before the dialog paints, so the press is the clock's. Blank words are legal
+  with the flag ("accept the plan, ask nothing"); the entry leaves the queue on the press. Off a
+  pane the flag is nothing: it is about a dialog, and only a pane shows one, so it never rides
+  `queue.json`.
+- **The press is the harness's default, never a label.** `daemon/src/plan_dialog.rs`:
+  `claude_at_default` wants the measured shape (`Would you like to proceed?`, numbered rows,
+  one `❯`, the `Tell Claude what to change` row) with the `❯` on the lowest-numbered row, and
+  refuses a row that starts `No,` or `Tell ` even there. Row 1 is whatever Claude Code puts
+  first — `Yes, and use auto mode` on 2.1.280 with `defaultMode: auto`, `Yes, auto-accept
+  edits` where auto is unavailable, the bypass variant only where the person launched with
+  bypass (mesimon never does, T-117) — which is the "don't hardcode" clause made structural.
+  `codex_at_default` wants `codex::plan_dialog`'s shape; its selection marker is UNMEASURED,
+  so a dialog with no marker on either row is taken at its shape (it opens on `Yes`) and one
+  with a marker on `No, stay in Plan mode` is refused. Both refusals name themselves in the
+  feed, never in a blind Enter. Mesophon's `dialog_step` still walks to `Yes, manually approve
+  edits` for a paired device's `Accept`; the two matchers agree on the Claude shape and the
+  board's road is the default row on purpose.
+- **The daemon side.** `Daemon::accept_plan(session, actor)`: state must be `Plan`, one press
+  in flight per session (`plan_accept: HashMap<Uuid, deadline>`), `capture_input_screen`, the
+  matcher for the kind, `send_enter`, feed `plan_accepted`. `service_plan_accepts` (the 1 s
+  bucket, before `drain_queue`) presses for every flagged ask whose pane is at `Plan`; a miss
+  (dialog not painted yet, or never recognised) is retried up to `PLAN_ACCEPT_TRIES` = 10
+  passes, then the flag is dropped with `plan_accept_unrecognised` and the ask waits behind the
+  `≡` as an unflagged one always did. `settle_plan_accepts` forgets a press the harness
+  confirmed (the record left `Plan`: Claude's `PostToolUse ExitPlanMode`, Codex's next turn)
+  and past `PLAN_ACCEPT_CONFIRM_MS` = 8 s still at `Plan` says `plan_accept_unconfirmed` and
+  leaves the `≡` — the card never claims an approval the hooks did not see. Both maps are
+  memory-only: a restart forgets a press in flight and the next daemon reads the pane as it is.
+  `probe_codex_startup` skips its dismissed-dialog path while a press is in flight, so the
+  composer coming back on an accepted plan is not read as a decline.
+- **A question holds; it does not drop.** `apply_change` on a transition to
+  `RequiresAction{Question | Secret | Elicitation}` sets `QueuedAsk.held = Some("agent asked")`
+  on the ask queued at that pane (feed `queued_ask_held_question`). Held rides the T-413 seat:
+  `drain_queue` and `ask_waits_on` skip it, `persist_queue` never writes it, the row says
+  `held ∙ agent asked`, `^y` sends, `^u` takes back, and re-queuing through the field clears it.
+  A permission prompt does NOT hold — allowing a tool changes nothing about the follow-up — and
+  a plan dialog holds only an unflagged ask, as `queued_target_ready` always did. This is every
+  queued ask, plan or not ("either not or in plan mode"). Drop was refused on T-418's lesson: a
+  queue entry that vanishes with no line anywhere is the failure.
+- **`^y` into a dialog is refused.** `send_queued_ask` on a pane at any `RequiresAction`
+  answers `the agent is waiting on you ∙ answer it in the pane first`: a paste into a dialog
+  lands in the question, or on the plan's revise row.
+- **Rows.** `Pending.accept_plan` and `Pending.held` (`#[serde(default)]`). `App::pending_row`:
+  `accepting plan` while the agent is on the dialog and the press is the next tick's,
+  `queued ∙ accepts plan` while it still plans, `held ∙ agent asked`. The field's placeholder at
+  `accept plan` reads `enter accepts the plan`; the room and the card's delivery row say
+  `accept plan` through `App::ask_mode_word`. The board's status on Enter: `accepting plan`,
+  `queued ∙ accepts plan`, or the ordinary queued receipt prefixed `accepting plan ∙` /
+  `accepts plan ∙`.
+
+**Measured on the way.** An Enter of the daemon's submits whatever the box holds: on a pane
+whose spawn typed the title as a prefill (T-224) and never submitted it, the accept's Enter
+sends the title. The e2e counts that line as the first press. Real Claude panes have submitted
+their prefill long before a plan is ready, so the press lands on the dialog alone.
+
+**Not done.** The hook road (`PermissionRequest` `allow` + `updatedPermissions: setMode`) was
+argued out of v1: it blocks the turn for at most the bridge's 47 s while a plan sits for minutes,
+it must name a mode, `approve.rs` excludes `ExitPlanMode` on purpose, and Codex has no such
+road. Revising the plan from the board (words to the dialog's text row) is a possible third stop
+on the ring, not built. The Codex selection marker wants a live capture. A legacy terminal has
+no Shift+Enter, so no board accept — the same fate as every Shift+Enter binding.
+
+**Tests.** `plan_dialog` unit (row 1, a walked cursor, two cursors, an unknown screen, the
+Codex marker cases); keymap `shift_enter_accepts_a_ready_plan_and_the_field_says_so`; TUI
+`shift_enter_on_a_ready_plan_accepts_it_and_the_ring_skips_now` and
+`a_planning_agent_queues_with_the_flag_and_a_held_ask_says_why`; e2e
+`plan_accept_e2e::the_board_accepts_a_plan_with_one_enter_and_the_words_wait_for_the_turn_after`
+(a stub painting the Claude dialog: the blank accept is one Enter and nothing else, the flag
+queued before the plan presses on the `≡` and delivers the words on the idle after, a cleared
+screen gives the flag up with the feed line and no blind Enter); `ask_queue_e2e`'s idle-queue
+test now proves the permission wait, the `^y` refusal on a dialog, the hold on a question and
+the send by hand.

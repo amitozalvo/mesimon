@@ -105,6 +105,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         ticket: b,
         text: "mesimon-probe-51 commit what you have".into(),
         queued: true,
+        accept_plan: false,
     }) {
         Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the ask to be parked: {other:?}"),
@@ -138,7 +139,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         c.request(Command::PromptSession {
             ticket: b,
             text: "mesimon-probe-52 never".into(),
-            queued: true
+            queued: true,
+            accept_plan: false
         }),
         Response::Queued { .. }
     ));
@@ -156,7 +158,12 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     start(&mut c, sa);
     for probe in ["mesimon-probe-53 first", "mesimon-probe-54 second"] {
         assert!(matches!(
-            c.request(Command::PromptSession { ticket: b, text: probe.into(), queued: true }),
+            c.request(Command::PromptSession {
+                ticket: b,
+                text: probe.into(),
+                queued: true,
+                accept_plan: false
+            }),
             Response::Queued { .. }
         ));
     }
@@ -176,7 +183,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         c.request(Command::PromptSession {
             ticket: b,
             text: "mesimon-probe-55 now".into(),
-            queued: true
+            queued: true,
+            accept_plan: false
         }),
         Response::Ok
     ));
@@ -192,7 +200,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         c.request(Command::PromptSession {
             ticket: b,
             text: "mesimon-probe-56 dropped".into(),
-            queued: true
+            queued: true,
+            accept_plan: false
         }),
         Response::Queued { .. }
     ));
@@ -211,7 +220,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         c.request(Command::PromptSession {
             ticket: b,
             text: "mesimon-probe-57 asleep".into(),
-            queued: true
+            queued: true,
+            accept_plan: false
         }),
         Response::Queued { .. }
     ));
@@ -225,7 +235,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         c.request(Command::PromptSession {
             ticket: b,
             text: "mesimon-probe-58 later".into(),
-            queued: true
+            queued: true,
+            accept_plan: false
         }),
         Response::Queued { .. }
     ));
@@ -294,6 +305,7 @@ fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
         ticket: b,
         text: "mesimon-probe-71 read the ticket".into(),
         queued: true,
+        accept_plan: false,
     }) {
         Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the start to be parked: {other:?}"),
@@ -419,7 +431,12 @@ fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
     start(&mut c, sa);
     for (t, probe) in [(y, "mesimon-probe-61 lower"), (x, "mesimon-probe-62 upper")] {
         assert!(matches!(
-            c.request(Command::PromptSession { ticket: t, text: probe.into(), queued: true }),
+            c.request(Command::PromptSession {
+                ticket: t,
+                text: probe.into(),
+                queued: true,
+                accept_plan: false
+            }),
             Response::Queued { .. }
         ));
     }
@@ -467,7 +484,8 @@ fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
 }
 
 /// Follow-ups in an isolated worktree wait for this turn, including its
-/// permission/question stops. Explicit send-now bypasses that wait.
+/// permission stop; a question stop HOLDS them for a person (T-420).
+/// Explicit send-now bypasses the idle wait, never a dialog.
 #[test]
 fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
@@ -506,27 +524,49 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
     c.await_state(sid, "running", |s| *s == SessionState::Running);
     let queue = |c: &mut TestClient, words: &str| {
         assert!(matches!(
-            c.request(Command::PromptSession { ticket, text: words.into(), queued: true }),
+            c.request(Command::PromptSession {
+                ticket,
+                text: words.into(),
+                queued: true,
+                accept_plan: false
+            }),
             Response::Queued { .. }
         ));
     };
     queue(&mut c, "idle-queue-first");
-    for (event, payload) in [
-        ("PermissionRequest", r#"{"tool_name":"Bash"}"#),
-        ("PreToolUse", r#"{"tool_name":"AskUserQuestion"}"#),
-    ] {
-        hook_send(&hooks, &sid.to_string(), event, payload);
-        c.await_state(sid, "waiting for person", |s| {
-            matches!(s, SessionState::RequiresAction { .. })
-        });
-        std::thread::sleep(Duration::from_millis(1200));
-        assert!(!text().contains("idle-queue-first"));
-        assert!(pending_of(&mut c, None).iter().any(|p| p.ticket == ticket && !p.in_flight));
-        hook_send(&hooks, &sid.to_string(), "PostToolUse", payload);
-        c.await_state(sid, "running again", |s| *s == SessionState::Running);
-    }
+    // A permission prompt holds the words through it, as it always did,
+    // and a send-now into the dialog is refused (T-420): a paste there is
+    // an answer, not an ask.
+    let permission = r#"{"tool_name":"Bash"}"#;
+    hook_send(&hooks, &sid.to_string(), "PermissionRequest", permission);
+    c.await_state(sid, "waiting for person", |s| matches!(s, SessionState::RequiresAction { .. }));
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(!text().contains("idle-queue-first"));
+    let p = pending_of(&mut c, Some(ticket));
+    assert!(p.iter().any(|p| !p.in_flight && p.held.is_none()), "{p:?}");
+    assert!(matches!(c.request(Command::SendQueuedAsk { ticket }), Response::Err { .. }));
+    hook_send(&hooks, &sid.to_string(), "PostToolUse", permission);
+    c.await_state(sid, "running again", |s| *s == SessionState::Running);
+    // A QUESTION holds them for a person (T-420): the answer may change
+    // what the follow-up should say, so the idle after it delivers nothing
+    // and the row says why; `^y` sends.
+    let question = r#"{"tool_name":"AskUserQuestion"}"#;
+    hook_send(&hooks, &sid.to_string(), "PreToolUse", question);
+    c.await_state(sid, "asking", |s| matches!(s, SessionState::RequiresAction { .. }));
+    wait_until(Duration::from_secs(5), "the ask to be held", || {
+        pending_of(&mut c, Some(ticket)).iter().any(|p| p.held.as_deref() == Some("agent asked"))
+    });
+    hook_send(&hooks, &sid.to_string(), "PostToolUse", question);
+    c.await_state(sid, "running again", |s| *s == SessionState::Running);
     hook_send(&hooks, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-    wait_until(Duration::from_secs(10), "idle delivery", || text().contains("idle-queue-first"));
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!text().contains("idle-queue-first"), "a held ask never goes on its own");
+    assert!(pending_of(&mut c, Some(ticket)).iter().any(|p| p.held.is_some()));
+    assert!(matches!(c.request(Command::SendQueuedAsk { ticket }), Response::Ok));
+    wait_until(Duration::from_secs(10), "the held ask, sent by hand", || {
+        text().contains("idle-queue-first")
+    });
     assert_eq!(text().matches("idle-queue-first").count(), 1);
     hook_send(&hooks, &sid.to_string(), "UserPromptSubmit", "{}");
     c.await_state(sid, "running", |s| *s == SessionState::Running);
@@ -548,6 +588,7 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
             ticket,
             text: "idle-queue-already-idle".into(),
             queued: true,
+            accept_plan: false,
         }),
         Response::Ok
     ));
@@ -603,6 +644,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
         ticket: b,
         text: "mesimon-probe-418 read the ticket".into(),
         queued: true,
+        accept_plan: false,
     }) {
         Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the start to be parked: {other:?}"),
@@ -612,6 +654,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
             ticket: a,
             text: "mesimon-probe-418 follow-up for the holder".into(),
             queued: true,
+            accept_plan: false,
         }),
         Response::Queued { .. }
     ));

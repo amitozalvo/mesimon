@@ -280,6 +280,7 @@ fn starts_with_any_status_line(footer: &str) {
             ticket: waiting,
             text: "queued instructions".into(),
             queued: true,
+            accept_plan: false,
         }),
         Response::Queued { .. }
     ));
@@ -365,7 +366,8 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
         c.request(Command::PromptSession {
             ticket: waiting,
             text: "first words".into(),
-            queued: true
+            queued: true,
+            accept_plan: false
         }),
         Response::Queued { .. }
     ));
@@ -374,7 +376,8 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
         c.request(Command::PromptSession {
             ticket: waiting,
             text: "replacement words".into(),
-            queued: true
+            queued: true,
+            accept_plan: false
         }),
         Response::Queued { .. }
     ));
@@ -496,7 +499,8 @@ fn lost_codex_observation_holds_the_checkout_and_recovers_without_duplicate_subm
         c.request(Command::PromptSession {
             ticket: waiting,
             text: "after observation recovers".into(),
-            queued: true
+            queued: true,
+            accept_plan: false
         }),
         Response::Queued { .. }
     ));
@@ -535,6 +539,7 @@ fn sleeping_codex_holds_checkout_and_refuses_wake_until_worker_stops() {
             ticket: waiting,
             text: "after owned server stops".into(),
             queued: true,
+            accept_plan: false,
         }),
         Response::Queued { .. }
     ));
@@ -747,6 +752,7 @@ fn daemon_handover_keeps_sent_codex_prompt_held_without_pressing_enter_again() {
             ticket,
             text: "send exactly once".into(),
             queued: false,
+            accept_plan: false,
         }),
         Response::Ok
     ));
@@ -783,6 +789,7 @@ fn daemon_handover_abandons_unpasted_volatile_words_without_submitting_partial_i
             ticket,
             text: "volatile custom words".into(),
             queued: false,
+            accept_plan: false,
         }),
         Response::Ok
     ));
@@ -867,7 +874,12 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
     select(&mut c, AgentProvider::ClaudeCode);
     let waiting = ticket(&mut c, "queued behind uncertain cleanup", None);
     assert!(matches!(
-        c.request(Command::PromptSession { ticket: waiting, text: "wait".into(), queued: true }),
+        c.request(Command::PromptSession {
+            ticket: waiting,
+            text: "wait".into(),
+            queued: true,
+            accept_plan: false
+        }),
         Response::Queued { .. }
     ));
     std::thread::sleep(Duration::from_millis(1500));

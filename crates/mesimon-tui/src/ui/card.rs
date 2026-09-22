@@ -152,9 +152,8 @@ pub(super) fn render_workspace_selector(
 /// said ` ∙ blank enter drops` on a reopened ask until T-241 (2026-09-05):
 /// 39 cells, cut to `dr` on a narrow column. The emptied field's
 /// placeholder carries that word now (`render_prompt`).
-pub(super) fn render_ask_mode(ctx: &CardCtx, queued: bool) -> Line<'static> {
+pub(super) fn render_ask_mode(ctx: &CardCtx, word: &'static str) -> Line<'static> {
     let theme = ctx.theme;
-    let word = if queued { "queued" } else { "now" };
     let spans = vec![
         Span::raw(" ".repeat(BAR_WIDTH + 1)),
         Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),

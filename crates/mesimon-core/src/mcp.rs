@@ -1723,7 +1723,12 @@ mod tests {
             Command::AdoptTerminal { ticket: t },
             // One agent steering another agent's turn is the sharpest thing
             // the never-tier exists to stop.
-            Command::PromptSession { ticket: t, text: "do the thing".into(), queued: false },
+            Command::PromptSession {
+                ticket: t,
+                text: "do the thing".into(),
+                queued: false,
+                accept_plan: false,
+            },
             Command::PromptColumn {
                 column: "TODO".into(),
                 text: "do the thing".into(),

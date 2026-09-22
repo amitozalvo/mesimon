@@ -15,6 +15,7 @@ pub mod ingest;
 pub mod journal;
 pub mod movegate;
 pub mod paths;
+pub mod plan_dialog;
 pub mod resources;
 pub mod server;
 pub mod shellenv;

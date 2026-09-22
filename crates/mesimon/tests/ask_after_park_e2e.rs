@@ -82,7 +82,12 @@ fn asking_again_after_parking_by_hand_moves_the_card_to_in_progress() {
     // Shift+Enter from TODO: the prompt lands and the agent runs. The card
     // must go with it — this is the edge the gate refused before.
     assert!(matches!(
-        c.request(Command::PromptSession { ticket, text: "again".into(), queued: false }),
+        c.request(Command::PromptSession {
+            ticket,
+            text: "again".into(),
+            queued: false,
+            accept_plan: false
+        }),
         Response::Ok
     ));
     hook_send(&hook_sock, &sid_s, "UserPromptSubmit", r#"{"session_id":"x"}"#);

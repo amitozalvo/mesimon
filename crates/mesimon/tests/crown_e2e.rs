@@ -511,6 +511,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         ticket: b,
         text: "mesimon-probe-64 the person's".into(),
         queued: true,
+        accept_plan: false,
     }) {
         Response::Queued { .. } | Response::Ok => {}
         other => panic!("the person's queued ask: {other:?}"),
@@ -780,6 +781,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_finishes() {
         ticket: a,
         text: "mesimon-probe-74 person".into(),
         queued: true,
+        accept_plan: false,
     }) {
         Response::Queued { .. } => {}
         other => panic!("queue a person's ask: {other:?}"),
