@@ -12283,8 +12283,11 @@ with it — and its own branch, because `add -b` mints the branch before it lays
 Sequential in the one provisioning thread, concurrency 2 across tickets as before;
 `Msg::ProvisionProgress` puts `7/19` on the binding's `detail` while it runs, and the journal
 gets `provisioned <KEY>: <n> repos in <ms> ms` on every success (single-repo included, the
-baseline). The e2e's three tiny repos: 217 ms. **Simbly's number is still to be read** off
-`daemon.log` the first time a worktree ticket is cut there.
+baseline). The e2e's three tiny repos: 217 ms. **Simbly, measured 2026-09-22:** `provisioned
+T-105: 12 repos in 1487 ms` — a tenth of the spike's 10–30 s estimate, so no exclusion list.
+The writer turn that absorbed it read `slow turn: provisioned took 1556 ms` (the synchronous
+`refresh_worktree_flags` over twelve repos plus the parked spawn's replay); the single-repo
+board's own `provisioned` turns ran 1.1–3.4 s before this change, so the replay is most of it.
 
 **One answer per ticket.** `worktree::aggregate` folds the legs' `RepoFlags`: the TOUCHED legs
 (tip moved off the creation base) judge — `merged` is every touched leg merged, `needs_rebase`
