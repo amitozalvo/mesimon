@@ -1,13 +1,14 @@
 //! The sentences mesimon itself types into an agent's box, and the user's
 //! right to rewrite them (T-353).
 //!
-//! Three of mesimon's own sentences reach a live agent: the rebase ask when
+//! Four of mesimon's own sentences reach a live agent: the rebase ask when
 //! the base branch moved past a ticket's branch, the notice after that branch
-//! was merged, and the nudge when a note on the ticket changed. Every one of
+//! was merged, the nudge when a note on the ticket changed, and the wake the
+//! crown gets when an agent it started finishes (T-414). Every one of
 //! them was a `format!` in the daemon until now, which meant the words that
 //! start somebody's turn were the binary's and not theirs — wrong in a tool
 //! whose third README promise is that mesimon adds no token of its own to a
-//! conversation. The three exceptions stay exceptions; what changes here is
+//! conversation. The exceptions stay exceptions; what changes here is
 //! WHOSE words they are.
 //!
 //! The shape is deliberately the smallest one that works:
@@ -26,7 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One of the three sentences mesimon writes for an agent.
+/// One of the four sentences mesimon writes for an agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentPrompt {
@@ -39,13 +40,23 @@ pub enum AgentPrompt {
     Merged,
     /// A note on the ticket changed under a working agent: `NoteToAgent`.
     NoteUpdated,
+    /// An agent the crown started ended its turn or raised its hand (T-414):
+    /// the daemon's `crown_wake` rule, into the crown's own box. `{events}`
+    /// is the clause list mesimon builds (`T-14 "fix the thing" finished its
+    /// turn, T-15 "add tests" raised its hand`) and `{keys}` the keys alone.
+    CrownWake,
 }
 
 impl AgentPrompt {
     /// The ring, in the order the Settings list shows them: the two halves of
-    /// the merge flow in the order they happen, then the note nudge.
-    pub const ALL: [AgentPrompt; 3] =
-        [AgentPrompt::Rebase, AgentPrompt::Merged, AgentPrompt::NoteUpdated];
+    /// the merge flow in the order they happen, then the note nudge, then
+    /// the crown's wake.
+    pub const ALL: [AgentPrompt; 4] = [
+        AgentPrompt::Rebase,
+        AgentPrompt::Merged,
+        AgentPrompt::NoteUpdated,
+        AgentPrompt::CrownWake,
+    ];
 
     /// The row's name — what the setting IS, in the user's words.
     pub fn label(self) -> &'static str {
@@ -53,6 +64,7 @@ impl AgentPrompt {
             AgentPrompt::Rebase => "Rebase ask",
             AgentPrompt::Merged => "Merged notice",
             AgentPrompt::NoteUpdated => "Note nudge",
+            AgentPrompt::CrownWake => "Crown wake",
         }
     }
 
@@ -62,6 +74,9 @@ impl AgentPrompt {
             AgentPrompt::Rebase => "when the base branch moved past this one",
             AgentPrompt::Merged => "after this ticket's branch was merged",
             AgentPrompt::NoteUpdated => "when a note on the ticket changed",
+            AgentPrompt::CrownWake => {
+                "when an agent the crown started ends its turn or raises its hand"
+            }
         }
     }
 
@@ -80,6 +95,7 @@ impl AgentPrompt {
                 "Note \"{note}\" on this ticket was just updated; read_note with id {id} \
                  returns the new text."
             }
+            AgentPrompt::CrownWake => "{events} ∙ get_ticket key={keys} for state and notes",
         }
     }
 
@@ -89,6 +105,7 @@ impl AgentPrompt {
         match self {
             AgentPrompt::Rebase | AgentPrompt::Merged => &["branch", "base"],
             AgentPrompt::NoteUpdated => &["note", "id"],
+            AgentPrompt::CrownWake => &["events", "keys"],
         }
     }
 
@@ -103,16 +120,17 @@ impl AgentPrompt {
             AgentPrompt::Rebase => "rebase",
             AgentPrompt::Merged => "merged",
             AgentPrompt::NoteUpdated => "note_updated",
+            AgentPrompt::CrownWake => "crown_wake",
         }
     }
 }
 
-/// The board's three templates: `None` is mesimon's own words.
+/// The board's four templates: `None` is mesimon's own words.
 ///
-/// Three `Option<String>`s and not a map, for one reason that is about disk:
+/// Four `Option<String>`s and not a map, for one reason that is about disk:
 /// these ride `columns.toml` as SCALARS beside `system_prompt` and
 /// `default_column`, and a map would serialize as a TOML table, which may not
-/// be followed by any scalar. The enum above is what keeps the three honest.
+/// be followed by any scalar. The enum above is what keeps the four honest.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptSet {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -121,6 +139,8 @@ pub struct PromptSet {
     pub merged: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_updated: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crown_wake: Option<String>,
 }
 
 impl PromptSet {
@@ -130,6 +150,7 @@ impl PromptSet {
             AgentPrompt::Rebase => self.rebase.as_deref(),
             AgentPrompt::Merged => self.merged.as_deref(),
             AgentPrompt::NoteUpdated => self.note_updated.as_deref(),
+            AgentPrompt::CrownWake => self.crown_wake.as_deref(),
         }
     }
 
@@ -142,7 +163,7 @@ impl PromptSet {
         self.custom(which).is_some()
     }
 
-    /// How many of the three are the user's — the door row's label.
+    /// How many of the four are the user's — the door row's label.
     pub fn custom_count(&self) -> usize {
         AgentPrompt::ALL.iter().filter(|w| self.is_custom(**w)).count()
     }
@@ -153,6 +174,7 @@ impl PromptSet {
             AgentPrompt::Rebase => &mut self.rebase,
             AgentPrompt::Merged => &mut self.merged,
             AgentPrompt::NoteUpdated => &mut self.note_updated,
+            AgentPrompt::CrownWake => &mut self.crown_wake,
         };
         *slot = text;
     }
@@ -214,6 +236,13 @@ mod tests {
             p.render(AgentPrompt::NoteUpdated, &[("note", "Design"), ("id", "01ABC")]),
             "Note \"Design\" on this ticket was just updated; read_note with id 01ABC returns \
              the new text."
+        );
+        assert_eq!(
+            p.render(
+                AgentPrompt::CrownWake,
+                &[("events", "T-14 \"fix the thing\" finished its turn"), ("keys", "T-14")]
+            ),
+            "T-14 \"fix the thing\" finished its turn ∙ get_ticket key=T-14 for state and notes"
         );
     }
 

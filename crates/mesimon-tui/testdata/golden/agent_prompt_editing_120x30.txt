@@ -13,10 +13,10 @@
                            │   Rebase ask: Rebase your current branch {branch} onto {base}, │
                            │   Merged notice: mesimon's words                               │
                            │   Note nudge: mesimon's words                                  │
+                           │   Crown wake: mesimon's words                                  │
                            │                                                                │
                            │     {branch} {base} get filled in ∙ empty it for mesimon's wo~ │
                            ╰────────────────────────────────────── enter save ∙ esc cancel ─╯
-
 
 
 

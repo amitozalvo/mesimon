@@ -138,6 +138,8 @@ struct ColumnsFile {
     prompt_merged: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt_note_updated: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_crown_wake: Option<String>,
     /// The crowned ticket (`Board::crown`, T-411), a ULID. A scalar, so it
     /// sits here before the tables; absent — every file before the field —
     /// means no crown, and a plain default with no bump: a build that drops
@@ -436,6 +438,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                     rebase: cf.prompt_rebase,
                                     merged: cf.prompt_merged,
                                     note_updated: cf.prompt_note_updated,
+                                    crown_wake: cf.prompt_crown_wake,
                                 },
                                 crown: cf.crown,
                                 ..Default::default()
@@ -660,6 +663,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         rebase: cf.prompt_rebase,
         merged: cf.prompt_merged,
         note_updated: cf.prompt_note_updated,
+        crown_wake: cf.prompt_crown_wake,
     };
     let mut b = Board { columns: cf.columns, ..Default::default() };
     if cf.schema_version < 4 {
@@ -699,6 +703,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         prompt_rebase: board.prompts.rebase.clone(),
         prompt_merged: board.prompts.merged.clone(),
         prompt_note_updated: board.prompts.note_updated.clone(),
+        prompt_crown_wake: board.prompts.crown_wake.clone(),
         crown: board.crown,
         columns: board.columns.clone(),
         tags: board.tags.clone(),
@@ -1872,6 +1877,7 @@ order = "a0"
             prompt_rebase: Some("catch {branch} up to {base}".into()),
             prompt_merged: None,
             prompt_note_updated: None,
+            prompt_crown_wake: None,
             crown: Some(ulid::Ulid(7)),
             columns: vec![Column {
                 name: "TODO".into(),

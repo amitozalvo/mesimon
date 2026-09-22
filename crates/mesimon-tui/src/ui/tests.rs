@@ -771,7 +771,7 @@ fn golden_notifications_board_120() {
 }
 
 /// The agent-prompt list (T-353), one level under Settings > Agents: the
-/// three sentences mesimon types into an agent's box, each row saying whose
+/// four sentences mesimon types into an agent's box, each row saying whose
 /// words stand there and the selected one's detail saying when it is sent
 /// and what it says. `AGENT PROMPTS` in the frame's top edge.
 #[test]

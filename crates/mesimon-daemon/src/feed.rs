@@ -107,6 +107,18 @@ impl FeedWriter {
             "from": from, "destination": destination, "outcome": outcome}));
     }
 
+    /// The board noted a wake for the crown (T-414): the worker that
+    /// finished or raised its hand, and why. Keys only — the sentence the
+    /// crown receives is never in the feed (D11).
+    pub fn crown_wake(&mut self, crown: ulid::Ulid, worker: ulid::Ulid, cause: &str) {
+        self.push(json!({
+            "kind": "crown_wake",
+            "crown": crown,
+            "worker": worker,
+            "cause": cause,
+        }));
+    }
+
     /// One board mutation.
     pub fn board(&mut self, actor: &str, cmd: &str, ticket: Option<ulid::Ulid>) {
         self.push(json!({

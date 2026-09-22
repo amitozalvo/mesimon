@@ -504,8 +504,8 @@ fn agents(repo: &Path, verbose: bool) -> Section {
             );
         }
 
-        // The three sentences Mesimon itself types into an agent's box
-        // (T-353). Printed VERBATIM either way, the brief's rule and for the
+        // The four sentences Mesimon itself types into an agent's box
+        // (T-353, T-414). Printed VERBATIM either way, the brief's rule and for the
         // brief's reason: these are the only words Mesimon adds to a
         // conversation, so "what does it say" must be answerable without
         // opening the TUI.
@@ -526,7 +526,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         records.push(
             rec(Level::Ok, "agent prompts", summary)
                 .advice(format!(
-                    "Mesimon sends these into a live session: a rebase request, a merge notice, and a note update. Settings > Agents > Agent prompts edits them; an emptied field restores the default wording.\n\n{body}"
+                    "Mesimon sends these into a live session: a rebase request, a merge notice, a note update, and the crown's wake when an agent it started finishes. Settings > Agents > Agent prompts edits them; an emptied field restores the default wording.\n\n{body}"
                 )),
         );
 

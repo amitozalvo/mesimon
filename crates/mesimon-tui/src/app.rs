@@ -3225,6 +3225,10 @@ impl App {
             (A::Start, Some(a)) => format!("starts ∙ {a}"),
             (A::Wake, None) => "wakes next".into(),
             (A::Wake, Some(a)) => format!("wakes ∙ {a}"),
+            // The board's own sentence to the crown about a worker that
+            // finished (T-414): waits on the crown's turn and nothing else.
+            (A::CrownWake, None) => "crown wakes next".into(),
+            (A::CrownWake, Some(a)) => format!("crown wakes ∙ {a}"),
             // The checkout refused this merge (T-289) — a dirty tree the
             // ff would overwrite, almost always. It outranks what the row
             // waits on, because a blocked merge does not happen when the
@@ -4601,7 +4605,7 @@ impl App {
             // there now — theirs if they wrote one, mesimon's otherwise — so
             // a rewrite starts from the sentence being rewritten and not from
             // an empty box.
-            Verb::PromptRebase | Verb::PromptMerged | Verb::PromptNote => {
+            Verb::PromptRebase | Verb::PromptMerged | Verb::PromptNote | Verb::PromptCrownWake => {
                 let Some(which) = keymap::prompt_of(verb) else { return Ok(()) };
                 let text = self.board.prompts.text(which).to_string();
                 let items = keymap::prompt_items(&self.ctx());

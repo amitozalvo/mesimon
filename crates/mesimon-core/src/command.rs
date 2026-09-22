@@ -477,7 +477,8 @@ pub enum Command {
         mode: crate::board::FollowUpMode,
     },
     /// Rewrite one of the three sentences mesimon types into an agent's box
-    /// (T-353): the rebase ask, the merged notice, the note nudge. `None`
+    /// (T-353): the rebase ask, the merged notice, the note nudge, the crown
+    /// wake (T-414). `None`
     /// puts mesimon's own words back — so does text that sanitizes to
     /// nothing, which is what an emptied field sends. The daemon sanitizes
     /// what it stores (`sanitize_prompt`, the same boundary a typed ask
@@ -1617,6 +1618,9 @@ pub enum PendingAction {
     Merge,
     /// The train will ask this ticket's claude to rebase.
     Rebase,
+    /// The board's own sentence to the crown about an agent it started that
+    /// finished its turn or raised its hand (T-414); the ticket is the crown's.
+    CrownWake,
     /// A word this build does not know.
     #[serde(other)]
     Unknown,
@@ -1656,7 +1660,9 @@ impl Pending {
     /// whatever seat it is in? `ask` is a live pane, `wake` a parked claude
     /// the delivery wakes, `start` an empty seat where the delivery starts
     /// one (T-294). The three live here so no screen spells the vocabulary
-    /// itself; the train's `merge` and `rebase` rows are not asks.
+    /// itself; the train's `merge` and `rebase` rows are not asks, and
+    /// neither is the crown's wake (T-414) — nobody's words to send or take
+    /// back, so `^y`/`^u` leave it alone.
     pub fn is_queued_ask(&self) -> bool {
         matches!(self.action, PendingAction::Ask | PendingAction::Start | PendingAction::Wake)
     }

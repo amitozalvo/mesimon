@@ -457,6 +457,13 @@ pub struct Daemon {
     /// changed. In memory on purpose, like the move gate's: the feed is the
     /// record, this is what the next frame needs.
     crown_touches: HashMap<ulid::Ulid, CrownTouch>,
+    /// Wakes the crown is owed (T-414): one per agent the crown started that
+    /// finished its turn or raised its hand since the crown's last turn,
+    /// rendered into ONE sentence when the crown itself is idle. In memory
+    /// on purpose, like a held ask (T-413): a restart re-derives every
+    /// worker's state at Low confidence anyway, and the crown can list the
+    /// board. Uncrowning drops them.
+    crown_wakes: Vec<CrownWake>,
     /// The user's own shell environment, as their login shell last reported
     /// it. Every spawn hands this to the pane, because a Claude pane is exec'd
     /// directly by tmux and so reads no rc file of its own.
@@ -819,6 +826,7 @@ pub fn run(paths: Paths) -> Result<()> {
         board_version: 0,
         agent_replay: HashMap::new(),
         crown_touches: HashMap::new(),
+        crown_wakes: Vec::new(),
         shell_env: crate::shellenv::ShellEnv::default(),
         shell_env_capturing: false,
         shell_env_error: None,
@@ -1163,6 +1171,41 @@ struct QueuedAsk {
     /// that keeps a person between one session and another's turn. Never
     /// persisted: it dies with the daemon, and the crown may ask again.
     by: Option<ulid::Ulid>,
+}
+
+/// One thing the crown has yet to hear about (T-414): an agent it started
+/// finished a turn or raised its hand. Keyed by worker — a second event on
+/// the same worker before delivery replaces the cause rather than adding a
+/// clause, and the same `state_changed_at` is the same finish and adds
+/// nothing (the edge the ticket asks for).
+struct CrownWake {
+    worker: ulid::Ulid,
+    cause: WakeCause,
+    /// The worker record's `state_changed_at` for a finish; `None` for a hand.
+    changed_at: Option<u64>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WakeCause {
+    Finished,
+    Raised,
+}
+
+impl WakeCause {
+    /// The clause after the ticket in the sentence, and the feed's word.
+    fn clause(self) -> &'static str {
+        match self {
+            WakeCause::Finished => "finished its turn",
+            WakeCause::Raised => "raised its hand",
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            WakeCause::Finished => "finished",
+            WakeCause::Raised => "raised",
+        }
+    }
 }
 
 /// Where a prompt's claude is (`Daemon::seat_of`), and therefore how it is
@@ -1880,6 +1923,7 @@ impl Daemon {
             changed |= stage!("sweep_queue", self.sweep_queue());
             changed |= stage!("expire_inflight", self.expire_inflight(now));
             changed |= stage!("drain_queue", self.drain_queue(now));
+            changed |= stage!("drain_crown_wakes", self.drain_crown_wakes(now));
             let a = stage!("archive_figures", self.archive_figures());
             if a != self.archive_cache {
                 self.archive_cache = a;
@@ -3168,12 +3212,28 @@ impl Daemon {
             self.lower_hand_on(snapshot.ticket);
         }
         self.auto_move(snapshot.ticket, &change.to, change.confidence);
+        // An agent the crown started ended its turn (T-414): the crown is
+        // owed a wake. Only on the edge (`from != to`, the same test that
+        // stamped `state_changed_at`), only `EndTurn` — `Background` is a
+        // park and the rest are guesses — and at Medium or better, the
+        // confidence automove's `on_done` takes. Not a move, so the move
+        // gate's depth rule holds by construction: nothing here calls
+        // `place_ticket`.
+        if change.from != change.to
+            && matches!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn })
+            && matches!(change.confidence, Confidence::High | Confidence::Medium)
+            && snapshot.started_by.is_some()
+        {
+            self.note_crown_wake(snapshot.ticket, WakeCause::Finished, snapshot.state_changed_at);
+        }
         // A turn ended, or a target died: the queued asks look again. The
         // settle that lands `Idle{EndTurn}` comes through here from the
         // tick, and so does the shutdown flush — the words go out on the
-        // way down rather than being lost with the restart.
+        // way down rather than being lost with the restart. The crown's
+        // wake looks after the queue, so a person's ask takes the turn.
         self.sweep_queue();
         self.drain_queue(now_ms());
+        self.drain_crown_wakes(now_ms());
         true
     }
 
@@ -3909,6 +3969,8 @@ impl Daemon {
         if self.board.crown == Some(id) {
             return Response::Ok;
         }
+        // A new crown is owed nothing the old one was (T-414).
+        self.drop_crown_wakes();
         self.board.crown = Some(id);
         self.persist_columns();
         self.broadcast();
@@ -3922,6 +3984,7 @@ impl Daemon {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
         }
+        self.drop_crown_wakes();
         self.board.crown = None;
         self.persist_columns();
         self.broadcast();
@@ -3933,10 +3996,144 @@ impl Daemon {
     /// feed as the daemon's own doing.
     fn drop_crown_if(&mut self, id: ulid::Ulid) {
         if self.board.crown == Some(id) {
+            self.drop_crown_wakes();
             self.board.crown = None;
             self.persist_columns();
             self.feed.board("automation", "uncrown", Some(id));
         }
+    }
+
+    /// Record that the crown is owed a wake about `worker` (T-414), and try
+    /// to deliver it now. Only while the crown is worn and only for an
+    /// agent THIS crown started: a worker left over from an earlier crown
+    /// wakes nobody. The feed line names both tickets and the cause, never
+    /// the sentence; the crown's card lights `woke` the way it lights for
+    /// the crown's own touches.
+    fn note_crown_wake(&mut self, worker: ulid::Ulid, cause: WakeCause, changed_at: Option<u64>) {
+        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return };
+        if worker == crown {
+            return;
+        }
+        let started_by_crown = self
+            .board
+            .sessions
+            .iter()
+            .any(|s| s.ticket == worker && s.holds_agent_seat() && s.started_by == Some(crown));
+        if !started_by_crown {
+            return;
+        }
+        if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
+            if w.cause == cause && changed_at.is_some() && w.changed_at == changed_at {
+                return;
+            }
+            w.cause = cause;
+            w.changed_at = changed_at;
+        } else {
+            self.crown_wakes.push(CrownWake { worker, cause, changed_at });
+        }
+        self.feed.crown_wake(crown, worker, cause.word());
+        self.crown_touched(worker, crown, "woke");
+        self.drain_crown_wakes(now_ms());
+        self.broadcast();
+    }
+
+    /// The crown left, or another ticket took it: whatever it was owed goes
+    /// with it, said once in the feed.
+    fn drop_crown_wakes(&mut self) {
+        if self.crown_wakes.is_empty() {
+            return;
+        }
+        self.crown_wakes.clear();
+        self.feed.board("automation", "crown_wake_dropped", self.board.crown);
+    }
+
+    /// The sentence the crown receives: the board's `crown_wake` template
+    /// over every wake owed, in the order they happened. A worker's title is
+    /// user text headed for another process, so it crosses `scrub_text`. A
+    /// worker no longer on the board contributes nothing.
+    fn crown_wake_text(&self) -> String {
+        let mut events: Vec<String> = Vec::new();
+        let mut keys: Vec<String> = Vec::new();
+        for w in &self.crown_wakes {
+            let Some(t) = self.board.ticket(w.worker) else { continue };
+            let title = mesimon_core::text::scrub_text(&t.title);
+            events.push(format!("{} \"{title}\" {}", t.short_key, w.cause.clause()));
+            keys.push(t.short_key.clone());
+        }
+        self.board.prompts.render(
+            mesimon_core::prompts::AgentPrompt::CrownWake,
+            &[("events", &events.join(", ")), ("keys", &keys.join(", "))],
+        )
+    }
+
+    /// What keeps a wake from going out right now, if anything: a person's
+    /// ask queued for the crown (theirs goes first, the wake follows as its
+    /// own turn), a paste of ours still owed its ack, an empty seat (the
+    /// wake starts nobody), or the crown's own session mid-turn. The
+    /// checkout-wide quiet test the queue applies is deliberately NOT here:
+    /// a crown in the shared checkout would otherwise wait for every worker
+    /// it started to fall silent before hearing about the first.
+    fn crown_wake_blocked(&self, crown: ulid::Ulid) -> bool {
+        if self.queued.iter().any(|q| q.ticket == crown && q.by.is_none())
+            || self.inflight.contains_key(&crown)
+        {
+            return true;
+        }
+        match self.seat_of(crown) {
+            QueuedSeat::Pane(id) => {
+                !self.session_idle(id)
+                    || self.pending_prompt.contains_key(&id)
+                    || self.board.sessions.iter().any(|s| s.id == id && s.pending_submit)
+            }
+            QueuedSeat::Wake(_) => false,
+            QueuedSeat::Start(_) => true,
+        }
+    }
+
+    /// Deliver the owed wakes as one sentence, if the crown can take it
+    /// (`crown_wake_blocked`). The road is `deliver` — the queue's own: a
+    /// pane is pasted, a parked crown is woken with the words parked for
+    /// its first tick. A pane's paste is owed an ack, so the crown is held
+    /// `inflight` until its `UserPromptSubmit`, exactly as a queued ask is.
+    fn drain_crown_wakes(&mut self, now: u64) -> bool {
+        if self.crown_wakes.is_empty() {
+            return false;
+        }
+        let Some(crown) = self.board.crown_holder().map(|t| t.id) else {
+            self.drop_crown_wakes();
+            return true;
+        };
+        if self.crown_wake_blocked(crown) {
+            return false;
+        }
+        let seat = self.seat_of(crown);
+        let id = match seat {
+            QueuedSeat::Pane(id) | QueuedSeat::Wake(id) => id,
+            QueuedSeat::Start(_) => return false,
+        };
+        let by = Principal::Automation { rule: "crown_wake".into() };
+        if authorize(&by, &Action::Mutate, &Resource::Session { id }).denied() {
+            self.crown_wakes.clear();
+            self.feed.board("automation", "crown_wake_failed", Some(crown));
+            return true;
+        }
+        let text = self.crown_wake_text();
+        let pane = matches!(seat, QueuedSeat::Pane(_));
+        match self.deliver(crown, seat, text) {
+            Response::Err { message } => {
+                eprintln!("mesimon: crown wake failed: {message}");
+                self.crown_wakes.clear();
+                self.feed.board("automation", "crown_wake_failed", Some(crown));
+            }
+            _ => {
+                self.crown_wakes.clear();
+                if pane {
+                    self.inflight.insert(crown, (now + INFLIGHT_MS, "crown_wake_delivered"));
+                }
+                self.feed.board("automation", "crown_wake_sent", Some(crown));
+            }
+        }
+        true
     }
 
     /// `create_ticket`, for an agent: the same mint a human's composer gets
@@ -4216,6 +4413,11 @@ impl Daemon {
             return err;
         }
         self.feed.board(by.actor(), "raise_hand", Some(ticket));
+        // A hand on an agent the crown started wakes the crown (T-414) —
+        // that a hand went up, never the reason: one agent's words do not
+        // start another's turn with no person between (T-413); the crown
+        // reads the reason through `get_ticket`.
+        self.note_crown_wake(ticket, WakeCause::Raised, None);
         Response::AgentRaised { reason, board_version: self.board_version }
     }
 
@@ -4741,6 +4943,23 @@ impl Daemon {
                     by: None,
                 });
             }
+        }
+        // The wake the crown is owed (T-414), after the queue's rows so a
+        // person's own ask on the crown ticket is the card's row. The text
+        // is the sentence as it would go out now, for the ticket page.
+        if let Some(crown) =
+            self.board.crown_holder().map(|t| t.id).filter(|_| !self.crown_wakes.is_empty())
+        {
+            let waits_on =
+                if self.crown_wake_blocked(crown) { self.keys_of(&[crown]) } else { Vec::new() };
+            out.push(Pending {
+                ticket: crown,
+                action: PendingAction::CrownWake,
+                waits_on,
+                text: Some(self.crown_wake_text()),
+                in_flight: false,
+                by: None,
+            });
         }
         // What the train will do once its gate is clear — said before it
         // happens, so the card can be watched rather than discovered. The
@@ -6721,12 +6940,20 @@ impl Daemon {
     /// the pane it was queued at is dropped, not redirected.
     fn queued_target_ready(&self, q: &QueuedAsk) -> bool {
         match q.seat {
-            QueuedSeat::Pane(id) => self.board.sessions.iter().any(|s| {
-                s.id == id && matches!(s.state, SessionState::Idle { stop_reason } if stop_reason != StopReason::Background)
-                    && !mesimon_core::quiet::is_working(s)
-            }),
+            QueuedSeat::Pane(id) => self.session_idle(id),
             _ => true,
         }
+    }
+
+    /// Is this pane's session between turns — idle, not parked in the
+    /// background, and not working by any of `quiet`'s signs? The one
+    /// predicate a queued ask and the crown's wake (T-414) both take.
+    fn session_idle(&self, id: uuid::Uuid) -> bool {
+        self.board.sessions.iter().any(|s| {
+            s.id == id
+                && matches!(s.state, SessionState::Idle { stop_reason } if stop_reason != StopReason::Background)
+                && !mesimon_core::quiet::is_working(s)
+        })
     }
 
     fn drain_queue(&mut self, now: u64) -> bool {

@@ -530,13 +530,14 @@ pub enum Verb {
     /// list — and inert elsewhere.
     PrefScope,
     /// The Agents row that opens the agent-prompt list (T-353) — another
-    /// door, for the three sentences mesimon types into an agent's box.
+    /// door, for the four sentences mesimon types into an agent's box.
     AgentPrompts,
-    /// Its three rows: each opens the template as a text field, in place.
+    /// Its four rows: each opens the template as a text field, in place.
     /// Enter saves it, an emptied field puts mesimon's own words back.
     PromptRebase,
     PromptMerged,
     PromptNote,
+    PromptCrownWake,
     /// The Settings row that holds this machine awake while an agent is
     /// mid-turn (T-288); remembered in `prefs.json`, held by the BOARD, so
     /// the daemon is never told and a closed board sleeps.
@@ -3863,8 +3864,8 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: |c| !c.default_column.is_empty(),
         key: "",
     },
-    // The three sentences mesimon itself types into an agent's box (T-353).
-    // A door, like Notifications: three rows that are each a text field do
+    // The four sentences mesimon itself types into an agent's box (T-353,
+    // T-414). A door, like Notifications: rows that are each a text field do
     // not fit a list `draw_list` sizes at two lines a row. Last in Agents,
     // because the rows above decide whether mesimon says anything to an
     // agent at all and this decides what it says once it does.
@@ -3874,7 +3875,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             0 => "Agent prompts: mesimon's words".into(),
             n => format!("Agent prompts: {n} of {} yours", crate::prompts::AgentPrompt::ALL.len()),
         },
-        detail: |_| "what mesimon types at an agent about a rebase, a merge, a note".into(),
+        detail: |_| {
+            "what mesimon types at an agent about a rebase, a merge, a note, a crown wake".into()
+        },
         avail: always,
         key: "",
     },
@@ -3883,7 +3886,8 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
 /// The agent-prompt list, one level under Settings > Agents (T-353).
 ///
 /// One row per sentence mesimon writes for an agent, in the order they
-/// happen: the rebase ask, then the merged notice, then the note nudge. Each
+/// happen: the rebase ask, then the merged notice, then the note nudge, then
+/// the crown wake (T-414). Each
 /// row's label says WHOSE words stand there and its detail says when it is
 /// sent and what it says — the value of the setting IS the sentence, so the
 /// sentence is what the list shows. Enter opens it as a text field in place
@@ -3908,6 +3912,13 @@ pub static PROMPT_ITEMS: &[MenuItem] = &[
         verb: Verb::PromptNote,
         label: |c| prompt_label(c, crate::prompts::AgentPrompt::NoteUpdated),
         detail: |c| prompt_detail(c, crate::prompts::AgentPrompt::NoteUpdated),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::PromptCrownWake,
+        label: |c| prompt_label(c, crate::prompts::AgentPrompt::CrownWake),
+        detail: |c| prompt_detail(c, crate::prompts::AgentPrompt::CrownWake),
         avail: always,
         key: "",
     },
@@ -4252,7 +4263,7 @@ pub fn notify_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     NOTIFY_ITEMS.iter().filter(|m| m.live(ctx)).collect()
 }
 
-/// The agent-prompt list's rows (T-353). All three, always: a sentence
+/// The agent-prompt list's rows (T-353). All four, always: a sentence
 /// mesimon can send is a sentence somebody can rewrite, whatever else is on.
 pub fn prompt_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     PROMPT_ITEMS.iter().filter(|m| m.live(ctx)).collect()
@@ -4266,6 +4277,7 @@ pub fn prompt_of(verb: Verb) -> Option<crate::prompts::AgentPrompt> {
         Verb::PromptRebase => Some(AgentPrompt::Rebase),
         Verb::PromptMerged => Some(AgentPrompt::Merged),
         Verb::PromptNote => Some(AgentPrompt::NoteUpdated),
+        Verb::PromptCrownWake => Some(AgentPrompt::CrownWake),
         _ => None,
     }
 }
@@ -5804,7 +5816,7 @@ mod tests {
         // One rewritten: that row and the door both say so, and the other
         // two still stand on mesimon's words.
         ctx.prompts.set(AgentPrompt::Merged, Some("done, {branch} is in".into()));
-        assert_eq!((door.label)(&ctx), "Agent prompts: 1 of 3 yours");
+        assert_eq!((door.label)(&ctx), "Agent prompts: 1 of 4 yours");
         let rows = prompt_items(&ctx);
         assert_eq!((rows[1].label)(&ctx), "Merged notice: your words");
         assert!((rows[1].detail)(&ctx).ends_with("done, {branch} is in"));

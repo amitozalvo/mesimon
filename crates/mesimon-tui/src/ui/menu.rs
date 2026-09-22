@@ -70,7 +70,7 @@ pub(super) fn draw_column(f: &mut Frame, app: &App) {
     draw_dense(f, app, &ctx, *idx, &title, &items, naming.as_ref().map(|b| ("Name: ", b)));
 }
 
-/// The agent-prompt list (T-353): the three sentences mesimon types into an
+/// The agent-prompt list (T-353): the four sentences mesimon types into an
 /// agent's box, one row each. Dense like the column dialog and for the same
 /// reason — a row here becomes a text field in place, and `draw_list` has no
 /// room for the cursor. The lead keeps the row's name in front of the field,

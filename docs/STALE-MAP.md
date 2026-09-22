@@ -12171,3 +12171,65 @@ seven lines on its next spawn without asking again. A re-offer would need a cons
 stamp in the board file and a dialog that says what changed; the day a line is added that
 *widens* what the brief asks for, build that first. `has_marker` means a CLAUDE.md that
 already carries the old snippet is left as it is.
+
+## The board wakes the crown when a ticket it started finishes (T-414, 2026-09-22)
+
+**Shipped.** A coordinator that starts work has to learn when it finished, and a blocking
+`wait_for(key)` tool is the wrong shape three times over: the shim's read timeout is 20 s, Claude
+Code has its own MCP tool timeout, and a wait held on the daemon's single writer thread would
+wedge the board. The daemon already sees both moments — `apply_change` lands `Idle{EndTurn}` and
+`agent_raise_hand` is the only hand-raiser — so it records a wake it owes the crown and pastes
+ONE sentence of its own into the crown's box when the crown itself is idle. Nothing blocks,
+nothing polls. Four decisions were put to the user and taken as recommended:
+
+- **The gate is the crown's own idleness, not the checkout's.** The T-390 queue delivers only
+  when nobody in the checkout is working. A crown in the shared checkout shares its cwd with
+  every shared-checkout worker it started, so under that rule it would hear about the first
+  finish only after the last. `crown_wake_blocked` asks `session_idle` (the predicate lifted out
+  of `queued_target_ready`, one for both), plus: no person's ask queued for the crown, no paste
+  of ours still owed its ack, no parked words, and an empty seat holds — the wake starts
+  nobody. A sleeping crown is woken the way an ask wakes a parked agent (`deliver` on a `Wake`
+  seat).
+- **Finishes coalesce.** `Daemon.crown_wakes: Vec<CrownWake>` is one entry per worker (a second
+  event on the same worker replaces the cause; the same `state_changed_at` is the same finish
+  and adds nothing — the edge key). Rendered at delivery into one sentence through the fourth
+  `AgentPrompt`, `CrownWake` (`{events}`, `{keys}`): `T-14 "fix the thing" finished its turn,
+  T-15 "add tests" raised its hand ∙ get_ticket key=T-14, T-15 for state and notes`. Titles
+  cross `scrub_text`. User-editable in Settings → Agents → Agent prompts, printed by `doctor`,
+  a `prompt_crown_wake` scalar on `columns.toml`, no schema bump (T-353's doctrine).
+- **A person's ask goes first.** `drain_crown_wakes` runs after `drain_queue` in both
+  `apply_change` and the 1 s bucket, and a queued person's ask on the crown blocks it; the
+  delivered ask holds the crown `inflight` until its `UserPromptSubmit`, so the wake follows as
+  the crown's NEXT turn and never rides under someone's words.
+- **The hand's reason never rides the sentence.** T-413 keeps a person between one agent's
+  words and another's turn; a reason in the wake would be the first place that rule broke. The
+  sentence says a hand went up; the crown reads why through `get_ticket key=`.
+
+**Guards.** Only `EndTurn` (`Background` is a park, the rest are guesses), only on the edge
+(`from != to`), at High or Medium (automove's `on_done` confidence), only for a record whose
+`started_by` is THIS crown — a worker left over from an earlier crown wakes nobody. The wake
+moves nothing, so the move gate's depth rule holds by construction. `uncrown`, a re-crown and
+`drop_crown_if` drop the list (`crown_wake_dropped`). Memory-only like a held ask: a restart
+re-derives every worker at Low confidence anyway, and the crown can `list_board`.
+
+**Visible.** `crown_touched(worker, crown, "woke")` lights the crown's card; the feed line is
+`crown_wake {crown, worker, cause}` (a new `FeedWriter` kind — keys only, never the sentence),
+then `crown_wake_sent` / `crown_wake_failed` / `crown_wake_dropped`. The snapshot carries a
+`PendingAction::CrownWake` row on the crown ticket (after the queue's rows, so a person's own
+ask is the card's row) with the sentence as it would go out and `waits_on = [crown]` while
+blocked; `pending_row` says `crown wakes next` / `crown wakes ∙ after its turn`.
+`Pending::is_queued_ask` excludes it, so `^y`/`^u` leave it alone.
+
+**Not built.** `crown_sends` (T-413's reserved switch) is still unbuilt and unrelated: the wake
+is mesimon's sentence, not the crown's words. A wake owed to a crown with no agent at all holds
+until one exists or the crown leaves; it never spawns.
+
+**Tests.** `prompts`: the `CrownWake` default and the `ALL`-driven laws; `keymap`: `1 of 4
+yours`, the row-to-template order; `store`: the scalar round-trip; goldens
+`agent_prompts_120x30` / `agent_prompt_editing_120x30` gained a row. `crown_e2e` gained
+`the_board_wakes_the_crown_when_a_started_worker_finishes` with the real hook binary: a
+crown-started worker's `Stop` lands the sentence on the crown's stub, the `woke` touch and the
+`crown_wake` feed line with no title in it; a second `Stop` adds nothing; two finishes under a
+working crown make one row and one sentence; a hand's wake carries no reason; a person's queued
+ask lands first and the wake follows the crown's next turn; `Uncrown` drops the row and an
+uncrowned board queues nothing.

@@ -13,10 +13,10 @@
                            │   Rebase ask: mesimon's words                                  │
                            │   Merged notice: mesimon's words                               │
                            │   Note nudge: mesimon's words                                  │
+                           │   Crown wake: mesimon's words                                  │
                            │                                                                │
                            │     when the base branch moved past this one ∙ Rebase your cu~ │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

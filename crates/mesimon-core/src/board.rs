@@ -1548,7 +1548,7 @@ pub struct Board {
     pub default_column: Option<String>,
     #[serde(default)]
     pub follow_up_mode: FollowUpMode,
-    /// The three sentences mesimon itself types into an agent's box, as this
+    /// The four sentences mesimon itself types into an agent's box, as this
     /// board would have them (T-353): the rebase ask, the merged notice and
     /// the note nudge. Empty — every board before the field, and every board
     /// nobody has edited — means mesimon's own words, which live in the

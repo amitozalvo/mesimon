@@ -613,3 +613,212 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
     assert!(!file.contains("crown ="), "{file}");
 }
+
+/// The board wakes the crown (T-414): an agent the crown started ends its
+/// turn or raises its hand, and the daemon puts ONE sentence of its own in
+/// front of the crown when the crown itself is idle — no tool blocks, nothing
+/// polls. Finishes that pile up while the crown works coalesce into one
+/// sentence; a person's queued ask on the crown goes first; the hand's
+/// reason never rides the sentence; uncrowning drops what was owed.
+#[test]
+fn the_board_wakes_the_crown_when_a_started_worker_finishes() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    // The quiet probe would otherwise flip a stub between working and idle
+    // on its own clock; the hooks are the only voice here.
+    let Some(h) = Harness::boot_with_env(
+        "crown_wake",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_wake");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> usize {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .count()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let wake_rows = |c: &mut TestClient, t: ulid::Ulid| -> Vec<mesimon_core::command::Pending> {
+        pending_of(c, Some(t))
+            .into_iter()
+            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .collect()
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w1 = create(&mut c, "mesimon-probe-71 worker");
+    let (ka, kw1) = (key_of(&mut c, a), key_of(&mut c, w1));
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    // The stub emits no `SessionStart`, so the crown sits at `Spawning` —
+    // WORKING — until a turn is walked through it.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // The crown starts the worker; the worker's first turn ends.
+    let start_agent = |c: &mut TestClient, key: &str| {
+        let v = read(c, sa, key).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket { key: key.into(), seen: v.seen },
+        ) {
+            Response::AgentStarted { .. } => {}
+            other => panic!("start_agent {key}: {other:?}"),
+        }
+    };
+    start_agent(&mut c, &kw1);
+    let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws1);
+    stop(&mut c, ws1);
+    // One sentence, mesimon's template over the worker's key and title, in
+    // the crown's pane — the crown is idle, so it goes at once.
+    let sentence = format!(
+        "{kw1} \"mesimon-probe-71 worker\" finished its turn ∙ get_ticket key={kw1} for state \
+         and notes"
+    );
+    wait_until(std::time::Duration::from_secs(10), "the wake to land on the crown", || {
+        lines_with(&sentence) == 1
+    });
+    assert!(wake_rows(&mut c, a).is_empty(), "delivered, so nothing is owed");
+    assert_eq!(
+        touches(&mut c).iter().find(|t| t.ticket == a).map(|t| t.action.as_str()),
+        Some("woke"),
+        "the crown's card lights"
+    );
+    // The feed names both tickets and the cause, never the sentence.
+    wait_until(std::time::Duration::from_secs(5), "the crown_wake feed line", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"crown\":\"{a}\""))
+                    && l.contains(&format!("\"worker\":\"{w1}\""))
+                    && l.contains("\"cause\":\"finished\"")
+            })
+        })
+    });
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert!(!feed.contains("mesimon-probe-71"), "the feed never carries the words:\n{feed}");
+    assert!(feed.contains("\"crown_wake_sent\""), "{feed}");
+
+    // A second `Stop` on an idle worker is no edge: nothing is owed twice.
+    hook_send(&hook_sock, &ws1.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(wake_rows(&mut c, a).is_empty());
+    assert_eq!(lines_with(&sentence), 1, "a re-affirmed idle does not re-ask");
+
+    // ---- two finishes while the crown works: one row, one sentence ----------
+    // The crown's paste is owed its ack; a person's prompt is what acks it.
+    start(&mut c, sa);
+    let w2 = create(&mut c, "mesimon-probe-72 worker");
+    let kw2 = key_of(&mut c, w2);
+    start_agent(&mut c, &kw2);
+    let ws2 = c.board().live_agent(w2).expect("W2 holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    for sid in [ws1, ws2] {
+        start(&mut c, sid);
+        stop(&mut c, sid);
+    }
+    let rows = wake_rows(&mut c, a);
+    assert_eq!(rows.len(), 1, "one row for both finishes: {rows:?}");
+    assert_eq!(rows[0].waits_on, vec![ka.clone()], "it waits on the crown's own turn");
+    assert!(rows[0].by.is_none());
+    let both = format!(
+        "{kw1} \"mesimon-probe-71 worker\" finished its turn, {kw2} \"mesimon-probe-72 worker\" \
+         finished its turn ∙ get_ticket key={kw1}, {kw2} for state and notes"
+    );
+    assert_eq!(rows[0].text.as_deref(), Some(both.as_str()));
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(lines_with("mesimon-probe-72"), 0, "a working crown is not interrupted");
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the coalesced wake to land", || {
+        lines_with(&both) == 1
+    });
+    assert!(wake_rows(&mut c, a).is_empty());
+
+    // ---- a hand: the sentence says a hand went up, never why ----------------
+    start(&mut c, sa);
+    match c.send(
+        Principal::Agent { session: ws1 },
+        Command::AgentRaiseHand { reason: "mesimon-secret-73 need the sandbox key".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    }
+    let rows = wake_rows(&mut c, a);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let raised = format!(
+        "{kw1} \"mesimon-probe-71 worker\" raised its hand ∙ get_ticket key={kw1} for state and \
+         notes"
+    );
+    assert_eq!(rows[0].text.as_deref(), Some(raised.as_str()));
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the hand's wake to land", || {
+        lines_with(&raised) == 1
+    });
+    assert_eq!(lines_with("mesimon-secret-73"), 0, "the reason never reaches the crown's pane");
+    assert!(matches!(c.request(Command::LowerHand { id: w1 }), Response::Ok));
+
+    // ---- a person's ask on the crown goes first; the wake follows ----------
+    start(&mut c, sa);
+    match c.request(Command::PromptSession {
+        ticket: a,
+        text: "mesimon-probe-74 person".into(),
+        queued: true,
+    }) {
+        Response::Queued { .. } => {}
+        other => panic!("queue a person's ask: {other:?}"),
+    }
+    start(&mut c, ws1);
+    stop(&mut c, ws1);
+    let before = lines_with(&sentence);
+    assert_eq!(wake_rows(&mut c, a).len(), 1);
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the person's words to land", || {
+        lines_with("mesimon-probe-74 person") == 1
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(lines_with(&sentence), before, "the wake waits for the crown's next turn");
+    let rows = wake_rows(&mut c, a);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].waits_on, vec![ka.clone()]);
+    // The crown takes the person's turn (the ack) and ends it: now the wake.
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the wake after the person's ask", || {
+        lines_with(&sentence) == before + 1
+    });
+
+    // ---- uncrown drops what was owed; an uncrowned board owes nothing -----
+    start(&mut c, sa);
+    start(&mut c, ws1);
+    stop(&mut c, ws1);
+    assert_eq!(wake_rows(&mut c, a).len(), 1);
+    assert!(matches!(c.request(Command::Uncrown), Response::Ok));
+    assert!(wake_rows(&mut c, a).is_empty(), "uncrown cancels the pending wake");
+    wait_until(std::time::Duration::from_secs(5), "the crown_wake_dropped feed line", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|f| f.contains("\"crown_wake_dropped\""))
+    });
+    let before = lines_with(&sentence);
+    stop(&mut c, sa);
+    start(&mut c, ws1);
+    stop(&mut c, ws1);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(wake_rows(&mut c, a).is_empty(), "an uncrowned board queues nothing");
+    assert_eq!(lines_with(&sentence), before, "nothing lands on an uncrowned board");
+}
