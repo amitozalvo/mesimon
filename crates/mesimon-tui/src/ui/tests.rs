@@ -4976,6 +4976,33 @@ fn the_composer_dialog_grows_out_of_its_card() {
     assert_eq!(after[29].trim(), "NEW", "the footer under a dialog is its chip: {:?}", after[29]);
 }
 
+/// T-420: the ask room grown from a field at `accept plan` says so in its
+/// empty body, not `ask agent` — the send there accepts the plan first.
+#[test]
+fn the_ask_room_at_accept_plan_says_what_the_send_does() {
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    let room = |accept_plan: bool| {
+        editor_on(
+            crate::app::EditorPurpose::Ask {
+                target: crate::app::AskTarget::Ticket(ulid_n(3)),
+                queued: true,
+                accept_plan,
+            },
+            "Fix OSC-11 detection",
+            "",
+        )
+    };
+    app.mode = Mode::Editor(room(true));
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("accept the plan")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("ask agent")), "{lines:?}");
+    app.mode = Mode::Editor(room(false));
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("ask agent")), "{lines:?}");
+}
+
 #[test]
 fn golden_editor_compose_tags_120() {
     let mut app = app_graphite(fixture_tagged());

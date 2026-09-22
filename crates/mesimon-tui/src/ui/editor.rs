@@ -509,7 +509,14 @@ fn body_hint(app: &App, ed: &Editor) -> &'static str {
         EditorPurpose::Note { ticket, note } => {
             app.board.ticket(*ticket).is_some_and(|t| t.description().map(|d| d.id) == *note)
         }
-        // The empty room says what it is for in the field's own words.
+        // The empty room says what it is for in the field's own words —
+        // and at `accept plan` (T-420) what the send actually does, so the
+        // grown field does not read as an ordinary ask (user 2026-09-23:
+        // "not to distract the user from the actual thing that's going to
+        // happen").
+        EditorPurpose::Ask { target: AskTarget::Ticket(_), accept_plan: true, .. } => {
+            return "accept the plan ∙ words go right after"
+        }
         EditorPurpose::Ask { target: AskTarget::Ticket(_), .. } => return "ask agent",
         EditorPurpose::Ask { target: AskTarget::Column(_), .. } => return "ask every agent",
     };
