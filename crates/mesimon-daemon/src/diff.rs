@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use mesimon_core::command::Response;
 use mesimon_core::diff::{
     apply_status_flags, build_file_diff, merge_numstat, parse_numstat_z, parse_raw_z,
-    parse_status_v2_z, FileDiff, Render,
+    parse_status_v2_z, FileDiff, FileEntry, Render,
 };
 
 use crate::worktree::{branch_tip, Binding, BindingStatus};
@@ -85,7 +85,101 @@ fn git_bytes_ok(repo: &Path, args: &[&str], ok: impl Fn(i32) -> bool) -> Result<
 /// The stable file list, BASE...BRANCH (three dots: the merge-base diff —
 /// "what did this ticket change" — right even after base moved).
 pub fn diff_list(repo: &Path, binding: &Binding) -> Result<Response> {
-    let range = format!("{}...{}", binding.base_oid, binding.branch);
+    let worktree_present = binding.status == BindingStatus::Attached && binding.path.is_dir();
+    let files =
+        diff_list_at(repo, &binding.path, &binding.branch, &binding.base_oid, worktree_present)?;
+    Ok(Response::DiffList {
+        branch: binding.branch.clone(),
+        base_oid: binding.base_oid.clone(),
+        branch_oid: branch_tip(repo, &binding.branch),
+        files,
+        worktree_present,
+    })
+}
+
+/// Ticket `v` on a WORKSPACE binding (T-368): every leg's BASE...BRANCH in
+/// one list — the root leg's rows first and unprefixed, each child's
+/// prefixed `<repo>/` in leg order — the checkout list's shape over the
+/// ticket's own branch. A leg with no commits contributes nothing but its
+/// untracked sightings, which is exactly why it is not skipped.
+pub fn workspace_diff_list(repo_root: &Path, binding: &Binding) -> Result<Response> {
+    let worktree_present = binding.status == BindingStatus::Attached && binding.path.is_dir();
+    let mut files = Vec::new();
+    let mut root: Option<(String, String)> = None;
+    for leg in binding.legs(repo_root, "") {
+        let present = worktree_present && leg.path.is_dir();
+        let rows = diff_list_at(&leg.repo, &leg.path, &binding.branch, &leg.base_oid, present)?;
+        if leg.name.is_empty() {
+            root = Some((leg.base_oid.clone(), branch_tip(&leg.repo, &binding.branch)));
+        }
+        files.extend(prefix_rows(&leg.name, rows));
+    }
+    let (base_oid, branch_oid) = root.unwrap_or_default();
+    Ok(Response::DiffList {
+        branch: binding.branch.clone(),
+        base_oid,
+        branch_oid,
+        files,
+        worktree_present,
+    })
+}
+
+/// `DiffFile` on a workspace binding: the first path component names the
+/// leg where it is a child's name, anything else is the root leg's own —
+/// `checkout_diff_file`'s rule, over the binding's legs.
+pub fn workspace_diff_file(
+    repo_root: &Path,
+    binding: &Binding,
+    path: &str,
+    context: u32,
+) -> Result<FileDiff> {
+    let legs = binding.legs(repo_root, "");
+    if let Some((name, rest)) = path.split_once('/') {
+        if let Some(leg) = legs.iter().find(|l| !l.name.is_empty() && l.name == name) {
+            let fd = diff_file_at(&leg.repo, &binding.branch, &leg.base_oid, rest, context)?;
+            return Ok(prefix_file(name, fd));
+        }
+    }
+    let Some(root) = legs.iter().find(|l| l.name.is_empty()) else {
+        bail!("no such file in this diff");
+    };
+    diff_file_at(&root.repo, &binding.branch, &root.base_oid, path, context)
+}
+
+/// `<name>/` in front of every row's path (and rename source) — the one
+/// prefixing the checkout road and the ticket road share. An empty name
+/// (the root) prefixes nothing.
+pub(crate) fn prefix_rows(name: &str, rows: Vec<FileEntry>) -> Vec<FileEntry> {
+    if name.is_empty() {
+        return rows;
+    }
+    rows.into_iter()
+        .map(|mut f| {
+            f.path = format!("{name}/{}", f.path);
+            f.old_path = f.old_path.take().map(|old| format!("{name}/{old}"));
+            f
+        })
+        .collect()
+}
+
+pub(crate) fn prefix_file(name: &str, mut fd: FileDiff) -> FileDiff {
+    if !name.is_empty() {
+        fd.path = format!("{name}/{}", fd.path);
+        fd.old_path = fd.old_path.take().map(|old| format!("{name}/{old}"));
+    }
+    fd
+}
+
+/// `diff_list`'s body for ONE checkout: the rows of BASE...BRANCH in `repo`,
+/// with the working tree's own status flags from `wt` where it stands.
+fn diff_list_at(
+    repo: &Path,
+    wt: &Path,
+    branch: &str,
+    base_oid: &str,
+    worktree_present: bool,
+) -> Result<Vec<FileEntry>> {
+    let range = format!("{base_oid}...{branch}");
     let raw = git_bytes(
         repo,
         &[
@@ -110,31 +204,32 @@ pub fn diff_list(repo: &Path, binding: &Binding) -> Result<Response> {
     ) {
         merge_numstat(&mut files, &parse_numstat_z(&numstat));
     }
-    let worktree_present = binding.status == BindingStatus::Attached && binding.path.is_dir();
     if worktree_present {
         // Display only: an un-added agent file is invisible to every diff
         // query, and it is exactly the change the reviewer least wants to
         // miss. Never -uno here (docs/08 §2's ban).
-        if let Ok(status) =
-            git_bytes(&binding.path, &["status", "--porcelain=v2", "-unormal", "-z"])
-        {
+        if let Ok(status) = git_bytes(wt, &["status", "--porcelain=v2", "-unormal", "-z"]) {
             apply_status_flags(&mut files, &parse_status_v2_z(&status));
         }
     }
-    Ok(Response::DiffList {
-        branch: binding.branch.clone(),
-        base_oid: binding.base_oid.clone(),
-        branch_oid: branch_tip(repo, &binding.branch),
-        files,
-        worktree_present,
-    })
+    Ok(files)
 }
 
 /// One file's hunks. A git failure on the per-file call is a render state
 /// (`Unresolvable`, stderr verbatim in the errored register), not a wire
 /// error — the pane must show it.
 pub fn diff_file(repo: &Path, binding: &Binding, path: &str, context: u32) -> Result<FileDiff> {
-    let range = format!("{}...{}", binding.base_oid, binding.branch);
+    diff_file_at(repo, &binding.branch, &binding.base_oid, path, context)
+}
+
+fn diff_file_at(
+    repo: &Path,
+    branch: &str,
+    base_oid: &str,
+    path: &str,
+    context: u32,
+) -> Result<FileDiff> {
+    let range = format!("{base_oid}...{branch}");
     // The list entry supplies modes/blobs for classification (and the rename
     // source path). ~30 ms even on huge diffs [M]; keeps the wire stateless.
     let raw = git_bytes(
@@ -395,11 +490,7 @@ pub fn checkout_diff_list(root: &Path) -> Result<Response> {
             continue;
         };
         child_branches.push(branch);
-        files.extend(rows.into_iter().map(|mut f| {
-            f.path = format!("{name}/{}", f.path);
-            f.old_path = f.old_path.take().map(|old| format!("{name}/{old}"));
-            f
-        }));
+        files.extend(prefix_rows(name, rows));
     }
     // The identity row's word is the header's: the root's branch where the
     // root is a repository, the one child's where a folder holds exactly
@@ -428,10 +519,8 @@ pub fn checkout_diff_file(root: &Path, path: &str, context: u32) -> Result<FileD
     let repos = crate::gitstatus::census(root);
     if let Some((name, rest)) = path.split_once('/') {
         if repos.iter().any(|r| r == name) {
-            let mut fd = checkout_diff_file_one(&root.join(name), rest, context)?;
-            fd.path = format!("{name}/{}", fd.path);
-            fd.old_path = fd.old_path.take().map(|old| format!("{name}/{old}"));
-            return Ok(fd);
+            let fd = checkout_diff_file_one(&root.join(name), rest, context)?;
+            return Ok(prefix_file(name, fd));
         }
     }
     checkout_diff_file_one(root, path, context)
@@ -876,45 +965,7 @@ mod tests {
 
     // ---- a workspace: repositories nested under the root (T-225) --------------
 
-    /// The author's shape in miniature: a meta repo tracking its own notes
-    /// and ignoring every child, over two independent repos, plus a gitfile
-    /// child (a worktree of `web`) and a declared submodule, neither of
-    /// which is a workspace repo.
-    fn workspace_scratch(name: &str) -> Option<PathBuf> {
-        if !have_git() {
-            return None;
-        }
-        let root = std::env::temp_dir().join(format!("msmn-ws-{name}-{}", std::process::id()));
-        std::fs::remove_dir_all(&root).ok();
-        let run = |d: &Path, args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        };
-        let init = |d: &Path, file: &str, body: &str| {
-            std::fs::create_dir_all(d).unwrap();
-            run(d, &["init", "-q", "-b", "main"]);
-            run(d, &["config", "user.email", "t@t"]);
-            run(d, &["config", "user.name", "t"]);
-            std::fs::write(d.join(file), body).unwrap();
-            run(d, &["add", "."]);
-            run(d, &["commit", "-qm", "init"]);
-        };
-        init(&root, "CLAUDE.md", "# ws\n");
-        std::fs::write(root.join(".gitignore"), "*/\n").unwrap();
-        std::fs::write(
-            root.join(".gitmodules"),
-            "[submodule \"v\"]\n\tpath = vendored\n\turl = x\n",
-        )
-        .unwrap();
-        run(&root, &["add", ".gitignore", ".gitmodules"]);
-        run(&root, &["commit", "-qm", "ignore"]);
-        init(&root.join("web"), "page.tsx", "hello\n");
-        init(&root.join("api"), "server.ts", "one\ntwo\n");
-        init(&root.join("vendored"), "lib.c", "int x;\n");
-        run(&root.join("web"), &["worktree", "add", "-q", "../.wt-web", "-b", "feedback"]);
-        std::fs::create_dir_all(root.join("node_modules/dep")).unwrap();
-        Some(root)
-    }
+    use crate::testrepo::workspace_scratch;
 
     #[test]
     fn census_names_own_repos_only() {
@@ -948,6 +999,52 @@ mod tests {
         let g = crate::gitstatus::sample(&root);
         assert!(g.sampled && g.branch.is_empty(), "{g:?}");
         assert_eq!((g.repos.len(), g.changed), (2, 3), "{g:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Ticket `v` on a workspace binding (T-368): one list over the legs,
+    /// the root's rows bare and each child's under its name, the same
+    /// routing on the file call, and the same three refusals.
+    #[test]
+    fn ticket_diff_on_a_workspace_binding_prefixes_the_children() {
+        let Some(root) = workspace_scratch("wsdiff") else { return };
+        let wtroot = root.join("_wtroot");
+        std::fs::create_dir_all(&wtroot).unwrap();
+        let census = crate::gitstatus::census(&root);
+        let b = crate::worktree::provision_workspace(
+            &root,
+            &wtroot,
+            &census,
+            true,
+            ulid::Ulid(1),
+            "T-1",
+            "Fix",
+            &mut |_, _| {},
+        )
+        .unwrap();
+        crate::testrepo::commit(&b.path.join("api"), "server.ts", "one\nCHANGED\n", "api");
+        crate::testrepo::commit(&b.path, "CLAUDE.md", "# ws\nmore\n", "root");
+        std::fs::write(b.path.join("web/stray.tsx"), "un-added\n").unwrap();
+        let resp = workspace_diff_list(&root, &b).unwrap();
+        match &resp {
+            Response::DiffList { branch, base_oid, branch_oid, worktree_present, .. } => {
+                assert_eq!(branch, &b.branch);
+                assert_eq!(base_oid, &b.base_oid, "the root leg's base");
+                assert_eq!(branch_oid, &branch_tip(&root, &b.branch));
+                assert!(*worktree_present);
+            }
+            _ => unreachable!(),
+        }
+        let paths: Vec<String> = files_of(&resp).into_iter().map(|f| f.path).collect();
+        assert_eq!(paths, vec!["CLAUDE.md", "api/server.ts", "web/stray.tsx"]);
+        let fd = workspace_diff_file(&root, &b, "api/server.ts", 3).unwrap();
+        assert_eq!(fd.path, "api/server.ts");
+        assert!(matches!(fd.render, Render::Text), "{:?}", fd.render);
+        assert_eq!(fd.hunks.len(), 1);
+        assert_eq!(workspace_diff_file(&root, &b, "CLAUDE.md", 3).unwrap().path, "CLAUDE.md");
+        assert!(workspace_diff_file(&root, &b, "web/x", 3).is_err());
+        assert!(workspace_diff_file(&root, &b, "api/../CLAUDE.md", 3).is_err());
+        assert!(workspace_diff_file(&root, &b, "server.ts", 3).is_err(), "not the root's");
         std::fs::remove_dir_all(&root).ok();
     }
 

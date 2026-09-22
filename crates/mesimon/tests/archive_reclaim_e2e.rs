@@ -17,34 +17,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, WorkspaceStrategy};
-use mesimon_core::command::{Command, MergeOutcome, Response, WorktreeItem};
+use mesimon_core::command::{Command, MergeOutcome, Response};
 
 const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n";
-
-fn worktrees_of(c: &mut TestClient) -> Vec<WorktreeItem> {
-    match c.request(Command::Snapshot) {
-        Response::Board { worktrees, .. } => worktrees,
-        other => panic!("not a board: {other:?}"),
-    }
-}
-
-fn wt_of(c: &mut TestClient, ticket: ulid::Ulid) -> Option<WorktreeItem> {
-    worktrees_of(c).into_iter().find(|w| w.ticket == ticket)
-}
-
-fn wait_attached(c: &mut TestClient, ticket: ulid::Ulid) -> WorktreeItem {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let item = wt_of(c, ticket);
-        if let Some(w) = &item {
-            if w.status == "attached" {
-                return w.clone();
-            }
-        }
-        assert!(Instant::now() < deadline, "binding never attached; last: {item:?}");
-        std::thread::sleep(Duration::from_millis(150));
-    }
-}
 
 fn branch_exists(repo: &Path, branch: &str) -> bool {
     std::process::Command::new("git")

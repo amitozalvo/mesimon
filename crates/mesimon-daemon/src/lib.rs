@@ -21,6 +21,8 @@ pub mod shellenv;
 pub mod state_replay;
 pub mod store;
 pub mod team;
+#[cfg(test)]
+pub(crate) mod testrepo;
 // Compatibility path; native transcript recovery belongs to the Claude adapter.
 pub use agents::claude::tail;
 pub mod train;

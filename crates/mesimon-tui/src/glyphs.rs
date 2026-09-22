@@ -291,6 +291,17 @@ pub(crate) fn behind_mark(tier: Tier) -> char {
     }
 }
 
+/// A branch whose work has landed: the thin check `✓` U+2713 the card's
+/// worktree mark has always worn, and the ticket page's per-leg clause
+/// since T-368; the ASCII tier reads `+`.
+pub(crate) fn merged_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        '+'
+    } else {
+        '✓'
+    }
+}
+
 /// The done mark while its reply is UNREAD (T-173): `✔` U+2714, the heavy
 /// check, against the thin `✓` U+2713 `card_glyph` gives a finished agent
 /// once the cursor has been on the card. Same idea, thicker stroke — the
@@ -1210,7 +1221,13 @@ mod tests {
     fn branch_marks_are_one_cell_at_both_tiers() {
         use unicode_width::UnicodeWidthChar;
         for tier in [Tier::Unicode, Tier::Ascii] {
-            for c in [branch_mark(tier), ahead_mark(tier), behind_mark(tier), auto_mark(tier)] {
+            for c in [
+                branch_mark(tier),
+                ahead_mark(tier),
+                behind_mark(tier),
+                auto_mark(tier),
+                merged_mark(tier),
+            ] {
                 assert_eq!(c.width(), Some(1), "{c:?}");
                 assert!(!(0x2500..=0x259F).contains(&(c as u32)), "{c:?}");
             }

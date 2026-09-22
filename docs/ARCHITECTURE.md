@@ -1706,8 +1706,8 @@ status says where the ticket landed, and the
 card's mark says the rest: **a worktree asked for but not cut is `⎇·`**, one dot in the DORMANT
 register against `queued`'s three (`card::worktree_mark`'s no-binding arm, `WtTone::Dormant`),
 because provisioning is lazy and between the pick and the first spawn the card said nothing at all.
-Archived tickets and a workspace board (`multi_repo`) offer nothing, and the ticket screen still has
-no `w`. Goldens `board_worktree_planned_120x30`, `ticket_new_claude_120x30`; e2e `exit_parks_e2e`
+Archived tickets offer nothing (a workspace board offers the choice since T-368), and the ticket
+screen still has no `w`. Goldens `board_worktree_planned_120x30`, `ticket_new_claude_120x30`; e2e `exit_parks_e2e`
 holds the loosened lock from both sides. **Merges are ff-only** — TUI `m` is a staged flow
 (stage derived from git state): ahead+ff → confirm→merge; main moved → inject
 "rebase+test" to the agent (conflicts resolve in the worktree, tests run pre-main); merged →
@@ -1842,15 +1842,22 @@ ONE list:
 `checkout_diff_list` runs per repo, the root's rows bare, each child's prefixed `<repo>/`, and
 `checkout_diff_file` routes on the first path component against the CHILD's list. A folder of
 several repos with no repo at the root still samples (branch empty); `gitstatus::branch_dir` is
-where the sampled branch lives and where the fetch runs. **A worktree ticket is refused in
-words** at `resolve_spawn_cwd` (census asked there, not the cached sample) until workspace
-worktrees exist, and `Ctx::multi_repo` hides the composer's/editor's Shift+Tab workspace
-choice. `doctor` prints a `workspace` line. On the way past, `worktree::default_branch` stopped
-reading `origin/HEAD` literally: it asks the remote the checked-out branch tracks, then
-`origin`, then the sole remote (simbly's are named `gitlab`). The design and the phases still
-owed — learned repos from the hook stream, workspace worktrees as a meta worktree holding one
-child worktree each, per-child merge — are `docs/spikes/T-225-multirepo-workspace.md`. E2e:
-`crates/mesimon/tests/workspace_e2e.rs`. (STALE-MAP "A board on a workspace of repositories".)
+where the sampled branch lives and where the fetch runs. **A worktree ticket on a workspace
+cuts one leg per repo** (T-368): a binding is a list of legs (`worktree::Binding.repos`,
+`worktrees.json` schema 2, `Binding::legs` the one resolver) — the container is a worktree of
+the meta at `worktrees/<KEY>-<slug>/` on the ticket branch (a plain directory on a folder
+root), holding one child worktree per census repo on the same `msmn/` branch, each based on the
+branch its checkout stood on — and flags, merge, `ticket_merged`, locks, diff and teardown
+iterate legs. Merges are per leg and not atomic: the ticket page names the legs with something
+to say (`api +3 ∙ web ✓`), a refusal midway leaves the ticket half landed and the next `m`
+continues. `Ctx::multi_repo` is gone; `doctor` prints a `workspace` line. On the way past
+(T-225), `worktree::default_branch` stopped reading `origin/HEAD` literally: it asks the remote
+the checked-out branch tracks, then `origin`, then the sole remote (simbly's are named
+`gitlab`). The spike's learned-repos phase was decided against (author, 2026-09-22: every
+census repo gets a leg; inferring the touched ones from the hook stream cannot be trusted to be
+complete); `docs/spikes/T-225-multirepo-workspace.md` is the design. E2e:
+`crates/mesimon/tests/workspace_e2e.rs`. (STALE-MAP "A board on a workspace of repositories"
+and "A worktree ticket on a workspace cuts one leg per repo".)
 
 **The merge train (opt-in, 2026-09-04).** Settings rows `Merge train` (`prefs.json::merge_train`,
 off) and `Train tells the agent after a merge` (`merge_train_notice`, on). The daemon reads no

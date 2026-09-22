@@ -322,6 +322,7 @@ fn install_diff(app: &mut App) {
         needs_rebase: false,
         detail: None,
         path: Some("/wt/T-3-fix-osc-11-detection".into()),
+        repos: vec![],
     }];
     app.diff = Some(crate::app::DiffState {
         commits: false,
@@ -2617,6 +2618,7 @@ fn golden_card_branch_line_120() {
         needs_rebase: false,
         detail: None,
         path: Some("/wt/T-3-fix-osc-11-detection".into()),
+        repos: vec![],
     }];
     app.cursor_col = 1;
     app.cursor_row = Some(0);
@@ -2662,6 +2664,7 @@ fn a_worktree_asked_for_but_not_cut_wears_a_dormant_mark() {
         needs_rebase: false,
         detail: None,
         path: Some("/wt/T-1".into()),
+        repos: vec![],
     }];
     let rows = marked(&app);
     assert_eq!(rows.len(), 1, "{rows:?}");
@@ -2689,6 +2692,7 @@ fn the_worktree_glyph_holds_one_column() {
         needs_rebase: false,
         detail: None,
         path: Some("/wt/x".into()),
+        repos: vec![],
     };
     let mut app = app_graphite(fixture(false));
     // T-3 and T-4 share IN PROGRESS, so the two cards sit one above the other.
@@ -2725,6 +2729,7 @@ fn a_provisioning_ticket_launches_too() {
         needs_rebase: false,
         detail: None,
         path: None,
+        repos: vec![],
     };
     // T-1 has no sessions at all, so whatever mark sits in front of its
     // title is the launch one. The board row spans every column — hence the
@@ -3691,6 +3696,7 @@ fn golden_merged_upstream_120() {
         needs_rebase: false,
         detail: None,
         path: Some("/wt/T-5-grapheme-truncation".into()),
+        repos: vec![],
     }];
     app.cursor_col = 2;
     app.cursor_row = Some(0);
@@ -3743,6 +3749,7 @@ fn a_confirmed_merge_says_it_is_merging() {
         needs_rebase: false,
         detail: None,
         path: Some("/wt/T-5-grapheme-truncation".into()),
+        repos: vec![],
     }];
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     press(&mut app, 'm');
@@ -3788,6 +3795,7 @@ fn golden_train_manual_120() {
         needs_rebase: false,
         detail: None,
         path: Some("/wt/T-5-grapheme-truncation".into()),
+        repos: vec![],
     }];
     let candidate = mesimon_core::command::Pending {
         ticket: ulid_n(5),
@@ -4038,6 +4046,151 @@ fn tagged_worktree() -> mesimon_core::command::WorktreeItem {
         needs_rebase: false,
         detail: None,
         path: Some("/wt/T-3".into()),
+        repos: vec![],
+    }
+}
+
+/// A workspace binding's legs on the ticket page (T-368): the aggregate
+/// state reads after the name, and the legs with something to say sit
+/// between them — `root +1 ∙ api +3` here, `web` untouched and silent.
+#[test]
+fn golden_ticket_workspace_wt_120() {
+    let mut app = app_graphite(fixture(false));
+    app.screen = Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    app.worktrees = vec![workspace_worktree()];
+    let lines = render(&app, 120, 30);
+    let state = lines.iter().position(|l| l.contains("REVIEW")).expect("state row");
+    let row = &lines[state + 1];
+    assert!(
+        row.contains("⎇ msmn/T-5-grapheme-truncation ∙ root +1 ∙ api +3 ∙ 4 to merge"),
+        "{row:?}"
+    );
+    assert!(!row.contains("web"), "an untouched leg is silent: {row:?}");
+    golden("ticket_workspace_wt_120x30", &lines);
+}
+
+/// Only the legs with something to say are named, with the card's marks —
+/// and the ASCII tier's spellings of them.
+#[test]
+fn the_workspace_row_names_only_the_legs_with_something_to_say() {
+    use mesimon_core::command::WorktreeRepoItem;
+    let mut app = app_graphite(fixture(false));
+    app.screen = Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let mut w = workspace_worktree();
+    w.repos = vec![
+        WorktreeRepoItem {
+            name: "api".into(),
+            base: "main".into(),
+            conflict: true,
+            ..Default::default()
+        },
+        WorktreeRepoItem {
+            name: "web".into(),
+            base: "main".into(),
+            merged: true,
+            ..Default::default()
+        },
+        WorktreeRepoItem {
+            name: "infra".into(),
+            base: "main".into(),
+            needs_rebase: true,
+            ..Default::default()
+        },
+        WorktreeRepoItem {
+            name: "ops".into(),
+            base: "main".into(),
+            needs_rebase: true,
+            ahead: 2,
+            ..Default::default()
+        },
+        WorktreeRepoItem { name: "docs".into(), base: "main".into(), ..Default::default() },
+    ];
+    w.conflict = true;
+    app.worktrees = vec![w];
+    let row_of = |app: &App| {
+        let lines = render(app, 120, 30);
+        let state = lines.iter().position(|l| l.contains("REVIEW")).expect("state row");
+        lines[state + 1].clone()
+    };
+    let row = row_of(&app);
+    assert!(row.contains("∙ api ! ∙ web ✓ ∙ infra ↓ ∙ ops +2↓ ∙ branch shared!"), "{row:?}");
+    assert!(!row.contains("docs"), "{row:?}");
+    app.theme = Theme::new(Flavor::Graphite, Profile::Mono);
+    let row = row_of(&app);
+    assert!(
+        row.contains("api ! ")
+            && row.contains("web + ")
+            && row.contains("infra v ")
+            && row.contains("ops +2v"),
+        "{row:?}"
+    );
+}
+
+/// Nineteen legs fit no terminal: the legs give before the branch name,
+/// kept from the left with the rest counted, and the name still keeps its
+/// floor and the merge state is never cut.
+#[test]
+fn the_workspace_row_drops_legs_before_the_branch_name() {
+    use mesimon_core::command::WorktreeRepoItem;
+    let mut app = app_graphite(fixture_tagged());
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let mut w = tagged_worktree();
+    w.repos = (0..6)
+        .map(|i| WorktreeRepoItem {
+            name: format!("service-{i}"),
+            base: "main".into(),
+            ahead: 1,
+            ..Default::default()
+        })
+        .collect();
+    w.ahead = 6;
+    app.worktrees = vec![w];
+    for width in [120u16, 100, 80, 60] {
+        let lines = render(&app, width, 30);
+        let state = lines.iter().position(|l| l.contains("IN PROGRESS")).expect("state row");
+        let row = &lines[state + 1];
+        assert!(row.starts_with(" ⎇ msmn/T-3"), "{width}: {row:?}");
+        assert!(row.contains("∙ 6 to merge"), "{width}: the merge state is never cut: {row:?}");
+        assert!(row.trim_end().width() < width as usize, "{width}: off the edge: {row:?}");
+        assert!(row.contains("∙ service-0 +1"), "{width}: the first leg is kept: {row:?}");
+        if width <= 80 {
+            assert!(row.contains("∙ +"), "{width}: dropped legs are counted: {row:?}");
+        }
+    }
+    let row = render(&app, 120, 30).into_iter().find(|l| l.contains("∙ 6 to merge")).unwrap();
+    assert!(row.contains("service-5 +1 ∙ 6 to merge"), "{row:?}");
+}
+
+/// T-5's workspace binding: the meta and two children, work in two of them.
+fn workspace_worktree() -> mesimon_core::command::WorktreeItem {
+    use mesimon_core::command::WorktreeRepoItem;
+    mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(5),
+        branch: "msmn/T-5-grapheme-truncation".into(),
+        status: "attached".into(),
+        merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
+        conflict: false,
+        ahead: 4,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/T-5-grapheme-truncation".into()),
+        repos: vec![
+            WorktreeRepoItem {
+                name: String::new(),
+                base: "master".into(),
+                ahead: 1,
+                ..Default::default()
+            },
+            WorktreeRepoItem {
+                name: "api".into(),
+                base: "main".into(),
+                ahead: 3,
+                ..Default::default()
+            },
+            WorktreeRepoItem { name: "web".into(), base: "main".into(), ..Default::default() },
+        ],
     }
 }
 
@@ -6879,7 +7032,6 @@ fn test_git_clause_names_a_workspace_by_its_count() {
         repos: vec!["api".into(), "infra".into(), "web".into()],
         ..git_state("master", 2, 1, 7)
     };
-    assert!(app.ctx().multi_repo);
     let head = &render(&app, 120, 30)[0];
     assert!(head.contains("⎇ master ↑2 ↓1 ∙ 3 repos ∙ 7 changed"), "{head:?}");
     // A folder of repos has no branch of its own and still speaks.
@@ -6905,7 +7057,6 @@ fn test_git_clause_never_says_one_repo() {
     let mut app = app_graphite(fixture(false));
     app.git =
         mesimon_core::command::RepoGit { repos: vec!["mt".into()], ..git_state("main", 2, 0, 3) };
-    assert!(app.ctx().multi_repo, "a worktree of the root would still hold none of the code");
     let head = &render(&app, 120, 30)[0];
     assert!(head.contains("⎇ main ↑2 ∙ 3 changed"), "{head:?}");
     assert!(!head.contains("repo"), "{head:?}");

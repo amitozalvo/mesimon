@@ -51,8 +51,10 @@ pub struct WtFlags {
 pub struct Input<'a> {
     pub board: &'a Board,
     pub flags: &'a HashMap<ulid::Ulid, WtFlags>,
-    /// The base branch's tip now; an ask recorded at it is not repeated.
-    pub base_tip: &'a str,
+    /// Each ticket's base tip now — a workspace ticket's is its legs' joined
+    /// (T-368) — so an ask recorded at it is not repeated until it moves. A
+    /// ticket with no sample yet reads `""`.
+    pub base_tip: &'a HashMap<ulid::Ulid, String>,
     /// Ticket → the base tip it was last asked to rebase onto.
     pub asked: &'a HashMap<ulid::Ulid, String>,
     pub fused: &'a HashSet<ulid::Ulid>,
@@ -130,7 +132,9 @@ pub fn plan(input: &Input) -> Plan {
                 && f.ahead > 0
                 && seat == Seat::Idle
                 && !input.fused.contains(&t.id)
-                && input.asked.get(&t.id).is_none_or(|at| at != input.base_tip)
+                && input.asked.get(&t.id).is_none_or(|at| {
+                    at != input.base_tip.get(&t.id).map(String::as_str).unwrap_or("")
+                })
             {
                 plan.rebase.push(t.id);
             }
@@ -193,11 +197,16 @@ mod tests {
         WtFlags { attached: true, ahead, merged: false, needs_rebase, conflict: false }
     }
 
+    /// Every ticket 1..=4 stands on the same base tip.
+    fn tips(tip: &str) -> HashMap<ulid::Ulid, String> {
+        (1..=4).map(|n| (ulid::Ulid(n), tip.to_string())).collect()
+    }
+
     fn run(board: &Board, flags: &HashMap<ulid::Ulid, WtFlags>) -> Plan {
         plan(&Input {
             board,
             flags,
-            base_tip: "tip1",
+            base_tip: &tips("tip1"),
             asked: &HashMap::new(),
             fused: &HashSet::new(),
         })
@@ -336,7 +345,24 @@ mod tests {
         let p = plan(&Input {
             board: &b,
             flags: &flags,
-            base_tip: "tip1",
+            base_tip: &tips("tip1"),
+            asked: &asked,
+            fused: &HashSet::new(),
+        });
+        assert_eq!(p.rebase, vec![ulid::Ulid(3)]);
+        // The tip is the TICKET's (T-368): ticket 3's own base moved to
+        // `tip2` while ticket 2's stands where it was asked — 3 is asked
+        // again, 2 is not, whatever the other's base did.
+        let asked: HashMap<_, _> =
+            [(ulid::Ulid(2), "tip1".to_string()), (ulid::Ulid(3), "tip1".to_string())]
+                .into_iter()
+                .collect();
+        let mut per_ticket = tips("tip1");
+        per_ticket.insert(ulid::Ulid(3), "tip2".into());
+        let p = plan(&Input {
+            board: &b,
+            flags: &flags,
+            base_tip: &per_ticket,
             asked: &asked,
             fused: &HashSet::new(),
         });
@@ -346,7 +372,7 @@ mod tests {
         let p = plan(&Input {
             board: &b,
             flags: &flags,
-            base_tip: "tip1",
+            base_tip: &tips("tip1"),
             asked: &HashMap::new(),
             fused: &fused,
         });

@@ -151,7 +151,8 @@ pub fn tools() -> Vec<Value> {
             "name": "get_ticket",
             "description": "Returns the mesimon ticket this session is attached to, or with \
                             key another ticket (crown only): key, title, column, workspace, \
-                            branch, merge state, the column names move_ticket accepts, tags, \
+                            branch, merge state (per repo on a workspace), the column names \
+                            move_ticket accepts, tags, \
                             every tag the board knows (allowed_tags), the description (first \
                             note), every note's id, name and author, the agent's state word \
                             and a seen stamp keyed edits require. The prompt that starts a \

@@ -19,10 +19,10 @@ use mesimon_core::board::{
     TagRef, Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    AgentAutomoveView, AgentBoardView, AgentStateView, AgentTagView, AgentTicketRow,
+    AgentAutomoveView, AgentBoardView, AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow,
     AgentTicketView, Command, CrownTouch, DiffTarget, Envelope, Event, ExternalItem, GraceItem,
     MergeOutcome, Notice, Pending, PendingAction, Resources, Response, TerminalItem, WorktreeItem,
-    PROTOCOL_VERSION,
+    WorktreeRepoItem, PROTOCOL_VERSION,
 };
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
@@ -226,8 +226,12 @@ enum Msg {
     /// owner is provably gone. Off-thread because it forks `ps`.
     CodexOrphansChecked(Vec<(uuid::Uuid, Option<u64>, std::result::Result<(), String>)>),
     Tick,
-    /// A provisioning thread finished (M4): the binding, or the failing stage.
-    Provisioned(ulid::Ulid, std::result::Result<Binding, (String, String)>),
+    /// A provisioning thread finished (M4): the binding, or the failing
+    /// stage, and how long it took — the number the journal keeps (T-368).
+    Provisioned(ulid::Ulid, std::result::Result<Binding, (String, String)>, Duration),
+    /// A workspace provision landed one more leg (T-368): `(done, total)`,
+    /// the snapshot's `7/19` while the binding is `provisioning`.
+    ProvisionProgress(ulid::Ulid, u32, u32),
     /// A shell-environment capture finished. Off-thread because it forks the
     /// user's login shell and runs their rc files (`crate::shellenv`).
     ShellEnvCaptured(std::result::Result<crate::shellenv::ShellEnv, String>),
@@ -238,10 +242,11 @@ enum Msg {
     /// merge train it may have armed disarms with it (2026-09-04).
     ClientGone(Arc<Mutex<UnixStream>>),
     /// The worktree flags sampled on a worker (T-216) — one `for-each-ref`
-    /// and one `rev-list` per binding, off the writer thread. The `u64` is
-    /// the `wt_gen` the sample started under: a synchronous refresh in the
-    /// meantime (a merge, a teardown) makes it stale, and it is dropped.
-    WorktreeFlags(u64, worktree::WtFlags),
+    /// and one `rev-list` per binding, per repository the legs live in
+    /// (T-368), off the writer thread. The `u64` is the `wt_gen` the sample
+    /// started under: a synchronous refresh in the meantime (a merge, a
+    /// teardown) makes it stale, and it is dropped.
+    WorktreeFlags(u64, Vec<worktree::RepoSample>),
     /// The relay executor finished a job (T-215). What it means is decided
     /// here, on the writer, in `teamglue`.
     Team(crate::team::sync::Done),
@@ -331,9 +336,6 @@ pub struct Daemon {
     /// The merge train (2026-09-04): armed by a connection, what it asked,
     /// its fuse. See `crate::train`.
     train: crate::train::Train,
-    /// The base branch's tip as of the last `refresh_worktree_flags` — a
-    /// rebase ask is recorded against it, and repeated only once it moves.
-    base_tip: String,
     ticks: u64,
     feed: FeedWriter,
     /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
@@ -403,9 +405,20 @@ pub struct Daemon {
     /// page says beside the branch.
     wt_merged_in: HashMap<ulid::Ulid, String>,
     wt_merged_oid: HashMap<ulid::Ulid, String>,
-    /// The last content-merge verdict per binding, handed back to the next
-    /// sample so the patch scan runs only when a tip moved.
-    wt_content: HashMap<ulid::Ulid, worktree::ContentSeen>,
+    /// Each binding's flags PER LEG (T-368), in leg order — the snapshot's
+    /// per-repo rows, `ticket_merged`'s content memo (handed back to the
+    /// next sample so the patch scan runs only when a tip moved), and what
+    /// the maps above are the `aggregate` of. A single-repo binding is one
+    /// leg.
+    wt_repos: HashMap<ulid::Ulid, Vec<worktree::RepoFlags>>,
+    /// Each ticket's base tip as of the last sample — a rebase ask is
+    /// recorded against it, and repeated only once it moves. A workspace
+    /// ticket's is its legs' joined, so any leg's base moving is news.
+    wt_base_tip: HashMap<ulid::Ulid, String>,
+    /// A workspace provision's `(done, total)` while it runs (T-368).
+    wt_progress: HashMap<ulid::Ulid, (u32, u32)>,
+    /// Every branch checked out twice, across every repository the legs
+    /// live in.
     wt_conflicts: Vec<String>,
     /// Bumped by every synchronous flag refresh; a worker's sample carries
     /// the value it started under and lands only if nothing bumped it since.
@@ -414,10 +427,11 @@ pub struct Daemon {
     wt_inflight: bool,
     /// Cached default-branch name (origin/HEAD → main/master/trunk → HEAD).
     base_branch: Option<String>,
-    /// Cached remote-tracking ref for it (`origin/main`), where git has one:
-    /// the ref a merged PR lands on (T-267). Resolved beside `base_branch`
-    /// and forgotten with it, since a fetch can mint either.
-    upstream_base: Option<Option<String>>,
+    /// Cached remote-tracking ref per leg name (`""` the root): `origin/main`
+    /// where git has one, the ref a merged PR lands on (T-267). Asked once
+    /// per leg — the value is whether there is one — and forgotten with
+    /// `base_branch`, since a fetch can mint either.
+    upstreams: HashMap<String, Option<String>>,
     /// Worktrees on their way out — a deleted ticket's once its grace
     /// expired, an archived ticket's once its work landed (T-278) — each
     /// waiting for the reaper (never remove a live cwd).
@@ -631,7 +645,10 @@ pub fn run(paths: Paths) -> Result<()> {
     notices.extend(wt_notices);
     let mut wt_changed = worktree::reconcile_interrupted(&paths.repo_root, &mut worktrees);
     for b in worktrees.values_mut() {
-        if b.status == BindingStatus::Attached && !b.path.is_dir() {
+        // A leg gone is the binding evicted (T-368): `provision_existing`
+        // brings back exactly the legs that are missing.
+        let whole = b.path.is_dir() && b.legs(&paths.repo_root, "").iter().all(|l| l.path.is_dir());
+        if b.status == BindingStatus::Attached && !whole {
             b.status = BindingStatus::Evicted;
             wt_changed = true;
         }
@@ -670,6 +687,10 @@ pub fn run(paths: Paths) -> Result<()> {
         .collect();
     if !worktrees.is_empty() {
         let _ = worktree::sweep_stale_locks(&paths.repo_root);
+        // The legs of a workspace binding hold their locks in the children.
+        for name in crate::gitstatus::census(&paths.repo_root) {
+            let _ = worktree::sweep_stale_locks(&paths.repo_root.join(name));
+        }
     }
 
     // Accept loop: one reader thread per client. Diff commands (M4b) are
@@ -775,7 +796,6 @@ pub fn run(paths: Paths) -> Result<()> {
         queued,
         inflight: HashMap::new(),
         train: Default::default(),
-        base_tip: String::new(),
         ticks: 0,
         feed,
         external: Vec::new(),
@@ -806,12 +826,14 @@ pub fn run(paths: Paths) -> Result<()> {
         wt_tip: HashMap::new(),
         wt_merged_in: HashMap::new(),
         wt_merged_oid: HashMap::new(),
-        wt_content: HashMap::new(),
+        wt_repos: HashMap::new(),
+        wt_base_tip: HashMap::new(),
+        wt_progress: HashMap::new(),
         wt_conflicts: Vec::new(),
         wt_gen: 0,
         wt_inflight: false,
         base_branch: None,
-        upstream_base: None,
+        upstreams: HashMap::new(),
         pending_teardown: Vec::new(),
         tx: tx.clone(),
         team: teamglue::TeamCtx::new(tx.clone()),
@@ -920,6 +942,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::RemotePermission(..) => "remote permission".into(),
             Msg::Request(env, ..) => format!("request {}", env.command.wire_name()).into(),
             Msg::Provisioned(..) => "provisioned".into(),
+            Msg::ProvisionProgress(..) => "provision progress".into(),
             Msg::ShellEnvCaptured(_) => "shell env captured".into(),
             Msg::GitSampled(..) => "git sampled".into(),
             Msg::ClientGone(_) => "client gone".into(),
@@ -946,7 +969,10 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::RemotePermission(frame, stream) => d.control_permission_wait(frame, stream),
             Msg::CodexSnapshots(snapshots) => d.on_codex_snapshots(snapshots),
             Msg::CodexOrphansChecked(results) => d.on_codex_orphans_checked(results),
-            Msg::Provisioned(ticket, result) => d.on_provisioned(ticket, result),
+            Msg::Provisioned(ticket, result, took) => d.on_provisioned(ticket, result, took),
+            Msg::ProvisionProgress(ticket, done, total) => {
+                d.on_provision_progress(ticket, done, total)
+            }
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
@@ -1376,6 +1402,20 @@ fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
             };
         }
         _ => {}
+    }
+    // A workspace binding (T-368) is diffed leg by leg, one list.
+    if binding.is_workspace() {
+        return match &env.command {
+            Command::DiffList { .. } => crate::diff::workspace_diff_list(repo, binding)
+                .unwrap_or_else(|e| Response::Err { message: e.to_string() }),
+            Command::DiffFile { path, context, .. } => {
+                match crate::diff::workspace_diff_file(repo, binding, path, *context) {
+                    Ok(file) => Response::DiffFile { file },
+                    Err(e) => Response::Err { message: e.to_string() },
+                }
+            }
+            _ => unreachable!(),
+        };
     }
     match &env.command {
         Command::DiffList { .. } => crate::diff::diff_list(repo, binding)
@@ -4467,9 +4507,7 @@ impl Daemon {
 
     /// The ticket holds a worktree branch that has not landed on the base.
     fn ticket_unmerged(&self, id: ulid::Ulid) -> bool {
-        self.worktrees
-            .get(&id)
-            .is_some_and(|b| !b.branch.is_empty() && !self.ticket_merged(id, &b.branch))
+        self.worktrees.get(&id).is_some_and(|b| !b.branch.is_empty() && !self.ticket_merged(id))
     }
 
     /// The ticket's merge state as a word — the same four the `m` flow derives
@@ -4506,6 +4544,7 @@ impl Daemon {
             workspace: workspace.to_string(),
             branch: self.worktrees.get(&id).map(|b| b.branch.clone()).filter(|b| !b.is_empty()),
             merge_state: self.merge_state_word(id).map(str::to_string),
+            repos: self.agent_repo_views(id),
             allowed_columns: self.agent_allowed_columns(id),
             automove: self
                 .board
@@ -4794,9 +4833,43 @@ impl Daemon {
                 needs_rebase: self.wt_needs_rebase.get(tid).copied().unwrap_or(false),
                 detail: match &b.status {
                     BindingStatus::Error { stage, message } => Some(format!("{stage}: {message}")),
+                    BindingStatus::Provisioning => {
+                        self.wt_progress.get(tid).map(|(d, t)| format!("{d}/{t}"))
+                    }
                     _ => None,
                 },
                 path: (b.status == BindingStatus::Attached).then(|| b.path.display().to_string()),
+                repos: if b.is_workspace() {
+                    self.wt_repos
+                        .get(tid)
+                        .map(|legs| {
+                            legs.iter()
+                                .map(|l| WorktreeRepoItem {
+                                    name: l.name.clone(),
+                                    base: l.base.clone(),
+                                    ahead: l.ahead,
+                                    merged: l.merged,
+                                    needs_rebase: l.needs_rebase,
+                                    conflict: l.conflict,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_else(|| {
+                            b.repos
+                                .iter()
+                                .map(|r| WorktreeRepoItem {
+                                    name: r.name.clone(),
+                                    base: r.base.clone(),
+                                    ahead: 0,
+                                    merged: false,
+                                    needs_rebase: false,
+                                    conflict: false,
+                                })
+                                .collect()
+                        })
+                } else {
+                    Vec::new()
+                },
             })
             .collect();
         // Standing notices, plus any ticket whose flap fuse is currently
@@ -4990,7 +5063,7 @@ impl Daemon {
                     ticket: t,
                     action: PendingAction::Merge,
                     waits_on: waits_on.clone(),
-                    text: self.train.refusal(t, &tip, &self.base_tip).map(String::from),
+                    text: self.train.refusal(t, &tip, self.base_tip_of(t)).map(String::from),
                     in_flight: false,
                     by: None,
                 });
@@ -5016,7 +5089,7 @@ impl Daemon {
             .iter()
             .map(|(t, r)| mesimon_core::command::TrainAsk {
                 ticket: *t,
-                current: r.base_oid == self.base_tip,
+                current: r.base_oid == self.base_tip_of(*t),
                 at_ms: r.at_ms,
                 by: if r.by_hand { "local" } else { "train" }.into(),
             })
@@ -5090,7 +5163,7 @@ impl Daemon {
                     // the same fetch is what moves `origin/main`, so its ref
                     // is re-asked with it (T-267).
                     self.base_branch = None;
-                    self.upstream_base = None;
+                    self.upstreams.clear();
                 }
                 Err(e) => self.git_fetch_error = Some(e),
             }
@@ -5764,7 +5837,7 @@ impl Daemon {
         // unmerged worktree must be merged or explicitly discarded.
         if !discard_worktree {
             if let Some(b) = self.worktrees.get(&id) {
-                if !b.branch.is_empty() && !self.ticket_merged(id, &b.branch) {
+                if !b.branch.is_empty() && !self.ticket_merged(id) {
                     return Response::Err {
                         message: "worktree unmerged — merge it first, or delete with discard"
                             .into(),
@@ -5816,39 +5889,104 @@ impl Daemon {
         Response::Ok
     }
 
-    fn ticket_merged(&self, id: ulid::Ulid, branch: &str) -> bool {
-        // Fresh check on gate paths (the 10 s cache may lag a just-made merge).
-        let base = self
+    /// The ticket's branch has landed in EVERY leg it was cut in (T-368):
+    /// the DONE gate's, the delete gate's and the archive's one oracle, and
+    /// it must answer as the card does.
+    fn ticket_merged(&self, id: ulid::Ulid) -> bool {
+        let Some(b) = self.worktrees.get(&id) else { return false };
+        if b.branch.is_empty() {
+            return false;
+        }
+        let single_base = self
             .base_branch
             .clone()
-            .or_else(|| worktree::default_branch(&self.paths.repo_root).ok());
-        if base.is_some_and(|b| worktree::is_merged(&self.paths.repo_root, branch, &b)) {
-            return true;
-        }
-        // A PR squashed into the base is the SAMPLE's answer (T-267): the
-        // patch scan behind it is too big for a keypress. An ff merge made
-        // here is caught fresh above; a squash made here is a bucket's wait,
-        // never a wrong answer. The branch tip is re-read so a commit since
-        // the verdict drops it, and the target can only ever gain commits,
-        // so a stale tip there cannot turn a merge back into a non-merge.
-        // The gates and the card must answer alike: a ticket the board calls
-        // merged must not then be refused DONE.
-        self.wt_content.get(&id).is_some_and(|seen| {
-            seen.merged
-                && !seen.branch_tip.is_empty()
-                && seen.branch_tip == worktree::branch_tip(&self.paths.repo_root, branch)
+            .or_else(|| worktree::default_branch(&self.paths.repo_root).ok())
+            .unwrap_or_default();
+        let legs = b.legs(&self.paths.repo_root, &single_base);
+        legs.iter().all(|leg| {
+            // Fresh check on gate paths (the 10 s cache may lag a just-made
+            // merge).
+            if !leg.base.is_empty() && worktree::is_merged(&leg.repo, &b.branch, &leg.base) {
+                return true;
+            }
+            // A PR squashed into the base is the SAMPLE's answer (T-267):
+            // the patch scan behind it is too big for a keypress. An ff
+            // merge made here is caught fresh above; a squash made here is a
+            // bucket's wait, never a wrong answer. The branch tip is re-read
+            // so a commit since the verdict drops it, and the target can
+            // only ever gain commits, so a stale tip there cannot turn a
+            // merge back into a non-merge. The gates and the card must
+            // answer alike: a ticket the board calls merged must not then be
+            // refused DONE.
+            self.wt_repos
+                .get(&id)
+                .and_then(|legs| legs.iter().find(|l| l.name == leg.name))
+                .and_then(|l| l.content.as_ref())
+                .is_some_and(|seen| {
+                    seen.merged
+                        && !seen.branch_tip.is_empty()
+                        && seen.branch_tip == worktree::branch_tip(&leg.repo, &b.branch)
+                })
         })
     }
 
-    /// The ref a merged PR lands on (`origin/main`), asked once and kept: the
-    /// outer `Option` is whether it has been asked, the inner whether there is
-    /// one, so a repo with no remote is not re-asked every bucket. Forgotten
-    /// with `base_branch` after a fetch — the one thing that can mint it.
-    fn upstream_ref(&mut self, base: &str) -> Option<String> {
-        if self.upstream_base.is_none() {
-            self.upstream_base = Some(worktree::upstream_base(&self.paths.repo_root, base));
+    /// The binding's legs, with the daemon's base branch for a single-repo
+    /// one (a workspace leg carries its own).
+    fn legs_of(&self, id: ulid::Ulid) -> Vec<worktree::Leg> {
+        let base = self.base_branch.clone().unwrap_or_default();
+        self.worktrees.get(&id).map(|b| b.legs(&self.paths.repo_root, &base)).unwrap_or_default()
+    }
+
+    /// The ticket's base tip as of the last sample (`""` before one).
+    fn base_tip_of(&self, id: ulid::Ulid) -> &str {
+        self.wt_base_tip.get(&id).map(String::as_str).unwrap_or("")
+    }
+
+    /// The ref a merged PR lands on (`origin/main`) for one leg, asked once
+    /// and kept — the value is whether there is one, so a repo with no
+    /// remote is not re-asked every bucket. Forgotten with `base_branch`
+    /// after a fetch — the one thing that can mint it.
+    fn upstream_ref(&mut self, name: &str, repo: &std::path::Path, base: &str) -> Option<String> {
+        if !self.upstreams.contains_key(name) {
+            self.upstreams.insert(name.to_string(), worktree::upstream_base(repo, base));
         }
-        self.upstream_base.clone().flatten()
+        self.upstreams.get(name).cloned().flatten()
+    }
+
+    /// `get_ticket`'s per-repo rows on a workspace ticket (T-368); empty on
+    /// a single repo.
+    fn agent_repo_views(&self, id: ulid::Ulid) -> Vec<AgentRepoView> {
+        let Some(b) = self.worktrees.get(&id) else { return Vec::new() };
+        if !b.is_workspace() || b.branch.is_empty() {
+            return Vec::new();
+        }
+        let Some(legs) = self.wt_repos.get(&id) else {
+            return b
+                .repos
+                .iter()
+                .map(|r| AgentRepoView {
+                    name: r.name.clone(),
+                    base: r.base.clone(),
+                    merge_state: "clean".into(),
+                })
+                .collect();
+        };
+        legs.iter()
+            .map(|l| AgentRepoView {
+                name: l.name.clone(),
+                base: l.base.clone(),
+                merge_state: if l.merged {
+                    "merged"
+                } else if l.needs_rebase {
+                    "needs_rebase"
+                } else if l.ahead > 0 {
+                    "ahead"
+                } else {
+                    "clean"
+                }
+                .into(),
+            })
+            .collect()
     }
 
     fn set_workspace(&mut self, id: ulid::Ulid, workspace: Option<WorkspaceStrategy>) -> Response {
@@ -6070,12 +6208,16 @@ impl Daemon {
                 detail: "no default branch found".into(),
             };
         };
+        let legs = self.legs_of(id);
+        let workspace = self.worktrees.get(&id).is_some_and(|b| b.is_workspace());
         // A branch whose tip never left the creation base is trivially an
         // ancestor of main — merge_check would call it "already merged".
         // Truth: there is nothing to merge yet (dogfood 2026-08-30).
-        let tip = worktree::branch_tip(&self.paths.repo_root, &branch);
-        let base_oid = self.worktrees.get(&id).map(|b| b.base_oid.clone()).unwrap_or_default();
-        if tip.is_empty() || tip == base_oid {
+        let touched = legs.iter().any(|leg| {
+            let tip = worktree::branch_tip(&leg.repo, &branch);
+            !tip.is_empty() && tip != leg.base_oid
+        });
+        if !touched {
             return Response::Merge {
                 outcome: MergeOutcome::Refused,
                 detail: "no commits on the branch yet — nothing to merge".into(),
@@ -6085,7 +6227,7 @@ impl Daemon {
         // — a branch the card already calls merged: a PR squashed into
         // `origin/main` is merged without being an ancestor of anything
         // (T-267), and the ff check below would answer "main moved" there.
-        if self.ticket_merged(id, &branch) {
+        if self.ticket_merged(id) {
             let landed = self
                 .wt_merged_in
                 .get(&id)
@@ -6097,16 +6239,32 @@ impl Daemon {
                 detail: format!("{branch} is already in {landed}"),
             };
         }
-        // ff-only policy: base moved past the branch → the agent rebases +
-        // tests in its worktree first. Mesimon never mints merge commits.
-        if !worktree::ff_possible(&self.paths.repo_root, &branch, &base) {
-            return Response::Merge {
+        // ff-only policy, leg by leg (T-368): every touched leg is judged
+        // before any is moved — a base moved past the branch anywhere is the
+        // agent's rebase + tests in its worktree first, and mesimon never
+        // mints merge commits. Then each leg fast-forwards into its own
+        // base, in order; a refusal midway leaves the ticket half landed and
+        // says so, and the next `m` continues from there.
+        match worktree::merge_legs(&legs, &branch) {
+            worktree::LegMerge::Nothing => Response::Merge {
+                outcome: MergeOutcome::Refused,
+                detail: "no commits on the branch yet — nothing to merge".into(),
+            },
+            worktree::LegMerge::Already => Response::Merge {
+                outcome: MergeOutcome::AlreadyMerged,
+                detail: format!("{branch} is already in {base}"),
+            },
+            worktree::LegMerge::NeedsRebase(moved) => Response::Merge {
                 outcome: MergeOutcome::NeedsRebase,
-                detail: format!("{base} moved — rebase first"),
-            };
-        }
-        match worktree::ff_merge(&self.paths.repo_root, &branch, &base) {
-            Ok(()) => {
+                detail: if workspace {
+                    let names: Vec<&str> =
+                        moved.iter().map(|(n, _)| worktree::leg_word(n)).collect();
+                    format!("{} moved — rebase first", names.join(", "))
+                } else {
+                    format!("{base} moved — rebase first")
+                },
+            },
+            worktree::LegMerge::Merged(landed) => {
                 self.refresh_worktree_flags();
                 // The merge just moved the checkout's branch: the header's
                 // `↑` should say so before the next 10 s bucket.
@@ -6114,13 +6272,30 @@ impl Daemon {
                 self.persist_and_notify();
                 Response::Merge {
                     outcome: MergeOutcome::Merged,
-                    detail: format!("{branch} merged into {base}"),
+                    detail: if workspace {
+                        format!("{branch} merged into {}", worktree::landed_words(&landed))
+                    } else {
+                        format!("{branch} merged into {base}")
+                    },
                 }
             }
-            Err(e) => Response::Merge {
-                outcome: MergeOutcome::Refused,
-                detail: worktree::merge_refusal_detail(&e.to_string(), &base),
-            },
+            worktree::LegMerge::Refused { landed, leg, base: leg_base, error } => {
+                if !landed.is_empty() {
+                    // Some legs did land: the card must say so now.
+                    self.refresh_worktree_flags();
+                    self.queue_git_sample();
+                    self.persist_and_notify();
+                }
+                let detail = worktree::merge_refusal_detail(&error, &leg_base);
+                Response::Merge {
+                    outcome: MergeOutcome::Refused,
+                    detail: if workspace {
+                        format!("{}: {detail}", worktree::leg_word(&leg))
+                    } else {
+                        detail
+                    },
+                }
+            }
         }
     }
 
@@ -6155,7 +6330,33 @@ impl Daemon {
         if self.base_branch.is_none() {
             self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
         }
-        let base = self.base_branch.clone().unwrap_or_else(|| "main".into());
+        let mut base = self.base_branch.clone().unwrap_or_else(|| "main".into());
+        // On a workspace ticket (T-368) the base is per leg: the sentence
+        // names the legs that moved, `main (api), main (web)`, or every
+        // touched leg where the sample has not said which yet.
+        if b.is_workspace() {
+            let legs = self.wt_repos.get(&id).cloned().unwrap_or_default();
+            let mut named: Vec<String> = legs
+                .iter()
+                .filter(|l| l.needs_rebase && l.ahead > 0)
+                .map(|l| format!("{} ({})", l.base, worktree::leg_word(&l.name)))
+                .collect();
+            if named.is_empty() {
+                named = legs
+                    .iter()
+                    .filter(|l| l.touched())
+                    .map(|l| format!("{} ({})", l.base, worktree::leg_word(&l.name)))
+                    .collect();
+            }
+            if named.is_empty() {
+                named = b
+                    .repos
+                    .iter()
+                    .map(|r| format!("{} ({})", r.base, worktree::leg_word(&r.name)))
+                    .collect();
+            }
+            base = named.join(", ");
+        }
         // The board's template, or mesimon's own words where nobody wrote one
         // (T-353). The two facts the sentence is about — which branch, which
         // base — are the only things substituted into it.
@@ -6170,7 +6371,7 @@ impl Daemon {
         if matches!(request, mesimon_core::command::MergeRequest::Rebase) {
             self.train.record_ask(
                 id,
-                self.base_tip.clone(),
+                self.base_tip_of(id).to_string(),
                 now_ms(),
                 by.is_human(),
                 Instant::now(),
@@ -6278,7 +6479,7 @@ impl Daemon {
         mesimon_core::train::plan(&mesimon_core::train::Input {
             board: &self.board,
             flags: &flags,
-            base_tip: &self.base_tip,
+            base_tip: &self.wt_base_tip,
             asked: &asked,
             fused: &fused,
         })
@@ -6317,7 +6518,7 @@ impl Daemon {
             // the refusal memory is keyed on the pair, and the snapshot road
             // (`pending_items`) reads the same map, so neither forks git.
             let tip = self.wt_tip.get(&t).cloned().unwrap_or_default();
-            if self.train.refusal(t, &tip, &self.base_tip).is_some() {
+            if self.train.refusal(t, &tip, self.base_tip_of(t)).is_some() {
                 continue;
             }
             match self.merge_ticket(t, &by) {
@@ -6347,7 +6548,8 @@ impl Daemon {
                     return true;
                 }
                 Response::Merge { outcome: MergeOutcome::Refused, detail } => {
-                    self.train.refuse(t, tip, self.base_tip.clone(), detail);
+                    let base_tip = self.base_tip_of(t).to_string();
+                    self.train.refuse(t, tip, base_tip, detail);
                     self.feed.board("automation", "merge_train_refused:merge", Some(t));
                     refused = true;
                 }
@@ -6742,7 +6944,7 @@ impl Daemon {
                 continue;
             }
             let mid_rebase = self.wt_needs_rebase.get(&t).copied().unwrap_or(false)
-                && self.train.asked().get(&t).is_some_and(|r| r.base_oid == self.base_tip);
+                && self.train.asked().get(&t).is_some_and(|r| r.base_oid == self.base_tip_of(t));
             if mid_rebase {
                 out.push(t);
             }
@@ -7323,7 +7525,7 @@ impl Daemon {
     /// A snooze takes none of this — a snooze is a return.
     fn reclaim_on_archive(&mut self, id: ulid::Ulid) {
         let Some(b) = self.worktrees.get(&id) else { return };
-        let merged = !b.branch.is_empty() && self.ticket_merged(id, &b.branch);
+        let merged = !b.branch.is_empty() && self.ticket_merged(id);
         let awake = self.board.ticket_awake_sessions(id);
         if !worktree::reclaim_on_archive(b, merged, awake, self.worktrees_barred) {
             return;
@@ -7911,7 +8113,7 @@ impl Daemon {
         for i in ready.into_iter().rev() {
             let Teardown { ticket, why, .. } = self.pending_teardown.remove(i);
             let Some(b) = self.worktrees.get(&ticket).cloned() else { continue };
-            let merged = !b.branch.is_empty() && self.ticket_merged(ticket, &b.branch);
+            let merged = !b.branch.is_empty() && self.ticket_merged(ticket);
             let archived = matches!(why, TeardownWhy::Archived);
             if archived {
                 let still_archived = self.board.ticket(ticket).is_some_and(|t| t.is_archived());
@@ -7926,22 +8128,29 @@ impl Daemon {
                 // about to go: it is no session of the ticket, so the reaper
                 // never saw it. Killed here, first — never remove a live cwd.
                 let _ = self.backend.kill_session(&terminal_name(Some(ticket)));
-                let _ = worktree::remove(&self.paths.repo_root, &b.path);
             }
-            if !b.branch.is_empty() {
-                match why {
-                    _ if merged => {
-                        let _ = worktree::delete_branch(&self.paths.repo_root, &b.branch, false);
-                    }
-                    TeardownWhy::Deleted { discard: true } => {
-                        let _ = worktree::delete_branch(&self.paths.repo_root, &b.branch, true);
-                    }
-                    // Unmerged without discard: keep the branch (commits survive).
-                    TeardownWhy::Deleted { discard: false } | TeardownWhy::Archived => {}
+            // Every leg, then the container (T-368): a merged leg's branch
+            // goes with `-d`, a discard's with `-D`; unmerged without
+            // discard keeps the branch (commits survive). On a workspace
+            // each leg is judged on its own, so a landed leg's branch goes
+            // while an unmerged sibling's stays.
+            let discard = matches!(why, TeardownWhy::Deleted { discard: true });
+            let workspace = b.is_workspace();
+            let branch = b.branch.clone();
+            let branch_kept = worktree::teardown(&self.paths.repo_root, &b, &|leg| {
+                let leg_merged = if workspace {
+                    !leg.base.is_empty() && worktree::is_merged(&leg.repo, &branch, &leg.base)
+                } else {
+                    merged
+                };
+                if leg_merged {
+                    Some(false)
+                } else if discard {
+                    Some(true)
+                } else {
+                    None
                 }
-            }
-            let branch_kept = !b.branch.is_empty()
-                && !worktree::branch_tip(&self.paths.repo_root, &b.branch).is_empty();
+            });
             if archived && branch_kept {
                 if let Some(b) = self.worktrees.get_mut(&ticket) {
                     b.status = BindingStatus::Evicted;
@@ -7960,7 +8169,9 @@ impl Daemon {
             self.wt_tip.remove(&ticket);
             self.wt_merged_in.remove(&ticket);
             self.wt_merged_oid.remove(&ticket);
-            self.wt_content.remove(&ticket);
+            self.wt_repos.remove(&ticket);
+            self.wt_base_tip.remove(&ticket);
+            self.wt_progress.remove(&ticket);
         }
         self.persist_worktrees();
         self.refresh_worktree_flags();
@@ -8172,28 +8383,9 @@ impl Daemon {
                 _ => Err("no worktree bound to this ticket — adopt one first".into()),
             },
             WorkspaceStrategy::Worktree => {
-                // T-225: on a workspace root (repositories nested one level
-                // under it) a worktree of the root is a worktree of the meta
-                // repo — its handful of files and none of the code — so the
-                // spawn is refused in words until workspace worktrees exist.
-                // The census is asked here (1.5 ms) rather than read off the
-                // last sample, so a spawn before the boot sample lands is
-                // judged the same way. A binding already attached is kept.
-                let attached = self
-                    .worktrees
-                    .get(&ticket)
-                    .is_some_and(|b| b.status == BindingStatus::Attached);
-                if !attached {
-                    let repos = crate::gitstatus::census(&self.paths.repo_root);
-                    if !repos.is_empty() {
-                        return Err(format!(
-                            "this board sits on a workspace of {} — a worktree of it would hold \
-                             none of the code; workspace worktrees are not built yet, use the \
-                             shared checkout",
-                            mesimon_core::workspace::repos_word(repos.len())
-                        ));
-                    }
-                }
+                // On a workspace root (repositories nested one level under
+                // it) the provision cuts one worktree per nested repo
+                // (T-368, `queue_provision` asks the census).
                 match self.worktrees.get(&ticket).map(|b| b.status.clone()) {
                     Some(BindingStatus::Attached) => Ok(Some(self.worktrees[&ticket].path.clone())),
                     Some(BindingStatus::Queued) | Some(BindingStatus::Provisioning) => Ok(None),
@@ -8218,6 +8410,7 @@ impl Daemon {
             branch_oid: String::new(),
             status: BindingStatus::Queued,
             locked: false,
+            repos: Vec::new(),
         });
         entry.status = BindingStatus::Queued;
         let in_flight =
@@ -8245,22 +8438,63 @@ impl Daemon {
         };
         let tx = self.tx.clone();
         let evicted = prior.filter(|b| b.status == BindingStatus::Evicted && !b.branch.is_empty());
+        // A workspace root (T-368) gets a leg per census repo. The census is
+        // asked here (1.5 ms) rather than read off the last sample, so a
+        // spawn before the boot sample lands is judged the same way.
+        let census = crate::gitstatus::census(&repo);
+        let is_meta = repo.join(".git").exists();
         std::thread::spawn(move || {
+            let started = Instant::now();
+            let ptx = tx.clone();
             let result = match evicted {
                 Some(prior) => worktree::provision_existing(&repo, ticket, &prior),
-                None => worktree::provision(&repo, &root, ticket, &key, &title),
+                None if census.is_empty() => {
+                    worktree::provision(&repo, &root, ticket, &key, &title)
+                }
+                None => worktree::provision_workspace(
+                    &repo,
+                    &root,
+                    &census,
+                    is_meta,
+                    ticket,
+                    &key,
+                    &title,
+                    &mut |done, total| {
+                        let _ = ptx.send(Msg::ProvisionProgress(ticket, done, total));
+                    },
+                ),
             };
-            let _ = tx.send(Msg::Provisioned(ticket, result));
+            let _ = tx.send(Msg::Provisioned(ticket, result, started.elapsed()));
         });
+    }
+
+    fn on_provision_progress(&mut self, ticket: ulid::Ulid, done: u32, total: u32) {
+        if self.worktrees.get(&ticket).is_some_and(|b| b.status == BindingStatus::Provisioning) {
+            self.wt_progress.insert(ticket, (done, total));
+            self.broadcast();
+        }
     }
 
     fn on_provisioned(
         &mut self,
         ticket: ulid::Ulid,
         result: std::result::Result<Binding, (String, String)>,
+        took: Duration,
     ) {
+        self.wt_progress.remove(&ticket);
         match result {
             Ok(b) => {
+                // The journal keeps the cost (T-368): a workspace's legs are
+                // cut one after another, and this line is how the number on
+                // a real workspace is read — the single-repo line beside it
+                // is the baseline.
+                let key =
+                    self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+                self.journal.line(&format!(
+                    "provisioned {key}: {} in {} ms",
+                    mesimon_core::workspace::repos_word(b.repos.len().max(1)),
+                    took.as_millis()
+                ));
                 self.worktrees.insert(ticket, b);
                 let (pending, rest): (Vec<PendingSpawn>, Vec<PendingSpawn>) =
                     self.pending_spawns.drain(..).partition(|s| s.ticket == ticket);
@@ -8324,26 +8558,80 @@ impl Daemon {
             return;
         }
         let key = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
-        if worktree::lock(&self.paths.repo_root, &b.path, &key, session, std::process::id()).is_ok()
-        {
-            b.locked = true;
-            self.persist_worktrees();
+        // Every leg (T-368): a lock taken in each repository the branch is
+        // checked out in; one refused releases the ones taken.
+        let legs = b.legs(&self.paths.repo_root, "");
+        let mut taken = Vec::new();
+        for leg in &legs {
+            if worktree::lock(&leg.repo, &leg.path, &key, session, std::process::id()).is_ok() {
+                taken.push(leg);
+            } else {
+                for done in taken {
+                    let _ = worktree::unlock(&done.repo, &done.path);
+                }
+                return;
+            }
         }
+        if let Some(b) = self.worktrees.get_mut(&ticket) {
+            b.locked = true;
+        }
+        self.persist_worktrees();
     }
 
-    /// The bindings as `compute_flags` wants them; empty when there are none
-    /// to judge, which is also when the flags are cleared rather than sampled.
-    fn wt_inputs(&self) -> Vec<worktree::FlagInput> {
-        self.worktrees
-            .iter()
-            .filter(|(_, b)| !b.branch.is_empty())
-            .map(|(t, b)| worktree::FlagInput {
-                ticket: *t,
-                branch: b.branch.clone(),
-                base_oid: b.base_oid.clone(),
-                seen: self.wt_content.get(t).cloned(),
-            })
-            .collect()
+    /// The bindings as `compute_repo_flags` wants them: one query per
+    /// repository a leg lives in, holding every ticket's leg there (T-368).
+    /// A single-repo board is one query on the root — the same `2 + n`
+    /// forks it always was. Empty when there is nothing to judge, which is
+    /// also when the flags are cleared rather than sampled. The upstream of
+    /// a leg is asked here where the cache has no answer, on the writer,
+    /// which is what the tick's road avoids by passing `None` and asking on
+    /// the worker.
+    fn wt_queries(&mut self, ask_upstream: bool) -> Vec<worktree::RepoQuery> {
+        let base = self.base_branch.clone().unwrap_or_default();
+        let mut queries: Vec<worktree::RepoQuery> = Vec::new();
+        let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
+        for t in tickets {
+            let b = &self.worktrees[&t];
+            if b.branch.is_empty() {
+                continue;
+            }
+            let branch = b.branch.clone();
+            for leg in b.legs(&self.paths.repo_root, &base) {
+                if leg.base.is_empty() {
+                    continue;
+                }
+                let seen = self
+                    .wt_repos
+                    .get(&t)
+                    .and_then(|legs| legs.iter().find(|l| l.name == leg.name))
+                    .and_then(|l| l.content.clone());
+                let input = worktree::FlagInput {
+                    ticket: t,
+                    branch: branch.clone(),
+                    base_oid: leg.base_oid.clone(),
+                    seen,
+                };
+                if let Some(q) =
+                    queries.iter_mut().find(|q| q.name == leg.name && q.base == leg.base)
+                {
+                    q.inputs.push(input);
+                    continue;
+                }
+                let upstream = if ask_upstream {
+                    self.upstream_ref(&leg.name, &leg.repo, &leg.base)
+                } else {
+                    self.upstreams.get(&leg.name).cloned().flatten()
+                };
+                queries.push(worktree::RepoQuery {
+                    name: leg.name.clone(),
+                    repo: leg.repo.clone(),
+                    base: leg.base.clone(),
+                    upstream,
+                    inputs: vec![input],
+                });
+            }
+        }
+        queries
     }
 
     /// merged/ahead/needs-rebase/conflict flags, NOW, on the writer thread —
@@ -8351,8 +8639,8 @@ impl Daemon {
     /// a merge just made, a binding just attached or torn down. The tick
     /// never takes this road (T-216): with thirteen bindings it was 53 git
     /// forks, ~0.5 s, every 10 s, and every keypress in that window waited
-    /// on it — it asks `queue_worktree_flags` instead. `2 + n` forks since
-    /// the same change (`worktree::compute_flags`).
+    /// on it — it asks `queue_worktree_flags` instead. `2 + n` forks per
+    /// repository since the same change (`worktree::compute_flags`).
     fn refresh_worktree_flags(&mut self) {
         self.wt_gen = self.wt_gen.wrapping_add(1);
         if self.worktrees.is_empty() {
@@ -8362,23 +8650,21 @@ impl Daemon {
             self.wt_tip.clear();
             self.wt_merged_in.clear();
             self.wt_merged_oid.clear();
-            self.wt_content.clear();
+            self.wt_repos.clear();
+            self.wt_base_tip.clear();
             self.wt_conflicts.clear();
             return;
         }
         if self.base_branch.is_none() {
             self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
         }
-        let Some(base) = self.base_branch.clone() else { return };
-        let upstream = self.upstream_ref(&base);
-        let flags = worktree::compute_flags(
-            &self.paths.repo_root,
-            &base,
-            upstream.as_deref(),
-            &self.wt_inputs(),
-        );
+        if self.base_branch.is_none() {
+            return;
+        }
+        let queries = self.wt_queries(true);
+        let samples = worktree::compute_repo_flags(&queries);
         // The callers of this road broadcast on their own terms.
-        let _ = self.absorb_worktree_flags(flags);
+        let _ = self.absorb_worktree_flags(samples);
     }
 
     /// The tick's road: the same sample on a worker, landing as
@@ -8394,19 +8680,34 @@ impl Daemon {
         let gen = self.wt_gen;
         let repo = self.paths.repo_root.clone();
         let base = self.base_branch.clone();
-        let upstream = self.upstream_base.clone();
-        let inputs = self.wt_inputs();
+        let cached: HashMap<String, Option<String>> = self.upstreams.clone();
+        // Single-repo legs need the base to make a query at all; with the
+        // cache empty the worker resolves it and the queries are built here
+        // against that answer once it lands. A workspace leg carries its
+        // own base and is queried either way.
+        let mut queries = self.wt_queries(false);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let Some(base) = base.or_else(|| worktree::default_branch(&repo).ok()) else {
-                let _ = tx.send(Msg::WorktreeFlags(gen, worktree::WtFlags::default()));
-                return;
+            let base = match base.or_else(|| worktree::default_branch(&repo).ok()) {
+                Some(b) => b,
+                None => {
+                    let _ = tx.send(Msg::WorktreeFlags(gen, Vec::new()));
+                    return;
+                }
             };
-            // The upstream ref leaves the writer thread with the base, and on
-            // the same terms: asked here when the cache has no answer yet.
-            let upstream = upstream.unwrap_or_else(|| worktree::upstream_base(&repo, &base));
-            let flags = worktree::compute_flags(&repo, &base, upstream.as_deref(), &inputs);
-            let _ = tx.send(Msg::WorktreeFlags(gen, flags));
+            for q in &mut queries {
+                if q.base.is_empty() {
+                    q.base = base.clone();
+                }
+                // The upstream ref leaves the writer thread with the base,
+                // and on the same terms: asked here when the cache has no
+                // answer yet.
+                if !cached.contains_key(&q.name) {
+                    q.upstream = worktree::upstream_base(&q.repo, &q.base);
+                }
+            }
+            let samples = worktree::compute_repo_flags(&queries);
+            let _ = tx.send(Msg::WorktreeFlags(gen, samples));
         });
     }
 
@@ -8414,15 +8715,30 @@ impl Daemon {
     /// started) means dropped: the flags on hand are newer than it. Fresh
     /// means absorbed, then the train's pass on it — exactly what the tick
     /// did in one turn before the sample left the writer thread.
-    fn on_worktree_flags(&mut self, gen: u64, flags: worktree::WtFlags) {
+    fn on_worktree_flags(&mut self, gen: u64, samples: Vec<worktree::RepoSample>) {
         self.wt_inflight = false;
-        if gen != self.wt_gen || flags.base.is_empty() {
+        if gen != self.wt_gen || samples.is_empty() {
             return;
         }
         if self.base_branch.is_none() {
-            self.base_branch = Some(flags.base.clone());
+            if let Some(root) = samples.iter().find(|s| s.name.is_empty()) {
+                self.base_branch = Some(root.base.clone());
+            }
         }
-        let changed = self.absorb_worktree_flags(flags);
+        for s in &samples {
+            self.upstreams.entry(s.name.clone()).or_insert_with(|| {
+                // What the worker resolved is what the cache learns; the
+                // upstream it used is not on the sample, so it is asked once
+                // more here — one fork per leg name, once per fetch.
+                let repo = if s.name.is_empty() {
+                    self.paths.repo_root.clone()
+                } else {
+                    self.paths.repo_root.join(&s.name)
+                };
+                worktree::upstream_base(&repo, &s.base)
+            });
+        }
+        let changed = self.absorb_worktree_flags(samples);
         let acted = self.train_pass();
         if acted {
             self.persist_sessions();
@@ -8435,38 +8751,86 @@ impl Daemon {
         }
     }
 
-    /// Take a sample's answers, for the bindings still here, and release
-    /// the lock of any attached binding whose last session is gone (the
-    /// one git fork left on this road, and a rare one).
-    fn absorb_worktree_flags(&mut self, flags: worktree::WtFlags) -> bool {
+    /// Take a sample's answers, for the bindings still here — per leg, then
+    /// folded into the ticket's one answer (`worktree::aggregate`, T-368) —
+    /// and release the lock of any attached binding whose last session is
+    /// gone (the one git fork left on this road, and a rare one).
+    fn absorb_worktree_flags(&mut self, samples: Vec<worktree::RepoSample>) -> bool {
         // Whether any of it is NEWS — what the board would draw differently.
         // The tick's road broadcasts on that and nothing else: a fetch that
         // lands a merge moves no session and fires no hook, so without this
         // the mark waited for the next thing to happen (T-267).
-        let mut changed = self.base_tip != flags.base_tip || self.wt_conflicts != flags.conflicts;
-        self.base_tip = flags.base_tip;
-        self.wt_conflicts = flags.conflicts;
-        for f in flags.flags {
-            if !self.worktrees.contains_key(&f.ticket) {
+        let mut conflicts: Vec<String> = Vec::new();
+        for s in &samples {
+            for c in &s.flags.conflicts {
+                if !conflicts.contains(c) {
+                    conflicts.push(c.clone());
+                }
+            }
+        }
+        let mut changed = self.wt_conflicts != conflicts;
+        self.wt_conflicts = conflicts;
+        // Per ticket, its legs in binding order.
+        let base = self.base_branch.clone().unwrap_or_default();
+        let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
+        for t in tickets {
+            let b = &self.worktrees[&t];
+            if b.branch.is_empty() {
                 continue;
             }
-            changed |= self.wt_merged.insert(f.ticket, f.merged) != Some(f.merged);
-            changed |= self.wt_ahead.insert(f.ticket, f.ahead) != Some(f.ahead);
-            changed |=
-                self.wt_needs_rebase.insert(f.ticket, f.needs_rebase) != Some(f.needs_rebase);
-            changed |= self.wt_tip.insert(f.ticket, f.tip.clone()) != Some(f.tip);
-            changed |= self.wt_merged_in.insert(f.ticket, f.merged_in.clone()) != Some(f.merged_in);
-            changed |=
-                self.wt_merged_oid.insert(f.ticket, f.merged_oid.clone()) != Some(f.merged_oid);
-            // The memo is the sampler's own working note, never the board's.
-            match f.seen {
-                Some(seen) => {
-                    self.wt_content.insert(f.ticket, seen);
-                }
-                None => {
-                    self.wt_content.remove(&f.ticket);
-                }
+            let branch = b.branch.clone();
+            let mut legs: Vec<worktree::RepoFlags> = Vec::new();
+            for leg in b.legs(&self.paths.repo_root, &base) {
+                let Some(s) = samples.iter().find(|s| s.name == leg.name && s.base == leg.base)
+                else {
+                    // Not sampled this pass: carry the old leg forward.
+                    if let Some(old) = self
+                        .wt_repos
+                        .get(&t)
+                        .and_then(|old| old.iter().find(|l| l.name == leg.name))
+                    {
+                        legs.push(old.clone());
+                    }
+                    continue;
+                };
+                let Some(f) = s.flags.flags.iter().find(|f| f.ticket == t) else { continue };
+                legs.push(worktree::RepoFlags {
+                    name: leg.name.clone(),
+                    base: leg.base.clone(),
+                    base_tip: s.flags.base_tip.clone(),
+                    base_oid: leg.base_oid.clone(),
+                    tip: f.tip.clone(),
+                    ahead: f.ahead,
+                    merged: f.merged,
+                    needs_rebase: f.needs_rebase,
+                    conflict: s.flags.conflicts.contains(&branch),
+                    merged_in: f.merged_in.clone(),
+                    merged_oid: f.merged_oid.clone(),
+                    // The memo is the sampler's own working note, never
+                    // the board's.
+                    content: f.seen.clone(),
+                });
             }
+            if legs.is_empty() {
+                continue;
+            }
+            let a = worktree::aggregate(&legs);
+            changed |= self.wt_merged.insert(t, a.merged) != Some(a.merged);
+            changed |= self.wt_ahead.insert(t, a.ahead) != Some(a.ahead);
+            changed |= self.wt_needs_rebase.insert(t, a.needs_rebase) != Some(a.needs_rebase);
+            changed |= self.wt_tip.insert(t, a.tip.clone()) != Some(a.tip);
+            changed |= self.wt_merged_in.insert(t, a.merged_in.clone()) != Some(a.merged_in);
+            changed |= self.wt_merged_oid.insert(t, a.merged_oid.clone()) != Some(a.merged_oid);
+            changed |= self.wt_base_tip.insert(t, a.base_tip.clone()) != Some(a.base_tip);
+            let same_legs = self.wt_repos.get(&t).is_some_and(|old| {
+                old.len() == legs.len()
+                    && old.iter().zip(&legs).all(|(o, n)| {
+                        (o.ahead, o.merged, o.needs_rebase, o.conflict)
+                            == (n.ahead, n.merged, n.needs_rebase, n.conflict)
+                    })
+            });
+            changed |= !same_legs;
+            self.wt_repos.insert(t, legs);
         }
         let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
         for tid in tickets {
@@ -8482,8 +8846,11 @@ impl Daemon {
                     .iter()
                     .any(|s| s.ticket == tid && (s.state.is_live() || s.codex_stopping));
                 if !live {
-                    if let Some(b) = self.worktrees.get_mut(&tid) {
-                        if worktree::unlock(&self.paths.repo_root, &b.path).is_ok() {
+                    let legs = self.legs_of(tid);
+                    let released =
+                        legs.iter().all(|leg| worktree::unlock(&leg.repo, &leg.path).is_ok());
+                    if released {
+                        if let Some(b) = self.worktrees.get_mut(&tid) {
                             b.locked = false;
                         }
                     }

@@ -29,6 +29,93 @@ pub struct Binding {
     /// A `git worktree lock` we hold while sessions live in the tree.
     #[serde(default)]
     pub locked: bool,
+    /// The legs of a WORKSPACE binding (T-368): one entry per repository the
+    /// ticket's branch lives in, the root (meta) leg named `""` first when
+    /// the root is a repository. Empty is a single-repo binding — today's
+    /// shape, its story told by the top-level fields — and is left off the
+    /// wire, so a single-repo `worktrees.json` reads as it always did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<RepoBinding>,
+}
+
+/// One leg of a workspace binding as persisted: which nested repo, and the
+/// branch its checkout was on when the leg was cut — that leg's base.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoBinding {
+    /// `""` is the root repository; otherwise the census name (`api`).
+    pub name: String,
+    pub base: String,
+    pub base_oid: String,
+    pub branch_oid: String,
+}
+
+/// A leg resolved against the checkout: where git runs (`repo`) and where
+/// the ticket's tree for that repo is (`path`). A single-repo binding is
+/// exactly one root leg, so every consumer iterates legs and never asks
+/// whether a binding is a workspace one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Leg {
+    /// `""` is the root.
+    pub name: String,
+    pub repo: PathBuf,
+    pub path: PathBuf,
+    pub base: String,
+    pub base_oid: String,
+    pub branch_oid: String,
+}
+
+impl Binding {
+    pub fn is_workspace(&self) -> bool {
+        !self.repos.is_empty()
+    }
+
+    /// Whether a root leg exists: a single-repo binding always has one; a
+    /// workspace binding on a FOLDER root (no repository there) has none,
+    /// and its container is a plain directory.
+    pub fn has_root_leg(&self) -> bool {
+        !self.is_workspace() || self.repos.iter().any(|r| r.name.is_empty())
+    }
+
+    /// Root leg first, then the children in `repos` order. A single-repo
+    /// binding's base is not on the binding — it is the daemon's
+    /// `base_branch`, re-resolved after every fetch — so the caller passes it.
+    pub fn legs(&self, repo_root: &Path, single_base: &str) -> Vec<Leg> {
+        if !self.is_workspace() {
+            return vec![Leg {
+                name: String::new(),
+                repo: repo_root.to_path_buf(),
+                path: self.path.clone(),
+                base: single_base.to_string(),
+                base_oid: self.base_oid.clone(),
+                branch_oid: self.branch_oid.clone(),
+            }];
+        }
+        self.repos
+            .iter()
+            .map(|r| Leg {
+                name: r.name.clone(),
+                repo: if r.name.is_empty() {
+                    repo_root.to_path_buf()
+                } else {
+                    repo_root.join(&r.name)
+                },
+                path: if r.name.is_empty() { self.path.clone() } else { self.path.join(&r.name) },
+                base: r.base.clone(),
+                base_oid: r.base_oid.clone(),
+                branch_oid: r.branch_oid.clone(),
+            })
+            .collect()
+    }
+}
+
+/// A leg's word on the ticket page and in a detail: `root` for the root
+/// leg, else its name.
+pub fn leg_word(name: &str) -> &str {
+    if name.is_empty() {
+        "root"
+    } else {
+        name
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,7 +138,12 @@ pub type Bindings = HashMap<ulid::Ulid, Binding>;
 
 /// On-disk schema stamp for `worktrees.json` (16 §6.2). Its own counter: a
 /// bindings change must not force a sessions or ticket migration.
-pub const BINDINGS_SCHEMA: u32 = 1;
+///
+/// 2 (T-368): a binding may carry `repos`, the legs of a workspace worktree.
+/// A schema-1 file reads through the default (no legs); a build that reads 1
+/// bars its writes on a 2, because dropping the list would forget which
+/// repositories hold the branch.
+pub const BINDINGS_SCHEMA: u32 = 2;
 
 /// `worktrees.json`. The legacy shape is a bare ULID-keyed map, which is why
 /// `load_or_recover` probes for the `schema_version` key instead of reaching
@@ -120,11 +212,15 @@ pub fn save_bindings(paths: &Paths, b: &Bindings) -> Result<()> {
 ///
 /// This exists because losing `worktrees.json` used to orphan every worktree
 /// and `msmn/*` branch with nothing to reconstruct from.
-pub fn rebuild_from_disk(repo: &Path) -> Bindings {
+///
+/// A workspace binding (T-368) is found through its children: every census
+/// repo's `worktree list` is read for `msmn/` rows under `worktrees_root`
+/// whose marker names a ticket, and those legs are grouped under the ticket
+/// with the container as the parent of the leg's path. A root row the meta
+/// scan found for the same ticket becomes the root leg.
+pub fn rebuild_from_disk(repo: &Path, worktrees_root: &Path) -> Bindings {
     let mut out = Bindings::new();
-    let Ok(rows) = list_worktrees(repo) else {
-        return out;
-    };
+    let rows = list_worktrees(repo).unwrap_or_default();
     let base = default_branch(repo).unwrap_or_else(|_| "main".into());
     for row in rows {
         let Some(branch) = row.branch.clone() else { continue }; // detached: not ours
@@ -150,10 +246,80 @@ pub fn rebuild_from_disk(repo: &Path) -> Bindings {
                 branch_oid,
                 status,
                 locked: row.locked_reason.is_some(),
+                repos: Vec::new(),
             },
         );
     }
+    // The children of a workspace: a leg is a row on our namespace, under
+    // the worktrees root, carrying our marker.
+    let wt_root = worktrees_root.canonicalize().unwrap_or_else(|_| worktrees_root.to_path_buf());
+    let root_found: Vec<ulid::Ulid> = out.keys().copied().collect();
+    for name in crate::gitstatus::census(repo) {
+        let child = repo.join(&name);
+        let Ok(rows) = list_worktrees(&child) else { continue };
+        let child_base = checked_out(&child)
+            .map(|(b, _)| b)
+            .or_else(|_| default_branch(&child))
+            .unwrap_or_else(|_| "main".into());
+        for row in rows {
+            let Some(branch) = row.branch.clone() else { continue };
+            if !branch.starts_with(mesimon_core::workspace::BRANCH_NS) {
+                continue;
+            }
+            let path = row.path.canonicalize().unwrap_or(row.path.clone());
+            if !path.starts_with(&wt_root) {
+                continue;
+            }
+            let Some(ticket) = marker_ticket(&path) else { continue };
+            let Some(container) = path.parent().map(Path::to_path_buf) else { continue };
+            let branch_oid = branch_tip(&child, &branch);
+            let base_oid = git_read(&child, &["merge-base", &child_base, &branch])
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| branch_oid.clone());
+            let b = out.entry(ticket).or_insert_with(|| Binding {
+                path: container,
+                branch: branch.clone(),
+                base_oid: String::new(),
+                branch_oid: String::new(),
+                status: BindingStatus::Attached,
+                locked: row.locked_reason.is_some(),
+                repos: Vec::new(),
+            });
+            if b.repos.is_empty() && root_found.contains(&ticket) {
+                // The meta's own row: the root leg, from what the scan above
+                // recovered, judged against the branch the meta stands on.
+                let root_base = checked_out(repo).map(|(b, _)| b).unwrap_or_else(|_| base.clone());
+                b.repos.push(RepoBinding {
+                    name: String::new(),
+                    base: root_base,
+                    base_oid: b.base_oid.clone(),
+                    branch_oid: b.branch_oid.clone(),
+                });
+            }
+            b.repos.push(RepoBinding {
+                name: name.clone(),
+                base: child_base.clone(),
+                base_oid,
+                branch_oid,
+            });
+        }
+    }
+    for b in out.values_mut().filter(|b| b.is_workspace()) {
+        let all_present = b.legs(repo, "").iter().all(|l| l.path.is_dir());
+        b.status = if all_present { BindingStatus::Attached } else { BindingStatus::Evicted };
+    }
     out
+}
+
+/// Every leg's directory is on disk and carries our marker — the test a
+/// recovered or interrupted binding must pass before anything trusts it. A
+/// folder container (no root leg) has no marker of its own; its directory
+/// is enough.
+pub fn verify_on_disk(ticket: ulid::Ulid, b: &Binding, repo_root: &Path) -> bool {
+    b.path.is_dir()
+        && b.legs(repo_root, "")
+            .iter()
+            .all(|leg| leg.path.is_dir() && marker_ticket(&leg.path) == Some(ticket))
 }
 
 /// Startup loader for `worktrees.json`: parse, and on failure quarantine and
@@ -178,7 +344,7 @@ pub fn load_or_recover(paths: &Paths) -> (Bindings, Vec<Notice>, bool) {
                     .with_path(f.display())
                     .with_detail(e.to_string()),
             );
-            return (rebuild_from_disk(&paths.repo_root), notices, true);
+            return (rebuild_from_disk(&paths.repo_root, &paths.worktrees_root()), notices, true);
         }
     };
 
@@ -198,18 +364,18 @@ pub fn load_or_recover(paths: &Paths) -> (Bindings, Vec<Notice>, bool) {
                 )
                 .with_path(f.display()),
             );
-            return (rebuild_from_disk(&paths.repo_root), notices, true);
+            return (rebuild_from_disk(&paths.repo_root, &paths.worktrees_root()), notices, true);
         }
         Err((None, detail)) => detail,
     };
 
     let moved = crate::store::quarantine(&f);
-    let rebuilt = rebuild_from_disk(&paths.repo_root);
+    let rebuilt = rebuild_from_disk(&paths.repo_root, &paths.worktrees_root());
     // Unbar only when every rebuilt binding verifies against disk: the
     // directory is there and its marker still names the same ticket. Anything
     // less and we keep the bar, so nothing is torn down on a guess.
-    let verified = moved.is_some()
-        && rebuilt.iter().all(|(id, b)| b.path.is_dir() && marker_ticket(&b.path) == Some(*id));
+    let verified =
+        moved.is_some() && rebuilt.iter().all(|(id, b)| verify_on_disk(*id, b, &paths.repo_root));
     notices.push(
         Notice::new(
             "worktrees_barred",
@@ -376,31 +542,8 @@ pub fn provision(
         return Err(("precheck".into(), format!("{} already exists", dir.display())));
     }
 
-    // Stage 1 — add. Never --force, never --relative-paths.
-    let dir_s = dir.to_string_lossy().into_owned();
-    git(repo, &["worktree", "add", "--quiet", &dir_s, "-b", &branch, &base_oid])
-        .map_err(|e| ("add".into(), e.to_string()))?;
-
-    // Stage 1b — ownership marker inside the admin dir (survives clean -xfd,
-    // dies with worktree remove/prune, needs no shared-config write).
-    let marker = git_read(&dir, &["rev-parse", "--git-path", "mesimon-ticket"])
-        .map_err(|e| ("mark".into(), e.to_string()))?;
-    let marker_path = {
-        let p = PathBuf::from(marker.trim());
-        if p.is_absolute() {
-            p
-        } else {
-            dir.join(p)
-        }
-    };
-    std::fs::write(&marker_path, format!("{ticket_id}\n{}\n1\n", repo.display()))
-        .map_err(|e| ("mark".into(), e.to_string()))?;
-
-    // Stage 2 — .worktreeinclude copy (Claude Code semantics: pattern match AND
-    // gitignored). Skip silently when the repo has no file.
-    if let Err(e) = copy_worktreeinclude(repo, &dir) {
-        return Err(("include".into(), e.to_string()));
-    }
+    // Stages 1/1b/2.
+    add_leg(repo, &dir, &branch, Some(&base_oid), ticket_id)?;
 
     // Stage 5 — ready. Canonicalize so the path matches `worktree list` output
     // (macOS /var → /private/var); the abs path is the canonical key (12 §12.2).
@@ -412,6 +555,168 @@ pub fn provision(
         branch,
         status: BindingStatus::Attached,
         locked: false,
+        repos: Vec::new(),
+    })
+}
+
+/// Stages 1/1b/2 for ONE leg: `worktree add` (with `-b <branch> <start>`
+/// when `start` is given — a fresh branch; without it the branch exists and
+/// is checked out as is), the ownership marker, the `.worktreeinclude` copy.
+/// The road every provision takes, single-repo or per leg.
+fn add_leg(
+    repo: &Path,
+    wt: &Path,
+    branch: &str,
+    start: Option<&str>,
+    ticket_id: ulid::Ulid,
+) -> std::result::Result<(), (String, String)> {
+    // Stage 1 — add. Never --force, never --relative-paths.
+    let wt_s = wt.to_string_lossy().into_owned();
+    match start {
+        Some(oid) => git(repo, &["worktree", "add", "--quiet", &wt_s, "-b", branch, oid]),
+        None => git(repo, &["worktree", "add", "--quiet", &wt_s, branch]),
+    }
+    .map_err(|e| ("add".into(), e.to_string()))?;
+
+    // Stage 1b — ownership marker inside the admin dir (survives clean -xfd,
+    // dies with worktree remove/prune, needs no shared-config write).
+    let marker = git_read(wt, &["rev-parse", "--git-path", "mesimon-ticket"])
+        .map_err(|e| ("mark".into(), e.to_string()))?;
+    let marker_path = {
+        let p = PathBuf::from(marker.trim());
+        if p.is_absolute() {
+            p
+        } else {
+            wt.join(p)
+        }
+    };
+    std::fs::write(&marker_path, format!("{ticket_id}\n{}\n1\n", repo.display()))
+        .map_err(|e| ("mark".into(), e.to_string()))?;
+
+    // Stage 2 — .worktreeinclude copy (Claude Code semantics: pattern match AND
+    // gitignored). Skip silently when the repo has no file.
+    copy_worktreeinclude(repo, wt).map_err(|e| ("include".into(), e.to_string()))
+}
+
+/// The branch a checkout stands on and its tip. `Err` names a detached or
+/// unborn HEAD — a leg's base is the branch its checkout is on, and a
+/// checkout on no branch has no base to offer (fail closed, D26).
+fn checked_out(repo: &Path) -> std::result::Result<(String, String), String> {
+    let name = git_read(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .map_err(|_| "is on a detached HEAD — check out a branch there first".to_string())?;
+    let refname = format!("refs/heads/{name}");
+    let oid = git_read(repo, &["rev-parse", "--verify", "--quiet", &refname])
+        .map(|s| s.trim().to_string())
+        .map_err(|_| format!("branch {name} has no commits"))?;
+    Ok((name, oid))
+}
+
+/// Provision a WORKSPACE worktree (T-368): the container under
+/// `worktrees_root` — a worktree of the meta on the ticket branch when the
+/// root is a repository (`is_meta`), a plain directory holding the root's
+/// `CLAUDE.md` otherwise — and inside it one worktree per census repo, each
+/// on the same `msmn/` branch, based on the branch that repo's checkout is
+/// on. Every repo is cut (author, 2026-09-22: no guessing which ones a
+/// ticket will touch). Sequential, off the writer thread; `progress` is told
+/// `(done, total)` after every leg.
+///
+/// Fail closed: the precheck writes nothing and refuses on the first repo
+/// that is detached or already holds the branch; a leg that fails to add
+/// takes every leg already added with it, branches included.
+#[allow(clippy::too_many_arguments)]
+pub fn provision_workspace(
+    root: &Path,
+    worktrees_root: &Path,
+    census: &[String],
+    is_meta: bool,
+    ticket_id: ulid::Ulid,
+    short_key: &str,
+    title: &str,
+    progress: &mut dyn FnMut(u32, u32),
+) -> std::result::Result<Binding, (String, String)> {
+    let branch = mesimon_core::workspace::branch_name(short_key, title);
+    let dir = worktrees_root.join(mesimon_core::workspace::dir_name(short_key, title));
+
+    // Stage 0 — precheck, every repo, nothing written.
+    if dir.exists() {
+        return Err(("precheck".into(), format!("{} already exists", dir.display())));
+    }
+    let branch_ref = format!("refs/heads/{branch}");
+    let mut plan: Vec<(String, PathBuf, String, String)> = Vec::new();
+    let names = std::iter::once(String::new()).filter(|_| is_meta).chain(census.iter().cloned());
+    for name in names {
+        let repo = if name.is_empty() { root.to_path_buf() } else { root.join(&name) };
+        let (base, head) = checked_out(&repo)
+            .map_err(|e| ("precheck".into(), format!("{} {e}", leg_word(&name))))?;
+        if git_read(&repo, &["rev-parse", "--verify", "--quiet", &branch_ref]).is_ok() {
+            return Err((
+                "precheck".into(),
+                format!("branch {branch} already exists in {}", leg_word(&name)),
+            ));
+        }
+        plan.push((name, repo, base, head));
+    }
+    if plan.is_empty() {
+        return Err(("precheck".into(), "no repositories to cut a worktree of".into()));
+    }
+
+    let total = plan.len() as u32;
+    let mut added: Vec<(PathBuf, PathBuf)> = Vec::new(); // (repo, wt), in add order
+    let rollback = |added: &[(PathBuf, PathBuf)]| {
+        for (repo, wt) in added.iter().rev() {
+            let _ = remove(repo, wt);
+            let _ = delete_branch(repo, &branch, true);
+        }
+        if !is_meta {
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    };
+
+    // The container.
+    if !is_meta {
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return Err(("add".into(), e.to_string()));
+        }
+        let claude = root.join("CLAUDE.md");
+        if claude.is_file() {
+            let _ = std::fs::copy(&claude, dir.join("CLAUDE.md"));
+        }
+    }
+
+    let mut repos = Vec::with_capacity(plan.len());
+    for (i, (name, repo, base, head)) in plan.iter().enumerate() {
+        let wt = if name.is_empty() { dir.clone() } else { dir.join(name) };
+        if let Err((stage, message)) = add_leg(repo, &wt, &branch, Some(head), ticket_id) {
+            // `add -b` mints the branch before it lays the tree, so a failed
+            // add can leave the branch behind; the precheck saw none, so
+            // one standing at `head` is ours to take back.
+            if branch_tip(repo, &branch) == *head {
+                let _ = delete_branch(repo, &branch, true);
+            }
+            rollback(&added);
+            return Err((stage, format!("{}: {message}", leg_word(name))));
+        }
+        added.push((repo.clone(), wt));
+        repos.push(RepoBinding {
+            name: name.clone(),
+            base: base.clone(),
+            base_oid: head.clone(),
+            branch_oid: head.clone(),
+        });
+        progress(i as u32 + 1, total);
+    }
+
+    let dir = dir.canonicalize().unwrap_or(dir);
+    let root_leg = repos.iter().find(|r| r.name.is_empty());
+    Ok(Binding {
+        path: dir,
+        branch,
+        base_oid: root_leg.map(|r| r.base_oid.clone()).unwrap_or_default(),
+        branch_oid: root_leg.map(|r| r.branch_oid.clone()).unwrap_or_default(),
+        status: BindingStatus::Attached,
+        locked: false,
+        repos,
     })
 }
 
@@ -440,6 +745,37 @@ pub fn reconcile_interrupted(repo: &Path, bindings: &mut Bindings) -> bool {
             return true;
         }
         changed = true;
+        if b.is_workspace() {
+            // A workspace binding (T-368): whole, or not at all. Every leg on
+            // disk with our marker → `Attached`. Anything partial is taken
+            // down — the legs that landed are removed, and a leg's branch
+            // goes only where it never left its base (an interrupted replay
+            // of an evicted binding has branches carrying work). A surviving
+            // branch keeps the binding as `Evicted`; none drops it.
+            if verify_on_disk(*ticket, b, repo) {
+                b.status = BindingStatus::Attached;
+                return true;
+            }
+            let legs = b.legs(repo, "");
+            for leg in legs.iter().rev() {
+                if leg.path.is_dir() {
+                    let _ = remove(&leg.repo, &leg.path);
+                }
+                let tip = branch_tip(&leg.repo, &b.branch);
+                if !tip.is_empty() && tip == leg.base_oid {
+                    let _ = delete_branch(&leg.repo, &b.branch, true);
+                }
+            }
+            if !b.has_root_leg() {
+                std::fs::remove_dir_all(&b.path).ok();
+            }
+            let kept = legs.iter().any(|leg| !branch_tip(&leg.repo, &b.branch).is_empty());
+            if kept {
+                b.status = BindingStatus::Evicted;
+                b.locked = false;
+            }
+            return kept;
+        }
         if b.path.is_dir() {
             if marker_ticket(&b.path) == Some(*ticket) {
                 b.status = BindingStatus::Attached;
@@ -478,6 +814,9 @@ pub fn provision_existing(
     ticket_id: ulid::Ulid,
     prior: &Binding,
 ) -> std::result::Result<Binding, (String, String)> {
+    if prior.is_workspace() {
+        return provision_existing_workspace(repo, ticket_id, prior);
+    }
     let branch_ref = format!("refs/heads/{}", prior.branch);
     if git_read(repo, &["rev-parse", "--verify", "--quiet", &branch_ref]).is_err() {
         return Err(("precheck".into(), format!("branch {} no longer exists", prior.branch)));
@@ -503,6 +842,63 @@ pub fn provision_existing(
     let mut b = prior.clone();
     b.path = b.path.canonicalize().unwrap_or(b.path);
     b.branch_oid = branch_oid;
+    b.status = BindingStatus::Attached;
+    b.locked = false;
+    Ok(b)
+}
+
+/// The evicted road for a workspace binding: every leg whose tree is gone
+/// is re-added on its existing branch; a leg still standing with our marker
+/// (a half-evicted container) is kept. Rollback removes only the legs THIS
+/// call added and never a branch — the branches carry the work eviction
+/// preserved.
+fn provision_existing_workspace(
+    repo_root: &Path,
+    ticket_id: ulid::Ulid,
+    prior: &Binding,
+) -> std::result::Result<Binding, (String, String)> {
+    let legs = prior.legs(repo_root, "");
+    let branch_ref = format!("refs/heads/{}", prior.branch);
+    for leg in &legs {
+        if git_read(&leg.repo, &["rev-parse", "--verify", "--quiet", &branch_ref]).is_err() {
+            return Err((
+                "precheck".into(),
+                format!("branch {} no longer exists in {}", prior.branch, leg_word(&leg.name)),
+            ));
+        }
+        if leg.path.exists() && marker_ticket(&leg.path) != Some(ticket_id) {
+            return Err(("precheck".into(), format!("{} already exists", leg.path.display())));
+        }
+    }
+    if !prior.has_root_leg() {
+        if let Err(e) = std::fs::create_dir_all(&prior.path) {
+            return Err(("add".into(), e.to_string()));
+        }
+    }
+    let mut added: Vec<&Leg> = Vec::new();
+    for leg in &legs {
+        if leg.path.is_dir() {
+            continue;
+        }
+        if let Err((stage, message)) = add_leg(&leg.repo, &leg.path, &prior.branch, None, ticket_id)
+        {
+            for done in added.iter().rev() {
+                let _ = remove(&done.repo, &done.path);
+            }
+            return Err((stage, format!("{}: {message}", leg_word(&leg.name))));
+        }
+        added.push(leg);
+    }
+    let mut b = prior.clone();
+    b.path = b.path.canonicalize().unwrap_or(b.path);
+    for r in &mut b.repos {
+        let leg_repo =
+            if r.name.is_empty() { repo_root.to_path_buf() } else { repo_root.join(&r.name) };
+        r.branch_oid = branch_tip(&leg_repo, &prior.branch);
+    }
+    if let Some(root) = b.repos.iter().find(|r| r.name.is_empty()) {
+        b.branch_oid = root.branch_oid.clone();
+    }
     b.status = BindingStatus::Attached;
     b.locked = false;
     Ok(b)
@@ -1316,6 +1712,217 @@ pub fn delete_branch(repo: &Path, branch: &str, force: bool) -> Result<()> {
     git(repo, &["branch", flag, branch]).map(|_| ())
 }
 
+/// Steps 1/2/4/5 for every leg, then the container: the tree removed where
+/// it stands, the branch deleted per `delete` (`Some(false)` is `-d`,
+/// `Some(true)` the `-D` a discard confirmed, `None` keeps it). Children go
+/// before the root leg — removing the meta's worktree first would take the
+/// children's gitfiles with it and leave every child repo a prunable row —
+/// and a folder container is a plain directory removed last. Returns
+/// whether any leg's branch survived. Callers kill the sessions first
+/// (step 0) and never call this while a live process has a leg as cwd.
+pub fn teardown(repo_root: &Path, b: &Binding, delete: &dyn Fn(&Leg) -> Option<bool>) -> bool {
+    let legs = b.legs(repo_root, "");
+    let mut kept = false;
+    for leg in legs.iter().rev() {
+        if leg.path.is_dir() {
+            let _ = remove(&leg.repo, &leg.path);
+        }
+        if !b.branch.is_empty() {
+            if let Some(force) = delete(leg) {
+                let _ = delete_branch(&leg.repo, &b.branch, force);
+            }
+            kept |= !branch_tip(&leg.repo, &b.branch).is_empty();
+        }
+    }
+    if b.is_workspace() && !b.has_root_leg() && b.path.is_dir() {
+        std::fs::remove_dir_all(&b.path).ok();
+    }
+    kept
+}
+
+// ---- legs: flags per repo, one answer per ticket ------------------------------
+
+/// One repository's question for a flags pass: the base and upstream it is
+/// judged against, and the legs of every ticket that has one there.
+#[derive(Debug, Clone)]
+pub struct RepoQuery {
+    /// `""` is the root.
+    pub name: String,
+    pub repo: PathBuf,
+    pub base: String,
+    pub upstream: Option<String>,
+    pub inputs: Vec<FlagInput>,
+}
+
+/// That repository's answer: `compute_flags` as it was, tagged with the
+/// query it answers.
+#[derive(Debug, Clone)]
+pub struct RepoSample {
+    pub name: String,
+    pub base: String,
+    pub flags: WtFlags,
+}
+
+/// `compute_flags` once per repository, on any thread. A single-repo board
+/// is one query, and the same `2 + n` forks it always was.
+pub fn compute_repo_flags(queries: &[RepoQuery]) -> Vec<RepoSample> {
+    queries
+        .iter()
+        .map(|q| RepoSample {
+            name: q.name.clone(),
+            base: q.base.clone(),
+            flags: compute_flags(&q.repo, &q.base, q.upstream.as_deref(), &q.inputs),
+        })
+        .collect()
+}
+
+/// One leg's flags as the daemon keeps them between passes: the snapshot's
+/// per-repo row, `ticket_merged`'s content memo, and `aggregate`'s input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoFlags {
+    pub name: String,
+    pub base: String,
+    pub base_tip: String,
+    pub base_oid: String,
+    pub tip: String,
+    pub ahead: u32,
+    pub merged: bool,
+    pub needs_rebase: bool,
+    pub conflict: bool,
+    pub merged_in: String,
+    pub merged_oid: String,
+    pub content: Option<ContentSeen>,
+}
+
+impl RepoFlags {
+    /// The branch has moved off the leg's creation base — there is work here
+    /// to judge. A branch git no longer has is treated as touched too, so a
+    /// lost branch keeps reading as it always did.
+    pub fn touched(&self) -> bool {
+        self.tip != self.base_oid
+    }
+}
+
+/// The ticket's one answer over its legs — what the card, the DONE gate and
+/// the train read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Aggregate {
+    pub merged: bool,
+    pub ahead: u32,
+    pub needs_rebase: bool,
+    pub conflict: bool,
+    pub tip: String,
+    pub base_tip: String,
+    pub merged_in: String,
+    pub merged_oid: String,
+}
+
+/// Fold a ticket's legs into one answer. The legs that were TOUCHED judge
+/// it: `merged` is every touched leg merged, `needs_rebase` any touched leg
+/// behind its base. An untouched leg is silent — on a workspace most legs
+/// never see a commit, and one whose base moved on has nothing to rebase.
+/// With no leg touched every leg judges, which is exactly the single-leg
+/// answer (`compute_flags` calls a fresh branch not merged: no work yet).
+/// `ahead` sums every leg; `tip` and `base_tip` join the legs' with `+`, so
+/// a change in any leg is a change in the key the train and the refusal
+/// memo hang off.
+pub fn aggregate(legs: &[RepoFlags]) -> Aggregate {
+    let touched: Vec<&RepoFlags> = legs.iter().filter(|l| l.touched()).collect();
+    let judged: Vec<&RepoFlags> = if touched.is_empty() { legs.iter().collect() } else { touched };
+    let merged = !judged.is_empty() && judged.iter().all(|l| l.merged);
+    let landed = judged
+        .iter()
+        .find(|l| l.name.is_empty() && !l.merged_in.is_empty())
+        .or_else(|| judged.iter().find(|l| !l.merged_in.is_empty()));
+    Aggregate {
+        merged,
+        ahead: legs.iter().map(|l| l.ahead).sum(),
+        needs_rebase: judged.iter().any(|l| l.needs_rebase),
+        conflict: legs.iter().any(|l| l.conflict),
+        tip: legs.iter().map(|l| l.tip.as_str()).collect::<Vec<_>>().join("+"),
+        base_tip: legs.iter().map(|l| l.base_tip.as_str()).collect::<Vec<_>>().join("+"),
+        merged_in: landed.map(|l| l.merged_in.clone()).unwrap_or_default(),
+        merged_oid: landed.map(|l| l.merged_oid.clone()).unwrap_or_default(),
+    }
+}
+
+/// What merging the branch across its legs did, or why it could not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegMerge {
+    /// No leg's tip has left its creation base: nothing to merge yet.
+    Nothing,
+    /// Every touched leg is already an ancestor of its base.
+    Already,
+    /// Legs whose base moved past them, `(name, base)` each — judged before
+    /// anything was written, so nothing was.
+    NeedsRebase(Vec<(String, String)>),
+    /// Fast-forwarded these legs, `(name, base)` each.
+    Merged(Vec<(String, String)>),
+    /// Landed `landed`, then `leg` refused with git's words; the legs before
+    /// it stay merged and the next call continues from here.
+    Refused { landed: Vec<(String, String)>, leg: String, base: String, error: String },
+}
+
+/// Merge the branch leg by leg, ff-only, in leg order: every touched,
+/// unmerged leg is judged ff-able first (or the answer is `NeedsRebase` and
+/// nothing moves), then each is fast-forwarded into its own base. Not
+/// atomic across repositories — git has no such thing — so a refusal
+/// midway leaves the ticket half landed, and says so.
+pub fn merge_legs(legs: &[Leg], branch: &str) -> LegMerge {
+    let mut any_touched = false;
+    let mut moved = Vec::new();
+    let mut pending: Vec<&Leg> = Vec::new();
+    for leg in legs {
+        let tip = branch_tip(&leg.repo, branch);
+        if tip.is_empty() || tip == leg.base_oid {
+            continue;
+        }
+        any_touched = true;
+        if is_merged(&leg.repo, branch, &leg.base) {
+            continue;
+        }
+        if !ff_possible(&leg.repo, branch, &leg.base) {
+            moved.push((leg.name.clone(), leg.base.clone()));
+            continue;
+        }
+        pending.push(leg);
+    }
+    if !any_touched {
+        return LegMerge::Nothing;
+    }
+    if !moved.is_empty() {
+        return LegMerge::NeedsRebase(moved);
+    }
+    if pending.is_empty() {
+        return LegMerge::Already;
+    }
+    let mut landed = Vec::new();
+    for leg in pending {
+        match ff_merge(&leg.repo, branch, &leg.base) {
+            Ok(()) => landed.push((leg.name.clone(), leg.base.clone())),
+            Err(e) => {
+                return LegMerge::Refused {
+                    landed,
+                    leg: leg.name.clone(),
+                    base: leg.base.clone(),
+                    error: e.to_string(),
+                }
+            }
+        }
+    }
+    LegMerge::Merged(landed)
+}
+
+/// `(name, base)` pairs as a detail names them: the root's base bare, a
+/// child's as `api/main`.
+pub fn landed_words(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .map(|(n, b)| if n.is_empty() { b.clone() } else { format!("{n}/{b}") })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1328,6 +1935,7 @@ mod tests {
             branch_oid: String::new(),
             status,
             locked: false,
+            repos: Vec::new(),
         }
     }
 
@@ -1380,7 +1988,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let b = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing").unwrap();
 
-        let rebuilt = rebuild_from_disk(&repo);
+        let rebuilt = rebuild_from_disk(&repo, &repo.join("_wtroot"));
         let got = rebuilt.get(&ulid::Ulid(1)).expect("ticket recovered from its marker");
         assert_eq!(got.branch, b.branch);
         assert_eq!(got.path, b.path);
@@ -1402,7 +2010,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
-        assert!(rebuild_from_disk(&repo).is_empty(), "no marker, no claim");
+        assert!(rebuild_from_disk(&repo, &repo.join("_wtroot")).is_empty(), "no marker, no claim");
         std::fs::remove_dir_all(&repo).ok();
     }
 
@@ -1455,6 +2063,7 @@ mod tests {
                 branch_oid: String::new(),
                 status: BindingStatus::Queued,
                 locked: false,
+                repos: Vec::new(),
             },
         );
         // Dir exists but is not ours (no marker) → fail closed.
@@ -1469,6 +2078,7 @@ mod tests {
                 branch_oid: String::new(),
                 status: BindingStatus::Provisioning,
                 locked: false,
+                repos: Vec::new(),
             },
         );
         // Attached stays untouched.
@@ -2030,5 +2640,499 @@ mod tests {
         assert!(!by("gone").merged && by("gone").ahead == 0 && by("gone").needs_rebase);
         assert!(got.conflicts.is_empty());
         std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // ---- workspace worktrees: one leg per repo (T-368) ------------------------
+
+    use crate::testrepo::{self, workspace_scratch};
+
+    fn ws_binding(name: &str) -> Binding {
+        Binding {
+            path: PathBuf::from("/wt/T-1-x"),
+            branch: "msmn/T-1-x".into(),
+            base_oid: "r0".into(),
+            branch_oid: "r0".into(),
+            status: BindingStatus::Attached,
+            locked: false,
+            repos: vec![
+                RepoBinding {
+                    name: String::new(),
+                    base: "master".into(),
+                    base_oid: "r0".into(),
+                    branch_oid: "r0".into(),
+                },
+                RepoBinding {
+                    name: name.into(),
+                    base: "main".into(),
+                    base_oid: "a0".into(),
+                    branch_oid: "a1".into(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn legs_of_a_single_binding_is_one_root_leg() {
+        let b = binding(BindingStatus::Attached, "msmn/T-1-x");
+        let legs = b.legs(Path::new("/repo"), "main");
+        assert_eq!(legs.len(), 1);
+        assert_eq!(legs[0].name, "");
+        assert_eq!(legs[0].repo, Path::new("/repo"));
+        assert_eq!(legs[0].path, Path::new("/nowhere"));
+        assert_eq!(legs[0].base, "main", "the daemon's base, not the binding's");
+        assert!(!b.is_workspace() && b.has_root_leg());
+        assert_eq!(leg_word(""), "root");
+        assert_eq!(leg_word("api"), "api");
+    }
+
+    #[test]
+    fn legs_of_a_workspace_binding_map_root_and_children() {
+        let b = ws_binding("api");
+        let legs = b.legs(Path::new("/repo"), "ignored");
+        assert_eq!(legs.len(), 2);
+        assert_eq!(legs[0].name, "");
+        assert_eq!(legs[0].repo, Path::new("/repo"));
+        assert_eq!(legs[0].path, Path::new("/wt/T-1-x"));
+        assert_eq!(legs[0].base, "master");
+        assert_eq!(legs[1].name, "api");
+        assert_eq!(legs[1].repo, Path::new("/repo/api"));
+        assert_eq!(legs[1].path, Path::new("/wt/T-1-x/api"));
+        assert_eq!((legs[1].base.as_str(), legs[1].base_oid.as_str()), ("main", "a0"));
+        assert!(b.is_workspace() && b.has_root_leg());
+        let mut folder = b.clone();
+        folder.repos.remove(0);
+        assert!(!folder.has_root_leg());
+    }
+
+    /// Schema 2 round-trips its legs; a single-repo binding is written
+    /// without a `repos` key at all, so the file reads as it always did.
+    #[test]
+    fn schema_two_carries_legs_and_leaves_them_off_a_single_binding() {
+        let single = binding(BindingStatus::Attached, "msmn/T-1-x");
+        let text = serde_json::to_string(&single).unwrap();
+        assert!(!text.contains("repos"), "{text}");
+        let ws = ws_binding("api");
+        let mut bindings = Bindings::new();
+        bindings.insert(ulid::Ulid(1), ws.clone());
+        let file =
+            serde_json::to_string(&BindingsFile { schema_version: BINDINGS_SCHEMA, bindings })
+                .unwrap();
+        assert!(file.contains("\"schema_version\":2"));
+        let back = parse_bindings(&file).unwrap();
+        assert_eq!(back[&ulid::Ulid(1)].repos, ws.repos);
+        // A schema-1 wrapper still loads, legless.
+        let one = file
+            .replace("\"schema_version\":2", "\"schema_version\":1")
+            .replace(&serde_json::to_string(&ws.repos).unwrap(), "[]");
+        assert!(parse_bindings(&one).unwrap()[&ulid::Ulid(1)].repos.is_empty());
+    }
+
+    fn ws_provision(
+        root: &Path,
+        is_meta: bool,
+        progress: &mut dyn FnMut(u32, u32),
+    ) -> std::result::Result<Binding, (String, String)> {
+        let wtroot = root.join("_wtroot");
+        std::fs::create_dir_all(&wtroot).unwrap();
+        let census = crate::gitstatus::census(root);
+        provision_workspace(root, &wtroot, &census, is_meta, ulid::Ulid(1), "T-1", "Fix", progress)
+    }
+
+    #[test]
+    fn workspace_provision_cuts_every_census_repo() {
+        let Some(root) = workspace_scratch("wsprov") else { return };
+        let mut seen = Vec::new();
+        let b = ws_provision(&root, true, &mut |d, t| seen.push((d, t))).unwrap();
+        assert_eq!(seen, vec![(1, 3), (2, 3), (3, 3)]);
+        assert_eq!(b.branch, "msmn/T-1-fix");
+        assert_eq!(b.status, BindingStatus::Attached);
+        let names: Vec<&str> = b.repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["", "api", "web"], "root first, then census order");
+        for leg in b.legs(&root, "") {
+            assert!(leg.path.is_dir(), "{}", leg.path.display());
+            assert_eq!(marker_ticket(&leg.path), Some(ulid::Ulid(1)), "{}", leg.name);
+            assert_eq!(leg.base, "main");
+            assert_eq!(leg.base_oid, branch_tip(&leg.repo, "main"));
+            assert_eq!(
+                testrepo::read(&leg.path, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+                "msmn/T-1-fix"
+            );
+        }
+        assert!(b.path.join("CLAUDE.md").is_file(), "the meta's files are in the container");
+        assert!(b.path.join("api/server.ts").is_file());
+        assert!(b.path.join("web/page.tsx").is_file());
+        // The gitfile child (a worktree of `web`, sharing its refs) stays on
+        // its own branch, and the declared submodule was never touched.
+        assert_eq!(
+            testrepo::read(&root.join(".wt-web"), &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+            "feedback"
+        );
+        assert!(branch_tip(&root.join("vendored"), "msmn/T-1-fix").is_empty());
+        assert!(verify_on_disk(ulid::Ulid(1), &b, &root));
+        assert!(!verify_on_disk(ulid::Ulid(2), &b, &root));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn workspace_provision_on_a_folder_has_no_root_leg() {
+        let Some(root) = workspace_scratch("wsfolder") else { return };
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+        let b = ws_provision(&root, false, &mut |_, _| {}).unwrap();
+        let names: Vec<&str> = b.repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["api", "web"]);
+        assert!(!b.has_root_leg());
+        assert!(b.base_oid.is_empty() && b.branch_oid.is_empty());
+        assert!(b.path.join("CLAUDE.md").is_file(), "the root's CLAUDE.md is copied in");
+        assert!(!b.path.join(".git").exists(), "a plain directory, not a worktree");
+        assert!(verify_on_disk(ulid::Ulid(1), &b, &root));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn workspace_provision_fails_closed_on_a_detached_child() {
+        let Some(root) = workspace_scratch("wsdetached") else { return };
+        testrepo::run(&root.join("web"), &["checkout", "-q", "--detach"]);
+        let (stage, message) = ws_provision(&root, true, &mut |_, _| {}).unwrap_err();
+        assert_eq!(stage, "precheck");
+        assert!(message.starts_with("web "), "{message}");
+        assert!(message.contains("detached"), "{message}");
+        assert!(
+            std::fs::read_dir(root.join("_wtroot")).unwrap().next().is_none(),
+            "nothing written"
+        );
+        for leg in ["", "api", "web"] {
+            assert!(branch_tip(&root.join(leg), "msmn/T-1-fix").is_empty(), "{leg}");
+        }
+        // A branch already held in one child is refused the same way.
+        testrepo::run(&root.join("web"), &["checkout", "-q", "main"]);
+        testrepo::run(&root.join("api"), &["branch", "msmn/T-1-fix"]);
+        let (stage, message) = ws_provision(&root, true, &mut |_, _| {}).unwrap_err();
+        assert_eq!(stage, "precheck");
+        assert!(message.ends_with("already exists in api"), "{message}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A child that fails to add takes the legs already added with it.
+    #[test]
+    fn workspace_provision_rolls_back_a_failed_child() {
+        let Some(root) = workspace_scratch("wsrollback") else { return };
+        // The precheck reads `web` fine; its add fails because git cannot
+        // write the admin entry under a read-only `worktrees/` dir.
+        let admin = root.join("web/.git/worktrees");
+        let perm = |mode: u32| {
+            std::fs::set_permissions(&admin, std::os::unix::fs::PermissionsExt::from_mode(mode))
+                .unwrap()
+        };
+        perm(0o555);
+        let mut seen = Vec::new();
+        let err = ws_provision(&root, true, &mut |d, t| seen.push((d, t))).unwrap_err();
+        perm(0o755);
+        assert_eq!(err.0, "add");
+        assert!(err.1.starts_with("web: "), "{}", err.1);
+        assert_eq!(seen, vec![(1, 3), (2, 3)], "root and api landed before web failed");
+        assert!(
+            std::fs::read_dir(root.join("_wtroot")).unwrap().next().is_none(),
+            "the container and every leg are gone"
+        );
+        for leg in ["", "api", "web"] {
+            assert!(branch_tip(&root.join(leg), "msmn/T-1-fix").is_empty(), "{leg} branch gone");
+            assert!(
+                !testrepo::read(&root.join(leg), &["worktree", "list", "--porcelain"])
+                    .contains("T-1-fix"),
+                "{leg} still lists the tree"
+            );
+        }
+        // And the next attempt succeeds outright.
+        assert!(ws_provision(&root, true, &mut |_, _| {}).is_ok());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rebuild_from_disk_recovers_a_workspace_binding() {
+        let Some(root) = workspace_scratch("wsrebuild") else { return };
+        let b = ws_provision(&root, true, &mut |_, _| {}).unwrap();
+        let rebuilt = rebuild_from_disk(&root, &root.join("_wtroot"));
+        let got = rebuilt.get(&ulid::Ulid(1)).expect("the workspace binding is recovered");
+        assert_eq!(got.path, b.path);
+        assert_eq!(got.branch, b.branch);
+        assert_eq!(got.status, BindingStatus::Attached);
+        let names: Vec<&str> = got.repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["", "api", "web"]);
+        for r in &got.repos {
+            assert_eq!(r.base, "main");
+            assert!(!r.base_oid.is_empty() && !r.branch_oid.is_empty());
+        }
+        // A folder root: found through the children alone.
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+        let rebuilt = rebuild_from_disk(&root, &root.join("_wtroot"));
+        let got = rebuilt.get(&ulid::Ulid(1)).unwrap();
+        let names: Vec<&str> = got.repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["api", "web"]);
+        assert_eq!(got.path, b.path);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reconcile_settles_a_partial_workspace() {
+        let Some(root) = workspace_scratch("wsreconcile") else { return };
+        let b = ws_provision(&root, true, &mut |_, _| {}).unwrap();
+        // Whole on disk, persisted mid-provision → Attached.
+        let mut bindings = Bindings::new();
+        bindings
+            .insert(ulid::Ulid(1), Binding { status: BindingStatus::Provisioning, ..b.clone() });
+        assert!(reconcile_interrupted(&root, &mut bindings));
+        assert_eq!(bindings[&ulid::Ulid(1)].status, BindingStatus::Attached);
+
+        // `web`'s leg gone, no work anywhere → everything is taken down and
+        // the binding drops.
+        remove(&root.join("web"), &b.path.join("web")).unwrap();
+        bindings
+            .insert(ulid::Ulid(1), Binding { status: BindingStatus::Provisioning, ..b.clone() });
+        assert!(reconcile_interrupted(&root, &mut bindings));
+        assert!(!bindings.contains_key(&ulid::Ulid(1)));
+        assert!(!b.path.exists(), "the container went with the legs");
+        for leg in ["", "api", "web"] {
+            assert!(branch_tip(&root.join(leg), &b.branch).is_empty(), "{leg} branch deleted");
+        }
+
+        // Provision again, commit on `api`'s leg, lose `web`'s tree: the
+        // legs go but `api`'s branch carries work and stays → Evicted.
+        let b = ws_provision(&root, true, &mut |_, _| {}).unwrap();
+        testrepo::commit(&b.path.join("api"), "new.ts", "x\n", "work");
+        remove(&root.join("web"), &b.path.join("web")).unwrap();
+        bindings.insert(ulid::Ulid(1), Binding { status: BindingStatus::Queued, ..b.clone() });
+        assert!(reconcile_interrupted(&root, &mut bindings));
+        assert_eq!(bindings[&ulid::Ulid(1)].status, BindingStatus::Evicted);
+        assert!(!branch_tip(&root.join("api"), &b.branch).is_empty(), "api's work survives");
+        assert!(branch_tip(&root.join("web"), &b.branch).is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn provision_existing_replays_a_workspace() {
+        let Some(root) = workspace_scratch("wsreplay") else { return };
+        let b = ws_provision(&root, true, &mut |_, _| {}).unwrap();
+        testrepo::commit(&b.path.join("api"), "new.ts", "x\n", "work");
+        let kept = teardown(&root, &b, &|_| None);
+        assert!(kept, "no branch deleted");
+        assert!(!b.path.exists());
+        let again = provision_existing(&root, ulid::Ulid(1), &b).unwrap();
+        assert_eq!(again.status, BindingStatus::Attached);
+        assert_eq!(again.repos.len(), 3);
+        for leg in again.legs(&root, "") {
+            assert!(leg.path.is_dir(), "{}", leg.name);
+            assert_eq!(marker_ticket(&leg.path), Some(ulid::Ulid(1)));
+        }
+        assert!(again.path.join("api/new.ts").is_file(), "the work came back");
+        let api = again.repos.iter().find(|r| r.name == "api").unwrap();
+        assert_eq!(api.branch_oid, branch_tip(&root.join("api"), &b.branch), "tip re-read");
+        assert_ne!(api.branch_oid, api.base_oid);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn workspace_teardown_removes_every_leg_and_the_container() {
+        let Some(root) = workspace_scratch("wsteardown") else { return };
+        let b = ws_provision(&root, true, &mut |_, _| {}).unwrap();
+        testrepo::commit(&b.path.join("api"), "new.ts", "x\n", "work");
+        ff_merge(&root.join("api"), &b.branch, "main").unwrap();
+        let kept = teardown(&root, &b, &|leg| {
+            Some(!(leg.name == "api" || branch_tip(&leg.repo, "msmn/T-1-fix") == leg.base_oid))
+        });
+        assert!(!kept);
+        assert!(!b.path.exists());
+        for leg in ["", "api", "web"] {
+            assert!(branch_tip(&root.join(leg), &b.branch).is_empty(), "{leg}");
+            assert!(
+                !testrepo::read(&root.join(leg), &["worktree", "list", "--porcelain"])
+                    .contains("T-1-fix"),
+                "{leg} still lists the tree"
+            );
+        }
+        // A folder container is a plain directory, removed last.
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+        let b = ws_provision(&root, false, &mut |_, _| {}).unwrap();
+        assert!(!teardown(&root, &b, &|_| Some(true)));
+        assert!(!b.path.exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn leg_flags(
+        name: &str,
+        base_oid: &str,
+        tip: &str,
+        ahead: u32,
+        merged: bool,
+        nr: bool,
+    ) -> RepoFlags {
+        RepoFlags {
+            name: name.into(),
+            base: "main".into(),
+            base_tip: format!("bt-{name}"),
+            base_oid: base_oid.into(),
+            tip: tip.into(),
+            ahead,
+            merged,
+            needs_rebase: nr,
+            conflict: false,
+            merged_in: String::new(),
+            merged_oid: String::new(),
+            content: None,
+        }
+    }
+
+    /// A single leg's aggregate is that leg, field for field — the
+    /// single-repo board reads exactly what it read before.
+    #[test]
+    fn aggregate_of_one_leg_is_that_leg() {
+        for (tip, ahead, merged, nr) in [
+            ("b0", 0, false, false),
+            ("b1", 1, false, true),
+            ("b2", 0, true, false),
+            ("", 0, false, true),
+        ] {
+            let l = leg_flags("", "b0", tip, ahead, merged, nr);
+            let a = aggregate(std::slice::from_ref(&l));
+            assert_eq!((a.merged, a.ahead, a.needs_rebase), (merged, ahead, nr), "{tip}");
+            assert_eq!(a.tip, tip);
+            assert_eq!(a.base_tip, "bt-");
+        }
+    }
+
+    #[test]
+    fn aggregate_judges_touched_legs_and_sums_ahead() {
+        // `api` has work, `web` is untouched with a moved base: `web` is silent.
+        let api = leg_flags("api", "a0", "a3", 3, false, false);
+        let web_stale = leg_flags("web", "w0", "w0", 0, false, true);
+        let a = aggregate(&[api.clone(), web_stale.clone()]);
+        assert!(!a.merged && a.ahead == 3 && !a.needs_rebase);
+        assert_eq!(a.tip, "a3+w0");
+        assert_eq!(a.base_tip, "bt-api+bt-web");
+        // `api` landed, `web` untouched: merged.
+        let api_landed = leg_flags("api", "a0", "a3", 0, true, false);
+        assert!(aggregate(&[api_landed.clone(), web_stale.clone()]).merged);
+        // Two touched, one landed, one behind: not merged, needs a rebase.
+        let web_behind = leg_flags("web", "w0", "w1", 1, false, true);
+        let a = aggregate(&[api_landed.clone(), web_behind]);
+        assert!(!a.merged && a.needs_rebase && a.ahead == 1);
+        // Nothing touched: every leg judges, like the single leg.
+        let fresh = leg_flags("api", "a0", "a0", 0, false, false);
+        let a = aggregate(&[fresh, web_stale]);
+        assert!(!a.merged && a.needs_rebase, "single-repo stale parity");
+        // `merged_in`: the root's, else the first leg with one.
+        let mut root = leg_flags("", "r0", "r1", 1, true, false);
+        root.merged_in = "origin/master".into();
+        let mut api_in = api_landed;
+        api_in.merged_in = "main".into();
+        assert_eq!(aggregate(&[api_in.clone(), root]).merged_in, "origin/master");
+        assert_eq!(aggregate(&[api_in]).merged_in, "main");
+        // A conflict anywhere is the ticket's.
+        let mut c = api;
+        c.conflict = true;
+        assert!(aggregate(&[c]).conflict);
+    }
+
+    #[test]
+    fn workspace_flags_come_back_per_leg() {
+        let Some(root) = workspace_scratch("wsflags") else { return };
+        let b = ws_provision(&root, true, &mut |_, _| {}).unwrap();
+        testrepo::commit(&b.path.join("api"), "new.ts", "x\n", "work");
+        let queries: Vec<RepoQuery> = b
+            .legs(&root, "")
+            .into_iter()
+            .map(|leg| RepoQuery {
+                name: leg.name.clone(),
+                repo: leg.repo.clone(),
+                base: leg.base.clone(),
+                upstream: None,
+                inputs: vec![FlagInput {
+                    ticket: ulid::Ulid(1),
+                    branch: b.branch.clone(),
+                    base_oid: leg.base_oid.clone(),
+                    seen: None,
+                }],
+            })
+            .collect();
+        let samples = compute_repo_flags(&queries);
+        assert_eq!(samples.len(), 3);
+        let legs: Vec<RepoFlags> = samples
+            .iter()
+            .zip(&queries)
+            .map(|(s, q)| {
+                let f = &s.flags.flags[0];
+                RepoFlags {
+                    name: s.name.clone(),
+                    base: s.base.clone(),
+                    base_tip: s.flags.base_tip.clone(),
+                    base_oid: q.inputs[0].base_oid.clone(),
+                    tip: f.tip.clone(),
+                    ahead: f.ahead,
+                    merged: f.merged,
+                    needs_rebase: f.needs_rebase,
+                    conflict: false,
+                    merged_in: f.merged_in.clone(),
+                    merged_oid: f.merged_oid.clone(),
+                    content: f.seen.clone(),
+                }
+            })
+            .collect();
+        assert_eq!(legs[1].name, "api");
+        assert_eq!(legs[1].ahead, 1);
+        assert!(!legs[0].touched() && !legs[2].touched());
+        let a = aggregate(&legs);
+        assert!(!a.merged && a.ahead == 1 && !a.needs_rebase, "{a:?}");
+        ff_merge(&root.join("api"), &b.branch, "main").unwrap();
+        let samples = compute_repo_flags(&queries);
+        assert!(samples[1].flags.flags[0].merged);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn workspace_merge_lands_leg_by_leg_and_stops_at_a_refusal() {
+        let Some(root) = workspace_scratch("wsmerge") else { return };
+        let b = ws_provision(&root, true, &mut |_, _| {}).unwrap();
+        let legs = b.legs(&root, "");
+        assert_eq!(merge_legs(&legs, &b.branch), LegMerge::Nothing);
+
+        testrepo::commit(&b.path.join("api"), "new.ts", "x\n", "api work");
+        testrepo::commit(&b.path.join("web"), "page.tsx", "branch side\n", "web work");
+        // `web`'s checkout is dirty on the very file: git refuses that ff.
+        std::fs::write(root.join("web/page.tsx"), "uncommitted\n").unwrap();
+        let got = merge_legs(&legs, &b.branch);
+        match got {
+            LegMerge::Refused { landed, leg, base, error } => {
+                assert_eq!(landed, vec![("api".to_string(), "main".to_string())]);
+                assert_eq!((leg.as_str(), base.as_str()), ("web", "main"));
+                assert!(merge_refusal_detail(&error, &base).contains("uncommitted"), "{error}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(root.join("api/new.ts").is_file(), "api landed");
+        assert!(!is_merged(&root.join("web"), &b.branch, "main"));
+        // Clean the checkout: the next call continues where it stopped.
+        testrepo::run(&root.join("web"), &["checkout", "-q", "--", "page.tsx"]);
+        assert_eq!(
+            merge_legs(&legs, &b.branch),
+            LegMerge::Merged(vec![("web".to_string(), "main".to_string())])
+        );
+        assert_eq!(merge_legs(&legs, &b.branch), LegMerge::Already);
+        assert_eq!(
+            landed_words(&[("".into(), "master".into()), ("api".into(), "main".into())]),
+            "master, api/main"
+        );
+
+        // `web`'s main moves on and the leg commits again: only `web` is named.
+        testrepo::commit(&root.join("web"), "other.tsx", "main moved\n", "main moved");
+        testrepo::commit(&b.path.join("web"), "more.tsx", "y\n", "more web work");
+        testrepo::commit(&b.path.join("api"), "more.ts", "y\n", "more api work");
+        assert_eq!(
+            merge_legs(&legs, &b.branch),
+            LegMerge::NeedsRebase(vec![("web".to_string(), "main".to_string())])
+        );
+        assert!(
+            !is_merged(&root.join("api"), &b.branch, "main"),
+            "nothing moved on a rebase answer"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }

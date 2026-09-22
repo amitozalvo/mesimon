@@ -17,7 +17,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::glyphs::{self, ahead_mark, behind_mark, branch_mark, Register, Tier};
+use crate::glyphs::{self, ahead_mark, behind_mark, branch_mark, merged_mark, Register, Tier};
 use crate::tags::BAR_WIDTH;
 use crate::text::{
     age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
@@ -200,7 +200,8 @@ fn worktree_mark(
     // The glyph and the arrows are the header's too (T-124): one home.
     let g = branch_mark(tier);
     let (up, down) = (ahead_mark(tier), behind_mark(tier));
-    let (dots, check) = if ascii { ('.', '+') } else { ('…', '✓') };
+    let dots = if ascii { '.' } else { '…' };
+    let check = merged_mark(tier);
     let Some(w) = wt else {
         // Asked for, not cut yet (T-309). The workspace is a choice the
         // ticket carries from the moment it is minted and the worktree is

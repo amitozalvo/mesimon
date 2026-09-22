@@ -1,0 +1,30 @@
+ TICKET (T-5)   mesimon › kanban-tui
+
+ Grapheme truncation
+ REVIEW for >1y ∙ created >1y ago
+ ⎇ msmn/T-5-grapheme-truncation ∙ root +1 ∙ api +3 ∙ 4 to merge ∙ m merge
+
+
+  PREVIEW                                                                                  SESSIONS                  1
+
+    done                                                                                  ✓ ✻ claude               >1y
+    it left no transcript                                                                  x sleep
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ enter focus ∙ v diff ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown                                              ? keys

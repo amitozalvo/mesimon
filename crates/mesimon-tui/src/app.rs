@@ -3604,7 +3604,6 @@ impl App {
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
             shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
             git_repo: self.git.sampled,
-            multi_repo: !self.git.repos.is_empty(),
             git_upstream: self.git.upstream.is_some(),
             git_remote: self
                 .git
@@ -7958,10 +7957,6 @@ impl App {
         // Why not, in the ticket's own words. The key is live wherever there
         // is a card (`m`'s shape) precisely so these can be said: the first
         // cut left the press silent and it read as a broken key.
-        if !self.git.repos.is_empty() {
-            self.status = format!("{key} stays in the checkout — this board is a workspace");
-            return Ok(());
-        }
         if self.board.sessions.iter().any(|s| s.ticket == ticket && s.state.has_pane()) {
             self.status = format!("{key} has an agent running — its directory is where it is");
             return Ok(());
@@ -11001,17 +10996,18 @@ mod tests {
             ahead: 0,
             needs_rebase: false,
             detail: None,
+            repos: vec![],
         }];
         back(&mut app);
         assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
         assert_eq!(app.status, "T-1 already has a worktree");
-        // And a workspace board has no worktree to offer at all (T-225): the
-        // daemon would take the field, so the refusal is the TUI's own.
+        // A workspace board offers the choice like any other (T-368): the
+        // daemon cuts one worktree per nested repo, so the TUI has nothing
+        // of its own to refuse.
         let (mut app, sent) = app_with_note();
         app.git.repos = vec!["one".into(), "two".into()];
         back(&mut app);
-        assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
-        assert_eq!(app.status, "T-1 stays in the checkout — this board is a workspace");
+        assert!(sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
     }
 
     /// `^s` on a note saves and leaves, either way; a clean one just leaves
@@ -12663,6 +12659,7 @@ mod tests {
             needs_rebase: true,
             detail: None,
             path: None,
+            repos: vec![],
         });
         assert_eq!(app.merge_outstanding(t), None);
         app.automation.train_asked = vec![mesimon_core::command::TrainAsk {
@@ -14195,6 +14192,7 @@ mod tests {
             path: Some("/wt/T-1-x".into()),
             merged_in: String::new(),
             merged_oid: String::new(),
+            repos: vec![],
         });
         app.screen = Screen::Ticket { ticket: t, rail_idx: 0 };
         sent.borrow_mut().clear();
@@ -14304,6 +14302,7 @@ mod tests {
             needs_rebase: false,
             detail: None,
             path: None,
+            repos: vec![],
         });
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
         press(&mut app, 'm');
@@ -14338,6 +14337,7 @@ mod tests {
             needs_rebase: false,
             detail: None,
             path: None,
+            repos: vec![],
         };
         app.worktrees.push(wt(false, 2));
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
@@ -14380,6 +14380,7 @@ mod tests {
             needs_rebase: true,
             detail: None,
             path: None,
+            repos: vec![],
         };
         app.worktrees.push(wt());
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };

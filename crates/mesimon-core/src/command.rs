@@ -1460,6 +1460,11 @@ pub struct AgentTicketView {
     /// the same reason `WorktreeItem.status` is one.
     #[serde(default)]
     pub merge_state: Option<String>,
+    /// On a workspace ticket (T-368), every repository the branch lives in
+    /// with its own merge state. Empty — and absent from the JSON — on a
+    /// single repo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<AgentRepoView>,
     /// Where `move_ticket` will accept a move to, right now. This is why
     /// `to_column` needs no schema enum: the valid set travels as transient
     /// result data instead of permanent context.
@@ -1552,6 +1557,18 @@ pub struct CrownTouch {
 pub struct AgentTagView {
     pub name: String,
     pub group: u8,
+}
+
+/// One repository of a workspace ticket as the agent sees it (T-368).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRepoView {
+    /// `""` is the root repository.
+    pub name: String,
+    /// The branch this leg is judged against: the repository's checked-out
+    /// branch when the leg was cut.
+    pub base: String,
+    /// The same words as `merge_state`, for this repository alone.
+    pub merge_state: String,
 }
 
 /// One note as an agent lists it. No body: that is `read_note`'s answer.
@@ -1744,6 +1761,27 @@ pub struct WorktreeItem {
     /// Worktree directory — Some only while attached (M4b, `!` handover).
     #[serde(default)]
     pub path: Option<String>,
+    /// Per-repository flags on a workspace binding (T-368), in leg order,
+    /// the root leg first when there is one. Empty on a single-repo
+    /// binding, and left off the wire then, so a single-repo snapshot is
+    /// byte-identical to what it was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<WorktreeRepoItem>,
+}
+
+/// One leg of a workspace binding (T-368): the ticket's branch in one
+/// nested repository. `name == ""` is the root repository. The flags mean
+/// what `WorktreeItem`'s mean, for this repository alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeRepoItem {
+    pub name: String,
+    /// The branch this leg is judged against: the repository's checked-out
+    /// branch when the leg was cut (`main`, `master`, …).
+    pub base: String,
+    pub ahead: u32,
+    pub merged: bool,
+    pub needs_rebase: bool,
+    pub conflict: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2128,9 +2166,79 @@ mod tests {
                 assert_eq!(ticket.automove, AgentAutomoveView::default());
                 assert_eq!(ticket.automove.on_working, None);
                 assert_eq!(ticket.automove.on_done, None);
+                assert!(ticket.repos.is_empty());
             }
             other => panic!("expected agent_ticket, got {other:?}"),
         }
+    }
+
+    /// A snapshot from before T-368 has no `repos` on its worktree rows.
+    #[test]
+    fn old_worktree_item_json_parses() {
+        let old = r#"{"ticket":"00000000000000000000000001","branch":"msmn/T-1-x",
+            "status":"attached","merged":false,"conflict":false}"#;
+        let w: WorktreeItem = serde_json::from_str(old).unwrap();
+        assert!(w.repos.is_empty());
+    }
+
+    /// A single-repo binding's row and ticket view carry no `repos` key at
+    /// all; a workspace one round-trips its legs.
+    #[test]
+    fn single_repo_items_leave_repos_off_the_wire() {
+        let mut w = WorktreeItem {
+            ticket: ulid::Ulid(1),
+            branch: "msmn/T-1-x".into(),
+            status: "attached".into(),
+            merged: false,
+            merged_in: String::new(),
+            merged_oid: String::new(),
+            conflict: false,
+            ahead: 0,
+            needs_rebase: false,
+            detail: None,
+            path: None,
+            repos: vec![],
+        };
+        assert!(!serde_json::to_string(&w).unwrap().contains("repos"));
+        w.repos = vec![
+            WorktreeRepoItem { name: String::new(), base: "master".into(), ..Default::default() },
+            WorktreeRepoItem {
+                name: "api".into(),
+                base: "main".into(),
+                ahead: 3,
+                ..Default::default()
+            },
+        ];
+        let back: WorktreeItem = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+        assert_eq!(back.repos, w.repos);
+        let mut t = AgentTicketView {
+            key: "T-1".into(),
+            title: "t".into(),
+            column: "TODO".into(),
+            workspace: "worktree".into(),
+            branch: Some("msmn/T-1-x".into()),
+            merge_state: Some("ahead".into()),
+            repos: vec![],
+            allowed_columns: vec![],
+            automove: AgentAutomoveView::default(),
+            tags: vec![],
+            allowed_tags: vec![],
+            board_version: 1,
+            description: None,
+            notes: vec![],
+            crowned: false,
+            state: None,
+            seen: None,
+        };
+        assert!(!serde_json::to_string(&t).unwrap().contains("repos"));
+        t.repos = vec![AgentRepoView {
+            name: "api".into(),
+            base: "main".into(),
+            merge_state: "ahead".into(),
+        }];
+        let back: AgentTicketView =
+            serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back.repos, t.repos);
     }
 
     /// `Notice.kind` is a String precisely so a kind this build has never heard

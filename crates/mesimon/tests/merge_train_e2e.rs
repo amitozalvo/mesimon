@@ -17,10 +17,10 @@ use common::*;
 
 use std::path::{Path, PathBuf};
 use std::process::Command as Proc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use mesimon_core::board::{SessionKind, SessionState, WorkspaceStrategy};
-use mesimon_core::command::{AutomationStatus, Command, PendingAction, Response, WorktreeItem};
+use mesimon_core::command::{AutomationStatus, Command, PendingAction, Response};
 
 fn git_ok(repo: &Path, args: &[&str]) -> bool {
     Proc::new("git")
@@ -32,31 +32,10 @@ fn git_ok(repo: &Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-fn worktrees_of(c: &mut TestClient) -> Vec<WorktreeItem> {
-    match c.request(Command::Snapshot) {
-        Response::Board { worktrees, .. } => worktrees,
-        other => panic!("not a board: {other:?}"),
-    }
-}
-
 fn automation_of(c: &mut TestClient) -> AutomationStatus {
     match c.request(Command::Snapshot) {
         Response::Board { automation, .. } => automation,
         other => panic!("not a board: {other:?}"),
-    }
-}
-
-fn wait_attached(c: &mut TestClient, ticket: ulid::Ulid) -> WorktreeItem {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let item = worktrees_of(c).into_iter().find(|w| w.ticket == ticket);
-        if let Some(w) = &item {
-            if w.status == "attached" {
-                return w.clone();
-            }
-        }
-        assert!(Instant::now() < deadline, "binding never attached; last: {item:?}");
-        std::thread::sleep(Duration::from_millis(150));
     }
 }
 

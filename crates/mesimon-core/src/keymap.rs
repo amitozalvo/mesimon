@@ -950,11 +950,6 @@ pub struct Ctx {
     /// The diff belongs to the checkout, so upstream history is available.
     pub checkout_diff: bool,
     pub git_commits: bool,
-    /// The board sits on a WORKSPACE — a root with repositories nested one
-    /// level under it (`RepoGit::repos`, T-225). A worktree there would be a
-    /// worktree of the meta repo and none of the code, so the workspace
-    /// choice is not offered, and the daemon refuses it besides.
-    pub multi_repo: bool,
     /// The checkout's branch tracks a remote branch, so a fetch has
     /// somewhere to go. Gates the menu row: without an upstream there are no
     /// arrows on the header either.
@@ -1382,12 +1377,12 @@ impl MenuItem {
 /// The workspace toggle's word on the board and the ticket page (T-309), and
 /// the one place the two screens can agree. It names the DESTINATION — `t`'s
 /// idiom — because the card's mark and the page's state row already say where
-/// the ticket stands. EMPTY while the press cannot act: the choice is locked,
-/// or the board is a workspace of repositories where a worktree of the root
-/// would hold none of the code (T-225). The key stays live there so it can
-/// say which; only the hint stands down.
+/// the ticket stands. EMPTY while the press cannot act: the choice is locked.
+/// The key stays live there so it can say why; only the hint stands down.
+/// (A workspace of repositories held it too until T-368: a worktree there
+/// now cuts one worktree per nested repo.)
 fn workspace_hint(c: &Ctx) -> &'static str {
-    if c.multi_repo || !c.workspace_open {
+    if !c.workspace_open {
         ""
     } else if c.workspace_worktree {
         "shared checkout"
@@ -4343,7 +4338,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
             format!("Workspace for new tickets: {}", or(c.col_workspace_word, "board default"))
         },
         detail: |_| "the composer starts here ∙ shift+tab still changes it".into(),
-        avail: |c| !c.col_new && !c.multi_repo,
+        avail: |c| !c.col_new,
         key: "",
     },
     MenuItem {
@@ -4931,7 +4926,7 @@ static INPUT: &[Binding] = &[
         // and one gesture: shift+tab is "the other way" for whatever the
         // field is about.
         hint: |c| if c.prompting { "now / queued" } else { "shared checkout / own worktree" },
-        avail: |c| (c.composing && !c.multi_repo) || (c.prompting && c.ask_queueable),
+        avail: |c| c.composing || (c.prompting && c.ask_queueable),
         class: Class::Plain,
         group: Group::Worktree,
         mutates: false,
@@ -5389,7 +5384,7 @@ static EDITOR: &[Binding] = &[
                 && if c.editor_asking {
                     c.ask_queueable
                 } else {
-                    !c.multi_repo && (c.editor_composing || c.workspace_open)
+                    c.editor_composing || c.workspace_open
                 }
         },
         class: Class::Plain,
@@ -7109,11 +7104,6 @@ mod tests {
                 Verb::ColumnOnDone
             ]
         );
-        assert_eq!(
-            column_items(&Ctx { multi_repo: true, ..Default::default() }).len(),
-            6,
-            "a workspace board offers no worktree choice"
-        );
     }
 
     /// A column header is a cursor position (T-117): over an empty column it
@@ -8039,41 +8029,45 @@ mod tests {
         assert_eq!(&hot_footer[..2], &["enter", "space"], "{hot_footer:?}");
     }
 
-    /// T-225: on a workspace board the composer offers no workspace choice
-    /// — a worktree of the root holds none of the code — while the same key
-    /// still flips an ask between `now` and `queued`.
+    /// T-368, inverting T-225's `a_workspace_board_offers_no_worktree_choice`:
+    /// a workspace board offers the workspace choice like any other board —
+    /// a worktree ticket there cuts one worktree per nested repo — and the
+    /// same key still flips an ask between `now` and `queued`. There is no
+    /// workspace bit on `Ctx` any more, so this pins the composer, the
+    /// editor, the board and the ticket page offering the key on nothing but
+    /// the ordinary gates.
     #[test]
-    fn a_workspace_board_offers_no_worktree_choice() {
+    fn a_workspace_board_offers_the_worktree_choice() {
         let composing = Ctx { editing: true, composing: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::BackTab, &composing), Some(Verb::CycleWorkspace));
-        let on_workspace = Ctx { multi_repo: true, ..composing.clone() };
-        assert_eq!(resolve(Scope::Input, Key::BackTab, &on_workspace), None);
-        assert_eq!(hint_for(Scope::Input, Verb::CycleWorkspace, &on_workspace), None);
-        let asking = Ctx {
-            editing: true,
-            prompting: true,
-            ask_queueable: true,
-            multi_repo: true,
-            ..Default::default()
-        };
+        assert_eq!(
+            hint_for(Scope::Input, Verb::CycleWorkspace, &composing),
+            Some(("shift+tab", "shared checkout / own worktree"))
+        );
+        // The ask field's toggle is unaffected either way.
+        let asking =
+            Ctx { editing: true, prompting: true, ask_queueable: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::BackTab, &asking), Some(Verb::CycleWorkspace));
-        let editor =
-            Ctx { editing: true, workspace_open: true, multi_repo: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Editor, Key::BackTab, &editor), None);
-        // And the two screens the key reached in T-309 are held by the same
-        // clause: a worktree of the root holds none of the code, wherever the
-        // press comes from. Offered is HINTED there — the key stays live so
-        // the press can say why (`m`'s shape), and `App::set_ticket_workspace`
-        // refuses it before the wire.
-        let screen =
-            Ctx { has_ticket: true, workspace_open: true, multi_repo: true, ..Default::default() };
+        assert_eq!(
+            hint_for(Scope::Input, Verb::CycleWorkspace, &asking),
+            Some(("shift+tab", "now / queued"))
+        );
+        let editor = Ctx { editing: true, workspace_open: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &editor), Some(Verb::CycleWorkspace));
+        let screen = Ctx { has_ticket: true, workspace_open: true, ..Default::default() };
         for scope in [Scope::Board, Scope::Ticket] {
-            assert_eq!(hint_for(scope, Verb::CycleWorkspace, &screen), None, "{scope:?}");
-            assert!(!overlay(scope, &screen)
+            assert_eq!(
+                hint_for(scope, Verb::CycleWorkspace, &screen),
+                Some(("shift+tab", "own worktree")),
+                "{scope:?}"
+            );
+            assert!(overlay(scope, &screen)
                 .into_iter()
                 .flat_map(|(_, rows)| rows)
                 .any(|(k, _)| k == "shift+tab"));
         }
+        // And the column list keeps its workspace row.
+        assert!(column_items(&Ctx::default()).iter().any(|m| m.verb == Verb::ColumnWorkspace));
     }
 
     /// `b` flips the Settings scope (T-361) exactly where a row can be set

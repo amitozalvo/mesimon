@@ -18,28 +18,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, WorkspaceStrategy};
-use mesimon_core::command::{Command, MergeOutcome, Response, WorktreeItem};
-
-fn worktrees_of(c: &mut TestClient) -> Vec<WorktreeItem> {
-    match c.request(Command::Snapshot) {
-        Response::Board { worktrees, .. } => worktrees,
-        other => panic!("not a board: {other:?}"),
-    }
-}
-
-fn wait_attached(c: &mut TestClient, ticket: ulid::Ulid) -> WorktreeItem {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let item = worktrees_of(c).into_iter().find(|w| w.ticket == ticket);
-        if let Some(w) = &item {
-            if w.status == "attached" {
-                return w.clone();
-            }
-        }
-        assert!(Instant::now() < deadline, "binding never attached; last: {item:?}");
-        std::thread::sleep(Duration::from_millis(150));
-    }
-}
+use mesimon_core::command::{Command, MergeOutcome, Response};
 
 /// A worktree ticket with a spawned agent and one commit on its branch.
 fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {

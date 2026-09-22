@@ -339,7 +339,10 @@ live under the state dir at `worktrees/<KEY>-<slug>/` on branch `msmn/<KEY>-<slu
 `core/src/workspace.rs`; **argv arrays always** — a ticket title is an injection vector).
 Provisioning is lazy, off the writer thread, and the parked spawn replays on ready. Bindings
 persist in `worktrees.json`, with an ownership marker in the git admin dir and pid-bearing locks
-with a crash-safe sweep. **Merges are ff-only.** A branch reads merged by ancestry *or* by
+with a crash-safe sweep. **A binding is a list of legs** (`worktree::Binding::legs`, schema 2):
+one git repo each, the root's unnamed; on a workspace root every census repo gets a leg on the
+same `msmn/` branch inside one container, and flags, merge, locks, diff and teardown iterate
+legs — never `paths.repo_root` alone. **Merges are ff-only.** A branch reads merged by ancestry *or* by
 patch-id against one target ref — and that comparison **writes nothing**, because README promise
 1 does not allow a loose object in the repo. The DONE gate and the delete gate go through
 `ticket_merged`, and **they must answer as the card does**. Teardown waits for the reaper: never

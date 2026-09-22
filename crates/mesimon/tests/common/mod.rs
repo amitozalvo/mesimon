@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use mesimon_core::board::{Board, SessionState};
 use mesimon_core::command::{
-    Command, Envelope, Event, GraceItem, Pending, RepoGit, Resources, Response,
+    Command, Envelope, Event, GraceItem, Pending, RepoGit, Resources, Response, WorktreeItem,
 };
 use mesimon_core::diff::FileEntry;
 use mesimon_core::Principal;
@@ -482,6 +482,35 @@ pub fn files_of(resp: &Response) -> Vec<FileEntry> {
     match resp {
         Response::DiffList { files, .. } => files.clone(),
         other => panic!("expected DiffList, got {other:?}"),
+    }
+}
+
+/// The snapshot's worktree rows.
+pub fn worktrees_of(c: &mut TestClient) -> Vec<WorktreeItem> {
+    match c.request(Command::Snapshot) {
+        Response::Board { worktrees, .. } => worktrees,
+        other => panic!("not a board: {other:?}"),
+    }
+}
+
+/// One ticket's worktree row, if it has one.
+pub fn wt_of(c: &mut TestClient, ticket: ulid::Ulid) -> Option<WorktreeItem> {
+    worktrees_of(c).into_iter().find(|w| w.ticket == ticket)
+}
+
+/// Poll until the ticket's binding reads `attached` (a lazy provision lands
+/// off the writer thread), and return the row.
+pub fn wait_attached(c: &mut TestClient, ticket: ulid::Ulid) -> WorktreeItem {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let item = wt_of(c, ticket);
+        if let Some(w) = &item {
+            if w.status == "attached" {
+                return w.clone();
+            }
+        }
+        assert!(Instant::now() < deadline, "binding never attached; last: {item:?}");
+        std::thread::sleep(Duration::from_millis(150));
     }
 }
 

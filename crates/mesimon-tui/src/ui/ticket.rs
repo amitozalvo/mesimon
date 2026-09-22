@@ -67,6 +67,36 @@ pub(super) fn author_word(by: &str, _app: &App) -> String {
     }
 }
 
+/// One clause per leg of a workspace binding with something to say
+/// (T-368): `api +3` ahead, `web ✓` landed, `root ↓` behind its base
+/// (`+2↓` when it is both), `infra !` shared. A leg with no commits and
+/// nothing against it is silent — on a workspace most legs are untouched,
+/// and naming them would bury the two that matter. Empty on a single-repo
+/// binding, which has no legs on the wire.
+fn leg_clauses(w: &mesimon_core::command::WorktreeItem, tier: glyphs::Tier) -> Vec<String> {
+    let (check, down) = (glyphs::merged_mark(tier), glyphs::behind_mark(tier));
+    w.repos
+        .iter()
+        .filter_map(|r| {
+            let label = if r.name.is_empty() { "root" } else { r.name.as_str() };
+            let mark = if r.conflict {
+                "!".to_string()
+            } else if r.merged {
+                check.to_string()
+            } else if r.needs_rebase && r.ahead > 0 {
+                format!("+{}{down}", r.ahead)
+            } else if r.needs_rebase {
+                down.to_string()
+            } else if r.ahead > 0 {
+                format!("+{}", r.ahead)
+            } else {
+                return None;
+            };
+            Some(format!("{label} {mark}"))
+        })
+        .collect()
+}
+
 /// Where the branch's work landed, in words (T-267). A plain fast-forward
 /// into the checkout's own default branch stays the bare `merged` it has
 /// always been — that is the ref the whole page is already about. Anything
@@ -293,6 +323,13 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             String::new()
         };
         wt_spans.push(Span::styled(format!(" ⎇ {}", w.branch), d1));
+        // The legs of a workspace binding with something to say (T-368):
+        // `api +3 ∙ web ✓ ∙ root ↓`. Drawn between the name and the state,
+        // in the detail's register, so the aggregate the state word gives
+        // reads first and the halves that make it up read after.
+        for clause in leg_clauses(w, app.theme.glyph_tier()) {
+            wt_spans.push(Span::styled(format!(" ∙ {clause}"), d2));
+        }
         if !state.is_empty() {
             let actionable = !w.merged
                 && w.status == "attached"
@@ -367,6 +404,31 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     }
     let ident = Line::from(ident_spans);
 
+    // The legs give before the name (T-368): the name is the row's identity
+    // and the legs are its detail, and nineteen of them do not fit any
+    // terminal. Kept from the left, the ones dropped counted as ` ∙ +N`,
+    // until the floor the name keeps plus what is left fits the row.
+    let room = (area.width as usize).saturating_sub(1);
+    let n_legs = app.wt_item(ticket.id).map_or(0, |w| leg_clauses(w, app.theme.glyph_tier()).len());
+    if n_legs > 0 && wt_spans.len() > n_legs {
+        let legs_at = 1;
+        let fixed: usize = super::spans_width(&wt_spans[legs_at + n_legs..]);
+        let mut keep = n_legs;
+        loop {
+            let legs_w: usize = super::spans_width(&wt_spans[legs_at..legs_at + keep]);
+            let more = if keep < n_legs { format!(" ∙ +{}", n_legs - keep).width() } else { 0 };
+            if keep == 0 || WT_BRANCH_FLOOR + legs_w + more + fixed <= room {
+                break;
+            }
+            keep -= 1;
+        }
+        if keep < n_legs {
+            let dropped = n_legs - keep;
+            let style = wt_spans[legs_at].style;
+            wt_spans.drain(legs_at + keep..legs_at + n_legs);
+            wt_spans.insert(legs_at + keep, Span::styled(format!(" ∙ +{dropped}"), style));
+        }
+    }
     // The branch name fits the room the rest of ITS OWN row leaves, cut with
     // the `~` marker (never below its floor) rather than the line running off
     // the right edge — `truncate` never marks what fits. What the clause
@@ -374,7 +436,6 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // cut: only the name gives.
     let wt_width: usize = super::spans_width(&wt_spans);
     let wt_rest = wt_width.saturating_sub(wt_spans.first().map_or(0, |s| s.content.width()));
-    let room = (area.width as usize).saturating_sub(1);
     if wt_width > room {
         if let Some(first) = wt_spans.first_mut() {
             let cut = truncate(&first.content, room.saturating_sub(wt_rest).max(WT_BRANCH_FLOOR));

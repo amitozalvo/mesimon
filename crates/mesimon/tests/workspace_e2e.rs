@@ -2,9 +2,9 @@
 //! level under it — on the wire. A meta repo tracking one file over two child
 //! repos → the snapshot's `git.repos` names the children and `changed` is the
 //! sum across all three → `DiffList { Checkout }` is one list, the children's
-//! rows prefixed by their name, and `DiffFile` opens through the prefix → a
-//! worktree ticket's spawn is refused in words instead of minting a worktree
-//! of the meta repo.
+//! rows prefixed by their name, and `DiffFile` opens through the prefix. And
+//! (T-368) a worktree ticket there gets one worktree per repo under one
+//! container, merged leg by leg.
 //!
 //! The harness boots on a bare directory and the boot sample sees no repo;
 //! the next sample is the 10 s bucket's, so the census is waited for (a
@@ -19,11 +19,12 @@
 mod common;
 use common::*;
 
+use std::path::PathBuf;
 use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, WorkspaceStrategy};
-use mesimon_core::command::{Command, DiffTarget, Response};
+use mesimon_core::command::{Command, DiffTarget, MergeOutcome, Response};
 
 #[test]
 fn a_workspace_of_repos_stands_on_the_wire() {
@@ -112,36 +113,199 @@ fn a_workspace_of_repos_stands_on_the_wire() {
         context: 3,
     });
     assert!(matches!(resp, Response::Err { .. }), "{resp:?}");
+}
 
-    // ---- a worktree ticket is refused in words ------------------------------
+/// Stub claude: records its cwd beside itself, dies politely on TERM. The
+/// harness writes it to `<dir>/claude-stub.sh`, so `$0` is that path.
+const STUB: &str = "#!/bin/sh\npwd >> \"$(dirname \"$0\")/claude-cwd.log\"\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n";
+
+/// T-368: a worktree ticket on a workspace cuts one worktree per repo — the
+/// meta's own as the container, every nested repo's inside it, all on the
+/// ticket's branch, based on the branch each checkout stands on — and the
+/// agent starts in the container. Work in one repo is that repo's `ahead`;
+/// `m` fast-forwards leg by leg and the DONE gate lifts when every touched
+/// leg has landed; a base that moved is named for the rebase; a discard
+/// delete takes every leg, every branch and the container.
+#[test]
+fn a_workspace_ticket_gets_a_worktree_per_repo() {
+    if Proc::new("git").arg("--version").output().is_err() {
+        eprintln!("git not installed; skipping");
+        return;
+    }
+    let Some(h) = Harness::boot_with_env(
+        "workspace-wt",
+        Some(STUB),
+        &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let root = h.repo.clone();
+    init_repo(&root, "CLAUDE.md", "# workspace\n");
+    std::fs::write(root.join(".gitignore"), "*/\n").unwrap();
+    git(&root, &["add", ".gitignore"]);
+    git(&root, &["commit", "-qm", "ignore children"]);
+    init_repo(&root.join("api"), "server.ts", "one\n");
+    init_repo(&root.join("web"), "page.tsx", "hello\n");
+    let mut c = h.client("workspace-wt");
+    assert!(matches!(c.request(Command::Subscribe), Response::Ok));
+
+    // ---- the spawn is accepted and parks on provisioning ----------------
     let _ = c.request(Command::CreateTicket {
         column: "TODO".into(),
         title: "Fix thing".into(),
         workspace: None,
     });
-    let id = match c.request(Command::Snapshot) {
-        Response::Board { board, .. } => board.tickets[0].id,
-        other => panic!("expected board, got {other:?}"),
-    };
+    let id = c.board().tickets[0].id;
     assert!(matches!(
         c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    match c.request(Command::SpawnSession {
-        ticket: id,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-    }) {
-        Response::Err { message } => {
-            assert!(message.contains("workspace of 2 repos"), "{message}");
-            assert!(message.contains("shared checkout"), "{message}");
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket: id,
+            kind: SessionKind::Claude,
+            submit_prompt: false
+        }),
+        Response::Provisioning
+    ));
+    let wt = wait_attached(&mut c, id);
+    assert_eq!(wt.branch, "msmn/T-1-fix-thing");
+    let names: Vec<&str> = wt.repos.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["", "api", "web"], "the root leg first, then census order");
+    assert!(wt.repos.iter().all(|r| r.base == "main"), "{:?}", wt.repos);
+    assert!(!wt.merged && wt.ahead == 0, "{wt:?}");
+    let container = PathBuf::from(wt.path.as_deref().expect("attached: the container's path"));
+    assert_eq!(
+        container.canonicalize().unwrap(),
+        h.paths.worktrees_root().join("T-1-fix-thing").canonicalize().unwrap()
+    );
+    let leg_repo = |leg: &str| if leg.is_empty() { root.clone() } else { root.join(leg) };
+    for leg in ["", "api", "web"] {
+        let repo = leg_repo(leg);
+        let tree = container.join(leg);
+        assert!(
+            git(&repo, &["worktree", "list", "--porcelain"]).contains("T-1-fix-thing"),
+            "{leg:?} lists no worktree"
+        );
+        assert!(git(&repo, &["branch", "--list", "msmn/T-1-fix-thing"]).contains("fix-thing"));
+        assert_eq!(
+            git(&tree, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+            "msmn/T-1-fix-thing",
+            "{leg:?}"
+        );
+    }
+    assert!(container.join("CLAUDE.md").is_file() && container.join("api/server.ts").is_file());
+    // The agent stands in the container.
+    let cwd_log = h.dir.join("claude-cwd.log");
+    wait_until(Duration::from_secs(10), "the stub's pwd", || {
+        std::fs::read_to_string(&cwd_log).is_ok_and(|l| l.lines().any(|x| !x.is_empty()))
+    });
+    let pwd = std::fs::read_to_string(&cwd_log).unwrap().lines().next().unwrap().to_string();
+    assert_eq!(
+        std::fs::canonicalize(&pwd).unwrap(),
+        std::fs::canonicalize(&container).unwrap(),
+        "the session's cwd is the container"
+    );
+    // The journal measured it.
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap();
+    assert!(
+        journal.lines().any(|l| l.contains("provisioned T-1: 3 repos in ") && l.ends_with(" ms")),
+        "{journal}"
+    );
+
+    // ---- work in api only: api is ahead, web is silent ------------------
+    std::fs::write(container.join("api/feature.ts"), "agent work\n").unwrap();
+    git(&container.join("api"), &["add", "."]);
+    git(&container.join("api"), &["commit", "-qm", "api work"]);
+    wait_until(Duration::from_secs(15), "api ahead 1", || {
+        wt_of(&mut c, id).is_some_and(|w| {
+            w.ahead == 1
+                && w.repos.iter().any(|r| r.name == "api" && r.ahead == 1 && !r.merged)
+                && w.repos.iter().any(|r| r.name == "web" && r.ahead == 0)
+        })
+    });
+    // The agent's own view says the same, per repo.
+    let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
+    match c.send(mesimon_core::Principal::Agent { session: sid }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => {
+            assert_eq!(ticket.merge_state.as_deref(), Some("ahead"));
+            let api = ticket.repos.iter().find(|r| r.name == "api").expect("api leg");
+            assert_eq!((api.base.as_str(), api.merge_state.as_str()), ("main", "ahead"));
+            let web = ticket.repos.iter().find(|r| r.name == "web").expect("web leg");
+            assert_eq!(web.merge_state, "clean");
         }
-        other => panic!("a worktree of the meta repo must not be minted: {other:?}"),
+        other => panic!("expected the agent's ticket view, got {other:?}"),
     }
-    // Nothing was provisioned: no binding, no branch, no directory.
-    match c.request(Command::Snapshot) {
-        Response::Board { worktrees, .. } => assert!(worktrees.is_empty(), "{worktrees:?}"),
-        other => panic!("expected board, got {other:?}"),
+
+    // ---- merge: api's main moves, web is untouched, DONE lifts ----------
+    match c.request(Command::MoveTicket { id, column: "DONE".into(), before: None }) {
+        Response::Err { message } => assert!(message.contains("unmerged"), "{message}"),
+        other => panic!("expected the DONE gate, got {other:?}"),
     }
-    assert!(!h.paths.worktrees_root().exists(), "no worktree root was made");
+    let _ = c.request(Command::KillSession { id: sid });
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let detail = loop {
+        match c.request(Command::MergeTicket { id }) {
+            Response::Merge { outcome: MergeOutcome::Merged, detail } => break detail,
+            Response::Merge { outcome: MergeOutcome::Refused, detail } => {
+                assert!(Instant::now() < deadline, "merge never accepted: {detail}");
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            other => panic!("expected Merged, got {other:?}"),
+        }
+    };
+    assert!(detail.contains("api/main"), "the landed legs are named: {detail}");
+    assert!(root.join("api/feature.ts").is_file(), "api's main moved");
+    assert_eq!(
+        git(&root.join("api"), &["rev-parse", "main"]),
+        git(&container.join("api"), &["rev-parse", "HEAD"])
+    );
+    assert_eq!(
+        git(&root.join("web"), &["rev-parse", "main"]),
+        git(&root.join("web"), &["rev-parse", "msmn/T-1-fix-thing"]),
+        "web was never touched"
+    );
+    assert!(matches!(
+        c.request(Command::MoveTicket { id, column: "DONE".into(), before: None }),
+        Response::Ok
+    ));
+
+    // ---- web's main moves and web's leg diverges: the rebase names web --
+    std::fs::write(root.join("web/page.tsx"), "main moved\n").unwrap();
+    git(&root.join("web"), &["commit", "-aqm", "main moved"]);
+    std::fs::write(container.join("web/feature.tsx"), "web work\n").unwrap();
+    git(&container.join("web"), &["add", "."]);
+    git(&container.join("web"), &["commit", "-qm", "web work"]);
+    match c.request(Command::MergeTicket { id }) {
+        Response::Merge { outcome: MergeOutcome::NeedsRebase, detail } => {
+            assert!(detail.contains("web"), "{detail}");
+            assert!(!detail.contains("api"), "api has landed and is not named: {detail}");
+        }
+        other => panic!("expected NeedsRebase, got {other:?}"),
+    }
+    wait_until(Duration::from_secs(15), "web needs a rebase on the wire", || {
+        wt_of(&mut c, id).is_some_and(|w| {
+            w.needs_rebase
+                && w.repos.iter().any(|r| r.name == "web" && r.needs_rebase && r.ahead == 1)
+                && w.repos.iter().any(|r| r.name == "api" && r.merged)
+        })
+    });
+
+    // ---- a discard delete takes every leg, every branch, the container --
+    match c.request(Command::DeleteTicket { id, discard_worktree: false }) {
+        Response::Err { message } => assert!(message.contains("unmerged"), "{message}"),
+        other => panic!("expected the delete gate, got {other:?}"),
+    }
+    assert!(matches!(
+        c.request(Command::DeleteTicket { id, discard_worktree: true }),
+        Response::Ok
+    ));
+    wait_until(Duration::from_secs(25), "teardown of every leg", || {
+        !container.exists()
+            && ["", "api", "web"].iter().all(|leg| {
+                let repo = leg_repo(leg);
+                !git(&repo, &["branch", "--list", "msmn/T-1-fix-thing"]).contains("fix-thing")
+                    && !git(&repo, &["worktree", "list", "--porcelain"]).contains("T-1-fix-thing")
+            })
+    });
 }

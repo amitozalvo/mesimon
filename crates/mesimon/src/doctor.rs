@@ -638,8 +638,10 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
             )
             .advice(
                 "The header counts changes across all of them and v on the board diffs them \
-                 together. Worktree tickets are not offered on a workspace yet: a worktree of \
-                 the root would hold none of the code.",
+                 together. A worktree ticket here cuts one worktree per nested repo (and of \
+                 the root, when it is a repository) under one directory, all on the ticket's \
+                 branch; m merges each fast-forward into the branch it was cut from, and a \
+                 repo whose branch moved on is named for the rebase.",
             ),
         );
     }

@@ -12293,3 +12293,109 @@ disk, pid file gone → `Sleeping` with `host` cleared and the shell row clear, 
 `transcript_for_finds_the_newest_copy_by_filename` and
 `a_live_pid_file_outranks_a_dead_one_for_the_same_session` (census); golden
 `ticket_shell_claude_120x30`.
+
+## A worktree ticket on a workspace cuts one leg per repo (T-368, 2026-09-22, user: "no build learned repos. we can't trust this kind of reverse engineering way to work perfectly")
+
+**What stood.** T-225's phase 1 refused a worktree ticket on a workspace in words at
+`resolve_spawn_cwd` and hid the Shift+Tab choice behind `Ctx::multi_repo`, because a worktree
+of the meta holds none of the code; the spike (`docs/spikes/T-225-multirepo-workspace.md` §5.2–
+§5.4, §6 phase 3) owed the real thing. The author avoids worktrees on simbly (19 repos) for
+exactly this reason.
+
+**Decided against: learned repos.** The spike's phase 2 — which repos a ticket touched, learned
+from the hook stream, so a provision could cut only those — is dropped, not deferred. Every
+census repo gets a leg. Inferring the touched set can miss one, and a missing child worktree is
+silently the wrong code; the cost of cutting them all is measured instead (below), and an
+exclusion list is a later ticket only if that number hurts.
+
+**Legs.** `worktree::Binding` gains `repos: Vec<RepoBinding { name, base, base_oid, branch_oid }>`
+(`#[serde(default, skip_serializing_if = "Vec::is_empty")]`, so a single-repo file is textually
+what it was bar the stamp) and `BINDINGS_SCHEMA` is 2 — a build that reads 1 bars its writes on a
+2 through the `found > BINDINGS_SCHEMA` clause it already had. `Binding::legs(repo_root,
+single_base)` is the one resolver: a `Leg { name, repo, path, base, base_oid, branch_oid }` per
+repository the branch lives in, `""` the root (`repo_root`, the container), `api` a child
+(`repo_root/api`, `container/api`); a single-repo binding is exactly one root leg whose base is
+the daemon's `base_branch` (not on the binding — it is re-resolved after every fetch). **Every
+consumer iterates legs**: flags (`compute_repo_flags`, one `compute_flags` per distinct
+repository with every ticket's leg there batched — a single-repo board is the same `2 + n` forks),
+`ticket_merged` (every leg fresh `is_merged` or that leg's cached content verdict at an unmoved
+tip; the DONE gate, the delete gate and the archive reclaim answer as the card does), locks (one
+per leg, one refused releases the taken), ticket `v` (`workspace_diff_list`/`_file`: every leg's
+BASE...BRANCH, root bare, children prefixed, the checkout road's `prefix_rows`/`prefix_file`
+shared), teardown (`worktree::teardown`: children before the root leg — removing the meta's
+worktree first would take the children's gitfiles with it — `-d` per merged leg, `-D` on
+discard, a folder container `remove_dir_all` last), `rebuild_from_disk` (the children's
+`worktree list` rows on `msmn/` under the worktrees root with our marker, grouped under the
+ticket, the container their parent) and `reconcile_interrupted` (whole → Attached; partial →
+the present legs removed, a branch deleted only where its tip never left the base, `Evicted` if
+any survives else dropped).
+
+**The container and the cut.** On a META root (a repository) the container is the root leg: a
+worktree of the meta on the ticket branch, base = the branch the meta stands on, so an edit to
+the workspace's own files rides the same flow. On a FOLDER root (no `.git`) it is a plain
+directory with the root's `CLAUDE.md` copied in and no root leg. Children:
+`git -C <root>/<child> worktree add <container>/<child> -b msmn/<KEY>-<slug> <that child's HEAD>`,
+base = the branch that checkout is on (`checked_out`, `symbolic-ref HEAD`), marker and
+`.worktreeinclude` per leg (`add_leg`, the stages `provision` always ran, now shared).
+**Fail closed**: the precheck writes nothing and refuses the first repo on a detached HEAD or
+already holding the branch, naming it; a leg that fails to add takes every leg already added
+with it — and its own branch, because `add -b` mints the branch before it lays the tree.
+Sequential in the one provisioning thread, concurrency 2 across tickets as before;
+`Msg::ProvisionProgress` puts `7/19` on the binding's `detail` while it runs, and the journal
+gets `provisioned <KEY>: <n> repos in <ms> ms` on every success (single-repo included, the
+baseline). The e2e's three tiny repos: 217 ms. **Simbly's number is still to be read** off
+`daemon.log` the first time a worktree ticket is cut there.
+
+**One answer per ticket.** `worktree::aggregate` folds the legs' `RepoFlags`: the TOUCHED legs
+(tip moved off the creation base) judge — `merged` is every touched leg merged, `needs_rebase`
+any touched leg behind its base — because `compute_flags` calls a fresh branch not merged ("no
+work yet", 2026-08-30) and an untouched child whose base moved on has nothing to rebase; with no
+leg touched every leg judges, which is the single-leg answer exactly. `ahead` sums; `tip` and
+`base_tip` join the legs' with `+`, so the train's "asked at this base tip" memo and the merge
+refusal memo re-arm when any leg's base moves. `train::Input.base_tip` is per ticket now
+(`HashMap<Ulid, String>`, `wt_base_tip`), and the daemon-wide `base_tip` is gone.
+
+**Merge per leg, not atomic.** `worktree::merge_legs`: every touched, unmerged leg is judged
+ff-able first (or `NeedsRebase` names the moved legs and nothing moves), then each fast-forwards
+into its own base in leg order; a refusal midway is `Refused { landed, leg, .. }` — the ticket
+is half landed, the flags refresh so the card says so, the detail reads `web: uncommitted
+changes in the main checkout — …`, and the next `m` continues from there. Single-repo details are
+byte-for-byte what they were; a workspace's read `msmn/T-9-x merged into main, api/main` and
+`api, web moved — rebase first`. The rebase prompt's `{base}` on a workspace names the moved
+legs: `main (api), main (web)`.
+
+**The wire and the screen.** `WorktreeItem.repos: Vec<WorktreeRepoItem { name, base, ahead,
+merged, needs_rebase, conflict }>` and `AgentTicketView.repos: Vec<AgentRepoView { name, base,
+merge_state }>`, both `skip_serializing_if` empty so a single-repo snapshot and `get_ticket` are
+byte-identical; `get_ticket`'s description says `merge state (per repo on a workspace)` (+26
+bytes, 775 of 820). The ticket page's worktree row names the legs with something to say between
+the branch and the aggregate — `⎇ msmn/T-5-x ∙ root +1 ∙ api +3 ∙ 4 to merge ∙ m merge`; `✓`
+landed, `↓` behind, `+2↓` both, `!` shared (`glyphs::merged_mark`, hoisted from the card so the
+two agree at both tiers) — an untouched leg silent, and the legs give before the branch name
+(kept from the left, ` ∙ +N` for the dropped, then the name to its floor). The card's mark reads
+the aggregate and moves not at all.
+
+**Lifted.** The refusal in `resolve_spawn_cwd`, the TUI's own in `set_ticket_workspace`, and
+`Ctx::multi_repo` with its four gates (`workspace_hint`, the column's workspace row, the
+composer's and the editor's Shift+Tab) are gone; `a_workspace_board_offers_no_worktree_choice`
+is now `a_workspace_board_offers_the_worktree_choice`, its inverse. `doctor`'s workspace advice
+says what a worktree ticket does there. CHANGELOG untouched: alpha.24 is tagged, the next
+heading is the next release's to write.
+
+**Tests.** `worktree.rs` over the scratch meta (`testrepo::workspace_scratch`, moved out of
+`diff.rs` for the three modules that build it): legs of a single and a workspace binding, schema
+2 round-trip with `repos` left off a single binding, provision (legs, branches, markers, bases,
+progress, the gitfile child untouched), the folder container, fail-closed on a detached child
+and on a held branch, rollback of a failed child (a read-only admin dir forces `web`'s add to
+fail), rebuild from the children, reconcile of a partial (drop, and `Evicted` with work kept),
+`provision_existing` replaying a workspace, teardown of every leg on a meta and a folder,
+`aggregate` parity and its touched-leg rule, per-leg flags, and the half-landing merge.
+`diff.rs`: the prefixed ticket list and the routed file with its refusals. `train.rs`: the
+per-ticket tip. `command.rs`: the old rows parse, `repos` stays off the wire. TUI: golden
+`ticket_workspace_wt_120x30`, the silence rule at both tiers, legs yielding before the name.
+E2e `workspace_e2e::a_workspace_ticket_gets_a_worktree_per_repo`: the accepted spawn parks on
+provisioning, attaches with legs `["", "api", "web"]` on `main`, the stub's cwd is the
+container, the journal line, api ahead and web silent (and `get_ticket` says so per repo), the
+DONE gate refusing then lifting after `m` lands `api/main` with web untouched, `NeedsRebase`
+naming web alone, the delete gate, and a discard delete leaving no leg, branch or container.
+`wait_attached`/`worktrees_of`/`wt_of` moved to `tests/common` (the fourth copy).
