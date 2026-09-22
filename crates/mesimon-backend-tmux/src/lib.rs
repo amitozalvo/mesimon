@@ -334,10 +334,17 @@ impl TmuxBackend {
     /// (`mesimon exec --env`): values on a `new-session` command line are
     /// readable by every user on the machine for as long as the spawn runs,
     /// and this argv is exactly where the user's exported secrets used to be.
-    pub fn spawn(&self, sid16: &str, cwd: &Path, argv: &[String]) -> Result<()> {
+    ///
+    /// Returns the new pane's key (`conf::PANE_KEY`, via `-P -F`): the
+    /// identity a death frame is matched against, because a wake reuses the
+    /// session NAME (T-245).
+    pub fn spawn(&self, sid16: &str, cwd: &Path, argv: &[String]) -> Result<String> {
         let mut args: Vec<String> = vec![
             "new-session".into(),
             "-d".into(),
+            "-P".into(),
+            "-F".into(),
+            conf::PANE_KEY.into(),
             "-s".into(),
             sid16.into(),
             "-c".into(),
@@ -345,8 +352,13 @@ impl TmuxBackend {
         ];
         args.extend(argv.iter().cloned());
         let argrefs: Vec<&str> = args.iter().map(String::as_str).collect();
-        self.run(&argrefs)?;
-        Ok(())
+        Ok(self.run(&argrefs)?.trim().to_string())
+    }
+
+    /// The key (`conf::PANE_KEY`) of a session's pane — for a pane that
+    /// already exists (the adopt road), where `spawn`'s return is not on hand.
+    pub fn pane_key(&self, sid16: &str) -> Result<String> {
+        Ok(self.run(&["display-message", "-p", "-t", sid16, conf::PANE_KEY])?.trim().to_string())
     }
 
     /// Type literal text into a session's pane WITHOUT pressing Enter — a

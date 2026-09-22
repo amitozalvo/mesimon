@@ -12541,3 +12541,42 @@ other two roads always did.
 text is no note, on-the-fly registration), `auto_run_e2e` (both orders), the reshaped
 `editor_save_*` app tests, `composer_tags_ride_the_mint`, `a_refused_mint_keeps_the_draft`,
 and the teamglue viewer test.
+## T-245: a death frame names its pane (2026-09-23, user: "verify still needed … if verified and easy, move to in progress and implement" ∙ "plan, I go with your suggestion")
+
+**Reported.** From the T-234 simplify pass: the `pane-died` hook sent only the session name, a
+wake reuses that name, and `pane_reborn` forked a pane listing on the writer thread to decide
+whether a death frame belonged to the old pane.
+
+**Verified, and the fix moved.** `pane_reborn` had become `straggler_death` (T-381), which
+guards TWO death frames by name: tmux's `PaneDied` (the sid16) and an agent's own
+`SessionEnd{other | prompt_input_exit}` (the session uuid a `--resume` wake reuses). A pane id
+on the tmux hook alone would have fixed one road and left the fork for the other. What closed
+both: `mesimon exec` layers the env file over the inherited environment and never clears it, so
+tmux's own `TMUX` and `TMUX_PANE` reach claude and every hook it runs (the denylist strips them
+from the CAPTURED shell env only; verified on a live mesimon pane). The backend's `spawn` did not
+run `new-session -P -F` as the ticket claimed; it does now.
+
+**Shipped.** The hook header carries `pane`, a key `<server pid>:<pane id>` — the tmux hook
+spells it as `--pane "#{pid}:#{pane_id}"` (`conf::PANE_KEY`; the live-server reinstall on
+daemon start already covers a server that outlived a restart), a Claude hook rebuilds it from
+`TMUX` (`socket,server pid,index`) and `TMUX_PANE`. `SessionRecord.pane_key`
+(`#[serde(default)]`, no schema bump) is set on every pane road: `spawn_session`,
+`resume_session_with_cleanup_ack` and `wake_session` from `TmuxBackend::spawn`'s `-P -F` return,
+`adopt_terminal` from `TmuxBackend::pane_key`. `straggler_death` is pure: a death frame whose
+key differs from the record's is dropped with a journal line (`straggler dropped: …`) and a
+`straggler` reason on the feed; the `pane_born` map, `STRAGGLER_WINDOW` and the `Spawning`
+special case are gone; `own_pane_pid` stays for `resume_guard`'s "elsewhere" exemption.
+
+**Decision (user).** A frame with no key (a hook binary older than this change, a frame sent
+from outside a pane, an older `sessions.json`) is trusted, as before minus the guard. The one
+exposure is a wake straddling the upgrade.
+
+**Measured on the way.** A pane id is unique per SERVER: the first cut keyed on `#{pane_id}`
+alone and `wake_straggler_e2e` failed with `%0 == %0` — the wake's kill-session took the private
+server's last session, the server exited, and the fresh server numbered from `%0`. A
+one-session board does the same. Hence the server pid in the key.
+
+**Checks.** `wake_straggler_e2e` (stragglers from the old pane's key dropped, a `PaneDied` from
+the new pane's key lands at once, the record carries the key the wake spawned),
+`the_header_names_its_pane_when_it_has_one`, `hooked_render_carries_the_notify`; `hook_e2e`,
+`prompt_e2e`, `exit_parks_e2e`, `m3_e2e` unchanged on the real roads.

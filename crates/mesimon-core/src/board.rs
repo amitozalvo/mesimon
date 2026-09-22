@@ -278,6 +278,14 @@ pub struct SessionRecord {
     /// (mesimon-spawned ones pass `--session-id id`, so the two coincide).
     #[serde(default)]
     pub claude_session_id: Option<uuid::Uuid>,
+    /// The tmux pane this record's process runs in, as `<server pid>:<pane
+    /// id>` (the backend's `PANE_KEY`), set on every pane road (spawn,
+    /// resume, wake, adopt). A wake reuses the session name; the pane key is
+    /// what tells the old pane's death frames from the new pane's (T-245).
+    /// `None` on a record from an older build or with no pane, and a death
+    /// frame is then trusted as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_key: Option<String>,
     /// Codex's exact resumable thread, independent of Mesimon's record UUID.
     /// Opaque: a provider may change its identifier format without changing
     /// board identity. Never replace this with a thread-tree session ID.
@@ -412,6 +420,7 @@ impl SessionRecord {
             confidence: Confidence::default(),
             provenance: Provenance::default(),
             claude_session_id: None,
+            pane_key: None,
             codex_thread_id: None,
             codex_generation: None,
             codex_observed_seq: 0,

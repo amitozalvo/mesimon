@@ -166,13 +166,6 @@ const PLAN_ACCEPT_CONFIRM_MS: u64 = 8_000;
 const PLAN_ACCEPT_TRIES: u8 = 10;
 const SUBMIT_ATTEMPTS: u8 = 10;
 const REAP_GRACE: Duration = Duration::from_secs(5);
-/// How long after a pane is born a death frame naming its session may still
-/// be the PREVIOUS tenant's (`straggler_death`). A wake re-uses the record's
-/// sid16 and its session uuid, and the process the sleep SIGTERM'd — or the
-/// wake's own kill-session took down — runs its `SessionEnd` hook on the way
-/// out; that frame, and the pane-died behind it, can land after the new pane
-/// is up and past `Spawning` (T-381).
-const STRAGGLER_WINDOW: Duration = Duration::from_secs(10);
 /// How often an orphaned Codex cleanup record (T-357) is re-checked for
 /// known owners after a check refused. Each check forks one `ps`.
 const CODEX_ORPHAN_RETRY: Duration = Duration::from_secs(15);
@@ -409,10 +402,6 @@ pub struct Daemon {
     cleanup_resume_offers: HashMap<uuid::Uuid, u64>,
     /// Panes SIGTERM'd and awaiting their grace-then-kill-pane (by sid16).
     reaping: HashMap<String, Instant>,
-    /// When each record's CURRENT pane was spawned — the window in which a
-    /// death frame may still be a straggler from the pane that held the
-    /// name before (`straggler_death`). In memory only.
-    pane_born: HashMap<uuid::Uuid, Instant>,
     /// (bytes, sessions seen) — `ps` aggregate, refreshed on the 10 s bucket.
     rss_cache: (u64, usize),
     /// Per-session slice of that aggregate, same bucket — feeds the sleep
@@ -868,7 +857,6 @@ pub fn run(paths: Paths) -> Result<()> {
         recovery: HashMap::new(),
         cleanup_resume_offers: HashMap::new(),
         reaping: HashMap::new(),
-        pane_born: HashMap::new(),
         rss_cache: (0, 0),
         rss_by: HashMap::new(),
         foregrounds: HashMap::new(),
@@ -2916,23 +2904,25 @@ impl Daemon {
         let mut dirty = observation.metadata_changed;
         let signal = observation.signal;
         if let Some(sig) = signal {
-            // A death that names a pane still ALIVE is the previous tenant's.
-            // The pane-died notify carries only the session name and a
-            // Claude hook only the session uuid, and a wake re-uses both for
-            // its new pane; sleep SIGTERMs and returns, so an ask, a `c` or
-            // the very next `x` spawns into the name while the old process
-            // is still going down — its `SessionEnd` hook and the pane-died
-            // behind it are still on their way up the hook socket. Landing
-            // on `Spawning`, that pane-died was read as the NEW pane
-            // crashing (prompt_e2e, 2026-09-04, the ask at a sleeping
-            // claude); landing on the `Idle` the new pane's `SessionStart`
-            // had already minted, the `SessionEnd{other}` of the killed
-            // process was read as a crash too (T-381) — and every Enter on
-            // that corpse then killed the live claude under it and bred the
-            // next straggler. Only the window where a pane was just born can
-            // be ambiguous, so only there is tmux asked; "listed and not
-            // dead" is the one answer that refutes a death.
-            if self.straggler_death(id, &sig) {
+            // A death that names ANOTHER pane is the previous tenant's. A
+            // wake re-uses the record's session name and its session uuid
+            // for the new pane; sleep SIGTERMs and returns, so an ask, a `c`
+            // or the very next `x` spawns into the name while the old
+            // process is still going down — its `SessionEnd` hook and the
+            // pane-died behind it are still on their way up the hook socket,
+            // and read by name they land on the new pane's record as its
+            // death (prompt_e2e, 2026-09-04; T-381). A pane key — server
+            // pid and pane id, `conf::PANE_KEY` — is never reused, so the
+            // frame carries it (`--pane` on the tmux hook, `TMUX` and
+            // `TMUX_PANE` through a Claude hook) and the record keeps the
+            // one it spawned: a mismatch is dropped, no tmux asked (T-245).
+            // A frame or a record without one is trusted as before.
+            if let Some((theirs, ours)) = self.straggler_death(id, &sig, frame.pane.as_deref()) {
+                self.journal.line(&format!(
+                    "straggler dropped: session {id} {} from pane {theirs}, record's pane is {ours}",
+                    frame.event
+                ));
+                self.feed.hook_event(&frame.session, &frame.event, Some("straggler"));
                 return;
             }
             if matches!(sig, Signal::PaneDied { .. }) {
@@ -3217,19 +3207,21 @@ impl Daemon {
     }
 
     /// A death frame — pane-died, or the `SessionEnd` a process runs on its
-    /// way out — for a record whose pane was born inside `STRAGGLER_WINDOW`
-    /// (or is still `Spawning`) and which tmux lists ALIVE belongs to the
-    /// pane that held the name before (see the caller). `logout`, `clear`
-    /// and `resume` are never a kill's echo and stay out of it, and so does
-    /// a shell's `SessionEnd`: a shell record's hook frames are the
-    /// agent-inside-a-shell compatibility road, and no shell wake kills a
-    /// claude. A real death inside the window still lands: tmux lists that
-    /// pane dead, and where an agent's `SessionEnd` beat its exit, the
-    /// pane-died behind it carries the status.
-    fn straggler_death(&self, id: uuid::Uuid, sig: &Signal) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
-            return false;
-        };
+    /// way out — that names a pane other than the record's belongs to the
+    /// pane that held the name before (see the caller): `Some((theirs,
+    /// ours))`. `logout`, `clear` and `resume` are never a kill's echo and
+    /// stay out of it, and so does a shell's `SessionEnd`: a shell record's
+    /// hook frames are the agent-inside-a-shell compatibility road, and no
+    /// shell wake kills a claude. A frame with no pane key (a hook binary
+    /// older than T-245, a frame sent from outside a pane) or a record with
+    /// none (an older `sessions.json`) is trusted: `None`.
+    fn straggler_death(
+        &self,
+        id: uuid::Uuid,
+        sig: &Signal,
+        frame_pane: Option<&str>,
+    ) -> Option<(String, String)> {
+        let rec = self.board.sessions.iter().find(|s| s.id == id)?;
         let death = match sig {
             Signal::PaneDied { .. } => true,
             Signal::SessionEnd { kind } => {
@@ -3238,14 +3230,11 @@ impl Daemon {
             _ => false,
         };
         if !death {
-            return false;
+            return None;
         }
-        let young = matches!(rec.state, SessionState::Spawning)
-            || self.pane_born.get(&id).is_some_and(|born| born.elapsed() < STRAGGLER_WINDOW);
-        if !young {
-            return false;
-        }
-        self.own_pane_pid(rec).is_some()
+        let theirs = frame_pane?;
+        let ours = rec.pane_key.as_deref()?;
+        (theirs != ours).then(|| (theirs.to_string(), ours.to_string()))
     }
 
     /// The pid of the record's own pane while tmux lists it alive and not
@@ -8771,10 +8760,10 @@ impl Daemon {
             rec.pending_prefill = true;
         }
         let launch = self.launch(&argv, &self.session_vars(ticket, &cwd));
-        if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &launch) {
-            return Response::Err { message: format!("spawn failed: {e}") };
+        match self.backend.spawn(&rec.sid16(), &cwd, &launch) {
+            Ok(pane) => rec.pane_key = Some(pane),
+            Err(e) => return Response::Err { message: format!("spawn failed: {e}") },
         }
-        self.pane_born.insert(id, Instant::now());
         // Prefill the ticket title into the agent's input box — typed, never
         // submitted; the user edits and presses Enter (zero token injection).
         // Fresh Claude spawns only: resume/wake replay argv elsewhere and must
@@ -9799,27 +9788,30 @@ impl Daemon {
         self.reaping.remove(&sid); // a fresh pane must not meet a stale reap
         let _ = self.backend.kill_session(&sid); // clear any dead remain-on-exit pane
         let launch = self.launch(&argv, &self.session_vars(ticket, &cwd));
-        if let Err(e) = self.backend.spawn(&sid, &cwd, &launch) {
-            if let (Some(evidence), Some(prepared_generation)) =
-                (cleanup_evidence.as_deref(), spec.generation)
-            {
-                if let Err(rollback) = crate::agents::codex::restore_unverified_cleanup(
-                    &self.paths,
-                    &rec,
-                    evidence,
-                    prepared_generation,
-                ) {
-                    return Response::Err {
+        let pane = match self.backend.spawn(&sid, &cwd, &launch) {
+            Ok(pane) => pane,
+            Err(e) => {
+                if let (Some(evidence), Some(prepared_generation)) =
+                    (cleanup_evidence.as_deref(), spec.generation)
+                {
+                    if let Err(rollback) = crate::agents::codex::restore_unverified_cleanup(
+                        &self.paths,
+                        &rec,
+                        evidence,
+                        prepared_generation,
+                    ) {
+                        return Response::Err {
                         message: format!("resume spawn failed: {e}; original cleanup remains unverified and configuration rollback failed: {rollback}"),
                     };
+                    }
                 }
+                return Response::Err { message: format!("resume spawn failed: {e}") };
             }
-            return Response::Err { message: format!("resume spawn failed: {e}") };
-        }
-        self.pane_born.insert(id, Instant::now());
+        };
         let now = now_ms();
         let resumed_thread = rec.codex_thread_id.clone();
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.pane_key = Some(pane);
             rec.argv = argv;
             rec.codex_generation = spec.generation;
             rec.codex_plan_dialog_seen = false;
@@ -10176,12 +10168,13 @@ impl Daemon {
                 self.reaping.remove(&sid);
                 let _ = self.backend.kill_session(&sid);
                 let launch = self.launch(&argv, &self.session_vars(ticket, &cwd));
-                if let Err(e) = self.backend.spawn(&sid, &cwd, &launch) {
-                    return Response::Err { message: format!("wake spawn failed: {e}") };
-                }
-                self.pane_born.insert(id, Instant::now());
+                let pane = match self.backend.spawn(&sid, &cwd, &launch) {
+                    Ok(pane) => pane,
+                    Err(e) => return Response::Err { message: format!("wake spawn failed: {e}") },
+                };
                 let now = now_ms();
                 if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    rec.pane_key = Some(pane);
                     rec.state = SessionState::Running;
                     rec.state_changed_at = Some(now);
                 }
@@ -10662,6 +10655,7 @@ impl Daemon {
         if let Err(e) = self.backend.rename_session(&name, &rec.sid16()) {
             return Response::Err { message: format!("terminal adopt failed: {e}") };
         }
+        rec.pane_key = self.backend.pane_key(&rec.sid16()).ok();
         if let Some(fg) = self.terminals.remove(&Some(ticket)).flatten() {
             self.foregrounds.insert(id, fg);
         }

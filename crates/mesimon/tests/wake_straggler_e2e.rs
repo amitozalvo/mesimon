@@ -12,8 +12,13 @@
 //!
 //! The test drives exactly that: a live pid file naming the record, a sleep,
 //! an immediate wake, the new pane's `SessionStart`, and then the stragglers
-//! — and the record stays live. A real death inside the same window still
-//! lands, so the rule is not a blindfold.
+//! — and the record stays live. A death frame from the NEW pane, and a real
+//! death, still land, so the rule is not a blindfold.
+//!
+//! What tells a straggler apart is the pane id it carries (T-245): a wake
+//! reuses the session name and the session uuid, never the pane. The test
+//! process sits outside every pane, so the stragglers spell the old pane
+//! with `--pane`, the way `TMUX_PANE` would inside it.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
@@ -35,6 +40,18 @@ fn pane_pid(sock: &std::path::Path, sid16: &str) -> i32 {
     let out =
         tmux(sock).args(["display-message", "-p", "-t", sid16, "#{pane_pid}"]).output().unwrap();
     String::from_utf8_lossy(&out.stdout).trim().parse().expect("pane_pid")
+}
+
+/// `<server pid>:<pane id>` — the key the daemon records and a hook frame
+/// carries. The server pid is in it because this test's wake kills the
+/// server's LAST session: the server exits, the wake starts a fresh one, and
+/// the new pane is `%0` again, same as the old.
+fn pane_key(sock: &std::path::Path, sid16: &str) -> String {
+    let out = tmux(sock)
+        .args(["display-message", "-p", "-t", sid16, "#{pid}:#{pane_id}"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn alive(pid: i32) -> bool {
@@ -87,6 +104,7 @@ fn wake_over_a_dying_pane_is_not_elsewhere_and_its_stragglers_do_not_land() {
     // The pid file a live claude keeps for its conversation — the file the
     // double-resume guard reads. The pane's process IS the agent's.
     let old_pid = pane_pid(&tmux_sock, &sid16);
+    let old_pane = pane_key(&tmux_sock, &sid16);
     let sessions = claude_home.join("sessions");
     std::fs::create_dir_all(&sessions).unwrap();
     std::fs::write(
@@ -114,7 +132,14 @@ fn wake_over_a_dying_pane_is_not_elsewhere_and_its_stragglers_do_not_land() {
         }
     }
     let new_pid = pane_pid(&tmux_sock, &sid16);
+    let new_pane = pane_key(&tmux_sock, &sid16);
     assert_ne!(new_pid, old_pid, "a fresh pane under the same name");
+    assert_ne!(new_pane, old_pane, "a fresh pane key under the same name");
+    assert_eq!(
+        c.board().sessions.iter().find(|s| s.id == sid).unwrap().pane_key.as_deref(),
+        Some(new_pane.as_str()),
+        "the record remembers the pane the wake spawned"
+    );
     wait_until(Duration::from_secs(5), "the old process to be gone", || !alive(old_pid));
 
     // The new pane says it is reading; the record leaves `Spawning`.
@@ -122,14 +147,16 @@ fn wake_over_a_dying_pane_is_not_elsewhere_and_its_stragglers_do_not_land() {
     c.await_state(sid, "idle after resume", |s| matches!(s, SessionState::Idle { .. }));
 
     // ---- the stragglers: the killed process's exit hook, and the ---------
-    // pane-died its pane would have sent, both naming this record.
-    hook_send_with(&hook_sock, &sid.to_string(), "SessionEnd", Some("other"), "{}");
-    hook_send_with(&hook_sock, &sid16, "PaneDied", Some("143"), "");
+    // pane-died its pane would have sent, both naming this record and
+    // both from the OLD pane.
+    let old = Some(old_pane.as_str());
+    hook_send_from_pane(&hook_sock, &sid.to_string(), "SessionEnd", Some("other"), old, "{}");
+    hook_send_from_pane(&hook_sock, &sid16, "PaneDied", Some("143"), old, "");
     std::thread::sleep(Duration::from_millis(800));
     let state = c.board().sessions.iter().find(|s| s.id == sid).unwrap().state.clone();
     assert!(
         matches!(state, SessionState::Idle { .. }),
-        "a death frame for a pane tmux lists alive is the previous tenant's: {state:?}"
+        "a death frame from another pane is the previous tenant's: {state:?}"
     );
     assert!(alive(new_pid), "the woken process was never touched");
     // ...and Enter on it is a focus, never another resume-with-confirm.
@@ -138,17 +165,19 @@ fn wake_over_a_dying_pane_is_not_elsewhere_and_its_stragglers_do_not_land() {
         "session is live",
     );
 
-    // ---- a REAL death inside the same window still lands ------------------
-    // SIGHUP ends the stub (it only ignores TERM); tmux holds the dead pane
-    // and its pane-died carries the status — the pane is listed dead, so
-    // nothing refutes it.
-    let _ = std::process::Command::new("kill").args(["-HUP", &new_pid.to_string()]).status();
+    // ---- a death from the NEW pane lands, at once ----------------------
+    // The same frame with the live pane's id is the record's own death: no
+    // window, no tmux ask. (The stub is still up; the daemon's harvest
+    // kill-session then finishes it.)
+    let new = Some(new_pane.as_str());
+    hook_send_from_pane(&hook_sock, &sid16, "PaneDied", Some("1"), new, "");
     let dead = c.await_state(sid, "exited", |s| !s.is_live());
     assert_eq!(
         dead,
         SessionState::Exited { reason: ExitReason::Crashed },
-        "a pane tmux lists dead is a death, window or not"
+        "a death frame from the record's own pane is a death"
     );
+    wait_until(Duration::from_secs(5), "the harvest to take the pane", || !alive(new_pid));
 
     let _ = c.request(Command::Shutdown);
 }

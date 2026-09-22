@@ -10,6 +10,11 @@ pub struct HookFrame {
     /// Which registration fired — the matcher travels in argv, not payload
     /// (11 §11.2.3: `SessionStart` has `source`, not `session_start_reason`).
     pub reason: Option<String>,
+    /// The tmux pane the frame came from, as `<server pid>:<pane id>`: the
+    /// pane-died hook's `--pane`, or the `TMUX` + `TMUX_PANE` a Claude hook
+    /// inherits. Absent from a hook binary older than T-245 or a frame sent
+    /// from outside a pane.
+    pub pane: Option<String>,
     pub payload: Value,
 }
 
@@ -20,12 +25,14 @@ pub fn parse_frame(bytes: &[u8]) -> Option<HookFrame> {
     let session = header.get("session")?.as_str()?.to_string();
     let event = header.get("event")?.as_str()?.to_string();
     let reason = header.get("reason").and_then(Value::as_str).map(str::to_string);
+    let pane =
+        header.get("pane").and_then(Value::as_str).filter(|p| !p.is_empty()).map(str::to_string);
     let payload = bytes
         .get(nl + 1..)
         .filter(|rest| !rest.is_empty())
         .and_then(|rest| serde_json::from_slice(rest).ok())
         .unwrap_or(Value::Null);
-    Some(HookFrame { session, event, reason, payload })
+    Some(HookFrame { session, event, reason, pane, payload })
 }
 
 /// A whole-frame deadline (not a fresh timeout per byte) bounds how long a
@@ -100,6 +107,19 @@ mod transport_tests {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
+
+    #[test]
+    fn the_header_names_its_pane_when_it_has_one() {
+        let with = parse_frame(b"{\"session\":\"s\",\"event\":\"PaneDied\",\"pane\":\"41:%3\"}\n")
+            .unwrap();
+        assert_eq!(with.pane.as_deref(), Some("41:%3"));
+        // An older hook binary, or a frame sent from outside any pane.
+        let without = parse_frame(b"{\"session\":\"s\",\"event\":\"PaneDied\"}\n").unwrap();
+        assert_eq!(without.pane, None);
+        let blank =
+            parse_frame(b"{\"session\":\"s\",\"event\":\"PaneDied\",\"pane\":\"\"}\n").unwrap();
+        assert_eq!(blank.pane, None);
+    }
 
     #[test]
     fn deciding_frame_finishes_without_eof_but_observer_waits_for_eof() {

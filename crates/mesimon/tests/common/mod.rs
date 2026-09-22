@@ -323,10 +323,28 @@ pub fn hook_send(sock: &Path, session: &str, event: &str, body: &str) {
 /// every call: exit 0, and nothing on stdout (stdout lands in the agent's
 /// context).
 pub fn hook_send_with(sock: &Path, session: &str, event: &str, reason: Option<&str>, body: &str) {
+    hook_send_from_pane(sock, session, event, reason, None, body);
+}
+
+/// `hook_send_with` from a named tmux pane (`--pane <server pid>:%N`): what
+/// a frame from inside a pane carries through `TMUX` and `TMUX_PANE`. The
+/// test process is outside every pane, so a straggler from the OLD pane is
+/// spelled here (T-245).
+pub fn hook_send_from_pane(
+    sock: &Path,
+    session: &str,
+    event: &str,
+    reason: Option<&str>,
+    pane: Option<&str>,
+    body: &str,
+) {
     let mut cmd = Proc::new(mesimon_binary());
     cmd.args(["hook", "--sock"]).arg(sock).args(["--session", session, "--event", event]);
     if let Some(r) = reason {
         cmd.args(["--reason", r]);
+    }
+    if let Some(p) = pane {
+        cmd.args(["--pane", p]);
     }
     let mut child = cmd
         .stdin(Stdio::piped())

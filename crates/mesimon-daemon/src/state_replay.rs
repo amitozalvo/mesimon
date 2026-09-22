@@ -180,6 +180,7 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
                         session: "lab-session".into(),
                         event: event.clone(),
                         reason: reason.clone(),
+                        pane: None,
                         payload: payload.clone(),
                     },
                     &mut tasks,

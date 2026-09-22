@@ -290,7 +290,11 @@ stdin to EOF first, **never writes stdout** (stdout is injected into the agent's
 `core/src/attention.rs` is the pure, time-injected state machine (fixed precedence ranks 0–16,
 ranks 0–8 the attention set; enters at 0 ms, leaves after a 1500 ms settle, 15-min stale
 demote). **No polling for exits** — tmux's `pane-died` hook is the only exit signal, with a 15 s
-server-alive guard for wholesale tmux death. After a daemon restart our sessions sit at
+server-alive guard for wholesale tmux death. **A death frame names its pane** (`pane` in the hook
+header: `<server pid>:<pane id>`, from `--pane` or the pane's own `TMUX`/`TMUX_PANE`) and the
+record keeps the key it spawned (`SessionRecord.pane_key`); a wake reuses the session name and
+the session uuid, never the pane, so a death frame from another pane is dropped
+(`straggler_death`) and no tmux is asked. A frame or record without a key is trusted. After a daemon restart our sessions sit at
 `Unknown{DaemonRestarted}` and re-derive from the transcript tail at Low confidence until a hook
 re-asserts; reconcile never trusts stale claims.
 
@@ -425,6 +429,9 @@ will not show up in our tests until they break something.
   signals only, and a stated High signal commits through it.
 - **`probe_activity` only scans `Running`**, which is what makes `Idle{Background}` immune to it.
 - **`log` is a zsh builtin** — use `/usr/bin/log`.
+- **A tmux pane id is unique per server, and the server exits with its last session.** A wake
+  that kills the only session restarts the server, and the new pane is `%0` like the old one;
+  a pane identity must carry the server pid (`#{pid}`) beside `#{pane_id}`.
 - **A kitty key-release report outlives the keypress, and tmux types it.** Under the pushed
   flags a release is `CSI code;mods:3 u`; tmux 3.6a's CSI-u parser stops at the `:` and passes
   it to the pane as text. `restore_terminal` pops the flags and then fences on a

@@ -1,7 +1,9 @@
 //! `mesimon hook` — the pure observer (11 §11.2.2, the seven rules).
 //!
 //! Invoked by Claude Code's hook engine (exec form, never a shell) and by the
-//! tmux `pane-died` hook. Reads stdin to EOF, forwards one frame to the
+//! tmux `pane-died` hook. The header names the pane the frame comes from
+//! (`--pane`, else `TMUX_PANE`), so the daemon can tell a reused session
+//! name from a reused pane (T-245). Reads stdin to EOF, forwards one frame to the
 //! daemon's hook socket, exits 0. It never writes to stdout (stdout on
 //! `SessionStart`/`UserPromptSubmit` is injected into the agent's context),
 //! never returns a decision, and a missing daemon is invisible to the agent
@@ -43,6 +45,17 @@ fn forward(args: &[String]) {
     let Some(session) = val(args, "--session") else { return };
     let Some(event) = val(args, "--event") else { return };
     let reason = val(args, "--reason");
+    // The pane this frame comes from, as `<server pid>:<pane id>`: the tmux
+    // `pane-died` hook spells it in argv (`--pane "#{pid}:#{pane_id}"`); a
+    // Claude hook inherits tmux's own `TMUX` (`socket,server pid,index`)
+    // and `TMUX_PANE` through claude, because `mesimon exec` layers the env
+    // file over the inherited environment and never clears it. A wake
+    // reuses the session name, never the pane — so a death frame naming
+    // another pane is the previous tenant's and the daemon drops it. The
+    // server pid is part of the key because a pane id is only unique per
+    // server: a wake that took the server's last session down restarts it,
+    // and the fresh server hands out `%0` again (wake_straggler_e2e).
+    let pane = val(args, "--pane").map(str::to_string).or_else(pane_key_from_env);
 
     // Rule 7: socket absent or refusing → silent success.
     let Ok(mut stream) = UnixStream::connect(sock) else { return };
@@ -53,12 +66,22 @@ fn forward(args: &[String]) {
         "session": session,
         "event": event,
         "reason": reason,
+        "pane": pane,
     });
     let Ok(mut buf) = serde_json::to_vec(&header) else { return };
     buf.push(b'\n');
     buf.extend_from_slice(&body);
     // Rule 6: one connect, one write, exit.
     let _ = stream.write_all(&buf);
+}
+
+/// `<server pid>:<pane id>` from the environment tmux gives a pane's process,
+/// or `None` outside one (and the daemon then trusts the frame as before).
+fn pane_key_from_env() -> Option<String> {
+    let tmux = std::env::var("TMUX").ok()?;
+    let server_pid = tmux.split(',').nth(1).filter(|p| !p.is_empty())?;
+    let pane = std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty())?;
+    Some(format!("{server_pid}:{pane}"))
 }
 
 fn val<'a>(args: &'a [String], key: &str) -> Option<&'a str> {

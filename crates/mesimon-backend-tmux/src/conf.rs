@@ -164,12 +164,21 @@ pub fn copy_pipe_bindings() -> Vec<(&'static str, &'static str, String)> {
 
 /// The `run-shell` command the `pane-died` hook executes: one invocation of
 /// the mesimon binary's hook path, session identified by sid16, exit status
-/// carried in `--reason`. `-b` keeps the notify off tmux's own thread.
+/// carried in `--reason`, the dead pane's key in `--pane` (a wake reuses the
+/// session name for its new pane; the key is what tells them apart, T-245).
+/// `-b` keeps the notify off tmux's own thread.
 pub fn pane_died_cmd(hook_bin: &str, hook_sock: &str) -> String {
     format!(
-        r##"run-shell -b '"{hook_bin}" hook --sock "{hook_sock}" --session "#{{session_name}}" --event PaneDied --reason "#{{pane_dead_status}}"'"##
+        r##"run-shell -b '"{hook_bin}" hook --sock "{hook_sock}" --session "#{{session_name}}" --event PaneDied --reason "#{{pane_dead_status}}" --pane "{PANE_KEY}"'"##
     )
 }
+
+/// A pane's identity across the server's life: `<server pid>:<pane id>`. The
+/// pane id alone is unique per SERVER only — a fresh server hands out `%0`
+/// again, and a wake that kills the last session restarts the server.
+/// `TmuxBackend::spawn` returns it and the hook binary rebuilds the same
+/// string from `TMUX` and `TMUX_PANE`, so the three must agree.
+pub const PANE_KEY: &str = "#{pid}:#{pane_id}";
 
 #[cfg(test)]
 mod tests {
@@ -256,5 +265,6 @@ mod tests {
         assert!(conf.contains(r#""/abs/mesimon" hook"#));
         assert!(conf.contains("#{session_name}"));
         assert!(conf.contains("#{pane_dead_status}"));
+        assert!(conf.contains(r##"--pane "#{pid}:#{pane_id}""##));
     }
 }
