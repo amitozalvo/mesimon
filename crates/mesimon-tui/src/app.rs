@@ -8806,12 +8806,10 @@ impl App {
                 "accepting plan".into()
             }
             Response::Queued { .. } if accept_plan && blank => "queued ∙ accepts plan".into(),
-            Response::Queued { behind } if accept_now => {
-                format!("accepting plan ∙ {}", queued_status(&lead, &first, &behind, &own))
-            }
-            Response::Queued { behind } if accept_plan => {
-                format!("accepts plan ∙ {}", queued_status(&lead, &first, &behind, &own))
-            }
+            // With words (T-420): they go the moment the approval is
+            // confirmed, so the receipt is not the idle queue's.
+            Response::Queued { .. } if accept_now => "accepting plan ∙ then asks".into(),
+            Response::Queued { .. } if accept_plan => "accepts plan ∙ then asks".into(),
             // Parked: name what it waits on, the way the card does.
             Response::Queued { behind } => queued_status(&lead, &first, &behind, &own),
             // A parked claude: the daemon woke it and holds the

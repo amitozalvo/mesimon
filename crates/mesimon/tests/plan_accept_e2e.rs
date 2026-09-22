@@ -3,8 +3,8 @@
 //! and a `PromptSession` with `accept_plan` — blank, or with words — makes
 //! the daemon press ONE Enter into the pane. `read` returns on a newline,
 //! so a `got:` line (or `got:planned `, the spawn's title prefill submitted
-//! by the first Enter) proves the Enter and nothing else went. The words wait
-//! for the idle after the accepted turn; a pane at `Plan` with no dialog
+//! by the first Enter) proves the Enter and nothing else went. The words go
+//! in the moment the harness confirms the press; a pane at `Plan` with no dialog
 //! the daemon recognises gives the flag up after its tries and says so in
 //! the feed, and the words keep waiting as an unflagged ask does.
 
@@ -30,7 +30,7 @@ while IFS= read -r line; do \
   printf 'got:%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
 
 #[test]
-fn the_board_accepts_a_plan_with_one_enter_and_the_words_wait_for_the_turn_after() {
+fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
     let Some(h) = Harness::boot_with_env(
         "planok",
         Some(STUB),
@@ -116,8 +116,9 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_wait_for_the_turn_after
     stop(&mut c);
 
     // (2) Queued while the agent still works, with the flag: nothing goes
-    // until the plan is ready; then the Enter, and the words only on the
-    // idle after the accepted turn.
+    // until the plan is ready; then the Enter, and the words the moment
+    // the harness confirms it — at the head of the approved turn, not on
+    // the idle after.
     start(&mut c);
     assert!(matches!(
         c.request(Command::PromptSession {
@@ -134,19 +135,20 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_wait_for_the_turn_after
     assert_eq!(presses(), 1, "no plan yet, no Enter");
     plan_ready(&mut c);
     wait_until(Duration::from_secs(10), "the second accept's Enter", || presses() == 2);
-    wait_until(Duration::from_secs(5), "the flag to be spent", || {
-        pending_of(&mut c, Some(ticket)).iter().any(|p| !p.accept_plan && !p.in_flight)
-    });
-    assert!(!text().contains("mesimon-probe-420"), "the words wait for the turn: {:?}", text());
+    assert!(!text().contains("mesimon-probe-420"), "the words wait for the approval: {:?}", text());
+    assert!(
+        pending_of(&mut c, Some(ticket)).iter().any(|p| p.accept_plan),
+        "the row says accepting until the harness confirms"
+    );
     approved(&mut c);
-    std::thread::sleep(Duration::from_millis(1200));
-    assert!(!text().contains("mesimon-probe-420"), "still working: {:?}", text());
-    stop(&mut c);
-    wait_until(Duration::from_secs(10), "the words after the turn", || {
+    wait_until(Duration::from_secs(10), "the words at the head of the approved turn", || {
         text().contains("got:mesimon-probe-420 then do this")
     });
     assert_eq!(presses(), 2, "the paste's own Enter rides the paste: {:?}", text());
-    // The paste is acked by the next prompt hook.
+    wait_until(Duration::from_secs(5), "the feed line", || {
+        feed().contains(r#""cmd":"queued_ask_sent_after_plan""#)
+    });
+    // The paste is acked by the next prompt hook, then the turn ends.
     start(&mut c);
     wait_until(Duration::from_secs(5), "the ack", || pending_of(&mut c, Some(ticket)).is_empty());
     stop(&mut c);

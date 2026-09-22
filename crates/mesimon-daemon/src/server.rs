@@ -744,6 +744,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 queued_at: e.queued_at,
                 by: None,
                 accept_plan: false,
+                send_on_accept: false,
                 held: None,
             })
         })
@@ -1268,6 +1269,14 @@ struct QueuedAsk {
     /// about a dialog, and only a pane shows one — so it never rides
     /// `queue.json`.
     accept_plan: bool,
+    /// The press went in and the words go the moment the harness confirms
+    /// it — the record leaving `Plan` (T-420, user 2026-09-23: "immediately
+    /// after plan was approved send the words", so "main moved since the
+    /// plan started" reaches the agent before it writes a line). Not on the
+    /// idle after, not behind the checkout: the approved turn is this
+    /// agent's own. A press never confirmed clears this, and the words wait
+    /// as an ordinary ask does.
+    send_on_accept: bool,
     /// `Some` is an ask the daemon HELD (T-420): the agent stopped on a
     /// question after these words were queued, and the answer may change
     /// what they should say. `drain_queue` skips it the way it skips a
@@ -5090,7 +5099,7 @@ impl Daemon {
                 text: (!q.text.is_empty()).then(|| q.text.clone()),
                 in_flight: false,
                 by: q.by.and_then(|c| self.board.ticket(c)).map(|c| c.short_key.clone()),
-                accept_plan: q.accept_plan,
+                accept_plan: q.accept_plan || q.send_on_accept,
                 held: q.held.map(str::to_string),
             })
             .collect();
@@ -7318,6 +7327,7 @@ impl Daemon {
             // Re-queued by hand: the person read the words again, so a
             // hold is answered, and the flag is whatever the field said.
             q.accept_plan = accept_plan;
+            q.send_on_accept = false;
             q.held = None;
             self.feed.board(actor, replaced, Some(ticket));
         } else {
@@ -7329,6 +7339,7 @@ impl Daemon {
                 queued_at: now,
                 by,
                 accept_plan,
+                send_on_accept: false,
                 held: None,
             });
             self.feed.board(actor, &fresh, Some(ticket));
@@ -7708,6 +7719,9 @@ impl Daemon {
                 Ok(()) => {
                     if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == ticket) {
                         q.accept_plan = false;
+                        // Words ride the confirmation (`settle_plan_accepts`);
+                        // none, and the accept was the whole ask.
+                        q.send_on_accept = !q.text.is_empty();
                         if q.text.is_empty() {
                             self.queued.retain(|q| q.ticket != ticket);
                         }
@@ -7750,14 +7764,58 @@ impl Daemon {
             });
             if !at_plan {
                 self.plan_accept.remove(&id);
+                changed |= self.send_after_accept(id, now);
             } else if now >= deadline {
                 self.plan_accept.remove(&id);
                 let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
                 self.feed.board("automation", "plan_accept_unconfirmed", ticket);
+                // The words stay, as an ordinary ask: they wait for idle.
+                if let Some(q) = self
+                    .queued
+                    .iter_mut()
+                    .find(|q| matches!(q.seat, QueuedSeat::Pane(s) if s == id) && q.send_on_accept)
+                {
+                    q.send_on_accept = false;
+                }
                 changed = true;
             }
         }
         changed
+    }
+
+    /// The accepted plan's turn has begun (the record left `Plan`): the
+    /// words flagged to ride it go in now (T-420). A Claude pane takes a
+    /// paste mid-turn and shows it to the agent at its next step, which is
+    /// the point — "main moved since the plan started" is worth nothing
+    /// after the implementation. Into a live turn only: a record that left
+    /// `Plan` for anything but `Running`/`Idle` (a death, a park) keeps the
+    /// words queued for the sweep to judge.
+    fn send_after_accept(&mut self, session: uuid::Uuid, now: u64) -> bool {
+        let Some(i) = self.queued.iter().position(|q| {
+            matches!(q.seat, QueuedSeat::Pane(s) if s == session) && q.send_on_accept
+        }) else {
+            return false;
+        };
+        let live = self.board.sessions.iter().any(|s| {
+            s.id == session && matches!(s.state, SessionState::Running | SessionState::Idle { .. })
+        });
+        if !live {
+            self.queued[i].send_on_accept = false;
+            return true;
+        }
+        let QueuedAsk { ticket, seat, text, .. } = self.queued.remove(i);
+        if !self.seat_stands(ticket, &seat) {
+            self.feed.board("automation", "queued_ask_dropped_target_gone", Some(ticket));
+            return true;
+        }
+        match self.deliver_queued_ask(ticket, seat, text) {
+            Response::Ok => {
+                self.inflight.insert(ticket, (now + INFLIGHT_MS, "queued_ask_delivered"));
+                self.feed.board("automation", "queued_ask_sent_after_plan", Some(ticket));
+            }
+            _ => self.feed.board("automation", "queued_ask_failed", Some(ticket)),
+        }
+        true
     }
 
     fn send_queued_ask(&mut self, ticket: ulid::Ulid) -> Response {

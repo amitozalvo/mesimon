@@ -12391,7 +12391,8 @@ and the queued flag on by default only when the session is known to be planning.
 - **One key, one verb.** Shift+Enter stays `Verb::Prompt`. On a card whose paned agent is at
   `RequiresAction{Plan}` (`Ctx::ticket_plan_ready`) the hint is `accept plan + ask` and the
   field opens with its row at `accept plan`; a blank Enter is the accept, words + Enter accept
-  and park the words for the idle after. Shift+Tab's ring (`App::cycle_ask_mode`) has three stops
+  and send the words the moment the approval is confirmed (amended below; the first cut parked
+  them for the idle after). Shift+Tab's ring (`App::cycle_ask_mode`) has three stops
   on a seat that can take it (`Ctx::ask_plan_able`): `accept plan` → `queued` → `now`, and
   `now` is skipped while the dialog is up — a paste there is an answer. A session whose argv
   carries `--permission-mode plan` and is not on the dialog yet is *known to be planning*
@@ -12450,7 +12451,15 @@ and the queued flag on by default only when the session is known to be planning.
   make sense here and can confuse users"): on the dialog itself the field has ONE stop —
   Shift+Tab is inert and unhinted (`Ctx::ask_plan_ready`; the row drops its `shift+tab`) and
   `cycle_ask_mode` holds `accept plan`. A seat merely known to be planning keeps the three-stop
-  ring, since there the words can still wait or go now. The board's status on Enter: `accepting plan`,
+  ring, since there the words can still wait or go now. **Amended again the same day** (user:
+  "immediately after plan was approved send the words … 'keep in mind main moved since plan
+  started'"): words with the flag no longer wait for the idle after the accepted turn. The press
+  sets `QueuedAsk.send_on_accept`, and `settle_plan_accepts`, on the confirmation (the record
+  leaving `Plan` for `Running`/`Idle`), calls `send_after_accept`: the ordinary `deliver_queued_ask`
+  paste, straight into the live turn, feed `queued_ask_sent_after_plan`. A Claude pane takes a
+  paste mid-turn and shows it at the next step, which is the point. Not behind the checkout —
+  the approved turn is this agent's own. An unconfirmed press clears the flag and the words wait
+  as an ordinary ask. The row reads `accepting plan` until the confirmation. The board's status on Enter: `accepting plan`,
   `queued ∙ accepts plan`, or the ordinary queued receipt prefixed `accepting plan ∙` /
   `accepts plan ∙`.
 
@@ -12470,9 +12479,9 @@ no Shift+Enter, so no board accept — the same fate as every Shift+Enter bindin
 Codex marker cases); keymap `shift_enter_accepts_a_ready_plan_and_the_field_says_so`; TUI
 `shift_enter_on_a_ready_plan_accepts_it_and_the_ring_skips_now` and
 `a_planning_agent_queues_with_the_flag_and_a_held_ask_says_why`; e2e
-`plan_accept_e2e::the_board_accepts_a_plan_with_one_enter_and_the_words_wait_for_the_turn_after`
+`plan_accept_e2e::the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval`
 (a stub painting the Claude dialog: the blank accept is one Enter and nothing else, the flag
-queued before the plan presses on the `≡` and delivers the words on the idle after, a cleared
+queued before the plan presses on the `≡` and delivers the words on the confirmed approval, a cleared
 screen gives the flag up with the feed line and no blind Enter); `ask_queue_e2e`'s idle-queue
 test now proves the permission wait, the `^y` refusal on a dialog, the hold on a question and
 the send by hand.

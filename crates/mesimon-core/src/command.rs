@@ -249,7 +249,8 @@ pub enum Command {
         /// Accept the agent's plan on the way (T-420): the daemon presses
         /// Enter on the harness's own plan dialog, at the row the harness
         /// highlights by default — it chooses no option label — and the
-        /// words (if any) wait for the turn that follows. Meaningful only
+        /// words (if any) go in the moment the harness confirms the press,
+        /// at the head of the approved turn. Meaningful only
         /// on a live pane: the flag is parked with the ask and spent on the
         /// dialog when it shows, so an ask queued while the agent is still
         /// planning accepts the plan it ends on. Blank words are legal
