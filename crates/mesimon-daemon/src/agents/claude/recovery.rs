@@ -72,9 +72,7 @@ impl AgentRecovery for ClaudeRecovery {
                 !observe_only(record) && record.state == SessionState::Running
             }
             RecoveryChannel::Status => {
-                // A claude in a ticket's shell (T-369) keeps a pid file like
-                // any other; its idle/busy is worth Medium the same way.
-                let eligible = (!observe_only(record) || record.host.is_some())
+                let eligible = !observe_only(record)
                     && (record.state == SessionState::Running
                         || record.state
                             == SessionState::RequiresAction { reason: Reason::Permission });

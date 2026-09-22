@@ -193,7 +193,6 @@ mod tests {
             title: None,
             started_by: None,
             foreground: None,
-            host: None,
             confidence: Confidence::High,
             provenance: Provenance::Spawned,
             claude_session_id: None,

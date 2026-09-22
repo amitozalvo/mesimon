@@ -8826,10 +8826,7 @@ impl App {
         // flow runs. An exited claude is a conversation, not a process — the
         // daemon replays its argv (`--resume`) into a fresh pane.
         if let Some(rec) = self.board.sessions.iter().find(|s| s.id == sid) {
-            // A claude in a ticket's shell (T-369) is observe-only with a
-            // pane to land in — its host's — so Enter focuses, not resumes.
-            let observe_only =
-                rec.provenance == Provenance::Adopted && rec.argv.is_empty() && rec.host.is_none();
+            let observe_only = rec.provenance == Provenance::Adopted && rec.argv.is_empty();
             let sleeping = matches!(rec.state, SessionState::Sleeping);
             let exited_claude =
                 rec.kind.is_agent() && matches!(rec.state, SessionState::Exited { .. });

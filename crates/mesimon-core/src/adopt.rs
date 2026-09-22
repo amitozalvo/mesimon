@@ -51,13 +51,10 @@ pub fn cwd_matches(cwd: &str, roots: &[PathBuf]) -> bool {
 }
 
 /// `~/.claude/sessions/<pid>.json` — best-effort enrichment only (11 §11.3).
-/// MAY contribute a display name, a running-elsewhere hint and — since
-/// T-369 — PLACEMENT: which tmux pane the process sits in (`tmux`), which is
-/// how a claude typed into a ticket's shell is bound to that shell. MUST NOT
-/// set any §11.7 state, attention entry, or liveness verdict: the bound
-/// record's state still comes from its transcript. Join key is `session_id`
-/// (the file's `sessionId`), never the filename pid. Every key is optional
-/// (measured presence varies file to file); unknown keys pass.
+/// MAY contribute a display name and a running-elsewhere hint; MUST NOT set
+/// any §11.7 state, attention entry, or liveness verdict. Join key is
+/// `session_id` (the file's `sessionId`), never the filename pid. Every key
+/// is optional (measured presence varies file to file); unknown keys pass.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionsPidFile {
@@ -72,20 +69,7 @@ pub struct SessionsPidFile {
     pub status_updated_at: Option<u64>,
     pub pid: Option<i32>,
     pub name: Option<String>,
-    /// `<session name>:@<window>.%<pane>` when the process runs inside tmux
-    /// (measured on 2.1.280: `2c54cd15159348e4:@30.%30`) — the session name
-    /// is the pane's tmux session, which for a pane of ours is a record's
-    /// `sid16`. `pane_session` reads it.
     pub tmux: Option<String>,
-}
-
-/// The tmux session name a pid file's `tmux` field places the process in:
-/// the text before the first `:`. `None` for an empty field or one with no
-/// `:` — a name alone is not the measured shape, and a guess would bind a
-/// claude to the wrong shell.
-pub fn pane_session(tmux: &str) -> Option<&str> {
-    let (name, _) = tmux.split_once(':')?;
-    (!name.is_empty()).then_some(name)
 }
 
 /// What one complete transcript record means for the observe tier (09 §4.4).
@@ -467,15 +451,6 @@ mod tests {
         assert_eq!(h.session_id.to_string(), SID);
         assert_eq!(h.cwd, "/repo");
         assert!(parse_transcript_head("{}\n{\"foo\":1}").is_none());
-    }
-
-    #[test]
-    fn pane_session_is_the_name_before_the_colon() {
-        assert_eq!(pane_session("2c54cd15159348e4:@30.%30"), Some("2c54cd15159348e4"));
-        assert_eq!(pane_session("msmn-term-01J:@1.%1"), Some("msmn-term-01J"));
-        assert_eq!(pane_session(""), None);
-        assert_eq!(pane_session(":@1.%1"), None);
-        assert_eq!(pane_session("2c54cd15159348e4"), None);
     }
 
     #[test]

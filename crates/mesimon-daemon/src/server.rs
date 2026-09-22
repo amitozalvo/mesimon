@@ -1973,7 +1973,6 @@ impl Daemon {
         if self.ticks % TAIL_POLL_TICKS == 0 {
             changed |= stage!("poll_tails", self.poll_tails());
             changed |= stage!("probe_status_files", self.probe_status_files());
-            changed |= stage!("bind_shell_agents", self.bind_shell_agents());
             changed |= stage!("refresh_panes", self.refresh_panes());
         }
         if self.ticks % inactivity_park_ticks() == 0 {
@@ -2265,13 +2264,6 @@ impl Daemon {
             let Some(f) = facts.iter().find(|f| f.session_name == sid && !f.pane_dead) else {
                 continue;
             };
-            // A shell hosting a bound claude (T-369) says so by name: tmux
-            // would say `2.1.280` or `node`, the versioned binary or the
-            // runtime, and the binding knows better.
-            if self.board.sessions.iter().any(|r| r.host == Some(rec.id) && r.state.is_live()) {
-                foregrounds.insert(rec.id, "claude".to_string());
-                continue;
-            }
             let shell = rec.argv.first().map(String::as_str).unwrap_or_default();
             if let Some(cmd) = foreground_of(&f.current_command, shell) {
                 foregrounds.insert(rec.id, cmd);
@@ -8983,31 +8975,17 @@ impl Daemon {
                 self.mint_ticket(by, None, column, title, None)
             }
         };
-        Ok(self.attach_item(&item, ticket))
-    }
-
-    /// The observe-only record an external item becomes (19 §4 tier 2): no
-    /// argv — no process of ours, the discriminator the tail poller keys on
-    /// — the provider's conversation identity, the transcript, `Low`. The
-    /// drawer's attach and the shell binding (T-369) both end here; the
-    /// seat checks are the caller's.
-    fn attach_item(&mut self, item: &ExternalItem, ticket: ulid::Ulid) -> uuid::Uuid {
-        let identity = if item.conversation_id.is_empty() {
-            item.id.to_string()
-        } else {
-            item.conversation_id.clone()
-        };
         let id = uuid::Uuid::new_v4();
         let mut rec = SessionRecord::new(
             id,
-            item.provider.session_kind(),
+            kind,
             ticket,
-            vec![],
+            vec![], // no process of ours — the discriminator the tail poller keys on
             item.cwd.clone(),
             SessionState::unknown(),
         );
         rec.provenance = Provenance::Adopted;
-        match item.provider {
+        match provider {
             AgentProvider::ClaudeCode => rec.claude_session_id = identity.parse().ok(),
             AgentProvider::Codex => rec.codex_thread_id = Some(identity),
         }
@@ -9017,148 +8995,7 @@ impl Daemon {
         rec.detail = item.preview.clone();
         self.machines.insert(id, Machine::restore(rec.state.clone(), Confidence::Low, now_ms()));
         self.board.sessions.push(rec);
-        id
-    }
-
-    /// A claude typed into a ticket's shell, bound to the ticket (T-369).
-    ///
-    /// Recognition is by PLACEMENT, not name: tmux names a native-install
-    /// claude by its versioned binary (`2.1.280`) and an npm one `node`, so
-    /// `pane_current_command` never says `claude`. Claude Code's own pid
-    /// file says which tmux session it sits in (`SessionsPidFile::tmux`),
-    /// and for a pane of ours that is a shell record's `sid16` — exact, and
-    /// free of the cwd ambiguity every `shared_checkout` ticket's shell has.
-    ///
-    /// Two passes on the tail-poll bucket, one pid-file read for both:
-    /// a live pid file placed in a shell record's pane whose session is not
-    /// on the board attaches it as an observe-only record of the shell's
-    /// ticket with `host` set (once its transcript exists — Claude writes it
-    /// at the first prompt); a hosted record whose placement is gone (file
-    /// gone, pid dead, or the pid file naming another session after
-    /// `/clear`) parks as `Sleeping`, which is exactly where the wake road
-    /// takes over with `--resume` — hooks and MCP from then on.
-    fn bind_shell_agents(&mut self) -> bool {
-        let shells: Vec<(uuid::Uuid, String, ulid::Ulid, String)> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|r| r.kind == SessionKind::Bash && r.state.has_pane())
-            .map(|r| (r.id, r.sid16(), r.ticket, r.cwd.clone()))
-            .collect();
-        let hosted: Vec<(uuid::Uuid, uuid::Uuid, uuid::Uuid)> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|r| r.kind == SessionKind::Claude && r.state.is_live())
-            .filter_map(|r| Some((r.id, r.host?, r.claude_session_id.unwrap_or(r.id))))
-            .collect();
-        if shells.is_empty() && hosted.is_empty() {
-            return false;
-        }
-        let home = crate::census::claude_home();
-        let pid_files = crate::census::read_pid_files(&home.join("sessions"));
-        let mut changed = false;
-
-        for (host, sid16, ticket, shell_cwd) in &shells {
-            let Some((sid, entry)) =
-                pid_files.iter().find(|(_, e)| e.alive && e.pane.as_deref() == Some(sid16))
-            else {
-                continue;
-            };
-            let sid = *sid;
-            let known = self.board.sessions.iter().find(|r| {
-                r.kind == SessionKind::Claude && r.claude_session_id.unwrap_or(r.id) == sid
-            });
-            match known {
-                // Already bound here, or a session of ours (its own pane).
-                Some(r) if r.host == Some(*host) || !r.argv.is_empty() => continue,
-                // Another ticket's live seat: leave it there.
-                Some(r) if r.host.is_none() && r.state.is_live() && r.ticket != *ticket => {
-                    continue;
-                }
-                _ => {}
-            }
-            let Some(path) = crate::census::transcript_for(&home, sid) else { continue };
-            let roots =
-                [std::path::PathBuf::from(entry.cwd.clone().unwrap_or_else(|| shell_cwd.clone()))];
-            let Some(item) = crate::census::candidate(&path, &roots, &pid_files) else { continue };
-            let id = match known.map(|r| r.id) {
-                // The same conversation parked earlier (`/exit`, then
-                // `claude --resume` by hand): the record re-enters as the
-                // drawer's attach would, keyed on its identity.
-                Some(id) => {
-                    let now = now_ms();
-                    if let Some(rec) = self.board.sessions.iter_mut().find(|r| r.id == id) {
-                        rec.ticket = *ticket;
-                        rec.state = SessionState::unknown();
-                        rec.confidence = Confidence::Low;
-                        rec.state_changed_at = Some(now);
-                        rec.transcript_path = Some(item.transcript_path.clone());
-                        rec.detail = item.preview.clone();
-                        rec.waiting_since = None;
-                    }
-                    self.machines.insert(
-                        id,
-                        Machine::restore(SessionState::unknown(), Confidence::Low, now),
-                    );
-                    self.recovery.remove(&id);
-                    id
-                }
-                None => {
-                    if self.board.live_agent(*ticket).is_some() {
-                        continue;
-                    }
-                    self.attach_item(&item, *ticket)
-                }
-            };
-            if let Some(rec) = self.board.sessions.iter_mut().find(|r| r.id == id) {
-                rec.host = Some(*host);
-            }
-            self.journal.line(&format!(
-                "shell agent bound: session {id} (claude {sid}) in shell {host} on ticket {ticket}"
-            ));
-            changed = true;
-        }
-
-        for (id, host, sid) in hosted {
-            let host_sid16 = shells.iter().find(|(h, ..)| *h == host).map(|(_, s, ..)| s.as_str());
-            let placed = host_sid16.is_some_and(|s| {
-                pid_files.get(&sid).is_some_and(|e| e.alive && e.pane.as_deref() == Some(s))
-            });
-            if placed {
-                continue;
-            }
-            self.park_hosted(id, host);
-            changed = true;
-        }
-        changed
-    }
-
-    /// The shell's claude has left its pane: park the hosted record where the
-    /// wake road resumes it. `sleep_one`'s Claude branch without the pane
-    /// kill — the pane was never ours — at `Low`, as everything on the
-    /// observe tier is.
-    fn park_hosted(&mut self, id: uuid::Uuid, host: uuid::Uuid) {
-        let now = now_ms();
-        let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else { return };
-        if let Some(t) = &rec.transcript_path {
-            let dir = self.paths.transcripts_dir();
-            if std::fs::create_dir_all(&dir).is_ok() {
-                let _ = std::fs::copy(t, dir.join(format!("{id}.jsonl")));
-            }
-        }
-        rec.state = SessionState::Sleeping;
-        rec.confidence = Confidence::Low;
-        rec.waiting_since = None;
-        rec.state_changed_at = Some(now);
-        rec.detail = None;
-        rec.host = None;
-        let ticket = rec.ticket;
-        self.machines.insert(id, Machine::restore(SessionState::Sleeping, Confidence::Low, now));
-        self.recovery.remove(&id);
-        self.journal.line(&format!(
-            "shell agent left: session {id} parked, shell {host} on ticket {ticket}"
-        ));
+        Ok(id)
     }
 
     /// How far up the tool ladder a claude on `ticket` reaches (T-117): the
@@ -9508,7 +9345,6 @@ impl Daemon {
         let resumed_thread = rec.codex_thread_id.clone();
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.argv = argv;
-            rec.host = None; // a pane of its own now (T-369)
             rec.codex_generation = spec.generation;
             rec.codex_plan_dialog_seen = false;
             rec.codex_plan_dismissed_turn = None;
@@ -10139,17 +9975,12 @@ impl Daemon {
         if matches!(rec.state, SessionState::Sleeping) {
             return Response::Err { message: "asleep — wake it first".into() };
         }
-        // A claude in a ticket's shell (T-369) has no pane of its own but
-        // borrows its host's: Enter on its row lands in the shell.
-        let host_sid16 = rec.host.and_then(|h| {
-            self.board.sessions.iter().find(|s| s.id == h && s.state.has_pane()).map(|s| s.sid16())
-        });
-        if host_sid16.is_none() && rec.provenance == Provenance::Adopted && rec.argv.is_empty() {
+        if rec.provenance == Provenance::Adopted && rec.argv.is_empty() {
             // Observe-only: no pane, no hooks, no input (19 §4 tier 2).
             return Response::Err { message: "external session — resume it to take over".into() };
         }
         self.focus = Some(FocusHold { what: Focus::Session(session), by: Arc::downgrade(by) });
-        let sid16 = host_sid16.unwrap_or_else(|| rec.sid16());
+        let sid16 = rec.sid16();
         let kind = rec.kind;
         let argv = self.backend.attach_argv(&sid16);
         // Breadcrumb leaf: the session's own name when the agent set one
