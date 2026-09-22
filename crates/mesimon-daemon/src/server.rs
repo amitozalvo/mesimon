@@ -309,7 +309,8 @@ pub struct Daemon {
     clients: HashMap<usize, String>,
     /// When `begin_shutdown` ran, so `stopped` can say how long the flush took.
     stop_started: Option<Instant>,
-    /// The slowest stage of the last tick, for the slow-turn line.
+    /// The slowest stage of the turn in hand, for the slow-turn line: a
+    /// tick's probes, or the provisioned turn's replay and flags (T-430).
     tick_slowest: (&'static str, Duration),
     /// Standing advisories about persisted state, rebuilt at startup and
     /// carried on every snapshot. Not transient: each one describes a
@@ -2079,6 +2080,14 @@ impl Daemon {
         resp
     }
 
+    /// A stage of the turn in hand took `took`: remembered when it is the
+    /// slowest so far, so the slow-turn line can name it.
+    fn note_stage(&mut self, name: &'static str, took: Duration) {
+        if took > self.tick_slowest.1 {
+            self.tick_slowest = (name, took);
+        }
+    }
+
     /// One wheel tick (250 ms): grace expiry at the old 1 s cadence, settle
     /// timers, the wholesale-server guard.
     /// How long to wait for the `UserPromptSubmit` ack before pressing Enter
@@ -2096,10 +2105,7 @@ impl Daemon {
             ($name:literal, $e:expr) => {{
                 let t = Instant::now();
                 let r = $e;
-                let took = t.elapsed();
-                if took > self.tick_slowest.1 {
-                    self.tick_slowest = ($name, took);
-                }
+                self.note_stage($name, t.elapsed());
                 r
             }};
         }
@@ -9305,6 +9311,11 @@ impl Daemon {
                     took.as_millis()
                 ));
                 self.worktrees.insert(ticket, b);
+                // The replay is timed as a stage (T-430): what is left on
+                // this turn is `spawn_session`'s tmux work, and the
+                // slow-turn line names it so the number is read off the
+                // journal, not guessed.
+                let replay = Instant::now();
                 let (pending, rest): (Vec<PendingSpawn>, Vec<PendingSpawn>) =
                     self.pending_spawns.drain(..).partition(|s| s.ticket == ticket);
                 self.pending_spawns = rest;
@@ -9350,6 +9361,7 @@ impl Daemon {
                         _ => {}
                     }
                 }
+                self.note_stage("spawn_replay", replay.elapsed());
             }
             Err((stage, message)) => {
                 self.pending_spawns.retain(|s| s.ticket != ticket);
@@ -9366,7 +9378,17 @@ impl Daemon {
             self.queue_provision(next);
         }
         self.persist_worktrees();
-        self.refresh_worktree_flags();
+        // The flags take the worker road (T-430). A binding just cut is
+        // trivially fresh — not merged, nothing ahead, no rebase owed — and
+        // that is exactly what an absent entry reads as (`unwrap_or` on
+        // every `wt_*` map; the snapshot's `repos` falls back to the
+        // binding's own legs). Nothing on this turn reads the flags: the
+        // lock and the card's mark read `status`. The synchronous road
+        // was one `compute_repo_flags` round per census repo on the writer,
+        // 12 rounds on a 12-leg workspace, while every keypress waited.
+        let flags = Instant::now();
+        self.queue_worktree_flags();
+        self.note_stage("queue_worktree_flags", flags.elapsed());
         self.persist_and_notify();
     }
 
@@ -9404,7 +9426,12 @@ impl Daemon {
     /// also when the flags are cleared rather than sampled. The upstream of
     /// a leg is asked here where the cache has no answer, on the writer,
     /// which is what the tick's road avoids by passing `None` and asking on
-    /// the worker.
+    /// the worker. A single-repo leg rides with an empty base when the
+    /// cache is empty — the worker fills it from `default_branch` — where a
+    /// workspace leg without one is a broken record and is skipped: with
+    /// the leg skipped instead (before T-430) a fetch, which empties the
+    /// cache, left the worker road with no query and no sample, and the
+    /// flags stood still until a synchronous road happened to run.
     fn wt_queries(&mut self, ask_upstream: bool) -> Vec<worktree::RepoQuery> {
         let base = self.base_branch.clone().unwrap_or_default();
         let mut queries: Vec<worktree::RepoQuery> = Vec::new();
@@ -9415,8 +9442,9 @@ impl Daemon {
                 continue;
             }
             let branch = b.branch.clone();
+            let workspace = b.is_workspace();
             for leg in b.legs(&self.paths.repo_root, &base) {
-                if leg.base.is_empty() {
+                if leg.base.is_empty() && workspace {
                     continue;
                 }
                 let seen = self
@@ -9455,7 +9483,8 @@ impl Daemon {
 
     /// merged/ahead/needs-rebase/conflict flags, NOW, on the writer thread —
     /// for the roads that must read them fresh in the same turn: startup,
-    /// a merge just made, a binding just attached or torn down. The tick
+    /// a merge just made, a binding torn down. A binding just attached is
+    /// not one of them (T-430): fresh is what an absent entry reads as. The tick
     /// never takes this road (T-216): with thirteen bindings it was 53 git
     /// forks, ~0.5 s, every 10 s, and every keypress in that window waited
     /// on it — it asks `queue_worktree_flags` instead. `2 + n` forks per

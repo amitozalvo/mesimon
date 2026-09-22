@@ -12933,3 +12933,54 @@ at the top of the measured tree, 20 of 550 past 256 KiB. The window cut it mid-l
 **Tests.** census `head_reads_past_latches_and_a_record_larger_than_the_old_window`,
 `head_scan_stops_at_its_budget`,
 `a_live_pid_file_outranks_a_dead_one_under_the_same_session_in_either_order`.
+
+## The provisioned turn queues its flags and times its replay (T-430, 2026-09-23)
+
+**Measured 2026-09-22** (`daemon.log`, T-368): `slow turn: provisioned took 1556 ms` on simbly
+(12 legs) right after `provisioned T-105: 12 repos in 1487 ms`; the single-repo board's own
+`provisioned` turns ran 1085, 1475 and 3372 ms before T-368. Every keypress waited behind it.
+`Daemon::on_provisioned` did two things on the writer: replayed the parked spawns through
+`spawn_session` (tmux `new-session`, the hook settings, the env file) and ran
+`refresh_worktree_flags`, the synchronous road — one `compute_repo_flags` round (`2 + n` forks
+plus `worktree list`) per census repo, 12 rounds on simbly.
+
+**The flags take the worker road.** `on_provisioned` now calls `queue_worktree_flags` (the
+tick's road, landing as `Msg::WorktreeFlags`) instead. A binding just cut is trivially fresh —
+not merged, nothing ahead, no rebase owed — and that is exactly what an absent entry reads as:
+every `wt_*` map is read `unwrap_or`, the snapshot's `repos` on a workspace falls back to the
+binding's own legs (root first, census order, all zeros), and `agent_repo_views` reads `clean`.
+Nothing on the provisioned turn reads the flags — `lock_worktree` and the card's mark read
+`status`. The synchronous road keeps its three callers: startup, a merge just made (or partly
+landed), a teardown. Its doc comment no longer lists the attach.
+
+**Found on the way and fixed: the worker road could not start from an empty base cache on a
+single-repo board.** `wt_queries` skipped every leg whose base was empty; a single-repo leg
+takes its base from `base_branch`, which is `None` until a synchronous refresh resolves it and
+is emptied again by every successful fetch (T-267). So `queue_worktree_flags` built no query,
+the worker sent an empty sample, `on_worktree_flags` returned before learning the base, and the
+flags stood still until a synchronous road happened to run — after a fetch on a single-repo
+board, that was the next merge, teardown or attach. It never showed because the attach *was* a
+synchronous road; taking it away made all four `merge_train_e2e` tests time out on a train
+that never saw `ahead`. Now a single-repo leg rides with an empty base (the worker fills it
+from `default_branch`, as its comment always said it would) and only a workspace leg without
+one — a broken record — is skipped.
+
+**The replay is timed** (`note_stage("spawn_replay", ..)`, the tick's `stage!` recorder lifted
+into a method), so the slow-turn line names it: `slow turn: provisioned took N ms ∙ slowest
+stage spawn_replay M ms`. On the e2e fixtures, same machine, same run shape:
+
+| road | fixture | turn | slowest stage |
+|---|---|---|---|
+| before (sync) | 3-leg workspace | 441 ms | `refresh_worktree_flags` 299 ms |
+| before (sync) | single repo | 254 ms | `refresh_worktree_flags` 136 ms |
+| after (queued) | 3-leg workspace | 282 ms | `spawn_replay` 255 ms |
+| after (queued) | single repo | 103–180 ms | `spawn_replay` 68–142 ms |
+
+What is left on the turn is `spawn_session`'s tmux work, 70–250 ms per parked spawn here;
+whether that can leave the writer is the bigger question (the backend is called synchronously
+everywhere) and is **not done** — the journal line now says the number on a real board, which
+is what to read on simbly after the next fresh worktree ticket before deciding.
+
+**Tests.** `cargo nextest run -p mesimon --test workspace_e2e --test worktree_e2e --test
+merge_train_e2e --test gitstatus_e2e --test archive_reclaim_e2e --test pr_merge_e2e`, green
+(12); the merge-train four are the regression test for the empty-base gap.
