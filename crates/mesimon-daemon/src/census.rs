@@ -9,10 +9,17 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use mesimon_core::adopt::{assistant_text, cwd_matches, parse_transcript_head, SessionsPidFile};
+use mesimon_core::adopt::{assistant_text, cwd_matches, HeadScan, SessionsPidFile, TranscriptHead};
 use mesimon_core::command::ExternalItem;
 
-const HEAD_BYTES: usize = 8 * 1024;
+/// Identity scan budget, from the start of the file. Read record by record and
+/// stopped at the first `sessionId` + `cwd` pair, so the usual cost is one
+/// buffered read and the cap only bounds a head that never yields. T-425: a
+/// fixed 8 KiB window cut the first real record mid-line on 230 of 550
+/// transcripts measured, because the latches before it carry no `cwd` and the
+/// first record that does can carry a pasted image or prompt — 787 KB was the
+/// largest head measured, 20 of 550 sat past 256 KiB.
+const HEAD_BYTES_MAX: u64 = 4 * 1024 * 1024;
 /// Preview scan windows, back from EOF. Real transcripts bury the last
 /// assistant text under tool results, stop_hook_summary and latch records —
 /// often several KB, sometimes one record alone exceeds 4 KB (measured on the
@@ -135,11 +142,23 @@ fn read_pid_files(dir: &Path) -> HashMap<uuid::Uuid, PidEntry> {
     for f in files.flatten() {
         let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
         let Ok(pf) = serde_json::from_str::<SessionsPidFile>(&text) else { continue };
-        let Some(sid) = pf.session_id else { continue };
         let alive = pf.pid.is_some_and(|pid| pid > 0 && unsafe { libc::kill(pid, 0) } == 0);
-        map.insert(sid, PidEntry { name: pf.name, alive });
+        merge_pid_file(&mut map, pf, alive);
     }
     map
+}
+
+/// A resume leaves the dead process's file beside the live one's under the
+/// same `sessionId`, and `read_dir` orders them however it likes: a live file
+/// outranks a dead one, and between equals the later read wins (T-425).
+fn merge_pid_file(map: &mut HashMap<uuid::Uuid, PidEntry>, pf: SessionsPidFile, alive: bool) {
+    let Some(sid) = pf.session_id else { return };
+    if let Some(have) = map.get(&sid) {
+        if have.alive && !alive {
+            return;
+        }
+    }
+    map.insert(sid, PidEntry { name: pf.name, alive });
 }
 
 fn candidate(
@@ -151,7 +170,6 @@ fn candidate(
     let mtime_ms = mesimon_core::clock::epoch_ms(meta.modified().ok()?)?;
 
     let head = read_head(path)?;
-    let head = parse_transcript_head(&head)?;
     if !cwd_matches(&head.cwd, roots) {
         return None;
     }
@@ -180,13 +198,24 @@ fn candidate(
     })
 }
 
-fn read_head(path: &Path) -> Option<String> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; HEAD_BYTES];
-    let n = f.read(&mut buf).ok()?;
-    buf.truncate(n);
-    Some(String::from_utf8_lossy(&buf).into_owned())
+/// The transcript's identity, read record by record under `HEAD_BYTES_MAX`.
+/// A record cut by the budget fails to parse and ends the scan.
+fn read_head(path: &Path) -> Option<TranscriptHead> {
+    use std::io::{BufRead, BufReader, Read};
+    let f = std::fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(f.take(HEAD_BYTES_MAX));
+    let mut scan = HeadScan::default();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
+        if let Some(head) = scan.feed(&String::from_utf8_lossy(&line)) {
+            return Some(head);
+        }
+    }
 }
 
 /// What the tail scan can offer the drawer: the last assistant text (already
@@ -413,6 +442,89 @@ mod tests {
         assert_eq!(items[0].preview.as_deref(), Some("> ill push, find it"));
         assert_eq!(items[0].name.as_deref(), Some("Fix widget animation"));
         std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn head_reads_past_latches_and_a_record_larger_than_the_old_window() {
+        // Measured shape (T-425): latch records carrying `sessionId` and no
+        // `cwd`, then a 22 KB attachment as the first real record. An 8 KiB
+        // window cut that record mid-line and lost the session.
+        let home = tmp("bighead");
+        let repo = "/repo/h";
+        let dir = home.join("projects").join("-s");
+        std::fs::create_dir_all(&dir).unwrap();
+        let latches = format!(
+            "{{\"type\":\"last-prompt\",\"lastPrompt\":\"hi\",\"sessionId\":\"{SID_A}\"}}\n\
+             {{\"type\":\"mode\",\"mode\":\"default\",\"sessionId\":\"{SID_A}\"}}\n\
+             {{\"type\":\"permission-mode\",\"permissionMode\":\"default\",\"sessionId\":\"{SID_A}\"}}\n\
+             {{\"type\":\"atis-latch\",\"sessionId\":\"{SID_A}\"}}\n"
+        );
+        let big = format!(
+            "{{\"uuid\":\"u0\",\"type\":\"attachment\",\"attachment\":{{\"body\":\"{}\"}},\"sessionId\":\"{SID_A}\",\"cwd\":\"{repo}\"}}\n",
+            "a".repeat(22 * 1024)
+        );
+        assert!(latches.len() + big.len() > 8 * 1024, "fixture must exceed the old window");
+        let tail = "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"after the attachment\"}]}}\n";
+        std::fs::write(dir.join("a.jsonl"), format!("{latches}{big}{tail}")).unwrap();
+        let items = scan(&home, &[PathBuf::from(repo)], &|_| false);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.to_string(), SID_A);
+        assert_eq!(items[0].cwd, repo);
+        assert_eq!(items[0].preview.as_deref(), Some("after the attachment"));
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn head_scan_stops_at_its_budget() {
+        // A head that never yields a cwd inside the budget is a skipped
+        // candidate, and the read never goes past `HEAD_BYTES_MAX`.
+        let home = tmp("nohead");
+        let dir = home.join("projects").join("-s");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.jsonl");
+        let latch = format!("{{\"type\":\"atis-latch\",\"sessionId\":\"{SID_A}\"}}\n");
+        let filler =
+            format!("{{\"uuid\":\"u0\",\"pad\":\"{}\"}}\n", "p".repeat(HEAD_BYTES_MAX as usize));
+        let late =
+            format!("{{\"uuid\":\"u1\",\"cwd\":\"/repo/late\",\"sessionId\":\"{SID_A}\"}}\n");
+        std::fs::write(&p, format!("{latch}{filler}{late}")).unwrap();
+        assert!(read_head(&p).is_none());
+        // The same file with the pad under budget parses — the cap is the
+        // only thing in the way.
+        let filler = format!("{{\"uuid\":\"u0\",\"pad\":\"{}\"}}\n", "p".repeat(100 * 1024));
+        std::fs::write(&p, format!("{latch}{filler}{late}")).unwrap();
+        assert_eq!(read_head(&p).map(|h| h.cwd).as_deref(), Some("/repo/late"));
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn a_live_pid_file_outranks_a_dead_one_under_the_same_session_in_either_order() {
+        let sid: uuid::Uuid = SID_A.parse().unwrap();
+        let file = |name: &str| SessionsPidFile {
+            session_id: Some(sid),
+            name: Some(name.to_string()),
+            ..Default::default()
+        };
+        for live_first in [true, false] {
+            let mut map = HashMap::new();
+            let order: Vec<(SessionsPidFile, bool)> = if live_first {
+                vec![(file("live"), true), (file("dead"), false)]
+            } else {
+                vec![(file("dead"), false), (file("live"), true)]
+            };
+            for (pf, alive) in order {
+                merge_pid_file(&mut map, pf, alive);
+            }
+            let e = &map[&sid];
+            assert!(e.alive, "live_first={live_first}");
+            assert_eq!(e.name.as_deref(), Some("live"), "live_first={live_first}");
+        }
+        // Two dead files: the later read wins, as before.
+        let mut map = HashMap::new();
+        merge_pid_file(&mut map, file("first"), false);
+        merge_pid_file(&mut map, file("second"), false);
+        assert!(!map[&sid].alive);
+        assert_eq!(map[&sid].name.as_deref(), Some("second"));
     }
 
     #[test]

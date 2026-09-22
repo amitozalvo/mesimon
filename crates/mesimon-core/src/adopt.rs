@@ -22,23 +22,39 @@ pub struct TranscriptHead {
 /// Scan the head of a transcript (a chunk of newline-delimited JSON) for the
 /// first `sessionId` + `cwd` pair. Unparseable lines are skipped, never fatal
 /// (09 §4.3: skip-and-continue). The last line may be truncated by the caller's
-/// fixed-size read — a parse failure there is expected and harmless.
+/// bounded read — a parse failure there is expected and harmless.
 pub fn parse_transcript_head(head: &str) -> Option<TranscriptHead> {
-    let mut session_id: Option<uuid::Uuid> = None;
-    let mut cwd: Option<String> = None;
-    for line in head.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        if session_id.is_none() {
-            session_id = v.get("sessionId").and_then(Value::as_str).and_then(|s| s.parse().ok());
+    let mut scan = HeadScan::default();
+    head.lines().find_map(|line| scan.feed(line))
+}
+
+/// The record-by-record form of [`parse_transcript_head`]: a caller that reads
+/// a transcript line by line feeds each one and stops at the first `Some`.
+/// The two keys need not share a record — current Claude Code transcripts open
+/// with latch records (`last-prompt`, `mode`, `permission-mode`, `atis-latch`)
+/// that carry `sessionId` and no `cwd`, and the first record that carries both
+/// can be tens of KB (T-425: a 22 KB `attachment`, measured).
+#[derive(Debug, Default)]
+pub struct HeadScan {
+    session_id: Option<uuid::Uuid>,
+    cwd: Option<String>,
+}
+
+impl HeadScan {
+    pub fn feed(&mut self, line: &str) -> Option<TranscriptHead> {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return None };
+        if self.session_id.is_none() {
+            self.session_id =
+                v.get("sessionId").and_then(Value::as_str).and_then(|s| s.parse().ok());
         }
-        if cwd.is_none() {
-            cwd = v.get("cwd").and_then(Value::as_str).map(str::to_string);
+        if self.cwd.is_none() {
+            self.cwd = v.get("cwd").and_then(Value::as_str).map(str::to_string);
         }
-        if let (Some(session_id), Some(cwd)) = (session_id, cwd.clone()) {
-            return Some(TranscriptHead { session_id, cwd });
+        match (self.session_id, self.cwd.as_ref()) {
+            (Some(session_id), Some(cwd)) => Some(TranscriptHead { session_id, cwd: cwd.clone() }),
+            _ => None,
         }
     }
-    None
 }
 
 /// Does a session's `cwd` place it in this repo? `roots` = the main checkout

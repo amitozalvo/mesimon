@@ -12909,3 +12909,27 @@ still, settled and quiet after the last step); `test_archive_refused_shakes_the_
 one cell right with the bar's ground moved, step 1 one cell left, settled at rest, bystanders
 still; `board_archive_refused_120x30` pins the first step);
 `test_archive_refused_shakes_the_ticket_title`.
+
+## The census head is read record by record (T-425, 2026-09-23)
+
+**Measured on the author's `~/.claude/projects/-Users-amitozalvo-Documents-code-mesimon`:
+230 of 550 transcripts failed the head parse** under the fixed 8 KiB `HEAD_BYTES` window, so the
+external drawer never listed them. Current Claude Code transcripts open with latch records
+(`mode`, `permission-mode`, `atis-latch`, `last-prompt`, `file-history-snapshot`,
+`queue-operation`) that carry `sessionId` and no `cwd`; the first record carrying both is the
+first `user` turn, and it holds the pasted prompt or image — 22 KB in the ticket's case, 787 KB
+at the top of the measured tree, 20 of 550 past 256 KiB. The window cut it mid-line.
+
+- **`census::read_head` reads lines through a `BufReader` under `HEAD_BYTES_MAX` (4 MiB)** and
+  feeds each to `adopt::HeadScan`, stopping at the first `sessionId` + `cwd` pair. The usual cost
+  is one buffered read; the cap only bounds a head that never yields, since a hit stops the scan.
+  The ticket suggested 256 KiB; the measurement said no. `parse_transcript_head` is now a
+  wrapper over `HeadScan` for a chunk in hand. After the change every one of the 550 parses.
+- **A live pid file outranks a dead one** (`census::merge_pid_file`). A resume leaves the dead
+  process's `~/.claude/sessions/<pid>.json` beside the live one's under the same `sessionId`,
+  and `read_dir` order decided which `alive` and which name the drawer saw. Between two live or
+  two dead files the later read still wins.
+
+**Tests.** census `head_reads_past_latches_and_a_record_larger_than_the_old_window`,
+`head_scan_stops_at_its_budget`,
+`a_live_pid_file_outranks_a_dead_one_under_the_same_session_in_either_order`.
