@@ -12470,8 +12470,6 @@ screen gives the flag up with the feed line and no blind Enter); `ask_queue_e2e`
 test now proves the permission wait, the `^y` refusal on a dialog, the hold on a question and
 the send by hand.
 
-## T-427: the rebase ask's receipt says who acts (2026-09-23)
-
 ## T-427: the rebase ask's receipt names no key (2026-09-23, user: "m merges feels like it's possible now")
 
 The note after `m` sent a rebase ask read "rebase request sent — m merges once it lands".
