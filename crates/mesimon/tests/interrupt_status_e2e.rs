@@ -45,6 +45,7 @@ fn a_status_file_gone_idle_demotes_running_while_the_pane_still_paints() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -139,6 +140,7 @@ fn a_status_file_gone_idle_over_a_closed_turn_is_end_turn_not_interrupted() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

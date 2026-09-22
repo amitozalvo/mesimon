@@ -47,6 +47,7 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn: {other:?}"),

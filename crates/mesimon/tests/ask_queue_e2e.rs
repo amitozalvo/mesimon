@@ -60,6 +60,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -106,6 +107,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         text: "mesimon-probe-51 commit what you have".into(),
         queued: true,
         accept_plan: false,
+        plan: false,
     }) {
         Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the ask to be parked: {other:?}"),
@@ -140,7 +142,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             ticket: b,
             text: "mesimon-probe-52 never".into(),
             queued: true,
-            accept_plan: false
+            accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -162,7 +165,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
                 ticket: b,
                 text: probe.into(),
                 queued: true,
-                accept_plan: false
+                accept_plan: false,
+                plan: false
             }),
             Response::Queued { .. }
         ));
@@ -184,7 +188,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             ticket: b,
             text: "mesimon-probe-55 now".into(),
             queued: true,
-            accept_plan: false
+            accept_plan: false,
+            plan: false
         }),
         Response::Ok
     ));
@@ -201,7 +206,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             ticket: b,
             text: "mesimon-probe-56 dropped".into(),
             queued: true,
-            accept_plan: false
+            accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -221,7 +227,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             ticket: b,
             text: "mesimon-probe-57 asleep".into(),
             queued: true,
-            accept_plan: false
+            accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -236,7 +243,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             ticket: b,
             text: "mesimon-probe-58 later".into(),
             queued: true,
-            accept_plan: false
+            accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -291,6 +299,7 @@ fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
         ticket: a,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -306,6 +315,7 @@ fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
         text: "mesimon-probe-71 read the ticket".into(),
         queued: true,
         accept_plan: false,
+        plan: false,
     }) {
         Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the start to be parked: {other:?}"),
@@ -385,6 +395,7 @@ fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -435,7 +446,8 @@ fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
                 ticket: t,
                 text: probe.into(),
                 queued: true,
-                accept_plan: false
+                accept_plan: false,
+                plan: false
             }),
             Response::Queued { .. }
         ));
@@ -508,7 +520,8 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
         c.request(Command::SpawnSession {
             ticket,
             kind: SessionKind::Claude,
-            submit_prompt: false
+            submit_prompt: false,
+            plan: false
         }),
         Response::Provisioning | Response::Spawned { .. }
     ));
@@ -528,7 +541,8 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
                 ticket,
                 text: words.into(),
                 queued: true,
-                accept_plan: false
+                accept_plan: false,
+                plan: false
             }),
             Response::Queued { .. }
         ));
@@ -593,6 +607,7 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
             text: "idle-queue-already-idle".into(),
             queued: true,
             accept_plan: false,
+            plan: false
         }),
         Response::Ok
     ));
@@ -636,6 +651,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
         ticket: a,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -649,6 +665,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
         text: "mesimon-probe-418 read the ticket".into(),
         queued: true,
         accept_plan: false,
+        plan: false,
     }) {
         Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the start to be parked: {other:?}"),
@@ -659,6 +676,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
             text: "mesimon-probe-418 follow-up for the holder".into(),
             queued: true,
             accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));

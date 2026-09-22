@@ -54,6 +54,7 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: true,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -120,6 +121,7 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("plain spawn failed: {other:?}"),
@@ -150,6 +152,7 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
         ticket: bare,
         kind: SessionKind::Claude,
         submit_prompt: true,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("bare spawn failed: {other:?}"),
@@ -185,6 +188,7 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
         ticket: bare,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -202,6 +206,7 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
         ticket: bare,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

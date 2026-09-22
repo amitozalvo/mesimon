@@ -27,4 +27,4 @@
 
 
 
- NEW  enter save ∙ esc cancel ∙ ^t tags ∙ tab describe ∙ shift+tab shared checkout / own worktree
+ NEW  enter save ∙ esc cancel ∙ ^t tags ∙ tab describe ∙ ^p plan mode ∙ shift+tab shared checkout / own worktree

@@ -246,6 +246,7 @@ mod tests {
                     by: None,
                     accept_plan: false,
                     held: None,
+                    plan: false,
                 }]
             } else {
                 vec![]

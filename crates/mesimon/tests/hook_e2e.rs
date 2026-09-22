@@ -100,6 +100,7 @@ fn m2_attention_headless() {
         ticket,
         kind: SessionKind::Bash,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -270,6 +271,7 @@ fn m2_attention_headless() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("claude spawn failed: {other:?}"),
@@ -355,6 +357,7 @@ fn m2_attention_headless() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: true,
+        plan: false,
     }) {
         Response::Err { message } => {
             assert!(message.contains("already has an agent session"), "{message}");
@@ -375,6 +378,7 @@ fn m2_attention_headless() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: true,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("claude spawn failed: {other:?}"),
@@ -447,6 +451,7 @@ fn m2_attention_headless() {
         ticket,
         kind: SessionKind::Bash,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

@@ -123,6 +123,7 @@ fn m1_acceptance_headless() {
         ticket: t.id,
         kind: SessionKind::Bash,
         submit_prompt: false,
+        plan: false,
     });
     assert!(matches!(r, Response::Spawned { .. }), "{r:?}");
     let (board, _) = board_of(c.request(Command::Snapshot));

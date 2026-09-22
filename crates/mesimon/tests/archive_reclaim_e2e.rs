@@ -48,7 +48,8 @@ fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, Pa
         c.request(Command::SpawnSession {
             ticket: id,
             kind: SessionKind::Claude,
-            submit_prompt: false
+            submit_prompt: false,
+            plan: false
         }),
         Response::Provisioning
     ));
@@ -116,7 +117,8 @@ fn archive_reclaims_a_landed_worktree() {
         c.request(Command::SpawnSession {
             ticket: id,
             kind: SessionKind::Claude,
-            submit_prompt: false
+            submit_prompt: false,
+            plan: false
         }),
         Response::Provisioning
     ));

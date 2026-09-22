@@ -3272,6 +3272,7 @@ fn golden_compose_tags_120() {
             tags: vec![mesimon_core::board::TagRef { name: "BUG".into(), group: 1 }],
             description: None,
             images: Vec::new(),
+            plan: false,
         },
         buffer,
     };
@@ -3316,6 +3317,7 @@ fn golden_prompt_field_120() {
             walk: None,
             queued: false,
             accept_plan: false,
+            plan: false,
         },
         buffer,
     };
@@ -3354,6 +3356,7 @@ fn golden_prompt_field_queued_120() {
             walk: None,
             queued: true,
             accept_plan: false,
+            plan: false,
         },
         buffer,
     };
@@ -3385,6 +3388,7 @@ fn golden_column_prompt_field_120() {
             walk: None,
             queued: true,
             accept_plan: false,
+            plan: false,
         },
         buffer,
     };
@@ -3420,6 +3424,7 @@ fn golden_column_prompt_field_now_120() {
             walk: None,
             queued: false,
             accept_plan: false,
+            plan: false,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
@@ -3456,6 +3461,7 @@ fn golden_column_prompt_field_start_120() {
             walk: None,
             queued: true,
             accept_plan: false,
+            plan: false,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
@@ -3481,6 +3487,7 @@ fn golden_prompt_field_start_120() {
             walk: None,
             queued: true,
             accept_plan: false,
+            plan: false,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
@@ -3508,6 +3515,7 @@ fn golden_queued_start_open_120() {
         in_flight: false,
         by: None,
         accept_plan: false,
+        plan: false,
         held: None,
     }];
     app.cursor_col = 0;
@@ -3526,6 +3534,7 @@ fn pending_ask(ticket: u128, waits_on: &[&str]) -> mesimon_core::command::Pendin
         in_flight: false,
         by: None,
         accept_plan: false,
+        plan: false,
         held: None,
     }
 }
@@ -3594,6 +3603,7 @@ fn golden_train_120() {
             in_flight: false,
             by: None,
             accept_plan: false,
+            plan: false,
             held: None,
         },
         mesimon_core::command::Pending {
@@ -3604,6 +3614,7 @@ fn golden_train_120() {
             in_flight: false,
             by: None,
             accept_plan: false,
+            plan: false,
             held: None,
         },
     ];
@@ -3651,6 +3662,7 @@ fn golden_train_blocked_120() {
         in_flight: false,
         by: None,
         accept_plan: false,
+        plan: false,
         held: None,
     }];
     app.cursor_col = 2;
@@ -3800,6 +3812,7 @@ fn golden_train_manual_120() {
         in_flight: false,
         by: None,
         accept_plan: false,
+        plan: false,
         held: None,
     };
     app.pending = vec![candidate.clone()];
@@ -3911,6 +3924,7 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
         in_flight: false,
         by: None,
         accept_plan: false,
+        plan: false,
         held: None,
     }];
     app.mode = Mode::Input {
@@ -3919,6 +3933,7 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
             walk: None,
             queued: true,
             accept_plan: false,
+            plan: false,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
@@ -3953,6 +3968,7 @@ fn test_the_prompt_field_moves_no_text() {
             walk: None,
             queued: false,
             accept_plan: false,
+            plan: false,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
@@ -4304,6 +4320,7 @@ fn golden_composer_selector_120() {
             tags: Vec::new(),
             description: None,
             images: Vec::new(),
+            plan: false,
         },
         buffer,
     };
@@ -4874,6 +4891,7 @@ fn golden_editor_compose_120() {
         crate::app::EditorPurpose::Compose {
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: vec![mesimon_core::board::TagRef { name: "BUG".into(), group: 1 }],
+            plan: false,
         },
         "Ship the diff viewer",
         COMPOSE_BODY,
@@ -4901,6 +4919,7 @@ fn the_composer_dialog_grows_out_of_its_card() {
             tags: Vec::new(),
             description: None,
             images: Vec::new(),
+            plan: false,
         },
         buffer,
     };
@@ -4989,6 +5008,7 @@ fn the_ask_room_at_accept_plan_says_what_the_send_does() {
                 target: crate::app::AskTarget::Ticket(ulid_n(3)),
                 queued: true,
                 accept_plan,
+                plan: false,
             },
             "Fix OSC-11 detection",
             "",
@@ -5007,7 +5027,7 @@ fn the_ask_room_at_accept_plan_says_what_the_send_does() {
 fn golden_editor_compose_tags_120() {
     let mut app = app_graphite(fixture_tagged());
     let ed = editor_on(
-        crate::app::EditorPurpose::Compose { workspace: None, tags: Vec::new() },
+        crate::app::EditorPurpose::Compose { workspace: None, tags: Vec::new(), plan: false },
         "Ship the diff viewer",
         "why",
     );
@@ -5066,7 +5086,7 @@ fn golden_editor_wrapped_description_and_visual_navigation() {
     app.cursor_col = 1;
     let body = "A description can be a long paragraph with several sentences. The editor wraps these words within the dialog and keeps the cursor on the same text when the terminal changes size.\n\n    Indentation and explicit line breaks stay in the saved note.\n你好 cafe\u{301} — Unicode text stays whole.";
     app.mode = Mode::Editor(editor_on(
-        EditorPurpose::Compose { workspace: None, tags: Vec::new() },
+        EditorPurpose::Compose { workspace: None, tags: Vec::new(), plan: false },
         "Wrap description text",
         body,
     ));
@@ -5153,6 +5173,7 @@ fn golden_editor_ask_120() {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             queued: false,
             accept_plan: false,
+            plan: false,
         },
         "Fix OSC-11 detection",
         "rebase onto main\n\nthen run the suite and report the first failure, nothing else",
@@ -5186,6 +5207,7 @@ fn golden_editor_ask_column_120() {
             target: crate::app::AskTarget::Column("in progress".into()),
             queued: true,
             accept_plan: false,
+            plan: false,
         },
         "IN PROGRESS",
         "commit what you have",
@@ -5900,6 +5922,7 @@ fn test_no_banned_sgr() {
                         walk: None,
                         queued: false,
                         accept_plan: false,
+                        plan: false,
                     },
                     buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
@@ -6177,6 +6200,7 @@ fn test_no_drawn_structure() {
                     walk: None,
                     queued: false,
                     accept_plan: false,
+                    plan: false,
                 },
                 buffer: buf,
             };
@@ -6192,7 +6216,11 @@ fn test_no_drawn_structure() {
             // path, and the composer's picker open over it.
             let mut e = app_graphite(fixture_tagged());
             let mut ed = editor_on(
-                crate::app::EditorPurpose::Compose { workspace: None, tags: Vec::new() },
+                crate::app::EditorPurpose::Compose {
+                    workspace: None,
+                    tags: Vec::new(),
+                    plan: false,
+                },
                 "Ship it",
                 "",
             );
@@ -7036,6 +7064,7 @@ fn test_overflow_keeps_a_tall_cards_prompt_visible() {
             walk: None,
             queued: false,
             accept_plan: false,
+            plan: false,
         },
         buffer: crate::text::EditBuffer::from_text("continue here".into(), 100),
     };

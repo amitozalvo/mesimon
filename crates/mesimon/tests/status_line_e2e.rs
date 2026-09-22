@@ -55,6 +55,7 @@ fn the_status_line_moves_on_a_fresh_server_and_a_live_one() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { .. } => {}
         other => panic!("spawn failed: {other:?}"),

@@ -99,6 +99,7 @@ fn codex_external_opaque_identity_survives_provider_switch_and_restart_without_f
             text: "Never silently park this external prompt".into(),
             queued,
             accept_plan: false,
+            plan: false,
         });
         assert!(
             matches!(response, Response::Err { ref message } if message.contains("resume it to take over")),

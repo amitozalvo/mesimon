@@ -422,6 +422,7 @@ pub fn tools() -> Vec<Value> {
                 "properties": {
                     "key": { "type": "string", "description": "The ticket's key, from list_board." },
                     "seen": { "type": "string", "description": "get_ticket's seen stamp for this ticket." },
+                    "plan": { "type": "boolean", "description": "Optional. True starts it in plan mode." },
                 },
                 "required": ["key", "seen"],
                 "additionalProperties": false,
@@ -444,6 +445,7 @@ pub fn tools() -> Vec<Value> {
                     "key": { "type": "string", "description": "The ticket's key, from list_board." },
                     "text": { "type": "string", "description": "The words, as a person would type them." },
                     "seen": { "type": "string", "description": "get_ticket's seen stamp for this ticket." },
+                    "plan": { "type": "boolean", "description": "Optional. True runs the turn in plan mode." },
                 },
                 "required": ["key", "text", "seen"],
                 "additionalProperties": false,
@@ -519,11 +521,13 @@ pub enum ToolCall {
     StartAgent {
         key: String,
         seen: String,
+        plan: bool,
     },
     AskAgent {
         key: String,
         text: String,
         seen: String,
+        plan: bool,
     },
     CreateTicket {
         title: String,
@@ -548,6 +552,15 @@ pub enum ToolCall {
 /// An optional string argument, trimmed: absent, null or blank is `None`;
 /// any other shape is an error the model can read. The keyed tools (T-411)
 /// take their `key`, `before` and `seen` through this.
+/// An optional boolean argument: absent or null is `false`, anything but a
+/// boolean is refused by name (the `restore` rule, shared since T-434).
+fn flag(args: &Value, name: &str) -> Result<bool, String> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(false),
+        Some(v) => v.as_bool().ok_or_else(|| format!("{name} must be a boolean, not {v}")),
+    }
+}
+
 fn opt_word(args: &Value, name: &str) -> Result<Option<String>, String> {
     match args.get(name) {
         None | Some(Value::Null) => Ok(None),
@@ -610,9 +623,11 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             },
             seen: word(args, "seen")?,
         }),
-        "start_agent" => {
-            Ok(ToolCall::StartAgent { key: word(args, "key")?, seen: word(args, "seen")? })
-        }
+        "start_agent" => Ok(ToolCall::StartAgent {
+            key: word(args, "key")?,
+            seen: word(args, "seen")?,
+            plan: flag(args, "plan")?,
+        }),
         "ask_agent" => Ok(ToolCall::AskAgent {
             key: word(args, "key")?,
             text: args
@@ -621,6 +636,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                 .ok_or("ask_agent requires a text string")?
                 .to_string(),
             seen: word(args, "seen")?,
+            plan: flag(args, "plan")?,
         }),
         "read_attachment" => Ok(ToolCall::ReadAttachment {
             attachment: args
@@ -1130,9 +1146,17 @@ mod tests {
                 Command::AgentArchiveTicket { key: "T-1".into(), restore: false, seen: None },
                 "archive_ticket",
             ),
-            (Command::AgentStartTicket { key: "T-1".into(), seen: None }, "start_agent"),
             (
-                Command::AgentAskTicket { key: "T-1".into(), text: "x".into(), seen: None },
+                Command::AgentStartTicket { key: "T-1".into(), seen: None, plan: false },
+                "start_agent",
+            ),
+            (
+                Command::AgentAskTicket {
+                    key: "T-1".into(),
+                    text: "x".into(),
+                    seen: None,
+                    plan: false,
+                },
                 "ask_agent",
             ),
             (
@@ -1278,13 +1302,42 @@ mod tests {
         );
         assert_eq!(
             parse_tool_call("start_agent", &json!({ "key": " T-4 ", "seen": "abc" })),
-            Ok(ToolCall::StartAgent { key: "T-4".into(), seen: "abc".into() })
+            Ok(ToolCall::StartAgent { key: "T-4".into(), seen: "abc".into(), plan: false })
         );
+        // The plan flag (T-434): absent is false, a boolean is itself, a
+        // non-boolean is refused by name.
+        assert_eq!(
+            parse_tool_call("start_agent", &json!({ "key": "T-4", "seen": "abc", "plan": true })),
+            Ok(ToolCall::StartAgent { key: "T-4".into(), seen: "abc".into(), plan: true })
+        );
+        assert!(parse_tool_call(
+            "start_agent",
+            &json!({ "key": "T-4", "seen": "abc", "plan": "yes" })
+        )
+        .unwrap_err()
+        .contains("plan must be a boolean"));
         assert!(parse_tool_call("start_agent", &json!({ "key": "T-4" })).is_err());
         assert!(parse_tool_call("start_agent", &json!({ "seen": "abc" })).is_err());
         assert_eq!(
             parse_tool_call("ask_agent", &json!({ "key": " T-4 ", "text": "go", "seen": "abc" })),
-            Ok(ToolCall::AskAgent { key: "T-4".into(), text: "go".into(), seen: "abc".into() })
+            Ok(ToolCall::AskAgent {
+                key: "T-4".into(),
+                text: "go".into(),
+                seen: "abc".into(),
+                plan: false
+            })
+        );
+        assert_eq!(
+            parse_tool_call(
+                "ask_agent",
+                &json!({ "key": "T-4", "text": "go", "seen": "abc", "plan": true })
+            ),
+            Ok(ToolCall::AskAgent {
+                key: "T-4".into(),
+                text: "go".into(),
+                seen: "abc".into(),
+                plan: true
+            })
         );
         assert!(parse_tool_call("ask_agent", &json!({ "key": "T-4", "text": "go" })).is_err());
         assert!(parse_tool_call("ask_agent", &json!({ "key": "T-4", "seen": "abc" })).is_err());
@@ -1604,8 +1657,13 @@ mod tests {
                 seen: None,
             },
             Command::AgentArchiveTicket { key: "T-1".into(), restore: false, seen: None },
-            Command::AgentStartTicket { key: "T-1".into(), seen: None },
-            Command::AgentAskTicket { key: "T-1".into(), text: "x".into(), seen: None },
+            Command::AgentStartTicket { key: "T-1".into(), seen: None, plan: false },
+            Command::AgentAskTicket {
+                key: "T-1".into(),
+                text: "x".into(),
+                seen: None,
+                plan: false,
+            },
         ];
         for c in &allowed {
             assert!(agent_allows(c), "{c:?} should be in the tier");
@@ -1697,6 +1755,7 @@ mod tests {
                 ticket: t,
                 kind: crate::board::SessionKind::Claude,
                 submit_prompt: true,
+                plan: false,
             },
             Command::KillSession { id: s },
             Command::RescanExternal,
@@ -1729,6 +1788,7 @@ mod tests {
                 text: "do the thing".into(),
                 queued: false,
                 accept_plan: false,
+                plan: false,
             },
             Command::PromptColumn {
                 column: "TODO".into(),

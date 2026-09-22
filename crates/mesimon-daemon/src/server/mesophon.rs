@@ -1172,7 +1172,9 @@ impl Daemon {
             Pending { grant, device, command, ticket, pasted: false, send_now_receipt: None },
         );
         if queued {
-            if let Err(message) = self.park_ask(ticket, QueuedSeat::Pane(id), text, None, false) {
+            if let Err(message) =
+                self.park_ask(ticket, QueuedSeat::Pane(id), text, None, false, false)
+            {
                 self.control_cancel(id);
                 return Reply::Rejected { message };
             }

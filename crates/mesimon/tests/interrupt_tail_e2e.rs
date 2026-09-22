@@ -81,6 +81,7 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

@@ -69,6 +69,7 @@ fn exercise(phase: &str, expected_resume: Option<Option<&str>>) {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         response => panic!("spawn: {response:?}"),
@@ -186,6 +187,7 @@ fn a_crashed_runtime_on_a_live_ticket_releases_the_checkout() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         response => panic!("spawn: {response:?}"),

@@ -694,6 +694,12 @@ pub enum Verb {
     /// sentence: ask claude, stay on the board.
     SaveStart,
     CycleWorkspace,
+    /// `^p` in the composer and the ask field (T-434): the launch these
+    /// words end in runs in plan mode — a fresh claude with
+    /// `--permission-mode plan`, a parked one woken with it, an idle pane
+    /// parked and woken with it. A toggle: the row under the field wears
+    /// `plan mode` while it is on. The crown's tools take the same flag.
+    PlanMode,
     EditLeft,
     EditRight,
     EditWordLeft,
@@ -1070,6 +1076,16 @@ pub struct Ctx {
     /// defaults to accepting the plan it ends on; Shift+Tab flips it. A
     /// session that entered plan mode from inside its pane is not known.
     pub ticket_planning: bool,
+    /// The text field's launch can take PLAN MODE (T-434): the composer on
+    /// a claude board, or the ask field on a seat whose next turn is a
+    /// launch mesimon makes — empty (a start), parked (a wake), or a live
+    /// claude between turns (parked and woken with the flag). Never a seat
+    /// already planning (`ticket_plan_able`: the field is about accepting
+    /// then), never a codex seat (no launch flag), never a column.
+    pub plan_able: bool,
+    /// The field's `^p` is ON: the launch it ends in runs in plan mode. The
+    /// row under the field says so; the hint says what the next press does.
+    pub plan_armed: bool,
     // ---- search (T-349) ----
     /// The picker is up. Every binding in its scope is gated on it, so a bare
     /// `Ctx` hints none of them — the tag picker's `tag_naming` rule.
@@ -4913,6 +4929,28 @@ static INPUT: &[Binding] = &[
         prio: 25,
     },
     Binding {
+        // Plan mode for the launch the field ends in (T-434, user: "set
+        // plan mode from composer … only if agent is idle. maybe ^p?
+        // indicate will enter plan mode"). A Ctrl-letter because a text
+        // field swallows every plain one, the `^t` reason; `^p` because
+        // Input is a barrier scope, so the picker's `^p` (a list motion)
+        // never meets it. The hint says what the NEXT press does — the
+        // `x` rule — and the row under the field wears the state, where
+        // the workspace pick and the delivery word already sit. Gated on
+        // `plan_able`, which is the TUI's read of the seat: a key that is
+        // hinted works, and a working claude, a planning one or a codex
+        // seat offers no key rather than a refusal.
+        keys: &[Key::Ctrl('p')],
+        verb: Verb::PlanMode,
+        show: "^p",
+        hint: |c| if c.plan_armed { "plan mode off" } else { "plan mode" },
+        avail: |c| (c.composing || c.prompting) && c.plan_able,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: false,
+        prio: 29,
+    },
+    Binding {
         // The composer grows: `Tab` opens the full editor with the title
         // carried over and the cursor in the description. The ask field
         // grows the same way (T-380, "tab on ask agent to show big composer
@@ -5397,6 +5435,20 @@ static EDITOR: &[Binding] = &[
         group: Group::Ticket,
         mutates: true,
         prio: 25,
+    },
+    Binding {
+        // The one-line field's `^p` (T-434) in the bigger room: the same
+        // toggle, composing or asking, spelled on the context row beside
+        // the pick it sits with. Gated on the same `plan_able`.
+        keys: &[Key::Ctrl('p')],
+        verb: Verb::PlanMode,
+        show: "^p",
+        hint: |c| if c.plan_armed { "plan mode off" } else { "plan mode" },
+        avail: |c| c.editing && (c.editor_composing || c.editor_asking) && c.plan_able,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: false,
+        prio: 26,
     },
     Binding {
         // Composing, the pick rides with the draft; on a ticket that exists
@@ -6216,6 +6268,61 @@ mod tests {
             hint_for(Scope::Input, Verb::CycleWorkspace, &plain),
             Some(("shift+tab", "now / queued"))
         );
+    }
+
+    /// `^p` (T-434): hinted exactly where the field's launch can take plan
+    /// mode, in the one-line field and the room alike; the hint names the
+    /// next press; a seat that cannot take it offers nothing; and the
+    /// picker's `^p` — a list motion in a barrier scope of its own — is
+    /// untouched.
+    #[test]
+    fn ctrl_p_arms_plan_mode_where_the_launch_can_take_it() {
+        let composing = Ctx { composing: true, plan_able: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('p'), &composing), Some(Verb::PlanMode));
+        assert_eq!(hint_for(Scope::Input, Verb::PlanMode, &composing), Some(("^p", "plan mode")));
+        let armed = Ctx { plan_armed: true, ..composing.clone() };
+        assert_eq!(hint_for(Scope::Input, Verb::PlanMode, &armed), Some(("^p", "plan mode off")));
+        let codex = Ctx { plan_able: false, ..composing.clone() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('p'), &codex), None);
+        assert_eq!(hint_for(Scope::Input, Verb::PlanMode, &codex), None);
+
+        let asking = Ctx { prompting: true, plan_able: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('p'), &asking), Some(Verb::PlanMode));
+        let working = Ctx { plan_able: false, ..asking.clone() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('p'), &working), None);
+        // A rename has no launch to speak of.
+        let renaming = Ctx { plan_able: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('p'), &renaming), None);
+
+        for (room, armed) in [
+            (
+                Ctx {
+                    editing: true,
+                    editor_composing: true,
+                    plan_able: true,
+                    ..Default::default()
+                },
+                "plan mode",
+            ),
+            (
+                Ctx {
+                    editing: true,
+                    editor_asking: true,
+                    plan_able: true,
+                    plan_armed: true,
+                    ..Default::default()
+                },
+                "plan mode off",
+            ),
+        ] {
+            assert_eq!(resolve(Scope::Editor, Key::Ctrl('p'), &room), Some(Verb::PlanMode));
+            assert_eq!(hint_for(Scope::Editor, Verb::PlanMode, &room), Some(("^p", armed)));
+        }
+        let note = Ctx { editing: true, plan_able: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('p'), &note), None);
+
+        let picker = Ctx { searching: true, search_hits: 3, ..Default::default() };
+        assert_eq!(resolve(Scope::Search, Key::Ctrl('p'), &picker), Some(Verb::CursorUp));
     }
 
     #[test]

@@ -258,6 +258,18 @@ pub enum Command {
         /// client = no accept.
         #[serde(default)]
         accept_plan: bool,
+        /// Put the agent in PLAN MODE for the turn these words start
+        /// (T-434): an empty seat starts claude with `--permission-mode
+        /// plan`, a parked one wakes with it, and a live IDLE pane is parked
+        /// and woken with it — Claude Code has no absolute keystroke for
+        /// the mode, only a relative Shift+Tab ring mesimon cannot read, so
+        /// the launch flag is the one road that is a fact the board can
+        /// hold (`SessionRecord.argv`). A pane mid-turn is refused sent now
+        /// and waits its idle queued. Claude only; a Codex board refuses
+        /// it. Ignored beside `accept_plan`, which is about a plan that
+        /// already exists. Absent from an older client = no plan.
+        #[serde(default)]
+        plan: bool,
     },
     /// Atomically remove a waiting prompt and return its words for editing.
     TakeQueuedAsk {
@@ -578,6 +590,11 @@ pub enum Command {
         /// default — this is the user asking, explicitly, per session).
         #[serde(default)]
         submit_prompt: bool,
+        /// Start in plan mode (T-434): `--permission-mode plan` on this one
+        /// launch, whatever the column says — the composer's `^p`. A wake
+        /// later reads the column again. Claude only.
+        #[serde(default)]
+        plan: bool,
     },
     KillSession {
         id: uuid::Uuid,
@@ -805,6 +822,9 @@ pub enum Command {
         key: String,
         #[serde(default)]
         seen: Option<String>,
+        /// Start it in plan mode (T-434): the composer's `^p`, for the crown.
+        #[serde(default)]
+        plan: bool,
     },
     /// Queue words for another ticket's agent, by key (T-413): the crown's
     /// road into the T-390 follow-up queue. The entry is HELD — never
@@ -819,6 +839,11 @@ pub enum Command {
         text: String,
         #[serde(default)]
         seen: Option<String>,
+        /// The words start a plan-mode turn (T-434): the held entry carries
+        /// the flag, and the person's `^y` delivers it the way the ask
+        /// field's `^p` would have — a wake or a restart into plan mode.
+        #[serde(default)]
+        plan: bool,
     },
     /// Mint a NEW ticket (`create_ticket`). The one agent command that is
     /// not about the caller's own ticket, and the one place the tier makes a
@@ -1129,6 +1154,7 @@ mod meta_tests {
             text: "x".into(),
             queued: false,
             accept_plan: false,
+            plan: false,
         }
         .meta();
         assert_eq!(m, Meta { action: Action::Mutate, logged: true, subject: Some(id) });
@@ -1714,6 +1740,10 @@ pub struct Pending {
     /// does, and the reason is the row's word (`agent asked`).
     #[serde(default)]
     pub held: Option<String>,
+    /// The ask starts a plan-mode turn (T-434): the card's row says
+    /// `∙ plan mode`, and the field reopens on the flag.
+    #[serde(default)]
+    pub plan: bool,
 }
 
 impl Pending {

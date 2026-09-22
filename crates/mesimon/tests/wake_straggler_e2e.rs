@@ -80,6 +80,7 @@ fn wake_over_a_dying_pane_is_not_elsewhere_and_its_stragglers_do_not_land() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

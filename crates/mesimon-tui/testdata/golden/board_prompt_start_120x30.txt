@@ -27,4 +27,4 @@
 
 
 
- ASK  enter queue ∙ esc cancel ∙ tab expand ∙ shift+tab now / queued
+ ASK  enter queue ∙ esc cancel ∙ tab expand ∙ ^p plan mode ∙ shift+tab now / queued

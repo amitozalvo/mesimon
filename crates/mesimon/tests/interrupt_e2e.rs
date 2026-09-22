@@ -71,6 +71,7 @@ fn interrupted_turn_demotes_to_idle_without_any_hook() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

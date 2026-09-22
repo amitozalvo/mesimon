@@ -128,6 +128,7 @@ fn images_are_read_only_mcp_content_bound_to_the_agents_own_ticket() {
         ticket,
         kind: mesimon_core::board::SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("{other:?}"),

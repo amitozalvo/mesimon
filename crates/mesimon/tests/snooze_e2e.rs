@@ -128,6 +128,7 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
         ticket: napper,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) else {
         panic!("spawn");
     };

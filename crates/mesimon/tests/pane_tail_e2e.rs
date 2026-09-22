@@ -60,6 +60,7 @@ fn the_terminal_zone_reads_the_shell_pane() {
         ticket,
         kind: SessionKind::Bash,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

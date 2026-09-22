@@ -36,7 +36,8 @@ fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, Pa
         c.request(Command::SpawnSession {
             ticket: id,
             kind: SessionKind::Claude,
-            submit_prompt: false
+            submit_prompt: false,
+            plan: false
         }),
         Response::Provisioning
     ));

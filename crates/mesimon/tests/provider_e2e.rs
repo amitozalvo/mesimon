@@ -141,6 +141,7 @@ fn spawn(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         response => panic!("spawn agent: {response:?}"),
@@ -200,7 +201,8 @@ fn project_switches_preserve_old_running_and_sleeping_sessions_and_scoped_tools(
         c.request(Command::SpawnSession {
             ticket: a,
             kind: SessionKind::Codex,
-            submit_prompt: false
+            submit_prompt: false,
+            plan: false
         }),
         Response::Err { .. }
     ));
@@ -229,7 +231,8 @@ fn project_switches_preserve_old_running_and_sleeping_sessions_and_scoped_tools(
         c.request(Command::SpawnSession {
             ticket: b,
             kind: SessionKind::Claude,
-            submit_prompt: false
+            submit_prompt: false,
+            plan: false
         }),
         Response::Err { .. }
     ));
@@ -269,6 +272,7 @@ fn starts_with_any_status_line(footer: &str) {
         ticket: immediate,
         kind: SessionKind::Codex,
         submit_prompt: true,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         response => panic!("immediate spawn: {response:?}"),
@@ -281,6 +285,7 @@ fn starts_with_any_status_line(footer: &str) {
             text: "queued instructions".into(),
             queued: true,
             accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -335,6 +340,7 @@ fn a_hidden_cursor_keeps_initial_input_out_of_a_startup_dialog() {
         ticket,
         kind: SessionKind::Codex,
         submit_prompt: true,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         response => panic!("spawn: {response:?}"),
@@ -367,7 +373,8 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
             ticket: waiting,
             text: "first words".into(),
             queued: true,
-            accept_plan: false
+            accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -377,7 +384,8 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
             ticket: waiting,
             text: "replacement words".into(),
             queued: true,
-            accept_plan: false
+            accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -448,7 +456,8 @@ fn provisioning_captures_provider_and_excludes_a_competing_agent() {
         c.request(Command::SpawnSession {
             ticket: t,
             kind: SessionKind::Claude,
-            submit_prompt: false
+            submit_prompt: false,
+            plan: false
         }),
         Response::Provisioning
     ));
@@ -463,7 +472,8 @@ fn provisioning_captures_provider_and_excludes_a_competing_agent() {
         c.request(Command::SpawnSession {
             ticket: t,
             kind: SessionKind::Claude,
-            submit_prompt: false
+            submit_prompt: false,
+            plan: false
         }),
         Response::Provisioning
     ));
@@ -500,7 +510,8 @@ fn lost_codex_observation_holds_the_checkout_and_recovers_without_duplicate_subm
             ticket: waiting,
             text: "after observation recovers".into(),
             queued: true,
-            accept_plan: false
+            accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -540,6 +551,7 @@ fn sleeping_codex_holds_checkout_and_refuses_wake_until_worker_stops() {
             text: "after owned server stops".into(),
             queued: true,
             accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -569,6 +581,7 @@ fn killed_codex_keeps_agent_seat_until_its_server_cleanup_is_acknowledged() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Err { message } => assert!(message.contains("stopping")),
         response => panic!("replacement must wait for stopped server: {response:?}"),
@@ -654,7 +667,12 @@ fn archiving_sleeping_codex_preserves_worktree_until_server_cleanup_finishes() {
     select(&mut c, AgentProvider::Codex);
     let ticket = ticket(&mut c, "merged cleanup still owns cwd", Some(WorkspaceStrategy::Worktree));
     assert!(matches!(
-        c.request(Command::SpawnSession { ticket, kind: SessionKind::Codex, submit_prompt: false }),
+        c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Codex,
+            submit_prompt: false,
+            plan: false
+        }),
         Response::Provisioning
     ));
     wait_until(Duration::from_secs(15), "Codex worktree provisioned", || {
@@ -689,7 +707,12 @@ fn an_accepted_exited_resume_reserves_the_provisioning_seat_across_provider_swit
     let ticket =
         ticket(&mut c, "resume original after rebuilding", Some(WorkspaceStrategy::Worktree));
     assert!(matches!(
-        c.request(Command::SpawnSession { ticket, kind: SessionKind::Codex, submit_prompt: false }),
+        c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Codex,
+            submit_prompt: false,
+            plan: false
+        }),
         Response::Provisioning
     ));
     wait_until(Duration::from_secs(15), "first worktree provisioned", || {
@@ -720,6 +743,7 @@ fn an_accepted_exited_resume_reserves_the_provisioning_seat_across_provider_swit
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Err { message } => assert!(message.contains("resume is already provisioning")),
         response => panic!("accepted original resume reserves provider: {response:?}"),
@@ -753,6 +777,7 @@ fn daemon_handover_keeps_sent_codex_prompt_held_without_pressing_enter_again() {
             text: "send exactly once".into(),
             queued: false,
             accept_plan: false,
+            plan: false
         }),
         Response::Ok
     ));
@@ -790,6 +815,7 @@ fn daemon_handover_abandons_unpasted_volatile_words_without_submitting_partial_i
             text: "volatile custom words".into(),
             queued: false,
             accept_plan: false,
+            plan: false
         }),
         Response::Ok
     ));
@@ -878,7 +904,8 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
             ticket: waiting,
             text: "wait".into(),
             queued: true,
-            accept_plan: false
+            accept_plan: false,
+            plan: false
         }),
         Response::Queued { .. }
     ));

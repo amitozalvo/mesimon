@@ -94,6 +94,7 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -243,6 +244,7 @@ fn an_approved_plan_is_the_agents_note_on_the_ticket() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

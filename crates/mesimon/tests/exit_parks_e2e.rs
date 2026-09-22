@@ -86,6 +86,7 @@ fn leaving_claude_parks_the_session() {
         ticket,
         kind,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

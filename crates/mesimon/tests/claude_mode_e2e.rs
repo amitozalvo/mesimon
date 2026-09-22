@@ -54,6 +54,7 @@ fn a_columns_claude_mode_rides_the_spawn_and_the_wake() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn: {other:?}"),

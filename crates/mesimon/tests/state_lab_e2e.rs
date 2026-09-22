@@ -22,6 +22,7 @@ fn spawn(client: &mut TestClient, title: &str) -> uuid::Uuid {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

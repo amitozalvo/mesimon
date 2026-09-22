@@ -78,6 +78,7 @@ fn the_terminal_is_one_persistent_shell_in_the_checkout() {
         ticket: t,
         kind: SessionKind::Bash,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn: {other:?}"),

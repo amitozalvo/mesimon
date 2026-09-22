@@ -24,7 +24,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
 
-pub const QUEUE_SCHEMA: u32 = 1;
+/// v2 (T-434) adds `plan` to an entry. A bump for the columns file's
+/// `claude_mode` reason: a v1 build reading the file would drop the flag and
+/// start the restored session in the column's mode — auto, where the person
+/// queued a read-only planning turn — which is a widening.
+pub const QUEUE_SCHEMA: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueFile {
@@ -44,6 +48,9 @@ pub struct QueuedEntry {
     pub text: String,
     #[serde(default)]
     pub queued_at: u64,
+    /// The start or wake runs in plan mode (T-434).
+    #[serde(default)]
+    pub plan: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,12 +171,14 @@ mod tests {
                 seat: PersistedSeat::Start { provider: AgentProvider::Codex },
                 text: "read the ticket".into(),
                 queued_at: 7,
+                plan: true,
             },
             QueuedEntry {
                 ticket: ulid::Ulid::new(),
                 seat: PersistedSeat::Wake { session: uuid::Uuid::new_v4() },
                 text: String::new(),
                 queued_at: 8,
+                plan: false,
             },
         ]
     }
@@ -186,6 +195,22 @@ mod tests {
         let text = std::fs::read_to_string(queue_file(&p)).unwrap();
         assert!(text.contains(&format!("\"schema_version\": {QUEUE_SCHEMA}")), "{text}");
         assert!(text.contains("\"kind\": \"start\""), "{text}");
+        assert!(text.contains("\"plan\": true"), "{text}");
+    }
+
+    /// A v1 file (T-418) has no `plan`: it reads as false, never as a
+    /// refusal — the bump is for the OTHER direction (an older build must
+    /// not drop the flag and widen the start).
+    #[test]
+    fn a_v1_file_reads_with_plan_off() {
+        let (_d, p) = paths();
+        let text = r#"{"schema_version": 1, "entries": [{"ticket": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "seat": {"kind": "start", "provider": "claude_code"}, "text": "x", "queued_at": 1}]}"#;
+        std::fs::write(queue_file(&p), text).unwrap();
+        let (back, notices, barred) = load_or_recover(&p);
+        assert!(notices.is_empty(), "{notices:?}");
+        assert!(!barred);
+        assert_eq!(back.len(), 1);
+        assert!(!back[0].plan);
     }
 
     #[test]

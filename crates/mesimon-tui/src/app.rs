@@ -766,7 +766,7 @@ impl Pager {
 pub enum EditorPurpose {
     /// A new ticket: title + description, with the mini composer's picks
     /// riding along so Shift+Tab and `^t` keep working in the bigger room.
-    Compose { workspace: Option<WorkspaceStrategy>, tags: Vec<TagRef> },
+    Compose { workspace: Option<WorkspaceStrategy>, tags: Vec<TagRef>, plan: bool },
     /// A note on a ticket that exists. `note: None` until the first save
     /// mints it.
     Note { ticket: ulid::Ulid, note: Option<ulid::Ulid> },
@@ -775,7 +775,8 @@ pub enum EditorPurpose {
     /// nothing is saved — `^s` sends it through the field's own road. The
     /// title row is the destination, read-only: the ticket's title, or the
     /// column's name.
-    Ask { target: AskTarget, queued: bool, accept_plan: bool },
+    /// `plan` (T-434) is the field's `^p`, riding along like the rest.
+    Ask { target: AskTarget, queued: bool, accept_plan: bool, plan: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1021,6 +1022,9 @@ pub enum InputPurpose {
         /// it as `notes[0]` — the same shape as the tags.
         description: Option<String>,
         images: Vec<crate::image_paste::DraftImage>,
+        /// `^p` (T-434): the claude Shift+Enter starts on the new ticket
+        /// runs in plan mode. Rides the draft into the room and back.
+        plan: bool,
     },
     Rename {
         id: ulid::Ulid,
@@ -1053,6 +1057,10 @@ pub enum InputPurpose {
         /// the turn after. Implies `queued`. Shift+Tab's ring has this stop
         /// only on a seat that can take it (`ask_plan_able`).
         accept_plan: bool,
+        /// `^p` (T-434): the launch these words end in runs in plan mode —
+        /// a start, a wake, or an idle pane parked and woken with the flag.
+        /// Off wherever the seat cannot take it (`App::plan_able`).
+        plan: bool,
     },
 }
 
@@ -3197,13 +3205,47 @@ impl App {
     }
 
     /// The word on the ask field's delivery row (T-420 added the first).
-    pub(crate) fn ask_mode_word(accept_plan: bool, queued: bool) -> &'static str {
-        if accept_plan {
-            "accept plan"
-        } else if queued {
-            "queued"
-        } else {
-            "now"
+    pub(crate) fn ask_mode_word(accept_plan: bool, queued: bool, plan: bool) -> &'static str {
+        match (accept_plan, queued, plan) {
+            (true, _, _) => "accept plan",
+            // `^p` (T-434): the delivery word and the mode it launches in.
+            (_, true, true) => "queued ∙ plan mode",
+            (_, false, true) => "now ∙ plan mode",
+            (_, true, false) => "queued",
+            (_, false, false) => "now",
+        }
+    }
+
+    /// Can the text field's launch take plan mode (T-434)? Composing: the
+    /// board's provider is claude. Asking a ticket: the next turn is a
+    /// launch mesimon makes — no agent (a start), a parked one (a wake) or
+    /// a live claude between turns (parked and woken with the flag) — and
+    /// the seat is not already planning, where the field is about the
+    /// accept. A column's field never: one flag over N seats is not a
+    /// sentence the row can say. Codex has no launch flag for its plan
+    /// mode, so a codex seat offers nothing.
+    pub(crate) fn plan_able(&self, target: Option<&AskTarget>) -> bool {
+        use mesimon_core::board::{AgentProvider, SessionKind};
+        let Some(target) = target else {
+            return self.board.agent_provider == AgentProvider::ClaudeCode;
+        };
+        let AskTarget::Ticket(t) = target else {
+            return false;
+        };
+        if self.ticket_plan_able(*t) {
+            return false;
+        }
+        match self.board.live_agent(*t) {
+            None => self.board.agent_provider == AgentProvider::ClaudeCode,
+            Some(rec) if rec.kind != SessionKind::Claude => false,
+            Some(rec) => match rec.state {
+                SessionState::Sleeping => true,
+                SessionState::Idle { stop_reason } => {
+                    stop_reason != mesimon_core::board::StopReason::Background
+                        && !mesimon_core::quiet::is_working(rec)
+                }
+                _ => false,
+            },
         }
     }
 
@@ -3301,6 +3343,16 @@ impl App {
                 "accepting plan".into()
             } else {
                 "queued ∙ accepts plan".into()
+            });
+        }
+        // Plan mode (T-434) takes the row's second word, the way `accepts
+        // plan` does: what the launch will BE outranks what it waits on in
+        // 22 cells, and the ticket page's identity line names the wait.
+        if p.plan && p.is_queued_ask() && !p.in_flight {
+            return Some(match p.action {
+                A::Start => "starts ∙ plan mode".into(),
+                A::Wake => "wakes ∙ plan mode".into(),
+                _ => "queued ∙ plan mode".into(),
             });
         }
         Some(match (p.action, after) {
@@ -3809,6 +3861,29 @@ impl App {
             ticket_queued: subject.is_some_and(|t| self.ticket_queued(t)),
             ticket_plan_ready: subject.is_some_and(|t| self.ticket_plan_ready(t)),
             ticket_planning: subject.is_some_and(|t| self.ticket_planning(t)),
+            plan_able: match &self.mode {
+                Mode::Input { purpose: InputPurpose::Create { .. }, .. }
+                | Mode::Editor(Editor { purpose: EditorPurpose::Compose { .. }, .. }) => {
+                    self.plan_able(None)
+                }
+                Mode::Input { purpose: InputPurpose::Prompt { target, .. }, .. }
+                | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
+                    self.plan_able(Some(target))
+                }
+                _ => false,
+            },
+            plan_armed: matches!(
+                &self.mode,
+                Mode::Input {
+                    purpose: InputPurpose::Create { plan: true, .. }
+                        | InputPurpose::Prompt { plan: true, .. },
+                    ..
+                } | Mode::Editor(Editor {
+                    purpose: EditorPurpose::Compose { plan: true, .. }
+                        | EditorPurpose::Ask { plan: true, .. },
+                    ..
+                })
+            ),
             tag_naming: self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some()),
             tag_on_entry: tag_cell.is_some(),
             tag_worn: tag_cell.is_some_and(|(g, n, _)| {
@@ -4204,7 +4279,13 @@ impl App {
                 // Shift+Tab still changes it.
                 let workspace = self.cursor_column().and_then(|c| c.settings.workspace);
                 self.mode = Mode::Input {
-                    purpose: InputPurpose::Create { workspace, tags: Vec::new(), description: None, images: Vec::new() },
+                    purpose: InputPurpose::Create {
+                        workspace,
+                        tags: Vec::new(),
+                        description: None,
+                        images: Vec::new(),
+                        plan: false,
+                    },
                     buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
             }
@@ -4652,6 +4733,7 @@ impl App {
                     // take-back is an edit, not a change of mind about
                     // the plan.
                     let accept_plan = self.pending_of(ticket).is_some_and(|p| p.accept_plan);
+                    let plan = self.pending_of(ticket).is_some_and(|p| p.plan);
                     match self.req(Command::TakeQueuedAsk { ticket }) {
                         Response::Err { message } => self.status = message,
                         Response::PromptTakenBack { text } => {
@@ -4659,6 +4741,7 @@ impl App {
                                 AskTarget::Ticket(ticket),
                                 true,
                                 accept_plan,
+                                plan,
                                 &text,
                             ));
                             self.status = "taken back ∙ edit or close to discard".into();
@@ -4912,6 +4995,7 @@ impl App {
                                 walk: None,
                                 queued,
                                 accept_plan: false,
+                                plan: false,
                             },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
@@ -4929,9 +5013,10 @@ impl App {
                         // held ask comes back clean on Enter, and one
                         // waiting to accept a plan keeps waiting to.
                         let accept_plan = self.pending_of(id).is_some_and(|p| p.accept_plan);
+                        let plan = self.pending_of(id).is_some_and(|p| p.plan);
                         let target = AskTarget::Ticket(id);
                         if text.contains('\n') {
-                            let mut ed = self.ask_room(target, true, accept_plan, &text);
+                            let mut ed = self.ask_room(target, true, accept_plan, plan, &text);
                             ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
                             self.mode = Mode::Editor(ed);
                         } else {
@@ -4941,6 +5026,7 @@ impl App {
                                     walk: None,
                                     queued: true,
                                     accept_plan,
+                                    plan,
                                 },
                                 buffer: EditBuffer::from_text(
                                     text,
@@ -4967,6 +5053,7 @@ impl App {
                                 walk: None,
                                 queued,
                                 accept_plan,
+                                plan: false,
                             },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
@@ -4985,6 +5072,7 @@ impl App {
                                 walk: None,
                                 queued: ctx.checkout_busy,
                                 accept_plan: false,
+                                plan: false,
                             },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
@@ -5261,6 +5349,7 @@ impl App {
             | Verb::EditKillToStart
             | Verb::HistoryPrev
             | Verb::HistoryNext
+            | Verb::PlanMode
             // ---- editor (handled in key_editor; unreachable here) ----------
             | Verb::EditorSave
             | Verb::EditorSaveStart
@@ -6984,9 +7073,9 @@ impl App {
             // the delivery toggle rides along.
             Some(Verb::Describe) => {
                 let mut ed = match purpose {
-                    InputPurpose::Create { workspace, tags, description, images } => {
+                    InputPurpose::Create { workspace, tags, description, images, plan } => {
                         let mut editor = Editor::new(
-                            EditorPurpose::Compose { workspace, tags },
+                            EditorPurpose::Compose { workspace, tags, plan },
                             buffer,
                             TextArea::from_text(
                                 description.as_deref().unwrap_or(""),
@@ -6999,8 +7088,8 @@ impl App {
                         }
                         editor
                     }
-                    InputPurpose::Prompt { target, queued, accept_plan, .. } => {
-                        self.ask_room(target, queued, accept_plan, buffer.as_str())
+                    InputPurpose::Prompt { target, queued, accept_plan, plan, .. } => {
+                        self.ask_room(target, queued, accept_plan, plan, buffer.as_str())
                     }
                     other => {
                         self.mode = Mode::Input { purpose: other, buffer };
@@ -7028,6 +7117,14 @@ impl App {
                 InputPurpose::Prompt { target, queued, accept_plan, .. } => {
                     let target = target.clone();
                     self.cycle_ask_mode(&target, queued, accept_plan)
+                }
+                InputPurpose::Rename { .. } | InputPurpose::RenameColumn { .. } => {}
+            },
+            // `^p` (T-434): the launch this field ends in runs in plan mode,
+            // or stops to. The keymap offers it only where `plan_able`.
+            Some(Verb::PlanMode) => match &mut purpose {
+                InputPurpose::Create { plan, .. } | InputPurpose::Prompt { plan, .. } => {
+                    *plan = !*plan
                 }
                 InputPurpose::Rename { .. } | InputPurpose::RenameColumn { .. } => {}
             },
@@ -7256,6 +7353,13 @@ impl App {
             Some(Verb::Cancel) => return self.editor_cancel(ed),
             Some(Verb::EditorSave) => return self.editor_save(ed),
             Some(Verb::EditorSaveStart) => return self.editor_save_start(ed),
+            // The field's `^p` in the room (T-434).
+            Some(Verb::PlanMode) => match &mut ed.purpose {
+                EditorPurpose::Compose { plan, .. } | EditorPurpose::Ask { plan, .. } => {
+                    *plan = !*plan
+                }
+                EditorPurpose::Note { .. } => {}
+            },
             Some(Verb::EditorPaste) => {
                 if self.pending_paste.is_some() {
                     self.status = "clipboard read already pending".into();
@@ -7459,7 +7563,14 @@ impl App {
     /// title, or the column's name) and `text` as the body with the cursor
     /// at its end — pasted rather than opened on, so the sentence continues
     /// where the field left it.
-    fn ask_room(&self, target: AskTarget, queued: bool, accept_plan: bool, text: &str) -> Editor {
+    fn ask_room(
+        &self,
+        target: AskTarget,
+        queued: bool,
+        accept_plan: bool,
+        plan: bool,
+        text: &str,
+    ) -> Editor {
         let title = match &target {
             AskTarget::Ticket(t) => {
                 self.board.ticket(*t).map(|t| t.title.clone()).unwrap_or_default()
@@ -7469,7 +7580,7 @@ impl App {
         let mut body = TextArea::new(mesimon_core::command::PROMPT_MAX_BYTES);
         body.paste(text);
         Editor::new(
-            EditorPurpose::Ask { target, queued, accept_plan },
+            EditorPurpose::Ask { target, queued, accept_plan, plan },
             EditBuffer::from_text(title, mesimon_core::board::TITLE_MAX_BYTES),
             body,
             Field::Body,
@@ -7481,12 +7592,12 @@ impl App {
     /// field held, so nothing is lost on the way back — a body that grew
     /// lines is dirty, and dirty takes the two-press discard.
     fn fold_ask(&mut self, ed: Editor) {
-        let EditorPurpose::Ask { target, queued, accept_plan } = ed.purpose else {
+        let EditorPurpose::Ask { target, queued, accept_plan, plan } = ed.purpose else {
             self.mode = Mode::Normal;
             return;
         };
         self.mode = Mode::Input {
-            purpose: InputPurpose::Prompt { target, walk: None, queued, accept_plan },
+            purpose: InputPurpose::Prompt { target, walk: None, queued, accept_plan, plan },
             buffer: history_field(ed.body.as_str()),
         };
     }
@@ -7496,7 +7607,7 @@ impl App {
     /// seat's word, the receipt in the status — line breaks and all. A blank
     /// room sends nothing and stays open; the daemon would refuse it too.
     fn editor_send(&mut self, ed: Editor) -> Result<()> {
-        let EditorPurpose::Ask { target, queued, accept_plan } = ed.purpose.clone() else {
+        let EditorPurpose::Ask { target, queued, accept_plan, plan } = ed.purpose.clone() else {
             self.mode = Mode::Normal;
             return Ok(());
         };
@@ -7507,20 +7618,23 @@ impl App {
             return Ok(());
         }
         self.mode = Mode::Normal;
-        self.commit_prompt(InputPurpose::Prompt { target, walk: None, queued, accept_plan }, text)
+        self.commit_prompt(
+            InputPurpose::Prompt { target, walk: None, queued, accept_plan, plan },
+            text,
+        )
     }
 
     /// The grown composer folds back into the one-line field it grew out of,
     /// title, picks and description all riding along: `^s`'s road, and a
     /// clean Esc's. A blank body is no description.
     fn fold_composer(&mut self, ed: Editor) {
-        let EditorPurpose::Compose { workspace, tags } = ed.purpose else {
+        let EditorPurpose::Compose { workspace, tags, plan } = ed.purpose else {
             self.mode = Mode::Normal;
             return;
         };
         let description = Some(ed.body.as_str().to_string()).filter(|b| !b.trim().is_empty());
         self.mode = Mode::Input {
-            purpose: InputPurpose::Create { workspace, tags, description, images: ed.images },
+            purpose: InputPurpose::Create { workspace, tags, description, images: ed.images, plan },
             buffer: ed.title,
         };
     }
@@ -7544,7 +7658,7 @@ impl App {
         match ed.purpose.clone() {
             // Unbound in the ask room; the one thing the press could mean.
             EditorPurpose::Ask { .. } => self.editor_send(ed),
-            EditorPurpose::Compose { workspace, tags } => {
+            EditorPurpose::Compose { workspace, tags, plan } => {
                 let title = ed.title.as_str().trim().to_string();
                 if title.is_empty() {
                     self.status = "a ticket needs a title".into();
@@ -7553,7 +7667,7 @@ impl App {
                 }
                 let body = Some(ed.body.as_str().to_string()).filter(|b| !b.trim().is_empty());
                 self.mode = Mode::Normal;
-                self.mint_ticket_with_images(title, workspace, tags, body, ed.images, true)
+                self.mint_ticket_with_images(title, workspace, tags, body, ed.images, Some(plan))
             }
             EditorPurpose::Note { ticket, note } => {
                 let body = ed.body.as_str().to_string();
@@ -7590,7 +7704,7 @@ impl App {
                         None => format!("nothing to tell {}", keymap::AGENT_WORD),
                     };
                 } else if self.board.live_agent(ticket).is_none() {
-                    self.start_composed(ticket);
+                    self.start_composed(ticket, false);
                 } else {
                     self.status = format!("{} is asleep ∙ c wakes it", keymap::AGENT_WORD);
                 }
@@ -8641,8 +8755,15 @@ impl App {
             return Ok(());
         }
         match purpose {
-            InputPurpose::Create { workspace, tags, description, images } => {
-                self.mint_ticket_with_images(title, workspace, tags, description, images, start)?;
+            InputPurpose::Create { workspace, tags, description, images, plan } => {
+                self.mint_ticket_with_images(
+                    title,
+                    workspace,
+                    tags,
+                    description,
+                    images,
+                    start.then_some(plan),
+                )?;
             }
             InputPurpose::Rename { id } => {
                 self.send(Command::RenameTicket { id, title })?;
@@ -8669,7 +8790,8 @@ impl App {
     /// Mint the composed ticket in the cursor column and replay everything
     /// picked before it had an id: the workspace, the tags, and — from the
     /// editor — the description as its first note. `start` is Shift+Enter's
-    /// half: claude on the title, submitted.
+    /// half: claude on the title, submitted — `Some(plan)`, in plan mode
+    /// when the composer's `^p` was on (T-434).
     fn mint_ticket_with_images(
         &mut self,
         title: String,
@@ -8677,8 +8799,9 @@ impl App {
         tags: Vec<TagRef>,
         description: Option<String>,
         images: Vec<crate::image_paste::DraftImage>,
-        start: bool,
+        start: Option<bool>,
     ) -> Result<()> {
+        let plan = start.unwrap_or(false);
         let column = self.columns().get(self.cursor_col).cloned().unwrap_or_default();
         let recovery = Mode::Input {
             purpose: InputPurpose::Create {
@@ -8686,6 +8809,7 @@ impl App {
                 tags: tags.clone(),
                 description: description.clone(),
                 images: images.clone(),
+                plan,
             },
             buffer: EditBuffer::from_text(title.clone(), mesimon_core::board::TITLE_MAX_BYTES),
         };
@@ -8731,8 +8855,8 @@ impl App {
                     );
                     return Ok(());
                 }
-                if start {
-                    self.start_composed(id);
+                if start.is_some() {
+                    self.start_composed(id, plan);
                     return Ok(());
                 }
                 // Enter-Enter: the next plain Enter starts claude on
@@ -8764,7 +8888,7 @@ impl App {
     /// ticket's own title and brief, which is what the press does with no
     /// field at all on a quiet checkout.
     fn commit_prompt(&mut self, purpose: InputPurpose, text: String) -> Result<()> {
-        let InputPurpose::Prompt { target, queued, accept_plan, .. } = purpose else {
+        let InputPurpose::Prompt { target, queued, accept_plan, plan, .. } = purpose else {
             return Ok(());
         };
         if !text.is_empty() {
@@ -8786,52 +8910,63 @@ impl App {
         let waking = !starting && self.board.pane_target(ticket).is_none();
         let own = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
         let word = keymap::AGENT_WORD;
-        let (lead, first) = match (starting, waking) {
-            (true, _) => (format!("{word} starts"), format!("{word} starts next")),
-            (_, true) => (format!("{word} wakes"), format!("{word} wakes next")),
+        // Plan mode (T-434) rides every receipt: on a pane it is a park and
+        // a wake, so the words for that seat change too.
+        let mode = if plan { " in plan mode" } else { "" };
+        let (lead, first) = match (starting, waking, plan) {
+            (true, _, _) => (format!("{word} starts{mode}"), format!("{word} starts next{mode}")),
+            (_, true, _) => (format!("{word} wakes{mode}"), format!("{word} wakes next{mode}")),
+            (_, _, true) => {
+                (format!("{word} restarts{mode}"), format!("{word} restarts next{mode}"))
+            }
             _ => ("queued".into(), "queued ∙ sends next".into()),
         };
         let blank = text.is_empty();
-        self.status = match self.req(Command::PromptSession { ticket, text, queued, accept_plan }) {
-            // Deliberately not "sent to the agent": what is provably
-            // true is that it went into the box and Enter was
-            // pressed. Whether the agent took it is the card's to
-            // say, seconds from now, in the only vocabulary that has
-            // ever been trusted for it — the hooks.
-            // Sending now over a waiting ask drops the waiting one:
-            // the daemon did, and the status says so.
-            Response::Ok if !queued && had => "asked ∙ queued ask dropped".into(),
-            Response::Ok => "asked".into(),
-            Response::Queued { .. } if accept_plan && blank && accept_now => {
-                "accepting plan".into()
-            }
-            Response::Queued { .. } if accept_plan && blank => "queued ∙ accepts plan".into(),
-            // With words (T-420): they go the moment the approval is
-            // confirmed, so the receipt is not the idle queue's.
-            Response::Queued { .. } if accept_now => "accepting plan ∙ then asks".into(),
-            Response::Queued { .. } if accept_plan => "accepts plan ∙ then asks".into(),
-            // Parked: name what it waits on, the way the card does.
-            Response::Queued { behind } => queued_status(&lead, &first, &behind, &own),
-            // A parked claude: the daemon woke it and holds the
-            // words until the pane reads (2026-09-04). `fresh` is
-            // the wake road's own word — no conversation was left to
-            // resume, so a new one starts on this prompt — and it is
-            // said here for the same reason `c` says it. An empty seat
-            // reports the same way and means something else: a session
-            // that did not exist a moment ago (T-294).
-            Response::Spawned { .. } if starting => format!("{word} started ∙ asked"),
-            Response::Spawned { fresh: false, .. } => format!("woke {word} ∙ asked"),
-            Response::Spawned { fresh: true, .. } => {
-                "nothing to resume ∙ started a fresh conversation ∙ asked".into()
-            }
-            // Its worktree is being rebuilt under the wake (T-278);
-            // the words ride the parked wake.
-            Response::Provisioning => {
-                format!("provisioning worktree ∙ {word} wakes when ready ∙ asked")
-            }
-            Response::Err { message } => message,
-            _ => String::new(),
-        };
+        self.status =
+            match self.req(Command::PromptSession { ticket, text, queued, accept_plan, plan }) {
+                // Deliberately not "sent to the agent": what is provably
+                // true is that it went into the box and Enter was
+                // pressed. Whether the agent took it is the card's to
+                // say, seconds from now, in the only vocabulary that has
+                // ever been trusted for it — the hooks.
+                // Sending now over a waiting ask drops the waiting one:
+                // the daemon did, and the status says so.
+                Response::Ok if !queued && had => "asked ∙ queued ask dropped".into(),
+                Response::Ok => "asked".into(),
+                Response::Queued { .. } if accept_plan && blank && accept_now => {
+                    "accepting plan".into()
+                }
+                Response::Queued { .. } if accept_plan && blank => "queued ∙ accepts plan".into(),
+                // With words (T-420): they go the moment the approval is
+                // confirmed, so the receipt is not the idle queue's.
+                Response::Queued { .. } if accept_now => "accepting plan ∙ then asks".into(),
+                Response::Queued { .. } if accept_plan => "accepts plan ∙ then asks".into(),
+                // Parked: name what it waits on, the way the card does.
+                Response::Queued { behind } => queued_status(&lead, &first, &behind, &own),
+                // A parked claude: the daemon woke it and holds the
+                // words until the pane reads (2026-09-04). `fresh` is
+                // the wake road's own word — no conversation was left to
+                // resume, so a new one starts on this prompt — and it is
+                // said here for the same reason `c` says it. An empty seat
+                // reports the same way and means something else: a session
+                // that did not exist a moment ago (T-294).
+                Response::Spawned { .. } if starting => format!("{word} started{mode} ∙ asked"),
+                // An idle pane parked and woken into plan mode (T-434).
+                Response::Spawned { fresh: false, .. } if plan && !waking => {
+                    format!("restarted {word}{mode} ∙ asked")
+                }
+                Response::Spawned { fresh: false, .. } => format!("woke {word}{mode} ∙ asked"),
+                Response::Spawned { fresh: true, .. } => {
+                    "nothing to resume ∙ started a fresh conversation ∙ asked".into()
+                }
+                // Its worktree is being rebuilt under the wake (T-278);
+                // the words ride the parked wake.
+                Response::Provisioning => {
+                    format!("provisioning worktree ∙ {word} wakes when ready ∙ asked")
+                }
+                Response::Err { message } => message,
+                _ => String::new(),
+            };
         self.refresh()
     }
 
@@ -8885,12 +9020,13 @@ impl App {
     /// without leaving; the card's own state is how the user watches it land.
     /// The fresh-ticket Enter window is not armed either: the agent is already
     /// running, so the next Enter should mean what it always means.
-    fn start_composed(&mut self, ticket: ulid::Ulid) {
+    fn start_composed(&mut self, ticket: ulid::Ulid, plan: bool) {
         let kind = self.board.agent_provider.session_kind();
         let word = keymap::AGENT_WORD;
-        let cmd = Command::SpawnSession { ticket, kind, submit_prompt: true };
+        let cmd = Command::SpawnSession { ticket, kind, submit_prompt: true, plan };
+        let mode = if plan { " in plan mode" } else { "" };
         self.status = match self.req(cmd) {
-            Response::Spawned { .. } => format!("{word} started on the title"),
+            Response::Spawned { .. } => format!("{word} started on the title{mode}"),
             // M4: the worktree is still being cut. The daemon replays the
             // parked spawn — submit flag and all — when it lands.
             Response::Provisioning => format!("provisioning worktree ∙ {word} starts when ready"),
@@ -8970,7 +9106,7 @@ impl App {
     }
 
     fn spawn_and_focus(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
-        match self.req(Command::SpawnSession { ticket, kind, submit_prompt: false }) {
+        match self.req(Command::SpawnSession { ticket, kind, submit_prompt: false, plan: false }) {
             Response::Spawned { id, .. } => {
                 self.refresh()?;
                 self.focus_session(id)?;
@@ -9788,7 +9924,7 @@ pub(crate) mod test_support {
                         failed: 0,
                     });
                 }
-                Command::PromptSession { ticket, queued, accept_plan, .. } => {
+                Command::PromptSession { ticket, queued, accept_plan, plan, .. } => {
                     // An accept (T-420) is always a queued entry, its flag
                     // on the row until the daemon presses.
                     let queued = queued || accept_plan;
@@ -9811,11 +9947,30 @@ pub(crate) mod test_support {
                             by: None,
                             accept_plan,
                             held: None,
+                            plan,
                         });
                         return Ok(Response::Queued { behind: vec!["T-9".into()] });
                     }
+                    // A pane in plan mode (T-434) is parked and woken: the
+                    // record comes back Spawning with the flag in its argv.
+                    if seat == PendingAction::Ask && plan {
+                        if let Some(rec) =
+                            self.board.sessions.iter_mut().find(|s| s.ticket == ticket)
+                        {
+                            rec.state = SessionState::Spawning;
+                            rec.pending_submit = true;
+                            rec.argv =
+                                vec!["claude".into(), "--permission-mode".into(), "plan".into()];
+                            let id = rec.id;
+                            return Ok(Response::Spawned { id, fresh: false });
+                        }
+                    }
                     if seat == PendingAction::Ask {
                         return Ok(Response::Ok);
+                    }
+                    let mut argv = vec!["claude".to_string()];
+                    if plan {
+                        argv.extend(["--permission-mode".to_string(), "plan".to_string()]);
                     }
                     if let Some(rec) =
                         self.board.sessions.iter_mut().find(|s| {
@@ -9824,6 +9979,7 @@ pub(crate) mod test_support {
                     {
                         rec.state = SessionState::Spawning;
                         rec.pending_submit = true;
+                        rec.argv = argv;
                         let id = rec.id;
                         return Ok(Response::Spawned { id, fresh: false });
                     }
@@ -9831,7 +9987,7 @@ pub(crate) mod test_support {
                         uuid::Uuid::from_u128(4242),
                         self.board.agent_provider.session_kind(),
                         ticket,
-                        vec!["claude".into()],
+                        argv,
                         "/repo".into(),
                         SessionState::Spawning,
                     );
@@ -9840,12 +9996,16 @@ pub(crate) mod test_support {
                     self.board.sessions.push(rec);
                     return Ok(Response::Spawned { id, fresh: false });
                 }
-                Command::SpawnSession { ticket, kind, submit_prompt } => {
+                Command::SpawnSession { ticket, kind, submit_prompt, plan } => {
+                    let mut argv = vec!["claude".to_string()];
+                    if plan {
+                        argv.extend(["--permission-mode".to_string(), "plan".to_string()]);
+                    }
                     let mut rec = mesimon_core::board::SessionRecord::new(
                         uuid::Uuid::from_u128(4242),
                         kind,
                         ticket,
-                        vec!["claude".into()],
+                        argv,
                         "/repo".into(),
                         SessionState::Running,
                     );
@@ -11986,6 +12146,7 @@ mod tests {
                 tags: Vec::new(),
                 description: None,
                 images: Vec::new(),
+                plan: false,
             },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
@@ -12098,6 +12259,7 @@ mod tests {
                 walk: None,
                 queued: false,
                 accept_plan: false,
+                plan: false,
             },
             buffer: EditBuffer::new(PROMPT_MAX_BYTES),
         };
@@ -12112,6 +12274,7 @@ mod tests {
                 tags: Vec::new(),
                 description: None,
                 images: Vec::new(),
+                plan: false,
             },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
@@ -12136,6 +12299,7 @@ mod tests {
                 tags: Vec::new(),
                 description: None,
                 images: Vec::new(),
+                plan: false,
             },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
@@ -12560,7 +12724,7 @@ mod tests {
                     app.just_created = Some(ulid::Ulid(1));
                     app.board_enter().unwrap();
                 }
-                "prompt" => app.start_composed(ulid::Ulid(1)),
+                "prompt" => app.start_composed(ulid::Ulid(1), false),
                 _ => unreachable!(),
             }
             let sent = sent.borrow();
@@ -13335,6 +13499,157 @@ mod tests {
         assert!(app.ctx().ask_accepts_plan);
     }
 
+    /// T-434: `^p` in the ask field arms plan mode for the launch the words
+    /// end in. On an EMPTY seat the start carries the flag; the row under
+    /// the field says `now ∙ plan mode`; the receipt and the card say it;
+    /// and a seat the key cannot serve — a working claude, one already
+    /// planning — offers no key.
+    #[test]
+    fn ctrl_p_in_the_ask_field_starts_the_agent_in_plan_mode() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.rich_keys = true;
+        // An empty seat: the field opens, `^p` is offered and flips.
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().prompting && app.ctx().plan_able && !app.ctx().plan_armed);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Input, Verb::PlanMode, &app.ctx()),
+            Some(("^p", "plan mode"))
+        );
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.ctx().plan_armed);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Input, Verb::PlanMode, &app.ctx()),
+            Some(("^p", "plan mode off"))
+        );
+        assert_eq!(App::ask_mode_word(false, false, true), "now ∙ plan mode");
+        assert_eq!(App::ask_mode_word(false, true, true), "queued ∙ plan mode");
+        // A second press takes it off, a third puts it back; then send.
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(!app.ctx().plan_armed);
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        for ch in "scope it".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "plan: true"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "agent started in plan mode ∙ asked");
+        // The fake daemon launched it with the flag, so the seat now reads
+        // as planning (T-420) and the next field opens at `accept plan`,
+        // with no `^p` — the flag is about the NEXT launch, and there is
+        // none to make.
+        assert!(app.ticket_planning(ulid::Ulid(1)));
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_accepts_plan && !app.ctx().plan_able);
+        assert_eq!(mesimon_core::keymap::hint_for(Scope::Input, Verb::PlanMode, &app.ctx()), None);
+    }
+
+    /// T-434: on a live claude the key is offered only between turns — a
+    /// working one has no launch to flag — and the send is a park-and-wake
+    /// the receipt names; queued, the card says `queued ∙ plan mode`. The
+    /// flag rides the grown room and folds back with it.
+    #[test]
+    fn ctrl_p_on_an_idle_pane_restarts_it_in_plan_mode_and_a_working_one_offers_nothing() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().prompting && !app.ctx().plan_able);
+        assert_eq!(mesimon_core::keymap::hint_for(Scope::Input, Verb::PlanMode, &app.ctx()), None);
+        // Inert: the press is not a verb here, and the flag stays off.
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(!app.ctx().plan_armed);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+
+        app.board.sessions[0].state =
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().plan_able);
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.ctx().plan_armed);
+        // Into the room and back: the flag rides along both ways.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Editor(_)) && app.ctx().plan_armed);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Editor, Verb::PlanMode, &app.ctx()),
+            Some(("^p", "plan mode off"))
+        );
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Input { .. }) && app.ctx().plan_armed);
+        // Queued: the card's row wears the mode.
+        if !app.ctx().ask_queued {
+            app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        }
+        assert!(app.ctx().ask_queued);
+        for ch in "later".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "plan: true"), "{:?}", sent.borrow());
+        assert!(app.status.starts_with("agent restarts in plan mode"), "{}", app.status);
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued ∙ plan mode"));
+        // Reopened on the waiting words, the flag comes back with them.
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().plan_armed && app.ctx().ask_queued);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+
+        // Sent now on the idle pane: a park and a wake, said as such. (The
+        // refresh after the send re-read the fake board's own record, so
+        // the idle is set again.)
+        app.pending.clear();
+        app.board.sessions[0].state =
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        if app.ctx().ask_queued {
+            app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        }
+        assert!(!app.ctx().ask_queued);
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.ctx().plan_armed);
+        for ch in "go".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.status, "restarted agent in plan mode ∙ asked");
+    }
+
+    /// T-434: `^p` in the composer — one-line and grown — starts the new
+    /// ticket's claude in plan mode on Shift+Enter, and the selector row
+    /// says so. A codex board offers no key.
+    #[test]
+    fn ctrl_p_in_the_composer_starts_the_new_ticket_in_plan_mode() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
+        assert!(app.ctx().composing && app.ctx().plan_able);
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.ctx().plan_armed);
+        // Grown and folded, the flag survives.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(matches!(
+            app.mode,
+            Mode::Editor(Editor { purpose: EditorPurpose::Compose { plan: true, .. }, .. })
+        ));
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(
+            app.mode,
+            Mode::Input { purpose: InputPurpose::Create { plan: true, .. }, .. }
+        ));
+        for ch in "plan it".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(sent_contains(&sent, "submit_prompt: true"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "plan: true"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "agent started on the title in plan mode");
+
+        let mut codex = app_three_columns();
+        codex.board.agent_provider = mesimon_core::board::AgentProvider::Codex;
+        codex.handle_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
+        assert!(codex.ctx().composing && !codex.ctx().plan_able);
+        codex.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(!codex.ctx().plan_armed);
+    }
+
     /// T-420: an agent launched in plan mode and still working is KNOWN to
     /// be planning, so the field opens at `accept plan` too — the ring
     /// then has all three stops — and words sent there queue with the
@@ -13383,6 +13698,7 @@ mod tests {
             by: None,
             accept_plan: false,
             held: Some("agent asked".into()),
+            plan: false,
         }];
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("held ∙ agent asked"));
         assert!(app.ctx().ticket_queued, "a held ask is still edited and sent from the board");
@@ -13403,6 +13719,7 @@ mod tests {
             in_flight: false,
             by: None,
             accept_plan: false,
+            plan: false,
             held: None,
         }];
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
@@ -13436,6 +13753,7 @@ mod tests {
             in_flight: false,
             by: None,
             accept_plan: false,
+            plan: false,
             held: None,
         }];
         assert!(app.ctx().ticket_queued);
@@ -13497,6 +13815,7 @@ mod tests {
                 in_flight,
                 by: None,
                 accept_plan: false,
+                plan: false,
                 held: None,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
@@ -13516,6 +13835,7 @@ mod tests {
             in_flight: false,
             by: Some("T-411".into()),
             accept_plan: false,
+            plan: false,
             held: None,
         }];
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued by T-411's agent"));
@@ -13536,6 +13856,7 @@ mod tests {
                 in_flight: false,
                 by: None,
                 accept_plan: false,
+                plan: false,
                 held: None,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
@@ -17024,7 +17345,7 @@ mod tests {
     fn composer_folding_keeps_images_and_discard_does_not_upload() {
         let (mut app, sent) = app_with_note();
         app.mode = Mode::Editor(Editor::new(
-            EditorPurpose::Compose { workspace: None, tags: vec![] },
+            EditorPurpose::Compose { workspace: None, tags: vec![], plan: false },
             EditBuffer::from_text("new ticket".into(), mesimon_core::board::TITLE_MAX_BYTES),
             TextArea::new(mesimon_core::board::NOTE_MAX_BYTES),
             Field::Body,

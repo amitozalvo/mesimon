@@ -84,6 +84,7 @@ fn the_daemon_says_how_long_the_attached_pane_has_been_quiet() {
         ticket,
         kind: SessionKind::Bash,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -222,6 +223,7 @@ fn a_board_that_dies_inside_the_pane_gives_the_focus_token_back() {
             ticket,
             kind: SessionKind::Bash,
             submit_prompt: false,
+            plan: false,
         }) {
             Response::Spawned { id, .. } => sids.push(id),
             other => panic!("spawn: {other:?}"),

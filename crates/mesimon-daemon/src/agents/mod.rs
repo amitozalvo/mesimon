@@ -79,6 +79,11 @@ pub struct LaunchContext<'a> {
     pub tools: AgentTools,
     pub brief: bool,
     pub column: ColumnSettings,
+    /// Plan mode for THIS launch (T-434): the composer's or the ask field's
+    /// `^p`, or the crown's `plan`. Overrides the column's `claude_mode`
+    /// once; a later wake reads the column again. Claude reads it; Codex
+    /// has no launch flag for its plan mode and ignores it.
+    pub plan: bool,
 }
 
 pub struct LaunchSpec {

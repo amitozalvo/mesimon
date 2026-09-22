@@ -12659,3 +12659,76 @@ only.
 `crown_e2e` now send the `UserPromptSubmit` a real pane sends after a by-hand send, since the
 send owes it. `prompt_e2e`, `hook_e2e`, `brief_e2e`, `auto_run_e2e`, `column_ask_e2e`,
 `merge_train_e2e`, `provider_e2e`, `external_provider_e2e` unchanged and green.
+
+## Plan mode from the composer and the ask field (T-434, 2026-09-23, user: "set plan mode from composer … only if agent is idle. maybe ^p? indicate will enter plan mode … crown agents will be able to do so as well on behalf of the user")
+
+**What was asked.** A way to put the NEXT turn of a ticket's claude in plan mode without
+entering the pane: from the new-ticket composer, from Shift+Enter's ask field, one-line or
+grown (`Tab`), and from the crown's tools.
+
+**What Claude Code offers, measured on 2.1.280.** The mode is set at launch
+(`--permission-mode plan`) or cycled in the pane by Shift+Tab (`chat:cycleMode`), whose ring
+depends on the person's settings (`default → acceptEdits → plan → auto …`, the `auto` and
+`bypassPermissions` stops present or not). There is no absolute keystroke, no `/plan` that
+sets the mode (`/plan` views the plan file), and no keybinding action for it. A relative
+ring mesimon cannot read back is not a road; the launch flag is, and the argv it leaves is
+the one fact the board holds about a session's mode (`ticket_planning`, T-420).
+
+**What shipped.**
+
+- **`^p`** in the composer and the ask field (`Verb::PlanMode`; Input and Editor scopes, both
+  barrier scopes, so the picker's `^p` list motion never meets it). A toggle: the hint says
+  what the next press does (`plan mode` / `plan mode off`) and the row under the field wears
+  the state — the composer's selector row reads `⎇ shared  shift+tab ∙ plan mode`, the ask
+  field's delivery row `now ∙ plan mode` / `queued ∙ plan mode` (`App::ask_mode_word`), the
+  room's context row the same. The flag rides `InputPurpose::Create`/`Prompt` and
+  `EditorPurpose::Compose`/`Ask`, into the room and back. Gated on `Ctx::plan_able`, the
+  TUI's read of the seat (`App::plan_able`): composing, a claude board; asking, an empty seat,
+  a parked claude, or a live one between turns (`Idle`, not `Background`, not working). Never
+  a seat already planning or on its dialog (the field is about the accept there, T-420),
+  never a codex seat, never a column's field. A working claude offers no key — "only if agent
+  is idle" — rather than a refusal.
+- **The wire is a field on four commands**, all `#[serde(default)]`: `SpawnSession.plan`
+  (the composer's Shift+Enter), `PromptSession.plan` (the ask field), `AgentStartTicket.plan`
+  and `AgentAskTicket.plan` (the crown's `start_agent` / `ask_agent`, an optional boolean
+  `plan` in both schemas, parsed by the `restore` rule). `Pending.plan` rides the snapshot
+  so the row says `starts ∙ plan mode` / `wakes ∙ plan mode` / `queued ∙ plan mode` and the
+  reopened field wears the flag.
+- **One flag, three seats.** `LaunchContext.plan` outranks the column's `claude_mode` for that
+  one launch (`agents::claude::flags`); the next wake reads the column again — the flag is
+  per launch, never sticky. A **start** spawns with it (parked spawns carry it across
+  provisioning). A **wake** resumes with it (`resume_session_in`; `PendingResume.plan` across a
+  rebuild). A **live pane** is parked and woken with it — `Daemon::relaunch_in_plan`:
+  `session_idle`, then `sleep_one` (the gate: only an idle agent sleeps, so a turn is never
+  cut), then `prompt_sleeping(.., plan)`, the words parked for the first tick as any
+  wake-and-ask parks them; feed `plan_relaunch`. Sent now on a working pane, `prompt_session`
+  refuses (`mid-turn ∙ plan mode restarts it, so queue the ask for its idle`); queued, the
+  drain waits for idle as it always has and the relaunch is the delivery, a wake in all but its
+  seat word (no in-flight marker, the record is the receipt). `deliver` takes the flag, so the
+  crown's held ask sent by `^y` walks the same road.
+- **Beside `accept_plan` the flag is nothing** — an accept is about a plan that already
+  exists. Codex has no launch flag for its plan mode: `plan_refusal` refuses on a codex record
+  or an empty seat on a codex board, the same words for a person and for the crown.
+- **`queue.json` is schema 2.** `QueuedEntry.plan` rides a persisted start or wake. Bumped for
+  the columns file's `claude_mode` reason: a v1 build dropping the flag would start the
+  restored session in the column's mode — auto, where a read-only planning turn was queued —
+  which is a widening. A v1 file reads with the flag off.
+- **Receipts.** `agent started on the title in plan mode`; `agent started in plan mode ∙
+  asked`; `woke agent in plan mode ∙ asked`; `restarted agent in plan mode ∙ asked` on the
+  pane road; the queued receipts carry the same suffix.
+
+**Not done.** Setting plan mode on a WORKING claude (would need the ring, or a hook road that
+names a mode — `updatedPermissions: setMode` in a `PermissionRequest` answer, refused on T-420's
+grounds). Codex plan mode (no launch flag; its dialog is T-420's). A column's field with the
+flag (one flag over N seats). A `(default)` word on the row where the column already says plan.
+
+**Tests.** keymap `ctrl_p_arms_plan_mode_where_the_launch_can_take_it`; TUI
+`ctrl_p_in_the_ask_field_starts_the_agent_in_plan_mode`,
+`ctrl_p_on_an_idle_pane_restarts_it_in_plan_mode_and_a_working_one_offers_nothing`,
+`ctrl_p_in_the_composer_starts_the_new_ticket_in_plan_mode`; mcp parse tests for the flag;
+askqueue `a_v1_file_reads_with_plan_off`; e2e
+`plan_mode_e2e::plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch` (a start with
+the flag under an inherit column, a working pane's refusal, a queued ask relaunching the pane
+on its idle with the words parked and one seat, a wake with the flag and the next without,
+`queue.json` carrying `plan` at schema 2). Four goldens reminted for the `^p plan mode` footer
+hint.

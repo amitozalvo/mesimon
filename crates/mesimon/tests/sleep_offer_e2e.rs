@@ -74,6 +74,7 @@ fn z_sleeps_only_the_done_column() {
             ticket,
             kind: SessionKind::Claude,
             submit_prompt: false,
+            plan: false,
         }) {
             Response::Spawned { id, .. } => id,
             other => panic!("spawn failed: {other:?}"),

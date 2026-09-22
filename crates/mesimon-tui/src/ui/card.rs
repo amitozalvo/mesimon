@@ -126,6 +126,7 @@ pub(super) fn render_workspace_selector(
     ctx: &CardCtx,
     workspace: Option<mesimon_core::board::WorkspaceStrategy>,
     column_default: Option<mesimon_core::board::WorkspaceStrategy>,
+    plan: bool,
 ) -> Line<'static> {
     let theme = ctx.theme;
     let word = match workspace {
@@ -143,6 +144,11 @@ pub(super) fn render_workspace_selector(
     let hint = "  shift+tab";
     if super::spans_width(&spans) + hint.width() < ctx.width as usize {
         spans.push(Span::styled(hint, Style::default().fg(theme.sel.dim2)));
+    }
+    // `^p` armed (T-434): the claude Shift+Enter starts runs in plan mode.
+    // A setting like the workspace pick, on the same row, in the same ink.
+    if plan {
+        spans.push(Span::styled(" ∙ plan mode", Style::default().fg(theme.sel.dim1)));
     }
     Line::from(spans).style(theme.selected_row())
 }

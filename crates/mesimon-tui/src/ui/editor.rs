@@ -354,7 +354,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout) | None => "shared",
     };
     match &ed.purpose {
-        EditorPurpose::Compose { workspace, tags } => {
+        EditorPurpose::Compose { workspace, tags, plan } => {
             let word = workspace_word(*workspace);
             // Framed, the top edge already says NEW TICKET; the row starts
             // at the column. (Unframed — frame zero of the grow, a terminal
@@ -370,6 +370,11 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             // composer's card spells it (`card::render_workspace_selector`)
             // — the dialog's bottom edge does not repeat it.
             ctx_spans.push(Span::styled("  shift+tab".to_string(), dim2));
+            // `^p` armed (T-434): the launch runs in plan mode, said where
+            // the one-line composer's card says it.
+            if *plan {
+                ctx_spans.push(Span::styled(" ∙ plan mode".to_string(), dim1));
+            }
             if !tags.is_empty() {
                 ctx_spans.push(Span::styled(" ∙".to_string(), dim2));
                 for t in tags {
@@ -432,7 +437,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         // the dialog's bottom edge does not repeat it. A ticket's ask names
         // the ticket by its key; a column's names the seats the words reach
         // — every seat in it, since T-405 starts the empty ones.
-        EditorPurpose::Ask { target, queued, accept_plan } => {
+        EditorPurpose::Ask { target, queued, accept_plan, plan } => {
             if !framed {
                 ctx_spans.push(Span::styled(format!("{} ∙ ", heading(app, ed)), dim2));
             }
@@ -453,8 +458,10 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                     ctx_spans.push(Span::styled(" ∙ ".to_string(), dim2));
                 }
             }
-            ctx_spans
-                .push(Span::styled(crate::app::App::ask_mode_word(*accept_plan, *queued), dim1));
+            ctx_spans.push(Span::styled(
+                crate::app::App::ask_mode_word(*accept_plan, *queued, *plan),
+                dim1,
+            ));
             let fc = app.frame_ctx();
             if fc.ask_queueable && !fc.ask_plan_ready {
                 ctx_spans.push(Span::styled("  shift+tab".to_string(), dim2));

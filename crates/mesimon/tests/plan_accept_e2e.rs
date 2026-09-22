@@ -62,6 +62,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -101,6 +102,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             text: String::new(),
             queued: false,
             accept_plan: true,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -126,6 +128,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             text: "mesimon-probe-420 then do this".into(),
             queued: true,
             accept_plan: true,
+            plan: false
         }),
         Response::Queued { .. }
     ));
@@ -162,6 +165,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             text: "clear".into(),
             queued: false,
             accept_plan: false,
+            plan: false
         }),
         Response::Ok
     ));
@@ -175,6 +179,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             text: "mesimon-probe-421 unrecognised".into(),
             queued: true,
             accept_plan: true,
+            plan: false
         }),
         Response::Queued { .. }
     ));

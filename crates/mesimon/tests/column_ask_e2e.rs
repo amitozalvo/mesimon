@@ -60,6 +60,7 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

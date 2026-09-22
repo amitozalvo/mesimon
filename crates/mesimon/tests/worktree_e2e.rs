@@ -140,7 +140,8 @@ fn m4_worktree_lifecycle() {
         c.request(Command::SpawnSession {
             ticket: t1,
             kind: SessionKind::Claude,
-            submit_prompt: false
+            submit_prompt: false,
+            plan: false
         }),
         Response::Provisioning
     ));
@@ -310,6 +311,7 @@ fn m4_worktree_lifecycle() {
         ticket: t2,
         kind: SessionKind::Bash,
         submit_prompt: false,
+        plan: false,
     });
     let wt2 = wait_wt_status(&mut c, t2, "attached", Duration::from_secs(10));
     assert_eq!(wt2.branch, "msmn/T-2-clash");

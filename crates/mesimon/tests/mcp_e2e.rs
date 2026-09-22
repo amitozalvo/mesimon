@@ -132,6 +132,7 @@ fn agent_board_tools_tier_and_collisions() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -170,6 +171,7 @@ fn agent_board_tools_tier_and_collisions() {
         ticket: quiet,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -454,7 +456,12 @@ fn agent_board_tools_tier_and_collisions() {
     // of the policy rather than the policy itself.
     let agent = Principal::Agent { session: sid };
     for forbidden in [
-        Command::SpawnSession { ticket, kind: SessionKind::Bash, submit_prompt: false },
+        Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Bash,
+            submit_prompt: false,
+            plan: false,
+        },
         Command::KillSession { id: sid },
         Command::DeleteTicket { id: ticket, discard_worktree: true },
         Command::ArchiveTicket { id: ticket },

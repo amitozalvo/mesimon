@@ -37,6 +37,7 @@ fn park_a_stop_in_flight(c: &mut TestClient, hook_sock: &Path) -> String {
         ticket,
         kind: SessionKind::Bash,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

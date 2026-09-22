@@ -25,6 +25,7 @@ fn start(h: &Harness, c: &mut TestClient, title: &str) -> (uuid::Uuid, uuid::Uui
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn: {other:?}"),

@@ -77,6 +77,7 @@ fn archive_gates_suggests_and_restores() {
         ticket: cold,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -175,6 +176,7 @@ fn archive_gates_suggests_and_restores() {
             ticket: cold,
             kind: SessionKind::Bash,
             submit_prompt: false,
+            plan: false,
         }),
         "archived",
     );

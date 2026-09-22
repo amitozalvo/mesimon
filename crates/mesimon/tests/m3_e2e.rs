@@ -415,6 +415,7 @@ fn m3_adoption_and_sleep() {
         ticket: home_ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("ghost spawn: {other:?}"),

@@ -51,9 +51,16 @@ fn flags(context: &LaunchContext<'_>) -> Vec<String> {
             argv.extend(["--allowedTools".into(), allowed.join(",")]);
         }
     }
-    if let Some(mode) =
+    // One launch in plan mode (T-434) outranks the column's word, which
+    // outranks the user's own default — the same flag either way, and the
+    // TUI reads it back off the argv as the one fact it holds about a
+    // session's mode (`ticket_planning`).
+    let mode = if context.plan {
+        Some("plan".to_string())
+    } else {
         context.column.claude_mode.flag_word().map(str::to_string).or_else(user_default_mode)
-    {
+    };
+    if let Some(mode) = mode {
         argv.extend(["--permission-mode".into(), mode]);
     }
     argv

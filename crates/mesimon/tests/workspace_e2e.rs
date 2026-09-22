@@ -164,7 +164,8 @@ fn a_workspace_ticket_gets_a_worktree_per_repo() {
         c.request(Command::SpawnSession {
             ticket: id,
             kind: SessionKind::Claude,
-            submit_prompt: false
+            submit_prompt: false,
+            plan: false
         }),
         Response::Provisioning
     ));

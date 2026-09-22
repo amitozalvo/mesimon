@@ -50,6 +50,7 @@ fn asking_again_after_parking_by_hand_moves_the_card_to_in_progress() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
@@ -86,7 +87,8 @@ fn asking_again_after_parking_by_hand_moves_the_card_to_in_progress() {
             ticket,
             text: "again".into(),
             queued: false,
-            accept_plan: false
+            accept_plan: false,
+            plan: false
         }),
         Response::Ok
     ));

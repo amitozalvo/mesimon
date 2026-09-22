@@ -54,6 +54,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn: {other:?}"),

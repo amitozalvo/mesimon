@@ -139,6 +139,7 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),

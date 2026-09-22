@@ -139,9 +139,11 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::ArchiveTicket { key, restore, seen } => {
             Command::AgentArchiveTicket { key, restore, seen: Some(seen) }
         }
-        ToolCall::StartAgent { key, seen } => Command::AgentStartTicket { key, seen: Some(seen) },
-        ToolCall::AskAgent { key, text, seen } => {
-            Command::AgentAskTicket { key, text, seen: Some(seen) }
+        ToolCall::StartAgent { key, seen, plan } => {
+            Command::AgentStartTicket { key, seen: Some(seen), plan }
+        }
+        ToolCall::AskAgent { key, text, seen, plan } => {
+            Command::AgentAskTicket { key, text, seen: Some(seen), plan }
         }
         ToolCall::CreateTicket { title, column, description, tags, idempotency_key } => {
             Command::AgentCreateTicket {

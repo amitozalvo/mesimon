@@ -49,6 +49,7 @@ fn duplicate_copies_content_below_source_without_starting_an_agent() {
         ticket: source,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("{other:?}"),

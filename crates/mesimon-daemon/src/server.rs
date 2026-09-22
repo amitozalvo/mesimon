@@ -212,6 +212,8 @@ struct PendingResume {
     session: uuid::Uuid,
     confirm: bool,
     prompt: Option<String>,
+    /// Wake in plan mode (T-434), carried across the rebuild.
+    plan: bool,
 }
 
 struct GraceEntry {
@@ -730,6 +732,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 accept_plan: false,
                 send_on_accept: false,
                 held: None,
+                plan: e.plan,
             })
         })
         .collect();
@@ -1215,6 +1218,8 @@ struct PendingSpawn {
     /// provisioning wait so the replayed record still counts against the
     /// budget.
     started_by: Option<ulid::Ulid>,
+    /// Start in plan mode (T-434), carried across the wait.
+    plan: bool,
 }
 
 /// Words waiting for a pane that reads (`Owed::parked`). `brief` marks the
@@ -1345,6 +1350,11 @@ struct QueuedAsk {
     /// crown's ask; a person's `^y` sends it, and reopening the field on it
     /// re-queues it clean. The word is the card's (`agent asked`).
     held: Option<&'static str>,
+    /// The delivery starts a plan-mode turn (T-434): a start or a wake
+    /// launches with `--permission-mode plan`, and a pane is parked and
+    /// woken with it once idle. Rides `queue.json` (schema 2) on the
+    /// seats that ride it.
+    plan: bool,
 }
 
 /// One thing the crown has yet to hear about (T-414): an agent it started
@@ -1813,8 +1823,8 @@ impl Daemon {
             Command::MergeToAgent { id, request } => {
                 self.merge_to_agent(id, request, &Principal::Local, Ack::PROMPT)
             }
-            Command::PromptSession { ticket, text, queued, accept_plan } => {
-                self.prompt_session(ticket, text, queued, accept_plan)
+            Command::PromptSession { ticket, text, queued, accept_plan, plan } => {
+                self.prompt_session(ticket, text, queued, accept_plan, plan)
             }
             Command::PromptColumn { column, text, queued } => {
                 self.prompt_column(&column, text, queued)
@@ -1930,12 +1940,13 @@ impl Daemon {
             {
                 Response::Err { message: self.barred_message("worktrees") }
             }
-            Command::SpawnSession { ticket, kind, submit_prompt } => self.spawn_session(
+            Command::SpawnSession { ticket, kind, submit_prompt, plan } => self.spawn_session(
                 ticket,
                 if kind.is_agent() { self.board.agent_provider.session_kind() } else { kind },
                 submit_prompt,
                 None,
                 None,
+                plan,
             ),
             Command::KillSession { id } => self.kill_session(id),
             Command::FocusStart { session } => self.focus_start(session, stream),
@@ -1998,8 +2009,12 @@ impl Daemon {
                 }
             }
             Command::ResumeSession { id, confirm } => {
-                let resp =
-                    self.resume_session_with_cleanup_ack(id, confirm, env.principal.is_human());
+                let resp = self.resume_session_with_cleanup_ack(
+                    id,
+                    confirm,
+                    env.principal.is_human(),
+                    false,
+                );
                 self.persist_and_notify();
                 resp
             }
@@ -3833,7 +3848,7 @@ impl Daemon {
             // The crown's start (T-412): an ask to spawn, judged here. The
             // budget and the seat rule are the daemon's; the agent names a
             // ticket and nothing else — no kind, no prompt, no session.
-            Command::AgentAskTicket { key, text, seen } => {
+            Command::AgentAskTicket { key, text, seen, plan } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -3876,9 +3891,14 @@ impl Daemon {
                 let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
                     return Response::Err { message: "nothing to send".into() };
                 };
+                // Plan mode (T-434) is a Claude launch flag: the same
+                // refusal the person's field would get on a Codex board.
+                if let Some(message) = self.plan_refusal(target, plan) {
+                    return Response::Err { message };
+                }
                 let replaced =
                     self.queued.iter().any(|q| q.ticket == target && q.by == Some(ticket));
-                if let Err(message) = self.park_ask(target, seat, text, Some(ticket), false) {
+                if let Err(message) = self.park_ask(target, seat, text, Some(ticket), false, plan) {
                     return Response::Err { message };
                 }
                 self.broadcast();
@@ -3889,7 +3909,7 @@ impl Daemon {
                     seen,
                 }
             }
-            Command::AgentStartTicket { key, seen } => {
+            Command::AgentStartTicket { key, seen, plan } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -3919,9 +3939,12 @@ impl Daemon {
                 if let Some(message) = self.crown_budget_refusal() {
                     return Response::Err { message };
                 }
+                if let Some(message) = self.plan_refusal(target, plan) {
+                    return Response::Err { message };
+                }
                 let kind = self.board.agent_provider.session_kind();
                 let session_started =
-                    match self.spawn_session(target, kind, true, None, Some(ticket)) {
+                    match self.spawn_session(target, kind, true, None, Some(ticket), plan) {
                         Response::Spawned { .. } => true,
                         Response::Provisioning => false,
                         Response::Err { message } => return Response::Err { message },
@@ -4375,7 +4398,7 @@ impl Daemon {
         }
         let text = self.crown_wake_text();
         let ack = Ack { by: "automation", word: "crown_wake_delivered" };
-        match self.deliver(crown, seat, text, ack) {
+        match self.deliver(crown, seat, text, ack, false) {
             Response::Err { message } => {
                 eprintln!("mesimon: crown wake failed: {message}");
                 self.crown_wakes.clear();
@@ -5204,6 +5227,7 @@ impl Daemon {
                 by: q.by.and_then(|c| self.board.ticket(c)).map(|c| c.short_key.clone()),
                 accept_plan: q.accept_plan || q.send_on_accept,
                 held: q.held.map(str::to_string),
+                plan: q.plan,
             })
             .collect();
         for o in self.owed.values() {
@@ -5217,6 +5241,7 @@ impl Daemon {
                     by: None,
                     accept_plan: false,
                     held: None,
+                    plan: false,
                 });
             }
         }
@@ -5237,6 +5262,7 @@ impl Daemon {
                 by: None,
                 accept_plan: false,
                 held: None,
+                plan: false,
             });
         }
         // What the train will do once its gate is clear — said before it
@@ -5265,6 +5291,7 @@ impl Daemon {
                     by: None,
                     accept_plan: false,
                     held: None,
+                    plan: false,
                 });
             }
             for t in plan.rebase {
@@ -5277,6 +5304,7 @@ impl Daemon {
                     by: None,
                     accept_plan: false,
                     held: None,
+                    plan: false,
                 });
             }
         }
@@ -5469,6 +5497,7 @@ impl Daemon {
                     seat,
                     text: q.text.clone(),
                     queued_at: q.queued_at,
+                    plan: q.plan,
                 })
             })
             .collect();
@@ -6002,7 +6031,14 @@ impl Daemon {
         if !wants {
             return false;
         }
-        match self.spawn_session(id, self.board.agent_provider.session_kind(), true, None, None) {
+        match self.spawn_session(
+            id,
+            self.board.agent_provider.session_kind(),
+            true,
+            None,
+            None,
+            false,
+        ) {
             Response::Spawned { .. } | Response::Provisioning => {
                 self.feed.board("automation", "auto_run_started", Some(id));
                 true
@@ -7063,6 +7099,7 @@ impl Daemon {
         text: String,
         queued: bool,
         accept_plan: bool,
+        plan: bool,
     ) -> Response {
         if self
             .board
@@ -7087,6 +7124,30 @@ impl Daemon {
         // (`service_plan_accepts`), one tick away, and the card says
         // `accepting plan` until the harness confirms.
         let accept_plan = accept_plan && matches!(seat, QueuedSeat::Pane(_));
+        // Plan mode (T-434) is about the NEXT turn's launch; an accept is
+        // about a plan that already exists, so beside it the flag is
+        // nothing. Claude only — a launch flag Codex does not have — and on
+        // a live pane only an IDLE one: there is no keystroke that sets the
+        // mode absolutely, so the pane is parked and woken with the flag,
+        // which `sleep_one` refuses mid-turn. Sent now, that refusal is the
+        // person's answer; queued, the drain waits for idle as it always
+        // has and the relaunch is the delivery.
+        let plan = plan && !accept_plan;
+        if let Some(message) = self.plan_refusal(ticket, plan) {
+            return Response::Err { message };
+        }
+        if plan && !queued {
+            if let QueuedSeat::Pane(id) = seat {
+                if !self.session_idle(id) {
+                    return Response::Err {
+                        message: format!(
+                            "{} is mid-turn ∙ plan mode restarts it, so queue the ask for its idle",
+                            mesimon_core::keymap::AGENT_WORD
+                        ),
+                    };
+                }
+            }
+        }
         let text = match (mesimon_core::command::sanitize_prompt(&text), &seat) {
             (Some(text), _) => text,
             (None, QueuedSeat::Start(_)) => String::new(),
@@ -7096,13 +7157,50 @@ impl Daemon {
             (None, _) => return Response::Err { message: "nothing to send".into() },
         };
         if queued || accept_plan {
-            return self.enqueue_ask(ticket, seat, text, accept_plan);
+            return self.enqueue_ask(ticket, seat, text, accept_plan, plan);
         }
         // Sending now while an ask waits is the user talking to the agent
         // ahead of it: the waiting words are theirs to drop, and they just
         // did (the TUI's status says so).
         self.forget_queued(ticket, "queued_ask_dropped", "local");
-        self.deliver(ticket, seat, text, Ack::PROMPT)
+        self.deliver(ticket, seat, text, Ack::PROMPT, plan)
+    }
+
+    /// Why a plan-mode ask cannot reach this ticket (T-434), or `None`. The
+    /// flag is `--permission-mode plan`, Claude Code's; a Codex session, or
+    /// an empty seat on a Codex board, has no launch flag for its plan mode.
+    fn plan_refusal(&self, ticket: ulid::Ulid, plan: bool) -> Option<String> {
+        if !plan {
+            return None;
+        }
+        let codex = match self.board.live_agent(ticket) {
+            Some(rec) => rec.kind == SessionKind::Codex,
+            None => self.board.agent_provider == AgentProvider::Codex,
+        };
+        codex.then(|| "plan mode is a claude launch flag ∙ this seat runs codex".to_string())
+    }
+
+    /// A live IDLE pane into plan mode (T-434): park it and wake it with
+    /// the flag, the words parked for the first tick as any wake-and-ask
+    /// parks them. The one road, because Claude Code sets its mode only at
+    /// launch or on a relative Shift+Tab ring the daemon cannot read back
+    /// — and the argv it leaves is the fact the board then holds
+    /// (`ticket_planning`). `sleep_one` is the gate: only an idle agent
+    /// sleeps, so a turn is never cut.
+    fn relaunch_in_plan(&mut self, ticket: ulid::Ulid, id: uuid::Uuid, text: String) -> Response {
+        if !self.session_idle(id) {
+            return Response::Err {
+                message: format!(
+                    "{} is mid-turn ∙ plan mode waits for idle",
+                    mesimon_core::keymap::AGENT_WORD
+                ),
+            };
+        }
+        if let Err(message) = self.sleep_one(id, false) {
+            return Response::Err { message: format!("could not park for plan mode: {message}") };
+        }
+        self.feed.board("local", "plan_relaunch", Some(ticket));
+        self.prompt_sleeping(ticket, text, true)
     }
 
     /// Ask every seat in a column — paned, parked or EMPTY (T-405). The one
@@ -7155,7 +7253,7 @@ impl Daemon {
             // since T-294, which never offers the toggle on that seat.
             let now_anyway = starts && !self.shared_checkout(ticket);
             if queued && !now_anyway {
-                match self.park_ask(ticket, seat, text, None, false) {
+                match self.park_ask(ticket, seat, text, None, false, false) {
                     Ok(()) => parked.push((ticket, word)),
                     Err(message) => {
                         eprintln!("mesimon: column ask could not park: {message}");
@@ -7165,7 +7263,7 @@ impl Daemon {
                 continue;
             }
             self.forget_queued(ticket, "queued_ask_dropped", "local");
-            match self.deliver(ticket, seat, text, Ack::PROMPT) {
+            match self.deliver(ticket, seat, text, Ack::PROMPT, false) {
                 Response::Err { message } => {
                     eprintln!("mesimon: column ask failed: {message}");
                     self.feed.board("local", "prompt_column_failed", Some(ticket));
@@ -7244,8 +7342,11 @@ impl Daemon {
         seat: QueuedSeat,
         text: String,
         ack: Ack,
+        plan: bool,
     ) -> Response {
         match seat {
+            // Plan mode on a pane (T-434) is a relaunch, never a paste.
+            QueuedSeat::Pane(id) if plan => self.relaunch_in_plan(ticket, id, text),
             // `ack` is a pane's alone: a wake and a start park their words
             // as the user's prompt (`park`), whichever road asked.
             QueuedSeat::Pane(_) => match self.paste_to_ticket(ticket, &text, ack) {
@@ -7258,10 +7359,10 @@ impl Daemon {
                 Ok(()) => Response::Ok,
                 Err(message) => Response::Err { message },
             },
-            QueuedSeat::Wake(_) => self.prompt_sleeping(ticket, text),
+            QueuedSeat::Wake(_) => self.prompt_sleeping(ticket, text, plan),
             QueuedSeat::Start(provider) => {
                 let words = (!text.is_empty()).then_some(text);
-                self.spawn_session(ticket, provider.session_kind(), true, words, None)
+                self.spawn_session(ticket, provider.session_kind(), true, words, None, plan)
             }
         }
     }
@@ -7340,9 +7441,10 @@ impl Daemon {
         seat: QueuedSeat,
         text: String,
         accept_plan: bool,
+        plan: bool,
     ) -> Response {
         let word = seat.word();
-        if let Err(message) = self.park_ask(ticket, seat, text, None, accept_plan) {
+        if let Err(message) = self.park_ask(ticket, seat, text, None, accept_plan, plan) {
             return Response::Err { message };
         }
         self.drain_queue();
@@ -7352,8 +7454,9 @@ impl Daemon {
             Response::Queued { behind }
         } else if self.ask_in_flight(ticket) {
             Response::Ok
-        } else if word != "ask" {
-            // A start or a wake delivered on the spot: it holds the checkout
+        } else if word != "ask" || plan {
+            // A start or a wake delivered on the spot — or a pane relaunched
+            // into plan mode (T-434), which is a wake — holds the checkout
             // through its own record (`Spawning` + an owed Enter), so there
             // is no in-flight marker to look for — the session is the receipt.
             match self.board.live_agent(ticket) {
@@ -7382,6 +7485,7 @@ impl Daemon {
         text: String,
         by: Option<ulid::Ulid>,
         accept_plan: bool,
+        plan: bool,
     ) -> Result<(), String> {
         let Some(t) = self.board.ticket(ticket) else {
             return Err("no such ticket".into());
@@ -7445,6 +7549,7 @@ impl Daemon {
             q.accept_plan = accept_plan;
             q.send_on_accept = false;
             q.held = None;
+            q.plan = plan && !accept_plan;
             self.feed.board(actor, replaced, Some(ticket));
         } else {
             self.queued.push(QueuedAsk {
@@ -7457,6 +7562,7 @@ impl Daemon {
                 accept_plan,
                 send_on_accept: false,
                 held: None,
+                plan: plan && !accept_plan,
             });
             self.feed.board(actor, &fresh, Some(ticket));
         }
@@ -7575,7 +7681,7 @@ impl Daemon {
         take.sort_unstable_by(|a, b| b.cmp(a));
         let mut changed = false;
         for i in take {
-            let QueuedAsk { ticket, seat, text, .. } = self.queued.remove(i);
+            let QueuedAsk { ticket, seat, text, plan, .. } = self.queued.remove(i);
             changed = true;
             let word = seat.word();
             if !self.seat_stands(ticket, &seat) {
@@ -7587,17 +7693,18 @@ impl Daemon {
             // `queued ∙ sending`). A wake and a start hold it through their
             // own record — `Spawning` and an owed Enter are both WORKING —
             // and their entry is the user's prompt, so the card shows the
-            // launching arc instead.
+            // launching arc instead. A pane relaunched into plan mode
+            // (T-434) is a wake in all but its seat word.
             match seat {
-                seat @ QueuedSeat::Pane(_) => {
-                    match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED) {
+                seat @ QueuedSeat::Pane(_) if !plan => {
+                    match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, false) {
                         Response::Ok => {
                             self.feed.board("automation", "queued_ask_sent", Some(ticket));
                         }
                         _ => self.feed.board("automation", "queued_ask_failed", Some(ticket)),
                     }
                 }
-                seat => match self.deliver(ticket, seat, text, Ack::PROMPT) {
+                seat => match self.deliver(ticket, seat, text, Ack::PROMPT, plan) {
                     Response::Err { message } => {
                         eprintln!("mesimon: queued {word} failed: {message}");
                         self.feed.board(
@@ -7693,6 +7800,7 @@ impl Daemon {
         seat: QueuedSeat,
         text: String,
         ack: Ack,
+        plan: bool,
     ) -> Response {
         let id = match seat {
             QueuedSeat::Pane(id) => Some(id),
@@ -7710,7 +7818,7 @@ impl Daemon {
                 return Response::Err { message: "prompt not authorized".into() };
             }
         }
-        let response = self.deliver(ticket, seat, text, ack);
+        let response = self.deliver(ticket, seat, text, ack, plan);
         if let Some(id) = id {
             if self.control_delivery_principal(id).is_some() && self.parked(id) {
                 if let Some(rec) = self.board.sessions.iter_mut().find(|r| r.id == id) {
@@ -7900,7 +8008,7 @@ impl Daemon {
             self.feed.board("automation", "queued_ask_dropped_target_gone", Some(ticket));
             return true;
         }
-        match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED) {
+        match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, false) {
             Response::Ok => {
                 self.feed.board("automation", "queued_ask_sent_after_plan", Some(ticket));
             }
@@ -7934,7 +8042,7 @@ impl Daemon {
             self.broadcast();
             return Response::Err { message: "queued session changed".into() };
         }
-        let response = self.deliver_queued_ask(ticket, q.seat, q.text, Ack::QUEUED);
+        let response = self.deliver_queued_ask(ticket, q.seat, q.text, Ack::QUEUED, q.plan);
         self.broadcast();
         response
     }
@@ -7972,7 +8080,7 @@ impl Daemon {
     /// reason the composer sets it — the launching arc on the card is how the
     /// user watches the ask land — and the seat is still ONE claude: a wake
     /// re-enters the record, it never mints a second.
-    fn prompt_sleeping(&mut self, ticket: ulid::Ulid, text: String) -> Response {
+    fn prompt_sleeping(&mut self, ticket: ulid::Ulid, text: String, plan: bool) -> Response {
         let Some(id) = self
             .board
             .live_agent(ticket)
@@ -7983,7 +8091,7 @@ impl Daemon {
                 message: "no live agent session on this ticket — start or wake one first".into(),
             };
         };
-        let resp = self.resume_session(id, false);
+        let resp = self.resume_session_in(id, false, plan);
         match &resp {
             Response::Spawned { .. } => {
                 self.park(id, ticket, Parked { text, brief: false }, Ack::PROMPT)
@@ -7993,6 +8101,7 @@ impl Daemon {
             Response::Provisioning => {
                 if let Some(r) = self.pending_resumes.iter_mut().find(|r| r.session == id) {
                     r.prompt = Some(text);
+                    r.plan = plan;
                 }
             }
             _ => {}
@@ -8756,6 +8865,7 @@ impl Daemon {
         submit_prompt: bool,
         prompt: Option<String>,
         started_by: Option<ulid::Ulid>,
+        plan: bool,
     ) -> Response {
         if self.board.ticket(ticket).is_none() {
             return no_such_ticket();
@@ -8819,6 +8929,7 @@ impl Daemon {
                         submit_prompt,
                         prompt,
                         started_by,
+                        plan,
                     });
                 }
                 self.persist_and_notify();
@@ -8828,7 +8939,7 @@ impl Daemon {
         };
         let id = uuid::Uuid::new_v4();
         let spec = if let Some(adapter) = crate::agents::adapter(kind) {
-            match adapter.start(&self.launch_context(id, ticket, &cwd), &id.to_string()) {
+            match adapter.start(&self.launch_context(id, ticket, &cwd, plan), &id.to_string()) {
                 Ok(spec) => spec,
                 Err(message) => return Response::Err { message },
             }
@@ -9057,9 +9168,14 @@ impl Daemon {
                     // feed trace (the TUI's parked focus intent surfaces the
                     // "attached but no session" outcome to the user).
                     let kind = s.kind;
-                    if let Response::Err { message } =
-                        self.spawn_session(s.ticket, kind, s.submit_prompt, s.prompt, s.started_by)
-                    {
+                    if let Response::Err { message } = self.spawn_session(
+                        s.ticket,
+                        kind,
+                        s.submit_prompt,
+                        s.prompt,
+                        s.started_by,
+                        s.plan,
+                    ) {
                         eprintln!("mesimon: parked spawn replay failed ({kind:?}): {message}");
                         self.feed.board("daemon", "spawn_replay_failed", Some(s.ticket));
                     }
@@ -9071,7 +9187,7 @@ impl Daemon {
                     self.pending_resumes.drain(..).partition(|r| r.ticket == ticket);
                 self.pending_resumes = rest;
                 for r in resumes {
-                    match self.resume_session(r.session, r.confirm) {
+                    match self.resume_session_in(r.session, r.confirm, r.plan) {
                         Response::Spawned { .. } => {
                             if let Some(text) = r.prompt {
                                 self.park(
@@ -9586,6 +9702,7 @@ impl Daemon {
         id: uuid::Uuid,
         ticket: ulid::Ulid,
         cwd: &'a std::path::Path,
+        plan: bool,
     ) -> LaunchContext<'a> {
         LaunchContext {
             paths: &self.paths,
@@ -9593,6 +9710,7 @@ impl Daemon {
             session: id,
             tools: self.agent_tier(ticket),
             brief: self.board.system_prompt,
+            plan,
             column: self
                 .board
                 .ticket(ticket)
@@ -9602,8 +9720,12 @@ impl Daemon {
         }
     }
 
-    fn resume_argv(&self, rec: &SessionRecord) -> std::result::Result<LaunchSpec, String> {
-        let context = self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd));
+    fn resume_argv(
+        &self,
+        rec: &SessionRecord,
+        plan: bool,
+    ) -> std::result::Result<LaunchSpec, String> {
+        let context = self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd), plan);
         crate::agents::adapter(rec.kind)
             .ok_or_else(|| "shells do not have agent conversations".to_string())?
             .resume(&context, rec)
@@ -9716,7 +9838,13 @@ impl Daemon {
 
     /// Takeover / wake: spawn `claude --resume` under this record's sid16.
     fn resume_session(&mut self, id: uuid::Uuid, confirm: bool) -> Response {
-        self.resume_session_with_cleanup_ack(id, confirm, false)
+        self.resume_session_with_cleanup_ack(id, confirm, false, false)
+    }
+
+    /// A wake in plan mode (T-434): `--permission-mode plan` on this launch,
+    /// the column's word again on the next.
+    fn resume_session_in(&mut self, id: uuid::Uuid, confirm: bool, plan: bool) -> Response {
+        self.resume_session_with_cleanup_ack(id, confirm, false, plan)
     }
 
     fn resume_session_with_cleanup_ack(
@@ -9724,6 +9852,7 @@ impl Daemon {
         id: uuid::Uuid,
         confirm: bool,
         human_resume: bool,
+        plan: bool,
     ) -> Response {
         let Some(mut rec) = self.board.sessions.iter().find(|s| s.id == id).cloned() else {
             return Response::Err { message: "no such session".into() };
@@ -9820,7 +9949,7 @@ impl Daemon {
         };
         let spec = if startup_retry {
             match adapter.start(
-                &self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd)),
+                &self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd), plan),
                 &rec.id.to_string(),
             ) {
                 Ok(spec) => spec,
@@ -9830,14 +9959,19 @@ impl Daemon {
             match fresh {
                 Some(new_id) => {
                     match adapter.start(
-                        &self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd)),
+                        &self.launch_context(
+                            rec.id,
+                            rec.ticket,
+                            std::path::Path::new(&rec.cwd),
+                            plan,
+                        ),
                         &new_id.to_string(),
                     ) {
                         Ok(a) => a,
                         Err(message) => return Response::Err { message },
                     }
                 }
-                None => match self.resume_argv(&rec) {
+                None => match self.resume_argv(&rec, plan) {
                     Ok(a) => a,
                     Err(message) => return Response::Err { message },
                 },
@@ -9875,6 +10009,7 @@ impl Daemon {
                             session: id,
                             confirm,
                             prompt: None,
+                            plan,
                         });
                     }
                     self.persist_and_notify();

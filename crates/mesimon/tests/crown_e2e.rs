@@ -35,6 +35,7 @@ fn spawn(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
         ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
+        plan: false,
     }) {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn: {other:?}"),
@@ -346,7 +347,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let start = |c: &mut TestClient, key: &str, seen: Option<String>| {
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: key.into(), seen },
+            Command::AgentStartTicket { key: key.into(), seen, plan: false },
         )
     };
     // Refused: a ticket that already holds a seat, the crown's own ticket,
@@ -449,7 +450,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         |c: &mut TestClient, from: uuid::Uuid, key: &str, text: &str, seen: Option<String>| {
             c.send(
                 Principal::Agent { session: from },
-                Command::AgentAskTicket { key: key.into(), text: text.into(), seen },
+                Command::AgentAskTicket { key: key.into(), text: text.into(), seen, plan: false },
             )
         };
     // Refused: an uncrowned session, the crown's own ticket, no stamp, a
@@ -512,6 +513,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         text: "mesimon-probe-64 the person's".into(),
         queued: true,
         accept_plan: false,
+        plan: false,
     }) {
         Response::Queued { .. } | Response::Ok => {}
         other => panic!("the person's queued ask: {other:?}"),
@@ -683,7 +685,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_finishes() {
         let v = read(c, sa, key).unwrap();
         match c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: key.into(), seen: v.seen },
+            Command::AgentStartTicket { key: key.into(), seen: v.seen, plan: false },
         ) {
             Response::AgentStarted { .. } => {}
             other => panic!("start_agent {key}: {other:?}"),
@@ -789,6 +791,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_finishes() {
         text: "mesimon-probe-74 person".into(),
         queued: true,
         accept_plan: false,
+        plan: false,
     }) {
         Response::Queued { .. } => {}
         other => panic!("queue a person's ask: {other:?}"),
