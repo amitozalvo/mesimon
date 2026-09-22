@@ -12732,3 +12732,14 @@ the flag under an inherit column, a working pane's refusal, a queued ask relaunc
 on its idle with the words parked and one seat, a wake with the flag and the next without,
 `queue.json` carrying `plan` at schema 2). Four goldens reminted for the `^p plan mode` footer
 hint.
+
+## The status line names the ticket by key (T-428, 2026-09-23, user: "show ticket id inside session on tmux title bar")
+
+The focused pane's tmux status line read ` mesimon › repo !N › title › claude `. It reads
+` mesimon › repo !N › T-428 title › claude ` now — the key bold before the title, the way the
+ticket page's chip carries it (T-233). Inside a pane the key is the one word that says which
+ticket a session is on; the title alone did not, and it is what a prompt, a note or a commit
+names. `server::ticket_crumb` is the one place the crumb is spelled: the key rides outside the
+title's 48-char cap, both pass `tmux_text`, and an empty title leaves no trailing space. The TUI
+header is untouched — its chip already carries the key. Test: `status_line_tests::
+the_ticket_crumb_leads_with_the_key`.

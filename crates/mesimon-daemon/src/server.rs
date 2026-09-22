@@ -10712,7 +10712,7 @@ impl Daemon {
     }
 
     /// The focused status line renders the breadcrumb — same component as the
-    /// TUI header: ` mesimon › project !N › ticket title `. The needs-you
+    /// TUI header: ` mesimon › project !N › T-12 ticket title `. The needs-you
     /// count uses terminal yellow (the 16-colour attn of 06 §2.7, both
     /// flavors) popped out of the reversed bar; tmux chrome is backend-owned
     /// display, not the wire — the daemon still never styles a wire string.
@@ -10738,7 +10738,7 @@ impl Daemon {
             .map(|s| s.ticket)
             .or(terminal_ticket)
             .and_then(|t| self.board.ticket(t))
-            .map(|t| tmux_text(&t.title, 48))
+            .map(|t| ticket_crumb(&t.short_key, &t.title))
             .unwrap_or_default();
         let queue = mesimon_core::attention::attention_queue(&self.board);
         // Sessions in the attention set plus tickets a snooze woke lit —
@@ -10930,6 +10930,21 @@ impl Daemon {
 
 /// Text destined for the tmux status line: `#` doubled (tmux format escape),
 /// quotes and control characters stripped, hard char cap.
+/// The ticket's crumb on the focused status line (T-428): the key, bold, then
+/// the title — `T-12 fix the thing`. The key is how a ticket is named in a
+/// prompt, a note or a commit (the ticket page's chip carries it, T-233),
+/// and inside a pane it is the one word that says which ticket this
+/// session is on when three worktrees share a title word. The title alone
+/// keeps its 48-char cap; the key rides outside it.
+fn ticket_crumb(key: &str, title: &str) -> String {
+    let title = tmux_text(title, 48);
+    if title.is_empty() {
+        format!("#[bold]{}#[nobold]", tmux_text(key, 16))
+    } else {
+        format!("#[bold]{}#[nobold] {title}", tmux_text(key, 16))
+    }
+}
+
 fn tmux_text(s: &str, max_chars: usize) -> String {
     let mut out = String::new();
     for ch in s.chars().take(max_chars) {
@@ -11031,4 +11046,26 @@ const AGENT_DESCRIPTION_MAX_BYTES: usize = 4096;
 fn now_iso() -> String {
     // Seconds precision is enough for created_at; avoid a chrono dependency.
     format!("@{}", now_secs())
+}
+
+#[cfg(test)]
+mod status_line_tests {
+    use super::{ticket_crumb, tmux_text};
+
+    /// The status-line crumb names the ticket by key, then title (T-428):
+    /// the key is bold, the title is capped and scrubbed the way it was.
+    #[test]
+    fn the_ticket_crumb_leads_with_the_key() {
+        assert_eq!(ticket_crumb("T-428", "show the id"), "#[bold]T-428#[nobold] show the id");
+        assert_eq!(
+            ticket_crumb("T-1", ""),
+            "#[bold]T-1#[nobold]",
+            "no trailing space for an empty title"
+        );
+        let long = "x".repeat(60);
+        assert_eq!(ticket_crumb("T-9", &long), format!("#[bold]T-9#[nobold] {}", "x".repeat(48)));
+        // A title cannot open a tmux style: `#` doubles, quotes vanish.
+        assert_eq!(ticket_crumb("T-2", "a #[fg=red] 'b'"), "#[bold]T-2#[nobold] a ##[fg=red] b");
+        assert_eq!(tmux_text("T-2", 16), "T-2");
+    }
 }
