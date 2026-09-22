@@ -26,7 +26,10 @@ uncommitted changes cannot merge and block cleanup. When asked to rebase, rebase
 default branch, resolve conflicts, then run the tests and fix failures before reporting done.
 Never `git checkout main` there (it will fail — main belongs to another worktree) and never
 merge or push to main yourself: the user merges through mesimon, fast-forward only, so a green
-rebased branch is the deliverable.
+rebased branch is the deliverable. **Never call Claude Code's `EnterWorktree` tool** — a
+worktree is the ticket's workspace setting, cut by mesimon. `EnterWorktree` changes the process
+cwd, and Claude Code re-homes the transcript under a project dir for the new cwd; the daemon
+follows the move (T-433), but a wake still launches from the ticket's cwd.
 
 **You may be running inside mesimon** (a session spawned by the very daemon this repo builds).
 Then also: `pkill -f "mesimon daemon"` does not kill you — your pane belongs to the private

@@ -7,6 +7,7 @@ use mesimon_core::attention::{
 use mesimon_core::background::{
     classify, is_live_status, is_monitor_kind, Liveness, Registry, Transition,
 };
+use mesimon_core::board::SessionRecord;
 use serde_json::Value;
 
 /// Cards get an excerpt, never a transcript (D11). Hard cap.
@@ -282,6 +283,36 @@ pub fn transcript_of(frame: &HookFrame) -> Option<String> {
         return None;
     }
     frame.payload.get("transcript_path").and_then(Value::as_str).map(str::to_string)
+}
+
+/// The one exception to D24: the file MOVED. Claude Code homes a transcript
+/// under a project dir derived from the process cwd, and its `EnterWorktree`
+/// tool changes that cwd mid-session — the file is re-homed on the spot and
+/// every later frame names the new path (T-433, 2026-09-23: T-245's agent did
+/// exactly that and its card read "nothing to read in its transcript" for a
+/// day while the conversation sat 1.6 MB deep under
+/// `…-mesimon--claude-worktrees-t245-pane-id/`). A `cd` in the Bash tool does
+/// not do this: 213 local transcripts changed `cwd` that way and none moved.
+///
+/// Identity still never travels (D24): the new path is taken only when its
+/// file stem is the uuid the record already knows, it differs from the
+/// recorded path, and the recorded file is gone — a frame that names another
+/// session, or a copy beside a still-present original, changes nothing.
+pub fn transcript_moved(frame: &HookFrame, record: &SessionRecord) -> Option<String> {
+    let path = frame.payload.get("transcript_path").and_then(Value::as_str)?;
+    let known = record.transcript_path.as_deref()?;
+    if path == known {
+        return None;
+    }
+    let identity = record.claude_session_id.unwrap_or(record.id);
+    let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str())?;
+    if stem.parse::<uuid::Uuid>().ok()? != identity {
+        return None;
+    }
+    if std::path::Path::new(known).is_file() {
+        return None;
+    }
+    Some(path.to_string())
 }
 
 /// The plan an approved `ExitPlanMode` carries, whole (2026-09-03).
@@ -613,6 +644,47 @@ mod tests {
         );
         assert_eq!(signal_of(&f), Some(Signal::SessionStart { source: StartSource::Resume }));
         assert_eq!(transcript_of(&f), Some("/tmp/t.jsonl".into()));
+    }
+
+    #[test]
+    fn a_moved_transcript_is_followed_once_the_old_file_is_gone() {
+        use mesimon_core::board::{SessionKind, SessionState};
+        let dir = std::env::temp_dir().join(format!("msmn-moved-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let old = dir.join(format!("{id}.jsonl"));
+        let new = dir.join("elsewhere").join(format!("{id}.jsonl"));
+        let mut rec = SessionRecord::new(
+            id,
+            SessionKind::Claude,
+            ulid::Ulid::new(),
+            vec![],
+            "/r".into(),
+            SessionState::Running,
+        );
+        rec.transcript_path = Some(old.to_string_lossy().into_owned());
+        let f = |p: &std::path::Path| {
+            frame(
+                "PostToolUse",
+                Some("Bash"),
+                &format!(r#"{{"session_id":"x","transcript_path":"{}","cwd":"/w"}}"#, p.display()),
+            )
+        };
+        // The recorded file still exists: a differing path is a copy, not a move.
+        std::fs::write(&old, "").unwrap();
+        assert_eq!(transcript_moved(&f(&new), &rec), None);
+        // Same path: nothing to do.
+        std::fs::remove_file(&old).unwrap();
+        assert_eq!(transcript_moved(&f(&old), &rec), None);
+        // Another session's file at the new place: identity never travels.
+        let other = dir.join(format!("{}.jsonl", uuid::Uuid::new_v4()));
+        assert_eq!(transcript_moved(&f(&other), &rec), None);
+        // Gone here, named there, same uuid: follow it.
+        assert_eq!(transcript_moved(&f(&new), &rec), Some(new.to_string_lossy().into_owned()));
+        // A record with no path yet is SessionStart's to fill, not this road's.
+        rec.transcript_path = None;
+        assert_eq!(transcript_moved(&f(&new), &rec), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

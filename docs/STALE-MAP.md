@@ -12580,3 +12580,31 @@ one-session board does the same. Hence the server pid in the key.
 the new pane's key lands at once, the record carries the key the wake spawned),
 `the_header_names_its_pane_when_it_has_one`, `hooked_render_carries_the_notify`; `hook_e2e`,
 `prompt_e2e`, `exit_parks_e2e`, `m3_e2e` unchanged on the real roads.
+
+## A transcript follows its file (T-433, 2026-09-23)
+
+**Finding.** T-245's card said "nothing to read in its transcript" for a day. Its agent had
+called Claude Code's `EnterWorktree` tool, which changes the process cwd; Claude Code homes a
+transcript under a project dir derived from that cwd and re-homed the file on the spot, to
+`~/.claude/projects/…-mesimon--claude-worktrees-t245-pane-id/`. Every later hook frame named the
+new path. The daemon took `transcript_path` from `SessionStart` only (D24, "identity is never
+discovered"), so `sessions.json` kept a path with no file behind it, the peek's `metadata()`
+failed, and the sleep copy under `<state>/transcripts/` stopped at the last sleep before the
+move. Nothing was lost: the conversation was intact at the new path.
+
+**Not the multirepo case.** A `cd` in the Bash tool moves the per-entry `cwd` field and nothing
+else: 213 local transcripts changed `cwd` that way (the simbly workspace agents, mostly) and
+none moved. Only `EnterWorktree` re-homes the file.
+
+**Shipped.** `hooks::transcript_moved`: on any frame, when the payload's `transcript_path`
+differs from the record's, its stem is the uuid the record already knows, and the recorded file
+is gone, the record follows. Identity still never travels; a copy beside a still-present
+original changes nothing; a record with no path is `SessionStart`'s to fill. CLAUDE.md now says
+never to call `EnterWorktree` — the workspace setting is how a ticket gets a worktree.
+
+**Left open.** A wake replays `--resume` from the ticket's cwd; whether Claude Code finds a
+session filed under another project dir from there is unverified. The daemon's own
+`history::missing` searches every project dir, so mesimon would attempt the resume rather than
+mint a fresh conversation. A `Sleeping` record sends no frames and corrects itself only when
+its agent next does something.
+

@@ -108,6 +108,9 @@ impl AgentAdapter for Claude {
                     result.metadata_changed = true;
                 }
             }
+        } else if let Some(path) = hooks::transcript_moved(frame, record) {
+            record.transcript_path = Some(path);
+            result.metadata_changed = true;
         }
         result.signal = hooks::signal_with_background(frame, &mut record.background_tasks);
         result.detail = hooks::detail_of(frame);
