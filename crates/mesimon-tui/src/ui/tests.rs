@@ -7669,5 +7669,13 @@ fn the_crowning_sweeps_the_title_on_the_card_and_the_page() {
         assert!(!app.animating());
         let after = title_cells(&app);
         assert!(after.iter().all(|c| c.bg != tint), "{screen:?}: still lit after the crowning");
+        // At rest the holder's title stays in the tint under the cursor, as
+        // it does off it ("it should stay blue as if not hovered").
+        if screen == Screen::Board {
+            assert!(
+                after.iter().all(|c| c.fg == tint),
+                "the cursor turned the crown's title white"
+            );
+        }
     }
 }

@@ -1033,8 +1033,8 @@ impl Theme {
     /// rather than steps; behind it the glow falls off over `CROWN_GLOW`
     /// cells, its letter bright ink easing to the tint. Filled, the run holds
     /// the tint to `CROWN_HOLD_MS` and eases back to `resting` by
-    /// `CROWN_FLASH_MS` — a no-op off the cursor, where the holder's title
-    /// rests in the tint anyway.
+    /// `CROWN_FLASH_MS` — a no-op on the card, where the holder's title rests
+    /// in the tint, cursor or not; the page's title eases back to its ink.
     ///
     /// Only TrueColor has a tint and a halfway. Below it the head alone walks
     /// the run, the resting ink and its ground swapped — painted colours,

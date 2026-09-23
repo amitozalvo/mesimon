@@ -485,9 +485,20 @@ pub(super) fn render(
         // confirmed yet"): until Enter or the cancel the card is in hand the
         // same way, about to leave, and the delete's red is a deletion's.
         theme.move_blink(ctx.spin)
+    } else if matches!(crown, CrownMark::Holder { .. }) && (!cursorish || theme.paints_tags()) {
+        // The holder's title keeps the crown's tint under the cursor too
+        // (T-442, "it should stay blue as if not hovered"); the cursor adds
+        // only its weight. Below TrueColor the tint is the quiet grey, and
+        // the cursor's own ink reads better there.
+        let tint = theme.crown_text();
+        if cursorish {
+            tint.add_modifier(Modifier::BOLD)
+        } else {
+            tint
+        }
     } else if cursorish {
         Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
-    } else if matches!(crown, CrownMark::Holder { .. } | CrownMark::Touched(_)) {
+    } else if matches!(crown, CrownMark::Touched(_)) {
         theme.crown_text()
     } else {
         Style::default().fg(theme.rest.base)

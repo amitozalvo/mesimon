@@ -13232,6 +13232,12 @@ no SGR 7; mono still). `ui`: `the_crowning_sweeps_the_title_on_the_card_and_the_
 cursor card and the page title each show a lit head and filled letters 600 ms in, the loop is
 animating, and nothing is lit at 3 s; it fails with the sweep disabled.
 
+**Follow-up (same day, user: "the text becomes white when hovering the crowned ticket, I think
+it should stay blue as if not hovered").** The holder's card title keeps `crown_text` under the
+cursor and takes only the cursor's bold; the same test asserts the resting cursor title is the
+tint. Below TrueColor the tint is the quiet grey, so the cursor's own ink stays there. Touched
+cards and the ticket page's title are unchanged.
+
 ## The External drawer lists only what mesimon did not start (T-441, 2026-09-23)
 
 **What was wrong.** `known_conversations` hid a transcript only while a live or sleeping record
