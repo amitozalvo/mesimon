@@ -13238,6 +13238,20 @@ cursor and takes only the cursor's bold; the same test asserts the resting curso
 tint. Below TrueColor the tint is the quiet grey, so the cursor's own ink stays there. Touched
 cards and the ticket page's title are unchanged.
 
+**Second follow-up (same day, user: "the text should transition from white to blue, not turn all
+blue at once even before flash started, should be synced with the flash … just don't return it
+to white once animation finishes").** The first follow-up made the cursor title's resting look
+the tint, and the sweep drew the letters ahead of its front in that resting look, so the whole
+title was blue before the wave arrived. A run is now a `CrownSweep { elapsed, cells, before,
+after, surface }`: letters ahead of the front keep `before` (the plain title ink — the cursor's
+bold white, or `rest.base`), the wave leaves them in `after` (the holder's tint), and nothing
+eases back. The hold and the ease-back are gone, so `CROWN_FLASH_MS` is the sweep's own 1.3 s.
+The ticket page's title now rests in the tint too (bold, TrueColor only), for the same reason.
+Tests: `crown_sweep_turns_the_run_from_plain_to_the_crowns_tint` asserts every cell ahead of
+the fading-in cell is still `before` and every cell past the glow is `after`, on every frame;
+the render test asserts the title's last letter is still white mid-sweep and the whole title is
+the tint at 3 s on the card and the page.
+
 ## The External drawer lists only what mesimon did not start (T-441, 2026-09-23)
 
 **What was wrong.** `known_conversations` hid a transcript only while a live or sleeping record

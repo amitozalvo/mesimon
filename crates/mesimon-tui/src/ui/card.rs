@@ -23,7 +23,7 @@ use crate::text::{
     age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
     EditBuffer,
 };
-use crate::theme::{BarWeight, Theme};
+use crate::theme::{BarWeight, CrownSweep, Theme};
 
 pub(super) struct CardCtx<'a> {
     pub theme: &'a Theme,
@@ -258,22 +258,19 @@ pub(crate) enum CrownMark<'a> {
 }
 
 /// Text under the crowning's sweep (T-442), one span a grapheme. `first` is
-/// the column of the text's first cell in the swept run and `cells` the whole
-/// run's width, so a run drawn in pieces sweeps as one.
+/// the column of the text's first cell in the swept run, so a run drawn in
+/// pieces sweeps as one.
 pub(super) fn swept_spans(
     theme: &Theme,
+    run: &CrownSweep,
     text: &str,
     first: usize,
-    cells: usize,
-    elapsed: u64,
-    resting: Style,
-    surface: Option<ratatui::style::Color>,
 ) -> Vec<Span<'static>> {
     use unicode_segmentation::UnicodeSegmentation;
     let mut at = first;
     text.graphemes(true)
         .map(|g| {
-            let style = theme.crown_sweep(at, cells, elapsed, resting, surface);
+            let style = theme.crown_sweep(run, at);
             at += g.width();
             Span::styled(g.to_string(), style)
         })
@@ -527,14 +524,24 @@ pub(super) fn render(
     }
     // The crowning (T-442): a wavefront flows out of the mark and across
     // the title, letter by letter, on the row's own ground — under the
-    // cursor too, which is where `^o` leaves it. One run, mark and title,
-    // so the glow crosses the gap between them.
+    // cursor too, which is where `^o` leaves it — turning each letter from
+    // the title's plain ink to the holder's tint as it passes. One run, mark
+    // and title, so the glow crosses the gap between them.
     let sweep = match crown {
-        CrownMark::Holder { sweep: Some(ms) }
+        CrownMark::Holder { sweep: Some(elapsed) }
             if !(doomed || trail || attn_card || held || snooze.is_some()) =>
         {
-            let surface = if cursorish { theme.selected_bg } else { theme.bg };
-            Some((ms, surface, holder_cells + title.width()))
+            Some(CrownSweep {
+                elapsed,
+                cells: holder_cells + title.width(),
+                before: if cursorish {
+                    Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.rest.base)
+                },
+                after: title_style,
+                surface: if cursorish { theme.selected_bg } else { theme.bg },
+            })
         }
         _ => None,
     };
@@ -544,17 +551,16 @@ pub(super) fn render(
         // the card that must still read as itself there.
         let cs = if trail || attn_card { quiet_style } else { theme.crown_text() };
         let mark = format!("{crown_glyph} ");
-        match sweep {
-            Some((ms, surface, cells)) => {
-                spans.extend(swept_spans(theme, &mark, 0, cells, ms, cs, surface));
+        match &sweep {
+            Some(run) => {
+                let run = CrownSweep { before: cs, after: cs, ..*run };
+                spans.extend(swept_spans(theme, &run, &mark, 0));
             }
             None => spans.push(Span::styled(mark, cs)),
         }
     }
-    match sweep {
-        Some((ms, surface, cells)) => {
-            spans.extend(swept_spans(theme, &title, holder_cells, cells, ms, title_style, surface));
-        }
+    match &sweep {
+        Some(run) => spans.extend(swept_spans(theme, run, &title, holder_cells)),
         None => spans.push(Span::styled(title, title_style)),
     }
     spans.push(Span::raw(" ".repeat(fill)));

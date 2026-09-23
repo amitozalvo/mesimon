@@ -25,6 +25,7 @@ use crate::text::{
     age_created, age_in_column, age_slot, created_at_epoch_ms, edit_window, marquee_offset,
     marquee_window, truncate,
 };
+use crate::theme::CrownSweep;
 
 use super::chrome;
 
@@ -173,23 +174,28 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         None => {
             let title = truncate(&ticket.title, title_budget);
             let mut spans = vec![Span::raw(" ".repeat(pad))];
-            // The crowning (T-442): `^o` here sweeps this title the way it
-            // sweeps the card's, on the band's ground.
+            // The holder's title rests in the crown's tint, as its card's does
+            // (T-442), and `^o` here sweeps it there from the plain ink on the
+            // band's ground. Below TrueColor the tint is the quiet grey, so
+            // the title keeps its ink and only the head walks it.
+            let holder = app.board.is_crowned(ticket_id) && !app.doomed(ticket_id) && !snoozing;
+            let rest = if holder && theme.paints_tags() {
+                theme.crown_text().add_modifier(Modifier::BOLD)
+            } else {
+                title_style
+            };
             match app.crowning_ms(ticket_id) {
-                Some(ms) if !app.doomed(ticket_id) && !snoozing => {
-                    let surface = band.bg.or(theme.bg);
-                    let cells = title.width();
-                    spans.extend(super::card::swept_spans(
-                        theme,
-                        &title,
-                        0,
-                        cells,
-                        ms,
-                        title_style,
-                        surface,
-                    ));
+                Some(elapsed) if holder => {
+                    let run = CrownSweep {
+                        elapsed,
+                        cells: title.width(),
+                        before: title_style,
+                        after: rest,
+                        surface: band.bg.or(theme.bg),
+                    };
+                    spans.extend(super::card::swept_spans(theme, &run, &title, 0));
                 }
-                _ => spans.push(Span::styled(title, title_style)),
+                _ => spans.push(Span::styled(title, rest)),
             }
             Line::from(spans)
         }

@@ -7626,9 +7626,11 @@ fn list_dialog_scrolls_to_keep_the_cursor_on_screen() {
 
 /// The crowning sweeps the holder's title (T-442): on the cursor card, where
 /// `^o` leaves it and where T-411's flash was hidden under the cursor's own
-/// title ink, and on the ticket page's title row. Mid-sweep one cell of the
-/// title wears the crown's tint as its ground and the letters behind it wear
-/// it as ink; once the crowning is over, neither — and never `attn`.
+/// title ink, and on the ticket page's title row. Mid-sweep one cell wears
+/// the crown's tint as its ground, the letters it has passed wear it as ink
+/// and the letters ahead are still the plain white; once it is over the
+/// whole title stays in the tint ("don't return it to white once animation
+/// finishes") — and never `attn`.
 #[test]
 fn the_crowning_sweeps_the_title_on_the_card_and_the_page() {
     let t1 = ulid_n(1);
@@ -7664,18 +7666,14 @@ fn the_crowning_sweeps_the_title_on_the_card_and_the_page() {
         let mid = title_cells(&app);
         assert!(mid.iter().any(|c| c.bg == tint), "{screen:?}: no lit head mid-sweep");
         assert!(mid.iter().any(|c| c.fg == tint && c.bg != tint), "{screen:?}: nothing filled");
+        // Not blue before the wave gets there: the letters ahead are white.
+        assert!(mid.last().is_some_and(|c| c.fg == theme.sel.base), "{screen:?}: tinted ahead");
         assert!(mid.iter().all(|c| c.fg != theme.attn && c.bg != theme.attn));
         let app = crowned(3_000, screen.clone());
         assert!(!app.animating());
         let after = title_cells(&app);
         assert!(after.iter().all(|c| c.bg != tint), "{screen:?}: still lit after the crowning");
-        // At rest the holder's title stays in the tint under the cursor, as
-        // it does off it ("it should stay blue as if not hovered").
-        if screen == Screen::Board {
-            assert!(
-                after.iter().all(|c| c.fg == tint),
-                "the cursor turned the crown's title white"
-            );
-        }
+        // And it stays in the tint, cursor or not, card or page.
+        assert!(after.iter().all(|c| c.fg == tint), "{screen:?}: the title went back to white");
     }
 }
