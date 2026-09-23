@@ -1167,8 +1167,6 @@ const SPOKE_EVERY: Duration = Duration::from_secs(1);
 /// How long a card the crown just touched stays lit with the word for what
 /// was done to it (T-411); the residue stays until the cursor rests there.
 const CROWN_LIT_MS: u64 = 2_000;
-/// How long the crowning flash runs on a newly crowned card (T-411).
-const CROWN_FLASH_MS: u64 = 2_000;
 /// The refusal shake (T-423): a card a chord refused to act on shakes its
 /// head — one cell left and right, three times — and settles. One step per
 /// entry, `SHAKE_STEP` each; after the last the card is back where it was.
@@ -1772,11 +1770,21 @@ impl App {
 
     /// Whether something on screen is mid-motion and wants the next frame
     /// sooner than the spinner's cadence: the composer dialog growing, the
-    /// screen's reading zone turning a page, or a refused card shaking.
+    /// screen's reading zone turning a page, a refused card shaking, or the
+    /// crowning sweeping a title.
     pub fn animating(&self) -> bool {
         matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
             || self.pager().is_some_and(Pager::animating)
             || self.shaking()
+            || self.board.crown.is_some_and(|id| self.crowning_ms(id).is_some())
+    }
+
+    /// How long ago `id` was crowned, while the crowning still runs on it
+    /// (T-442): the card's and the page's sweep both read it.
+    pub fn crowning_ms(&self, id: ulid::Ulid) -> Option<u64> {
+        let (t, at) = self.crowned_at?;
+        let elapsed = mesimon_core::clock::now_ms().saturating_sub(at);
+        (t == id && elapsed < crate::theme::CROWN_FLASH_MS).then_some(elapsed)
     }
 
     /// A chord refused to act on `ticket`: shake it (T-423). The status line
@@ -3585,16 +3593,13 @@ impl App {
     }
 
     /// What the crown has to say on a card (T-411): the holder's mark (with
-    /// its flash for a beat after crowning), the word for a touch still lit,
+    /// its sweep for a beat after crowning), the word for a touch still lit,
     /// the residue a touch left, or nothing.
     pub(crate) fn crown_mark(&self, id: ulid::Ulid) -> crate::ui::CrownMark<'_> {
         use crate::ui::CrownMark;
         let now = mesimon_core::clock::now_ms();
         if self.board.is_crowned(id) {
-            let flash = self
-                .crowned_at
-                .is_some_and(|(t, at)| t == id && now.saturating_sub(at) < CROWN_FLASH_MS);
-            return CrownMark::Holder { flash };
+            return CrownMark::Holder { sweep: self.crowning_ms(id) };
         }
         if let Some(t) =
             self.crown_touches.iter().filter(|t| t.ticket == id).max_by_key(|t| t.at_ms)

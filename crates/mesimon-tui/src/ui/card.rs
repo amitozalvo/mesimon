@@ -244,16 +244,40 @@ fn worktree_mark(
 }
 
 /// What the crown (T-411) has to say on a card. `Holder` is the one card
-/// wearing it, flashing for a beat right after the crowning; `Touched` is a
-/// card the crown just edited, lit with the word for what was done;
+/// wearing it, `sweep` the ms since the crowning while its title still
+/// sweeps (T-442); `Touched` is a card the crown just edited, lit with the
+/// word for what was done;
 /// `Residue` is the quiet mark that light leaves until the cursor rests on
 /// the card, the unread done mark's rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CrownMark<'a> {
     None,
-    Holder { flash: bool },
+    Holder { sweep: Option<u64> },
     Touched(&'a str),
     Residue,
+}
+
+/// Text under the crowning's sweep (T-442), one span a grapheme. `first` is
+/// the column of the text's first cell in the swept run and `cells` the whole
+/// run's width, so a run drawn in pieces sweeps as one.
+pub(super) fn swept_spans(
+    theme: &Theme,
+    text: &str,
+    first: usize,
+    cells: usize,
+    elapsed: u64,
+    resting: Style,
+    surface: Option<ratatui::style::Color>,
+) -> Vec<Span<'static>> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut at = first;
+    text.graphemes(true)
+        .map(|g| {
+            let style = theme.crown_sweep(at, cells, elapsed, resting, surface);
+            at += g.width();
+            Span::styled(g.to_string(), style)
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)] // two call sites; a params struct would just rename the args
@@ -464,14 +488,7 @@ pub(super) fn render(
     } else if cursorish {
         Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
     } else if matches!(crown, CrownMark::Holder { .. } | CrownMark::Touched(_)) {
-        // The crowning flash (T-411): the holder's title breathes between
-        // the crown's tint and the quiet ramp for a beat after the
-        // crowning, on the delete flash's cadence — fg repainted on the
-        // redraw clock, never SGR 5. Settled, it holds the tint.
-        match crown {
-            CrownMark::Holder { flash: true } if !theme.delete_lit(ctx.spin) => theme.dim3(),
-            _ => theme.crown_text(),
-        }
+        theme.crown_text()
     } else {
         Style::default().fg(theme.rest.base)
     };
@@ -497,20 +514,38 @@ pub(super) fn render(
         };
         spans.push(Span::styled(format!("{g} "), gs));
     }
-    if let CrownMark::Holder { flash } = crown {
+    // The crowning (T-442): a wavefront flows out of the mark and across
+    // the title, letter by letter, on the row's own ground — under the
+    // cursor too, which is where `^o` leaves it. One run, mark and title,
+    // so the glow crosses the gap between them.
+    let sweep = match crown {
+        CrownMark::Holder { sweep: Some(ms) }
+            if !(doomed || trail || attn_card || held || snooze.is_some()) =>
+        {
+            let surface = if cursorish { theme.selected_bg } else { theme.bg };
+            Some((ms, surface, holder_cells + title.width()))
+        }
+        _ => None,
+    };
+    if let CrownMark::Holder { .. } = crown {
         // The mark keeps the tint under the cursor too — the cursor
         // surface recolours the title, and the crown is the one thing on
         // the card that must still read as itself there.
-        let cs = if trail || attn_card {
-            quiet_style
-        } else if flash && !theme.delete_lit(ctx.spin) {
-            theme.dim3()
-        } else {
-            theme.crown_text()
-        };
-        spans.push(Span::styled(format!("{crown_glyph} "), cs));
+        let cs = if trail || attn_card { quiet_style } else { theme.crown_text() };
+        let mark = format!("{crown_glyph} ");
+        match sweep {
+            Some((ms, surface, cells)) => {
+                spans.extend(swept_spans(theme, &mark, 0, cells, ms, cs, surface));
+            }
+            None => spans.push(Span::styled(mark, cs)),
+        }
     }
-    spans.push(Span::styled(title, title_style));
+    match sweep {
+        Some((ms, surface, cells)) => {
+            spans.extend(swept_spans(theme, &title, holder_cells, cells, ms, title_style, surface));
+        }
+        None => spans.push(Span::styled(title, title_style)),
+    }
     spans.push(Span::raw(" ".repeat(fill)));
     if let Some((m, tone)) = &wt_mark {
         // Trail/attn contexts demote the mark to the quiet tone with the row.

@@ -170,10 +170,29 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             f.set_cursor_position((area.x + (1 + cx).min(area.width - 1), area.y + 2));
             Line::from(vec![Span::raw(" "), Span::styled(shown, title_style)])
         }
-        None => Line::from(vec![
-            Span::raw(" ".repeat(pad)),
-            Span::styled(truncate(&ticket.title, title_budget), title_style),
-        ]),
+        None => {
+            let title = truncate(&ticket.title, title_budget);
+            let mut spans = vec![Span::raw(" ".repeat(pad))];
+            // The crowning (T-442): `^o` here sweeps this title the way it
+            // sweeps the card's, on the band's ground.
+            match app.crowning_ms(ticket_id) {
+                Some(ms) if !app.doomed(ticket_id) && !snoozing => {
+                    let surface = band.bg.or(theme.bg);
+                    let cells = title.width();
+                    spans.extend(super::card::swept_spans(
+                        theme,
+                        &title,
+                        0,
+                        cells,
+                        ms,
+                        title_style,
+                        surface,
+                    ));
+                }
+                _ => spans.push(Span::styled(title, title_style)),
+            }
+            Line::from(spans)
+        }
     };
 
     // ---- row 3: the STATE line — the ticket's TAGS, then its column, the

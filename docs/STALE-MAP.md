@@ -13174,3 +13174,38 @@ note`.
 `tab_in_the_editor_walks_the_notes_and_wraps`, `tab_on_an_unsaved_note_stays_and_says_why`,
 `tab_on_the_ticket_page_moves_the_rail_with_it`, `tab_on_a_lone_note_or_a_new_one_does_nothing`
 (app); `golden_editor_note_ring_120` pins the counter, the edge hint and the refused ink.
+
+## The crowning sweeps the title (T-442, 2026-09-23, user: "crowning animation underwhelming … should animate the title as well in blue transitioning to every letter" ∙ "can this fill sweep happen on the title itself? have the letter flash including its background")
+
+**Why it was underwhelming.** T-411's crowning flash square-waved the holder's title between
+`crown_text` and `dim3` for 2 s — but a person crowns with `^o` with the cursor on the card,
+and `card.rs` picks the cursor's bold `sel.base` title before the crown's, so the title never
+moved and only the `♛` blinked. The ticket page, where `^o` is hinted, animated nothing.
+
+**Shipped.** `Theme::crown_sweep` replaces the square wave on the card (the `♛ ` and the title
+are one swept run, so the glow crosses the gap) and on the ticket page's title row. A wavefront
+eases across the run in `CROWN_SWEEP_MS` = 1.3 s whatever its length: the head is a solid
+crown-tint cell in ground ink (`tag_ink`, the tag chip's pairing), the cell ahead fades in with
+the front's fraction so it glides, and a glow of up to six cells cools quadratically into the
+row's ground behind it, its letter bright ink easing to the tint. The filled title holds the
+tint to 1.7 s and eases back to its resting ink by `CROWN_FLASH_MS` (2 s, now in `theme.rs`)
+— a no-op off the cursor, where the holder rests in the tint. `App::crowning_ms` is the one
+reader of `crowned_at`; `animating()` asks it, so the loop runs at 16 ms for those two seconds
+instead of the 100 ms clock. `CrownMark::Holder { sweep: Option<u64> }` carries the elapsed ms.
+Doomed, trail, needs-you, held and armed-snooze cards and a page being renamed are not swept.
+
+- **Profiles.** Only TrueColor has a tint and a halfway (`mix`, lifted out of `faded`). Below
+  it the head alone walks the run — the resting ink and its ground swapped as painted colours,
+  never SGR 7, so only where the profile paints that ground — and nothing fills: the ring there
+  is `dim2`, and filling with it would read as dimming. Mono holds still; the glyph carries it.
+- **Laws.** The crown tint is a ring colour, low-chroma by the tag law; fg/bg repainted on the
+  frame clock, never SGR 5; never `attn`. Goldens are colourless and the text is unchanged, so
+  none was reminted.
+
+**Tests.** `theme`: `crown_sweep_fills_the_run_with_the_crowns_tint` (every flavor: nothing on
+the first frame, at most one bold head walking right and never back, the glow cooling behind
+it, every cell tinted at 1.5 s, resting at 2 s, the cursor's ink eased back, never `attn` or
+SGR 5) and `crown_sweep_below_truecolor_is_a_walking_head` (at most one painted cell at a time,
+no SGR 7; mono still). `ui`: `the_crowning_sweeps_the_title_on_the_card_and_the_page` — the
+cursor card and the page title each show a lit head and filled letters 600 ms in, the loop is
+animating, and nothing is lit at 3 s; it fails with the sweep disabled.

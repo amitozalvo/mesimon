@@ -7592,3 +7592,51 @@ fn list_dialog_scrolls_to_keep_the_cursor_on_screen() {
     assert!(lines.iter().any(|l| l.contains("EXTERNAL ∙ 3")), "{lines:#?}");
     assert!(!lines.iter().any(|l| l.contains("3/3")));
 }
+
+/// The crowning sweeps the holder's title (T-442): on the cursor card, where
+/// `^o` leaves it and where T-411's flash was hidden under the cursor's own
+/// title ink, and on the ticket page's title row. Mid-sweep one cell of the
+/// title wears the crown's tint as its ground and the letters behind it wear
+/// it as ink; once the crowning is over, neither — and never `attn`.
+#[test]
+fn the_crowning_sweeps_the_title_on_the_card_and_the_page() {
+    let t1 = ulid_n(1);
+    let title = "Decay treatments";
+    let crowned = |ago: u64, screen: Screen| {
+        let mut b = fixture(false);
+        b.crown = Some(t1);
+        let mut app = app_graphite(b);
+        (app.cursor_col, app.cursor_row) = (0, Some(0));
+        app.crowned_at = Some((t1, mesimon_core::clock::now_ms() - ago));
+        app.screen = screen;
+        app
+    };
+    // The title's own cells, on every row that shows it.
+    let title_cells = |app: &App| {
+        let buf = cells(app, 120, 30);
+        let mut out = Vec::new();
+        for (y, line) in lines_of(&buf).iter().enumerate() {
+            let Some(at) = line.find(title) else { continue };
+            let x0 = line[..at].width() as u16;
+            for x in x0..x0 + title.width() as u16 {
+                out.push(buf[(x, y as u16)].clone());
+            }
+        }
+        assert!(!out.is_empty(), "the title is on screen");
+        out
+    };
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let tint = theme.pip(5);
+    for screen in [Screen::Board, Screen::Ticket { ticket: t1, rail_idx: 0 }] {
+        let app = crowned(600, screen.clone());
+        assert!(app.animating(), "{screen:?}: the loop runs fast while it sweeps");
+        let mid = title_cells(&app);
+        assert!(mid.iter().any(|c| c.bg == tint), "{screen:?}: no lit head mid-sweep");
+        assert!(mid.iter().any(|c| c.fg == tint && c.bg != tint), "{screen:?}: nothing filled");
+        assert!(mid.iter().all(|c| c.fg != theme.attn && c.bg != theme.attn));
+        let app = crowned(3_000, screen.clone());
+        assert!(!app.animating());
+        let after = title_cells(&app);
+        assert!(after.iter().all(|c| c.bg != tint), "{screen:?}: still lit after the crowning");
+    }
+}

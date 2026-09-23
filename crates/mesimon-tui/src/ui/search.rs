@@ -332,7 +332,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         app.remote_initials(ticket.id).as_deref(),
         // The holder's mark, never a touch: the preview is a still.
         if app.board.is_crowned(ticket.id) {
-            super::CrownMark::Holder { flash: false }
+            super::CrownMark::Holder { sweep: None }
         } else {
             super::CrownMark::None
         },

@@ -702,6 +702,37 @@ const fn hex(rgb: u32) -> Color {
     Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
+/// `a` weighted `k` against `b`, channel by channel. Only two RGB colours
+/// have a halfway; anything else is `a` from the half up and `b` below it.
+fn mix(a: Color, b: Color, k: f32) -> Color {
+    let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
+        return if k >= 0.5 { a } else { b };
+    };
+    let k = k.clamp(0.0, 1.0);
+    let ch = |x: u8, y: u8| (x as f32 * k + y as f32 * (1.0 - k)).round() as u8;
+    Color::Rgb(ch(ar, br), ch(ag, bg), ch(ab, bb))
+}
+
+/// Sine ease-in-out over `0..=1`: starts and lands gently.
+fn ease(t: f32) -> f32 {
+    0.5 - 0.5 * (std::f32::consts::PI * t.clamp(0.0, 1.0)).cos()
+}
+
+/// How long the crowning runs on a newly crowned card and page (T-411).
+pub(crate) const CROWN_FLASH_MS: u64 = 2_000;
+/// The crowning's wavefront crosses the title in this long (T-442), whatever
+/// its length — a card's twenty cells and a page's hundred finish together.
+const CROWN_SWEEP_MS: u64 = 1_300;
+/// The filled title holds the crown's tint until here, then eases back to
+/// its resting look by `CROWN_FLASH_MS`.
+const CROWN_HOLD_MS: u64 = 1_700;
+/// Cells of glow the wavefront trails, at most (half the title, at least
+/// two, on a short one).
+const CROWN_GLOW: f32 = 6.0;
+/// Glow strength from which a lit cell's letter is written in ground ink;
+/// below it the letter is bright ink cooling to the crown's tint.
+const CROWN_INK_K: f32 = 0.6;
+
 impl Theme {
     /// Materialize one flavor at one profile from its table. Mono is derived
     /// rather than tabled: every ramp step is `Reset`, every register is
@@ -919,12 +950,7 @@ impl Theme {
         if self.profile != Profile::TrueColor {
             return base; // no ground to blend into, and one grey to blend
         }
-        let Color::Rgb(r, g, b) = base else { return base };
-        let Color::Rgb(gr, gg, gb) = hex(self.flavor.palette().truecolor.shadow) else {
-            return base;
-        };
-        let mix = |a: u8, b: u8| (a as f32 * k + b as f32 * (1.0 - k)).round() as u8;
-        Color::Rgb(mix(r, gr), mix(g, gg), mix(b, gb))
+        mix(base, hex(self.flavor.palette().truecolor.shadow), k)
     }
 
     /// Are the ten tag tints actually distinguishable here?
@@ -990,6 +1016,94 @@ impl Theme {
         match self.diff_del_bg() {
             Some(bg) => Style::default().bg(bg),
             None => self.selected_row(),
+        }
+    }
+
+    /// The crowning (T-442, replacing T-411's square wave, which the cursor
+    /// card's own title treatment hid): a lit wavefront flows out of the
+    /// crown and across the title one letter at a time, and leaves every
+    /// letter in the crown's tint. `cell` is this letter's column in a swept
+    /// run of `cells`, `elapsed` the time since the crowning, `resting` the
+    /// style the run wears without it and `surface` the row's ground, which
+    /// the glow cools into.
+    ///
+    /// The front eases across in `CROWN_SWEEP_MS`. Its head is a solid
+    /// crown-tint cell written in ground ink, the tag chip's pairing; the
+    /// cell ahead fades in with the front's fraction, so the motion glides
+    /// rather than steps; behind it the glow falls off over `CROWN_GLOW`
+    /// cells, its letter bright ink easing to the tint. Filled, the run holds
+    /// the tint to `CROWN_HOLD_MS` and eases back to `resting` by
+    /// `CROWN_FLASH_MS` — a no-op off the cursor, where the holder's title
+    /// rests in the tint anyway.
+    ///
+    /// Only TrueColor has a tint and a halfway. Below it the head alone walks
+    /// the run, the resting ink and its ground swapped — painted colours,
+    /// never SGR 7, so only where the profile paints that ground — and
+    /// nothing fills, because the ring's grey there would read as dimming.
+    /// Mono holds `resting` and the glyph carries it, the move blink's rule.
+    /// Fg/bg repainted on the frame clock, never SGR 5, and never `attn`.
+    pub fn crown_sweep(
+        &self,
+        cell: usize,
+        cells: usize,
+        elapsed: u64,
+        resting: Style,
+        surface: Option<Color>,
+    ) -> Style {
+        if !self.has_colour() || cells == 0 || elapsed >= CROWN_FLASH_MS {
+            return resting;
+        }
+        let rich = self.paints_tags();
+        let tint = self.pip(5); // `crown_text`'s ink
+        if elapsed >= CROWN_HOLD_MS {
+            let u = (elapsed - CROWN_HOLD_MS) as f32 / (CROWN_FLASH_MS - CROWN_HOLD_MS) as f32;
+            return match resting.fg {
+                Some(fg) if rich => resting.fg(mix(fg, tint, ease(u))),
+                _ => resting,
+            };
+        }
+        let glow = if rich { CROWN_GLOW.min(cells as f32 / 2.0).max(2.0) } else { 0.0 };
+        let t = elapsed as f32 / CROWN_SWEEP_MS as f32;
+        // From one cell short of the run to past its end by the glow, so the
+        // first frame lights nothing and the last leaves nothing lit.
+        let front = -1.0 + (cells as f32 + glow + 1.0) * ease(t);
+        let d = front - cell as f32; // how far behind the front this cell is
+        if !rich {
+            return match (resting.fg, surface) {
+                (Some(ink), Some(ground)) if (0.0..1.0).contains(&d) => {
+                    resting.fg(ground).bg(ink).add_modifier(Modifier::BOLD)
+                }
+                _ => resting,
+            };
+        }
+        let k = if d <= -1.0 {
+            0.0
+        } else if d < 0.0 {
+            d + 1.0
+        } else if d < 1.0 {
+            1.0
+        } else {
+            (1.0 - (d - 1.0) / glow).max(0.0).powi(2)
+        };
+        if k <= 0.0 {
+            return if d > 0.0 { resting.fg(tint) } else { resting };
+        }
+        let lit = match surface {
+            Some(ground) => resting.bg(mix(tint, ground, k)),
+            None if k >= CROWN_INK_K => resting.bg(tint),
+            None => resting,
+        };
+        let lit = if k >= CROWN_INK_K {
+            lit.fg(self.tag_ink())
+        } else if d < 0.0 {
+            lit // the leading edge: its letter keeps the resting ink
+        } else {
+            lit.fg(mix(self.sel.base, tint, k / CROWN_INK_K))
+        };
+        if k >= 1.0 {
+            lit.add_modifier(Modifier::BOLD)
+        } else {
+            lit
         }
     }
 
@@ -1642,6 +1756,96 @@ mod tests {
             // Mono has no ramp to blink: steady cursor treatment.
             let t = Theme::new(flavor, Profile::Mono);
             assert_eq!(t.move_blink(0), t.move_blink(5));
+        }
+    }
+
+    /// The crowning (T-442): one solid head walks the run left to right and
+    /// never back, the glow behind it cools toward the ground, every cell
+    /// ends in the crown's tint, and the whole thing lands on the resting
+    /// look — never in `attn`, never SGR 5.
+    #[test]
+    fn crown_sweep_fills_the_run_with_the_crowns_tint() {
+        const N: usize = 24;
+        let dist = |a: Option<Color>, b: Color| match (a, b) {
+            (Some(Color::Rgb(r, g, b1)), Color::Rgb(x, y, z)) => {
+                r.abs_diff(x) as u32 + g.abs_diff(y) as u32 + b1.abs_diff(z) as u32
+            }
+            _ => u32::MAX,
+        };
+        for flavor in Flavor::ALL {
+            let t = Theme::new(flavor, Profile::TrueColor);
+            let tint = t.pip(5);
+            // Off the cursor the holder's title rests in the tint, unbolded,
+            // so the head is the one bold cell.
+            let resting = t.crown_text();
+            let run =
+                |ms| (0..N).map(|c| t.crown_sweep(c, N, ms, resting, t.bg)).collect::<Vec<_>>();
+            assert_eq!(run(0), vec![resting; N], "{flavor:?}: lit on the first frame");
+            let mut last = 0;
+            for ms in (0..CROWN_SWEEP_MS).step_by(16) {
+                let cells = run(ms);
+                for s in &cells {
+                    assert_ne!(s.fg, Some(t.attn), "{flavor:?} at {ms} ms");
+                    assert_ne!(s.bg, Some(t.attn), "{flavor:?} at {ms} ms");
+                    assert!(!s.add_modifier.contains(Modifier::SLOW_BLINK));
+                }
+                let heads: Vec<usize> =
+                    (0..N).filter(|&c| cells[c].add_modifier.contains(Modifier::BOLD)).collect();
+                assert!(heads.len() <= 1, "{flavor:?} at {ms} ms: heads {heads:?}");
+                let Some(&h) = heads.first() else { continue };
+                assert!(h >= last, "{flavor:?} at {ms} ms: the head went back to {h}");
+                last = h;
+                assert_eq!(cells[h].bg, Some(tint), "{flavor:?}: the head is the tint");
+                assert_eq!(cells[h].fg, Some(t.tag_ink()), "{flavor:?}: in ground ink");
+                // Behind the head the glow only cools.
+                let lit: Vec<u32> = (0..h)
+                    .rev()
+                    .take_while(|&c| cells[c].bg.is_some())
+                    .map(|c| dist(cells[c].bg, tint))
+                    .collect();
+                assert!(lit.windows(2).all(|w| w[0] <= w[1]), "{flavor:?} at {ms} ms: {lit:?}");
+            }
+            assert_eq!(last, N - 1, "{flavor:?}: the head never reached the end");
+            // Filled: every letter in the tint, on its own ground.
+            assert!(run(1_500).iter().all(|s| s.fg == Some(tint) && s.bg.is_none()), "{flavor:?}");
+            assert_eq!(run(CROWN_FLASH_MS), vec![resting; N], "{flavor:?}: never settled");
+
+            // Under the cursor the filled title eases back to the cursor's ink.
+            let cursor = Style::default().fg(t.sel.base).add_modifier(Modifier::BOLD);
+            let at = |ms| t.crown_sweep(3, N, ms, cursor, t.selected_bg);
+            assert_eq!(at(1_500).fg, Some(tint), "{flavor:?}: filled under the cursor");
+            let mid = at((CROWN_HOLD_MS + CROWN_FLASH_MS) / 2).fg;
+            assert!(mid != Some(tint) && mid != Some(t.sel.base), "{flavor:?}: no ease back");
+            assert_eq!(at(CROWN_FLASH_MS), cursor);
+        }
+    }
+
+    /// Below TrueColor the head alone walks the run — the resting ink and its
+    /// ground swapped, painted — and nothing fills; mono holds still.
+    #[test]
+    fn crown_sweep_below_truecolor_is_a_walking_head() {
+        const N: usize = 12;
+        for flavor in Flavor::ALL {
+            for p in [Profile::Ansi256, Profile::Ansi16, Profile::Ansi8] {
+                let t = Theme::new(flavor, p);
+                let resting = t.crown_text();
+                for ms in (0..CROWN_FLASH_MS).step_by(16) {
+                    let changed: Vec<Style> = (0..N)
+                        .map(|c| t.crown_sweep(c, N, ms, resting, t.bg))
+                        .filter(|s| *s != resting)
+                        .collect();
+                    assert!(changed.len() <= 1, "{flavor:?}/{p:?} at {ms} ms: {changed:?}");
+                    for s in changed {
+                        assert_eq!((s.fg, s.bg), (t.bg, resting.fg), "{flavor:?}/{p:?}");
+                        assert!(!s.add_modifier.contains(Modifier::REVERSED), "painted, not SGR 7");
+                    }
+                }
+            }
+            let t = Theme::new(flavor, Profile::Mono);
+            let resting = t.crown_text();
+            for ms in (0..CROWN_FLASH_MS).step_by(50) {
+                assert!((0..N).all(|c| t.crown_sweep(c, N, ms, resting, t.bg) == resting));
+            }
         }
     }
 }
