@@ -59,6 +59,7 @@ fn archive_gates_suggests_and_restores() {
         column: "DONE".into(),
         title: "cold".into(),
         workspace: None,
+        tier: None,
     });
     // A session-less DONE ticket: suggested once created_at ages past the
     // threshold, archivable any time.
@@ -66,6 +67,7 @@ fn archive_gates_suggests_and_restores() {
         column: "DONE".into(),
         title: "empty".into(),
         workspace: None,
+        tier: None,
     });
     let (board, _) = snapshot_of(c.request(Command::Snapshot));
     let cold = board.tickets.iter().find(|t| t.title == "cold").unwrap().id;

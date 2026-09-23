@@ -68,6 +68,7 @@ fn leaving_claude_parks_the_session() {
         column: "TODO".into(),
         title: "left it".into(),
         workspace: None,
+        tier: None,
     });
     // A ticket holds one claude (2026-09-02), so the case with no conversation
     // needs a ticket of its own.
@@ -75,6 +76,7 @@ fn leaving_claude_parks_the_session() {
         column: "TODO".into(),
         title: "lost it".into(),
         workspace: None,
+        tier: None,
     });
     let find = |c: &mut TestClient, title: &str| {
         c.board().tickets.iter().find(|t| t.title == title).expect("ticket").id

@@ -16,6 +16,7 @@ fn spawn(client: &mut TestClient, title: &str) -> uuid::Uuid {
         column: "IN PROGRESS".into(),
         title: title.into(),
         workspace: None,
+        tier: None,
     });
     let ticket = client.board().tickets.iter().find(|t| t.title == title).unwrap().id;
     match client.request(Command::SpawnSession {

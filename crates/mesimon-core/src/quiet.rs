@@ -240,6 +240,9 @@ mod tests {
             background_tasks: Default::default(),
             plan_note: None,
             ticket_read: false,
+            tier: String::new(),
+            tier_owed: false,
+            tier_wake: false,
         }
     }
 

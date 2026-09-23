@@ -236,6 +236,7 @@ mod tests {
         Response::Board {
             board,
             crown_touches: Vec::new(),
+            machine_tiers: Default::default(),
             pending: if in_flight {
                 vec![Pending {
                     ticket: ulid::Ulid(1),

@@ -17,6 +17,7 @@ fn start(h: &Harness, c: &mut TestClient, title: &str) -> (uuid::Uuid, uuid::Uui
         column: "TODO".into(),
         title: title.into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("create: {other:?}"),

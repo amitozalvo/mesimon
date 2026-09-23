@@ -118,11 +118,13 @@ fn agent_board_tools_tier_and_collisions() {
         column: "TODO".into(),
         title: "the work".into(),
         workspace: None,
+        tier: None,
     });
     let _ = c.request(Command::CreateTicket {
         column: "REVIEW".into(),
         title: "decoy".into(),
         workspace: None,
+        tier: None,
     });
     let board = board_of(c.request(Command::Snapshot));
     let ticket = board.tickets.iter().find(|t| t.title == "the work").unwrap().id;
@@ -163,6 +165,7 @@ fn agent_board_tools_tier_and_collisions() {
         column: "TODO".into(),
         title: "no tools".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("create failed: {other:?}"),

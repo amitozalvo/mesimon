@@ -180,7 +180,8 @@ fn explain(args: &[String]) -> Result<()> {
         &mut stream,
         Command::Hello { version: PROTOCOL_VERSION, client: "state-explain".into() },
     )?;
-    let Response::Board { board, .. } = request(&mut stream, Command::Snapshot)? else {
+    let Response::Board { board, machine_tiers, .. } = request(&mut stream, Command::Snapshot)?
+    else {
         bail!("daemon did not return a board")
     };
     let records: Vec<_> = board
@@ -207,7 +208,10 @@ fn explain(args: &[String]) -> Result<()> {
             mesimon_core::automove::explain(&c.settings, &session.state, session.confidence));
         json!({"session": session.id, "ticket": session.ticket, "column": ticket.map(|t| &t.column),
             "provider": session.kind.provider(), "session_kind": session.kind,
-            "project_provider_for_new_sessions": board.agent_provider,
+            "project_provider_for_new_sessions":
+                mesimon_core::tier::Book::new(&machine_tiers, &board).default_tier().provider,
+            "tier": {"launched": session.tier, "ticket_pick": ticket.and_then(|t| t.tier.as_ref()),
+                "owed": session.tier_owed, "codex_wake_pending": session.tier_wake},
             "capabilities": capabilities(session.kind),
             "observation_hold": session.kind == SessionKind::Codex && session.observation_hold,
             "provider_identity": {"claude_session_id": session.claude_session_id,

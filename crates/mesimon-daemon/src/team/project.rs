@@ -111,6 +111,7 @@ mod tests {
             woke_at: None,
             manual_merge: true,
             execution_policy: Default::default(),
+            tier: None,
             import_origin: None,
             raised: None,
             previous_column: None,

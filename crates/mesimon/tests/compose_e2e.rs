@@ -32,6 +32,7 @@ fn mint(title: &str, text: &str, tags: Vec<TagRef>) -> Command {
         text: text.into(),
         uploads: Vec::new(),
         tags,
+        tier: None,
     }
 }
 
@@ -132,6 +133,7 @@ fn the_composer_mints_a_ticket_whole_or_not_at_all() {
             column: "TODO".into(),
             title: "thin".into(),
             workspace: None,
+            tier: None,
         }),
         Response::Created { .. }
     ));

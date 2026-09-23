@@ -74,6 +74,7 @@ fn wake_over_a_dying_pane_is_not_elsewhere_and_its_stragglers_do_not_land() {
         column: "TODO".into(),
         title: "restart me".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = c.board().tickets.iter().find(|t| t.title == "restart me").unwrap().id;
     let sid = match c.request(Command::SpawnSession {

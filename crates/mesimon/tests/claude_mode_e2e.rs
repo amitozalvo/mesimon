@@ -46,6 +46,7 @@ fn a_columns_claude_mode_rides_the_spawn_and_the_wake() {
         column: "TODO".into(),
         title: title.into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("create: {other:?}"),

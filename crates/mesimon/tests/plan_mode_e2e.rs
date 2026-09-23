@@ -35,6 +35,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
         column: "TODO".into(),
         title: title.into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("create: {other:?}"),
@@ -83,6 +84,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
         queued: false,
         accept_plan: false,
         plan: true,
+        tier: None,
     }) {
         Response::Err { message } => assert!(message.contains("mid-turn"), "{message}"),
         other => panic!("a working pane took a plan ask: {other:?}"),
@@ -101,6 +103,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
             queued: true,
             accept_plan: false,
             plan: true,
+            tier: None,
         }),
         Response::Queued { .. }
     ));
@@ -145,6 +148,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
         queued: false,
         accept_plan: false,
         plan: true,
+        tier: None,
     }) {
         Response::Spawned { id, .. } => assert_eq!(id, s2),
         other => panic!("wake: {other:?}"),
@@ -184,6 +188,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
             queued: true,
             accept_plan: false,
             plan: true,
+            tier: None,
         }),
         Response::Queued { .. }
     ));

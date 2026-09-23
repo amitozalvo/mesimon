@@ -57,11 +57,13 @@ fn z_sleeps_only_the_done_column() {
         column: "TODO".into(),
         title: "hot".into(),
         workspace: None,
+        tier: None,
     });
     let _ = c.request(Command::CreateTicket {
         column: "DONE".into(),
         title: "cold".into(),
         workspace: None,
+        tier: None,
     });
     let board = board_of(c.request(Command::Snapshot));
     let hot = board.tickets.iter().find(|t| t.column == "TODO").unwrap().id;

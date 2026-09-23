@@ -33,6 +33,7 @@ fn create(c: &mut TestClient, column: &str, title: &str) -> ulid::Ulid {
         column: column.into(),
         title: title.into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("create: {other:?}"),

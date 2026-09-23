@@ -78,6 +78,7 @@ fn the_daemon_says_how_long_the_attached_pane_has_been_quiet() {
         column: "TODO".into(),
         title: "focus quiet".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
     let sid = match c.request(Command::SpawnSession {
@@ -215,6 +216,7 @@ fn a_board_that_dies_inside_the_pane_gives_the_focus_token_back() {
             column: "TODO".into(),
             title: title.into(),
             workspace: None,
+            tier: None,
         }) {
             Response::Created { id, .. } => id,
             other => panic!("create: {other:?}"),

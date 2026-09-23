@@ -12,6 +12,7 @@ use anyhow::Result;
 use mesimon_core::board::{AgentProvider, Board, Column, SessionRecord, Ticket, KEY_PREFIX};
 use mesimon_core::command::Notice;
 use mesimon_core::prompts::PromptSet;
+use mesimon_core::tier::MachineTiers;
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
@@ -44,7 +45,11 @@ pub(crate) mod imports;
 /// file is never re-seeded, so a rule removed by hand stays removed.
 /// v5 adds the project provider. Older builds must not silently drop Codex
 /// selection and start a different provider on the next request.
-pub const COLUMNS_SCHEMA: u32 = 5;
+/// v6 (T-443) adds the board's agent tiers (`[[tiers]]`) and its default
+/// tier — the tags reason once more: a v5 build would read the file, ignore
+/// the registry and drop it on its next write, and a board whose default
+/// was a Codex tier would start Claude.
+pub const COLUMNS_SCHEMA: u32 = 6;
 /// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
 /// build would read the ticket, ignore the array, and on its next
 /// `save_ticket` drop every note's metadata while the files stayed behind
@@ -60,7 +65,13 @@ pub const COLUMNS_SCHEMA: u32 = 5;
 /// the file instead of dropping the restriction and putting it on the train.
 /// v6 adds import provenance, which also imposes an execution floor. A v5
 /// reader must not discard its correlation or weaken a partially imported ticket.
-pub const TICKET_SCHEMA: u32 = 6;
+/// v7 (T-443) adds the ticket's agent tier — the v5-provider reason: a v6
+/// build would drop a Codex tier pick and start Claude on the ticket.
+pub const TICKET_SCHEMA: u32 = 7;
+/// `tiers.toml`, the machine's agent tiers (T-443) — one file under the
+/// state root that every board's daemon reads and writes. Its own counter,
+/// on the same doctrine: newer than ours is left untouched and not written.
+pub const MACHINE_TIERS_SCHEMA: u32 = 1;
 /// v2 adds Codex session kinds, exact thread identity and observation holds.
 /// Older readers must refuse before decoding an unfamiliar session kind,
 /// rather than quarantine the file and forget ownership of its live panes.
@@ -146,11 +157,29 @@ struct ColumnsFile {
     /// it takes authority away from an agent, never hands any out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     crown: Option<ulid::Ulid>,
+    /// The board's default agent tier (`Board::default_tier`, v6), a tier
+    /// id. A scalar, so it sits here before the tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_tier: Option<String>,
     columns: Vec<Column>,
     /// The tag registry (v2). Another array of tables, so it may follow
     /// `columns` but must stay after every scalar.
     #[serde(default)]
     tags: Vec<mesimon_core::board::Tag>,
+    /// The board's agent tiers (v6): its own and its overrides of the
+    /// machine's. An array of tables, after the others.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tiers: Vec<mesimon_core::tier::Tier>,
+}
+
+/// `tiers.toml` with its stamp, the `TicketFile` shape.
+#[derive(Serialize, Deserialize, Default)]
+struct MachineTiersFile {
+    /// First, a scalar, for the `[[tiers]]` reason.
+    #[serde(default = "schema_v1")]
+    schema_version: u32,
+    #[serde(flatten)]
+    tiers: MachineTiers,
 }
 
 /// `ticket.toml` with its schema stamp. The stamp lives here rather than on
@@ -441,6 +470,8 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                     crown_wake: cf.prompt_crown_wake,
                                 },
                                 crown: cf.crown,
+                                tiers: cf.tiers,
+                                default_tier: cf.default_tier,
                                 ..Default::default()
                             };
                             // v3 → v4 (T-117): the template columns get the
@@ -620,6 +651,9 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnsScalars {
     pub agent_provider: AgentProvider,
+    /// `Board::default_tier` and `Board::tiers` (T-443): the board's layer.
+    pub default_tier: Option<String>,
+    pub tiers: Vec<mesimon_core::tier::Tier>,
     /// `Board::crown_budget` (T-412).
     pub crown_budget: u8,
     /// `Board::mcp_tools` (T-217).
@@ -642,6 +676,8 @@ impl Default for ColumnsScalars {
     fn default() -> Self {
         Self {
             agent_provider: AgentProvider::default(),
+            default_tier: None,
+            tiers: Vec::new(),
             crown_budget: mesimon_core::board::DEFAULT_CROWN_BUDGET,
             mcp_tools: true,
 
@@ -671,6 +707,8 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
     }
     ColumnsScalars {
         agent_provider: cf.agent_provider,
+        default_tier: cf.default_tier,
+        tiers: cf.tiers,
         crown_budget: cf.crown_budget,
         mcp_tools: cf.mcp_tools,
         system_prompt: cf.system_prompt,
@@ -705,10 +743,82 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         prompt_note_updated: board.prompts.note_updated.clone(),
         prompt_crown_wake: board.prompts.crown_wake.clone(),
         crown: board.crown,
+        default_tier: board.default_tier.clone(),
         columns: board.columns.clone(),
         tags: board.tags.clone(),
+        tiers: board.tiers.clone(),
     };
     write_atomic(&paths.board_dir.join("board/columns.toml"), &toml::to_string_pretty(&cf)?, SHARED)
+}
+
+/// What reading `tiers.toml` found.
+#[derive(Debug, Default)]
+pub struct MachineTiersLoad {
+    pub tiers: MachineTiers,
+    /// A quarantine or a newer file, for the advisory row.
+    pub notice: Option<Notice>,
+    /// Writing would destroy bytes we could not read.
+    pub barred: bool,
+}
+
+/// Read the machine's tiers. Missing is empty, not an error. A file that
+/// does not parse is moved aside (every byte kept) and reads as empty; one
+/// from a newer build is left alone and bars writes — `load_columns`'s
+/// doctrine, for the one file every board shares.
+pub fn load_machine_tiers(path: &Path) -> MachineTiersLoad {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return MachineTiersLoad::default(),
+        Err(e) => {
+            let notice =
+                Notice::new("quarantined", format!("{} could not be opened", short_name(path)))
+                    .with_path(path.display())
+                    .with_detail(e.to_string());
+            return MachineTiersLoad { notice: Some(notice), barred: true, ..Default::default() };
+        }
+    };
+    let fault = match toml::from_str::<toml::Value>(&text) {
+        Err(e) => e.to_string(),
+        Ok(v) => {
+            let found = v.get("schema_version").and_then(|s| s.as_integer()).unwrap_or(1);
+            match verdict(found as u32, MACHINE_TIERS_SCHEMA) {
+                Verdict::Newer(n) => {
+                    return MachineTiersLoad {
+                        notice: Some(future_notice(path, n, MACHINE_TIERS_SCHEMA)),
+                        barred: true,
+                        ..Default::default()
+                    };
+                }
+                Verdict::Load => match v.try_into::<MachineTiersFile>() {
+                    Ok(f) => return MachineTiersLoad { tiers: f.tiers, ..Default::default() },
+                    Err(e) => e.to_string(),
+                },
+            }
+        }
+    };
+    let moved = quarantine(path);
+    MachineTiersLoad {
+        barred: moved.is_none(),
+        notice: Some(quarantine_notice(path, moved.as_deref(), fault)),
+        ..Default::default()
+    }
+}
+
+/// The machine's tiers for a READER that may change nothing — `doctor`:
+/// no quarantine, no bar; a file that does not parse reads as `None`.
+pub fn read_machine_tiers(path: &Path) -> Option<MachineTiers> {
+    let text = std::fs::read_to_string(path).ok()?;
+    toml::from_str::<MachineTiersFile>(&text).ok().map(|f| f.tiers)
+}
+
+/// Write the machine's tiers whole, private to the user like the rest of
+/// the state root.
+pub fn save_machine_tiers(path: &Path, tiers: &MachineTiers) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let f = MachineTiersFile { schema_version: MACHINE_TIERS_SCHEMA, tiers: tiers.clone() };
+    write_atomic(path, &toml::to_string_pretty(&f)?, PRIVATE)
 }
 
 pub fn save_ticket(paths: &Paths, t: &Ticket) -> Result<()> {
@@ -840,7 +950,7 @@ mod tests {
         assert_eq!(back.ticket.import_origin, Some(origin.clone()));
         assert_eq!(back.ticket.notes.len(), 1);
         assert_eq!(back.ticket.effective_execution_policy(), ExecutionPolicy::OwnerOnly);
-        assert!(matches!(verdict(back.schema_version, 5), Verdict::Newer(6)));
+        assert!(matches!(verdict(back.schema_version, 5), Verdict::Newer(TICKET_SCHEMA)));
         // An incomplete local import must not turn into an automatic execution
         // merely because execution_policy was missing from its serialized form.
         let missing_policy = text.replace("execution_policy = \"owner_only\"\n", "");
@@ -1152,7 +1262,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             verdict(columns["schema_version"].as_integer().unwrap() as u32, 4),
-            Verdict::Newer(5)
+            Verdict::Newer(COLUMNS_SCHEMA)
         ));
         let sessions: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(paths.sessions_file()).unwrap()).unwrap();
@@ -1418,6 +1528,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier: None,
             import_origin: None,
             raised: Some(mesimon_core::board::Raised {
                 at: "@1788046500".into(),
@@ -1463,6 +1574,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier: None,
             import_origin: None,
             raised: None,
             workspace: None,
@@ -1515,6 +1627,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier: None,
             import_origin: None,
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
@@ -1561,6 +1674,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier: None,
             import_origin: None,
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
@@ -1621,6 +1735,7 @@ by = "local"
                 woke_at: None,
                 manual_merge: false,
                 execution_policy: Default::default(),
+                tier: None,
                 import_origin: None,
                 raised: None,
                 workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
@@ -1879,6 +1994,7 @@ order = "a0"
             prompt_note_updated: None,
             prompt_crown_wake: None,
             crown: Some(ulid::Ulid(7)),
+            default_tier: Some("01TIER".into()),
             columns: vec![Column {
                 name: "TODO".into(),
                 order: "a0".into(),
@@ -1902,6 +2018,13 @@ order = "a0"
                 mesimon_core::board::Tag { name: "BUG".into(), group: 1, color: None },
                 mesimon_core::board::Tag { name: "STAGING".into(), group: 2, color: Some(4) },
             ],
+            tiers: vec![mesimon_core::tier::Tier {
+                id: "01TIER".into(),
+                name: "coder".into(),
+                provider: AgentProvider::ClaudeCode,
+                model: "opus".into(),
+                effort: mesimon_core::tier::Effort::Xhigh,
+            }],
         };
         let text = toml::to_string_pretty(&cf).unwrap();
         let back: ColumnsFile = toml::from_str(&text).unwrap();
@@ -1928,6 +2051,13 @@ order = "a0"
         assert_eq!(back.follow_up_mode, mesimon_core::board::FollowUpMode::Steer);
         assert_eq!(back.agent_provider, AgentProvider::Codex);
         assert_eq!(back.park_after_minutes, 30);
+        // T-443: the default tier is a scalar before the tables, and the
+        // tiers an array of tables after them — a scalar after `[[tiers]]`
+        // would be a serialize error.
+        assert_eq!(back.default_tier.as_deref(), Some("01TIER"));
+        assert_eq!(back.tiers, cf.tiers);
+        assert!(text.find("default_tier").unwrap() < text.find("[[columns]]").unwrap());
+        assert!(text.contains("[[tiers]]") && text.contains("effort = \"xhigh\""), "{text}");
         assert_eq!(back.crown_budget, 5);
         assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());
 
@@ -1955,10 +2085,10 @@ order = "a0"
         // The stamp is what stops an older build silently dropping the
         // registry on its next write: at v1 it would parse, ignore `tags`,
         // and overwrite the file without them.
-        assert_eq!(COLUMNS_SCHEMA, 5);
+        assert_eq!(COLUMNS_SCHEMA, 6);
         assert!(matches!(verdict(1, COLUMNS_SCHEMA), Verdict::Load));
         assert!(matches!(verdict(3, COLUMNS_SCHEMA), Verdict::Load));
-        assert!(matches!(verdict(COLUMNS_SCHEMA, 3), Verdict::Newer(5)));
+        assert!(matches!(verdict(COLUMNS_SCHEMA, 3), Verdict::Newer(6)));
     }
 
     /// Today's ticket.toml carries no stamp; it must read as schema 1 (16 §6.2
@@ -2001,6 +2131,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier: None,
             import_origin: None,
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
@@ -2033,6 +2164,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier: None,
             import_origin: None,
             raised: None,
             workspace: None,
@@ -2056,5 +2188,79 @@ by = "local"
         assert!(back.agent_created());
         assert_eq!(back.created_by, t.created_by);
         assert_eq!(back.created_from, Some(ulid::Ulid(241)));
+    }
+
+    /// T-443: the machine's tiers round-trip, a file that does not parse is
+    /// moved aside with every byte kept, and one from a newer build is left
+    /// alone and bars writes.
+    #[test]
+    fn machine_tiers_roundtrip_quarantine_and_bar() {
+        use mesimon_core::tier::{Effort, Tier};
+        let dir = std::env::temp_dir().join(format!("msmn-store-tiers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("tiers.toml");
+        let empty = load_machine_tiers(&path);
+        assert!(empty.tiers.tiers.is_empty() && empty.notice.is_none() && !empty.barred);
+
+        let tiers = MachineTiers {
+            default_tier: Some("01A".into()),
+            tiers: vec![Tier {
+                id: "01A".into(),
+                name: "quick".into(),
+                provider: AgentProvider::ClaudeCode,
+                model: "sonnet".into(),
+                effort: Effort::High,
+            }],
+        };
+        save_machine_tiers(&path, &tiers).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("schema_version = 1\n"), "{text}");
+        let back = load_machine_tiers(&path);
+        assert_eq!(back.tiers, tiers);
+        assert!(back.notice.is_none() && !back.barred);
+
+        std::fs::write(&path, "schema_version = 1\n[[tiers]\n").unwrap();
+        let bad = load_machine_tiers(&path);
+        assert!(bad.tiers.tiers.is_empty() && !bad.barred);
+        assert_eq!(bad.notice.as_ref().map(|n| n.kind.as_str()), Some("quarantined"));
+        assert!(!path.exists(), "moved aside");
+        let kept = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with("tiers.toml.quarantine-"));
+        assert!(kept, "the bytes are kept");
+
+        std::fs::write(&path, "schema_version = 99\n").unwrap();
+        let newer = load_machine_tiers(&path);
+        assert!(newer.barred);
+        assert_eq!(newer.notice.as_ref().map(|n| n.kind.as_str()), Some("future_version"));
+        assert!(path.exists(), "a newer file is left untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-443: a ticket's tier pick round-trips as a scalar, and a board's
+    /// tiers and default tier survive a save and a load.
+    #[test]
+    fn a_tier_pick_and_the_board_tiers_survive_a_load() {
+        let (dir, paths) = scratch("tier-pick");
+        let body = format!("schema_version = 7\n{}tier = \"01A\"\n", ticket_body("T-1", "TODO"));
+        write(&paths.board_dir.join("board/tickets/T-1/ticket.toml"), &body);
+        let mut loaded = load_with(&paths, false).unwrap();
+        assert_eq!(loaded.board.tickets[0].tier.as_deref(), Some("01A"));
+        loaded.board.default_tier = Some("01A".into());
+        loaded.board.tiers.push(mesimon_core::tier::Tier {
+            id: "01A".into(),
+            name: "quick".into(),
+            provider: AgentProvider::Codex,
+            model: String::new(),
+            effort: mesimon_core::tier::Effort::Default,
+        });
+        save_columns(&paths, &loaded.board).unwrap();
+        save_ticket(&paths, &loaded.board.tickets[0]).unwrap();
+        let again = load_with(&paths, false).unwrap();
+        assert_eq!(again.board.default_tier.as_deref(), Some("01A"));
+        assert_eq!(again.board.tiers, loaded.board.tiers);
+        assert_eq!(again.board.tickets[0].tier.as_deref(), Some("01A"));
+        cleanup(&dir, &paths);
     }
 }

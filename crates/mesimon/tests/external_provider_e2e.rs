@@ -97,6 +97,7 @@ fn codex_external_opaque_identity_survives_provider_switch_and_restart_without_f
             queued,
             accept_plan: false,
             plan: false,
+            tier: None,
         });
         assert!(
             matches!(response, Response::Err { ref message } if message.contains("resume it to take over")),

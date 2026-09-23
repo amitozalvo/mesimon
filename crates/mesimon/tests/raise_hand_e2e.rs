@@ -38,6 +38,7 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
         column: "IN PROGRESS".into(),
         title: "wire up login".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("create: {other:?}"),

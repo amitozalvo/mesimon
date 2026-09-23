@@ -106,6 +106,7 @@ fn m1_acceptance_headless() {
         column: "TODO".into(),
         title: "first ticket".into(),
         workspace: None,
+        tier: None,
     });
     let (board, _) = board_of(c.request(Command::Snapshot));
     let t = board.tickets.first().expect("ticket created").clone();

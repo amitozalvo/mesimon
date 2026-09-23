@@ -44,6 +44,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         column: "TODO".into(),
         title: "ask me".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = c.board().tickets.first().expect("ticket").id;
 
@@ -89,6 +90,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         queued: false,
         accept_plan: false,
         plan: false,
+        tier: None,
     }) {
         Response::Err { message } => assert!(message.contains("nothing to send"), "{message}"),
         other => panic!("a blank prompt must refuse: {other:?}"),
@@ -100,7 +102,8 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
             text: "mesimon-probe-42 run the tests".into(),
             queued: false,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Ok
     ));
@@ -140,7 +143,8 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
             text: "mesimon-probe-44 first line\r\nmesimon-probe-44 second line".into(),
             queued: false,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Ok
     ));
@@ -184,6 +188,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         queued: false,
         accept_plan: false,
         plan: false,
+        tier: None,
     }) {
         Response::Spawned { id, fresh } => {
             assert_eq!(id, sid, "the wake re-enters the record — never a second claude");
@@ -242,6 +247,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         queued: false,
         accept_plan: false,
         plan: false,
+        tier: None,
     }) {
         Response::Spawned { id, .. } => {
             assert_ne!(id, sid, "a new session, never the corpse");

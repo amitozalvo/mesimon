@@ -45,11 +45,13 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         column: "TODO".into(),
         title: "holder".into(),
         workspace: None,
+        tier: None,
     });
     let _ = c.request(Command::CreateTicket {
         column: "TODO".into(),
         title: "waiter".into(),
         workspace: None,
+        tier: None,
     });
     let board = c.board();
     let a = board.tickets.iter().find(|t| t.title == "holder").expect("a").id;
@@ -108,6 +110,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         queued: true,
         accept_plan: false,
         plan: false,
+        tier: None,
     }) {
         Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the ask to be parked: {other:?}"),
@@ -143,7 +146,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             text: "mesimon-probe-52 never".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -166,7 +170,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
                 text: probe.into(),
                 queued: true,
                 accept_plan: false,
-                plan: false
+                plan: false,
+                tier: None
             }),
             Response::Queued { .. }
         ));
@@ -189,7 +194,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             text: "mesimon-probe-55 now".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Ok
     ));
@@ -207,7 +213,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             text: "mesimon-probe-56 dropped".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -228,7 +235,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             text: "mesimon-probe-57 asleep".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -244,7 +252,8 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             text: "mesimon-probe-58 later".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -288,6 +297,7 @@ fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
             column: "TODO".into(),
             title: title.into(),
             workspace: None,
+            tier: None,
         });
     }
     let board = c.board();
@@ -316,6 +326,7 @@ fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
         queued: true,
         accept_plan: false,
         plan: false,
+        tier: None,
     }) {
         Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the start to be parked: {other:?}"),
@@ -383,6 +394,7 @@ fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
             column: "TODO".into(),
             title: title.into(),
             workspace: None,
+            tier: None,
         });
     }
     let board = c.board();
@@ -447,7 +459,8 @@ fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
                 text: probe.into(),
                 queued: true,
                 accept_plan: false,
-                plan: false
+                plan: false,
+                tier: None
             }),
             Response::Queued { .. }
         ));
@@ -512,6 +525,7 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
         column: "TODO".into(),
         title: "isolated follow-ups".into(),
         workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("{other:?}"),
@@ -542,7 +556,8 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
                 text: words.into(),
                 queued: true,
                 accept_plan: false,
-                plan: false
+                plan: false,
+                tier: None
             }),
             Response::Queued { .. }
         ));
@@ -607,7 +622,8 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
             text: "idle-queue-already-idle".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Ok
     ));
@@ -640,6 +656,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
             column: "TODO".into(),
             title: title.into(),
             workspace: None,
+            tier: None,
         });
     }
     let board = c.board();
@@ -666,6 +683,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
         queued: true,
         accept_plan: false,
         plan: false,
+        tier: None,
     }) {
         Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the start to be parked: {other:?}"),
@@ -676,7 +694,8 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
             text: "mesimon-probe-418 follow-up for the holder".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));

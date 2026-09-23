@@ -70,6 +70,7 @@ fn the_terminal_is_one_persistent_shell_in_the_checkout() {
         column: "TODO".into(),
         title: "a ticket".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("create: {other:?}"),

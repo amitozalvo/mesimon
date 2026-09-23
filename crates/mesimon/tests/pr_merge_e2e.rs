@@ -26,6 +26,7 @@ fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, Pa
         column: "TODO".into(),
         title: title.into(),
         workspace: None,
+        tier: None,
     });
     let id = c.board().tickets.iter().find(|t| t.title == title).unwrap().id;
     assert!(matches!(

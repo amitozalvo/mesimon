@@ -39,6 +39,7 @@ fn a_status_file_gone_idle_demotes_running_while_the_pane_still_paints() {
         column: "TODO".into(),
         title: "intrstatus".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = c.board().tickets.first().expect("ticket").id;
     let sid = match c.request(Command::SpawnSession {
@@ -134,6 +135,7 @@ fn a_status_file_gone_idle_over_a_closed_turn_is_end_turn_not_interrupted() {
         column: "TODO".into(),
         title: "intrdone".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = c.board().tickets.first().expect("ticket").id;
     let sid = match c.request(Command::SpawnSession {

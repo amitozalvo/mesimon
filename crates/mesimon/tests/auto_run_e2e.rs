@@ -39,6 +39,7 @@ fn a_ticket_created_in_an_auto_run_column_starts_claude_on_its_brief() {
         column: "TODO".into(),
         title: "auto me".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, started } => (id, started),
         other => panic!("create: {other:?}"),
@@ -121,6 +122,7 @@ fn a_ticket_created_in_an_auto_run_column_starts_claude_on_its_brief() {
         column: "REVIEW".into(),
         title: "moved in".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, started } => {
             assert!(!started, "REVIEW does not auto-run");
@@ -145,6 +147,7 @@ fn a_ticket_created_in_an_auto_run_column_starts_claude_on_its_brief() {
         column: "TODO".into(),
         title: "another".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { started, .. } => started,
         other => panic!("create: {other:?}"),
@@ -181,6 +184,7 @@ fn a_ticket_minted_with_its_brief_in_one_command_starts_claude_on_it() {
         text: "the brief, mesimon-autorun-78".into(),
         uploads: Vec::new(),
         tags: Vec::new(),
+        tier: None,
     }) {
         Response::Created { id, started } => (id, started),
         other => panic!("create: {other:?}"),

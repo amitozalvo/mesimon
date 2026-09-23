@@ -212,6 +212,7 @@ fn an_observer_subscribes_and_never_spawns_a_daemon() {
             column: "TODO".into(),
             title: "a ticket the observer must hear about".into(),
             workspace: None,
+            tier: None,
         }),
         Response::Created { .. }
     ));

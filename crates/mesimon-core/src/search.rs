@@ -229,6 +229,7 @@ mod tests {
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier: None,
             workspace: None,
             import_origin: None,
             raised: None,

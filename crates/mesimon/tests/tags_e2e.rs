@@ -53,6 +53,7 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
         column: "TODO".into(),
         title: "tag me".into(),
         workspace: None,
+        tier: None,
     });
     let board = board_of(c.request(Command::Snapshot));
     let id = board.tickets[0].id;
@@ -90,6 +91,7 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
         column: "TODO".into(),
         title: "other".into(),
         workspace: None,
+        tier: None,
     });
     let board = board_of(c.request(Command::Snapshot));
     let other = board.tickets.iter().find(|t| t.title == "other").unwrap().id;
@@ -307,6 +309,7 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
             column: "SORT".into(),
             title: title.into(),
             workspace: None,
+            tier: None,
         }) {
             Response::Created { id, .. } => made.push(id),
             other => panic!("create: {other:?}"),

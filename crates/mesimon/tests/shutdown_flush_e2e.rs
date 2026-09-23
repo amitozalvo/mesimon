@@ -31,6 +31,7 @@ fn park_a_stop_in_flight(c: &mut TestClient, hook_sock: &Path) -> String {
         column: "TODO".into(),
         title: "flush".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = c.board().tickets.iter().find(|t| t.title == "flush").unwrap().id;
     let sid = match c.request(Command::SpawnSession {

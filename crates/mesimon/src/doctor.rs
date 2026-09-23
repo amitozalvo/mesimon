@@ -443,9 +443,32 @@ fn agents(repo: &Path, verbose: bool) -> Section {
     let paths = mesimon_daemon::Paths::for_repo(repo).ok();
     // Everything this section reads off `columns.toml`, parsed once (T-247).
     let cols = paths.as_ref().map(mesimon_daemon::store::read_columns_scalars).unwrap_or_default();
-    let selected = cols.agent_provider;
-    let mut records = vec![rec(Level::Ok, "new sessions", selected.label())
-        .advice("Settings > Agents selects the provider for new sessions only. Existing and sleeping sessions keep their original provider.")];
+    // The default tier (T-443) over both layers — the machine's `tiers.toml`
+    // read without touching it, and the board's own. Its provider is who a
+    // ticket that picked nothing starts.
+    let machine = mesimon_daemon::paths::machine_tiers_file()
+        .ok()
+        .and_then(|p| mesimon_daemon::store::read_machine_tiers(&p))
+        .unwrap_or_default();
+    let layer = mesimon_core::board::Board {
+        agent_provider: cols.agent_provider,
+        default_tier: cols.default_tier.clone(),
+        tiers: cols.tiers.clone(),
+        ..Default::default()
+    };
+    let book = mesimon_core::tier::Book::new(&machine, &layer);
+    let default = book.default_tier();
+    let selected = default.provider;
+    let mut records = vec![rec(
+        Level::Ok,
+        "default tier",
+        format!("{} ∙ {}", default.name, default.summary()),
+    )
+    .advice("Settings > Agents > Default tier picks what a ticket starts on; ^n on a ticket picks its own. Existing and sleeping sessions keep their original provider.")];
+    let names: Vec<String> = book.custom().into_iter().map(|(t, _)| t.name).collect();
+    if !names.is_empty() {
+        records.push(rec(Level::Note, "tiers", names.join(" ")));
+    }
     for (provider, name, override_key) in [
         (AgentProvider::ClaudeCode, "claude", "MESIMON_CLAUDE_BIN"),
         (AgentProvider::Codex, "codex", "MESIMON_CODEX_BIN"),

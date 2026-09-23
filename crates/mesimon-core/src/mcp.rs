@@ -927,6 +927,13 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // stop. It cannot see the flag either: no tool reports it.
         | Command::SetMcpTools { .. }
         | Command::SetAgentProvider { .. }
+        // Agent tiers (T-443): which model an agent runs on is money and
+        // capability, the person's to choose — an agent that could pick its
+        // own tier, or define one, would be writing its own budget.
+        | Command::SetTicketTier { .. }
+        | Command::SaveTier { .. }
+        | Command::DeleteTier { .. }
+        | Command::SetDefaultTier { .. }
         | Command::SetParkAfterMinutes { .. }
         | Command::SetCrownBudget { .. }
         // Where the status line sits over the user's own panes: chrome, and
@@ -1699,14 +1706,27 @@ mod tests {
                 text: "x".into(),
                 uploads: vec![],
                 tags: vec![],
+                tier: None,
             },
             Command::SetAgentProvider { provider: crate::board::AgentProvider::Codex },
             Command::SetParkAfterMinutes { minutes: 30 },
             Command::SetCrownBudget { budget: 3 },
+            Command::SetTicketTier { id: t, tier: Some("claude".into()) },
+            Command::SaveTier {
+                scope: crate::tier::TierScope::Machine,
+                tier: crate::tier::Tier::builtin(crate::board::AgentProvider::Codex),
+            },
+            Command::DeleteTier { scope: crate::tier::TierScope::Board, id: "x".into() },
+            Command::SetDefaultTier { scope: crate::tier::TierScope::Board, id: None },
             Command::Hello { version: 1, client: "x".into() },
             Command::Snapshot,
             Command::Subscribe,
-            Command::CreateTicket { column: "TODO".into(), title: "t".into(), workspace: None },
+            Command::CreateTicket {
+                column: "TODO".into(),
+                title: "t".into(),
+                workspace: None,
+                tier: None,
+            },
             Command::ImportTicket {
                 column: "TODO".into(),
                 content: crate::content::TicketContent { title: "incoming".into(), notes: vec![] },
@@ -1789,6 +1809,7 @@ mod tests {
                 queued: false,
                 accept_plan: false,
                 plan: false,
+                tier: None,
             },
             Command::PromptColumn {
                 column: "TODO".into(),

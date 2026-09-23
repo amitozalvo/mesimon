@@ -30,6 +30,7 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
         column: "TODO".into(),
         title: "noted".into(),
         workspace: None,
+        tier: None,
     });
     let board = c.board();
     let ticket = board.tickets[0].id;
@@ -166,6 +167,7 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
         column: "TODO".into(),
         title: "other".into(),
         workspace: None,
+        tier: None,
     });
     let other = c.board().tickets.iter().find(|t| t.title == "other").unwrap().id;
     let foreign =
@@ -238,6 +240,7 @@ fn an_approved_plan_is_the_agents_note_on_the_ticket() {
         column: "TODO".into(),
         title: "planned".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = c.board().tickets[0].id;
     let sid = match c.request(Command::SpawnSession {
@@ -341,6 +344,7 @@ fn a_note_past_the_limit_is_refused_and_the_existing_note_stays_whole() {
         column: "TODO".into(),
         title: "sized".into(),
         workspace: None,
+        tier: None,
     });
     let board = c.board();
     let ticket = board.tickets[0].id;

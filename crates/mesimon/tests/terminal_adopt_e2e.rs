@@ -65,6 +65,7 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
         column: "TODO".into(),
         title: "a ticket".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("create: {other:?}"),

@@ -44,6 +44,7 @@ fn asking_again_after_parking_by_hand_moves_the_card_to_in_progress() {
         column: "TODO".into(),
         title: "test".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = c.board().tickets.first().expect("ticket").id;
     let sid = match c.request(Command::SpawnSession {
@@ -88,7 +89,8 @@ fn asking_again_after_parking_by_hand_moves_the_card_to_in_progress() {
             text: "again".into(),
             queued: false,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Ok
     ));

@@ -54,6 +54,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
         column: "TODO".into(),
         title: "planned".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("{other:?}"),
@@ -102,7 +103,8 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             text: String::new(),
             queued: false,
             accept_plan: true,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -128,7 +130,8 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             text: "mesimon-probe-420 then do this".into(),
             queued: true,
             accept_plan: true,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -165,7 +168,8 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             text: "clear".into(),
             queued: false,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Ok
     ));
@@ -179,7 +183,8 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             text: "mesimon-probe-421 unrecognised".into(),
             queued: true,
             accept_plan: true,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -228,6 +233,7 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
         column: "TODO".into(),
         title: title.into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("{other:?}"),
@@ -285,7 +291,8 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
                 text: String::new(),
                 queued: false,
                 accept_plan: true,
-                plan: false
+                plan: false,
+                tier: None
             }),
             Response::Queued { .. }
         ));

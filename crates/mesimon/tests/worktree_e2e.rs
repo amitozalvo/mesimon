@@ -128,6 +128,7 @@ fn m4_worktree_lifecycle() {
         column: "TODO".into(),
         title: "Fix thing".into(),
         workspace: None,
+        tier: None,
     });
     let (board, _) = board_of(c.request(Command::Snapshot));
     let t1 = board.tickets[0].id;
@@ -302,6 +303,7 @@ fn m4_worktree_lifecycle() {
         column: "TODO".into(),
         title: "clash".into(),
         workspace: None,
+        tier: None,
     });
     let (board, _) = board_of(c.request(Command::Snapshot));
     let t2 = board.tickets.iter().find(|t| t.title == "clash").unwrap().id;

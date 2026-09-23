@@ -66,6 +66,7 @@ fn restart_recovers_state_from_the_transcript() {
         column: "TODO".into(),
         title: "restart".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
     let sid = match c.request(Command::SpawnSession {
@@ -204,6 +205,7 @@ fn restart_recovers_done_from_a_resting_transcript() {
         column: "TODO".into(),
         title: "rest".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
     let sid = match c.request(Command::SpawnSession {

@@ -52,6 +52,7 @@ fn pictures_survive_duplicate_delete_undo_archive_and_daemon_restart() {
         text: text.clone(),
         uploads: vec![attachment],
         tags: Vec::new(),
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("create failed: {other:?}"),
@@ -120,6 +121,7 @@ fn images_are_read_only_mcp_content_bound_to_the_agents_own_ticket() {
         text,
         uploads: vec![attachment],
         tags: Vec::new(),
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("{other:?}"),
@@ -147,6 +149,7 @@ fn images_are_read_only_mcp_content_bound_to_the_agents_own_ticket() {
         text: format!("[Image #1]({})", mesimon_core::attachment::target(foreign)),
         uploads: vec![foreign],
         tags: Vec::new(),
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         response => panic!("{response:?}"),
@@ -181,6 +184,7 @@ fn failed_note_save_rolls_back_new_files_and_can_be_retried() {
         column: "TODO".into(),
         title: "retry".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("{other:?}"),

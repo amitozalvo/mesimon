@@ -1246,6 +1246,9 @@ pub struct App {
     /// The crown's recent edits (T-411), off the snapshot: the cards to
     /// light for a beat with the word for what was done to them.
     pub crown_touches: Vec<mesimon_core::command::CrownTouch>,
+    /// The machine's agent tiers (T-443), off the snapshot: the layer under
+    /// `board.tiers`. Read through `App::tiers()`, never alone.
+    pub machine_tiers: mesimon_core::tier::MachineTiers,
     /// Cards the crown touched that the cursor has not rested on since —
     /// the residue the light leaves, on the unread done mark's rule.
     pub crown_residue: std::collections::HashSet<ulid::Ulid>,
@@ -1691,6 +1694,7 @@ impl App {
             shell_tail: None,
             terminals: Vec::new(),
             crown_touches: Vec::new(),
+            machine_tiers: Default::default(),
             crown_residue: std::collections::HashSet::new(),
             crowned_at: None,
             spoke: std::collections::HashMap::new(),
@@ -1983,6 +1987,7 @@ impl App {
             mesophon,
             terminals,
             crown_touches,
+            machine_tiers,
         } = snap;
         let was = self.cursor_column().map(|c| c.name.clone());
         // The cursor holds its TICKET across the pass (T-335): a card that
@@ -2009,6 +2014,7 @@ impl App {
         self.team = team;
         self.control = mesophon;
         self.terminals = terminals;
+        self.machine_tiers = machine_tiers;
         self.absorb_crown_touches(crown_touches, crown_was);
         self.settle_drawer();
         self.seed_team_drafts();
@@ -9174,6 +9180,7 @@ impl App {
             text,
             uploads: uploads.clone(),
             tags,
+            tier: None,
         });
         if !uploads.is_empty() {
             let _ = self.req(Command::DiscardAttachmentUploads { uploads });
@@ -9260,51 +9267,57 @@ impl App {
             _ => ("queued".into(), "queued ∙ sends next".into()),
         };
         let blank = text.is_empty();
-        self.status =
-            match self.req(Command::PromptSession { ticket, text, queued, accept_plan, plan }) {
-                // Deliberately not "sent to the agent": what is provably
-                // true is that it went into the box and Enter was
-                // pressed. Whether the agent took it is the card's to
-                // say, seconds from now, in the only vocabulary that has
-                // ever been trusted for it — the hooks.
-                // Sending now over a waiting ask drops the waiting one:
-                // the daemon did, and the status says so.
-                Response::Ok if !queued && had => "asked ∙ queued ask dropped".into(),
-                Response::Ok => "asked".into(),
-                Response::Queued { .. } if accept_plan && blank && accept_now => {
-                    "accepting plan".into()
-                }
-                Response::Queued { .. } if accept_plan && blank => "queued ∙ accepts plan".into(),
-                // With words (T-420): they go the moment the approval is
-                // confirmed, so the receipt is not the idle queue's.
-                Response::Queued { .. } if accept_now => "accepting plan ∙ then asks".into(),
-                Response::Queued { .. } if accept_plan => "accepts plan ∙ then asks".into(),
-                // Parked: name what it waits on, the way the card does.
-                Response::Queued { behind } => queued_status(&lead, &first, &behind, &own),
-                // A parked claude: the daemon woke it and holds the
-                // words until the pane reads (2026-09-04). `fresh` is
-                // the wake road's own word — no conversation was left to
-                // resume, so a new one starts on this prompt — and it is
-                // said here for the same reason `c` says it. An empty seat
-                // reports the same way and means something else: a session
-                // that did not exist a moment ago (T-294).
-                Response::Spawned { .. } if starting => format!("{word} started{mode} ∙ asked"),
-                // An idle pane parked and woken into plan mode (T-434).
-                Response::Spawned { fresh: false, .. } if plan && !waking => {
-                    format!("restarted {word}{mode} ∙ asked")
-                }
-                Response::Spawned { fresh: false, .. } => format!("woke {word}{mode} ∙ asked"),
-                Response::Spawned { fresh: true, .. } => {
-                    "nothing to resume ∙ started a fresh conversation ∙ asked".into()
-                }
-                // Its worktree is being rebuilt under the wake (T-278);
-                // the words ride the parked wake.
-                Response::Provisioning => {
-                    format!("provisioning worktree ∙ {word} wakes when ready ∙ asked")
-                }
-                Response::Err { message } => message,
-                _ => String::new(),
-            };
+        self.status = match self.req(Command::PromptSession {
+            ticket,
+            text,
+            queued,
+            accept_plan,
+            plan,
+            tier: None,
+        }) {
+            // Deliberately not "sent to the agent": what is provably
+            // true is that it went into the box and Enter was
+            // pressed. Whether the agent took it is the card's to
+            // say, seconds from now, in the only vocabulary that has
+            // ever been trusted for it — the hooks.
+            // Sending now over a waiting ask drops the waiting one:
+            // the daemon did, and the status says so.
+            Response::Ok if !queued && had => "asked ∙ queued ask dropped".into(),
+            Response::Ok => "asked".into(),
+            Response::Queued { .. } if accept_plan && blank && accept_now => {
+                "accepting plan".into()
+            }
+            Response::Queued { .. } if accept_plan && blank => "queued ∙ accepts plan".into(),
+            // With words (T-420): they go the moment the approval is
+            // confirmed, so the receipt is not the idle queue's.
+            Response::Queued { .. } if accept_now => "accepting plan ∙ then asks".into(),
+            Response::Queued { .. } if accept_plan => "accepts plan ∙ then asks".into(),
+            // Parked: name what it waits on, the way the card does.
+            Response::Queued { behind } => queued_status(&lead, &first, &behind, &own),
+            // A parked claude: the daemon woke it and holds the
+            // words until the pane reads (2026-09-04). `fresh` is
+            // the wake road's own word — no conversation was left to
+            // resume, so a new one starts on this prompt — and it is
+            // said here for the same reason `c` says it. An empty seat
+            // reports the same way and means something else: a session
+            // that did not exist a moment ago (T-294).
+            Response::Spawned { .. } if starting => format!("{word} started{mode} ∙ asked"),
+            // An idle pane parked and woken into plan mode (T-434).
+            Response::Spawned { fresh: false, .. } if plan && !waking => {
+                format!("restarted {word}{mode} ∙ asked")
+            }
+            Response::Spawned { fresh: false, .. } => format!("woke {word}{mode} ∙ asked"),
+            Response::Spawned { fresh: true, .. } => {
+                "nothing to resume ∙ started a fresh conversation ∙ asked".into()
+            }
+            // Its worktree is being rebuilt under the wake (T-278);
+            // the words ride the parked wake.
+            Response::Provisioning => {
+                format!("provisioning worktree ∙ {word} wakes when ready ∙ asked")
+            }
+            Response::Err { message } => message,
+            _ => String::new(),
+        };
         self.refresh()
     }
 
@@ -9926,6 +9939,7 @@ struct Snapshot {
     terminals: Vec<mesimon_core::command::TerminalItem>,
     /// The crown's recent edits (T-411): the cards to light.
     crown_touches: Vec<mesimon_core::command::CrownTouch>,
+    machine_tiers: mesimon_core::tier::MachineTiers,
 }
 
 impl Snapshot {
@@ -9950,6 +9964,7 @@ impl Snapshot {
                 mesophon,
                 terminals,
                 crown_touches,
+                machine_tiers,
             } => Some(Self {
                 board,
                 grace,
@@ -9969,6 +9984,7 @@ impl Snapshot {
                 mesophon,
                 terminals,
                 crown_touches,
+                machine_tiers,
             }),
             _ => None,
         }
@@ -10036,6 +10052,8 @@ pub(crate) mod test_support {
         pub notes: std::collections::HashMap<ulid::Ulid, String>,
         /// The `!` terminals the fake daemon reports alive (T-366).
         pub terminals: Vec<mesimon_core::command::TerminalItem>,
+        /// The machine's tiers the fake daemon reports (T-443).
+        pub machine_tiers: mesimon_core::tier::MachineTiers,
     }
 
     /// The fake daemon's fresh ticket: always `T-999` at the bottom of the
@@ -10055,6 +10073,7 @@ pub(crate) mod test_support {
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier: None,
             import_origin: None,
             raised: None,
             workspace,
@@ -10111,7 +10130,7 @@ pub(crate) mod test_support {
                     self.board.tickets.push(ticket);
                     return Ok(Response::Created { id, started: false });
                 }
-                Command::CreateTicket { column, title, workspace } => {
+                Command::CreateTicket { column, title, workspace, .. } => {
                     let ticket = fake_ticket(column, title, workspace);
                     let id = ticket.id;
                     self.board.tickets.push(ticket);
@@ -10400,6 +10419,7 @@ pub(crate) mod test_support {
                     mesophon: Default::default(),
                     terminals: self.terminals.clone(),
                     crown_touches: Vec::new(),
+                    machine_tiers: self.machine_tiers.clone(),
                 }),
                 // The column lifecycle (T-117), as the daemon does it — the
                 // refusals included, so the status a test reads is the
@@ -10661,6 +10681,7 @@ pub(crate) mod test_support {
                 refuse_mint: false,
                 notes: std::collections::HashMap::new(),
                 terminals: Vec::new(),
+                machine_tiers: Default::default(),
             };
             let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
                 .expect("fake transport snapshot");
@@ -10816,6 +10837,7 @@ mod tests {
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier: None,
             import_origin: None,
             raised: None,
             workspace: None,
@@ -10869,6 +10891,7 @@ mod tests {
             refuse_mint: false,
             notes: std::collections::HashMap::new(),
             terminals: Vec::new(),
+            machine_tiers: Default::default(),
         };
         App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot")
@@ -11164,6 +11187,7 @@ mod tests {
             refuse_mint: false,
             notes,
             terminals: Vec::new(),
+            machine_tiers: Default::default(),
         };
         let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot");
@@ -11225,6 +11249,7 @@ mod tests {
             refuse_mint: false,
             notes,
             terminals: Vec::new(),
+            machine_tiers: Default::default(),
         };
         let app = App::new(Box::new(fake), dir.clone(), theme()).expect("fake transport snapshot");
         (app, sent, dir)
@@ -14939,6 +14964,7 @@ mod tests {
             refuse_mint: true,
             notes: std::collections::HashMap::new(),
             terminals: Vec::new(),
+            machine_tiers: Default::default(),
         };
         let mut app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot");
@@ -17723,6 +17749,7 @@ mod tests {
             refuse_mint: false,
             notes,
             terminals: Vec::new(),
+            machine_tiers: Default::default(),
         };
         let mut app = App::new(Box::new(fake), dir.clone(), theme()).unwrap();
         let mut team = super::joined_team_fixture();

@@ -12,6 +12,7 @@ fn create(c: &mut TestClient, title: &str) -> ulid::Ulid {
         column: "TODO".into(),
         title: title.into(),
         workspace: Some(WorkspaceStrategy::SharedCheckout),
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         other => panic!("{other:?}"),

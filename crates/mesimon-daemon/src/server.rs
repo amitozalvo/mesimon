@@ -55,6 +55,8 @@ pub(crate) struct Mint {
     /// The description and the pictures it references, already prepared.
     /// Blank text is no note.
     pub note: Option<(String, Images)>,
+    /// The composer's tier pick (T-443), a tier id; `None` is the default.
+    pub tier: Option<String>,
 }
 
 /// The composer's draft as `CreateTicketWithNote` carries it: what
@@ -66,19 +68,21 @@ pub(crate) struct Draft {
     pub text: String,
     pub uploads: Vec<ulid::Ulid>,
     pub tags: Vec<TagRef>,
+    pub tier: Option<String>,
 }
 
 impl Mint {
     /// A title alone in a column: the thin `CreateTicket` and the adoption
     /// of an external session.
     fn bare(column: String, title: String, workspace: Option<WorkspaceStrategy>) -> Self {
-        Mint { column, title, workspace, from: None, tags: Vec::new(), note: None }
+        Mint { column, title, workspace, from: None, tags: Vec::new(), note: None, tier: None }
     }
 }
 
 mod attachments;
 mod mesophon;
 mod teamglue;
+mod tiers;
 
 const GRACE_SECS: u64 = 9;
 /// How long a crown touch (T-411) rides the snapshot: long enough for the
@@ -535,6 +539,13 @@ pub struct Daemon {
     /// worker's state at Low confidence anyway, and the crown can list the
     /// board. Uncrowning drops them.
     crown_wakes: Vec<CrownWake>,
+    /// The machine's agent tiers (T-443), `tiers.toml` as last read — the
+    /// layer under `board.tiers`, re-read when another board changes it.
+    machine_tiers: tiers::MachineTierCache,
+    /// When each ticket's tier was last picked, so a seat is relaunched on
+    /// the pick a person stopped at rather than on every `^n` on the way
+    /// (`tiers::TIER_SETTLE_MS`). In memory: a restart settles at once.
+    tier_set_at: HashMap<ulid::Ulid, u64>,
     /// The user's own shell environment, as their login shell last reported
     /// it. Every spawn hands this to the pane, because a Claude pane is exec'd
     /// directly by tmux and so reads no rc file of its own.
@@ -925,6 +936,8 @@ pub fn run(paths: Paths) -> Result<()> {
         agent_replay: HashMap::new(),
         crown_touches: HashMap::new(),
         crown_wakes: Vec::new(),
+        machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
+        tier_set_at: HashMap::new(),
         shell_env: crate::shellenv::ShellEnv::default(),
         shell_env_capturing: false,
         shell_env_error: None,
@@ -1776,6 +1789,9 @@ impl Daemon {
             return Response::Err { message };
         }
         let feed_cmd = meta.logged.then(|| (env.command.wire_name(), meta.subject));
+        // Another board may have changed the machine's tiers (T-443): one
+        // `stat`, so what this command reads or launches is current.
+        self.refresh_machine_tiers();
 
         let resp = match env.command {
             Command::Mesophon { action } => self.control_local(action),
@@ -1817,8 +1833,8 @@ impl Daemon {
                 }
                 Response::Ok
             }
-            Command::CreateTicket { column, title, workspace } => {
-                self.create_ticket(&env.principal, column, title, workspace)
+            Command::CreateTicket { column, title, workspace, tier } => {
+                self.create_ticket(&env.principal, column, title, workspace, tier)
             }
             Command::ImportTicket { column, content, origin } => {
                 self.import_ticket(&env.principal, column, content, origin)
@@ -1853,8 +1869,8 @@ impl Daemon {
             Command::MergeToAgent { id, request } => {
                 self.merge_to_agent(id, request, &Principal::Local, Ack::PROMPT)
             }
-            Command::PromptSession { ticket, text, queued, accept_plan, plan } => {
-                self.prompt_session(ticket, text, queued, accept_plan, plan)
+            Command::PromptSession { ticket, text, queued, accept_plan, plan, tier } => {
+                self.prompt_session(ticket, text, queued, accept_plan, plan, tier)
             }
             Command::PromptColumn { column, text, queued, accept_plan } => {
                 self.prompt_column(&column, text, queued, accept_plan)
@@ -1881,11 +1897,18 @@ impl Daemon {
             Command::SaveNoteWithAttachments { ticket, note, text, uploads } => {
                 self.save_note_with_attachments(stream, ticket, note, text, uploads)
             }
-            Command::CreateTicketWithNote { column, title, workspace, text, uploads, tags } => self
-                .create_ticket_with_note(
-                    stream,
-                    Draft { column, title, workspace, text, uploads, tags },
-                ),
+            Command::CreateTicketWithNote {
+                column,
+                title,
+                workspace,
+                text,
+                uploads,
+                tags,
+                tier,
+            } => self.create_ticket_with_note(
+                stream,
+                Draft { column, title, workspace, text, uploads, tags, tier },
+            ),
             Command::ReadNote { ticket, note } => self.read_note(ticket, note),
             Command::WriteNote { ticket, note, text } => {
                 self.write_note(ticket, note, text, &Principal::Local)
@@ -1903,7 +1926,14 @@ impl Daemon {
             Command::CrownTicket { id } => self.crown_ticket(id),
             Command::Uncrown => self.uncrown(),
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
-            Command::SetAgentProvider { provider } => self.set_agent_provider(provider),
+            Command::SetAgentProvider { provider } => self.set_default_tier(
+                mesimon_core::tier::TierScope::Board,
+                Some(mesimon_core::tier::builtin_id(provider).to_string()),
+            ),
+            Command::SetTicketTier { id, tier } => self.set_ticket_tier(id, tier),
+            Command::SaveTier { scope, tier } => self.save_tier(scope, tier),
+            Command::DeleteTier { scope, id } => self.delete_tier(scope, id),
+            Command::SetDefaultTier { scope, id } => self.set_default_tier(scope, id),
             Command::SetParkAfterMinutes { minutes } => self.set_park_after_minutes(minutes),
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
             Command::SetStatusLine { top } => self.set_status_line(top),
@@ -1972,7 +2002,11 @@ impl Daemon {
             }
             Command::SpawnSession { ticket, kind, submit_prompt, plan } => self.spawn_session(
                 ticket,
-                if kind.is_agent() { self.board.agent_provider.session_kind() } else { kind },
+                if kind.is_agent() {
+                    self.tier_book().start_provider(ticket).session_kind()
+                } else {
+                    kind
+                },
                 submit_prompt,
                 None,
                 None,
@@ -2164,6 +2198,8 @@ impl Daemon {
             changed |= stage!("settle_owed", self.settle_owed(now));
             changed |= stage!("settle_plan_accepts", self.settle_plan_accepts(now));
             changed |= stage!("service_plan_accepts", self.service_plan_accepts(now));
+            self.refresh_machine_tiers();
+            changed |= stage!("drain_tier_switches", self.drain_tier_switches());
             changed |= stage!("drain_queue", self.drain_queue());
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
             let a = stage!("archive_figures", self.archive_figures());
@@ -3549,6 +3585,9 @@ impl Daemon {
         // way down rather than being lost with the restart. The crown's
         // wake looks after the queue, so a person's ask takes the turn.
         self.sweep_queue();
+        // A seat that owes a tier switch (T-443) takes its idle first: the
+        // relaunch is what a person asked for when they picked the tier.
+        self.drain_tier_switches();
         self.drain_queue();
         self.drain_crown_wakes();
         true
@@ -3625,7 +3664,7 @@ impl Daemon {
         // The column's tier (T-117), against the ticket's column as it
         // stands NOW — the shim listed the tools of the column at spawn, and
         // the model reads the tier it is on in the refusal.
-        let tier = self.agent_tier(ticket);
+        let tier = self.agent_tools_for(ticket);
         if !mcp::tier_admits(tier, &cmd) {
             let col = self.board.ticket(ticket).map(|t| t.column.clone()).unwrap_or_default();
             return Response::Err {
@@ -3982,7 +4021,7 @@ impl Daemon {
                 if let Some(message) = self.plan_refusal(target, plan) {
                     return Response::Err { message };
                 }
-                let kind = self.board.agent_provider.session_kind();
+                let kind = self.tier_book().start_provider(target).session_kind();
                 let session_started =
                     match self.spawn_session(target, kind, true, None, Some(ticket), plan) {
                         Response::Spawned { .. } => true,
@@ -4497,6 +4536,7 @@ impl Daemon {
             from: Some(from),
             tags,
             note: description.map(|text| (text, Vec::new())),
+            tier: None,
         };
         let id = match self.mint_full(by, mint) {
             Ok(id) => id,
@@ -4746,7 +4786,7 @@ impl Daemon {
     /// then refuse it.
     fn agent_allowed_columns(&self, id: ulid::Ulid) -> Vec<String> {
         let Some(t) = self.board.ticket(id) else { return Vec::new() };
-        if self.agent_tier(id) < AgentTools::Full {
+        if self.agent_tools_for(id) < AgentTools::Full {
             return Vec::new();
         }
         let unmerged = self.ticket_unmerged(id);
@@ -5190,6 +5230,9 @@ impl Daemon {
                 ),
             ));
         }
+        // The machine's tiers file, quarantined or from a newer build
+        // (T-443): a standing advisory like any state file's.
+        notices.extend(self.machine_tiers.notice.clone());
         // The foregrounds ride the snapshot's records and nothing else: the
         // board on disk never carries one (T-366).
         let mut board = self.board.clone();
@@ -5234,6 +5277,7 @@ impl Daemon {
             claude_default_mode: user_default_mode(),
             status_top: self.backend.status_top(),
             crown_touches: self.recent_crown_touches(),
+            machine_tiers: self.machine_tiers.tiers.clone(),
         }
     }
 
@@ -5857,8 +5901,9 @@ impl Daemon {
         column: String,
         title: String,
         workspace: Option<WorkspaceStrategy>,
+        tier: Option<String>,
     ) -> Response {
-        match self.mint_full(by, Mint::bare(column, title, workspace)) {
+        match self.mint_full(by, Mint { tier, ..Mint::bare(column, title, workspace) }) {
             Ok(id) => {
                 let started = self.auto_run(id);
                 Response::Created { id, started }
@@ -5880,7 +5925,7 @@ impl Daemon {
         stream: &Arc<Mutex<UnixStream>>,
         draft: Draft,
     ) -> Response {
-        let Draft { column, title, workspace, text, uploads, tags } = draft;
+        let Draft { column, title, workspace, text, uploads, tags, tier } = draft;
         let mut refs = Vec::with_capacity(tags.len());
         for tag in tags {
             let Some(name) = sanitize_tag(&tag.name) else {
@@ -5911,8 +5956,15 @@ impl Daemon {
         if registered {
             self.persist_columns();
         }
-        let mint =
-            Mint { column, title, workspace, from: None, tags: refs, note: Some((text, images)) };
+        let mint = Mint {
+            column,
+            title,
+            workspace,
+            from: None,
+            tags: refs,
+            note: Some((text, images)),
+            tier,
+        };
         match self.mint_full(&Principal::Local, mint) {
             Ok(id) => {
                 self.uploads.committed(&uploads);
@@ -6061,6 +6113,7 @@ impl Daemon {
             woke_at: None,
             manual_merge: false,
             execution_policy: source.execution_policy,
+            tier: source.tier,
             import_origin: source.import_origin,
             raised: None,
             workspace: source.workspace,
@@ -6124,7 +6177,7 @@ impl Daemon {
         }
         match self.spawn_session(
             id,
-            self.board.agent_provider.session_kind(),
+            self.tier_book().start_provider(id).session_kind(),
             true,
             None,
             None,
@@ -6170,7 +6223,7 @@ impl Daemon {
     /// ticket yet. Persists and notifies; the caller adds its own feed
     /// line, auto-run or upload commit.
     fn mint_full(&mut self, by: &Principal, mint: Mint) -> Result<ulid::Ulid, String> {
-        let Mint { column, title, workspace, from, tags, note } = mint;
+        let Mint { column, title, workspace, from, tags, note, tier } = mint;
         // A barred columns.toml means next_key cannot be persisted, so a new
         // ticket's short_key would regress on the next start and save_ticket
         // would write over an existing ticket directory.
@@ -6197,6 +6250,16 @@ impl Daemon {
                 ));
             }
         }
+        // The composer's tier pick (T-443): a tier this machine resolves,
+        // stored as inherit when it is the default. A fresh ticket holds no
+        // seat, so any provider's tier is a pick it may make.
+        let tier = match tier.as_deref() {
+            None => None,
+            Some(t) => match self.tier_book().get(t) {
+                Some(found) => self.tier_book().stored_pick(&found.id),
+                None => return Err(format!("no tier {t} on this machine")),
+            },
+        };
         let note = match note {
             Some((text, images)) if !text.trim().is_empty() => {
                 if let Some(message) = mesimon_core::board::note_size_error(&text) {
@@ -6235,6 +6298,7 @@ impl Daemon {
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier,
             import_origin: None,
             raised: None,
             workspace,
@@ -7191,6 +7255,7 @@ impl Daemon {
         queued: bool,
         accept_plan: bool,
         plan: bool,
+        tier: Option<String>,
     ) -> Response {
         if self
             .board
@@ -7201,7 +7266,21 @@ impl Daemon {
                 message: "external session — resume it to take over before sending a prompt".into(),
             };
         }
+        // The ask field's tier pick (T-443) lands on the ticket before the
+        // seat is read: an empty seat starts on it, a parked one wakes on
+        // it, and a pane owes the switch these words then ride.
+        if let Some(pick) = tier {
+            if let Err(message) = self.apply_ticket_tier(ticket, Some(pick)) {
+                return Response::Err { message };
+            }
+            self.persist_sessions();
+        }
         let seat = self.seat_of(ticket);
+        // A pane that owes a switch takes its words through the relaunch,
+        // and the relaunch waits for idle: sent now at a working pane, the
+        // words queue behind the turn instead of landing on the old tier.
+        let queued = queued
+            || matches!(seat, QueuedSeat::Pane(id) if self.tier_owed(id) && !self.session_idle(id));
         // Blank in, nothing out: an empty paste would press Enter on a turn
         // the user never wrote. An EMPTY SEAT is the one exception (T-294):
         // there the Enter lands on the ticket title the spawn types, which
@@ -7266,32 +7345,9 @@ impl Daemon {
         }
         let codex = match self.board.live_agent(ticket) {
             Some(rec) => rec.kind == SessionKind::Codex,
-            None => self.board.agent_provider == AgentProvider::Codex,
+            None => self.tier_book().start_provider(ticket) == AgentProvider::Codex,
         };
         codex.then(|| "plan mode is a claude launch flag ∙ this seat runs codex".to_string())
-    }
-
-    /// A live IDLE pane into plan mode (T-434): park it and wake it with
-    /// the flag, the words parked for the first tick as any wake-and-ask
-    /// parks them. The one road, because Claude Code sets its mode only at
-    /// launch or on a relative Shift+Tab ring the daemon cannot read back
-    /// — and the argv it leaves is the fact the board then holds
-    /// (`ticket_planning`). `sleep_one` is the gate: only an idle agent
-    /// sleeps, so a turn is never cut.
-    fn relaunch_in_plan(&mut self, ticket: ulid::Ulid, id: uuid::Uuid, text: String) -> Response {
-        if !self.session_idle(id) {
-            return Response::Err {
-                message: format!(
-                    "{} is mid-turn ∙ plan mode waits for idle",
-                    mesimon_core::keymap::AGENT_WORD
-                ),
-            };
-        }
-        if let Err(message) = self.sleep_one(id, false) {
-            return Response::Err { message: format!("could not park for plan mode: {message}") };
-        }
-        self.feed.board("local", "plan_relaunch", Some(ticket));
-        self.prompt_sleeping(ticket, text, true)
     }
 
     /// Ask every seat in a column — paned, parked or EMPTY (T-405). The one
@@ -7464,7 +7520,7 @@ impl Daemon {
         // `prompt_sleeping`'s own filter is the belt under it.
         match self.board.live_agent(ticket) {
             Some(rec) => QueuedSeat::Wake(rec.id),
-            None => QueuedSeat::Start(self.board.agent_provider),
+            None => QueuedSeat::Start(self.tier_book().start_provider(ticket)),
         }
     }
 
@@ -7483,8 +7539,13 @@ impl Daemon {
         plan: bool,
     ) -> Response {
         match seat {
-            // Plan mode on a pane (T-434) is a relaunch, never a paste.
-            QueuedSeat::Pane(id) if plan => self.relaunch_in_plan(ticket, id, text),
+            // Plan mode on a pane (T-434) is a relaunch, never a paste — and
+            // so is a tier switch the seat owes (T-443), once it is idle:
+            // the words ride the relaunch. Owed but mid-turn, a send-now
+            // pastes on the tier it has; `prompt_session` queues its own.
+            QueuedSeat::Pane(id) if plan || (self.tier_owed(id) && self.session_idle(id)) => {
+                self.relaunch(ticket, id, Some(text), plan, "local")
+            }
             // `ack` is a pane's alone: a wake and a start park their words
             // as the user's prompt (`park`), whichever road asked.
             QueuedSeat::Pane(_) => match self.paste_to_ticket(ticket, &text, ack) {
@@ -7498,6 +7559,9 @@ impl Daemon {
                 Err(message) => Response::Err { message },
             },
             QueuedSeat::Wake(_) => self.prompt_sleeping(ticket, text, plan),
+            // The provider the start was accepted with, whatever changed
+            // since; the ticket's tier gives it a model only where the two
+            // agree (`Book::launch`, T-443).
             QueuedSeat::Start(provider) => {
                 let words = (!text.is_empty()).then_some(text);
                 self.spawn_session(ticket, provider.session_kind(), true, words, None, plan)
@@ -7850,7 +7914,13 @@ impl Daemon {
     fn queued_target_ready(&self, q: &QueuedAsk) -> bool {
         match q.seat {
             QueuedSeat::Pane(id) => self.session_idle(id),
-            _ => true,
+            // A Codex record wakes only once its runtime confirmed the stop
+            // (a tier switch parks one and queues its words here, T-443);
+            // trying earlier is a refusal, and the words would be lost.
+            QueuedSeat::Wake(id) => {
+                !self.board.sessions.iter().any(|s| s.id == id && s.codex_stopping)
+            }
+            QueuedSeat::Start(_) => true,
         }
     }
 
@@ -7912,7 +7982,7 @@ impl Daemon {
             // launching arc instead. A pane relaunched into plan mode
             // (T-434) is a wake in all but its seat word.
             match seat {
-                seat @ QueuedSeat::Pane(_) if !plan => {
+                seat @ QueuedSeat::Pane(pane) if !plan && !self.tier_owed(pane) => {
                     match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, false) {
                         Response::Ok => {
                             self.feed.board("automation", "queued_ask_sent", Some(ticket));
@@ -8558,17 +8628,6 @@ impl Daemon {
     /// changes is what the NEXT spawn or wake is built with — a running pane's
     /// argv was fixed at exec and nothing can revise it, which is the sentence
     /// the Settings row spends its detail on.
-    fn set_agent_provider(&mut self, provider: AgentProvider) -> Response {
-        if self.columns_barred {
-            return Response::Err { message: self.barred_message("columns") };
-        }
-        if self.board.agent_provider != provider {
-            self.board.agent_provider = provider;
-            self.persist_and_notify();
-        }
-        Response::Ok
-    }
-
     fn set_park_after_minutes(&mut self, minutes: u32) -> Response {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
@@ -9170,7 +9229,8 @@ impl Daemon {
         };
         let id = uuid::Uuid::new_v4();
         let spec = if let Some(adapter) = crate::agents::adapter(kind) {
-            match adapter.start(&self.launch_context(id, ticket, &cwd, plan), &id.to_string()) {
+            match adapter.start(&self.launch_context(id, ticket, kind, &cwd, plan), &id.to_string())
+            {
                 Ok(spec) => spec,
                 Err(message) => return Response::Err { message },
             }
@@ -9256,6 +9316,7 @@ impl Daemon {
         }
         self.machines.insert(id, Machine::new(rec.state.clone(), now_ms()));
         self.board.sessions.push(rec);
+        self.stamp_tier(id);
         self.lock_worktree(ticket, id);
         self.persist_and_notify();
         Response::Spawned { id, fresh: false }
@@ -9940,7 +10001,7 @@ impl Daemon {
     /// for what the daemon admits, so a hand move to a `read` column narrows
     /// a live session and a move back widens it. A ticket whose column is
     /// gone (a hand edit) reads `Full`, what a new column gets.
-    fn agent_tier(&self, ticket: ulid::Ulid) -> AgentTools {
+    fn agent_tools_for(&self, ticket: ulid::Ulid) -> AgentTools {
         if !self.board.mcp_tools {
             return AgentTools::Off;
         }
@@ -9955,6 +10016,7 @@ impl Daemon {
         &'a self,
         id: uuid::Uuid,
         ticket: ulid::Ulid,
+        kind: SessionKind,
         cwd: &'a std::path::Path,
         plan: bool,
     ) -> LaunchContext<'a> {
@@ -9962,9 +10024,10 @@ impl Daemon {
             paths: &self.paths,
             cwd,
             session: id,
-            tools: self.agent_tier(ticket),
+            tools: self.agent_tools_for(ticket),
             brief: self.board.system_prompt,
             plan,
+            tier: self.tier_book().launch(ticket, kind),
             column: self
                 .board
                 .ticket(ticket)
@@ -9979,7 +10042,8 @@ impl Daemon {
         rec: &SessionRecord,
         plan: bool,
     ) -> std::result::Result<LaunchSpec, String> {
-        let context = self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd), plan);
+        let context =
+            self.launch_context(rec.id, rec.ticket, rec.kind, std::path::Path::new(&rec.cwd), plan);
         crate::agents::adapter(rec.kind)
             .ok_or_else(|| "shells do not have agent conversations".to_string())?
             .resume(&context, rec)
@@ -10203,7 +10267,13 @@ impl Daemon {
         };
         let spec = if startup_retry {
             match adapter.start(
-                &self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd), plan),
+                &self.launch_context(
+                    rec.id,
+                    rec.ticket,
+                    rec.kind,
+                    std::path::Path::new(&rec.cwd),
+                    plan,
+                ),
                 &rec.id.to_string(),
             ) {
                 Ok(spec) => spec,
@@ -10216,6 +10286,7 @@ impl Daemon {
                         &self.launch_context(
                             rec.id,
                             rec.ticket,
+                            rec.kind,
                             std::path::Path::new(&rec.cwd),
                             plan,
                         ),
@@ -10349,6 +10420,7 @@ impl Daemon {
         }
         self.recovery.remove(&id); // reset provider cursors for the new launch
         self.machines.insert(id, Machine::new(SessionState::Spawning, now));
+        self.stamp_tier(id);
         Response::Spawned { id, fresh: fresh.is_some() || startup_retry }
     }
 

@@ -46,6 +46,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
             column: column.into(),
             title: title.into(),
             workspace: None,
+            tier: None,
         }) {
             Response::Created { id, .. } => id,
             other => panic!("create: {other:?}"),

@@ -50,6 +50,7 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
             column: "TODO".into(),
             title: title.into(),
             workspace: None,
+            tier: None,
         });
     }
     let board = c.board();
@@ -238,6 +239,7 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
         column: "TODO".into(),
         title: "mesimon-probe-83".into(),
         workspace: None,
+        tier: None,
     });
     assert!(matches!(
         c.request(Command::MoveTicket { id: holder, column: "TODO".into(), before: None }),

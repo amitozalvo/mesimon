@@ -133,6 +133,7 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
         column: "TODO".into(),
         title: "env".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
     let sid = match c.request(Command::SpawnSession {

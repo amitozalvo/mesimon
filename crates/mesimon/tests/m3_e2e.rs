@@ -116,6 +116,7 @@ fn m3_adoption_and_sleep() {
         column: "TODO".into(),
         title: "adopt".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
 

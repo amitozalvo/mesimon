@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::board::{
     AgentProvider, Board, ColumnSettings, SessionKind, SortBy, TagRef, WorkspaceStrategy,
 };
+use crate::tier::{MachineTiers, Tier, TierScope};
 use crate::Principal;
 
 // Codex session variants and provider settings must not be sent to a v1
@@ -95,6 +96,12 @@ pub enum Command {
         /// hit the lock. Absent means the column's own default.
         #[serde(default)]
         workspace: Option<WorkspaceStrategy>,
+        /// The composer's tier pick (T-443, `^n` in the field), a tier id
+        /// riding the mint for the `workspace` reason: a column's auto-run
+        /// may start the agent before a later `SetTicketTier` could land.
+        /// Absent means the default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<String>,
     },
     /// A trusted local adapter materializes owner-delegated external content.
     /// Same-UID local trust only: origin is correlation, never remote authority.
@@ -270,6 +277,14 @@ pub enum Command {
         /// already exists. Absent from an older client = no plan.
         #[serde(default)]
         plan: bool,
+        /// The ask field's tier pick (T-443, `^n`): applied to the ticket
+        /// first (`SetTicketTier`'s rules), then the words go the way a
+        /// tier switch goes — an idle pane is parked and woken on the new
+        /// tier with the words held, and a pane mid-turn waits for its idle
+        /// queued, whatever `queued` said, because the switch has to. Absent
+        /// from an older client = no change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<String>,
     },
     /// Atomically remove a waiting prompt and return its words for editing.
     TakeQueuedAsk {
@@ -354,6 +369,9 @@ pub enum Command {
         /// ticket is made rather than mirrored by the client.
         #[serde(default)]
         tags: Vec<TagRef>,
+        /// The composer's tier pick (T-443), as on `CreateTicket`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<String>,
     },
     /// One note's body, read whole. Bodies never ride the snapshot (a note
     /// can be 32 KiB and the board is cloned on every event), so the ticket
@@ -500,6 +518,35 @@ pub enum Command {
     /// subsequent sessions on the board.
     SetAgentProvider {
         provider: AgentProvider,
+    },
+    /// Pick a ticket's agent tier (T-443): a tier id, or `None` for the
+    /// default. A ticket holding an agent seat may only pick its seat's
+    /// provider's tiers — a conversation cannot move between CLIs. On a
+    /// seat with a pane the switch is owed and happens at its next idle.
+    /// Local only: an agent does not choose its own model.
+    SetTicketTier {
+        id: ulid::Ulid,
+        #[serde(default)]
+        tier: Option<String>,
+    },
+    /// Create or edit a tier on one layer (T-443), keyed by `tier.id`. A
+    /// board-scope save of a machine tier's id is that board's override.
+    SaveTier {
+        scope: TierScope,
+        tier: Tier,
+    },
+    /// Remove a tier from one layer. At board scope this drops the board's
+    /// entry, so an override reverts to the machine's tier.
+    DeleteTier {
+        scope: TierScope,
+        id: String,
+    },
+    /// The default tier of one layer; `None` at board scope inherits the
+    /// machine's, at machine scope falls back to `claude`.
+    SetDefaultTier {
+        scope: TierScope,
+        #[serde(default)]
+        id: Option<String>,
     },
     /// Turn the agent brief on or off for this board (T-224): `brief::TEXT`
     /// in the system prompt of every claude mesimon starts here, through
@@ -1058,7 +1105,8 @@ impl Command {
             | ArchiveTicket { id }
             | UnarchiveTicket { id }
             | SnoozeTicket { id, .. }
-            | SetManualMerge { id, .. } => m(Mutate, true, Some(*id)),
+            | SetManualMerge { id, .. }
+            | SetTicketTier { id, .. } => m(Mutate, true, Some(*id)),
             // A cursor landing is not news for the feed, and neither is
             // walking off the page a raised hand was read on.
             SeenTicket { id } | LowerHand { id } => m(Mutate, false, Some(*id)),
@@ -1097,6 +1145,9 @@ impl Command {
             // the brief on" get answered later.
             | SetMcpTools { .. }
             | SetAgentProvider { .. }
+            | SaveTier { .. }
+            | DeleteTier { .. }
+            | SetDefaultTier { .. }
             | SetParkAfterMinutes { .. }
             | SetCrownBudget { .. }
             | SetSystemPrompt { .. }
@@ -1147,7 +1198,12 @@ mod meta_tests {
 
     #[test]
     fn the_feed_name_is_the_wire_name() {
-        let c = Command::CreateTicket { column: "a".into(), title: "b".into(), workspace: None };
+        let c = Command::CreateTicket {
+            column: "a".into(),
+            title: "b".into(),
+            workspace: None,
+            tier: None,
+        };
         assert_eq!(c.wire_name(), "create_ticket");
         assert_eq!(Command::ReloadShellEnv.wire_name(), "reload_shell_env");
     }
@@ -1165,6 +1221,7 @@ mod meta_tests {
             queued: false,
             accept_plan: false,
             plan: false,
+            tier: None,
         }
         .meta();
         assert_eq!(m, Meta { action: Action::Mutate, logged: true, subject: Some(id) });
@@ -1371,6 +1428,11 @@ pub enum Response {
         /// daemon parses as none.
         #[serde(default)]
         crown_touches: Vec<CrownTouch>,
+        /// The machine's agent tiers (T-443), `tiers.toml` as this daemon
+        /// last read it — the layer under `board.tiers`. Absent from an older
+        /// daemon parses as none, which resolves every ticket to `claude`.
+        #[serde(default)]
+        machine_tiers: MachineTiers,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the

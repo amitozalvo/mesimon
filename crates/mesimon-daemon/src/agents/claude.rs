@@ -63,6 +63,17 @@ fn flags(context: &LaunchContext<'_>) -> Vec<String> {
     if let Some(mode) = mode {
         argv.extend(["--permission-mode".into(), mode]);
     }
+    // The ticket's tier (T-443). Only a Claude tier's words reach here —
+    // `Book::launch` hands another provider's pick this provider's built-in,
+    // which passes nothing — and only words the tier's own checks accept.
+    if context.tier.provider == mesimon_core::board::AgentProvider::ClaudeCode {
+        if let Some(model) = context.tier.model_arg() {
+            argv.extend(["--model".into(), model.into()]);
+        }
+        if let Some(effort) = context.tier.effort_arg() {
+            argv.extend(["--effort".into(), effort.into()]);
+        }
+    }
     argv
 }
 
@@ -182,6 +193,10 @@ impl AgentAdapter for Claude {
             "--allowedTools",
             mesimon_core::brief::FLAG,
             "--permission-mode",
+            // The tier's pair (T-443): a wake re-reads the ticket's tier, so
+            // a switch lands and a replayed argv never carries two.
+            "--model",
+            "--effort",
         ];
         let mut argv = Vec::with_capacity(record.argv.len() + 2);
         let mut previous = record.argv.iter();
@@ -201,5 +216,78 @@ impl AgentAdapter for Claude {
         ours.extend(["--resume".into(), identity]);
         argv.splice(at..at, ours);
         Ok(LaunchSpec::plain(argv))
+    }
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::*;
+    use mesimon_core::board::{AgentProvider, ColumnSettings, SessionKind, SessionState};
+    use mesimon_core::tier::{Effort, Tier};
+
+    fn context(paths: &crate::paths::Paths, tier: Tier) -> LaunchContext<'_> {
+        LaunchContext {
+            paths,
+            cwd: std::path::Path::new("/"),
+            session: uuid::Uuid::from_u128(1),
+            tools: AgentTools::Off,
+            brief: false,
+            column: ColumnSettings::default(),
+            plan: false,
+            tier,
+        }
+    }
+
+    fn pair<'a>(argv: &'a [String], flag: &str) -> Vec<&'a str> {
+        argv.windows(2).filter(|w| w[0] == flag).map(|w| w[1].as_str()).collect()
+    }
+
+    /// T-443: a tier's model and effort ride argv, a wake re-reads the
+    /// ticket's tier instead of replaying the old pair, and the built-in
+    /// passes nothing at all.
+    #[test]
+    fn a_wake_carries_the_tier_it_is_woken_on_and_never_two() {
+        let dir = std::env::temp_dir().join(format!("msmn-claude-tier-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = crate::paths::Paths::for_repo(&dir).unwrap();
+        let tier = |model: &str, effort| Tier {
+            id: "A".into(),
+            name: "coder".into(),
+            provider: AgentProvider::ClaudeCode,
+            model: model.into(),
+            effort,
+        };
+        let started = flags(&context(&paths, tier("opus", Effort::Xhigh)));
+        assert_eq!(pair(&started, "--model"), ["opus"]);
+        assert_eq!(pair(&started, "--effort"), ["xhigh"]);
+
+        let mut rec = SessionRecord::new(
+            uuid::Uuid::from_u128(1),
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            ["claude", "--settings", "/s.json", "--model", "opus", "--effort", "xhigh"]
+                .into_iter()
+                .map(String::from)
+                .chain(["--session-id".to_string(), uuid::Uuid::from_u128(1).to_string()])
+                .collect(),
+            "/".into(),
+            SessionState::Sleeping,
+        );
+        let woke = Claude.resume(&context(&paths, tier("sonnet", Effort::High)), &rec).unwrap();
+        assert_eq!(pair(&woke.argv, "--model"), ["sonnet"]);
+        assert_eq!(pair(&woke.argv, "--effort"), ["high"]);
+        assert_eq!(pair(&woke.argv, "--resume"), [uuid::Uuid::from_u128(1).to_string()]);
+
+        rec.argv = woke.argv;
+        let plain = Claude
+            .resume(&context(&paths, Tier::builtin(AgentProvider::ClaudeCode)), &rec)
+            .unwrap();
+        assert!(!plain.argv.iter().any(|a| a == "--model" || a == "--effort"), "{:?}", plain.argv);
+
+        // Another provider's tier never reaches a claude's argv.
+        let codex = Tier { provider: AgentProvider::Codex, ..tier("gpt-6-astra", Effort::Ultra) };
+        let argv = flags(&context(&paths, codex));
+        assert!(!argv.iter().any(|a| a == "--model" || a == "--effort"), "{argv:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

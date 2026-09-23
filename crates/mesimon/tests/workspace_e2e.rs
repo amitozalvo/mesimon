@@ -154,6 +154,7 @@ fn a_workspace_ticket_gets_a_worktree_per_repo() {
         column: "TODO".into(),
         title: "Fix thing".into(),
         workspace: None,
+        tier: None,
     });
     let id = c.board().tickets[0].id;
     assert!(matches!(

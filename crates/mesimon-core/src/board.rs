@@ -377,6 +377,25 @@ pub struct SessionRecord {
     /// watched.
     #[serde(default)]
     pub ticket_read: bool,
+    /// The tier this seat was last launched on (T-443): a tier id, stamped
+    /// by every launch road — spawn, resume, wake. Empty on a record from
+    /// before tiers, which reads as "unknown", never as a switch owed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tier: String,
+    /// A person picked a different tier for this seat's ticket while it had
+    /// a pane: at its next idle the daemon parks it and wakes it on the new
+    /// one (`drain_tier_switches`). Only an explicit per-ticket pick sets
+    /// it — a changed default or an edited tier applies at the next launch,
+    /// the way column settings do. Cleared by every launch. Persisted, so a
+    /// restart still owes the switch; a build that drops it just forgets a
+    /// pending switch, so no schema bump.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tier_owed: bool,
+    /// A Codex seat parked FOR a tier switch, waiting for its runtime to
+    /// confirm it stopped before it may be woken on the new tier (a Codex
+    /// wake cannot acknowledge unverified cleanup). Cleared by every launch.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tier_wake: bool,
 }
 
 impl SessionRecord {
@@ -439,6 +458,9 @@ impl SessionRecord {
             background_tasks: Default::default(),
             plan_note: None,
             ticket_read: false,
+            tier: String::new(),
+            tier_owed: false,
+            tier_wake: false,
         }
     }
 
@@ -999,6 +1021,12 @@ pub struct Ticket {
     /// toggleable `manual_merge` preference. Unknown policies fail decoding.
     #[serde(default, skip_serializing_if = "ExecutionPolicy::allows_automation")]
     pub execution_policy: ExecutionPolicy,
+    /// The agent tier this ticket picked (T-443): a tier id, resolved against
+    /// the machine's and the board's tiers (`tier::Book`). `None` follows the
+    /// default. An id that no longer resolves reads as the default too. A
+    /// scalar, with the scalars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
     /// Per-ticket workspace strategy (M4 layering: the ticket field is the truth;
     /// a column's `workspace` setting only defaults a NEW ticket, stamped here at
     /// mint — T-117). `None` = inherit the board default. Must stay after the
@@ -1584,6 +1612,14 @@ pub struct Board {
     /// starts the ticket itself, and nothing about the authority changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crown: Option<ulid::Ulid>,
+    /// This board's agent tiers (T-443): its own, and its overrides of the
+    /// machine's by id (`tier::Book`). The machine's live in `tiers.toml`
+    /// and ride the snapshot separately.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tiers: Vec<crate::tier::Tier>,
+    /// This board's default tier; `None` inherits the machine's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tier: Option<String>,
 }
 
 /// The crown's spawn budget when the file says nothing (T-412): three
@@ -1648,6 +1684,8 @@ impl Default for Board {
             follow_up_mode: FollowUpMode::default(),
             prompts: crate::prompts::PromptSet::default(),
             crown: None,
+            tiers: Vec::new(),
+            default_tier: None,
         }
     }
 }
@@ -2642,6 +2680,7 @@ mod tests {
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            tier: None,
             import_origin: None,
             raised: None,
             workspace: None,

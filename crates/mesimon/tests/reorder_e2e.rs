@@ -52,7 +52,8 @@ fn a_card_reorders_inside_its_own_column() {
             c.request(Command::CreateTicket {
                 column: "TODO".into(),
                 title: title.into(),
-                workspace: None
+                workspace: None,
+                tier: None
             }),
             Response::Created { .. }
         ));
@@ -117,6 +118,7 @@ fn completed_column_stay_survives_short_moves_and_restart() {
         column: "IN PROGRESS".into(),
         title: "timed".into(),
         workspace: None,
+        tier: None,
     }) else {
         panic!("create failed")
     };

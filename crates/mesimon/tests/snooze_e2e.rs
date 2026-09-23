@@ -35,11 +35,13 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
         column: "TODO".into(),
         title: "stays".into(),
         workspace: None,
+        tier: None,
     });
     let _ = c.request(Command::CreateTicket {
         column: "TODO".into(),
         title: "napper".into(),
         workspace: None,
+        tier: None,
     });
     let board = c.board();
     let stays = board.tickets.iter().find(|t| t.title == "stays").unwrap().id;

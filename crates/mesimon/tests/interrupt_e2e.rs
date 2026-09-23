@@ -64,6 +64,7 @@ fn interrupted_turn_demotes_to_idle_without_any_hook() {
         column: "TODO".into(),
         title: "intr".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
 

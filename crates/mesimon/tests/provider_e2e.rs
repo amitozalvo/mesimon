@@ -124,8 +124,12 @@ impl Fixture {
 }
 
 fn ticket(c: &mut TestClient, title: &str, workspace: Option<WorkspaceStrategy>) -> ulid::Ulid {
-    match c.request(Command::CreateTicket { column: "TODO".into(), title: title.into(), workspace })
-    {
+    match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace,
+        tier: None,
+    }) {
         Response::Created { id, .. } => id,
         response => panic!("create ticket: {response:?}"),
     }
@@ -285,7 +289,8 @@ fn starts_with_any_status_line(footer: &str) {
             text: "queued instructions".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -374,7 +379,8 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
             text: "first words".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -385,7 +391,8 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
             text: "replacement words".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -506,7 +513,8 @@ fn lost_codex_observation_holds_the_checkout_and_recovers_without_duplicate_subm
             text: "after observation recovers".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -546,7 +554,8 @@ fn sleeping_codex_holds_checkout_and_refuses_wake_until_worker_stops() {
             text: "after owned server stops".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -772,7 +781,8 @@ fn daemon_handover_keeps_sent_codex_prompt_held_without_pressing_enter_again() {
             text: "send exactly once".into(),
             queued: false,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Ok
     ));
@@ -810,7 +820,8 @@ fn daemon_handover_abandons_unpasted_volatile_words_without_submitting_partial_i
             text: "volatile custom words".into(),
             queued: false,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Ok
     ));
@@ -900,7 +911,8 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
             text: "wait".into(),
             queued: true,
             accept_plan: false,
-            plan: false
+            plan: false,
+            tier: None
         }),
         Response::Queued { .. }
     ));
@@ -1006,4 +1018,53 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
         .expect("old cleanup evidence retained separately from new runtime generation");
     assert_eq!(retained["snapshot"]["generation"], json!(old.codex_generation.unwrap()));
     assert_eq!(retained["snapshot"]["stopped"], false);
+}
+
+/// T-443: a Codex seat owed a tier switch is parked at its idle, waits for
+/// its runtime to confirm the stop (a Codex wake cannot acknowledge
+/// unverified cleanup), and is then woken on the new tier's config — the
+/// same thread resumed.
+#[test]
+fn a_codex_tier_switch_parks_waits_for_the_stop_and_wakes_on_the_new_tier() {
+    use mesimon_core::tier::{Effort, Tier, TierScope};
+    let Some(h) = Fixture::boot("providertier") else { return };
+    let mut c = h.client();
+    let reviewer = Tier {
+        id: "01REVIEW".into(),
+        name: "reviewer".into(),
+        provider: AgentProvider::Codex,
+        model: "gpt-6-astra".into(),
+        effort: Effort::High,
+    };
+    assert!(matches!(
+        c.request(Command::SaveTier { scope: TierScope::Board, tier: reviewer }),
+        Response::Ok
+    ));
+    select(&mut c, AgentProvider::Codex);
+    let t = ticket(&mut c, "codex switch", None);
+    let id = spawn(&mut c, t);
+    h.codex_ready(&mut c, id);
+    let thread = session(&mut c, id).codex_thread_id.clone();
+    assert!(thread.is_some(), "a thread to resume");
+    h.control(id, json!({"stop_delay":2}));
+    std::thread::sleep(Duration::from_millis(250));
+    assert!(matches!(
+        c.request(Command::SetTicketTier { id: t, tier: Some("01REVIEW".into()) }),
+        Response::Ok
+    ));
+    wait_until(Duration::from_secs(15), "the park for the switch", || {
+        let rec = session(&mut c, id);
+        rec.tier_wake && rec.state == SessionState::Sleeping
+    });
+    assert!(session(&mut c, id).codex_stopping, "the stop is not confirmed yet");
+    wait_until(Duration::from_secs(20), "the wake on the new tier", || {
+        let rec = session(&mut c, id);
+        !rec.tier_wake && rec.tier == "01REVIEW" && rec.state != SessionState::Sleeping
+    });
+    let rec = session(&mut c, id);
+    assert_eq!(rec.codex_thread_id, thread, "the same thread");
+    let config = std::fs::read_to_string(h.paths.hooks_dir().join(format!("{id}.codex.json")))
+        .expect("the runtime's config");
+    assert!(config.contains(r#"model=\"gpt-6-astra\""#), "{config}");
+    assert!(config.contains(r#"model_reasoning_effort=\"high\""#), "{config}");
 }

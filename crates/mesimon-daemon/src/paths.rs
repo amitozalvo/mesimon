@@ -183,6 +183,13 @@ pub fn state_root() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".local/state/mesimon"))
 }
 
+/// The machine's agent tiers (T-443), `tiers.toml` beside every board's
+/// state dir: the one list every repo's daemon reads, like
+/// `team/device.toml`, and writes only on a person's gesture.
+pub fn machine_tiers_file() -> Result<PathBuf> {
+    Ok(state_root()?.join("tiers.toml"))
+}
+
 /// Create `dir` if missing, then insist it is a real directory that this uid
 /// owns, and close it to everyone else. Errors name the path.
 pub fn own_private_dir(dir: &Path) -> Result<()> {

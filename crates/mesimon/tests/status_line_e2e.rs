@@ -49,6 +49,7 @@ fn the_status_line_moves_on_a_fresh_server_and_a_live_one() {
         column: "TODO".into(),
         title: "where is the bar".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = c.board().tickets.first().expect("ticket").id;
     match c.request(Command::SpawnSession {

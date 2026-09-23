@@ -42,6 +42,7 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
         column: "TODO".into(),
         title: "brief me".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = c.board().tickets.first().expect("ticket").id;
     assert!(matches!(
@@ -146,6 +147,7 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
         column: "TODO".into(),
         title: "bare title".into(),
         workspace: None,
+        tier: None,
     });
     let bare = c.board().tickets.into_iter().find(|t| t.title == "bare title").unwrap().id;
     let bsid = match c.request(Command::SpawnSession {

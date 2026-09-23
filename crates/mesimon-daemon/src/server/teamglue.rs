@@ -1223,6 +1223,7 @@ impl Daemon {
                 // Never the local composer's automation: a teammate's ticket
                 // is data until the owner starts it.
                 execution_policy: ExecutionPolicy::OwnerOnly,
+                tier: None,
                 import_origin: None,
                 raised: None,
                 workspace: None,
@@ -1424,7 +1425,12 @@ mod tests {
     fn a_viewer_may_read_and_tag_and_nothing_else() {
         let id = ulid::Ulid::new();
         let edits = [
-            Command::CreateTicket { column: "TODO".into(), title: "x".into(), workspace: None },
+            Command::CreateTicket {
+                column: "TODO".into(),
+                title: "x".into(),
+                workspace: None,
+                tier: None,
+            },
             Command::CreateTicketWithNote {
                 column: "TODO".into(),
                 title: "x".into(),
@@ -1432,6 +1438,7 @@ mod tests {
                 text: String::new(),
                 uploads: Vec::new(),
                 tags: Vec::new(),
+                tier: None,
             },
             Command::RenameTicket { id, title: "y".into() },
             Command::MoveTicket { id, column: "DOING".into(), before: None },

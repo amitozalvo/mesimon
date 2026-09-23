@@ -84,6 +84,10 @@ pub struct LaunchContext<'a> {
     /// once; a later wake reads the column again. Claude reads it; Codex
     /// has no launch flag for its plan mode and ignores it.
     pub plan: bool,
+    /// The agent tier this launch runs on (T-443), already resolved for the
+    /// session's provider (`tier::Book::launch`): its model and effort ride
+    /// argv, a built-in passes nothing.
+    pub tier: mesimon_core::tier::Tier,
 }
 
 pub struct LaunchSpec {

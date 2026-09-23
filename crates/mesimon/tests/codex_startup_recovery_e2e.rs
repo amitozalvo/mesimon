@@ -61,6 +61,7 @@ fn exercise(phase: &str, expected_resume: Option<Option<&str>>) {
         column: "TODO".into(),
         title: "startup recovery".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         response => panic!("create: {response:?}"),
@@ -179,6 +180,7 @@ fn a_crashed_runtime_on_a_live_ticket_releases_the_checkout() {
         column: "TODO".into(),
         title: "cleanup release".into(),
         workspace: None,
+        tier: None,
     }) {
         Response::Created { id, .. } => id,
         response => panic!("create: {response:?}"),

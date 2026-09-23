@@ -37,6 +37,7 @@ pub mod shellenv;
 pub mod snooze;
 pub mod team;
 pub mod text;
+pub mod tier;
 pub mod train;
 pub mod verdict;
 pub mod workspace;

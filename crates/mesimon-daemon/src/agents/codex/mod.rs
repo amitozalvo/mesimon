@@ -109,11 +109,31 @@ fn policy_flags(column: &mesimon_core::board::ColumnSettings) -> Vec<String> {
     flags
 }
 
+/// The ticket's tier as Codex config (T-443): `model` and
+/// `model_reasoning_effort`, the keys `~/.codex/config.toml` itself uses.
+/// `-c` rather than `-m`, because `config_flags` reach both the app server
+/// and the native client, and a resumed thread takes them too. The model is
+/// `tier::check_model`'s whitelist, so it needs no TOML escaping.
+fn tier_flags(tier: &mesimon_core::tier::Tier) -> Vec<String> {
+    let mut flags = Vec::new();
+    if tier.provider != mesimon_core::board::AgentProvider::Codex {
+        return flags;
+    }
+    if let Some(model) = tier.model_arg() {
+        flags.extend(["-c".into(), format!("model=\"{model}\"")]);
+    }
+    if let Some(effort) = tier.effort_arg() {
+        flags.extend(["-c".into(), format!("model_reasoning_effort=\"{effort}\"")]);
+    }
+    flags
+}
+
 fn prepare(context: &LaunchContext<'_>, resume: Option<String>) -> Result<LaunchSpec, String> {
     let id = context.session;
     let generation = (uuid::Uuid::new_v4().as_u128() as u64).max(1);
     let stem = format!("cdx-{}-{:08x}", &id.simple().to_string()[..16], generation as u32);
     let mut config_flags = policy_flags(&context.column);
+    config_flags.extend(tier_flags(&context.tier));
     // Stable definitions let native /hooks trust survive ticket changes.
     // Identity and guarded roots are invocation environment, not hook text.
     // Codex 0.153.4 preserves user hooks from both config.toml and hooks.json
@@ -403,5 +423,27 @@ mod policy_tests {
         );
         column.codex_sandbox = CodexSandbox::Inherit;
         assert_eq!(policy_flags(&column), ["-c", "approval_policy=\"never\""]);
+    }
+
+    /// T-443: a Codex tier is two config keys; a Claude tier, and a
+    /// built-in, are none.
+    #[test]
+    fn a_codex_tier_is_model_and_reasoning_effort_config() {
+        use mesimon_core::board::AgentProvider;
+        use mesimon_core::tier::{Effort, Tier};
+        let reviewer = Tier {
+            id: "A".into(),
+            name: "reviewer".into(),
+            provider: AgentProvider::Codex,
+            model: "gpt-6-astra".into(),
+            effort: Effort::High,
+        };
+        assert_eq!(
+            tier_flags(&reviewer),
+            ["-c", "model=\"gpt-6-astra\"", "-c", "model_reasoning_effort=\"high\""]
+        );
+        assert!(tier_flags(&Tier::builtin(AgentProvider::Codex)).is_empty());
+        let claude = Tier { provider: AgentProvider::ClaudeCode, ..reviewer };
+        assert!(tier_flags(&claude).is_empty());
     }
 }

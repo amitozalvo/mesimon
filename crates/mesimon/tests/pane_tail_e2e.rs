@@ -53,6 +53,7 @@ fn the_terminal_zone_reads_the_shell_pane() {
         column: "TODO".into(),
         title: "tail".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
 

@@ -74,6 +74,7 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
         column: "TODO".into(),
         title: "intrtail".into(),
         workspace: None,
+        tier: None,
     });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
 
