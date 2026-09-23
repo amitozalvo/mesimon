@@ -105,6 +105,22 @@ in the Esc menu under `Release notes` and on GitHub.
   `accept plan`: Shift+Tab no longer cycles it to `queued`, and the grown
   field reads `accept the plan ∙ words go right after` instead of
   `ask agent`.
+- **A squash-merged branch reads merged even when the base changed nearby.**
+  The merged-by-patch check compared both sides with three lines of context,
+  so a commit on the base within three lines of the branch's edit, landed
+  before the squash, left the ticket reading unmerged and blocked DONE and
+  delete. Only the changed lines are compared now.
+- **`External sessions` in the Esc menu opens at once.** The scan of
+  `~/.claude` transcripts ran on the daemon's main thread (1.2 s over 2,000
+  files), holding every client and hook while the board waited. It runs on a
+  worker now: the drawer opens on the last answer, shows that it is
+  scanning, and refreshes when the scan lands. Long lists scroll, with the
+  position shown in the title.
+- **A quiet pane with a tool call in flight no longer reads `interrupted`.**
+  A long test run inside a tool wrote nothing to the pane for a minute, and
+  the silence probe marked the turn interrupted. The probe now checks the
+  transcript first and holds while a tool call has no result yet. A session
+  with no transcript path is still judged on silence alone.
 
 ## v0.1.0-alpha.24 — 2026-09-22
 
