@@ -304,7 +304,10 @@ pub enum Signal {
     /// abort-only class → `TranscriptHint{AbortedMidStream}`, dogfood
     /// 2026-08-30: post-turn painting kept panes "active" for 60–80 s, so
     /// this probe alone left interrupted cards on "working"). PaneQuiet
-    /// remains the fallback for a record that never lands.
+    /// remains the fallback for a record that never lands — and the daemon
+    /// holds it while the transcript shows a tool in flight or a fresh reply
+    /// (`tail::turn_in_flight`, T-439): a live Claude Code pane can write no
+    /// byte for over a minute while a tool runs.
     PaneQuiet,
     /// Daemon-side probe while `Running`: Claude Code's own
     /// `~/.claude/sessions/<pid>.json` reads `status: idle`, stamped after

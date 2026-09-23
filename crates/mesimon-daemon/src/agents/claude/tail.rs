@@ -7,7 +7,9 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use mesimon_core::adopt::{classify_tail_record, turn_edge, TailEvent, ToolLedger, TurnEdge};
+use mesimon_core::adopt::{
+    classify_tail_record, record_ms, turn_edge, TailEvent, ToolLedger, TurnEdge,
+};
 
 /// The last uuid-bearing record's classification — how a transcript nobody
 /// is streaming RESTED (daemon-restart recovery). Reads at most the final
@@ -28,6 +30,50 @@ pub fn last_event(path: &Path) -> Option<TailEvent> {
         }
     }
     None
+}
+
+/// Is a turn IN FLIGHT on this transcript as of `now` — a tool running, or a
+/// reply under way? The pane probe asks this before it calls a silent pane an
+/// interrupt (T-439, 2026-09-23): a live Claude Code pane wrote no byte
+/// through a 63 s test suite, so it read as an Esc and the card wore
+/// "interrupted" until the tool's `PostToolUse` put it back. The last uuid
+/// record decides, trailing latches and attachments skipped. A trailing tool
+/// call with no result is a tool in flight for as long as it runs — the
+/// transcript is still throughout (T-265), so no clock bounds it. Any other
+/// trailing assistant record, or a tool's result the model has yet to answer,
+/// is a reply under way while its stamp is inside `quiet_ms`; past that the
+/// fallback is the fallback again. The recordless Esc leaves the user's
+/// prompt as the last word, a mid-turn Esc lands an abort record, a finished
+/// turn its close: none of those reads as in flight.
+pub fn turn_in_flight(path: &Path, now: u64, quiet_ms: u64) -> bool {
+    let Some(records) = tail_records(path) else { return false };
+    for v in records {
+        let kind = v.get("type").and_then(serde_json::Value::as_str);
+        let fresh = || record_ms(&v).is_some_and(|at| now.saturating_sub(at) < quiet_ms);
+        match classify_tail_record(&v) {
+            TailEvent::Latch => continue,
+            TailEvent::Other if kind == Some("attachment") => continue,
+            TailEvent::ToolInFlight => return true,
+            TailEvent::AssistantText { .. } => return fresh(),
+            TailEvent::Other if kind == Some("assistant") => return fresh(),
+            TailEvent::Other if kind == Some("user") && carries_tool_result(&v) => return fresh(),
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// A `user` record whose content holds a `tool_result` block: a tool came
+/// back and the model owes the next word.
+fn carries_tool_result(v: &serde_json::Value) -> bool {
+    v.get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|blocks| {
+            blocks
+                .iter()
+                .any(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_result"))
+        })
 }
 
 /// Does the transcript say the turn that began at `since` (epoch ms) has
@@ -315,5 +361,62 @@ mod tests {
         std::fs::write(&p, "").unwrap();
         assert_eq!(last_event(&p), None);
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// T-439: the pane probe's question. A tool with no result is in flight
+    /// however long it runs; a reply or a returned tool is in flight while
+    /// fresh; a prompt, a close and an abort never are.
+    #[test]
+    fn turn_in_flight_reads_the_tail() {
+        let path = tmp("inflight");
+        let quiet = 60_000;
+        let at = |s: &str| mesimon_core::adopt::iso_ms(s).unwrap();
+        let t0 = "2026-09-23T08:33:11.000Z";
+        let write = |lines: &[serde_json::Value]| {
+            let text: Vec<String> = lines.iter().map(|v| v.to_string()).collect();
+            std::fs::write(&path, text.join("\n") + "\n").unwrap();
+        };
+        let prompt = serde_json::json!({"uuid":"p","type":"user","timestamp":t0,
+            "message":{"role":"user","content":"do the thing"}});
+        let call = serde_json::json!({"uuid":"c","type":"assistant","timestamp":t0,
+            "message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]}});
+        let result = serde_json::json!({"uuid":"r","type":"user","timestamp":t0,
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}});
+        let attachment =
+            serde_json::json!({"uuid":"a","type":"attachment","timestamp":t0,"attachment":{}});
+        let text = serde_json::json!({"uuid":"x","type":"assistant","timestamp":t0,
+            "message":{"stop_reason":null,"content":[{"type":"text","text":"Build is clean."}]}});
+        let thinking = serde_json::json!({"uuid":"k","type":"assistant","timestamp":t0,
+            "message":{"stop_reason":"tool_use","content":[{"type":"thinking","thinking":"hm"}]}});
+        let close = serde_json::json!({"uuid":"d","type":"system","subtype":"turn_duration","timestamp":t0,"durationMs":5});
+        let abort = serde_json::json!({"uuid":"e","type":"user","timestamp":t0,
+            "message":{"role":"user","content":"[Request interrupted by user for tool use]"}});
+        let latch = serde_json::json!({"type":"cost-state","timestamp":t0});
+
+        // The recordless Esc: the prompt is the last word, however fresh.
+        write(std::slice::from_ref(&prompt));
+        assert!(!turn_in_flight(&path, at(t0) + 1_000, quiet));
+        // A tool in flight, for as long as it runs — a trailing latch or
+        // attachment does not hide it.
+        write(&[prompt.clone(), call.clone()]);
+        assert!(turn_in_flight(&path, at(t0) + 10 * 60_000, quiet));
+        write(&[prompt.clone(), call.clone(), latch.clone(), attachment.clone()]);
+        assert!(turn_in_flight(&path, at(t0) + 10 * 60_000, quiet));
+        // The tool came back: the model owes a word, while that is fresh.
+        write(&[prompt.clone(), call.clone(), result.clone(), attachment.clone()]);
+        assert!(turn_in_flight(&path, at(t0) + quiet - 1, quiet));
+        assert!(!turn_in_flight(&path, at(t0) + quiet, quiet));
+        // A reply under way — text or a thinking block — same window.
+        for reply in [text.clone(), thinking.clone()] {
+            write(&[prompt.clone(), call.clone(), result.clone(), reply]);
+            assert!(turn_in_flight(&path, at(t0) + quiet - 1, quiet));
+            assert!(!turn_in_flight(&path, at(t0) + quiet, quiet));
+        }
+        // A finished turn and an Esc are not in flight, however fresh.
+        write(&[prompt.clone(), call.clone(), result.clone(), text.clone(), close]);
+        assert!(!turn_in_flight(&path, at(t0), quiet));
+        write(&[prompt, call, abort]);
+        assert!(!turn_in_flight(&path, at(t0), quiet));
+        let _ = std::fs::remove_file(&path);
     }
 }

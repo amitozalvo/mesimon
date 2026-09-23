@@ -113,11 +113,25 @@ impl AgentRecovery for ClaudeRecovery {
                 vec![observation(Signal::SpawnProbe { bytes, osc0, resume }, "probe")]
             }
             RecoverySample::Activity { last_output_ms } => {
-                if now.saturating_sub(last_output_ms) < pane_quiet_ms() {
-                    Vec::new()
-                } else {
-                    vec![observation(Signal::PaneQuiet, "activity")]
+                let quiet = pane_quiet_ms();
+                if now.saturating_sub(last_output_ms) < quiet {
+                    return Vec::new();
                 }
+                // A silent pane is not a dead turn while the transcript
+                // says one is in flight (T-439): a live Claude Code pane
+                // wrote no byte through a 63 s suite, its result and the
+                // next call, so the suite read as an Esc and the card wore
+                // "interrupted" until the tool's PostToolUse put it back.
+                // One 64 KiB read a second, and only past the quiet
+                // threshold on a Running pane.
+                let in_flight = record
+                    .transcript_path
+                    .as_deref()
+                    .is_some_and(|p| tail::turn_in_flight(std::path::Path::new(p), now, quiet));
+                if in_flight {
+                    return Vec::new();
+                }
+                vec![observation(Signal::PaneQuiet, "activity")]
             }
             RecoverySample::Status => self.status_observation(record, now).into_iter().collect(),
             RecoverySample::Transcript => self.transcript_observations(record, now),
@@ -286,6 +300,14 @@ impl ClaudeRecovery {
 /// pane "active" for 60–80 s live (STALE-MAP, T-50), so the recordless case
 /// was never a fast one. Sixty seconds clears every working silence
 /// measured and costs that rare case a minute it was mostly paying anyway.
+///
+/// And silence alone no longer decides (T-439, 2026-09-23): a live Claude
+/// Code 2.1.280 pane held `#{window_activity}` still through a 63 s test
+/// suite, its result and the next call — Ink writes nothing while the frame
+/// does not change, and what froze that frame is unmeasured — and the card
+/// wore "interrupted" for 47 s of real work. The verdict is held while
+/// `tail::turn_in_flight` finds a tool with no result or a reply stamped
+/// inside the window; the recordless Esc leaves neither.
 const PANE_QUIET_MS: u64 = 60_000;
 /// A `status: idle` in Claude's session file counts only when stamped this
 /// far after the Running spell began: the previous turn's `idle` write and
@@ -388,7 +410,9 @@ fn resting_hint(path: &std::path::Path, now: u64) -> Option<TailHint> {
         // STILL for as long as it does — the file's quiet says nothing here
         // (T-265: a reload during a 3.5-minute `cargo` call). Seed Running;
         // a turn that really died is `probe_activity`'s to catch, off the
-        // pane's own quiet, which a tool in flight keeps painting.
+        // pane's own quiet — and since T-439 that probe asks the tail the
+        // same question first, because a live pane can go byte-silent for
+        // over a minute while a tool runs.
         TailEvent::ToolInFlight => Some(TailHint::ToolInFlight),
         // A trailing user/attachment record: the turn may be in flight — say
         // nothing while the file is fresh, idle once it has clearly died.
@@ -625,5 +649,38 @@ mod recovery_tests {
         assert_eq!(observations[0].source, "tail");
         assert!(record.detail.is_none());
         assert_eq!(record.state, SessionState::Running);
+    }
+
+    /// T-439: a pane silent past the threshold is still not quiet while the
+    /// transcript shows a tool in flight; once the turn has closed the probe
+    /// speaks again, and a record with no transcript (the stub e2es) is
+    /// judged on silence alone as before.
+    #[test]
+    fn a_silent_pane_with_a_tool_in_flight_is_not_quiet() {
+        let history = History::new();
+        history.append(serde_json::json!({"uuid":"call", "type":"assistant",
+            "timestamp":"2026-09-23T08:33:11.000Z", "message":{"stop_reason":"tool_use",
+            "content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo nextest run"}}]}}));
+        let mut record = record(SessionState::Running);
+        record.transcript_path = Some(history.0.display().to_string());
+        let mut recovery = ClaudeRecovery::default();
+        let now = 1_790_152_451_076; // 08:34:11, sixty seconds after the pane's last byte
+        let silent = || RecoverySample::Activity { last_output_ms: 1_790_152_391_000 };
+        assert!(recovery.needs_poll(&record, RecoveryChannel::Activity, now));
+        assert!(recovery.poll(&record, silent(), now).is_empty(), "tool in flight");
+        // The turn closes, the pane stays silent: the fallback is back.
+        history.append(serde_json::json!({"uuid":"res", "type":"user",
+            "timestamp":"2026-09-23T08:34:59.000Z",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}));
+        history
+            .append(serde_json::json!({"uuid":"end", "type":"system", "subtype":"turn_duration",
+            "timestamp":"2026-09-23T08:35:00.000Z", "durationMs": 1}));
+        let observations = recovery.poll(&record, silent(), now + 120_000);
+        assert!(matches!(observations[0].signal, Signal::PaneQuiet));
+        assert_eq!(observations[0].source, "activity");
+        // No transcript to ask: silence decides, as it always did.
+        record.transcript_path = None;
+        let observations = recovery.poll(&record, silent(), now);
+        assert!(matches!(observations[0].signal, Signal::PaneQuiet));
     }
 }

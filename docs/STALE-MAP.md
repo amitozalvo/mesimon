@@ -13050,3 +13050,66 @@ unchanged when the rows fit, and no golden moved.
 read `external` off the `RescanExternal` reply (`m3_e2e` ×3, `external_provider_e2e` ×2,
 `provider_e2e`) now go through `common::rescan_external`, which asks and then polls `Snapshot`
 until `external_scanning` clears.
+
+## A silent pane with a tool in flight is not an interrupt (T-439, 2026-09-23, user: "T-437 was marked as stopped for a moment until it returned to be working ∙ the agent never stopped")
+
+**The bug.** T-437's card read `interrupted` from 08:34:12 to 08:34:59 while its agent ran a
+63 s `cargo ut` + `nextest` call. The feed has the whole story: `state_decision` at 08:34:11,
+signal `PaneQuiet`, source `activity`, Running → Idle{Interrupted} at Medium through the
+settle; the tool's `PostToolUse` at 08:34:59 committed Running again (`tool_completed_recovers_a_quiet_probe_misfire`,
+T-71's road, worked as designed). No hook was lost and no Esc was pressed. The probe fires on
+`#{window_activity}` sixty seconds still on a Running pane, and the pane's last byte was in the
+second the tool call landed (08:33:11.187, an `assistant` record with one `tool_use` block):
+nothing painted through a 41 s build, its result (08:33:52), two seconds of assistant text
+(08:33:54), the next call (08:33:56) and the suite that followed. The other Running session on
+the board (`138f55b2`, three tools of 16–43 s in the same minute) never tripped, so the tmux
+server was reading panes; this pane emitted nothing.
+
+**Why — the shape is measured, the trigger is not.** Ink writes bytes only when the frame
+changes, so a byte-silent pane is a frame that stood still for a minute while the process
+worked. What held it still is not known. The pane was in Claude Code's Focus view (`/focus`,
+2.1.269: "a view with just your prompt, a one-line work summary, and the response" —
+`capture-pane` shows no `⏺` tool rows, `Thought for 50s, searched for 1 pattern, ran 4 shell
+commands` is a turn's whole account) and that was the first suspect, refuted by measurement: a
+scratch 2.1.280 session in Focus view, on its own tmux server, painted `· Mulling… (1m 40s)`
+every second through a 100 s `python3 -c 'time.sleep(100)'` tool, `#{window_activity}` never
+more than a second behind the clock. Two more refuted first: a tmux focus-out (the pane gets
+`\e[O` when the user leaves it for the board; injected into my own pane with `send-keys -H 1b
+5b 4f`, it kept painting every second for 30 s) and tmux accounting (`input_parse_buffer` in
+3.6a calls `window_update_activity` on every non-empty read, attached or not, mode or not). Then
+two more, on the user's report ("I was inside for a moment ∙ an animated flashing bullet was
+working and the title there said that we are running the suite" — the card had already flipped
+when they went in, so the pane painted attached and was silent unattended): a real client
+attached to my pane and detached (the pane painted every second for 70 s afterwards), and a
+full-core cargo load (the whole suite, 90 s, activity never more than a second behind). Five
+candidates measured, five refuted; the trigger is unknown, and if the card flips again on a
+working pane, the pane's own state at that minute is the next thing to capture. The T-265
+block's premise — "a tool in flight keeps the pane painting through Claude's spinner, which is
+the clock a tool obeys where the transcript's does not" — held on the default view and does not
+hold in general, and the fix does not depend on the trigger.
+
+**The fix.** `tail::turn_in_flight(path, now, quiet_ms)` is the question the transcript can
+answer that the pane no longer can, and `ClaudeRecovery::poll`'s Activity arm asks it before it
+emits `PaneQuiet`: a trailing `tool_use` with no result is a tool in flight for as long as it
+runs (no clock — the transcript is still throughout, T-265); a trailing assistant record (text
+or thinking) or a trailing `tool_result` the model has yet to answer is a reply under way while
+its stamp is inside the quiet window; latches and attachments are skipped as `last_event` skips
+them. The recordless Esc leaves the user's prompt as the last word, a mid-turn Esc lands an
+abort record, a finished turn its close — none reads as in flight, so the probe's one measured
+purpose (spike S-E's Esc before the first output) is untouched. The read is 64 KiB once a
+second, and only on a Running pane already past the threshold. A record with no transcript path
+(the stub e2es) is judged on silence alone as before, which is why `interrupt_e2e` needs no
+change. The attention machine is untouched: the probe is evidence, and evidence is the daemon's
+to weigh.
+
+**Accepted imprecision.** A Focus-view session thinking for longer than the window with nothing
+yet written — the reply-under-way clause is bounded by the last record's stamp — can still
+trip the probe; the next block the model writes, or the tool's `PostToolUse`, corrects it as
+before. Unmeasured, and the status-file probe would be the earlier catch if Claude Code's
+`~/.claude/sessions/<pid>.json` were reliable on 2.1.280 — T-437's vanished mid-session while
+its process lived, which is its own question.
+
+**Tests.** `turn_in_flight_reads_the_tail` (tail) walks every trailing shape;
+`a_silent_pane_with_a_tool_in_flight_is_not_quiet` (recovery) is T-439's minute — the
+probe holds with the call outstanding, speaks once the turn has closed, and speaks at once with
+no transcript to ask.
