@@ -19,6 +19,7 @@ pub mod plan_dialog;
 pub mod resources;
 pub mod server;
 pub mod shellenv;
+pub mod started;
 pub mod state_replay;
 pub mod store;
 pub mod team;

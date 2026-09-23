@@ -170,7 +170,7 @@ fn candidate(
     let mtime_ms = mesimon_core::clock::epoch_ms(meta.modified().ok()?)?;
 
     let head = read_head(path)?;
-    if !cwd_matches(&head.cwd, roots) {
+    if !cwd_matches(&head.cwd, roots) || head.agent_sdk_run() {
         return None;
     }
 
@@ -380,6 +380,34 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert!(items[0].running_elsewhere, "own pid is alive");
         assert_eq!(items[0].name.as_deref(), Some("my session"));
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// A program's conversation is not a session a person could take over
+    /// (T-441); the CLI driven by an app is, and so is a head that names no
+    /// entrypoint at all.
+    #[test]
+    fn scan_skips_agent_sdk_runs() {
+        let home = tmp("sdk");
+        let repo = "/repo/s";
+        let dir = home.join("projects").join("-s");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (sid, entrypoint) in [(SID_A, "sdk-py"), (SID_B, "sdk-cli"), (SID_C, "cli")] {
+            std::fs::write(
+                dir.join(format!("{sid}.jsonl")),
+                format!(
+                    "{{\"type\":\"queue-operation\",\"sessionId\":\"{sid}\"}}\n\
+                     {{\"sessionId\":\"{sid}\",\"cwd\":\"{repo}\",\"entrypoint\":\"{entrypoint}\",\"type\":\"user\",\"uuid\":\"u0\"}}\n"
+                ),
+            )
+            .unwrap();
+        }
+        let bare = "dddddddd-4444-4e6f-8b1a-2c3d4e5f6a7b";
+        write_transcript(&home, "-s", "d.jsonl", bare, repo, "");
+        let items = scan(&home, &[PathBuf::from(repo)], &|_| false);
+        let mut ids: Vec<String> = items.iter().map(|i| i.id.to_string()).collect();
+        ids.sort();
+        assert_eq!(ids, [SID_B, SID_C, bare]);
         std::fs::remove_dir_all(home).ok();
     }
 

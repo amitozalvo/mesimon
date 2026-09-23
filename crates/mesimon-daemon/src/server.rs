@@ -335,6 +335,8 @@ pub struct Daemon {
     worktrees_barred: bool,
     /// `queue.json` (T-418): the same bar, for the same reason.
     queue_barred: bool,
+    /// `started.json` (T-441): the same bar. The set filters either way.
+    started_barred: bool,
     /// One attention machine per session, keyed by session UUID.
     machines: HashMap<uuid::Uuid, Machine>,
     /// Words mesimon owes a pane an ack for, by session — the ONE ledger
@@ -396,6 +398,10 @@ pub struct Daemon {
     /// A rescan asked for while one was walking: the answer in flight was
     /// started against an older `known` set, so one more walk follows it.
     external_rescan_wanted: bool,
+    /// Every conversation a session mesimon spawned has held (T-441,
+    /// `crate::started`): the census leaves these out after the record that
+    /// held one is gone or has moved on.
+    started: std::collections::HashSet<String>,
     /// Provider-owned passive observation cursors; never persisted.
     recovery: HashMap<uuid::Uuid, Box<dyn AgentRecovery>>,
     /// A person has seen the unknown-cleanup warning for this exact generation.
@@ -723,6 +729,9 @@ pub fn run(paths: Paths) -> Result<()> {
     // same predicate a live entry is swept by.
     let (queue_entries, queue_notices, queue_barred) = crate::askqueue::load_or_recover(&paths);
     notices.extend(queue_notices);
+    let (started, started_notices, started_barred) =
+        crate::started::load_or_recover(&paths, &board.sessions);
+    notices.extend(started_notices);
     let queued: Vec<QueuedAsk> = queue_entries
         .into_iter()
         .filter_map(|e| {
@@ -854,6 +863,7 @@ pub fn run(paths: Paths) -> Result<()> {
         sessions_barred: sessions_write_barred,
         worktrees_barred,
         queue_barred,
+        started_barred,
         machines,
         owed: HashMap::new(),
         queued,
@@ -865,6 +875,7 @@ pub fn run(paths: Paths) -> Result<()> {
         external: Vec::new(),
         external_scanning: false,
         external_rescan_wanted: false,
+        started,
         recovery: HashMap::new(),
         cleanup_resume_offers: HashMap::new(),
         reaping: HashMap::new(),
@@ -5481,11 +5492,25 @@ impl Daemon {
         let _ = store::save_columns(&self.paths, &self.board);
     }
 
-    fn persist_sessions(&self) {
+    /// Also the one place `started.json` learns a key (T-441): every change
+    /// of a record's conversation persists the sessions, so folding here
+    /// misses none — and folds before the bar, which is `sessions.json`'s.
+    fn persist_sessions(&mut self) {
+        if crate::started::fold(&mut self.started, &self.board.sessions) {
+            self.persist_started();
+        }
         if self.sessions_barred {
             return;
         }
         let _ = store::save_sessions(&self.paths, &self.board);
+    }
+
+    /// The single write path for `started.json`.
+    fn persist_started(&self) {
+        if self.started_barred {
+            return;
+        }
+        let _ = crate::started::save(&self.paths, &self.started);
     }
 
     /// The single write path for `worktrees.json`. This one guards real work:
@@ -5734,19 +5759,23 @@ impl Daemon {
 
     /// 19 §4 tier 1: transcript census, filtered to this repo (and worktrees),
     /// minus sessions already on the board (ours live in the same tree).
-    /// The conversation keys of every session the board holds for `kind`:
-    /// what the census leaves out, because the drawer lists what mesimon
-    /// does not already own.
-    fn known_conversations(&self, kind: SessionKind) -> Vec<String> {
-        let Some(adapter) = crate::agents::adapter(kind) else { return Vec::new() };
-        self.board
-            .sessions
-            .iter()
-            .filter(|session| {
-                session.kind == kind && (session.state.is_live() || session.codex_stopping)
-            })
-            .filter_map(|session| adapter.conversation_key(session))
-            .collect()
+    /// The conversation keys the census leaves out, because the drawer lists
+    /// what mesimon does not already own: every live record's, and every one
+    /// a record mesimon spawned has ever held (T-441). A dead ADOPTED
+    /// record's is not here — that conversation was started outside, and the
+    /// drawer is how it is imported again.
+    fn excluded_conversations(&self) -> std::collections::HashSet<String> {
+        let mut keys = self.started.clone();
+        keys.extend(
+            self.board
+                .sessions
+                .iter()
+                .filter(|session| session.state.is_live() || session.codex_stopping)
+                .filter_map(|session| {
+                    crate::agents::adapter(session.kind)?.conversation_key(session)
+                }),
+        );
+        keys
     }
 
     /// Start the census on a worker (T-437). One walk at a time: a rescan
@@ -5759,22 +5788,15 @@ impl Daemon {
         }
         self.external_scanning = true;
         let roots = crate::census::repo_roots(&self.paths.repo_root);
-        let known: Vec<(SessionKind, Vec<String>)> =
-            [AgentProvider::ClaudeCode, AgentProvider::Codex]
-                .into_iter()
-                .map(|provider| {
-                    let kind = provider.session_kind();
-                    (kind, self.known_conversations(kind))
-                })
-                .collect();
+        let known = self.excluded_conversations();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let mut items = Vec::new();
-            for (kind, known) in &known {
-                let Some(adapter) = crate::agents::adapter(*kind) else { continue };
-                items.extend(
-                    adapter.discover(&roots, &|identity| known.iter().any(|key| key == identity)),
-                );
+            for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex] {
+                let Some(adapter) = crate::agents::adapter(provider.session_kind()) else {
+                    continue;
+                };
+                items.extend(adapter.discover(&roots, &|identity| known.contains(identity)));
             }
             let _ = tx.send(Msg::ExternalScanned(items));
         });
@@ -5785,21 +5807,9 @@ impl Daemon {
     /// then broadcast, so an open drawer redraws on it.
     fn on_external_scanned(&mut self, items: Vec<ExternalItem>) {
         self.external_scanning = false;
-        let known: Vec<(SessionKind, Vec<String>)> =
-            [AgentProvider::ClaudeCode, AgentProvider::Codex]
-                .into_iter()
-                .map(|provider| {
-                    let kind = provider.session_kind();
-                    (kind, self.known_conversations(kind))
-                })
-                .collect();
-        self.external = items
-            .into_iter()
-            .filter(|item| {
-                let kind = item.provider.session_kind();
-                !known.iter().any(|(k, keys)| *k == kind && keys.contains(&item.conversation_id))
-            })
-            .collect();
+        let known = self.excluded_conversations();
+        self.external =
+            items.into_iter().filter(|item| !known.contains(&item.conversation_id)).collect();
         self.external.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms).then(a.id.cmp(&b.id)));
         if std::mem::take(&mut self.external_rescan_wanted) {
             self.rescan_external();

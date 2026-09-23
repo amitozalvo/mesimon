@@ -17,6 +17,20 @@ use serde_json::Value;
 pub struct TranscriptHead {
     pub session_id: uuid::Uuid,
     pub cwd: String,
+    /// What launched the process (`cli`, `sdk-cli`, `sdk-py`, …), read off
+    /// the record that carried `cwd`. Absent on older transcripts.
+    pub entrypoint: Option<String>,
+}
+
+impl TranscriptHead {
+    /// A conversation an Agent SDK program ran, not one a person started
+    /// (T-441): the `security-guidance` plugin's review hook alone left 225
+    /// `sdk-py` transcripts in one repo's worktrees, measured. `sdk-cli` is
+    /// the CLI driven by an app, and measured with a person's prompts — it
+    /// stays. `sdk-ts` is the TypeScript SDK's word, by symmetry.
+    pub fn agent_sdk_run(&self) -> bool {
+        matches!(self.entrypoint.as_deref(), Some("sdk-py" | "sdk-ts"))
+    }
 }
 
 /// Scan the head of a transcript (a chunk of newline-delimited JSON) for the
@@ -38,6 +52,7 @@ pub fn parse_transcript_head(head: &str) -> Option<TranscriptHead> {
 pub struct HeadScan {
     session_id: Option<uuid::Uuid>,
     cwd: Option<String>,
+    entrypoint: Option<String>,
 }
 
 impl HeadScan {
@@ -49,9 +64,14 @@ impl HeadScan {
         }
         if self.cwd.is_none() {
             self.cwd = v.get("cwd").and_then(Value::as_str).map(str::to_string);
+            self.entrypoint = v.get("entrypoint").and_then(Value::as_str).map(str::to_string);
         }
         match (self.session_id, self.cwd.as_ref()) {
-            (Some(session_id), Some(cwd)) => Some(TranscriptHead { session_id, cwd: cwd.clone() }),
+            (Some(session_id), Some(cwd)) => Some(TranscriptHead {
+                session_id,
+                cwd: cwd.clone(),
+                entrypoint: self.entrypoint.clone(),
+            }),
             _ => None,
         }
     }
@@ -466,7 +486,31 @@ mod tests {
         let h = parse_transcript_head(&head).expect("head");
         assert_eq!(h.session_id.to_string(), SID);
         assert_eq!(h.cwd, "/repo");
+        assert_eq!(h.entrypoint, None);
+        assert!(!h.agent_sdk_run());
         assert!(parse_transcript_head("{}\n{\"foo\":1}").is_none());
+    }
+
+    /// The measured shape of an Agent SDK run (T-441): queue latches that
+    /// carry `sessionId` and no `cwd`, then the prompt, which carries both
+    /// and the entrypoint.
+    #[test]
+    fn head_reads_the_entrypoint_off_the_record_that_carries_cwd() {
+        let head = |entrypoint: &str| {
+            format!(
+                "{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"sessionId\":\"{SID}\"}}\n\
+                 {{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"sessionId\":\"{SID}\"}}\n\
+                 {{\"type\":\"user\",\"uuid\":\"u0\",\"promptSource\":\"sdk\",\"entrypoint\":\"{entrypoint}\",\
+                 \"cwd\":\"/repo\",\"sessionId\":\"{SID}\"}}\n"
+            )
+        };
+        for (word, program) in
+            [("sdk-py", true), ("sdk-ts", true), ("sdk-cli", false), ("cli", false)]
+        {
+            let h = parse_transcript_head(&head(word)).expect("head");
+            assert_eq!(h.entrypoint.as_deref(), Some(word));
+            assert_eq!(h.agent_sdk_run(), program, "{word}");
+        }
     }
 
     #[test]

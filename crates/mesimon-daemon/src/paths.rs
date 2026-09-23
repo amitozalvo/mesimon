@@ -79,6 +79,11 @@ impl Paths {
     pub fn queue_file(&self) -> PathBuf {
         self.state_dir.join("queue.json")
     }
+    /// Every conversation a session mesimon spawned has held (T-441): what
+    /// the External drawer leaves out, kept past the record.
+    pub fn started_file(&self) -> PathBuf {
+        self.state_dir.join("started.json")
+    }
     /// This board's overrides of the machine's `prefs.json` (T-361): the
     /// TUI's file, not the daemon's, under the state dir so it is private to
     /// the machine and never rides a team board.

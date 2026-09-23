@@ -429,6 +429,33 @@ fn m3_adoption_and_sleep() {
     let hosting = rec.claude_session_id.expect("record points at its new conversation");
     assert_ne!(hosting, ghost, "a newly minted id, never the one with no transcript");
 
+    // --- What mesimon started stays out of the drawer once its record is
+    // gone (T-441). Both of the ghost's conversations get a transcript — the
+    // id it was spawned with and the one the fresh resume moved it to, the
+    // shape a `/clear` leaves — and so does an Agent SDK run. Deleting the
+    // ticket takes the ghost and the adopted record with it: the adopted
+    // conversation comes back for re-import, and nothing else does.
+    let transcript_of = |sid: &str, entrypoint: &str| {
+        std::fs::write(
+            proj.join(format!("{sid}.jsonl")),
+            format!(
+                "{{\"sessionId\":\"{sid}\",\"cwd\":\"{repo_canon}\",\"entrypoint\":\"{entrypoint}\",\"type\":\"user\",\"uuid\":\"u0\",\"message\":{{}}}}\n"
+            ),
+        )
+        .unwrap();
+    };
+    transcript_of(&ghost.to_string(), "cli");
+    transcript_of(&hosting.to_string(), "cli");
+    transcript_of("5d500000-2222-4e6f-8b1a-2c3d4e5f6a7b", "sdk-py");
+    assert!(matches!(c.request(Command::KillSession { id: ghost }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::DeleteTicket { id: home_ticket, discard_worktree: false }),
+        Response::Ok
+    ));
+    let external = rescan_external(&mut c);
+    let listed: Vec<String> = external.iter().map(|item| item.id.to_string()).collect();
+    assert_eq!(listed, [FOREIGN_SID], "only the conversation started outside mesimon");
+
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
 }

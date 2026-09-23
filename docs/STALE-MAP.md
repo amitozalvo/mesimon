@@ -13209,3 +13209,46 @@ SGR 5) and `crown_sweep_below_truecolor_is_a_walking_head` (at most one painted 
 no SGR 7; mono still). `ui`: `the_crowning_sweeps_the_title_on_the_card_and_the_page` — the
 cursor card and the page title each show a lit head and filled letters 600 ms in, the loop is
 animating, and nothing is lit at 3 s; it fails with the sweep disabled.
+
+## The External drawer lists only what mesimon did not start (T-441, 2026-09-23)
+
+**What was wrong.** `known_conversations` hid a transcript only while a live or sleeping record
+held its key, and nothing on disk said "mesimon started this". A deleted ticket takes its records
+with it (`delete_ticket`'s `sessions.retain`), a `/clear` or a fresh resume moves the record to a
+new id and orphans the file of the old one, and an exited record was never in the filter — each
+put mesimon's own conversation back in the drawer as foreign. Measured on the author's board
+with a read-only emulation of the census: 548 candidates, 296 shown. 225 were the
+`security-guidance` plugin's review hook — Python Agent SDK runs, head record `entrypoint:
+"sdk-py"`, not the `/security-review` skill the ticket guessed — and 50 had a
+`<state>/hooks/<uuid>.json`, i.e. mesimon minted them.
+
+**`started.json`** (`crate::started`, the sixth state file, `persist_started` its one write path):
+every conversation key a record mesimon **spawned** has held. `started::fold` runs at the top of
+`persist_sessions` (now `&mut self`), before `sessions.json`'s bar — every key change (spawn, a
+hook-learned `claude_session_id`, a fresh resume's new id, a Codex thread id) already persists
+the sessions, so no mutator has to remember the set. At startup the file is unioned with the
+stems of `hooks/*.json` (every Claude launch writes one and nothing deletes them) and the current
+records, and written back when that grew: that is the migration, and it is why the first start
+hides the 50. No cap: ~40 bytes a key. The census excludes `excluded_conversations()` — every
+live record's key, as before, plus the set — and the per-kind key lists are gone.
+
+**An adopted record contributes nothing**, on purpose: its conversation was started outside, and
+`m3_e2e`'s "exited import must re-surface in the drawer" is the re-import road. A dead spawned
+record's conversation no longer re-surfaces — its corpse row on the rail offers `enter resume`.
+The one crossing: an in-pane `/resume <foreign id>` in a spawned session folds that id in, and it
+stays out of the drawer after the record moves on.
+
+**Agent SDK runs are not listed.** `TranscriptHead` carries `entrypoint`, read off the record that
+carried `cwd`, and `census::candidate` drops `sdk-py` and `sdk-ts` before the tail read. `sdk-cli`
+stays: measured with a person's prompts ("publish new version"), the CLI driven by an app. `sdk-ts`
+is by symmetry; no transcript on the author's machine carries it.
+
+**What still shows** on the author's board, about 21 rows: ~5 sessions genuinely started outside,
+~10 test residue (`99999999-…`, `REPROOK`, `hello`) that the ticket judged not worth a rule, and
+~7 `/clear` orphans from before this change — ids learned through a hook that no file ever kept,
+so nothing can mark them now.
+
+**Tests.** `adopt` `head_reads_the_entrypoint_off_the_record_that_carries_cwd`; `census`
+`scan_skips_agent_sdk_runs`; `started` ×5 (the fold's provenance rule, the `hooks/` seed, the
+missing, newer and garbage files); `m3_e2e` writes transcripts for the ghost's two ids and an
+`sdk-py` run, deletes the ticket, and the drawer lists exactly the adopted conversation.
