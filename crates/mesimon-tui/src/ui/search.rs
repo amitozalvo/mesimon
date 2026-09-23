@@ -336,6 +336,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         } else {
             super::CrownMark::None
         },
+        app.card_tier_word(ticket.id).as_deref(),
     );
     let w = inner.width as usize;
     let now = now_ms();

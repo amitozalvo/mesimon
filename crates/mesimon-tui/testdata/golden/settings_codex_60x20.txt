@@ -1,9 +1,10 @@
  BOARD   mesimon › kanban-tui   7 tickets
 
-    TODO                               2   2   2   1
   ╭─ AGENTS ─────────────────────────────────────────────╮
-  │   Provider: Codex                                    │
-  │     new sessions only ∙ enter selects Claude Code    │
+  │   Default tier: claude                               │
+  │     this board uses codex (b) ∙ Claude Code ∙ its o~ │
+  │   Tiers: none yet                                    │
+  │     a name for a launch: provider, model, effort ∙ ~ │
   │   Agent brief: off                                   │
   │     one line: read the ticket first ∙ enter shows i~ │
   │   Agent tools: on                                    │
@@ -14,7 +15,6 @@
   │     this board ∙ after a finished turn ∙ enter cycl~ │
   │   Crown may start 3 agents at once                   │
   │     start_agent on the crowned ticket ∙ a sleeping ~ │
-  ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
-
+  ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
 
  SETTINGS                                            ? keys

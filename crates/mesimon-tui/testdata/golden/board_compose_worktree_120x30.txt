@@ -27,4 +27,4 @@
 
 
 
- NEW  enter save ∙ shift+enter save + ask agent ∙ esc cancel ∙ ^t tags ∙ tab describe ∙ ^p plan mode
+ NEW  enter save ∙ shift+enter save + ask agent ∙ esc cancel ∙ ^t tags ∙ tab describe ∙ ^p plan mode ∙ ^n tier

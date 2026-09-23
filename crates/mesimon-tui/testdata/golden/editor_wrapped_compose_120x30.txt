@@ -24,7 +24,7 @@
                               │                                                           │
                               │                                                           │
                               │                                                           │
-                              ╰──────────── ^s save ∙ esc close ∙ ^t tags ∙ ^p plan mode ─╯
+                              ╰── ^s save ∙ esc close ∙ ^t tags ∙ ^p plan mode ∙ ^n tier ─╯
 
 
  NEW

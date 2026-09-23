@@ -4,6 +4,8 @@
 //! SESSIONS rail now).
 
 mod images;
+mod tiers;
+pub use tiers::{TierField, TierRow};
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -344,6 +346,21 @@ pub enum Mode {
     Sharing {
         idx: usize,
         editing: Option<EditBuffer>,
+        armed: bool,
+    },
+    /// The agent tiers list (T-443), one level under Settings → Agents, in
+    /// the dialog's scope (`settings_board_scope`). `naming` is the last
+    /// row's name field while a new tier is being named.
+    Tiers {
+        idx: usize,
+        naming: Option<EditBuffer>,
+    },
+    /// One tier's page (T-443), by id. `field` is the Name or Model row as a
+    /// text field in place; `armed` is the removal row's first press.
+    TierEdit {
+        id: String,
+        idx: usize,
+        field: Option<EditBuffer>,
         armed: bool,
     },
     /// The CLAUDE.md offer's confirm dialog (T-217): the snippet that would
@@ -777,7 +794,14 @@ impl Pager {
 pub enum EditorPurpose {
     /// A new ticket: title + description, with the mini composer's picks
     /// riding along so Shift+Tab and `^t` keep working in the bigger room.
-    Compose { workspace: Option<WorkspaceStrategy>, tags: Vec<TagRef>, plan: bool },
+    /// `tier` (T-443) is the field's `^n` pick, a tier id; `None` is the
+    /// default.
+    Compose {
+        workspace: Option<WorkspaceStrategy>,
+        tags: Vec<TagRef>,
+        plan: bool,
+        tier: Option<String>,
+    },
     /// A note on a ticket that exists. `note: None` until the first save
     /// mints it.
     Note { ticket: ulid::Ulid, note: Option<ulid::Ulid> },
@@ -787,7 +811,8 @@ pub enum EditorPurpose {
     /// title row is the destination, read-only: the ticket's title, or the
     /// column's name.
     /// `plan` (T-434) is the field's `^p`, riding along like the rest.
-    Ask { target: AskTarget, queued: bool, accept_plan: bool, plan: bool },
+    /// `tier` (T-443) is the field's `^n`, riding along the same way.
+    Ask { target: AskTarget, queued: bool, accept_plan: bool, plan: bool, tier: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1065,6 +1090,9 @@ pub enum InputPurpose {
         /// `^p` (T-434): the claude Shift+Enter starts on the new ticket
         /// runs in plan mode. Rides the draft into the room and back.
         plan: bool,
+        /// `^n` (T-443): the tier the new ticket starts on, a tier id, riding
+        /// the mint. `None` is the default.
+        tier: Option<String>,
     },
     Rename {
         id: ulid::Ulid,
@@ -1101,6 +1129,10 @@ pub enum InputPurpose {
         /// a start, a wake, or an idle pane parked and woken with the flag.
         /// Off wherever the seat cannot take it (`App::plan_able`).
         plan: bool,
+        /// `^n` (T-443): the tier these words are for, a tier id. `None`
+        /// leaves the ticket's tier as it is; a pick is sent with the words
+        /// and applied first, so they ride the switch.
+        tier: Option<String>,
     },
 }
 
@@ -2569,6 +2601,10 @@ impl App {
             ("a prompt", buf.paste(text), buf.limit())
         } else if let Mode::ColumnSettings { naming: Some(buf), .. } = &mut self.mode {
             ("a column name", buf.paste(text), buf.limit())
+        } else if let Mode::Tiers { naming: Some(buf), .. } = &mut self.mode {
+            ("a tier name", buf.paste(text), buf.limit())
+        } else if let Mode::TierEdit { field: Some(buf), .. } = &mut self.mode {
+            ("a tier's field", buf.paste(text), buf.limit())
         } else {
             return Ok(false);
         };
@@ -3337,7 +3373,7 @@ impl App {
     pub(crate) fn plan_able(&self, target: Option<&AskTarget>) -> bool {
         use mesimon_core::board::{AgentProvider, SessionKind};
         let Some(target) = target else {
-            return self.board.agent_provider == AgentProvider::ClaudeCode;
+            return self.composer_provider() == AgentProvider::ClaudeCode;
         };
         let AskTarget::Ticket(t) = target else {
             return false;
@@ -3346,7 +3382,7 @@ impl App {
             return false;
         }
         match self.board.live_agent(*t) {
-            None => self.board.agent_provider == AgentProvider::ClaudeCode,
+            None => self.tiers().start_provider(*t) == AgentProvider::ClaudeCode,
             Some(rec) if rec.kind != SessionKind::Claude => false,
             Some(rec) => match rec.state {
                 SessionState::Sleeping => true,
@@ -3418,6 +3454,11 @@ impl App {
     /// reopens, and a closed door with no sign is a ticket that silently
     /// never merges.
     pub(crate) fn pending_row(&self, ticket: ulid::Ulid) -> Option<String> {
+        // A tier switch the seat owes (T-443) is what happens next, whatever
+        // else waits: it carries a queued ask with it.
+        if let Some(row) = self.tier_owed_row(ticket) {
+            return Some(row);
+        }
         let Some(p) = self.pending_of(ticket) else {
             let off = self.board.ticket(ticket).is_some_and(|t| t.manual_merge)
                 && self.wt_item(ticket).is_some_and(|w| w.status == "attached");
@@ -3714,6 +3755,11 @@ impl App {
             Mode::Prompts { .. } => Scope::Prompts,
             Mode::Sharing { editing: Some(_), .. } => Scope::Input,
             Mode::Sharing { .. } => Scope::Sharing,
+            Mode::Tiers { naming: Some(_), .. } | Mode::TierEdit { field: Some(_), .. } => {
+                Scope::Input
+            }
+            Mode::Tiers { .. } => Scope::Tiers,
+            Mode::TierEdit { .. } => Scope::TierEdit,
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
             Mode::Search(_) => Scope::Search,
@@ -4034,12 +4080,18 @@ impl App {
             // The daemon's answer (T-247), computed once beside the switches
             // it depends on; the snapshot after Enter or `i` withdraws it.
             brief_offer: self.claude_md.offer,
-            pref_scope_offered: matches!(self.mode, Mode::Notifications { .. })
-                || (matches!(self.mode, Mode::Settings { .. })
-                    && matches!(
-                        self.settings_section,
-                        keymap::SettingsSection::Appearance | keymap::SettingsSection::Behaviour
-                    )),
+            // The Agents section offers it too since T-443: the default
+            // tier and the tiers list are the machine's, and a board's.
+            pref_scope_offered: matches!(
+                self.mode,
+                Mode::Notifications { .. } | Mode::Tiers { naming: None, .. }
+            ) || (matches!(self.mode, Mode::Settings { .. })
+                && matches!(
+                    self.settings_section,
+                    keymap::SettingsSection::Appearance
+                        | keymap::SettingsSection::Behaviour
+                        | keymap::SettingsSection::Agents
+                )),
             pref_scope_board: self.settings_board_scope,
             board_overrides: self
                 .board_prefs
@@ -4104,7 +4156,24 @@ impl App {
             team_boards: self.team.boards.len(),
             teams: self.teams,
             mesophon: self.mesophon_available,
+            // Agent tiers (T-443): filled below, beside the dialog words
+            // that read the mode.
+            tier_cycle: false,
+            tier_default: String::new(),
+            tier_default_summary: String::new(),
+            tier_default_next: String::new(),
+            tier_default_here: false,
+            tier_machine_default: String::new(),
+            tier_board_uses: String::new(),
+            tier_names: String::new(),
+            claude_unused: false,
+            codex_in_use: false,
+            tiers_enter_word: "",
+            tier_edit_enter_word: "",
+            tier_on_step: false,
         };
+        // Agent tiers (T-443): the rows, the dialogs' Enter words and `^n`.
+        self.fill_tier_ctx(&mut ctx);
         // The sharing dialog's Enter reads its word off the row under the
         // cursor, which only the mode knows.
         if let Mode::Sharing { idx, armed, .. } = &self.mode {
@@ -4265,6 +4334,12 @@ impl App {
         if let Mode::Sharing { editing: Some(_), .. } = self.mode {
             return self.key_sharing_field(code, mods);
         }
+        if matches!(
+            self.mode,
+            Mode::Tiers { naming: Some(_), .. } | Mode::TierEdit { field: Some(_), .. }
+        ) {
+            return self.key_tier_field(code, mods);
+        }
         let Some(key) = crate::keys::to_key(code, mods) else {
             return Ok(());
         };
@@ -4413,6 +4488,7 @@ impl App {
                         description: None,
                         images: Vec::new(),
                         plan: false,
+                        tier: None,
                     },
                     buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
@@ -4765,19 +4841,15 @@ impl App {
             // Board state, not a preference: it goes to the daemon and comes
             // back on the snapshot, so there is nothing local to flip and the
             // row relabels itself off the answer.
-            Verb::AgentProvider => {
-                let provider = self.board.agent_provider.next();
-                match self.client.request(Command::SetAgentProvider { provider })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh()?;
-                        self.status = format!(
-                            "{} for new sessions ∙ existing sessions keep their provider",
-                            self.board.agent_provider.label()
-                        );
-                    }
-                }
+            // The default tier (T-443), in the dialog's scope: the machine's
+            // tiers.toml or this board's columns.toml, both the daemon's.
+            Verb::DefaultTier => self.cycle_default_tier()?,
+            Verb::Tiers => {
+                self.mode = Mode::Tiers { idx: 0, naming: None };
             }
+            // `^n` on the board or the ticket page; the fields take theirs
+            // in `key_input` and `key_editor`.
+            Verb::TierNext => self.cycle_tier()?,
             Verb::ParkAfterMinutes => {
                 let minutes = match self.board.park_after_minutes {
                     0 => 15,
@@ -4870,6 +4942,7 @@ impl App {
                                 true,
                                 accept_plan,
                                 plan,
+                                None,
                                 &text,
                             ));
                             self.status = "taken back ∙ edit or close to discard".into();
@@ -5095,12 +5168,14 @@ impl App {
             }
             // ---- sessions --------------------------------------------------
             Verb::Agent | Verb::Shell => {
-                let kind = if verb == Verb::Agent {
-                    self.board.agent_provider.session_kind()
-                } else {
-                    SessionKind::Bash
-                };
                 if let Some(id) = self.subject() {
+                    // The seat's own provider where it holds one; an empty
+                    // seat starts the ticket's tier's (T-443).
+                    let kind = if verb == Verb::Agent {
+                        self.agent_kind_for(id)
+                    } else {
+                        SessionKind::Bash
+                    };
                     self.focus_kind_or_spawn(id, kind)?;
                 }
             }
@@ -5133,6 +5208,7 @@ impl App {
                                 queued,
                                 accept_plan,
                                 plan: false,
+                                tier: None,
                             },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
@@ -5153,7 +5229,8 @@ impl App {
                         let plan = self.pending_of(id).is_some_and(|p| p.plan);
                         let target = AskTarget::Ticket(id);
                         if text.contains('\n') {
-                            let mut ed = self.ask_room(target, true, accept_plan, plan, &text);
+                            let mut ed =
+                                self.ask_room(target, true, accept_plan, plan, None, &text);
                             ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
                             self.mode = Mode::Editor(ed);
                         } else {
@@ -5164,6 +5241,7 @@ impl App {
                                     queued: true,
                                     accept_plan,
                                     plan,
+                                    tier: None,
                                 },
                                 buffer: EditBuffer::from_text(
                                     text,
@@ -5191,6 +5269,7 @@ impl App {
                                 queued,
                                 accept_plan,
                                 plan: false,
+                                tier: None,
                             },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
@@ -5210,6 +5289,7 @@ impl App {
                                 queued: ctx.checkout_busy,
                                 accept_plan: false,
                                 plan: false,
+                                tier: None,
                             },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
@@ -5652,6 +5732,29 @@ impl App {
                     *idx = step(*idx, n, down);
                 }
             }
+            // The tiers list and a tier's page (T-443): up/down select, and
+            // on the page left/right step the provider or the effort — the
+            // binding's gate keeps them to those two rows.
+            Scope::Tiers => {
+                let n = self.tier_rows().len();
+                if let Mode::Tiers { idx, .. } = &mut self.mode {
+                    *idx = step(*idx, n, down);
+                }
+            }
+            Scope::TierEdit => match verb {
+                Verb::CursorLeft | Verb::CursorRight => {
+                    if let Err(e) = self.tier_edit_step(verb == Verb::CursorRight) {
+                        self.status = e.to_string();
+                    }
+                }
+                _ => {
+                    let n = self.tier_fields().len();
+                    if let Mode::TierEdit { idx, armed, .. } = &mut self.mode {
+                        *idx = step(*idx, n, down);
+                        *armed = false;
+                    }
+                }
+            },
             // Over the headings, never onto one; any motion disarms.
             Scope::Sharing => {
                 let rows = self.sharing_rows();
@@ -5729,8 +5832,7 @@ impl App {
                     // press. Same road `c` takes on an empty seat — spawn,
                     // then focus — so the two cannot drift.
                     if matches!(self.rail_row(), Some(RailRow::NewAgent)) {
-                        return self
-                            .spawn_and_focus(ticket, self.board.agent_provider.session_kind());
+                        return self.spawn_and_focus(ticket, self.agent_kind_for(ticket));
                     }
                     // The terminal's ghost row (T-366): Enter arms, Enter
                     // again adopts. `handle_key` stands the arm down on any
@@ -5812,6 +5914,8 @@ impl App {
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
             }
             Scope::Sharing => self.sharing_act(),
+            Scope::Tiers => self.tiers_act(),
+            Scope::TierEdit => self.tier_edit_act(),
             // A column row is a toggle, a cycle, the sort or the delete; the
             // dialog STAYS and the row relabels off the snapshot.
             Scope::ColumnSettings => {
@@ -5904,6 +6008,18 @@ impl App {
             }
             Scope::Notifications => self.return_to_settings(Verb::Notifications),
             Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
+            Scope::Tiers => self.return_to_settings(Verb::Tiers),
+            // Back to the list, on the tier the page was about.
+            Scope::TierEdit => {
+                let Mode::TierEdit { id, .. } = &self.mode else { return };
+                let id = id.clone();
+                let idx = self
+                    .tier_rows()
+                    .iter()
+                    .position(|r| matches!(r, TierRow::Tier(t, _) if t.id == id))
+                    .unwrap_or(0);
+                self.mode = Mode::Tiers { idx, naming: None };
+            }
             Scope::Sharing => {
                 self.join_watch = None;
                 if self.mesophon_dialog {
@@ -6860,7 +6976,7 @@ impl App {
                 self.screen = Screen::Ticket { ticket, rail_idx };
             }
         } else if fresh {
-            self.spawn_and_focus(ticket, self.board.agent_provider.session_kind())?;
+            self.spawn_and_focus(ticket, self.agent_kind_for(ticket))?;
         } else {
             self.screen = Screen::Ticket { ticket, rail_idx: 0 };
         }
@@ -7217,9 +7333,9 @@ impl App {
             // the delivery toggle rides along.
             Some(Verb::Describe) => {
                 let mut ed = match purpose {
-                    InputPurpose::Create { workspace, tags, description, images, plan } => {
+                    InputPurpose::Create { workspace, tags, description, images, plan, tier } => {
                         let mut editor = Editor::new(
-                            EditorPurpose::Compose { workspace, tags, plan },
+                            EditorPurpose::Compose { workspace, tags, plan, tier },
                             buffer,
                             TextArea::from_text(
                                 description.as_deref().unwrap_or(""),
@@ -7232,8 +7348,8 @@ impl App {
                         }
                         editor
                     }
-                    InputPurpose::Prompt { target, queued, accept_plan, plan, .. } => {
-                        self.ask_room(target, queued, accept_plan, plan, buffer.as_str())
+                    InputPurpose::Prompt { target, queued, accept_plan, plan, tier, .. } => {
+                        self.ask_room(target, queued, accept_plan, plan, tier, buffer.as_str())
                     }
                     other => {
                         self.mode = Mode::Input { purpose: other, buffer };
@@ -7271,6 +7387,17 @@ impl App {
                     *plan = !*plan
                 }
                 InputPurpose::Rename { .. } | InputPurpose::RenameColumn { .. } => {}
+            },
+            // `^n` (T-443): the tier the launch these words end in runs on,
+            // riding the draft or the ask. The keymap offers it only where
+            // the field's ring has somewhere to go.
+            Some(Verb::TierNext) => match &mut purpose {
+                InputPurpose::Create { tier, .. } => self.step_field_tier(None, tier),
+                InputPurpose::Prompt { target: AskTarget::Ticket(t), tier, .. } => {
+                    let t = *t;
+                    self.step_field_tier(Some(t), tier)
+                }
+                _ => {}
             },
             // The ask history, shell-style. `↑` from the ordinary field keeps
             // the draft and shows the newest ask; each further `↑` goes one
@@ -7506,6 +7633,15 @@ impl App {
                 }
                 EditorPurpose::Note { .. } => {}
             },
+            // The field's `^n` (T-443) in the room.
+            Some(Verb::TierNext) => match &mut ed.purpose {
+                EditorPurpose::Compose { tier, .. } => self.step_field_tier(None, tier),
+                EditorPurpose::Ask { target: AskTarget::Ticket(t), tier, .. } => {
+                    let t = *t;
+                    self.step_field_tier(Some(t), tier)
+                }
+                _ => {}
+            },
             Some(Verb::EditorPaste) => {
                 if self.pending_paste.is_some() {
                     self.status = "clipboard read already pending".into();
@@ -7715,6 +7851,7 @@ impl App {
         queued: bool,
         accept_plan: bool,
         plan: bool,
+        tier: Option<String>,
         text: &str,
     ) -> Editor {
         let title = match &target {
@@ -7726,7 +7863,7 @@ impl App {
         let mut body = TextArea::new(mesimon_core::command::PROMPT_MAX_BYTES);
         body.paste(text);
         Editor::new(
-            EditorPurpose::Ask { target, queued, accept_plan, plan },
+            EditorPurpose::Ask { target, queued, accept_plan, plan, tier },
             EditBuffer::from_text(title, mesimon_core::board::TITLE_MAX_BYTES),
             body,
             Field::Body,
@@ -7738,12 +7875,12 @@ impl App {
     /// field held, so nothing is lost on the way back — a body that grew
     /// lines is dirty, and dirty takes the two-press discard.
     fn fold_ask(&mut self, ed: Editor) {
-        let EditorPurpose::Ask { target, queued, accept_plan, plan } = ed.purpose else {
+        let EditorPurpose::Ask { target, queued, accept_plan, plan, tier } = ed.purpose else {
             self.mode = Mode::Normal;
             return;
         };
         self.mode = Mode::Input {
-            purpose: InputPurpose::Prompt { target, walk: None, queued, accept_plan, plan },
+            purpose: InputPurpose::Prompt { target, walk: None, queued, accept_plan, plan, tier },
             buffer: history_field(ed.body.as_str()),
         };
     }
@@ -7753,7 +7890,8 @@ impl App {
     /// seat's word, the receipt in the status — line breaks and all. A blank
     /// room sends nothing and stays open; the daemon would refuse it too.
     fn editor_send(&mut self, ed: Editor) -> Result<()> {
-        let EditorPurpose::Ask { target, queued, accept_plan, plan } = ed.purpose.clone() else {
+        let EditorPurpose::Ask { target, queued, accept_plan, plan, tier } = ed.purpose.clone()
+        else {
             self.mode = Mode::Normal;
             return Ok(());
         };
@@ -7765,7 +7903,7 @@ impl App {
         }
         self.mode = Mode::Normal;
         self.commit_prompt(
-            InputPurpose::Prompt { target, walk: None, queued, accept_plan, plan },
+            InputPurpose::Prompt { target, walk: None, queued, accept_plan, plan, tier },
             text,
         )
     }
@@ -7774,13 +7912,20 @@ impl App {
     /// title, picks and description all riding along: `^s`'s road, and a
     /// clean Esc's. A blank body is no description.
     fn fold_composer(&mut self, ed: Editor) {
-        let EditorPurpose::Compose { workspace, tags, plan } = ed.purpose else {
+        let EditorPurpose::Compose { workspace, tags, plan, tier } = ed.purpose else {
             self.mode = Mode::Normal;
             return;
         };
         let description = Some(ed.body.as_str().to_string()).filter(|b| !b.trim().is_empty());
         self.mode = Mode::Input {
-            purpose: InputPurpose::Create { workspace, tags, description, images: ed.images, plan },
+            purpose: InputPurpose::Create {
+                workspace,
+                tags,
+                description,
+                images: ed.images,
+                plan,
+                tier,
+            },
             buffer: ed.title,
         };
     }
@@ -7804,7 +7949,7 @@ impl App {
         match ed.purpose.clone() {
             // Unbound in the ask room; the one thing the press could mean.
             EditorPurpose::Ask { .. } => self.editor_send(ed),
-            EditorPurpose::Compose { workspace, tags, plan } => {
+            EditorPurpose::Compose { workspace, tags, plan, tier } => {
                 let title = ed.title.as_str().trim().to_string();
                 if title.is_empty() {
                     self.status = "a ticket needs a title".into();
@@ -7813,7 +7958,15 @@ impl App {
                 }
                 let body = Some(ed.body.as_str().to_string()).filter(|b| !b.trim().is_empty());
                 self.mode = Mode::Normal;
-                self.mint_ticket_with_images(title, workspace, tags, body, ed.images, Some(plan))
+                self.mint_ticket_with_images(
+                    title,
+                    workspace,
+                    tags,
+                    body,
+                    ed.images,
+                    Some(plan),
+                    tier,
+                )
             }
             EditorPurpose::Note { ticket, note } => {
                 let body = ed.body.as_str().to_string();
@@ -9097,7 +9250,7 @@ impl App {
             return Ok(());
         }
         match purpose {
-            InputPurpose::Create { workspace, tags, description, images, plan } => {
+            InputPurpose::Create { workspace, tags, description, images, plan, tier } => {
                 self.mint_ticket_with_images(
                     title,
                     workspace,
@@ -9105,6 +9258,7 @@ impl App {
                     description,
                     images,
                     start.then_some(plan),
+                    tier,
                 )?;
             }
             InputPurpose::Rename { id } => {
@@ -9134,6 +9288,7 @@ impl App {
     /// editor — the description as its first note. `start` is Shift+Enter's
     /// half: claude on the title, submitted — `Some(plan)`, in plan mode
     /// when the composer's `^p` was on (T-434).
+    #[allow(clippy::too_many_arguments)] // the draft's picks, from its two callers
     fn mint_ticket_with_images(
         &mut self,
         title: String,
@@ -9142,6 +9297,7 @@ impl App {
         description: Option<String>,
         images: Vec<crate::image_paste::DraftImage>,
         start: Option<bool>,
+        tier: Option<String>,
     ) -> Result<()> {
         let plan = start.unwrap_or(false);
         let column = self.columns().get(self.cursor_col).cloned().unwrap_or_default();
@@ -9152,6 +9308,7 @@ impl App {
                 description: description.clone(),
                 images: images.clone(),
                 plan,
+                tier: tier.clone(),
             },
             buffer: EditBuffer::from_text(title.clone(), mesimon_core::board::TITLE_MAX_BYTES),
         };
@@ -9180,7 +9337,7 @@ impl App {
             text,
             uploads: uploads.clone(),
             tags,
-            tier: None,
+            tier,
         });
         if !uploads.is_empty() {
             let _ = self.req(Command::DiscardAttachmentUploads { uploads });
@@ -9231,7 +9388,7 @@ impl App {
     /// ticket's own title and brief, which is what the press does with no
     /// field at all on a quiet checkout.
     fn commit_prompt(&mut self, purpose: InputPurpose, text: String) -> Result<()> {
-        let InputPurpose::Prompt { target, queued, accept_plan, plan, .. } = purpose else {
+        let InputPurpose::Prompt { target, queued, accept_plan, plan, tier, .. } = purpose else {
             return Ok(());
         };
         if !text.is_empty() {
@@ -9267,14 +9424,13 @@ impl App {
             _ => ("queued".into(), "queued ∙ sends next".into()),
         };
         let blank = text.is_empty();
-        self.status = match self.req(Command::PromptSession {
-            ticket,
-            text,
-            queued,
-            accept_plan,
-            plan,
-            tier: None,
-        }) {
+        // The field's `^n` pick (T-443) rides every receipt: the words go
+        // to the agent on that tier.
+        let on_tier = tier.as_deref().map(|t| format!(" ∙ on {}", self.tier_name(t)));
+        let answer =
+            self.req(Command::PromptSession { ticket, text, queued, accept_plan, plan, tier });
+        let refused = matches!(answer, Response::Err { .. });
+        self.status = match answer {
             // Deliberately not "sent to the agent": what is provably
             // true is that it went into the box and Enter was
             // pressed. Whether the agent took it is the card's to
@@ -9318,6 +9474,9 @@ impl App {
             Response::Err { message } => message,
             _ => String::new(),
         };
+        if let Some(on) = on_tier.filter(|_| !refused && !self.status.is_empty()) {
+            self.status.push_str(&on);
+        }
         self.refresh()
     }
 
@@ -9381,7 +9540,7 @@ impl App {
     /// The fresh-ticket Enter window is not armed either: the agent is already
     /// running, so the next Enter should mean what it always means.
     fn start_composed(&mut self, ticket: ulid::Ulid, plan: bool) {
-        let kind = self.board.agent_provider.session_kind();
+        let kind = self.agent_kind_for(ticket);
         let word = keymap::AGENT_WORD;
         let cmd = Command::SpawnSession { ticket, kind, submit_prompt: true, plan };
         let mode = if plan { " in plan mode" } else { "" };
@@ -10368,7 +10527,9 @@ pub(crate) mod test_support {
                     }
                     let mut rec = mesimon_core::board::SessionRecord::new(
                         uuid::Uuid::from_u128(4242),
-                        self.board.agent_provider.session_kind(),
+                        mesimon_core::tier::Book::new(&self.machine_tiers, &self.board)
+                            .start_provider(ticket)
+                            .session_kind(),
                         ticket,
                         argv,
                         "/repo".into(),
@@ -10603,6 +10764,74 @@ pub(crate) mod test_support {
                 }
                 Command::SetAgentProvider { provider } => {
                     self.board.agent_provider = provider;
+                    Ok(Response::Ok)
+                }
+                // Agent tiers (T-443), as the daemon keeps them: two layers,
+                // names checked, a ticket's pick stored as inherit when it
+                // is the default.
+                Command::SetDefaultTier { scope, id } => {
+                    let provider = id
+                        .as_deref()
+                        .and_then(|t| {
+                            mesimon_core::tier::Book::new(&self.machine_tiers, &self.board).get(t)
+                        })
+                        .map(|t| t.provider)
+                        .unwrap_or_default();
+                    match scope {
+                        mesimon_core::tier::TierScope::Machine => {
+                            self.machine_tiers.default_tier =
+                                id.filter(|t| t != mesimon_core::tier::CLAUDE);
+                        }
+                        mesimon_core::tier::TierScope::Board => {
+                            self.board.default_tier = id;
+                            self.board.agent_provider = provider;
+                        }
+                    }
+                    Ok(Response::Ok)
+                }
+                Command::SaveTier { scope, tier } => {
+                    let book = mesimon_core::tier::Book::new(&self.machine_tiers, &self.board);
+                    let taken = book.all();
+                    if let Err(message) =
+                        mesimon_core::tier::check_name(&tier.name, &taken, Some(&tier.id))
+                            .and_then(|()| mesimon_core::tier::check_model(&tier.model))
+                    {
+                        return Ok(Response::Err { message });
+                    }
+                    let list = match scope {
+                        mesimon_core::tier::TierScope::Machine => &mut self.machine_tiers.tiers,
+                        mesimon_core::tier::TierScope::Board => &mut self.board.tiers,
+                    };
+                    match list.iter_mut().find(|t| t.id == tier.id) {
+                        Some(slot) => *slot = tier,
+                        None => list.push(tier),
+                    }
+                    Ok(Response::Ok)
+                }
+                Command::DeleteTier { scope, id } => {
+                    match scope {
+                        mesimon_core::tier::TierScope::Machine => {
+                            self.machine_tiers.tiers.retain(|t| t.id != id)
+                        }
+                        mesimon_core::tier::TierScope::Board => {
+                            self.board.tiers.retain(|t| t.id != id)
+                        }
+                    }
+                    Ok(Response::Ok)
+                }
+                Command::SetTicketTier { id, tier } => {
+                    let book = mesimon_core::tier::Book::new(&self.machine_tiers, &self.board);
+                    let want = match tier.as_deref() {
+                        None => book.default_tier(),
+                        Some(t) => match book.get(t) {
+                            Some(t) => t,
+                            None => return Ok(Response::Err { message: format!("no tier {t}") }),
+                        },
+                    };
+                    let stored = book.stored_pick(&want.id);
+                    if let Some(t) = self.board.ticket_mut(id) {
+                        t.tier = stored;
+                    }
                     Ok(Response::Ok)
                 }
                 Command::SetSystemPrompt { on } => {
@@ -12660,6 +12889,7 @@ mod tests {
                 description: None,
                 images: Vec::new(),
                 plan: false,
+                tier: None,
             },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
@@ -12773,6 +13003,7 @@ mod tests {
                 queued: false,
                 accept_plan: false,
                 plan: false,
+                tier: None,
             },
             buffer: EditBuffer::new(PROMPT_MAX_BYTES),
         };
@@ -12788,6 +13019,7 @@ mod tests {
                 description: None,
                 images: Vec::new(),
                 plan: false,
+                tier: None,
             },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
@@ -12813,6 +13045,7 @@ mod tests {
                 description: None,
                 images: Vec::new(),
                 plan: false,
+                tier: None,
             },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
@@ -13175,23 +13408,32 @@ mod tests {
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownBudget")).count(), 6);
     }
 
+    /// The Default tier row (T-443) took the Provider row's place: with no
+    /// tiers made it walks the two built-ins — which ARE the two providers —
+    /// and a session that exists keeps its own.
     #[test]
-    fn provider_setting_cycles_and_preserves_existing_sleeping_session() {
+    fn default_tier_row_cycles_and_preserves_existing_sleeping_session() {
         use mesimon_core::board::AgentProvider;
         let (mut app, sent, sid) = app_with_claude(SessionState::Sleeping, false);
         app.settings_section = keymap::SettingsSection::Agents;
-        let idx = app.settings_row(Verb::AgentProvider);
+        let idx = app.settings_row(Verb::DefaultTier);
         app.mode = Mode::Settings { idx };
+        // Machine scope: claude → codex → claude.
         for expected in [AgentProvider::Codex, AgentProvider::ClaudeCode] {
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-            assert_eq!(app.board.agent_provider, expected);
+            assert_eq!(app.tiers().default_tier().provider, expected);
             assert_eq!(app.mode, Mode::Settings { idx });
             let old = app.board.sessions.iter().find(|s| s.id == sid).unwrap();
             assert_eq!(old.kind, SessionKind::Claude);
             assert_eq!(old.state, SessionState::Sleeping);
-            assert!(app.status.contains("new sessions"));
+            assert!(app.status.contains("default tier"), "{}", app.status);
         }
-        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetAgentProvider")).count(), 2);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetDefaultTier")).count(), 2);
+        // Board scope starts at inherit and sets this board's own.
+        press(&mut app, 'b');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.board.default_tier.as_deref(), Some("claude"));
+        assert!(app.ctx().tier_default_here);
     }
 
     #[test]
@@ -13218,6 +13460,121 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `^n` (T-443): on a card it picks the ticket's next tier at once —
+    /// the ring is the two built-ins, then the tiers a person made, and the
+    /// default comes back as inherit — and in the composer it is a pick
+    /// that rides the mint.
+    #[test]
+    fn ctrl_n_picks_a_tickets_tier_and_rides_the_composers_mint() {
+        use mesimon_core::board::AgentProvider;
+        use mesimon_core::tier::{Effort, Tier};
+        let mut board = board_three_columns();
+        board.tiers.push(Tier {
+            id: "01QUICK".into(),
+            name: "quick".into(),
+            provider: AgentProvider::ClaudeCode,
+            model: "sonnet".into(),
+            effort: Effort::High,
+        });
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        app.cursor_col = 0;
+        app.cursor_row = Some(0);
+        let ctrl_n =
+            |app: &mut App| app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+        let pick = |app: &App| app.board.ticket(ulid::Ulid(1)).unwrap().tier.clone();
+        ctrl_n(&mut app);
+        assert!(sent_contains(&sent, "SetTicketTier"));
+        assert_eq!(pick(&app).as_deref(), Some("codex"));
+        assert!(app.status.contains("codex") && app.status.contains("starts on"), "{}", app.status);
+        ctrl_n(&mut app);
+        assert_eq!(pick(&app).as_deref(), Some("01QUICK"));
+        ctrl_n(&mut app);
+        assert_eq!(pick(&app), None, "back to the default, stored as inherit");
+        app.mode = Mode::Input {
+            purpose: InputPurpose::Create {
+                workspace: None,
+                tags: vec![],
+                description: None,
+                images: vec![],
+                plan: false,
+                tier: None,
+            },
+            buffer: EditBuffer::from_text("new work".into(), mesimon_core::board::TITLE_MAX_BYTES),
+        };
+        ctrl_n(&mut app);
+        ctrl_n(&mut app);
+        assert!(
+            matches!(
+                &app.mode,
+                Mode::Input { purpose: InputPurpose::Create { tier: Some(t), .. }, .. }
+                    if t == "01QUICK"
+            ),
+            "{:?}",
+            app.mode
+        );
+        // A full turn of the ring is no pick at all.
+        ctrl_n(&mut app);
+        assert!(matches!(
+            &app.mode,
+            Mode::Input { purpose: InputPurpose::Create { tier: None, .. }, .. }
+        ));
+        ctrl_n(&mut app);
+        ctrl_n(&mut app);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            sent.borrow()
+                .iter()
+                .any(|r| r.contains("CreateTicketWithNote") && r.contains("01QUICK")),
+            "{:?}",
+            sent.borrow()
+        );
+    }
+
+    /// The tiers list makes a tier and its page edits it: a name typed in
+    /// place, then the provider, the model and the effort, each saved at once.
+    #[test]
+    fn the_tiers_dialog_makes_and_edits_a_tier() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.settings_section = keymap::SettingsSection::Agents;
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::Tiers) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Tiers { idx: 0, naming: None });
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Tiers { naming: Some(_), .. }));
+        for c in "coder".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "SaveTier"));
+        assert!(matches!(app.mode, Mode::TierEdit { idx: 1, .. }), "{:?}", app.mode);
+        let made = || app_tier(&sent);
+        assert!(made().contains("name: \"coder\""), "{}", made());
+        // The effort steps over Claude Code's ring.
+        press(&mut app, 'j');
+        press(&mut app, 'j');
+        press(&mut app, 'l');
+        assert!(app_tier(&sent).contains("Low"), "{}", app_tier(&sent));
+        // The model is a field in place; the provider flip clears it.
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for c in "opus".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app_tier(&sent).contains("model: \"opus\""), "{}", app_tier(&sent));
+        press(&mut app, 'k');
+        press(&mut app, 'l');
+        let last = app_tier(&sent);
+        assert!(last.contains("Codex") && last.contains("model: \"\""), "{last}");
+        // Esc goes back to the list, on the tier.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Tiers { idx: 0, naming: None });
+    }
+
+    fn app_tier(sent: &std::cell::RefCell<Vec<String>>) -> String {
+        sent.borrow().iter().rev().find(|r| r.contains("SaveTier")).cloned().unwrap_or_default()
     }
 
     #[test]
@@ -17928,9 +18285,11 @@ mod tests {
         let ctx = app.ctx();
         app.dispatch(Verb::SettingsBehaviour, Key::Enter, Scope::Settings, &ctx).unwrap();
         assert!(app.ctx().pref_scope_offered);
+        // The default tier and the tiers are the machine's and a board's
+        // (T-443), so Agents offers the switch too.
         let ctx = app.ctx();
         app.dispatch(Verb::SettingsAgents, Key::Enter, Scope::Settings, &ctx).unwrap();
-        assert!(!app.ctx().pref_scope_offered, "nothing under Agents is a preference");
+        assert!(app.ctx().pref_scope_offered, "the tier rows have two scopes");
     }
     fn queued_picture(
         app: &mut App,
@@ -18016,7 +18375,7 @@ mod tests {
     fn composer_folding_keeps_images_and_discard_does_not_upload() {
         let (mut app, sent) = app_with_note();
         app.mode = Mode::Editor(Editor::new(
-            EditorPurpose::Compose { workspace: None, tags: vec![], plan: false },
+            EditorPurpose::Compose { workspace: None, tags: vec![], plan: false, tier: None },
             EditBuffer::from_text("new ticket".into(), mesimon_core::board::TITLE_MAX_BYTES),
             TextArea::new(mesimon_core::board::NOTE_MAX_BYTES),
             Field::Body,

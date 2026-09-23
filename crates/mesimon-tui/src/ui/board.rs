@@ -107,7 +107,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // the title line the way a rename does: the ticket is not what is being
     // edited here, it is who the text is going to — so it has to stay whole
     // and stay on screen while the sentence is typed.
-    let prompt_of = |t: &Ticket| -> Option<(&EditBuffer, bool, bool, bool)> {
+    type Prompted<'a> = (&'a EditBuffer, bool, bool, bool, Option<&'a str>);
+    let prompt_of = |t: &Ticket| -> Option<Prompted> {
         match editing {
             Some((
                 InputPurpose::Prompt {
@@ -115,10 +116,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                     queued,
                     accept_plan,
                     plan,
+                    tier,
                     ..
                 },
                 buf,
-            )) if *ticket == t.id => Some((buf, *queued, *accept_plan, *plan)),
+            )) if *ticket == t.id => Some((buf, *queued, *accept_plan, *plan, tier.as_deref())),
             _ => None,
         }
     };
@@ -206,11 +208,12 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             app.pending_row(t.id).as_deref(),
             app.remote_initials(t.id).as_deref(),
             app.crown_mark(t.id),
+            app.card_tier_word(t.id).as_deref(),
         );
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
-        let edit_cursor = prompt_of(t).map(|(buf, queued, accept_plan, plan)| {
+        let edit_cursor = prompt_of(t).map(|(buf, queued, accept_plan, plan, tier)| {
             // What a blank Enter would do, in the seat's own words, and by
             // the same rule `commit_input` judges it: drop the entry that is
             // waiting, start the agent on the title where the seat is empty and
@@ -234,11 +237,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             // shows on the same row, so a seat that cannot wait — a
             // worktree ticket's empty seat — still gets the row while the
             // flag is on.
-            if app.ask_queueable(t.id) || plan {
+            let tier_word = app.field_tier_word(Some(t.id), tier);
+            if app.ask_queueable(t.id) || plan || tier_word.is_some() {
                 lines.push(card::render_ask_mode(
                     &ctx,
                     crate::app::App::ask_mode_word(accept_plan, queued, plan),
                     app.ask_queueable(t.id) && !app.ticket_plan_ready(t.id),
+                    tier_word.as_deref(),
                 ));
             }
             (at, x_off)
@@ -285,14 +290,21 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // New-ticket entry: a phantom card at the column tail, edited in place.
     // The second line is the M4 workspace selector (Shift+Tab cycles it).
     if is_cursor_col {
-        if let Some((InputPurpose::Create { workspace, tags, plan, .. }, buf)) = editing {
+        if let Some((InputPurpose::Create { workspace, tags, plan, tier, .. }, buf)) = editing {
             // The tags picked with `^t` stripe the phantom card exactly as
             // they will stripe the real one — otherwise you are picking
             // blind until the ticket exists.
             let painted = crate::tags::painted(&app.board, tags);
             let (line, x_off) = card::render_edit(&ctx, buf, &painted);
             let column_default = app.board.column(name).and_then(|c| c.settings.workspace);
-            let selector = card::render_workspace_selector(&ctx, *workspace, column_default, *plan);
+            let tier_word = app.field_tier_word(None, tier.as_deref());
+            let selector = card::render_workspace_selector(
+                &ctx,
+                *workspace,
+                column_default,
+                *plan,
+                tier_word.as_deref(),
+            );
             groups.push(Group {
                 lines: vec![line, selector],
                 cursor: true,
@@ -541,6 +553,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 &ctx,
                 crate::app::App::ask_mode_word(accept_plan, queued, false),
                 true,
+                None,
             ));
         }
     }

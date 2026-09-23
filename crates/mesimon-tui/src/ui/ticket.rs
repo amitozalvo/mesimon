@@ -263,6 +263,18 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             app.theme.crown_text(),
         ));
     }
+    // The agent tier (T-443): what the ticket runs on, and while a switch is
+    // owed, from what to what — with the key that picks the next one beside
+    // it, where it operates.
+    if !ticket.is_archived() {
+        if let Some(clause) = app.tier_clause(ticket.id) {
+            let key =
+                keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::TierNext, &app.frame_ctx())
+                    .map(|(show, _)| format!(" ∙ {show} next"))
+                    .unwrap_or_default();
+            ident_spans.push(Span::styled(format!("{clause}{key}"), d2));
+        }
+    }
     // The m flow's live reply (armed prompt, outcome, refusal) replaces the
     // resting branch-state hint for a beat — same spot, so the conversation
     // with the merge key happens in one place, never in the footer.
@@ -1090,8 +1102,12 @@ fn seat_rows(app: &App, ticket: &mesimon_core::board::Ticket) -> Vec<String> {
     // What the ticket's column hands the session (T-117), and only where it
     // differs from what a spawn by hand would get: a column that changes
     // nothing has nothing to preview.
+    // The tier a start would run (T-443), first: it decides the rest.
+    if let Some(on) = app.seat_tier_clause(ticket.id) {
+        clauses.insert(0, on);
+    }
     let settings = app.board.column(&ticket.column).map(|c| &c.settings);
-    if app.board.agent_provider == mesimon_core::board::AgentProvider::ClaudeCode {
+    if app.tiers().start_provider(ticket.id) == mesimon_core::board::AgentProvider::ClaudeCode {
         if let Some(m) = settings.map(|s| s.claude_mode).filter(|m| *m != ClaudeMode::Inherit) {
             clauses.push(format!("{} mode", m.word()));
         }

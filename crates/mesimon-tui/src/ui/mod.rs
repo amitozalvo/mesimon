@@ -197,6 +197,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::Sharing { .. }) {
         menu::draw_sharing(f, app);
     }
+    if matches!(app.mode, Mode::Tiers { .. }) {
+        menu::draw_tiers(f, app);
+    }
+    if matches!(app.mode, Mode::TierEdit { .. }) {
+        menu::draw_tier_edit(f, app);
+    }
     if matches!(app.mode, Mode::ColumnSettings { .. }) {
         menu::draw_column(f, app);
     }

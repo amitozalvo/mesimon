@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap::{self, MenuItem, Scope};
 
-use crate::app::{App, ColumnSubject, Mode, SharingRow};
+use crate::app::{App, ColumnSubject, Mode, SharingRow, TierField};
 use crate::text::truncate;
 
 use super::dialog::{self, ListRow};
@@ -130,6 +130,38 @@ pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
     };
     let field = editing.as_ref().map(|b| (lead, b));
     draw_rows(f, app, *idx, &title, &words, &headings, field);
+}
+
+/// The agent tiers list (T-443): a row per tier in the dialog's scope and
+/// one that makes a new one, dense like the sharing list because the last
+/// row becomes a name field in place. The title says the scope, the
+/// Settings list's rule.
+pub(super) fn draw_tiers(f: &mut Frame, app: &App) {
+    let Mode::Tiers { idx, naming } = &app.mode else { return };
+    let rows = app.tier_rows();
+    let words: Vec<(String, String)> = rows.iter().map(|r| app.tier_row_words(r)).collect();
+    let field = naming.as_ref().map(|b| ("Name: ", b));
+    draw_rows(f, app, *idx, &scoped(app, "TIERS"), &words, &[], field);
+}
+
+/// One tier's page (T-443): the column dialog's shape — a row a setting,
+/// the Name and Model rows fields in place.
+pub(super) fn draw_tier_edit(f: &mut Frame, app: &App) {
+    let Mode::TierEdit { idx, field, armed, .. } = &app.mode else { return };
+    let fields = app.tier_fields();
+    let words: Vec<(String, String)> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| app.tier_field_words(*f, *armed && i == *idx))
+        .collect();
+    let name = app.edited_tier().map(|(t, _)| t.name.to_uppercase()).unwrap_or_default();
+    let lead = match fields.get(*idx) {
+        Some(TierField::Name) => "Name: ",
+        Some(TierField::Model) => "Model: ",
+        _ => "",
+    };
+    let field = field.as_ref().map(|b| (lead, b));
+    draw_rows(f, app, *idx, &scoped(app, &format!("TIER ∙ {name}")), &words, &[], field);
 }
 
 fn draw_dense(

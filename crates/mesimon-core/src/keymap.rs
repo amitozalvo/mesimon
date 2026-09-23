@@ -245,13 +245,21 @@ pub enum Scope {
     /// is a text field (the relay, the name, an invite code) makes the
     /// scope `Input` while it is open.
     Sharing,
+    /// The agent tiers list (T-443), one level under Settings → Agents: the
+    /// machine's tiers, or with `b` this board's view of them, and a row to
+    /// make one. Its rows are the tiers, so the mode builds them; a name
+    /// being typed makes the scope `Input`.
+    Tiers,
+    /// One tier's page (T-443): name, provider, model, effort, delete. The
+    /// column dialog's shapes — `h`/`l` step the provider and the effort.
+    TierEdit,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 28] = [
+    pub const ALL: [Scope; 30] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -280,6 +288,8 @@ impl Scope {
         Scope::Search,
         Scope::Sharing,
         Scope::MergeChord,
+        Scope::Tiers,
+        Scope::TierEdit,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -300,7 +310,9 @@ impl Scope {
             | Scope::Links
             | Scope::ColumnSettings
             | Scope::Header
-            | Scope::Sharing => Some(Scope::Global),
+            | Scope::Sharing
+            | Scope::Tiers
+            | Scope::TierEdit => Some(Scope::Global),
             Scope::Global
             | Scope::Move
             | Scope::DiffView
@@ -338,6 +350,8 @@ impl Scope {
             Scope::Notifications => "NOTIFICATIONS",
             Scope::Prompts => "PROMPTS",
             Scope::Sharing => "SHARING",
+            Scope::Tiers => "TIERS",
+            Scope::TierEdit => "TIER",
             Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
@@ -588,8 +602,17 @@ pub enum Verb {
     /// board (T-217). Board state, not a preference: it is per repo, it
     /// lives in `columns.toml`, and the daemon reads it at every spawn.
     McpTools,
-    /// Project default for newly accepted sessions; existing seats retain theirs.
-    AgentProvider,
+    /// The Settings row for the default agent tier (T-443) — what a ticket
+    /// that picked nothing starts on, which is also who starts it. It took
+    /// the `Provider` row's place: the built-ins `claude` and `codex` ARE
+    /// the two providers at their own defaults. Machine or board scope.
+    DefaultTier,
+    /// The Settings door to the tiers list (T-443).
+    Tiers,
+    /// `^n` (T-443): the ticket's next agent tier — on the board and the
+    /// ticket page at once, in the composer and the ask field as a pick
+    /// that rides the draft or the words, like `^p`.
+    TierNext,
     ParkAfterMinutes,
     /// The Settings row for the crown's spawn budget (T-412): how many agent
     /// seats the crowned agent may have started at once. Board state like
@@ -840,7 +863,8 @@ impl SettingsSection {
             | Verb::KeepAwake => Self::Behaviour,
             Verb::SystemPrompt
             | Verb::McpTools
-            | Verb::AgentProvider
+            | Verb::DefaultTier
+            | Verb::Tiers
             | Verb::ParkAfterMinutes
             | Verb::CrownBudget
             | Verb::AgentPrompts => Self::Agents,
@@ -1109,6 +1133,35 @@ pub struct Ctx {
     /// The field's `^p` is ON: the launch it ends in runs in plan mode. The
     /// row under the field says so; the hint says what the next press does.
     pub plan_armed: bool,
+    // ---- agent tiers (T-443) ----
+    /// `^n` has somewhere to go: the subject ticket's ring (or the field's)
+    /// holds more than the tier it is on.
+    pub tier_cycle: bool,
+    /// The Default tier row, in the scope the dialog is in: the tier's
+    /// name, its launch in words, the name Enter would select, and — in
+    /// board scope — whether the board sets one and the machine's name.
+    pub tier_default: String,
+    pub tier_default_summary: String,
+    pub tier_default_next: String,
+    pub tier_default_here: bool,
+    pub tier_machine_default: String,
+    /// The board's own default where it differs from the machine's, for the
+    /// machine-scope row to say so; empty otherwise.
+    pub tier_board_uses: String,
+    /// The Tiers door's label: the names the list holds, in its scope.
+    pub tier_names: String,
+    /// Which providers a column may need settings for: the default tier's
+    /// and every tier a person made. The column dialog shows a provider's
+    /// rows while it is in use — Claude's unless nothing uses it, Codex's
+    /// only where something does, which is what a bare `Ctx` reads as.
+    pub claude_unused: bool,
+    pub codex_in_use: bool,
+    /// The tiers list's Enter word for the row under the cursor, and the
+    /// tier page's; empty is inert. `tier_on_step` is the page's cursor on
+    /// a row `h`/`l` steps (provider, effort).
+    pub tiers_enter_word: &'static str,
+    pub tier_edit_enter_word: &'static str,
+    pub tier_on_step: bool,
     // ---- search (T-349) ----
     /// The picker is up. Every binding in its scope is gated on it, so a bare
     /// `Ctx` hints none of them — the tag picker's `tag_naming` rule.
@@ -1981,6 +2034,27 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // The ticket's next agent tier (T-443, user: "cycle them on ticket
+        // ... switch agent tier for each ticket without entering the
+        // session"). A Ctrl-letter because the same key works inside the
+        // ask field and the composer, which swallow every plain letter;
+        // `^n` for next, the only way it goes — Ctrl has no Shift twin on
+        // the legacy floor, so the ring wraps rather than reverses. Applies
+        // at once: an empty seat starts on it, a parked one wakes on it, a
+        // live one switches at its next idle. Overlay-only on the board, the
+        // crown's reason: the open card wears the tier, and the status line
+        // says what the press did.
+        keys: &[Key::Ctrl('n')],
+        verb: Verb::TierNext,
+        show: "^n",
+        hint: |_| "tier",
+        avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
         // `Tab` on a card is the composer's `Tab` a ticket late: the card
         // grows into the description editor, the same dialog over the board
         // (2026-09-03, T-163). It took `needs you`'s key — the attention
@@ -2573,6 +2647,20 @@ static TICKET: &[Binding] = &[
         group: Group::Ticket,
         mutates: true,
         prio: 96,
+    },
+    Binding {
+        // The board's `^n` on the ticket page (T-443): same verb, same
+        // press. Drawn beside the tier on the state row, where it operates,
+        // so overlay-only in the footer.
+        keys: &[Key::Ctrl('n')],
+        verb: Verb::TierNext,
+        show: "^n",
+        hint: |_| "tier",
+        avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 0,
     },
     Binding {
         // The board's shift+tab, on the ticket page (T-309): same verb, same
@@ -3440,6 +3528,106 @@ static SHARING: &[Binding] = &[
     },
 ];
 
+/// The tiers list (T-443): the Sharing list's shapes — a row per tier and
+/// one to make one, Enter's word read off the row under the cursor — plus
+/// the Settings dialog's `b`, because the list has two scopes.
+static TIERS: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('b')],
+        verb: Verb::PrefScope,
+        show: "b",
+        hint: |c| if c.pref_scope_board { "machine" } else { "this board" },
+        avail: |c| c.pref_scope_offered,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |c| c.tiers_enter_word,
+        avail: |c| !c.tiers_enter_word.is_empty(),
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: true,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
+/// One tier's page (T-443): the column dialog's shapes — `h`/`l` step the
+/// provider and the effort both ways, Enter steps forward, edits a field in
+/// place, or deletes on the second press.
+static TIER_EDIT: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Char('h'), Key::Left, Key::Char('l'), Key::Right],
+        verb: Verb::CursorLeft,
+        show: "h l",
+        hint: |_| "step",
+        avail: |c| c.tier_on_step,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: true,
+        prio: 15,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |c| c.tier_edit_enter_word,
+        avail: |c| !c.tier_edit_enter_word.is_empty(),
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: true,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The theme picker's three shapes are the menu's. `Act` does not mutate:
 /// nothing the daemon owns changes, and the file it writes is this
 /// machine's own preference.
@@ -3859,11 +4047,54 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // preference: it is board state in `columns.toml`, per repo, because
     // "may agents on this board see their ticket" is a property of the
     // board — so it acts over the wire and reads back off the snapshot.
+    // The default tier (T-443) took the Provider row's place, and it is the
+    // one row here with two scopes: the machine's tiers are every board's,
+    // and a board may pick its own default over them.
     MenuItem {
-        verb: Verb::AgentProvider,
-        label: |c| format!("Provider: {}", c.agent_provider.label()),
+        verb: Verb::DefaultTier,
+        label: |c| format!("Default tier: {}", or(&c.tier_default, crate::tier::CLAUDE)),
         detail: |c| {
-            format!("new sessions only ∙ enter selects {}", c.agent_provider.next().label())
+            if !c.pref_scope_board && !c.tier_board_uses.is_empty() {
+                format!(
+                    "this board uses {} (b) ∙ {} ∙ enter selects {}",
+                    c.tier_board_uses, c.tier_default_summary, c.tier_default_next
+                )
+            } else if !c.pref_scope_board {
+                format!(
+                    "{} ∙ what a ticket starts on unless ^n picks its own ∙ enter selects {}",
+                    c.tier_default_summary, c.tier_default_next
+                )
+            } else if c.tier_default_here {
+                format!(
+                    "set here ∙ machine: {} ∙ {} ∙ enter selects {}",
+                    c.tier_machine_default, c.tier_default_summary, c.tier_default_next
+                )
+            } else {
+                format!(
+                    "inherited ∙ {} ∙ enter sets {} here",
+                    c.tier_default_summary, c.tier_default_next
+                )
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::Tiers,
+        label: |c| {
+            if c.tier_names.is_empty() {
+                "Tiers: none yet".into()
+            } else {
+                format!("Tiers: {}", c.tier_names)
+            }
+        },
+        detail: |c| {
+            if c.pref_scope_board {
+                "this board's tiers, and its own versions of the machine's ∙ enter opens".into()
+            } else {
+                "a name for a launch: provider, model, effort ∙ ^n cycles a ticket through them"
+                    .into()
+            }
         },
         avail: always,
         key: "",
@@ -4298,7 +4529,8 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::FollowUpMode,
         ],
         SettingsSection::Agents => &[
-            Verb::AgentProvider,
+            Verb::DefaultTier,
+            Verb::Tiers,
             Verb::SystemPrompt,
             Verb::McpTools,
             Verb::AgentPrompts,
@@ -4471,7 +4703,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
             }
         },
         detail: |_| "--permission-mode for an agent started here ∙ a wake picks a change up".into(),
-        avail: |c| !c.col_new && c.agent_provider == AgentProvider::ClaudeCode,
+        avail: |c| !c.col_new && !c.claude_unused,
         key: "",
     },
     MenuItem {
@@ -4481,7 +4713,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
             "native sandbox policy ∙ inherit keeps Codex configuration ∙ applies on launch/wake"
                 .into()
         },
-        avail: |c| !c.col_new && c.agent_provider == AgentProvider::Codex,
+        avail: |c| !c.col_new && c.codex_in_use,
         key: "",
     },
     MenuItem {
@@ -4490,7 +4722,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         detail: |_| {
             "native approval policy ∙ never refuses requests requiring approval ∙ applies on launch/wake".into()
         },
-        avail: |c| !c.col_new && c.agent_provider == AgentProvider::Codex,
+        avail: |c| !c.col_new && c.codex_in_use,
         key: "",
     },
     MenuItem {
@@ -5020,6 +5252,22 @@ static INPUT: &[Binding] = &[
         prio: 29,
     },
     Binding {
+        // `^n` in the field (T-443): the tier the launch these words end in
+        // runs on, a pick that rides the draft or the ask like `^p` — the
+        // row under the field wears it, Enter sends it, Esc drops it. Gated
+        // on `tier_cycle`, the TUI's read of the field's ring: a column's
+        // field, and a seat with nothing else to be, offer no key.
+        keys: &[Key::Ctrl('n')],
+        verb: Verb::TierNext,
+        show: "^n",
+        hint: |_| "tier",
+        avail: |c| (c.composing || c.prompting) && c.tier_cycle,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
         // The composer grows: `Tab` opens the full editor with the title
         // carried over and the cursor in the description. The ask field
         // grows the same way (T-380, "tab on ask agent to show big composer
@@ -5540,6 +5788,18 @@ static EDITOR: &[Binding] = &[
         prio: 26,
     },
     Binding {
+        // The one-line field's `^n` (T-443) in the bigger room.
+        keys: &[Key::Ctrl('n')],
+        verb: Verb::TierNext,
+        show: "^n",
+        hint: |_| "tier",
+        avail: |c| c.editing && (c.editor_composing || c.editor_asking) && c.tier_cycle,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: false,
+        prio: 27,
+    },
+    Binding {
         // Composing, the pick rides with the draft; on a ticket that exists
         // it is set on the daemon at once (`SetWorkspace`), and only while
         // nothing has locked it — the choice closes the moment a session or
@@ -5743,6 +6003,8 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         // keymap's.
         Scope::Settings | Scope::Notifications | Scope::Prompts => SETTINGS,
         Scope::Sharing => SHARING,
+        Scope::Tiers => TIERS,
+        Scope::TierEdit => TIER_EDIT,
         Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
@@ -5959,11 +6221,19 @@ mod tests {
                 Some(("shift+enter", "ask agent"))
             );
         }
-        let ctx = Ctx { settings_section: SettingsSection::Agents, ..Ctx::default() };
-        let provider =
-            settings_items(&ctx).into_iter().find(|r| r.verb == Verb::AgentProvider).unwrap();
-        assert_eq!((provider.label)(&ctx), "Provider: Claude Code");
-        assert!((provider.detail)(&ctx).contains("new sessions only"));
+        // The provider is spelled where a tier is: the Default tier row's
+        // detail (T-443, the `Provider:` row's successor).
+        let ctx = Ctx {
+            settings_section: SettingsSection::Agents,
+            tier_default: "claude".into(),
+            tier_default_summary: "Claude Code ∙ its own model".into(),
+            tier_default_next: "codex".into(),
+            ..Ctx::default()
+        };
+        let row = settings_items(&ctx).into_iter().find(|r| r.verb == Verb::DefaultTier).unwrap();
+        assert_eq!((row.label)(&ctx), "Default tier: claude");
+        assert!((row.detail)(&ctx).contains("Claude Code"));
+        assert!((row.detail)(&ctx).contains("enter selects codex"));
     }
 
     /// The agent-prompt list (T-353): three rows, one per sentence mesimon
@@ -6070,6 +6340,8 @@ mod tests {
                 Scope::Search => 25,
                 Scope::Sharing => 26,
                 Scope::MergeChord => 27,
+                Scope::Tiers => 28,
+                Scope::TierEdit => 29,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -7849,7 +8121,8 @@ mod tests {
             (
                 SettingsSection::Agents,
                 vec![
-                    Verb::AgentProvider,
+                    Verb::DefaultTier,
+                    Verb::Tiers,
                     Verb::SystemPrompt,
                     Verb::McpTools,
                     Verb::AgentPrompts,

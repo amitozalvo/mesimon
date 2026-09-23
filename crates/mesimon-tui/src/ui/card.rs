@@ -127,6 +127,7 @@ pub(super) fn render_workspace_selector(
     workspace: Option<mesimon_core::board::WorkspaceStrategy>,
     column_default: Option<mesimon_core::board::WorkspaceStrategy>,
     plan: bool,
+    tier_word: Option<&str>,
 ) -> Line<'static> {
     let theme = ctx.theme;
     let word = match workspace {
@@ -150,6 +151,11 @@ pub(super) fn render_workspace_selector(
     if plan {
         spans.push(Span::styled(" ∙ plan mode", Style::default().fg(theme.sel.dim1)));
     }
+    // `^n` (T-443): the tier the new ticket starts on, where it is not the
+    // default — the other launch pick, beside plan mode.
+    if let Some(word) = tier_word {
+        spans.push(Span::styled(format!(" ∙ {word}"), Style::default().fg(theme.sel.dim1)));
+    }
     Line::from(spans).style(theme.selected_row())
 }
 
@@ -160,12 +166,21 @@ pub(super) fn render_workspace_selector(
 /// placeholder carries that word now (`render_prompt`).
 /// `cycles` is whether Shift+Tab is live on the row (T-420: not on a plan
 /// dialog, where the one stop is `accept plan`); the hint goes with it.
-pub(super) fn render_ask_mode(ctx: &CardCtx, word: &'static str, cycles: bool) -> Line<'static> {
+pub(super) fn render_ask_mode(
+    ctx: &CardCtx,
+    word: &'static str,
+    cycles: bool,
+    tier_word: Option<&str>,
+) -> Line<'static> {
     let theme = ctx.theme;
     let mut spans = vec![
         Span::raw(" ".repeat(BAR_WIDTH + 1)),
         Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),
     ];
+    // `^n` (T-443): the tier the words switch the agent to.
+    if let Some(tier) = tier_word {
+        spans.push(Span::styled(format!(" ∙ {tier}"), Style::default().fg(theme.sel.dim1)));
+    }
     if cycles {
         spans.push(Span::styled("  shift+tab".to_string(), Style::default().fg(theme.sel.dim2)));
     }
@@ -298,6 +313,7 @@ pub(super) fn render(
     owed_row: Option<&str>,
     editor: Option<&str>,
     crown: CrownMark<'_>,
+    tier_word: Option<&str>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -617,7 +633,9 @@ pub(super) fn render(
     // row (T-410): a session says "T-410" and a resting card never did, so
     // the id was one focus away on every card; with `p` on, the cursor card
     // names its own, and `P` names every card's.
-    let meta_row = open && (ctx.names_key || !tags.is_empty());
+    // The ticket's agent tier (T-443) is one of its own facts, and rides
+    // the same row where it is not the default.
+    let meta_row = open && (ctx.names_key || !tags.is_empty() || tier_word.is_some());
     // The cursor card's accordion, or — under `P` (T-237) — a resting card
     // open on its own ground: the tag row and the reply, on the resting ramp,
     // no surface. The session list, the armed snooze and the owed row stay
@@ -693,8 +711,15 @@ pub(super) fn render(
         }
         if meta_row {
             let inner = t_cells.saturating_sub(glyph_cells);
-            let key =
-                if ctx.names_key { truncate(&ticket.short_key, inner) } else { String::new() };
+            let key = if ctx.names_key { ticket.short_key.clone() } else { String::new() };
+            // The tier word before the key (T-443), the quiet ink the key
+            // wears: `coder ∙ T-443`.
+            let key = match tier_word {
+                Some(t) if key.is_empty() => t.to_string(),
+                Some(t) => format!("{t} ∙ {key}"),
+                None => key,
+            };
+            let key = truncate(&key, inner);
             let key_cells = key.width();
             let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
             let chips = if tags.is_empty() {

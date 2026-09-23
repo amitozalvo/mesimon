@@ -3325,6 +3325,7 @@ fn golden_compose_tags_120() {
             description: None,
             images: Vec::new(),
             plan: false,
+            tier: None,
         },
         buffer,
     };
@@ -3370,6 +3371,7 @@ fn golden_prompt_field_120() {
             queued: false,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         buffer,
     };
@@ -3409,6 +3411,7 @@ fn golden_prompt_field_queued_120() {
             queued: true,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         buffer,
     };
@@ -3441,6 +3444,7 @@ fn golden_column_prompt_field_120() {
             queued: true,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         buffer,
     };
@@ -3477,6 +3481,7 @@ fn golden_column_prompt_field_now_120() {
             queued: false,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
@@ -3514,6 +3519,7 @@ fn golden_column_prompt_field_start_120() {
             queued: true,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
@@ -3540,6 +3546,7 @@ fn golden_prompt_field_start_120() {
             queued: true,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
@@ -3983,6 +3990,7 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
             queued: true,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
@@ -4018,6 +4026,7 @@ fn test_the_prompt_field_moves_no_text() {
             queued: false,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
@@ -4370,6 +4379,7 @@ fn golden_composer_selector_120() {
             description: None,
             images: Vec::new(),
             plan: false,
+            tier: None,
         },
         buffer,
     };
@@ -4941,6 +4951,7 @@ fn golden_editor_compose_120() {
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: vec![mesimon_core::board::TagRef { name: "BUG".into(), group: 1 }],
             plan: false,
+            tier: None,
         },
         "Ship the diff viewer",
         COMPOSE_BODY,
@@ -4969,6 +4980,7 @@ fn the_composer_dialog_grows_out_of_its_card() {
             description: None,
             images: Vec::new(),
             plan: false,
+            tier: None,
         },
         buffer,
     };
@@ -5058,6 +5070,7 @@ fn the_ask_room_at_accept_plan_says_what_the_send_does() {
                 queued: true,
                 accept_plan,
                 plan: false,
+                tier: None,
             },
             "Fix OSC-11 detection",
             "",
@@ -5076,7 +5089,12 @@ fn the_ask_room_at_accept_plan_says_what_the_send_does() {
 fn golden_editor_compose_tags_120() {
     let mut app = app_graphite(fixture_tagged());
     let ed = editor_on(
-        crate::app::EditorPurpose::Compose { workspace: None, tags: Vec::new(), plan: false },
+        crate::app::EditorPurpose::Compose {
+            workspace: None,
+            tags: Vec::new(),
+            plan: false,
+            tier: None,
+        },
         "Ship the diff viewer",
         "why",
     );
@@ -5135,7 +5153,7 @@ fn golden_editor_wrapped_description_and_visual_navigation() {
     app.cursor_col = 1;
     let body = "A description can be a long paragraph with several sentences. The editor wraps these words within the dialog and keeps the cursor on the same text when the terminal changes size.\n\n    Indentation and explicit line breaks stay in the saved note.\n你好 cafe\u{301} — Unicode text stays whole.";
     app.mode = Mode::Editor(editor_on(
-        EditorPurpose::Compose { workspace: None, tags: Vec::new(), plan: false },
+        EditorPurpose::Compose { workspace: None, tags: Vec::new(), plan: false, tier: None },
         "Wrap description text",
         body,
     ));
@@ -5269,6 +5287,7 @@ fn golden_editor_ask_120() {
             queued: false,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         "Fix OSC-11 detection",
         "rebase onto main\n\nthen run the suite and report the first failure, nothing else",
@@ -5303,6 +5322,7 @@ fn golden_editor_ask_column_120() {
             queued: true,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         "IN PROGRESS",
         "commit what you have",
@@ -6018,6 +6038,7 @@ fn test_no_banned_sgr() {
                         queued: false,
                         accept_plan: false,
                         plan: false,
+                        tier: None,
                     },
                     buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
@@ -6296,6 +6317,7 @@ fn test_no_drawn_structure() {
                     queued: false,
                     accept_plan: false,
                     plan: false,
+                    tier: None,
                 },
                 buffer: buf,
             };
@@ -6315,6 +6337,7 @@ fn test_no_drawn_structure() {
                     workspace: None,
                     tags: Vec::new(),
                     plan: false,
+                    tier: None,
                 },
                 "Ship it",
                 "",
@@ -7236,6 +7259,7 @@ fn test_overflow_keeps_a_tall_cards_prompt_visible() {
             queued: false,
             accept_plan: false,
             plan: false,
+            tier: None,
         },
         buffer: crate::text::EditBuffer::from_text("continue here".into(), 100),
     };
@@ -7677,4 +7701,115 @@ fn the_crowning_sweeps_the_title_on_the_card_and_the_page() {
         // And it stays in the tint, cursor or not, card or page.
         assert!(after.iter().all(|c| c.fg == tint), "{screen:?}: the title went back to white");
     }
+}
+
+// ---- agent tiers (T-443) ---------------------------------------------------
+
+fn tier(
+    id: &str,
+    name: &str,
+    provider: mesimon_core::board::AgentProvider,
+    model: &str,
+    effort: mesimon_core::tier::Effort,
+) -> mesimon_core::tier::Tier {
+    mesimon_core::tier::Tier {
+        id: id.into(),
+        name: name.into(),
+        provider,
+        model: model.into(),
+        effort,
+    }
+}
+
+/// A machine with two tiers (`quick`, its default, and `coder`); a board
+/// with its own version of `coder` and a tier of its own (`reviewer`). T-1
+/// picked `coder` and has no agent; T-3 picked it too, and its claude still
+/// runs on `claude`, owed the switch.
+fn tier_app() -> App {
+    use mesimon_core::board::AgentProvider::{ClaudeCode, Codex};
+    use mesimon_core::tier::Effort;
+    let mut board = fixture(false);
+    board.tiers = vec![
+        tier("01CODER", "coder", ClaudeCode, "opus", Effort::Max),
+        tier("01REVIEW", "reviewer", Codex, "gpt-6-astra", Effort::High),
+    ];
+    for t in &mut board.tickets {
+        if t.id == ulid_n(1) || t.id == ulid_n(3) {
+            t.tier = Some("01CODER".into());
+        }
+    }
+    if let Some(s) =
+        board.sessions.iter_mut().find(|s| s.ticket == ulid_n(3) && s.kind == SessionKind::Claude)
+    {
+        s.tier = "claude".into();
+        s.tier_owed = true;
+    }
+    let mut app = app_graphite(board);
+    app.machine_tiers = mesimon_core::tier::MachineTiers {
+        default_tier: Some("01QUICK".into()),
+        tiers: vec![
+            tier("01QUICK", "quick", ClaudeCode, "sonnet", Effort::High),
+            tier("01CODER", "coder", ClaudeCode, "opus", Effort::Xhigh),
+        ],
+    };
+    app
+}
+
+/// The tiers list in both scopes — the machine's own, then this board's
+/// view with where each comes from — and a tier's page: the board's version
+/// of a machine tier offers the way back, and the model row is a field in
+/// place.
+#[test]
+fn golden_tiers_list_both_scopes_and_a_page() {
+    let mut app = tier_app();
+    app.mode = Mode::Tiers { idx: 0, naming: None };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("quick") && r.contains("default")), "{rows:?}");
+    assert!(!rows.iter().any(|r| r.contains("reviewer")), "the machine's list is the machine's");
+    assert!(rows.iter().any(|r| r.contains("+ new tier")));
+    golden("tiers_machine_120x30", &rows);
+    app.settings_board_scope = true;
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("reviewer")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.contains("TIERS ∙ THIS BOARD")), "{rows:?}");
+    golden("tiers_board_120x30", &rows);
+    app.mode = Mode::TierEdit { id: "01CODER".into(), idx: 4, field: None, armed: false };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("Use the machine's")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.contains("Effort: max")), "the board's version: {rows:?}");
+    golden("tier_edit_board_120x30", &rows);
+    app.settings_board_scope = false;
+    app.mode = Mode::TierEdit {
+        id: "01QUICK".into(),
+        idx: 2,
+        field: Some(crate::text::EditBuffer::from_text("sonnet".into(), 64)),
+        armed: false,
+    };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("Model: sonnet")), "{rows:?}");
+    golden("tier_edit_model_120x30", &rows);
+}
+
+/// The ticket page says what the ticket runs on, beside the key that picks
+/// the next, and its empty seat's preview starts on it; a seat owed a
+/// switch says from what to what, and on the board the open card wears the
+/// tier and the switch it owes.
+#[test]
+fn golden_the_ticket_and_the_card_wear_the_tier() {
+    let mut app = tier_app();
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("on coder ∙ ^n next")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.contains("starts on coder")), "{rows:?}");
+    golden("ticket_tier_120x30", &rows);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("on claude → coder at idle")), "{rows:?}");
+    app.screen = Screen::Board;
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("switches to coder")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.contains("coder")), "{rows:?}");
+    golden("board_tier_owed_120x30", &rows);
 }

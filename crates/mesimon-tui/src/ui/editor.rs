@@ -355,7 +355,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout) | None => "shared",
     };
     match &ed.purpose {
-        EditorPurpose::Compose { workspace, tags, plan } => {
+        EditorPurpose::Compose { workspace, tags, plan, tier } => {
             let word = workspace_word(*workspace);
             // Framed, the top edge already says NEW TICKET; the row starts
             // at the column. (Unframed — frame zero of the grow, a terminal
@@ -375,6 +375,11 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             // the one-line composer's card says it.
             if *plan {
                 ctx_spans.push(Span::styled(" ∙ plan mode".to_string(), dim1));
+            }
+            // `^n` (T-443): the tier the new ticket starts on, where it is
+            // not the default — said beside `plan mode`, the other launch pick.
+            if let Some(word) = app.field_tier_word(None, tier.as_deref()) {
+                ctx_spans.push(Span::styled(format!(" ∙ {word}"), dim1));
             }
             if !tags.is_empty() {
                 ctx_spans.push(Span::styled(" ∙".to_string(), dim2));
@@ -438,7 +443,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         // the dialog's bottom edge does not repeat it. A ticket's ask names
         // the ticket by its key; a column's names the seats the words reach
         // — every seat in it, since T-405 starts the empty ones.
-        EditorPurpose::Ask { target, queued, accept_plan, plan } => {
+        EditorPurpose::Ask { target, queued, accept_plan, plan, tier } => {
             if !framed {
                 ctx_spans.push(Span::styled(format!("{} ∙ ", heading(app, ed)), dim2));
             }
@@ -463,6 +468,14 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 crate::app::App::ask_mode_word(*accept_plan, *queued, *plan),
                 dim1,
             ));
+            // `^n` (T-443): the tier the words switch the agent to.
+            let ticket = match target {
+                AskTarget::Ticket(t) => Some(*t),
+                AskTarget::Column(_) => None,
+            };
+            if let Some(word) = app.field_tier_word(ticket, tier.as_deref()) {
+                ctx_spans.push(Span::styled(format!(" ∙ {word}"), dim1));
+            }
             let fc = app.frame_ctx();
             if fc.ask_queueable && !fc.ask_plan_ready {
                 ctx_spans.push(Span::styled("  shift+tab".to_string(), dim2));
