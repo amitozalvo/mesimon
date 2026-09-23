@@ -336,7 +336,8 @@ fn install_diff(app: &mut App) {
         pager: crate::app::Pager::default(),
         marquee: std::cell::Cell::new(None),
         density: 3,
-        cache,
+        cache: cache.into_iter().map(|(k, v)| (k, std::rc::Rc::new(v))).collect(),
+        body: std::cell::RefCell::new(None),
         z_armed: false,
         swap: false,
         worktree_present: true,
@@ -421,7 +422,8 @@ fn install_checkout_diff(app: &mut App) {
         pager: crate::app::Pager::default(),
         marquee: std::cell::Cell::new(None),
         density: 3,
-        cache,
+        cache: cache.into_iter().map(|(k, v)| (k, std::rc::Rc::new(v))).collect(),
+        body: std::cell::RefCell::new(None),
         z_armed: false,
         swap: false,
         worktree_present: true,
@@ -1949,7 +1951,7 @@ fn golden_diff_screen_120() {
 fn install_long_diff(app: &mut App) {
     install_diff(app);
     let d = app.diff.as_mut().unwrap();
-    let file = d.cache.get_mut(&d.files[0].path).unwrap();
+    let file = std::rc::Rc::get_mut(d.cache.get_mut(&d.files[0].path).unwrap()).unwrap();
     file.hunks.truncate(1);
     file.hunks[0].lines = (1..=100)
         .map(|n| mesimon_core::diff::HunkLine {
@@ -1999,6 +2001,35 @@ fn diff_hints_live_beside_their_panes_and_pages_use_the_viewport() {
         }
         assert_eq!(app.diff.as_ref().unwrap().pager.view.get().offset, 0);
     }
+}
+
+/// T-444: the hunk pane is laid out once per fetched file and width, not
+/// once per frame — and a file fetched again (`R`, the density cycle) is a
+/// new layout, never the old one's rows.
+#[test]
+fn test_diff_pane_lays_out_once() {
+    let mut app = app_graphite(fixture(false));
+    install_long_diff(&mut app);
+    let body = |app: &App| app.diff.as_ref().and_then(|d| d.body.borrow().clone()).expect("drawn");
+    let _ = render(&app, 120, 30);
+    let first = body(&app);
+    press(&mut app, 'j');
+    let _ = render(&app, 120, 30);
+    press(&mut app, '}');
+    let _ = render(&app, 120, 30);
+    assert!(std::rc::Rc::ptr_eq(&first, &body(&app)), "a scroll reuses the rows");
+    let _ = render(&app, 160, 30);
+    assert!(!std::rc::Rc::ptr_eq(&first, &body(&app)), "a resize lays them out again");
+
+    // The same path fetched again with new content, as `R` does.
+    let d = app.diff.as_mut().expect("diff");
+    let path = d.files[0].path.clone();
+    let mut again = (*d.cache[&path]).clone();
+    again.hunks[0].lines[0].text = "fetched again".into();
+    d.cache.insert(path, std::rc::Rc::new(again));
+    d.pager.reset();
+    let rows = render(&app, 160, 30);
+    assert!(rows.iter().any(|r| r.contains("fetched again")), "{rows:#?}");
 }
 
 #[test]

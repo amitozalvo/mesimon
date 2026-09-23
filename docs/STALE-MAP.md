@@ -13133,6 +13133,28 @@ backend. The goldens did not move.
 **Test.** `test_release_notes_render_once`: a `j` and a `}` reuse the same `Rc`, and a resize
 lays the document out again.
 
+**The diff's hunk pane had the same shape.** `draw_hunks` built every row of the selected file on
+every frame (the band, the wrapped line, the gutter format and the pad for each line), then showed
+about 38 of them. A file diff runs up to `MAX_PATCH_BYTES` (2 MB). Measured on a debug build at
+140×40, 10,000 lines took 38–95 ms a frame and 1,000 lines 7–18 ms. `DiffState.cache` now holds
+`Rc<FileDiff>`, and `DiffState.body` keeps the laid-out rows (`ui::diff::Body`) keyed on that
+`Rc` (`Rc::ptr_eq`), the width and the flavor. A file fetched again by `R` or the density cycle
+is a new `Rc`, so it cannot draw the old rows, and no clear site has to remember the rows. The
+10,000-line frame costs 5.7 ms now. `test_diff_pane_lays_out_once` pins the reuse, the resize and
+the re-fetch.
+
+**Measured and left alone: the note editor.** `TextArea::wrapped_rows` lays out the whole body
+once per frame (`area_window`) and once more per up/down key (`move_rows`). At the 32 KB note cap
+one wrap costs 4–6 ms on a debug build (English or Hebrew), so a typed key costs about 6 ms and an
+arrow key about 12 ms. Both are inside the 16 ms frame. A kept layout could not help typing,
+because every edit changes the text, and it would need invalidation in each of the eight
+mutators. If a larger cap ever makes this matter, a printable-ASCII fast path inside
+`wrapped_rows` (one byte is one cluster of width 1) cuts typing and moving alike.
+
+**Checked and bounded:** the ticket page's shell tail (60 rows), the card replies on the board
+(`peek::wrap` stops at its row cap), search (ranks on a keystroke or a snapshot, never a frame),
+and the description band (parses the whole note but flows at most 8 rows, about 3.5 ms at 32 KB).
+
 ## `Tab` in the note editor walks the ticket's notes (T-440, 2026-09-23, user: "when inside the big composer to edit description and there are more notes, allow user to cycle the notes on tab. if current note edited, prevent cycle and show indication")
 
 Tab on a card opened the description in the dialog (T-163), and the editor's own `Tab` was

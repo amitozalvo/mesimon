@@ -6,7 +6,9 @@
 //! registers (muted green/red; author 2026-08-30 amendment) plus glyph AND
 //! weight, so review still reads correctly in mono.
 
-use mesimon_core::diff::{Render, Sign};
+use std::rc::Rc;
+
+use mesimon_core::diff::{FileDiff, Render, Sign};
 use mesimon_core::keymap::{self, Scope, Verb};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -18,6 +20,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{App, DiffState};
 use crate::glyphs::Tier;
 use crate::text::truncate;
+use crate::theme::{Flavor, Theme};
 
 use super::chrome;
 
@@ -410,14 +413,57 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
         return;
     };
 
+    if matches!(fd.render, Render::Text | Render::Symlink) {
+        let nh = fd.hunks.len();
+        let noun = if nh == 1 { "hunk" } else { "hunks" };
+        head.push(Span::styled(format!(" ∙ {nh} {noun}"), theme.dim2()));
+    }
+    let body = cached_body(d, fd, w, theme);
+
+    // j/k scroll: clamp against the built content, write the clamp back
+    // (`Pager::window`), and draw the glide's row while a turn is in motion.
+    let visible = (area.height as usize).saturating_sub(2);
+    let at = d.pager.window(Some(d.file_idx as u64), body.rows.len(), visible, false);
+    lines.push(hunk_heading(app, d, head, w, f.area().width >= TWO_PANE_MIN_W));
+    lines.push(Line::default());
+    lines.extend(body.rows.iter().skip(at).take(visible).cloned());
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// The hunk pane's rows for one fetched file at one width and flavor: the
+/// hunk bands and every soft-wrapped line, of which a frame shows a window.
+pub(crate) struct Body {
+    file: Rc<FileDiff>,
+    width: usize,
+    flavor: Flavor,
+    rows: Vec<Line<'static>>,
+}
+
+/// The pane's rows, kept on `DiffState::body` (T-444): a file's diff can
+/// run to thousands of lines, and the draw runs at 60 fps through a glide
+/// and once per key while `j` is held, only to keep a window of it. Keyed
+/// on the fetched file itself, so `R` and the density cycle — which fetch
+/// it again — lay it out again, and on the width and flavor like the
+/// PREVIEW zone's `ticket::rendered`.
+fn cached_body(d: &DiffState, fd: &Rc<FileDiff>, width: usize, theme: &Theme) -> Rc<Body> {
+    let mut slot = d.body.borrow_mut();
+    if let Some(b) = slot.as_ref() {
+        if Rc::ptr_eq(&b.file, fd) && b.width == width && b.flavor == theme.flavor {
+            return Rc::clone(b);
+        }
+    }
+    let rows = body_rows(fd, d.is_branch(), width, theme);
+    let b = Rc::new(Body { file: Rc::clone(fd), width, flavor: theme.flavor, rows });
+    *slot = Some(Rc::clone(&b));
+    b
+}
+
+fn body_rows(fd: &FileDiff, branch: bool, w: usize, theme: &Theme) -> Vec<Line<'static>> {
     // Body content by render kind — the exhaustive enum (a skipped case is a
     // day-one panic, docs/08 §1.3).
     let mut body: Vec<Line<'static>> = Vec::new();
     match &fd.render {
         Render::Text | Render::Symlink => {
-            let nh = fd.hunks.len();
-            let noun = if nh == 1 { "hunk" } else { "hunks" };
-            head.push(Span::styled(format!(" ∙ {nh} {noun}"), theme.dim2()));
             if let Some(old) = &fd.old_path {
                 body.push(Line::from(Span::styled(format!("renamed from {old}"), theme.dim2())));
                 body.push(Line::default());
@@ -509,7 +555,7 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
             // reach. On the checkout there is nothing to offer: the user is
             // already standing in it.
             let mb = *bytes as f64 / 1_048_576.0;
-            let word = if d.is_branch() {
+            let word = if branch {
                 format!("{mb:.1} MB — ! opens it in your shell")
             } else {
                 format!("{mb:.1} MB — too large to render")
@@ -521,14 +567,7 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
         }
     }
 
-    // j/k scroll: clamp against the built content, write the clamp back
-    // (`Pager::window`), and draw the glide's row while a turn is in motion.
-    let visible = (area.height as usize).saturating_sub(2);
-    let at = d.pager.window(Some(d.file_idx as u64), body.len(), visible, false);
-    lines.push(hunk_heading(app, d, head, w, f.area().width >= TWO_PANE_MIN_W));
-    lines.push(Line::default());
-    lines.extend(body.into_iter().skip(at).take(visible));
-    f.render_widget(Paragraph::new(lines), area);
+    body
 }
 
 fn hunk_heading(

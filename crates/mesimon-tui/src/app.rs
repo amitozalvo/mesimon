@@ -170,7 +170,12 @@ pub struct DiffState {
     /// -U context: 1 | 3 | 8 (`z z` cycles).
     pub density: u32,
     /// Fetched files, keyed by path — valid for the current density only.
-    pub cache: std::collections::HashMap<String, mesimon_core::diff::FileDiff>,
+    /// Shared, so the hunk pane's kept rows (`body`) can name the fetch
+    /// they were laid out from.
+    pub cache: std::collections::HashMap<String, std::rc::Rc<mesimon_core::diff::FileDiff>>,
+    /// The hunk pane's rows at the last width and flavor, for the file they
+    /// were built from (`ui::diff::cached_body`). Written by the draw.
+    pub body: std::cell::RefCell<Option<std::rc::Rc<crate::ui::diff::Body>>>,
     /// A first `z` arms the view chord (`z z` density, `z p` pane swap).
     pub z_armed: bool,
     /// Below the two-pane breakpoint: false shows the file list, true the diff.
@@ -8506,6 +8511,7 @@ impl App {
                     marquee: Cell::new(None),
                     density: 3,
                     cache: std::collections::HashMap::new(),
+                    body: std::cell::RefCell::new(None),
                     z_armed: false,
                     swap: false,
                     worktree_present,
@@ -8568,7 +8574,7 @@ impl App {
             match self.req(Command::DiffFile { target, path: path.clone(), context }) {
                 Response::DiffFile { file } => {
                     if let Some(d) = self.diff.as_mut() {
-                        d.cache.insert(path, file);
+                        d.cache.insert(path, std::rc::Rc::new(file));
                     }
                 }
                 Response::Err { message } if cursor => self.status = message,
