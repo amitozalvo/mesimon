@@ -7096,11 +7096,14 @@ impl App {
     /// The menu's `Release notes` row: the changelog this binary was built
     /// with, opened at the top — the top entry IS this build (the parser's
     /// test holds the file to that), so the newest notes are the first
-    /// thing read.
+    /// thing read. Opening it also asks whether a newer build is out, now
+    /// rather than on the half-hour clock (T-445); the answer is the header's
+    /// chip, and the page itself stays the binary's own.
     fn open_releases(&mut self) {
         let releases = mesimon_core::relnotes::parse(mesimon_core::relnotes::SOURCE);
         self.releases = Some(ReleasesState::new(releases, BUILD_TAG));
         self.screen = Screen::Releases;
+        self.release.check_now();
     }
 
     /// `n`/`N` on the notes: the next release's band below the top of the

@@ -120,10 +120,16 @@ ask for, and never restarts a board you did not tell it to.
 
 **And it tells you what changed.** Esc → `Release notes` opens every version's notes, newest
 first, with `this build` on the one you are running. They are the binary's own (`CHANGELOG.md`,
-compiled in), so the page works offline and never reaches the network.
+compiled in), so the page reads offline. Opening it also asks, right then, whether a newer version
+is out; if one is, the header chip above appears.
 
-- `MESIMON_NO_UPDATE_CHECK=1` turns the check off. `mesimon doctor` prints whether it is on, when
-  it last answered and what it heard.
+**Or ask from a shell.** `mesimon update` checks now and, when a newer version is out, downloads
+it, checks it against the published checksum and puts it in place of the binary you ran. It
+restarts nothing: an open board offers `U`. `mesimon update --check` only asks.
+
+- `MESIMON_NO_UPDATE_CHECK=1` turns the board's check off. `mesimon update` still works when you
+  run it yourself. `mesimon doctor` prints whether the check is on, when it last answered and what
+  it heard.
 - Development builds never check. Only the binary `ci/release.sh` cuts is stamped to, so a
   `cargo build` board makes no request and can never have its binary replaced by a download.
 

@@ -105,6 +105,8 @@ pub use prefs::train_doctor_line as train_status;
 /// the offer it raises, and the doctor must not carry a second copy of the
 /// rules for when it runs.
 pub use release::doctor_line as update_check_status;
+/// `mesimon update` — the same checker and installer, asked from a shell.
+pub use release::update_command;
 
 pub fn run(repo_root: &Path) -> Result<()> {
     // Capability detection runs exactly once, before raw mode and before any

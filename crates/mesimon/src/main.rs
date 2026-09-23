@@ -63,6 +63,13 @@ fn main() -> Result<()> {
             mesimon_tui::run(&root)
         }
         Some("doctor") => doctor::run(&args[1..]),
+        Some("update") => {
+            let Some(check_only) = parse_update_args(&args[1..]) else {
+                eprintln!("usage: mesimon update [--check]");
+                std::process::exit(2);
+            };
+            std::process::exit(mesimon_tui::update_command(check_only))
+        }
         Some("mesophon") => mesophon::run(&args[1..]),
         // Redeem an invite code from the shell (T-335): the current
         // directory's daemon joins, and the joined board's root is printed.
@@ -87,6 +94,16 @@ fn main() -> Result<()> {
             let cwd = std::env::current_dir()?;
             mesimon_tui::run(&cwd)
         }
+    }
+}
+
+/// `mesimon update`'s one flag: `Some(check_only)`, or `None` for anything
+/// else — an unknown flag must not be read as "go ahead and install".
+fn parse_update_args(args: &[String]) -> Option<bool> {
+    match args {
+        [] => Some(false),
+        [flag] if flag == "--check" => Some(true),
+        _ => None,
     }
 }
 
@@ -116,6 +133,7 @@ fn help_text() -> &'static str {
          mesimon doctor --mcp           print everything mesimon adds to a session's model input\n  \
          mesimon daemon --repo <path>   run the daemon in the foreground\n  \
          mesimon open <dir>             open the board at a directory (a joined team board)\n  \
+         mesimon update [--check]       install the newest release; --check only asks\n  \
          mesimon join <code>            redeem a team invite code; prints the board's directory\n  \
          mesimon mesophon setup         check the relay and open its browser app\n  \
          mesimon state explain [session]   explain observed state and movement\n  \
@@ -131,7 +149,18 @@ fn help_text() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::help_text;
+    use super::{help_text, parse_update_args};
+
+    #[test]
+    fn update_takes_one_flag_and_refuses_the_rest() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_update_args(&a(&[])), Some(false));
+        assert_eq!(parse_update_args(&a(&["--check"])), Some(true));
+        assert_eq!(parse_update_args(&a(&["--chek"])), None, "a typo is not an install");
+        assert_eq!(parse_update_args(&a(&["--check", "--check"])), None);
+        assert_eq!(parse_update_args(&a(&["now"])), None);
+        assert!(help_text().contains("mesimon update [--check]"));
+    }
 
     #[test]
     fn help_points_to_the_canonical_mcp_disclosure() {

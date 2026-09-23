@@ -48,6 +48,12 @@ const CHECK_EVERY: Duration = Duration::from_secs(30 * 60);
 /// wait three seconds.
 const FIRST_CHECK_AFTER: Duration = Duration::from_secs(3);
 const POLL_EVERY: Duration = Duration::from_secs(1);
+/// The floor under a check somebody asked for (T-445) — opening the release
+/// notes. A stamp younger than this IS the answer, whichever board or
+/// `mesimon update` wrote it: GitHub allows sixty unauthenticated requests an
+/// hour to the whole machine, and a person paging in and out of the notes
+/// should not be the one to spend them.
+const ASK_AGAIN_AFTER: Duration = Duration::from_secs(60);
 
 const API_TIMEOUT_SECS: &str = "10";
 const DOWNLOAD_TIMEOUT_SECS: &str = "180";
@@ -127,23 +133,32 @@ pub struct ReleaseWatch {
     last_poll: Instant,
     /// A worker thread is out. Cleared by its one `Outcome`.
     working: bool,
+    /// The question itself — `fetch_latest_tag`, and a stand-in under test.
+    fetch: fn() -> Option<String>,
     tx: Sender<Outcome>,
     rx: Receiver<Outcome>,
 }
 
 impl ReleaseWatch {
-    pub fn new(repo_root: &Path) -> Self {
+    /// A watch that has checked nothing and will check nothing until it is
+    /// given an `Eligible` — which only `new` does, outside the tests.
+    fn inert() -> Self {
         let (tx, rx) = mpsc::channel();
-        let mut w = Self {
+        Self {
             eligible: None,
             stage: Stage::Quiet,
             note: None,
             next_check: None,
             last_poll: Instant::now(),
             working: false,
+            fetch: fetch_latest_tag,
             tx,
             rx,
-        };
+        }
+    }
+
+    pub fn new(repo_root: &Path) -> Self {
+        let mut w = Self::inert();
         let Some(eligible) = eligibility(repo_root) else {
             return w;
         };
@@ -175,7 +190,7 @@ impl ReleaseWatch {
             dirty = true;
         }
         // Never while a download is out: a check cannot overrule it anyway
-        // (see `absorb`), and not asking is cheaper than reasoning about it.
+        // (see `adopt`), and not asking is cheaper than reasoning about it.
         if self.eligible.is_none()
             || self.working
             || matches!(self.stage, Stage::Installing(_))
@@ -185,10 +200,41 @@ impl ReleaseWatch {
         }
         self.last_poll = Instant::now();
         if self.next_check.is_some_and(|t| Instant::now() >= t) {
-            self.next_check = Some(Instant::now() + CHECK_EVERY);
-            self.spawn(|| Outcome::Latest(fetch_latest_tag()));
+            self.ask();
         }
         dirty
+    }
+
+    /// Ask now, off the half-hour clock (T-445). Opening the release notes is
+    /// a person asking what is new, and an answer up to half an hour old is
+    /// the wrong one to give them. It stays as quiet as the clock's: a newer
+    /// tag raises the same chip, and being current says nothing.
+    ///
+    /// A stamp younger than [`ASK_AGAIN_AFTER`] is taken as the answer rather
+    /// than asking again — which also picks up what another board, or
+    /// `mesimon update`, heard a moment ago.
+    pub fn check_now(&mut self) {
+        let Some(e) = &self.eligible else { return };
+        // Nothing to ask while a download is out or once one landed: the
+        // answer could not change what happens next (see `adopt`).
+        if self.working || matches!(self.stage, Stage::Installing(_) | Stage::Installed(_)) {
+            return;
+        }
+        if let Some(stamp) = read_stamp(&e.stamp).filter(|s| s.age() < ASK_AGAIN_AFTER) {
+            if let Some(tag) = stamp.latest {
+                self.adopt(tag);
+            }
+            return;
+        }
+        self.ask();
+    }
+
+    /// Send the one worker that asks, and put the clock's next question a
+    /// whole interval out — an answer asked for is as good as a scheduled one.
+    fn ask(&mut self) {
+        self.next_check = Some(Instant::now() + CHECK_EVERY);
+        let fetch = self.fetch;
+        self.spawn(move || Outcome::Latest(fetch()));
     }
 
     /// Take the offer: fetch, verify, and put the new binary at our own path.
@@ -244,11 +290,7 @@ impl ReleaseWatch {
                 if let Some(e) = &self.eligible {
                     write_stamp(&e.stamp, &tag);
                 }
-                // A check never overrules a download in flight or one that
-                // landed: those are further along the same story.
-                if matches!(self.stage, Stage::Quiet | Stage::Available(_)) {
-                    self.stage = if is_newer(&tag) { Stage::Available(tag) } else { Stage::Quiet };
-                }
+                self.adopt(tag);
             }
             // The request did not answer. The stamp is deliberately NOT
             // written: it records when we last HEARD, so a week offline must
@@ -268,6 +310,15 @@ impl ReleaseWatch {
                     self.stage = Stage::Available(tag);
                 }
             }
+        }
+    }
+
+    /// Take a heard tag as the offer, or as its absence. A check never
+    /// overrules a download in flight or one that landed: those are further
+    /// along the same story.
+    fn adopt(&mut self, tag: String) {
+        if matches!(self.stage, Stage::Quiet | Stage::Available(_)) {
+            self.stage = if is_newer(&tag) { Stage::Available(tag) } else { Stage::Quiet };
         }
     }
 
@@ -298,6 +349,14 @@ fn why_off() -> Option<&'static str> {
     if std::env::var_os("MESIMON_NO_UPDATE_CHECK").is_some() {
         return Some("MESIMON_NO_UPDATE_CHECK is set");
     }
+    why_unfit()
+}
+
+/// Why this BUILD cannot update itself, whoever asks. `mesimon update` answers
+/// to this alone (T-445): the opt-out above silences the question a board asks
+/// on its own, and a person who types the command is asking it themselves.
+/// Every guard here still holds for them — above all the build-tree one.
+fn why_unfit() -> Option<&'static str> {
     if !checking_channel() {
         return Some("this build was not cut by ci/release.sh");
     }
@@ -545,6 +604,69 @@ fn sha256_file(p: &Path) -> Result<String, String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
+// ---- the command -----------------------------------------------------------
+
+/// `mesimon update [--check]` (T-445): ask now, and unless `--check`, take the
+/// offer — the menu's `Install` row from a shell, the same fetch, checksum,
+/// `--version` gate and atomic swap. It restarts nothing either: an open board
+/// sees its exe's mtime move and offers `U`, and the next board started
+/// restarts an older daemon on its own. Returns the process's exit code.
+pub fn update_command(check_only: bool) -> i32 {
+    let ours = format!("v{}", env!("CARGO_PKG_VERSION"));
+    if let Some(why) = why_unfit() {
+        eprintln!("mesimon update: {why} ∙ re-run the install line instead");
+        return 1;
+    }
+    let Some(tag) = fetch_latest_tag() else {
+        eprintln!("mesimon update: the releases repo did not answer (github.com, over curl)");
+        return 1;
+    };
+    // Every board's next check, and the doctor, hear what this one did.
+    if let Some(stamp) = stamp_path() {
+        write_stamp(&stamp, &tag);
+    }
+    if !is_newer(&tag) {
+        println!("{ours} is the newest");
+        return 0;
+    }
+    if check_only {
+        println!("{tag} is out ∙ this is {ours} ∙ mesimon update installs it");
+        return 0;
+    }
+    let exe = match mesimon_core::exe::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            eprintln!("mesimon update: {e}");
+            return 1;
+        }
+    };
+    // No repo, so no project runtime dir: a per-process dir under the uid's
+    // own, which is verified private first — a tarball staged anywhere others
+    // can write could be swapped between its checksum and its unpack.
+    let root = mesimon_daemon::paths::runtime_root();
+    if let Err(e) = mesimon_daemon::paths::own_private_dir(&root) {
+        eprintln!("mesimon update: {e:#}");
+        return 1;
+    }
+    let stage_dir = root.join(format!("update-{}", std::process::id()));
+    println!("downloading {tag} ∙ verifying the checksum");
+    let landed = install(&tag, &exe, &stage_dir);
+    let _ = std::fs::remove_dir_all(&stage_dir);
+    match landed {
+        Ok(()) => {
+            println!(
+                "{tag} is installed at {} ∙ an open board offers U to restart on it",
+                exe.display()
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("mesimon update failed: {e}");
+            1
+        }
+    }
+}
+
 // ---- the stamp -------------------------------------------------------------
 
 /// When we last heard, and what we heard.
@@ -665,10 +787,130 @@ mod tests {
     fn a_dev_build_is_never_eligible() {
         assert_eq!(env!("MESIMON_CHANNEL"), "dev", "a test binary is never a release build");
         assert!(!checking_channel());
-        let w = ReleaseWatch::new(Path::new("."));
+        let mut w = ReleaseWatch::new(Path::new("."));
         assert!(w.eligible.is_none());
         assert!(!w.available());
         assert_eq!(w.tag(), "");
+        // Opening the release notes on a dev build asks nothing either.
+        w.check_now();
+        assert!(!w.working, "an ineligible watch sent a worker");
+    }
+
+    /// And `mesimon update` refuses on the same ground before it asks — the
+    /// opt-out is not what stops it, the build is.
+    #[test]
+    fn a_dev_build_refuses_the_command_before_it_asks() {
+        assert!(why_unfit().is_some());
+        assert_eq!(update_command(true), 1);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("msmn-release-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmp");
+        dir
+    }
+
+    /// What `new` builds on a release build, pointed at a scratch stamp and a
+    /// stand-in for the request.
+    fn eligible_watch(dir: &Path, fetch: fn() -> Option<String>) -> ReleaseWatch {
+        let mut w = ReleaseWatch::inert();
+        w.fetch = fetch;
+        w.eligible = Some(Eligible {
+            exe: dir.join("mesimon"),
+            stamp: dir.join("update-check.json"),
+            stage_dir: dir.join("update"),
+        });
+        w
+    }
+
+    /// The worker's one answer, absorbed as `tick` would.
+    fn settle(w: &mut ReleaseWatch) {
+        let o = w.rx.recv_timeout(Duration::from_secs(5)).expect("the worker answers");
+        w.absorb(o);
+    }
+
+    fn a_newer_one() -> Option<String> {
+        Some("v99.0.0".into())
+    }
+    fn this_one() -> Option<String> {
+        Some(format!("v{}", env!("CARGO_PKG_VERSION")))
+    }
+    fn another_newer_one() -> Option<String> {
+        Some("v98.0.0".into())
+    }
+
+    /// Opening the notes asks at once, once, and the answer lands exactly as
+    /// the clock's would: the offer, the stamp, and the clock pushed out.
+    #[test]
+    fn asking_now_asks_once_and_lands_like_the_clock() {
+        let dir = scratch("now");
+        let mut w = eligible_watch(&dir, a_newer_one);
+        let before = Instant::now();
+        w.check_now();
+        assert!(w.working, "asked at once");
+        w.check_now();
+        settle(&mut w);
+        assert!(
+            w.rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "a second press while the first was out sent a second worker"
+        );
+        assert!(w.available());
+        assert_eq!(w.tag(), "v99.0.0");
+        let stamp = read_stamp(&dir.join("update-check.json")).expect("the answer is stamped");
+        assert_eq!(stamp.latest.as_deref(), Some("v99.0.0"));
+        assert!(w.next_check.is_some_and(|t| t >= before + CHECK_EVERY), "the clock moved out");
+
+        let _ = std::fs::remove_dir_all(dir);
+
+        // Current is quiet, as it is on the clock.
+        let dir = scratch("now-current");
+        let mut w = eligible_watch(&dir, this_one);
+        w.check_now();
+        settle(&mut w);
+        assert!(!w.available());
+        assert_eq!(w.tag(), "");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A stamp inside the floor IS the answer — whoever wrote it — and an
+    /// older one is asked past.
+    #[test]
+    fn a_fresh_stamp_is_the_answer_and_asks_nothing() {
+        let dir = scratch("floor");
+        let stamp = dir.join("update-check.json");
+        write_stamp(&stamp, "v99.0.0");
+        let mut w = eligible_watch(&dir, another_newer_one);
+        w.check_now();
+        assert!(!w.working, "asked inside the floor");
+        assert_eq!(w.tag(), "v99.0.0", "the stamp's answer was not taken");
+
+        let old = now_ms() - (ASK_AGAIN_AFTER.as_millis() as u64) - 1_000;
+        std::fs::write(
+            &stamp,
+            format!(r#"{{"schema_version": 1, "checked_at_ms": {old}, "latest": "v99.0.0"}}"#),
+        )
+        .expect("write");
+        w.check_now();
+        assert!(w.working, "a stamp past the floor was not asked past");
+        settle(&mut w);
+        assert_eq!(w.tag(), "v98.0.0");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Never while a download is out or after one landed: the answer could
+    /// not change what happens next.
+    #[test]
+    fn asking_now_waits_on_a_download() {
+        let dir = scratch("installing");
+        let mut w = eligible_watch(&dir, a_newer_one);
+        for stage in [Stage::Installing("v99.0.0".into()), Stage::Installed("v99.0.0".into())] {
+            w.stage = stage.clone();
+            w.check_now();
+            assert!(!w.working, "asked during {stage:?}");
+            assert_eq!(w.stage, stage);
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// And the guard under the gate: a binary inside a build tree is refused

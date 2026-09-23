@@ -28,8 +28,7 @@ impl Paths {
         h.update(canon.as_os_str().as_encoded_bytes());
         let proj16 = hex(&h.finalize())[..16].to_string();
 
-        let uid = unsafe { libc::getuid() };
-        let rt_dir = PathBuf::from(format!("/tmp/mesimon-{uid}/{proj16}"));
+        let rt_dir = runtime_root().join(&proj16);
         let state_dir = state_root()?.join(&proj16);
         let board_dir = canon.join(".mesimon");
 
@@ -168,6 +167,14 @@ impl Paths {
         }
         Ok(())
     }
+}
+
+/// `/tmp/mesimon-<uid>`, the parent of every per-project runtime dir — and of
+/// `mesimon update`'s staging dir, which has no project (T-445). Callers
+/// verify it with [`own_private_dir`] before putting anything in it.
+pub fn runtime_root() -> PathBuf {
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!("/tmp/mesimon-{uid}"))
 }
 
 /// `~/.local/state/mesimon`, the parent of every per-project state dir.

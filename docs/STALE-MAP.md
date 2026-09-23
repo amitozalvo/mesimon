@@ -13252,3 +13252,43 @@ so nothing can mark them now.
 `scan_skips_agent_sdk_runs`; `started` ×5 (the fold's provenance rule, the `hooks/` seed, the
 missing, newer and garbage files); `m3_e2e` writes transcripts for the ghost's two ids and an
 `sdk-py` run, deletes the ticket, and the drawer lists exactly the adopted conversation.
+
+## Asking now: the release notes and `mesimon update` (T-445, 2026-09-23, user: "check immediately when entering release notes and cli `mesimon update`")
+
+**Asked:** the release check ran only on its half-hour clock, so opening Release notes to see what
+is new could show an answer up to 30 minutes old; and there was no way to update from a shell but
+re-running the install line (`mesimon update` said "unknown command").
+
+**Built.** `ReleaseWatch::check_now` (`tui/src/release.rs`), called by `App::open_releases`: one
+worker at once, off the clock, landing through the same `absorb` as the clock's (the offer, the
+stamp, and the clock pushed a whole interval out). It skips while a worker is out and in
+`Installing`/`Installed`. **A floor, `ASK_AGAIN_AFTER` = 60 s, against the shared stamp**: a stamp
+younger than that IS the answer and nothing is asked — GitHub allows sixty unauthenticated
+requests an hour to the machine, and paging in and out of the notes must not spend them. The
+floor also means a board picks up what another board or the CLI heard a moment ago. `adopt` is
+the one place a heard tag becomes the stage, shared by `absorb` and the stamp path.
+
+**Silent on the page, by the author's choice.** The identity row was offered a `∙ nothing newer is
+out` / `∙ v… is out` word and the author declined: a newer tag raises the existing header chip,
+and being current still says nothing anywhere. No golden changed.
+
+**`mesimon update [--check]`** is `release::update_command`, exported beside the doctor line: ask
+(stamping the answer), then — unless `--check` — the menu's `install`, unchanged, and nothing
+restarted; an open board's `update.rs` sees the mtime move and offers `U`. Exit 0 on current,
+out-with-`--check` or installed; 1 on a refusal or a failure; 2 on an unknown argument (a typo is
+never read as "install"). It stages in `/tmp/mesimon-<uid>/update-<pid>` — there is no project,
+so no project runtime dir — under the uid dir verified by `own_private_dir`, because a tarball
+staged where others can write could be swapped between its checksum and its unpack.
+`paths::runtime_root()` is now the one spelling of `/tmp/mesimon-<uid>`.
+
+**The opt-out split.** `why_off` is now `MESIMON_NO_UPDATE_CHECK`, then `why_unfit` (channel,
+target, build tree, `HOME`). The board's clock and `check_now` answer to `why_off`; the command
+answers to `why_unfit` alone: the opt-out silences the question a board asks on its own, and a
+person who types `mesimon update` is asking it. Every build guard still holds for them — a
+`target/` binary is refused whatever is set. The doctor line is unchanged.
+
+**Tests.** `asking_now_asks_once_and_lands_like_the_clock`,
+`a_fresh_stamp_is_the_answer_and_asks_nothing`, `asking_now_waits_on_a_download` run an eligible
+watch on a scratch stamp with a stand-in `fetch` (the new field; `fetch_latest_tag` by default);
+`a_dev_build_refuses_the_command_before_it_asks`; `update_takes_one_flag_and_refuses_the_rest`
+in `main.rs`.
