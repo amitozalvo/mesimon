@@ -12984,3 +12984,26 @@ is what to read on simbly after the next fresh worktree ticket before deciding.
 **Tests.** `cargo nextest run -p mesimon --test workspace_e2e --test worktree_e2e --test
 merge_train_e2e --test gitstatus_e2e --test archive_reclaim_e2e --test pr_merge_e2e`, green
 (12); the merge-train four are the regression test for the empty-base gap.
+
+## A squash on a base that moved nearby reads merged (T-438, 2026-09-23, user: "squash committed merged MRs not indicated in mesimon")
+
+**What was wrong.** T-267's patch-id comparison took both sides with three lines of context
+(`--unified=3`). A patch-id hashes every line of a hunk, context included, and the squash
+commit's context is the target's text *at merge time* — so one commit on the base within three
+lines of the branch's edit, landed before the MR was, moved the id on the target side only, and
+the ticket read unmerged forever. The T-267 tests only ever added new files, which have no
+context to drift. Reproduced in a scratch repo: branch edits lines 10 and 20, main edits line 12,
+squash — `94b87fb…` against `37a90f9…` at width 3, equal at width 0.
+
+**Shipped.** `DIFF_FLAGS` takes `--unified=0`, so only the changed lines are hashed, which is the
+same text on both sides however the surroundings moved; and `--diff-algorithm=myers`, because
+which lines a diff calls changed is the other thing a user's config could move on one side. Both
+roads (the one-patch squash, the per-commit rebase-merge) share the flags and both are covered
+by `a_squash_on_a_base_that_moved_nearby_reads_merged`, which fails at width 3.
+
+**Trade-off.** Width 0 hashes less, so two different edits with the same changed lines at
+different places collide. The comparison decides a word on a card and never a write.
+
+**Still open, and not this.** A conflict resolved in the forge UI changes the patch itself; a
+branch amended more than a week after its MR merged falls outside the `--since` window
+(`SINCE_SLACK_SECS`). Neither has been seen.

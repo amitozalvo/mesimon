@@ -1168,7 +1168,16 @@ const GIT_PINS: [&str; 22] = [
 /// `--full-index` is for binaries, whose ids carry the abbreviated blob oids
 /// and would otherwise drift as the repo grows; `--no-ext-diff`/`--no-textconv`
 /// keep a user's own diff program from running on the daemon's worker thread.
-const DIFF_FLAGS: [&str; 10] = [
+///
+/// `--unified=0` is what makes a squash on a busy base match at all (T-438).
+/// A patch-id hashes every line of a hunk, context included, and the squash
+/// commit's context is the target's text at merge time — so one commit on
+/// the base within three lines of the branch's edit, landed before the PR
+/// was, moved the id and the ticket read unmerged forever. With no context
+/// only the changed lines are hashed, which is the same text on both sides
+/// however the surroundings moved. `--diff-algorithm=myers` pins the other
+/// thing a user's config could move: which lines a diff calls changed.
+const DIFF_FLAGS: [&str; 11] = [
     "-r",
     "-p",
     "--no-color",
@@ -1176,7 +1185,8 @@ const DIFF_FLAGS: [&str; 10] = [
     "--no-textconv",
     "--no-ext-diff",
     "--full-index",
-    "--unified=3",
+    "--unified=0",
+    "--diff-algorithm=myers",
     "--src-prefix=a/",
     "--dst-prefix=b/",
 ];
@@ -2423,6 +2433,56 @@ mod tests {
         assert!(!is_merged(&r.dir, "work", "main"));
         assert!(content_merged(&r.dir, "work", "main", 0).is_some(), "each patch is up there");
         assert!(r.flags("work", None, None).merged);
+    }
+
+    /// The busy-base case (T-438): main edits a line within three of the
+    /// branch's own before the PR lands. The squash commit's diff then carries
+    /// main's text as context, and a patch-id taken WITH context is a
+    /// different id — the ticket read unmerged forever. Only the changed
+    /// lines may be hashed.
+    #[test]
+    fn a_squash_on_a_base_that_moved_nearby_reads_merged() {
+        let Some(r) = Repo::new("squash-drift") else { return };
+        let lines = |a: &str, b: &str, c: &str| {
+            (1..=30)
+                .map(|n| match n {
+                    10 => a.to_string(),
+                    12 => b.to_string(),
+                    20 => c.to_string(),
+                    n => n.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        };
+        r.commit("f.txt", &lines("10", "12", "20"), "seed");
+        r.run(&["checkout", "-q", "-b", "work"]);
+        r.commit("f.txt", &lines("ten", "12", "20"), "ten");
+        r.commit("f.txt", &lines("ten", "12", "twenty"), "twenty");
+        r.run(&["checkout", "-q", "main"]);
+        // Two lines from the branch's edit: inside its context, outside its hunk.
+        r.commit("f.txt", &lines("10", "twelve", "20"), "main moved nearby");
+        r.run(&["merge", "-q", "--squash", "work"]);
+        r.run(&["commit", "-qm", "work (!7)"]);
+
+        assert!(!is_merged(&r.dir, "work", "main"));
+        let landed = content_merged(&r.dir, "work", "main", 0).expect("the patch is on main");
+        assert_eq!(landed, branch_tip(&r.dir, "main"));
+        let f = r.flags("work", None, None);
+        assert!(f.merged && !f.needs_rebase, "the branch reads merged");
+
+        // The same drift on the rebase-merge road: each commit replayed onto
+        // the moved base, each carrying the base's context.
+        r.run(&["checkout", "-q", "-b", "work2", "main~2"]);
+        r.commit("f.txt", &lines("TEN", "12", "20"), "TEN");
+        r.commit("f.txt", &lines("TEN", "12", "TWENTY"), "TWENTY");
+        let tip = branch_tip(&r.dir, "work2");
+        r.run(&["checkout", "-q", "main"]);
+        r.run(&["reset", "-q", "--hard", "main~1"]);
+        r.run(&["cherry-pick", "work2~1"]);
+        r.run(&["cherry-pick", &tip]);
+        assert!(!is_merged(&r.dir, "work2", "main"));
+        assert!(content_merged(&r.dir, "work2", "main", 0).is_some(), "each patch is up there");
     }
 
     /// The durability the memo buys: the base runs on over the very files the
