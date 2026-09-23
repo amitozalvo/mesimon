@@ -6,6 +6,106 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.25 — 2026-09-23
+
+### Added
+
+- **A worktree ticket on a multi-repository board gets one worktree per
+  repository.** When the board's root is a folder that holds several git
+  repositories, a ticket with the worktree workspace now gets a container
+  under the state directory with one worktree per repository, all on the
+  ticket's `msmn/` branch. `m` merges each repository in turn, fast-forward
+  only; a refusal partway leaves the landed ones landed, and the next `m`
+  continues. The ticket page names each repository with something to say,
+  for example `api +3 ∙ web ✓`, and `get_ticket` carries one merge row per
+  repository. The old refusal for a worktree ticket on such a board is gone.
+  `worktrees.json` moves to schema 2; an older build leaves the file
+  untouched and does not write to it.
+- **Shift+Enter accepts an agent's plan from the board.** On a card whose
+  agent is on its plan dialog, Shift+Enter opens the ask field at
+  `accept plan`. A blank Enter presses the dialog's own default row
+  (Claude Code's `Yes, and use auto mode`, Codex's `Yes, implement this
+  plan`); words plus Enter accept the plan and paste the words into the
+  turn as soon as the agent confirms it left the plan. An ask queued while
+  the agent is still planning carries the same flag. A column's Shift+Enter
+  field opens at `accept plan` when any of its seats can accept one, and
+  accepts every one of them, one per shared checkout at a time. A queued
+  ask that meets a question on the dialog is held for your `Ctrl+Y` rather
+  than dropped, and `Ctrl+Y` into a dialog is refused.
+- **Ctrl+P starts the agent in plan mode from the composer or the ask
+  field.** The hint reads `plan mode` and toggles; the row says `∙ plan
+  mode` while it is armed. The flag applies to the one launch the words end
+  in: a fresh Claude session, a parked one being woken, or an idle live pane,
+  which is parked and relaunched in plan mode (the feed records
+  `plan_relaunch`). A working pane refuses the send-now form, and a queued
+  ask waits for idle. Codex has no plan mode and is refused. The crown's
+  `start_agent` and `ask_agent` tools take the same `plan` flag. `queue.json`
+  moves to schema 2 to carry the flag.
+- **Pressing `m` on the ticket page opens a merge dialog.** The dialog names
+  what the merge will do and why to stay on the page, with its keys along the
+  bottom edge. While git runs, a spinner turns in the dialog and keys are
+  held; a merge that lands turns the dialog into the "tell the agent"
+  question instead of closing it.
+- **The crown is told when an agent it started finishes.** When a
+  crown-started agent ends its turn or raises its hand and the crown is
+  idle, one sentence is pasted into the crown's session. Finishes under a
+  working crown are collected into one sentence, a person's queued ask on
+  the crown goes first, and the hand's reason is not included. Uncrowning
+  drops what was owed. The feed records `crown_wake`.
+- **A refused archive shakes the card.** Pressing `a` on a ticket whose
+  sessions are awake shakes the card on the board, or the title row on the
+  ticket page, three times in colour-neutral motion, in addition to the
+  status-line refusal.
+
+### Changed
+
+- **The tmux status line names the ticket by key.** The focused pane's
+  breadcrumb reads `T-428 title` with the key in bold, matching the ticket
+  page's chip; the title is still cut at 48 characters.
+- **Every paste mesimon sends now waits for the agent's acknowledgement.**
+  A `p` prompt, a manual merge request, a note's nudge and a queued ask sent
+  by hand now expect the `UserPromptSubmit` hook (or Codex's new turn) like a
+  ticket's first prompt, and the feed records the acknowledgement. A Claude
+  record left with a pending prompt across a daemon restart is cleared at
+  boot instead of holding its checkout.
+- **Creating a ticket from the composer is one command.** Title, tags and
+  description arrive together, so an auto-run agent starts on a card that
+  already has its brief and tags. A failed create leaves no ticket behind.
+  A board viewer can no longer create a ticket through the composer.
+
+### Fixed
+
+- **Three tickets behind one merge are asked to rebase once each, not six
+  times.** The merge train held a ticket only until its git step cleared
+  `needs rebase`, so while the agent's tests still ran it was asked again
+  for the same base. The hold now lasts until the agent's turn ends.
+- **A woken session no longer inherits its predecessor's death.** A wake
+  reuses the session name and uuid, so the old process's `SessionEnd` and
+  `pane-died` frames could land on the new record. Every hook frame now
+  names its pane, and a death frame from another pane is dropped without
+  asking tmux.
+- **A transcript keeps being read after Claude Code moves it.** When a
+  session changes its working directory through Claude Code's own worktree
+  tool, the transcript file moves to another project directory; the card
+  read "nothing to read in its transcript". The daemon now follows the
+  file. A `cd` in Bash does not move it.
+- **Adopting external sessions reads the whole transcript head.** A fixed
+  8 KiB window cut the first real record mid-line on 230 of 550 transcripts
+  measured (a pasted prompt or image can make it large), so those sessions
+  had no working directory. The head is now read line by line under a 4 MiB
+  cap. A resumed session's stale pid file also no longer hides the live one.
+- **Provisioning a worktree on a multi-repository board no longer stalls
+  the daemon.** The flag refresh ran on the daemon's main thread, one git
+  round per repository (1.5 s on a 12-repository board); it now runs on the
+  worker. A single-repository worktree's flags also refresh after a fetch
+  without waiting for a page open.
+- **The rebase ask on the card reads `waiting for rebase`**, and its note
+  says the agent rebases first and `m` merges after.
+- **Ask-field wording under a plan dialog.** The field's one stop is
+  `accept plan`: Shift+Tab no longer cycles it to `queued`, and the grown
+  field reads `accept the plan ∙ words go right after` instead of
+  `ask agent`.
+
 ## v0.1.0-alpha.24 — 2026-09-22
 
 ### Added
