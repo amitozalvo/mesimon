@@ -427,6 +427,10 @@ will not show up in our tests until they break something.
   the running one. Ask for the binary's path through `mesimon_core::exe::current_exe`, which
   caches the first answer and strips the suffix; a core test scans `src/` for a raw
   `std::env::current_exe`.
+- **A human refusing a dialog fires no hook.** "No, keep planning", an Esc out of a question or a
+  denied permission emits no `PostToolUse`, no `PostToolUseFailure` and no `PermissionDenied`
+  (that one is auto mode's classifier). The agent's next `PreToolUse` is the first frame that
+  says the dialog is gone, and it is the refusal road (`Signal::ToolStarted`, T-447).
 - **A tool in flight keeps the transcript still for its whole duration**, so an mtime-quiet rule
   reads a 3.5-minute `cargo` call as a dead turn.
 - **Claude Code's session file flips `idle` at the end of every turn**, milliseconds before the

@@ -382,3 +382,77 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
 
     let _ = c.request(Command::Shutdown);
 }
+
+/// T-447 (2026-09-23): "No, keep planning" fires no hook of its own — no
+/// `PostToolUse`, no `PostToolUseFailure`, no `PermissionDenied` — so the
+/// agent's next tool call is the first frame that says the dialog is gone.
+/// The card wore "plan" through four tool completions and cleared only
+/// when the agent asked its next question. A subagent's call (`agent_id`)
+/// is not the lead's answer and leaves the dialog held.
+#[test]
+fn a_refused_plan_clears_on_the_agents_next_tool_call() {
+    let Some(h) = Harness::boot_with_env(
+        "planno",
+        Some("#!/bin/sh\nexec sleep 120\n"),
+        &[("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let hooks = h.paths.hook_sock();
+    let mut c = h.client("planno");
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "refused".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let session = sid.to_string();
+    hook_send(&hooks, &session, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    for (dialog, reason) in [
+        (r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"# Plan"}}"##, Reason::Plan),
+        (r#"{"tool_name":"AskUserQuestion"}"#, Reason::Question),
+    ] {
+        hook_send(&hooks, &session, "PreToolUse", dialog);
+        c.await_state(sid, "dialog up", |s| *s == SessionState::RequiresAction { reason });
+        // A subagent reading while the dialog is open is not the answer.
+        hook_send(
+            &hooks,
+            &session,
+            "PreToolUse",
+            r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"agent_id":"sub-1"}"#,
+        );
+        hook_send(
+            &hooks,
+            &session,
+            "PostToolUse",
+            r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"agent_id":"sub-1"}"#,
+        );
+        std::thread::sleep(Duration::from_millis(2000));
+        let held = board_of(c.request(Command::Snapshot))
+            .sessions
+            .iter()
+            .any(|s| s.id == sid && s.state == SessionState::RequiresAction { reason });
+        assert!(held, "a subagent's call left {reason:?} held");
+        // The refusal: no frame for it — the lead's own next call clears.
+        hook_send(
+            &hooks,
+            &session,
+            "PreToolUse",
+            r#"{"tool_name":"Bash","tool_input":{"command":"grep -n x"}}"#,
+        );
+        c.await_state(sid, "working after the refusal", |s| *s == SessionState::Running);
+    }
+}

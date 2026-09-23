@@ -215,7 +215,10 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
                 Some(Signal::PreToolUse { tool: AttentionTool::AskUserQuestion })
             }
             Some("ExitPlanMode") => Some(Signal::PreToolUse { tool: AttentionTool::ExitPlanMode }),
-            _ => None,
+            // Any other call is the session working — and, while a plan or
+            // question is held, the only frame a human's refusal leaves
+            // (T-447: "No, keep planning" fires no hook of its own).
+            _ => Some(Signal::ToolStarted { nested: has_agent_id(frame) }),
         },
         // Broad since dogfood 2026-08-30 (an ACCEPTED permission stayed
         // needs-you until end of turn): the interaction pair keeps its sharp
@@ -758,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    fn pretooluse_only_maps_the_two_tools() {
+    fn pretooluse_maps_the_two_tools_and_starts_the_rest() {
         let f = frame(
             "PreToolUse",
             None,
@@ -769,8 +772,12 @@ mod tests {
             Some(Signal::PreToolUse { tool: AttentionTool::AskUserQuestion })
         );
         assert_eq!(detail_of(&f), Some("Keep the 301?".into()));
+        // Any other call is a start — the refusal road for a held dialog
+        // (T-447); a subagent's carries `agent_id` and is nested.
         let f = frame("PreToolUse", None, r#"{"tool_name":"Bash"}"#);
-        assert_eq!(signal_of(&f), None);
+        assert_eq!(signal_of(&f), Some(Signal::ToolStarted { nested: false }));
+        let f = frame("PreToolUse", None, r#"{"tool_name":"Bash","agent_id":"a1"}"#);
+        assert_eq!(signal_of(&f), Some(Signal::ToolStarted { nested: true }));
         let f = frame("PostToolUse", None, r#"{"tool_name":"AskUserQuestion","tool_response":{}}"#);
         assert_eq!(
             signal_of(&f),

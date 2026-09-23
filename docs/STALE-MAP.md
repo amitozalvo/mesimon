@@ -13435,3 +13435,39 @@ seat's at its idle, an ask riding the switch, the provider refusal, the focused 
 alone, a delete returning tickets to the default); `provider_e2e`'s
 `a_codex_tier_switch_parks_waits_for_the_stop_and_wakes_on_the_new_tier`; the TUI's `^n`
 ring and composer mint, the dialog walk, and six goldens.
+
+## A refused plan clears on the agent's next tool call (T-447, 2026-09-23, user: "accept plan shown even though plan already accepted")
+
+**What shipped.** `Signal::ToolStarted { nested }` — every `PreToolUse` frame that is not one of
+the two interaction tools (`hooks::signal_of`). While a `Plan`, `Question` or `Permission` is
+held, the session's own (non-nested) call settles the dialog to `Running`; from `Idle`/`Unknown`
+it is the turn resuming, one frame ahead of the `ToolCompleted` that mirrors it; mid-turn it is
+inert. A nested call (a subagent's, `agent_id`) says nothing and proves background work, as its
+completion does.
+
+**Why.** T-443's agent put up its plan; the user answered "No, keep planning" with feedback.
+Claude Code wrote the rejection as the tool's result and fired nothing — no `PostToolUse`
+(the tool never ran), no `PostToolUseFailure` (a refusal is not a failure), no
+`PermissionDenied` (auto mode's classifier only; confirmed against the hooks reference and
+claude-code#94791). The machine's only clear for a held Plan was the pair's `PostToolUse`, and
+`ToolCompleted` from a held Plan/Question was deliberately `None` (a parallel sibling's
+completion must not clear a dialog). So the card wore `plan` through four `PostToolUse` frames
+of the agent grepping the keymap, and cleared only when its next `AskUserQuestion` relabelled
+it `question`, two and a half minutes on. The 15-minute stale clock was the only other road.
+
+**Why the next call is safe evidence.** The model cannot emit a new `tool_use` until the
+dialog's `tool_result` is back, and `ExitPlanMode`/`AskUserQuestion` are not concurrency-safe:
+a batch that holds one runs serially, so no sibling starts or finishes while the dialog is
+open. A non-nested `PreToolUse` during a held Plan/Question is therefore always after the
+answer. For a held `Permission` the sibling argument is the one `ToolCompleted` already accepts
+(a parallel read may clear early; the idle `permission_prompt` Notification re-asserts at
+Medium). The accept road is untouched and arrives first when it arrives.
+
+**Not done.** The recovery adapter's once-a-minute re-read (T-363) still affirms nothing when
+the tail no longer shows the dialog; with the hook road in place the lost-frame case is a
+`PreToolUse` lost too, which the stale clock still catches.
+
+**Tests.** `attention::tests::a_refused_plan_or_question_clears_on_the_sessions_next_tool_call`,
+`hooks::tests::pretooluse_maps_the_two_tools_and_starts_the_rest`,
+`plan_accept_e2e::a_refused_plan_clears_on_the_agents_next_tool_call` (through the real hook
+binary: a subagent's call leaves the dialog held, the lead's clears it, for both tools).

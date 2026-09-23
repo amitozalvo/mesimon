@@ -278,6 +278,19 @@ pub enum Signal {
     ToolCompleted {
         nested: bool,
     },
+    /// Broad PreToolUse (any tool but the interaction pair): the model has
+    /// issued a tool call. Mid-turn that says nothing new — but while a
+    /// plan or question dialog is held it is the only frame that says the
+    /// dialog was REFUSED. A human's "No, keep planning" (or an Esc out of
+    /// a question) fires no hook at all — no `PostToolUse`, no
+    /// `PostToolUseFailure`, no `PermissionDenied` (that one is auto mode's
+    /// classifier) — and the model's next call is the first sign it has the
+    /// answer (T-447, 2026-09-23: a refused plan wore "plan" through four
+    /// tool completions until the agent's next question relabelled it).
+    /// `nested` as on `ToolCompleted`.
+    ToolStarted {
+        nested: bool,
+    },
     Notification {
         kind: NotificationKind,
     },
@@ -939,6 +952,28 @@ impl Machine {
                 S::Unknown { .. } => t(S::Running),
                 _ => None,
             },
+            // The model cannot call a tool while its own dialog is open: the
+            // interaction tools run serially, and a new call is emitted only
+            // once the dialog's result is back. So the session's OWN next
+            // call while a Plan/Question is held is the refusal road — the
+            // accept road is the pair's `PostToolUse` above, and it arrives
+            // first when it arrives. A nested call is a subagent's and says
+            // nothing about the lead's dialog. From a held Permission the
+            // sibling argument is the same one `ToolCompleted` already
+            // accepts (a parallel sibling may clear early; the idle
+            // permission Notification re-asserts at Medium). Elsewhere the
+            // frame is mirrored on `ToolCompleted`, which follows it by the
+            // tool's duration: a turn resumed without a prompt shows on its
+            // first frame, which is this one.
+            Signal::ToolStarted { nested } => match &self.state {
+                S::RequiresAction {
+                    reason: Reason::Plan | Reason::Question | Reason::Permission,
+                } if !nested => t(S::Running),
+                S::Idle { .. } if !nested => t(S::Running),
+                S::Idle { .. } if self.confidence != Confidence::High => t(S::Running),
+                S::Unknown { .. } => t(S::Running),
+                _ => None,
+            },
             Signal::Notification { kind } => match kind {
                 NotificationKind::QuotaStale | NotificationKind::QuotaDisabled => {
                     t(S::RequiresAction { reason: Reason::QuotaResume })
@@ -1039,7 +1074,7 @@ fn proves_background(sig: &Signal) -> bool {
         }
         // A nested stop is a subagent's turn ending, not the lead's.
         Signal::Stop { has_agent_id, .. } => *has_agent_id,
-        Signal::ToolCompleted { nested } => *nested,
+        Signal::ToolCompleted { nested } | Signal::ToolStarted { nested } => *nested,
         Signal::BackgroundChanged { liveness } => *liveness != crate::background::Liveness::None,
         _ => false,
     }
@@ -1758,6 +1793,44 @@ mod tests {
         let mut done = m(SessionState::Idle { stop_reason: StopReason::EndTurn });
         assert_eq!(done.apply(&Signal::ToolCompleted { nested: true }, 1_000), None);
         assert!(done.pending.is_none());
+    }
+
+    #[test]
+    fn a_refused_plan_or_question_clears_on_the_sessions_next_tool_call() {
+        // T-447 (2026-09-23): "No, keep planning" fires no hook of its own —
+        // the model's next tool call is the first frame that says the dialog
+        // is gone. It is a leave, so it settles like the answered pair does.
+        for reason in [Reason::Plan, Reason::Question, Reason::Permission] {
+            let mut m1 = m(SessionState::RequiresAction { reason });
+            // A subagent's call is not the lead's answer.
+            assert_eq!(m1.apply(&Signal::ToolStarted { nested: true }, 1_000), None);
+            assert!(m1.pending.is_none(), "a nested call leaves {reason:?} held");
+            assert!(m1.apply(&Signal::ToolStarted { nested: false }, 5_000).is_none());
+            assert!(m1.tick(5_000 + SETTLE_MS - 1).is_none());
+            let c = m1.tick(5_000 + SETTLE_MS).unwrap();
+            assert_eq!(c.to, SessionState::Running);
+            assert!(!c.attention_added);
+        }
+        // The accept road is unchanged and arrives first: the pair's
+        // PostToolUse settles the leave, and the call that follows re-affirms.
+        let mut m2 = m(SessionState::Running);
+        m2.apply(&Signal::PreToolUse { tool: AttentionTool::ExitPlanMode }, 1_000).unwrap();
+        assert!(m2
+            .apply(&Signal::PostToolUse { tool: AttentionTool::ExitPlanMode }, 5_000)
+            .is_none());
+        assert!(m2.apply(&Signal::ToolStarted { nested: false }, 5_100).is_none());
+        assert_eq!(m2.tick(5_000 + SETTLE_MS).unwrap().to, SessionState::Running);
+        // Mid-turn it is inert; from a rest it is the turn resuming, as its
+        // completion is.
+        let mut m3 = m(SessionState::Running);
+        assert_eq!(m3.apply(&Signal::ToolStarted { nested: false }, 1_000), None);
+        let mut m4 = m(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(
+            m4.apply(&Signal::ToolStarted { nested: false }, 1_000).unwrap().to,
+            SessionState::Running
+        );
+        let mut m5 = m(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(m5.apply(&Signal::ToolStarted { nested: true }, 1_000), None);
     }
 
     #[test]
