@@ -125,13 +125,14 @@ pub struct View {
 /// Everything the release notes screen holds. `releases` is the parsed
 /// changelog (`relnotes::parse`), `build` the tag this binary answers to —
 /// the screen marks that entry `this build` — and the rest is the reading
-/// position. `starts` is written by the draw: the document row each
-/// release's band sits on, which is what `n`/`N` jump between.
+/// position. `doc` is written by the draw: the laid-out document at the
+/// last width and flavor, whose `starts` — the row each release's band sits
+/// on — are what `n`/`N` jump between.
 pub struct ReleasesState {
     pub releases: Vec<mesimon_core::relnotes::Release>,
     pub build: String,
     pub pager: Pager,
-    pub starts: std::cell::RefCell<Vec<usize>>,
+    pub doc: std::cell::RefCell<Option<std::rc::Rc<crate::ui::releases::Document>>>,
 }
 
 impl ReleasesState {
@@ -140,7 +141,7 @@ impl ReleasesState {
             releases,
             build: build.to_string(),
             pager: Pager::default(),
-            starts: std::cell::RefCell::new(Vec::new()),
+            doc: std::cell::RefCell::new(None),
         }
     }
 }
@@ -7096,7 +7097,8 @@ impl App {
     fn releases_nav(&mut self, dir: isize) {
         let Some(r) = self.releases.as_ref() else { return };
         let top = r.pager.view.get().offset;
-        let starts = r.starts.borrow();
+        let Some(doc) = r.doc.borrow().clone() else { return };
+        let starts = &doc.starts;
         let target = if dir > 0 {
             starts.iter().copied().find(|s| *s > top)
         } else {

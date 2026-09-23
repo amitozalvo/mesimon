@@ -2547,7 +2547,7 @@ fn test_real_changelog_reads_lawfully() {
         let _ = render(&app, w, h);
         let st = app.releases.as_ref().expect("state");
         let (max, page) = (st.pager.view.get().max, st.pager.view.get().page);
-        assert_eq!(st.starts.borrow().len(), releases.len());
+        assert_eq!(st.doc.borrow().as_ref().expect("drawn").starts.len(), releases.len());
         let mut top = 0;
         loop {
             st.pager.jump(top);
@@ -2566,6 +2566,26 @@ fn test_real_changelog_reads_lawfully() {
             top += page;
         }
     }
+}
+
+/// T-444: the notes are laid out once per width and flavor, not once per
+/// frame — a glide draws sixty frames a second and a held `j` one per key,
+/// and each used to parse and wrap the whole changelog to show a window.
+#[test]
+fn test_release_notes_render_once() {
+    let mut app = app_graphite(fixture(false));
+    install_releases(&mut app);
+    let doc =
+        |app: &App| app.releases.as_ref().and_then(|r| r.doc.borrow().clone()).expect("drawn");
+    let _ = render(&app, 120, 30);
+    let first = doc(&app);
+    press(&mut app, 'j');
+    let _ = render(&app, 120, 30);
+    press(&mut app, '}');
+    let _ = render(&app, 120, 30);
+    assert!(std::rc::Rc::ptr_eq(&first, &doc(&app)), "a scroll reuses the document");
+    let _ = render(&app, 160, 30);
+    assert!(!std::rc::Rc::ptr_eq(&first, &doc(&app)), "a resize lays it out again");
 }
 
 #[test]

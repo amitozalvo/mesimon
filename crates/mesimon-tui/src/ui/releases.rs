@@ -1,20 +1,23 @@
 //! The release notes screen — the Esc menu's `Release notes` row.
 //!
 //! The changelog this binary was built with (`relnotes::SOURCE`, parsed once
-//! on open into `App::releases`), laid out as one document read top to
-//! bottom: a painted band per release — its tag, its date in words, and
-//! `this build` on the entry the running binary answers to — with the notes
-//! under it as rendered markdown (`rich.rs`: value, weight, paint and space,
-//! no rules, no colour). The column is a reading measure centred on the
-//! screen rather than the terminal's whole width: prose past a hundred cells
-//! is a long line to carry the eye back from, and a 200-column terminal
-//! should make the margins wider, not the sentences.
+//! on open into `App::releases`, laid out once per width and flavor into
+//! `ReleasesState::doc`), as one document read top to bottom: a painted band
+//! per release — its tag, its date in words, and `this build` on the entry
+//! the running binary answers to — with the notes under it as rendered
+//! markdown (`rich.rs`: value, weight, paint and space, no rules, no
+//! colour). The column is a reading measure centred on the screen rather
+//! than the terminal's whole width: prose past a hundred cells is a long
+//! line to carry the eye back from, and a 200-column terminal should make
+//! the margins wider, not the sentences.
 //!
 //! Same laws as every screen: bands are painted, never drawn (L1); the one
 //! saturated colour stays needs-you's (L3); bold only on the tag, which is
 //! the entry's title. The band of the release the window starts inside stays
 //! pinned to the first row while its notes scroll under it, so a reader
 //! halfway down a long entry can always see whose it is.
+
+use std::rc::Rc;
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -26,7 +29,7 @@ use unicode_width::UnicodeWidthStr;
 use mesimon_core::relnotes::Release;
 
 use crate::app::{App, ReleasesState};
-use crate::theme::Theme;
+use crate::theme::{Flavor, Theme};
 
 use super::chrome;
 
@@ -62,15 +65,10 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     // ---- the document, windowed ---------------------------------------------
     let body_y = area.y + 4;
     let body_h = area.height.saturating_sub(5) as usize;
-    let width = area.width as usize;
-    let measure = width.saturating_sub(MARGIN_MIN * 2).min(MEASURE_MAX);
-    let left = (width - measure) / 2;
-
-    let doc = document(r, measure, left, theme);
+    let doc = cached(r, area.width as usize, theme);
     let top = r.pager.window(Some(DOC_KEY), doc.lines.len(), body_h, false);
-    *r.starts.borrow_mut() = doc.starts.clone();
 
-    let mut shown: Vec<Line<'static>> = doc.lines.into_iter().skip(top).take(body_h).collect();
+    let mut shown: Vec<Line<'static>> = doc.lines.iter().skip(top).take(body_h).cloned().collect();
     // The release the window starts inside keeps its band on the first row
     // — unless that band IS the first row, in which case it is already there.
     if let Some(i) = doc.starts.iter().rposition(|s| *s <= top) {
@@ -93,17 +91,44 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     );
 }
 
-/// The whole document at one width: every row, each release's band on its
-/// own (for pinning), and the row each band sits on (for `n`/`N`).
-struct Document {
+/// The whole document at one width and flavor: every row, each release's
+/// band on its own (for pinning), and the row each band sits on (for
+/// `n`/`N`).
+pub(crate) struct Document {
+    width: usize,
+    flavor: Flavor,
     lines: Vec<Line<'static>>,
     bands: Vec<Line<'static>>,
-    starts: Vec<usize>,
+    pub(crate) starts: Vec<usize>,
 }
 
-fn document(r: &ReleasesState, measure: usize, left: usize, theme: &Theme) -> Document {
+/// The document for this width and flavor, kept on `ReleasesState::doc`:
+/// `document` parses and wraps the whole changelog, and the draw runs at
+/// 60 fps through a glide and once per key while `j` is held, only to keep
+/// a window of it. The PREVIEW zone's `ticket::rendered`, for one document.
+fn cached(r: &ReleasesState, width: usize, theme: &Theme) -> Rc<Document> {
+    let mut slot = r.doc.borrow_mut();
+    if let Some(doc) = slot.as_ref() {
+        if doc.width == width && doc.flavor == theme.flavor {
+            return Rc::clone(doc);
+        }
+    }
+    let doc = Rc::new(document(r, width, theme));
+    *slot = Some(Rc::clone(&doc));
+    doc
+}
+
+fn document(r: &ReleasesState, width: usize, theme: &Theme) -> Document {
+    let measure = width.saturating_sub(MARGIN_MIN * 2).min(MEASURE_MAX);
+    let left = (width - measure) / 2;
     let margin = " ".repeat(left + INDENT);
-    let mut doc = Document { lines: Vec::new(), bands: Vec::new(), starts: Vec::new() };
+    let mut doc = Document {
+        width,
+        flavor: theme.flavor,
+        lines: Vec::new(),
+        bands: Vec::new(),
+        starts: Vec::new(),
+    };
     for rel in &r.releases {
         let band = band(rel, rel.tag == r.build, measure, left, theme);
         doc.starts.push(doc.lines.len());

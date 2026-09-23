@@ -13,7 +13,7 @@ pub(crate) mod diff;
 mod editor;
 mod help;
 mod menu;
-mod releases;
+pub(crate) mod releases;
 mod search;
 mod tagpicker;
 #[cfg(test)]

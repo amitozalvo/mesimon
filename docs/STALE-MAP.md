@@ -13113,3 +13113,22 @@ its process lived, which is its own question.
 `a_silent_pane_with_a_tool_in_flight_is_not_quiet` (recovery) is T-439's minute — the
 probe holds with the call outstanding, speaks once the turn has closed, and speaks at once with
 no transcript to ask.
+
+## The release notes are laid out once per width (T-444, 2026-09-23, user: "release notes scroll slow")
+
+**Cause.** `ui::releases::draw` built the whole document on every frame: every release's body
+through `rich::render_all` (the compiled-in `CHANGELOG.md`, 52 KB and 25 releases today), then
+the bands, then a copy of `starts`. The loop draws once per tick, which means every 16 ms through a
+`{ }` glide and once per key while `j` is held. Measured on a debug build at 120×40: 12.4 ms a
+frame, against a 16 ms glide frame. This is the bug the PREVIEW zone had, and it was fixed there
+by `App::rich_cache` ("The PREVIEW zone renders its markdown once per document"). The notes
+screen was not given the same fix.
+
+**The fix.** `ReleasesState.doc: RefCell<Option<Rc<ui::releases::Document>>>` replaces
+`ReleasesState.starts`. The draw's `cached` returns it when the width and flavor match, and
+otherwise lays the document out again. The frame then clones only the `body_h` rows it shows.
+`n`/`N` read `starts` off the document. The same frame costs 2.9 ms now, most of it the test
+backend. The goldens did not move.
+
+**Test.** `test_release_notes_render_once`: a `j` and a `}` reuse the same `Rc`, and a resize
+lays the document out again.
