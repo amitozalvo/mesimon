@@ -253,5 +253,5 @@ fn draw_list(
             detail: Some(keymap::item_detail(item, &ctx)),
         })
         .collect();
-    dialog::list(f, app, name, scope, idx, &rows);
+    dialog::list(f, app, name, false, scope, idx, &rows);
 }

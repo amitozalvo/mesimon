@@ -253,6 +253,7 @@ mod tests {
             },
             grace: vec![],
             external: vec![],
+            external_scanning: false,
             resources: Default::default(),
             worktrees: vec![],
             notices: vec![],

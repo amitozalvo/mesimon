@@ -1301,6 +1301,12 @@ pub enum Response {
         grace: Vec<GraceItem>,
         #[serde(default)]
         external: Vec<ExternalItem>,
+        /// An external census is running off the writer thread (T-437):
+        /// `external` is the previous answer until it lands and a
+        /// `BoardChanged` follows. Absent from an older daemon parses as
+        /// not scanning — that daemon answered `RescanExternal` inline.
+        #[serde(default)]
+        external_scanning: bool,
         #[serde(default)]
         resources: Resources,
         /// Per-ticket worktree bindings (M4). Serde-additive: absent from an

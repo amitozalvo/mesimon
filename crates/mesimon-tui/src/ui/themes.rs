@@ -38,5 +38,5 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         detail: Some(flavor.blurb().into()),
     }));
     let name = format!("THEME ∙ for a {} terminal", ctx.theme_slot_word);
-    dialog::list(f, app, &name, Scope::Theme, idx, &rows);
+    dialog::list(f, app, &name, false, Scope::Theme, idx, &rows);
 }

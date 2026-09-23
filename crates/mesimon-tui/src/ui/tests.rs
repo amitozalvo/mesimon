@@ -7451,3 +7451,78 @@ fn golden_unavailable_picture_link_120() {
     assert!(!lines.iter().any(|l| l.contains("mesimon-attachment")));
     golden("picture_link_unavailable_120x30", &lines);
 }
+
+/// One synthetic drawer row, named so a test can find it on screen.
+fn external_item(n: usize) -> mesimon_core::command::ExternalItem {
+    mesimon_core::command::ExternalItem {
+        id: uuid::Uuid::from_u128(0x5000 + n as u128),
+        provider: mesimon_core::board::AgentProvider::ClaudeCode,
+        conversation_id: format!("conv-{n}"),
+        cwd: "/repo".into(),
+        transcript_path: format!("/t/{n}.jsonl"),
+        mtime_ms: 1_700_000_000_000,
+        preview: Some(format!("preview of session {n}")),
+        name: Some(format!("session-{n:03}")),
+        running_elsewhere: false,
+    }
+}
+
+/// The External drawer over a census still walking (T-437): it opens on
+/// nothing and says so, spins over a stale answer, and only a *finished*
+/// empty census closes it with the word.
+#[test]
+fn external_drawer_waits_for_the_census_and_closes_only_on_a_finished_empty_one() {
+    let mut app = app_graphite(fixture(false));
+    app.external_scanning = true;
+    app.mode = Mode::External { idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("EXTERNAL")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("scanning for sessions started outside mesimon")));
+    // Still walking, still empty: the drawer stays.
+    app.settle_drawer();
+    assert!(matches!(app.mode, Mode::External { .. }));
+    // A stale answer under a new walk: the rows show and the title spins.
+    app.external = vec![external_item(1)];
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("session-001")), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("EXTERNAL ∙ 1")), "spinning, not counted");
+    // The walk lands with nothing: closed, with the word.
+    app.external.clear();
+    app.external_scanning = false;
+    app.settle_drawer();
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(app.status, "no external sessions found for this repo");
+    // Landed with rows: the plain counted title.
+    app.external = vec![external_item(1), external_item(2)];
+    app.mode = Mode::External { idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("EXTERNAL ∙ 2")), "{lines:#?}");
+}
+
+/// A list dialog taller than the screen scrolls to its cursor (T-437): the
+/// selected row is always drawn, the title carries the position, and every
+/// index from the first to the last is reachable.
+#[test]
+fn list_dialog_scrolls_to_keep_the_cursor_on_screen() {
+    let mut app = app_graphite(fixture(false));
+    app.external = (0..60).map(external_item).collect();
+    for idx in [0, 7, 8, 30, 59] {
+        app.mode = Mode::External { idx };
+        let lines = render(&app, 120, 20);
+        let want = format!("session-{idx:03}");
+        assert!(lines.iter().any(|l| l.contains(&want)), "row {idx} off screen:\n{lines:#?}");
+        let title = format!("EXTERNAL ∙ {}/60", idx + 1);
+        assert!(lines.iter().any(|l| l.contains(&title)), "{title} missing:\n{lines:#?}");
+    }
+    // The window moves with the cursor: the last page shows the tail.
+    app.mode = Mode::External { idx: 59 };
+    let lines = render(&app, 120, 20);
+    assert!(lines.iter().any(|l| l.contains("session-058")));
+    assert!(!lines.iter().any(|l| l.contains("session-000")));
+    // And a list that fits is counted, not positioned.
+    app.external.truncate(3);
+    app.mode = Mode::External { idx: 2 };
+    let lines = render(&app, 120, 20);
+    assert!(lines.iter().any(|l| l.contains("EXTERNAL ∙ 3")), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("3/3")));
+}

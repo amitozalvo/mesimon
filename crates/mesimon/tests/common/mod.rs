@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use mesimon_core::board::{Board, SessionState};
 use mesimon_core::command::{
-    Command, Envelope, Event, GraceItem, Pending, RepoGit, Resources, Response, WorktreeItem,
+    Command, Envelope, Event, ExternalItem, GraceItem, Pending, RepoGit, Resources, Response,
+    WorktreeItem,
 };
 use mesimon_core::diff::FileEntry;
 use mesimon_core::Principal;
@@ -359,6 +360,26 @@ pub fn hook_send_from_pane(
 }
 
 /// Poll `f` until it holds, or panic naming `what`.
+/// Ask for the external census and wait for it to land (T-437): the reply
+/// carries the *previous* answer with `external_scanning` set, and the
+/// walk's result rides the next snapshots.
+pub fn rescan_external(c: &mut TestClient) -> Vec<ExternalItem> {
+    match c.request(Command::RescanExternal) {
+        Response::Board { .. } => {}
+        other => panic!("rescan: {other:?}"),
+    }
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match c.request(Command::Snapshot) {
+            Response::Board { external, external_scanning: false, .. } => return external,
+            Response::Board { .. } => {}
+            other => panic!("snapshot after rescan: {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "the external census never landed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 pub fn wait_until(timeout: Duration, what: &str, mut f: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;
     while !f() {

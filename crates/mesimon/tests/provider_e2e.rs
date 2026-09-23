@@ -415,16 +415,11 @@ fn external_candidate(h: &Fixture, c: &mut TestClient) -> uuid::Uuid {
         "id":"synthetic-external-reservation-candidate", "cwd":h.paths.repo_root,
         "source":"cli", "cli_version":"0.153.4"}});
     std::fs::write(directory.join("external-reservation.jsonl"), format!("{metadata}\n")).unwrap();
-    match c.request(Command::RescanExternal) {
-        Response::Board { external, .. } => {
-            external
-                .into_iter()
-                .find(|item| item.conversation_id == "synthetic-external-reservation-candidate")
-                .expect("owned external history discovered")
-                .id
-        }
-        response => panic!("external census: {response:?}"),
-    }
+    rescan_external(c)
+        .into_iter()
+        .find(|item| item.conversation_id == "synthetic-external-reservation-candidate")
+        .expect("owned external history discovered")
+        .id
 }
 
 fn assert_external_cannot_displace_reservation(

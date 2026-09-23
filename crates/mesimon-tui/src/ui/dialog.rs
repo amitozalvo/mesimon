@@ -177,10 +177,17 @@ pub(super) struct ListRow {
 
 /// A centred framed list: `name` in the top edge, `scope`'s keys in the
 /// bottom one, one selected row. Nothing to draw when `rows` is empty.
+/// A list dialog, sized to its rows up to the screen and scrolled past
+/// that (T-437): the window keeps the cursor at its middle once the list
+/// outgrows it, so both directions move smoothly with no offset to keep.
+/// `count` puts the row count in the title (`ARCHIVED ∙ 3`); a list that
+/// overflows shows the position instead (`EXTERNAL ∙ 12/459`), counted
+/// or not — a menu on a short terminal scrolls too.
 pub(super) fn list(
     f: &mut Frame,
     app: &App,
     name: &str,
+    count: bool,
     scope: Scope,
     idx: usize,
     rows: &[ListRow],
@@ -191,7 +198,19 @@ pub(super) fn list(
     }
     let idx = idx.min(rows.len() - 1);
     let tall = rows.iter().any(|r| r.detail.is_some());
-    let area = centred(f.area(), rows.len() as u16 * if tall { 2 } else { 1 }, MAX_W);
+    let per = if tall { 2 } else { 1 };
+    let wanted = u16::try_from(rows.len() * per).unwrap_or(u16::MAX);
+    let area = centred(f.area(), wanted, MAX_W);
+    let visible = (usize::from(area.height.saturating_sub(2)) / per).max(1);
+    let first = idx.saturating_sub(visible / 2).min(rows.len().saturating_sub(visible));
+    let last = (first + visible).min(rows.len());
+    let name = if rows.len() > visible {
+        format!("{name} ∙ {}/{}", idx + 1, rows.len())
+    } else if count {
+        format!("{name} ∙ {}", rows.len())
+    } else {
+        name.to_string()
+    };
     let inner_w = area.width.saturating_sub(2) as usize;
     let inner = frame(
         f,
@@ -205,7 +224,7 @@ pub(super) fn list(
         },
     );
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (i, row) in rows.iter().enumerate() {
+    for (i, row) in rows.iter().enumerate().take(last).skip(first) {
         let selected = i == idx;
         let style = if selected {
             theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
@@ -304,7 +323,7 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
             }
         })
         .collect();
-    list(f, app, &format!("ARCHIVED ∙ {}", rows.len()), Scope::Archived, idx, &rows);
+    list(f, app, "ARCHIVED", true, Scope::Archived, idx, &rows);
 }
 
 /// The links dialog (T-256): what the ticket's notes point at, one row per
@@ -354,7 +373,7 @@ pub(super) fn draw_links(
             }
         })
         .collect();
-    list(f, app, &format!("LINKS ∙ {key} ∙ {}", rows.len()), Scope::Links, idx, &rows);
+    list(f, app, &format!("LINKS ∙ {key}"), true, Scope::Links, idx, &rows);
 }
 
 /// The merge dialog (T-431). Two rows under a `MERGE ∙ T-n` title: what the
@@ -405,7 +424,37 @@ pub(super) fn draw_merge(f: &mut Frame, app: &App, d: &crate::app::MergeDialog) 
 }
 
 /// The External drawer (19 §4): discovered foreign sessions, observe/resume.
+/// While the daemon walks `~/.claude` (T-437) the title spins over the last
+/// answer, and a first walk with nothing to show yet says so in the frame.
 pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
+    let theme = &app.theme;
+    let spinner = crate::glyphs::spinner(theme.glyph_tier(), app.spin_frame());
+    if app.external.is_empty() {
+        if !app.external_scanning {
+            return;
+        }
+        let area = centred(f.area(), 1, MAX_W);
+        let inner_w = area.width.saturating_sub(2) as usize;
+        let inner = frame(
+            f,
+            app,
+            area,
+            None,
+            &theme.rest,
+            Edges {
+                title: title(&theme.rest, "EXTERNAL"),
+                tail: keys(app, Scope::Drawer, &theme.rest, inner_w.saturating_sub(4)),
+            },
+        );
+        let line = Line::from(vec![
+            Span::styled(format!(" {spinner} "), theme.calm_text()),
+            Span::styled("scanning for sessions started outside mesimon", theme.dim2()),
+        ]);
+        f.render_widget(Paragraph::new(vec![line]), inner);
+        return;
+    }
+    let name =
+        if app.external_scanning { format!("EXTERNAL {spinner}") } else { "EXTERNAL".into() };
     let now = mesimon_core::clock::now_ms();
     let rows: Vec<ListRow> = app
         .external
@@ -428,5 +477,5 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
             }
         })
         .collect();
-    list(f, app, &format!("EXTERNAL ∙ {}", rows.len()), Scope::Drawer, idx, &rows);
+    list(f, app, &name, true, Scope::Drawer, idx, &rows);
 }

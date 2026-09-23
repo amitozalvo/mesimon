@@ -122,10 +122,7 @@ fn m3_adoption_and_sleep() {
     // --- Census: lazy, drawer-open only.
     let board = board_of(c.request(Command::Snapshot));
     assert!(board.sessions.is_empty());
-    let external = match c.request(Command::RescanExternal) {
-        Response::Board { external, .. } => external,
-        other => panic!("rescan: {other:?}"),
-    };
+    let external = rescan_external(&mut c);
     assert_eq!(external.len(), 1, "census must find the foreign transcript");
     let item = &external[0];
     assert_eq!(item.id.to_string(), FOREIGN_SID);
@@ -318,10 +315,7 @@ fn m3_adoption_and_sleep() {
 
     // Sleeping refuses focus; a slept session is skipped by the census (known id).
     assert!(matches!(c.request(Command::FocusStart { session: obs }), Response::Err { .. }));
-    let external = match c.request(Command::RescanExternal) {
-        Response::Board { external, .. } => external,
-        other => panic!("rescan: {other:?}"),
-    };
+    let external = rescan_external(&mut c);
     assert!(external.is_empty(), "attached session must not re-surface in the drawer");
 
     // --- Wake: same record, argv replayed (already a --resume argv).
@@ -371,10 +365,7 @@ fn m3_adoption_and_sleep() {
         std::thread::sleep(Duration::from_millis(250));
     }
     std::thread::sleep(Duration::from_millis(500));
-    let external = match c.request(Command::RescanExternal) {
-        Response::Board { external, .. } => external,
-        other => panic!("rescan: {other:?}"),
-    };
+    let external = rescan_external(&mut c);
     assert_eq!(external.len(), 1, "exited import must re-surface in the drawer");
     std::fs::write(&argv_log, "").unwrap();
     let back = match c.request(Command::ResumeExternal {

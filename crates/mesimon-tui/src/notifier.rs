@@ -545,6 +545,7 @@ mod tests {
                 board: self.board.lock().expect("the board").clone(),
                 grace: Vec::new(),
                 external: Vec::new(),
+                external_scanning: false,
                 resources: Default::default(),
                 worktrees: Vec::new(),
                 notices: Vec::new(),

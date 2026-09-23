@@ -13007,3 +13007,46 @@ different places collide. The comparison decides a word on a card and never a wr
 **Still open, and not this.** A conflict resolved in the forge UI changes the patch itself; a
 branch amended more than a week after its MR merged falls outside the `--since` window
 (`SINCE_SLACK_SECS`). Neither has been seen.
+
+## The External drawer opens at once and scrolls (T-437, 2026-09-23, user: "opening external hangs the TUI and is not scrollable")
+
+**What was wrong.** `RescanExternal` ran `census::scan` on the daemon's writer thread: every
+`.jsonl` under every `~/.claude/projects/*` dir gets its head read, and every one whose cwd
+matches the board's roots gets its tail read too. Measured on the author's machine: 1,994
+transcripts across 177 project dirs, 459 candidates for this repo, **1.2 s** — during which
+every client request and every hook frame waited behind it, and the TUI's synchronous `req`
+sat in `open_drawer`. Then the 459 rows went to `dialog::list`, which sized its frame to
+`rows × 2` clamped to the screen and drew every row from the top: the cursor left the frame at
+row 14 and never came back.
+
+**The census is a worker now.** `Daemon::rescan_external` spawns a thread with the roots and
+the per-provider `known` key lists (`known_conversations`, the filter the inline scan built),
+replies `snapshot()` at once with `external_scanning: true` (new `Response::Board` field,
+`#[serde(default)]`), and the walk lands as `Msg::ExternalScanned(Vec<ExternalItem>)`.
+`on_external_scanned` filters the result once more against the sessions the board holds
+*now* — an import made during the walk must not re-surface — sorts, and broadcasts, so an
+open drawer redraws on the push. One walk at a time: a rescan asked for mid-walk sets
+`external_rescan_wanted`, and one more walk follows the landing, because the one in flight
+excluded only the sessions known when it *started*. The adapters are not `Sync`, so the thread
+resolves them by `agents::adapter(kind)` itself rather than carrying a `&'static dyn`.
+
+**The drawer.** `open_drawer` opens `Mode::External` unconditionally on the reply and calls
+`settle_drawer`; `absorb` calls it too. The rule: an open drawer over a *finished* empty census
+closes with `no external sessions found for this repo`; over a running one, an empty list means
+nothing yet. `draw_drawer` draws a one-row frame reading `scanning for sessions started outside
+mesimon` behind a spinner while the first walk runs, and spins the title (`EXTERNAL ⠋`) over a
+stale answer under a later walk — the title is counted only once the answer is the walk's.
+
+**`dialog::list` scrolls.** The window is `inner.height / per-row` rows and keeps the cursor at
+its middle once the list outgrows it (`first = idx − visible/2`, clamped) — stateless, so both
+directions move smoothly with no offset to keep on `Mode`. A list that overflows shows its
+position in the title (`EXTERNAL ∙ 12/459`) in place of the count, counted or not — the Esc
+menu on a short terminal scrolls too. `list` grew a `count: bool` so the three counted callers
+(archived, links, external) stop formatting the count themselves; the `ARCHIVED ∙ 3` shape is
+unchanged when the rows fit, and no golden moved.
+
+**Tests.** `external_drawer_waits_for_the_census_and_closes_only_on_a_finished_empty_one` and
+`list_dialog_scrolls_to_keep_the_cursor_on_screen` in `ui/tests.rs`. The six e2e sites that
+read `external` off the `RescanExternal` reply (`m3_e2e` ×3, `external_provider_e2e` ×2,
+`provider_e2e`) now go through `common::rescan_external`, which asks and then polls `Snapshot`
+until `external_scanning` clears.

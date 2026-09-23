@@ -54,10 +54,7 @@ fn codex_external_opaque_identity_survives_provider_switch_and_restart_without_f
     owner.set_env("MESIMON_PANE_QUIET_MS", "0");
     let daemon = owner.daemon(&repo);
     let mut client = TestClient::connect(&paths.orch_sock());
-    let external = match client.request(Command::RescanExternal) {
-        Response::Board { external, .. } => external,
-        response => panic!("rescan failed: {response:?}"),
-    };
+    let external = rescan_external(&mut client);
     assert_eq!(external.len(), 1);
     let item = &external[0];
     assert_eq!(item.provider, AgentProvider::Codex);
@@ -123,10 +120,7 @@ fn codex_external_opaque_identity_survives_provider_switch_and_restart_without_f
     }
     std::thread::sleep(Duration::from_secs(2));
     check(&mut client);
-    let external = match client.request(Command::RescanExternal) {
-        Response::Board { external, .. } => external,
-        response => panic!("second rescan failed: {response:?}"),
-    };
+    let external = rescan_external(&mut client);
     assert!(external.is_empty(), "attached opaque conversation appeared twice");
     assert!(matches!(client.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();

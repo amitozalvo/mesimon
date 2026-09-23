@@ -1225,6 +1225,9 @@ pub struct App {
     pub board: Board,
     pub grace: Vec<GraceItem>,
     pub external: Vec<ExternalItem>,
+    /// The daemon is walking `~/.claude` for the drawer (T-437): `external`
+    /// is the last answer until the push brings the new one.
+    pub external_scanning: bool,
     pub resources: Resources,
     /// Per-ticket worktree bindings (M4): branch, status word, merged/conflict.
     pub worktrees: Vec<WorktreeItem>,
@@ -1623,6 +1626,7 @@ impl App {
             board: snap.board,
             grace: snap.grace,
             external: snap.external,
+            external_scanning: snap.external_scanning,
             resources: snap.resources,
             worktrees: snap.worktrees,
             notices: snap.notices,
@@ -1945,6 +1949,7 @@ impl App {
             board,
             grace,
             external,
+            external_scanning,
             resources,
             worktrees,
             notices,
@@ -1971,6 +1976,7 @@ impl App {
         self.reindex_columns();
         self.grace = grace;
         self.external = external;
+        self.external_scanning = external_scanning;
         self.resources = resources;
         self.worktrees = worktrees;
         self.notices = notices;
@@ -1985,6 +1991,7 @@ impl App {
         self.control = mesophon;
         self.terminals = terminals;
         self.absorb_crown_touches(crown_touches, crown_was);
+        self.settle_drawer();
         self.seed_team_drafts();
         self.follow_ticket(followed);
         self.clamp_cursor();
@@ -8769,6 +8776,10 @@ impl App {
     }
 
     /// `e`: rescan (lazy census — this is the only trigger) and open the drawer.
+    /// Open the External drawer. The census runs on a daemon worker (T-437):
+    /// the drawer opens at once on the last answer, says it is scanning, and
+    /// redraws on the push that brings the new one. Only a *finished* empty
+    /// answer closes it with the word (`settle_drawer`).
     fn open_drawer(&mut self) -> Result<()> {
         match self.req(Command::RescanExternal) {
             Response::Err { message } => {
@@ -8777,12 +8788,21 @@ impl App {
             }
             resp => self.absorb_board(resp),
         }
-        if self.external.is_empty() {
-            self.status = "no external sessions found for this repo".into();
-        } else {
-            self.mode = Mode::External { idx: 0 };
-        }
+        self.mode = Mode::External { idx: 0 };
+        self.settle_drawer();
         Ok(())
+    }
+
+    /// An open drawer over a finished, empty census closes with the word;
+    /// while the walk runs an empty list means nothing yet.
+    pub(crate) fn settle_drawer(&mut self) {
+        if matches!(self.mode, Mode::External { .. })
+            && !self.external_scanning
+            && self.external.is_empty()
+        {
+            self.mode = Mode::Normal;
+            self.status = "no external sessions found for this repo".into();
+        }
     }
 
     /// Archive with the advisory pre-check (the daemon gates again): archive
@@ -9796,6 +9816,7 @@ struct Snapshot {
     board: Board,
     grace: Vec<GraceItem>,
     external: Vec<ExternalItem>,
+    external_scanning: bool,
     resources: Resources,
     worktrees: Vec<WorktreeItem>,
     notices: Vec<mesimon_core::command::Notice>,
@@ -9821,6 +9842,7 @@ impl Snapshot {
                 board,
                 grace,
                 external,
+                external_scanning,
                 resources,
                 worktrees,
                 notices,
@@ -9839,6 +9861,7 @@ impl Snapshot {
                 board,
                 grace,
                 external,
+                external_scanning,
                 resources,
                 worktrees,
                 notices,
@@ -10269,6 +10292,7 @@ pub(crate) mod test_support {
                     board: self.board.clone(),
                     grace: self.grace.clone(),
                     external: self.external.clone(),
+                    external_scanning: false,
                     resources: self.resources.clone(),
                     worktrees: Vec::new(),
                     notices: Vec::new(),

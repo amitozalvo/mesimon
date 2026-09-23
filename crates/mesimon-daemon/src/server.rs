@@ -275,6 +275,10 @@ enum Msg {
     /// A shell-environment capture finished. Off-thread because it forks the
     /// user's login shell and runs their rc files (`crate::shellenv`).
     ShellEnvCaptured(std::result::Result<crate::shellenv::ShellEnv, String>),
+    /// The external census landed (T-437): every foreign transcript under
+    /// the board's roots, not yet filtered against the sessions the board
+    /// learned while the walk ran.
+    ExternalScanned(Vec<ExternalItem>),
     /// A git sample of the board's own checkout landed (T-124), with the
     /// verdict of the fetch that preceded it when one was asked for.
     GitSampled(mesimon_core::command::RepoGit, Option<std::result::Result<(), String>>),
@@ -384,6 +388,14 @@ pub struct Daemon {
     /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
     /// only on `RescanExternal` (the drawer opening).
     external: Vec<ExternalItem>,
+    /// A census is walking `~/.claude` on a worker (T-437): it reads the head
+    /// and tail of every transcript under every project — 1.2 s over 2,000
+    /// files on the author's machine — which held the writer, so every
+    /// client and every hook frame, for the whole walk.
+    external_scanning: bool,
+    /// A rescan asked for while one was walking: the answer in flight was
+    /// started against an older `known` set, so one more walk follows it.
+    external_rescan_wanted: bool,
     /// Provider-owned passive observation cursors; never persisted.
     recovery: HashMap<uuid::Uuid, Box<dyn AgentRecovery>>,
     /// A person has seen the unknown-cleanup warning for this exact generation.
@@ -851,6 +863,8 @@ pub fn run(paths: Paths) -> Result<()> {
         ticks: 0,
         feed,
         external: Vec::new(),
+        external_scanning: false,
+        external_rescan_wanted: false,
         recovery: HashMap::new(),
         cleanup_resume_offers: HashMap::new(),
         reaping: HashMap::new(),
@@ -999,6 +1013,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Provisioned(..) => "provisioned".into(),
             Msg::ProvisionProgress(..) => "provision progress".into(),
             Msg::ShellEnvCaptured(_) => "shell env captured".into(),
+            Msg::ExternalScanned(_) => "external scanned".into(),
             Msg::GitSampled(..) => "git sampled".into(),
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
@@ -1029,6 +1044,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 d.on_provision_progress(ticket, done, total)
             }
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
+            Msg::ExternalScanned(items) => d.on_external_scanned(items),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
@@ -1775,7 +1791,9 @@ impl Daemon {
             Command::Snapshot => self.snapshot(),
             Command::RescanExternal => {
                 self.rescan_external();
-                // Reply with the fresh board so the drawer opens in one round trip.
+                // The board as it stands, `external_scanning` set: the drawer
+                // opens on the last answer and the walk's `BoardChanged`
+                // brings the new one (T-437).
                 self.snapshot()
             }
             Command::Subscribe => {
@@ -5182,6 +5200,7 @@ impl Daemon {
             terminals,
             grace,
             external: self.external.clone(),
+            external_scanning: self.external_scanning,
             resources: self.resources(),
             worktrees,
             notices,
@@ -5715,26 +5734,77 @@ impl Daemon {
 
     /// 19 §4 tier 1: transcript census, filtered to this repo (and worktrees),
     /// minus sessions already on the board (ours live in the same tree).
+    /// The conversation keys of every session the board holds for `kind`:
+    /// what the census leaves out, because the drawer lists what mesimon
+    /// does not already own.
+    fn known_conversations(&self, kind: SessionKind) -> Vec<String> {
+        let Some(adapter) = crate::agents::adapter(kind) else { return Vec::new() };
+        self.board
+            .sessions
+            .iter()
+            .filter(|session| {
+                session.kind == kind && (session.state.is_live() || session.codex_stopping)
+            })
+            .filter_map(|session| adapter.conversation_key(session))
+            .collect()
+    }
+
+    /// Start the census on a worker (T-437). One walk at a time: a rescan
+    /// asked for mid-walk is remembered and runs when this one lands, since
+    /// the walk in flight excludes the sessions known when it *started*.
     fn rescan_external(&mut self) {
-        let roots = crate::census::repo_roots(&self.paths.repo_root);
-        self.external.clear();
-        for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex] {
-            let kind = provider.session_kind();
-            let adapter = crate::agents::adapter(kind).expect("provider is an agent");
-            let known: Vec<_> = self
-                .board
-                .sessions
-                .iter()
-                .filter(|session| {
-                    session.kind == kind && (session.state.is_live() || session.codex_stopping)
-                })
-                .filter_map(|session| adapter.conversation_key(session))
-                .collect();
-            self.external.extend(
-                adapter.discover(&roots, &|identity| known.iter().any(|key| key == identity)),
-            );
+        if self.external_scanning {
+            self.external_rescan_wanted = true;
+            return;
         }
+        self.external_scanning = true;
+        let roots = crate::census::repo_roots(&self.paths.repo_root);
+        let known: Vec<(SessionKind, Vec<String>)> =
+            [AgentProvider::ClaudeCode, AgentProvider::Codex]
+                .into_iter()
+                .map(|provider| {
+                    let kind = provider.session_kind();
+                    (kind, self.known_conversations(kind))
+                })
+                .collect();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let mut items = Vec::new();
+            for (kind, known) in &known {
+                let Some(adapter) = crate::agents::adapter(*kind) else { continue };
+                items.extend(
+                    adapter.discover(&roots, &|identity| known.iter().any(|key| key == identity)),
+                );
+            }
+            let _ = tx.send(Msg::ExternalScanned(items));
+        });
+    }
+
+    /// The census landed. Filtered once more against the sessions the board
+    /// holds *now* — an import made during the walk must not re-surface —
+    /// then broadcast, so an open drawer redraws on it.
+    fn on_external_scanned(&mut self, items: Vec<ExternalItem>) {
+        self.external_scanning = false;
+        let known: Vec<(SessionKind, Vec<String>)> =
+            [AgentProvider::ClaudeCode, AgentProvider::Codex]
+                .into_iter()
+                .map(|provider| {
+                    let kind = provider.session_kind();
+                    (kind, self.known_conversations(kind))
+                })
+                .collect();
+        self.external = items
+            .into_iter()
+            .filter(|item| {
+                let kind = item.provider.session_kind();
+                !known.iter().any(|(k, keys)| *k == kind && keys.contains(&item.conversation_id))
+            })
+            .collect();
         self.external.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms).then(a.id.cmp(&b.id)));
+        if std::mem::take(&mut self.external_rescan_wanted) {
+            self.rescan_external();
+        }
+        self.broadcast();
     }
 
     fn broadcast(&mut self) {
