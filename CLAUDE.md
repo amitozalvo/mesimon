@@ -148,11 +148,16 @@ here.**
    `COLUMNS_SCHEMA` (`daemon/src/store.rs`; the doctrine is on the constant).
 2. `board::template_settings` if the four template columns should carry it — the one place a
    column name is read as a literal.
-3. The reader (`automove`, `train::plan`, `place_ticket`'s gate, `permission_mode_for`,
-   `agent_tier`, `reclaim_columns`) reads the ticket's column through `Board::column`, never a
-   name. `Board::set_column_settings` validates cross-column references.
+3. The reader (`automove`, `train::plan`, `place_ticket`'s gate, `agents/claude.rs::flags`,
+   `agent_tools_for`, `reclaim_columns`) reads the ticket's column through `Board::column`,
+   never a name. `Board::set_column_settings` validates cross-column references.
 4. `ColumnSettings::summary` (doctor's `columns` line, the dialog's details) and a `MenuItem` in
    `keymap::COLUMN_ITEMS` with its `Ctx::col_*` word, filled in `App::ctx()`.
+
+**A launch flag** (a column's, a tier's — anything a spawn and a wake must both carry): a
+`LaunchContext` field filled in `Daemon::launch_context`, then `agents/claude.rs::flags` AND
+its `resume` owned-pair list (a wake replays the stored argv), and `agents/codex/mod.rs::prepare`.
+A tier is `core/src/tier.rs`; which one a ticket launches on is `tier::Book`, never a field read.
 
 **A theme:** a `static` `Palette` in `tui/src/theme.rs` (every profile, hand-authored — never
 nearest-matched), a `Flavor` variant and its arms in `palette`/`name`/`blurb` (the compiler

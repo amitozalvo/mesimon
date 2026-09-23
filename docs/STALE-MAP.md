@@ -13334,3 +13334,104 @@ person who types `mesimon update` is asking it. Every build guard still holds fo
 watch on a scratch stamp with a stand-in `fetch` (the new field; `fetch_latest_tag` by default);
 `a_dev_build_refuses_the_command_before_it_asks`; `update_takes_one_flag_and_refuses_the_rest`
 in `main.rs`.
+
+## Agent tiers: a name for a launch, cycled per ticket with `^n` (T-443, 2026-09-23, user: "let user create agent tiers in settings ∙ switch agent tier for each ticket without entering the session, and switch a tier while agent is running (will wait until idle, then switch)")
+
+**What a tier is.** `core/src/tier.rs`: `Tier { id, name, provider, model, effort }`. Two
+built-ins, `claude` and `codex`, are never stored: each is its provider at the CLI's own
+defaults and passes no flag, which is exactly what every launch was before tiers. A Claude
+tier rides argv as `--model <m> --effort <e>` (2.1.280: `low medium high xhigh max`); a Codex
+tier as `-c model="<m>" -c model_reasoning_effort="<e>"` in `config_flags`, which reach both
+the app server and the native client, and `codex resume` accepts them (0.155's enum:
+`none minimal low medium high xhigh max ultra`; `none` is not offered). The model is a narrow
+whitelist (`check_model`, never a leading `-`) because it lands in argv and inside a TOML
+string, and an effort off the provider's ring never reaches argv (`Tier::effort_arg`).
+
+**Two layers, the settings shape (user: "machine-wide + board, like other settings").** The
+machine's tiers are `~/.local/state/mesimon/tiers.toml` — the second machine-level file the
+daemons read, after `team/device.toml`. Daemons own it: a stat-keyed cache re-read on every
+command and every second (so a spawn on board B sees an edit made on board A), written
+atomically only on a person's command, its own `schema_version`, quarantined or barred on the
+state files' doctrine. The TUI never touches it; `Response::Board.machine_tiers` carries it.
+A board's layer is `[[tiers]]` and `default_tier` in `columns.toml`. `tier::Book` resolves:
+machine tiers in order, a board entry with the same id replacing it in place (the board's
+"version"), board-only tiers appended; the default is the board's, else the machine's, else
+`claude`. Tickets name a tier by ID, so renaming a machine tier never orphans another board's
+tickets; an id that no longer resolves reads as the default, and the card never names it.
+A tier never rides the team relay (`SharedTicket` carries no launch facts).
+
+**The Provider row is the Default tier row.** Picking `claude` or `codex` is what the Provider
+row did; a pre-tier board that chose Codex keeps Codex (`Book::board_default` reads
+`agent_provider = codex` with no `default_tier` as the board's choice, and `SetDefaultTier`
+keeps the two in step). `SetAgentProvider` stays on the wire and means the board-scope
+built-in. Every "start an agent" road — `SpawnSession`'s kind, `AgentStartTicket`,
+`auto_run`, an empty seat's `seat_of`, `plan_refusal` — asks `Book::start_provider(ticket)`,
+so a ticket may pick Codex on a Claude board. A queued `Start` keeps the provider it was
+accepted with (`queued_start_keeps_first_provider…` held us to it); the ticket's tier gives it
+a model only where the two agree, which is `Book::launch`'s rule for every launch: a session's
+provider is fixed at birth, and a tier of the other provider launches its own built-in.
+
+**The cycle.** `^n` — `^i` is Tab's byte, `^t` is the tag picker, Shift+Enter is ask — on the
+board and the ticket page applies at once (`SetTicketTier`); in the composer and the ask field
+it is a pick riding the draft or the words, exactly like `^p` (user: "rides with the ask"):
+`CreateTicket`/`CreateTicketWithNote`/`PromptSession` gained `tier`. Forward only: Ctrl has no
+Shift twin on the legacy floor, so the ring wraps. A ticket holding a seat (live, parked or
+stopping) cycles only its seat's provider's tiers; an empty seat offers every tier. Picking
+the default stores inherit, so the ticket follows a later change of default.
+
+**The switch is a relaunch, and only a person's pick owes one.** `apply_ticket_tier` marks a
+paned seat `tier_owed` when the pick is not what it launched on (`SessionRecord.tier`, stamped
+by every launch road). A changed default or an edited tier never marks anything: it applies
+at the next launch or wake, the way a column setting does. `drain_tier_switches` (before
+`drain_queue`, on every settled change and every second) relaunches an owed seat when its pick
+has stood still 2 s (three `^n` presses relaunch once), it is between turns (`session_idle`),
+no person is inside the pane (`focus_held` — the relaunch kills the tmux session, which would
+throw an attached client out), no ask is queued for it, and `park_inactive`'s guards pass,
+including a conversation to resume: a switch that could only start fresh waits for the
+person's own wake. The relaunch is T-434's `relaunch_in_plan` generalised (`relaunch`): park,
+then wake with the words held. A queued ask carries the switch itself — `deliver` relaunches
+instead of pasting on an owed idle pane, so the queue's checkout rules still decide WHEN — and
+an ask sent now with a pick at a working pane queues rather than landing on the old tier.
+Codex is two-phase: its wake cannot acknowledge unverified cleanup, so the seat is parked and
+marked `tier_wake`, the words wait as a `Wake` entry (`queued_target_ready` now holds a Wake
+until `codex_stopping` clears, where it used to try and fail), and the wake follows the
+runtime's `stopped`.
+
+**Schemas.** `COLUMNS_SCHEMA` 6 (the tags reason: an older build would drop the registry and a
+Codex default), `TICKET_SCHEMA` 7 (the v5-provider reason: it would drop a Codex pick and
+start Claude). The three `SessionRecord` fields ride serde defaults: dropping them forgets a
+pending switch, nothing wider. `MACHINE_TIERS_SCHEMA` 1.
+
+**Where it shows.** The ticket page's state row: `on coder ∙ ^n next`, `on claude → coder at
+idle` while owed, `switching to coder` while a Codex seat waits for its stop; nothing at all on
+a board where nobody made a tier and the ticket runs the default. The empty seat's preview
+starts `on coder`. A card owed a switch says `switches to coder` in its next-action row
+(`switches ∙ then asks` with an ask queued); an open card's meta row wears the tier word
+before its key. The composer's and the ask field's rows wear the pick. Settings → Agents:
+`Default tier` (Enter cycles; `b` flips to this board, where the ring starts at inherit and a
+machine-scope row says `this board uses codex (b)`), and `Tiers` — the list (`+ new tier`
+names one in place) and a tier's page (Name, Provider, Model, Effort; Delete, or for a board's
+version, `Use the machine's`). A provider flip clears the model, which is its provider's own.
+The column dialog shows Claude's rows unless nothing uses Claude and Codex's rows wherever a
+tier uses Codex (`Ctx::claude_unused`/`codex_in_use`), no longer the board provider alone.
+`doctor` prints the default tier and the tiers; `state explain` a session's launched tier,
+pick and owed flag.
+
+**Renamed.** The daemon's `agent_tier()` — the MCP tool ladder — is `agent_tools_for()`, so
+"tier" means one thing in the code.
+
+**Not done.** Reordering tiers (a new one appends). Validating a model against what the CLI
+offers (the daemon would have to ask the CLI; a wrong name fails at launch, visibly). A reverse
+cycle. A composer pick changing the column dialog's provider rows. Switching a seat across
+providers: a conversation cannot move between CLIs, so a Codex pick on a Claude seat is
+refused with `needs a fresh one`.
+
+**Tests.** `tier::tests` (the merge, the default chain, dangling picks, the seat's ring,
+argv words, effort rings, names and models); `store` (`machine_tiers_roundtrip_quarantine_and_bar`,
+`a_tier_pick_and_the_board_tiers_survive_a_load`, `[[tiers]]` after the scalars); the adapters
+(`a_wake_carries_the_tier_it_is_woken_on_and_never_two`, `a_codex_tier_is_model_and_reasoning_effort_config`);
+`tier_e2e` (both layers into argv, an idle seat's switch on the same conversation, a working
+seat's at its idle, an ask riding the switch, the provider refusal, the focused pane left
+alone, a delete returning tickets to the default); `provider_e2e`'s
+`a_codex_tier_switch_parks_waits_for_the_stop_and_wakes_on_the_new_tier`; the TUI's `^n`
+ring and composer mint, the dialog walk, and six goldens.
