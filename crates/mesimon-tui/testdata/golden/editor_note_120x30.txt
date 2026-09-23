@@ -1,6 +1,6 @@
  NOTE   mesimon › kanban-tui › Fix OSC-11 detection
 
- DESCRIPTION ∙ ⎇ shared ∙ edited by you >1y ago
+ DESCRIPTION 1/2 ∙ ⎇ shared ∙ edited by you >1y ago
 
  line 1 of the note
  line 2 of the note
@@ -27,4 +27,4 @@
  line 23 of the note
  line 24 of the note
  line 25 of the note
- ^s save ∙ esc close
+ ^s save ∙ tab next note ∙ esc close

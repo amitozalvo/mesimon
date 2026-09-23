@@ -14,9 +14,10 @@
 //! exists the title is the ticket's, read-only, and the context row names
 //! the ticket's workspace, which Shift+Tab still sets while nothing has
 //! locked it. From the ticket page the same editor takes the whole screen
-//! under a breadcrumb. No rules, no boxes (L1): the body is text on its
-//! surface, the hardware cursor is the only cursor, and the footer is the
-//! keymap's.
+//! under a breadcrumb. On a ticket with more than one note, `Tab` walks
+//! them in the same room (T-440), and the heading counts where it stands —
+//! `NOTE 2/3`. No rules, no boxes (L1): the body is text on its surface, the
+//! hardware cursor is the only cursor, and the footer is the keymap's.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -422,7 +423,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 parts.push(Span::styled(format!("edited by {who}{when}"), dim2));
             }
             if !framed {
-                parts.insert(0, Span::styled(heading(app, ed).to_string(), dim2));
+                parts.insert(0, Span::styled(heading(app, ed), dim2));
             }
             for (i, part) in parts.into_iter().enumerate() {
                 if i > 0 {
@@ -469,7 +470,11 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         }
     }
     if ed.dirty() {
-        ctx_spans.push(Span::styled(" ∙ unsaved".to_string(), dim2));
+        // A refused `tab` (T-440) says why where the eye already is: the
+        // word goes full ink until the next key, and the status line under
+        // the room says what to press.
+        let ink = if ed.tab_refused { Style::default().fg(ink.base) } else { dim2 };
+        ctx_spans.push(Span::styled(" ∙ unsaved".to_string(), ink));
     }
     // A teammate wrote the note since it was opened here (T-335): the
     // draft stays, the row says so in the full register, and a save is
@@ -486,8 +491,17 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
 /// The dialog's name, set into its frame's top edge (and said on the
 /// context row where there is no edge): what the text IS — a new ticket,
 /// the description (`notes[0]`, or the fresh note that becomes it), or
-/// another note.
-fn heading(app: &App, ed: &Editor) -> &'static str {
+/// another note — and, where `tab` walks the ticket's notes (T-440), which
+/// of them: `NOTE 2/3`.
+fn heading(app: &App, ed: &Editor) -> String {
+    let word = heading_word(app, ed);
+    match app.note_ring(ed) {
+        Some((at, n)) => format!("{word} {}/{n}", at + 1),
+        None => word.to_string(),
+    }
+}
+
+fn heading_word(app: &App, ed: &Editor) -> &'static str {
     match &ed.purpose {
         EditorPurpose::Compose { .. } => "NEW TICKET",
         // Who the words reach — the one-line field's own hint, in capitals.

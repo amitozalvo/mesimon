@@ -470,6 +470,10 @@ pub struct Editor {
     pub esc_armed: bool,
     /// `^s` on an EMPTIED existing note is a delete, and takes two presses.
     pub delete_armed: bool,
+    /// `tab` was refused on a dirty note (T-440): the context row's
+    /// `unsaved` goes full ink until the next key, so the reason is said
+    /// where the eye is and the status line says what to press.
+    pub tab_refused: bool,
     /// First visible wrapped body row; the draw follows the cursor and writes back.
     pub top: Cell<usize>,
     /// Body width from the last draw, shared by wrapping and vertical motion.
@@ -815,6 +819,7 @@ impl Editor {
             baseline,
             esc_armed: false,
             delete_armed: false,
+            tab_refused: false,
             top: Cell::new(0),
             body_width: Cell::new(usize::MAX),
             grow: None,
@@ -4046,6 +4051,7 @@ impl App {
             editor_asking: editor.is_some_and(|e| e.asking()),
             editor_body: editor.is_some_and(|e| e.focus == Field::Body),
             editor_dirty: editor.is_some_and(|e| e.dirty()),
+            editor_cycles: editor.is_some_and(|e| self.note_ring(e).is_some()),
             editor_word: self.editor_word,
             rich_keys: self.rich_keys,
             prompts: self.board.prompts.clone(),
@@ -5474,7 +5480,8 @@ impl App {
             | Verb::EditorUp
             | Verb::EditorDown
             | Verb::EditorExternal
-            | Verb::EditorPaste => {}
+            | Verb::EditorPaste
+            | Verb::NextNote => {}
         }
         Ok(())
     }
@@ -7467,8 +7474,10 @@ impl App {
         if verb != Some(Verb::EditorSave) {
             ed.delete_armed = false;
         }
+        ed.tab_refused = false;
         match verb {
             Some(Verb::Cancel) => return self.editor_cancel(ed),
+            Some(Verb::NextNote) => return self.editor_next_note(ed),
             Some(Verb::EditorSave) => return self.editor_save(ed),
             Some(Verb::EditorSaveStart) => return self.editor_save_start(ed),
             // The field's `^p` in the room (T-434).
@@ -7962,9 +7971,25 @@ impl App {
     /// daemon first (never the cache: an edit must start from the truth), or
     /// a fresh one that the first save mints.
     fn open_note_editor(&mut self, ticket: ulid::Ulid, note: Option<ulid::Ulid>) -> Result<()> {
-        let Some(t) = self.board.ticket(ticket) else {
+        let Some(mut ed) = self.note_editor(ticket, note) else {
             return Ok(());
         };
+        // Over the board the editor is a dialog, and it grows out of the
+        // cursor card the last frame drew — the composer's motion, on a
+        // ticket that exists. From the ticket page it takes the screen.
+        if matches!(self.screen, Screen::Board) {
+            ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
+        }
+        self.mode = Mode::Editor(ed);
+        Ok(())
+    }
+
+    /// The editor on one of a ticket's notes, read from the daemon, or a
+    /// fresh one — `None` when the ticket is gone or the read failed (the
+    /// daemon's word is in the status). Touches no mode: opening and
+    /// walking (T-440) decide what happens around it.
+    fn note_editor(&mut self, ticket: ulid::Ulid, note: Option<ulid::Ulid>) -> Option<Editor> {
+        let t = self.board.ticket(ticket)?;
         let title = EditBuffer::from_text(t.title.clone(), mesimon_core::board::TITLE_MAX_BYTES);
         let opened_rev = note.and_then(|id| t.note(id)).map(|n| n.rev);
         let body = match note {
@@ -7974,21 +7999,73 @@ impl App {
                 }
                 Response::Err { message } => {
                     self.status = message;
-                    return Ok(());
+                    return None;
                 }
-                _ => return Ok(()),
+                _ => return None,
             },
             None => TextArea::new(mesimon_core::board::NOTE_MAX_BYTES),
         };
         let mut ed = Editor::new(EditorPurpose::Note { ticket, note }, title, body, Field::Body);
         ed.opened_rev = opened_rev;
-        // Over the board the editor is a dialog, and it grows out of the
-        // cursor card the last frame drew — the composer's motion, on a
-        // ticket that exists. From the ticket page it takes the screen.
-        if matches!(self.screen, Screen::Board) {
-            ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
+        Some(ed)
+    }
+
+    /// Where a note editor stands among its ticket's notes (T-440): the
+    /// note's place and how many there are, in the rail's order — `None`
+    /// unless it is on a note that exists and the ticket has another to
+    /// walk to. The one answer the key, its hint and the heading's `2/3`
+    /// read.
+    pub fn note_ring(&self, ed: &Editor) -> Option<(usize, usize)> {
+        let EditorPurpose::Note { ticket, note: Some(id) } = ed.purpose else {
+            return None;
+        };
+        let notes = &self.board.ticket(ticket)?.notes;
+        let at = notes.iter().position(|n| n.id == id)?;
+        (notes.len() > 1).then_some((at, notes.len()))
+    }
+
+    /// `tab` in the note editor (T-440): the ticket's next note, round
+    /// again from the description, in the same room — no grow, since the
+    /// dialog is already open. Unsaved words hold it where it is: the
+    /// status says the two ways out and the row's `unsaved` goes full ink,
+    /// and nothing is ever discarded by this key. On the ticket page the
+    /// rail follows, so leaving the editor lands on the note it was on.
+    fn editor_next_note(&mut self, mut ed: Editor) -> Result<()> {
+        if self.pending_paste.as_ref().is_some_and(|p| p.editor == ed.draft_id && !p.timed_out) {
+            self.status = "clipboard read pending".into();
+            self.mode = Mode::Editor(ed);
+            return Ok(());
         }
-        self.mode = Mode::Editor(ed);
+        if ed.dirty() {
+            ed.tab_refused = true;
+            self.status = "unsaved ∙ ^s saves ∙ esc discards".into();
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        }
+        let next = match (&ed.purpose, self.note_ring(&ed)) {
+            (EditorPurpose::Note { ticket, .. }, Some((at, n))) => {
+                self.board.ticket(*ticket).map(|t| (t.id, t.notes[(at + 1) % n].id))
+            }
+            _ => None,
+        };
+        let Some((ticket, next)) = next else {
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        };
+        let Some(walked) = self.note_editor(ticket, Some(next)) else {
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        };
+        if let Screen::Ticket { ticket: page, .. } = self.screen {
+            if let Some(idx) = self
+                .rail_rows(page)
+                .iter()
+                .position(|r| matches!(r, RailRow::Note(m) if m.id == next))
+            {
+                self.screen = Screen::Ticket { ticket: page, rail_idx: idx };
+            }
+        }
+        self.mode = Mode::Editor(walked);
         Ok(())
     }
 
@@ -11025,8 +11102,25 @@ mod tests {
     fn app_with_note_state(
         claude: Option<SessionState>,
     ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+        app_with_notes_state(claude, &[(90, "# Why\n\nbecause")])
+    }
+
+    /// Ticket 1 with three notes (T-440): the description (90, the one
+    /// `app_with_note` carries) and two more, 91 and 92, in that order.
+    fn app_with_three_notes() -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+        app_with_notes_state(None, &[(90, "# Why\n\nbecause"), (91, "second"), (92, "third")])
+    }
+
+    /// Ticket 1 carrying `notes` (id, body) in order, the first its
+    /// description, and a claude in `claude`'s state when asked.
+    fn app_with_notes_state(
+        claude: Option<SessionState>,
+        bodies: &[(u128, &str)],
+    ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
         let mut b = board_three_columns();
-        b.tickets[0].notes.push(note_meta(90, 1, "local"));
+        for &(id, _) in bodies {
+            b.tickets[0].notes.push(note_meta(id, 1, "local"));
+        }
         if let Some(state) = claude {
             b.sessions.push(mesimon_core::board::SessionRecord::new(
                 uuid::Uuid::from_u128(7),
@@ -11038,8 +11132,8 @@ mod tests {
             ));
         }
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut notes = std::collections::HashMap::new();
-        notes.insert(ulid::Ulid(90), "# Why\n\nbecause".to_string());
+        let notes: std::collections::HashMap<_, _> =
+            bodies.iter().map(|&(id, text)| (ulid::Ulid(id), text.to_string())).collect();
         let fake = super::test_support::FakeTransport {
             board: b,
             grace: vec![],
@@ -11580,6 +11674,112 @@ mod tests {
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
         assert_eq!(app.board.tickets[0].workspace, None);
+    }
+
+    /// The note the editor is on, `None` on a fresh one.
+    fn on_note(app: &App) -> Option<ulid::Ulid> {
+        match editor(app).purpose {
+            EditorPurpose::Note { note, .. } => note,
+            _ => None,
+        }
+    }
+
+    /// T-440: `tab` in the editor walks the ticket's notes in the rail's
+    /// order and comes round to the description — each one re-read from
+    /// the daemon, clean, with its own rev, and in the room that is already
+    /// open: only the first `tab`, the one on the card, grows.
+    #[test]
+    fn tab_in_the_editor_walks_the_notes_and_wraps() {
+        let (mut app, sent) = app_with_three_notes();
+        let tab = |app: &mut App| app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.cursor_card.set(Some(ratatui::layout::Rect::new(2, 3, 30, 4)));
+        tab(&mut app);
+        assert_eq!(on_note(&app), Some(ulid::Ulid(90)), "the card's tab: the description");
+        assert!(editor(&app).grow.is_some(), "it grows out of the card");
+        assert!(app.ctx().editor_cycles);
+        sent.borrow_mut().clear();
+        tab(&mut app);
+        assert_eq!(on_note(&app), Some(ulid::Ulid(91)));
+        assert_eq!(editor(&app).body.as_str(), "second");
+        assert!(sent_contains(&sent, "ReadNote"), "never the cache: {:?}", sent.borrow());
+        assert!(editor(&app).grow.is_none(), "the room is already open");
+        assert_eq!(editor(&app).opened_rev, Some(1));
+        assert!(!editor(&app).dirty());
+        tab(&mut app);
+        assert_eq!(on_note(&app), Some(ulid::Ulid(92)));
+        tab(&mut app);
+        assert_eq!(on_note(&app), Some(ulid::Ulid(90)), "and round again");
+        assert_eq!(editor(&app).body.as_str(), "# Why\n\nbecause");
+    }
+
+    /// T-440: unsaved words hold the editor where it is. The status says
+    /// the two ways out, the row's `unsaved` goes full ink until the next
+    /// key, nothing is read — and a second `tab` is the same refusal, never
+    /// a discard.
+    #[test]
+    fn tab_on_an_unsaved_note_stays_and_says_why() {
+        let (mut app, sent) = app_with_three_notes();
+        let key = |app: &mut App, code| app.handle_key(code, KeyModifiers::NONE).unwrap();
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Char('x'));
+        sent.borrow_mut().clear();
+        for _ in 0..2 {
+            key(&mut app, KeyCode::Tab);
+            assert_eq!(on_note(&app), Some(ulid::Ulid(90)), "it stays");
+            assert!(editor(&app).body.as_str().contains('x'), "the draft is kept");
+            assert!(editor(&app).dirty());
+            assert!(editor(&app).tab_refused);
+            assert_eq!(app.status, "unsaved ∙ ^s saves ∙ esc discards");
+        }
+        assert!(!sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
+        key(&mut app, KeyCode::Char('y'));
+        assert!(!editor(&app).tab_refused, "any other key lets the word rest");
+    }
+
+    /// T-440: from the ticket page the rail follows the walk, so leaving
+    /// the editor lands on the note it was on.
+    #[test]
+    fn tab_on_the_ticket_page_moves_the_rail_with_it() {
+        let (mut app, _) = app_with_three_notes();
+        let first = app
+            .rail_rows(ulid::Ulid(1))
+            .iter()
+            .position(|r| matches!(r, RailRow::Note(n) if n.id == ulid::Ulid(90)))
+            .expect("the description is on the rail");
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: first };
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE).unwrap();
+        assert_eq!(on_note(&app), Some(ulid::Ulid(90)));
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(on_note(&app), Some(ulid::Ulid(91)));
+        assert!(
+            matches!(app.rail_row(), Some(RailRow::Note(n)) if n.id == ulid::Ulid(91)),
+            "{:?}",
+            app.screen
+        );
+    }
+
+    /// T-440: nothing to walk, nothing bound — a ticket with one note, and
+    /// a fresh note on a ticket with three (it has no place in the ring
+    /// until it is saved).
+    #[test]
+    fn tab_on_a_lone_note_or_a_new_one_does_nothing() {
+        let (mut app, sent) = app_with_note();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(!app.ctx().editor_cycles);
+        sent.borrow_mut().clear();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(on_note(&app), Some(ulid::Ulid(90)));
+        assert!(!sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
+        assert!(!editor(&app).dirty(), "a tab is not a character");
+
+        let (mut app, sent) = app_with_three_notes();
+        app.handle_key(KeyCode::Char('N'), KeyModifiers::SHIFT).unwrap();
+        assert_eq!(on_note(&app), None, "a new note");
+        assert!(!app.ctx().editor_cycles);
+        sent.borrow_mut().clear();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(on_note(&app), None);
+        assert!(!sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
     }
 
     /// T-309: the same press, one screen out. A ticket nobody has started

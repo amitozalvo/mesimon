@@ -5175,6 +5175,52 @@ fn golden_editor_describe_120() {
     golden("editor_describe_120x30", &lines);
 }
 
+/// T-440: on a ticket with three notes the dialog counts where it stands
+/// — `NOTE 2/3` in the frame's top edge — and its bottom edge offers
+/// `tab next note`. Dirty and refused, the context row's `unsaved` goes
+/// from the dim register to full ink.
+#[test]
+fn golden_editor_note_ring_120() {
+    let mut b = fixture_tagged();
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.notes.push(note_meta(90, "What changed", "local"));
+        t.notes.push(note_meta(91, "Repro steps", "local"));
+        t.notes.push(note_meta(92, "Follow-up", "local"));
+    }
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    let ed = editor_on(
+        crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: Some(ulid_n(91)) },
+        "Fix OSC-11 detection",
+        SECOND_NOTE,
+    );
+    app.mode = Mode::Editor(ed.clone());
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("NOTE 2/3")), "the frame counts: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("tab next note")), "the edge offers it: {lines:?}");
+    golden("editor_note_ring_120x30", &lines);
+
+    let ink = match app.theme.selected_bg {
+        Some(_) => app.theme.sel,
+        None => app.theme.rest,
+    };
+    let unsaved_fg = |app: &App| {
+        let buf = cells(app, 120, 30);
+        let lines = render(app, 120, 30);
+        lines.iter().enumerate().find_map(|(y, l)| {
+            let ix = l.find("unsaved")?;
+            Some(buf[(l[..ix].chars().count() as u16, y as u16)].fg)
+        })
+    };
+    let mut dirty = ed;
+    dirty.body.insert('x');
+    app.mode = Mode::Editor(dirty.clone());
+    assert_eq!(unsaved_fg(&app), Some(ink.dim2), "at rest the word is quiet");
+    dirty.tab_refused = true;
+    app.mode = Mode::Editor(dirty);
+    assert_eq!(unsaved_fg(&app), Some(ink.base), "a refused tab says it in full");
+}
+
 /// The ask room (T-380): the one-line field's prompt in the composer's
 /// dialog. The frame names who the words reach, the title row is the
 /// ticket (read-only), the context row is the field's delivery row, and the

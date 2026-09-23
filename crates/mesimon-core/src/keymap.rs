@@ -756,6 +756,11 @@ pub enum Verb {
     /// this ("open in external editor").
     EditorExternal,
     EditorPaste,
+    /// `tab` in the note editor (T-440): the ticket's next note, in the
+    /// rail's order and round again from the description. A note with
+    /// unsaved changes stays put and says so — the draft is never dropped
+    /// by a key the finger presses in a row.
+    NextNote,
 }
 
 /// 04 §2.0's legend. `Grace` actions land in the undo band; `Arm` actions name
@@ -1204,6 +1209,9 @@ pub struct Ctx {
     pub editor_body: bool,
     /// The editor holds changes not yet saved.
     pub editor_dirty: bool,
+    /// The editor is on a note that exists, of a ticket with more than one
+    /// (T-440): `tab` walks to the next.
+    pub editor_cycles: bool,
     /// The program `^g` hands the note's body to — the basename of
     /// `$VISUAL`, else `$EDITOR`, else `vi` — as the footer's word for it
     /// (`^g nvim`). Empty means no external editor is wired up (every test
@@ -5351,9 +5359,10 @@ static SEARCH: &[Binding] = &[
 ];
 
 /// The note editor: a text barrier like `Input`, with the composer's keys
-/// alive only while it is composing a ticket. `Tab` is deliberately unbound
-/// (a tab is not a body character; `sanitize_note` turns one into a space),
-/// and `{ }` are text here — paging is `pgup`/`pgdn`.
+/// alive only while it is composing a ticket. `Tab` is never a body character
+/// (`sanitize_note` turns one into a space); on a ticket with more than one
+/// note it walks them (T-440), and elsewhere it is unbound. `{ }` are text
+/// here — paging is `pgup`/`pgdn`.
 static EDITOR: &[Binding] = &[
     Binding {
         keys: &[Key::Ctrl('v')],
@@ -5444,6 +5453,25 @@ static EDITOR: &[Binding] = &[
         group: Group::Sessions,
         mutates: true,
         prio: 12,
+    },
+    Binding {
+        // The ticket's next note, in the same room (T-440, user request:
+        // "allow user to cycle the notes on tab"). Forward only and round
+        // again: Shift+Tab is the workspace pick here (T-163), and one atom
+        // is one binding in a scope. Live on a dirty note too — the press
+        // is refused there, and the refusal is the answer (the status says
+        // `^s` or `esc`, the row's `unsaved` goes full ink) — so the edge
+        // does not reflow on the first keystroke. Never a discard: Tab is
+        // pressed in a row, and a second press must not lose the draft.
+        keys: &[Key::Tab],
+        verb: Verb::NextNote,
+        show: "tab",
+        hint: |_| "next note",
+        avail: |c| c.editing && c.editor_cycles,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 15,
     },
     Binding {
         // Two presses when there is something to lose; the first says so.
@@ -6991,10 +7019,35 @@ mod tests {
         for scope in [Scope::Diff, Scope::Global] {
             assert_eq!(resolve(scope, Key::BackTab, &card), None, "{scope:?}");
         }
-        // Inside the editor Tab is nothing: not a character (a note holds no
-        // tabs) and not a verb.
+        // Composing, Tab inside the editor is nothing: not a character (a
+        // note holds no tabs) and not a verb. On a ticket's notes it walks
+        // them (`tab_walks_the_notes_in_the_editor`).
         let editing = Ctx { editing: true, editor_composing: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::Tab, &editing), None);
+    }
+
+    /// T-440: on a ticket with more than one note, `tab` in the editor is
+    /// the next note — dirty or clean, since the refusal is the handler's
+    /// and the edge must not reflow on the first keystroke. Nowhere else:
+    /// not composing, not asking, not on a new note or a lone description.
+    /// Shift+Tab stays the workspace pick.
+    #[test]
+    fn tab_walks_the_notes_in_the_editor() {
+        let ring = Ctx { editing: true, editor_cycles: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Tab, &ring), Some(Verb::NextNote));
+        assert_eq!(hint_for(Scope::Editor, Verb::NextNote, &ring), Some(("tab", "next note")));
+        let dirty = Ctx { editor_dirty: true, ..ring.clone() };
+        assert_eq!(resolve(Scope::Editor, Key::Tab, &dirty), Some(Verb::NextNote));
+        assert_eq!(hint_for(Scope::Editor, Verb::NextNote, &dirty), Some(("tab", "next note")));
+        let lone = Ctx { editing: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Tab, &lone), None);
+        assert_eq!(hint_for(Scope::Editor, Verb::NextNote, &lone), None);
+        let composing = Ctx { editing: true, editor_composing: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Tab, &composing), None);
+        let asking = Ctx { editing: true, editor_asking: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Tab, &asking), None);
+        let open = Ctx { workspace_open: true, ..ring };
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &open), Some(Verb::CycleWorkspace));
     }
 
     /// The editor owns its keys the way the composer does: the screen keys

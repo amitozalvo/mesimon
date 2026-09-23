@@ -13132,3 +13132,45 @@ backend. The goldens did not move.
 
 **Test.** `test_release_notes_render_once`: a `j` and a `}` reuse the same `Rc`, and a resize
 lays the document out again.
+
+## `Tab` in the note editor walks the ticket's notes (T-440, 2026-09-23, user: "when inside the big composer to edit description and there are more notes, allow user to cycle the notes on tab. if current note edited, prevent cycle and show indication")
+
+Tab on a card opened the description in the dialog (T-163), and the editor's own `Tab` was
+unbound. Reaching a ticket's second note meant closing, opening the ticket page, walking the
+rail and pressing `n`.
+
+**`tab` is `Verb::NextNote`, forward only, and comes round again.** The ring is `ticket.notes`
+in the rail's order, the description first. The binding is live only when `Ctx::editor_cycles`
+holds: the editor is on a note that exists (`note: Some`) and the ticket has more than one. It
+is unbound composing, asking, on a fresh note (`N`: it has no place in the ring until it is
+saved) and on a lone description, so those screens did not change. There is no backwards key:
+Shift+Tab in this room is the workspace pick (T-163's recorded request), and one atom is one
+binding in a scope. With the wrap, the previous note is `n-1` presses away. `App::note_ring`
+is the one answer the key, the hint and the heading read.
+
+**Unsaved words hold it where it is, and the refusal is the answer.** The key stays live and
+hinted on a dirty note, so the dialog's bottom edge does not reflow on the first keystroke. The
+press refuses: the status says `unsaved ∙ ^s saves ∙ esc discards`, and `Editor::tab_refused`
+turns the context row's `∙ unsaved` from `dim2` to full ink (the `changed elsewhere` register)
+until the next key. The reason shows inside the dialog and the remedy shows in the footer. A
+second `tab` is the same refusal and **never a discard**: Tab is pressed in a row, so a two-press
+discard on it would lose a draft to habit. A clipboard read pending for the draft refuses the
+walk with the save's own words.
+
+**The walk is quiet and re-reads.** `open_note_editor` split into `note_editor` (the
+`ReadNote` and the `opened_rev`, no mode change) and the wrapper that adds the grow. The walk
+uses the first, so the next note opens clean, from the daemon and never the cache, with no grow
+motion (the room is already open). A failed read keeps the current note open with the daemon's
+word in the status. On the ticket page `rail_idx` follows the note, so leaving the editor lands
+the rail on it and shows its preview.
+
+**The heading counts.** Wherever the ring exists, `editor::heading` appends the place:
+`DESCRIPTION 1/3`, `NOTE 2/3`. It sits in the frame's top edge on the dialog and leads the
+context row full screen. `editor_note_120x30` and `editor_picture_120x30` moved with it: their
+fixture (`app_noted`) carries two notes, so they now read `DESCRIPTION 1/2` and `tab next
+note`.
+
+**Tests.** `tab_walks_the_notes_in_the_editor` (keymap);
+`tab_in_the_editor_walks_the_notes_and_wraps`, `tab_on_an_unsaved_note_stays_and_says_why`,
+`tab_on_the_ticket_page_moves_the_rail_with_it`, `tab_on_a_lone_note_or_a_new_one_does_nothing`
+(app); `golden_editor_note_ring_120` pins the counter, the edge hint and the refused ink.

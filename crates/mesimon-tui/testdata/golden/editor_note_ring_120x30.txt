@@ -1,0 +1,30 @@
+ NOTE   mesimon › kanban-tui
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+                              ╭─ NOTE 2/3 ────────────────────────────────────────────────╮
+    Decay treatments      >1y │▉▉ Fix OSC-11 detection                                    │   z Painted accent bar >1y
+                              │▉▉ ⎇ shared ∙ edited by you >1y ago                        │
+    Keymap validator      >1y │▉▉                                                         │
+                              │▉▉ Repro steps                                             │
+                              │▉▉                                                         │
+                              │▉▉ 1. open the board                                       │
+                              │▉▉ 2. press `p`                                            │
+                              │▉▉ 3. watch the peek                                       │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              ╰───────────────────── ^s save ∙ tab next note ∙ esc close ─╯
+
+
+ ^s save ∙ tab next note ∙ esc close

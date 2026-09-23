@@ -1,6 +1,6 @@
  NOTE   mesimon › kanban-tui › Fix OSC-11 detection
 
- DESCRIPTION ∙ ⎇ shared ∙ edited by you >1y ago
+ DESCRIPTION 1/2 ∙ ⎇ shared ∙ edited by you >1y ago
 
  The failure appears here:
  [Image #1]
@@ -27,4 +27,4 @@
 
 
 
- ^s save ∙ esc close
+ ^s save ∙ tab next note ∙ esc close
