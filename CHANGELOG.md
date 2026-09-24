@@ -6,6 +6,81 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.26 — 2026-09-24
+
+### Compatibility
+
+- **`columns.toml` moves to schema 6 and ticket files to schema 7.** An
+  older build leaves `columns.toml` untouched and does not write to it, and
+  skips, with a notice, any ticket this version has saved until the newer
+  build is back.
+
+### Added
+
+- **Agent tiers name how a ticket's agent launches: provider, model and
+  effort.** Settings → Agents → `Tiers` lists them for this machine, or with
+  `b` for this board only, and `Default tier` replaces the Provider row. The
+  built-in `claude` and `codex` tiers pass no flags. `Ctrl+N` on the board or
+  the ticket page moves a ticket to its next tier: an empty seat starts on
+  it, a parked agent wakes on it, and a running agent is relaunched on the
+  same conversation at its next idle, never mid-turn and never while you are
+  in its pane. In the composer and the ask field, `Ctrl+N` picks the tier the
+  words launch on. The ticket page's state row names the tier (`on coder ∙
+  ^n next`), and a card waiting to switch says `switches to coder`. A seat
+  cannot switch between Claude and Codex, and a model name the CLI does not
+  accept fails at launch.
+- **`mesimon update` installs the newest release from a shell.** It asks
+  for the latest release and, when a newer one is out, downloads, verifies
+  and installs it the way the Esc menu's Install row does, restarting
+  nothing; an open board then offers `U`. `mesimon update --check` only
+  asks. `MESIMON_NO_UPDATE_CHECK` does not silence the command.
+- **Opening Release notes checks for a newer release at once** instead of
+  waiting for the half-hour check. A newer release raises the header chip as
+  before, and an answer less than 60 seconds old is reused.
+- **`Tab` in the note editor opens the ticket's next note.** On a ticket
+  with more than one note, `Tab` walks them in the rail's order and wraps to
+  the description; the heading shows the position, for example `NOTE 2/3`.
+  A note with unsaved changes stays open and the status line reads `unsaved
+  ∙ ^s saves ∙ esc discards`. `Tab` never discards.
+
+### Changed
+
+- **The first attach shows an animated guide to the way back.** Before your
+  first session opens, the practice pane shows a SESSION → BOARD diagram
+  whose keycaps step through holding Ctrl and tapping 5, with `Ctrl+]` named
+  as the alternative. Pressing the shortcut opens the session, as before;
+  other keys are ignored on this screen.
+- **Every refused card action shakes the card**, not only a refused
+  archive. A move stopped by the DONE gate, `d d` over an unmerged branch,
+  `z` on a ticket whose Claude agent is working, a workspace switch with an
+  agent running, `c` on a taken seat, and a refused wake, resume, crown,
+  manual merge, tag cycle or queued ask now shake the card as well as
+  showing the reason in the status line. Refusals shown inside a dialog or
+  a text field do not shake.
+- **Crowning a ticket sweeps its title into the crown's colour.** After
+  `Ctrl+O`, a wave crosses the title on the card and on the ticket page in
+  1.3 s and leaves it in the crown's tint. The crowned card's title keeps
+  that tint under the cursor. Below 24-bit colour a single highlighted cell
+  walks the title; monochrome terminals show no motion.
+
+### Fixed
+
+- **A refused plan or question clears from the card.** After you answer an
+  agent's plan with "No, keep planning", dismiss its question or deny a
+  permission, the card kept reading `plan` or `question` until the agent's
+  next dialog. It now clears on the agent's next tool call; a subagent's
+  tool call does not clear it.
+- **The External drawer no longer lists sessions mesimon started.** A
+  conversation from a deleted ticket, one left behind by `/clear` or a fresh
+  resume, and an exited session used to reappear there. mesimon now records
+  every conversation it starts in a new state file, `started.json`, seeded
+  on the first start from its existing launch records. Agent SDK runs, such
+  as a plugin's review hook, are no longer listed. A conversation cleared
+  with `/clear` before this version can still appear.
+- **Scrolling the release notes and large diffs keeps up with the keys.**
+  Both screens laid out their whole document on every frame while `j` was
+  held or `{ }` paged; they now lay it out once per width and file.
+
 ## v0.1.0-alpha.25 — 2026-09-23
 
 ### Added

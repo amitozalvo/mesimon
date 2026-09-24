@@ -1216,7 +1216,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mesimon"
-version = "0.1.0-alpha.25"
+version = "0.1.0-alpha.26"
 dependencies = [
  "anyhow",
  "mesimon-backend-tmux",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-backend-tmux"
-version = "0.1.0-alpha.25"
+version = "0.1.0-alpha.26"
 dependencies = [
  "anyhow",
  "libc",
@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-core"
-version = "0.1.0-alpha.25"
+version = "0.1.0-alpha.26"
 dependencies = [
  "nucleo-matcher",
  "serde",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-daemon"
-version = "0.1.0-alpha.25"
+version = "0.1.0-alpha.26"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-relay"
-version = "0.1.0-alpha.25"
+version = "0.1.0-alpha.26"
 dependencies = [
  "axum",
  "axum-server",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-team"
-version = "0.1.0-alpha.25"
+version = "0.1.0-alpha.26"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-tui"
-version = "0.1.0-alpha.25"
+version = "0.1.0-alpha.26"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1348,7 +1348,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-web"
-version = "0.1.0-alpha.25"
+version = "0.1.0-alpha.26"
 dependencies = [
  "mesimon-team",
  "serde_json",
