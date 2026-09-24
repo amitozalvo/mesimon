@@ -5,6 +5,8 @@
 //! `-z` is given, and a lossy decode-then-split would corrupt the record
 //! stream on paths containing what lossy decoding mangles.
 
+use std::ops::Range;
+
 use serde::{Deserialize, Serialize};
 
 /// One row of the file list (`DiffList`). Stable entries come from
@@ -401,6 +403,193 @@ pub fn build_file_diff(entry: &FileEntry, patch: &[u8], max_bytes: u64) -> FileD
     FileDiff { hunks, ..base }
 }
 
+/// The changed byte ranges of one line's `text`, in order and disjoint.
+pub type Marks = Vec<Range<usize>>;
+
+/// Past this many bytes on either side a pair keeps the whole-line treatment:
+/// a line that long is minified or generated, and nobody reads it by word.
+const INTRALINE_MAX_BYTES: usize = 2048;
+/// How much of a pair's content may differ and still read as one line
+/// edited, rather than a line deleted and an unrelated one written in its
+/// place — where marking every word would be noise. delta's own default
+/// (`max-line-distance`); at 0.7, `let base8 = d.base_oid;` →
+/// `let against = "uncommitted";` paired and lit every word but `let`.
+const INTRALINE_MAX_CHANGE: f64 = 0.6;
+/// How many adds past the last paired one a delete looks at for its partner.
+/// Bounds the work on a block rewritten wholesale, where nothing pairs and
+/// every delete would otherwise try every add.
+const INTRALINE_WINDOW: usize = 4;
+
+/// The changed words of every paired line in one hunk (T-454), inferred
+/// the way delta infers them: inside a run of deletes followed by a run of
+/// adds, each delete takes the add most like it among the next
+/// `INTRALINE_WINDOW` after the last paired one, if that add differs from it
+/// by at most `INTRALINE_MAX_CHANGE` — so a line written above the edited
+/// one is stepped over rather than paired by position. One entry
+/// per line of `lines`: `None` keeps the whole-line treatment (context, an
+/// unpaired line, a pair past the caps), `Some` holds byte ranges of `text`
+/// that changed — empty on the side of a pure insertion or deletion, which
+/// is still a paired line.
+pub fn intraline(lines: &[HunkLine]) -> Vec<Option<Marks>> {
+    let mut out = vec![None; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].sign != Sign::Del {
+            i += 1;
+            continue;
+        }
+        let dels = i;
+        while i < lines.len() && lines[i].sign == Sign::Del {
+            i += 1;
+        }
+        let adds = i;
+        while i < lines.len() && lines[i].sign == Sign::Add {
+            i += 1;
+        }
+        // Each line is cut into words once; a delete weighs up to
+        // `INTRALINE_WINDOW` adds and an add is weighed by as many deletes.
+        let side: Vec<Option<Words>> = lines[dels..i].iter().map(|l| Words::of(&l.text)).collect();
+        let mut next = adds;
+        for d in dels..adds {
+            let Some(old) = &side[d - dels] else { continue };
+            let best = (next..i.min(next + INTRALINE_WINDOW))
+                .filter_map(|a| {
+                    let new = side[a - dels].as_ref()?;
+                    word_diff(old, new).map(|p| (a, p))
+                })
+                .min_by(|(_, x), (_, y)| x.0.total_cmp(&y.0));
+            if let Some((a, (_, old, new))) = best {
+                out[d] = Some(old);
+                out[a] = Some(new);
+                next = a + 1;
+            }
+        }
+    }
+    out
+}
+
+/// One side of a pair, cut into words.
+struct Words<'a> {
+    text: &'a str,
+    /// Byte ranges of `text`, in order.
+    spans: Vec<Range<usize>>,
+    words: Vec<&'a str>,
+    /// `words` sorted, for the bound in `word_diff`.
+    sorted: Vec<&'a str>,
+    /// Bytes of leading whitespace. Indentation makes no two lines alike, so
+    /// the ratio is over the content after it: two unrelated lines at one
+    /// depth would otherwise pair.
+    indent: usize,
+}
+
+impl<'a> Words<'a> {
+    /// `None` past `INTRALINE_MAX_BYTES`.
+    fn of(text: &'a str) -> Option<Self> {
+        if text.len() > INTRALINE_MAX_BYTES {
+            return None;
+        }
+        let spans = tokens(text);
+        let words: Vec<&str> = spans.iter().map(|r| &text[r.clone()]).collect();
+        let mut sorted = words.clone();
+        sorted.sort_unstable();
+        Some(Words { text, spans, words, sorted, indent: text.len() - text.trim_start().len() })
+    }
+
+    fn content(&self) -> usize {
+        self.text.len() - self.indent
+    }
+
+    /// Bytes of `marks` past the indentation.
+    fn changed(&self, marks: &[Range<usize>]) -> usize {
+        marks.iter().map(|r| r.end.max(self.indent) - r.start.max(self.indent)).sum()
+    }
+}
+
+/// One pair's share of changed content and its changed byte ranges, or
+/// `None` past the ratio.
+fn word_diff(old: &Words, new: &Words) -> Option<(f64, Marks, Marks)> {
+    let content = old.content() + new.content();
+    if content == 0 {
+        return None;
+    }
+    // A bound before the diff: only a word both sides hold can come out
+    // equal, so a pair sharing too few bytes of them cannot pass the ratio
+    // whatever Myers finds. On a block rewritten wholesale — where nothing
+    // pairs and each delete tries `INTRALINE_WINDOW` adds — this is most of
+    // the work saved.
+    let (mut x, mut y, mut common) = (0, 0, 0);
+    while x < old.sorted.len() && y < new.sorted.len() {
+        match old.sorted[x].cmp(new.sorted[y]) {
+            std::cmp::Ordering::Less => x += 1,
+            std::cmp::Ordering::Greater => y += 1,
+            std::cmp::Ordering::Equal => {
+                common += old.sorted[x].len();
+                x += 1;
+                y += 1;
+            }
+        }
+    }
+    if content.saturating_sub(2 * common) as f64 > INTRALINE_MAX_CHANGE * content as f64 {
+        return None;
+    }
+    let mut om = Vec::new();
+    let mut nm = Vec::new();
+    for op in similar::capture_diff_slices(similar::Algorithm::Myers, &old.words, &new.words) {
+        if let similar::DiffOp::Equal { .. } = op {
+            continue;
+        }
+        let (o, n) = (op.old_range(), op.new_range());
+        if !o.is_empty() {
+            om.push(old.spans[o.start].start..old.spans[o.end - 1].end);
+        }
+        if !n.is_empty() {
+            nm.push(new.spans[n.start].start..new.spans[n.end - 1].end);
+        }
+    }
+    let (om, nm) = (merge_gaps(old.text, om), merge_gaps(new.text, nm));
+    let change = (old.changed(&om) + new.changed(&nm)) as f64 / content as f64;
+    (change <= INTRALINE_MAX_CHANGE).then_some((change, om, nm))
+}
+
+/// A line cut where a reader's eye cuts it: a run of word characters, a run
+/// of whitespace, or one character of anything else — so `get(code)` →
+/// `get(code, v)` marks `, v` and not the whole call.
+fn tokens(s: &str) -> Vec<Range<usize>> {
+    let class = |c: char| {
+        if c.is_alphanumeric() || c == '_' {
+            1
+        } else if c.is_whitespace() {
+            2
+        } else {
+            0
+        }
+    };
+    let mut out: Vec<Range<usize>> = Vec::new();
+    let mut prev = None;
+    for (at, c) in s.char_indices() {
+        let k = class(c);
+        match out.last_mut() {
+            Some(r) if k != 0 && prev == Some(k) => r.end = at + c.len_utf8(),
+            _ => out.push(at..at + c.len_utf8()),
+        }
+        prev = Some(k);
+    }
+    out
+}
+
+/// Two marks with only whitespace between them read as one change, so they
+/// are drawn as one: `a b` → `c d` marks `c d`, not `c`, a gap, and `d`.
+fn merge_gaps(s: &str, marks: Marks) -> Marks {
+    let mut out: Marks = Vec::with_capacity(marks.len());
+    for m in marks {
+        match out.last_mut() {
+            Some(last) if s[last.end..m.start].chars().all(char::is_whitespace) => last.end = m.end,
+            _ => out.push(m),
+        }
+    }
+    out
+}
+
 /// Fold numstat counts into the raw-z entries (keyed by destination path).
 pub fn merge_numstat(files: &mut [FileEntry], numstat: &[(String, Option<(u32, u32)>)]) {
     for f in files.iter_mut() {
@@ -705,6 +894,96 @@ mod tests {
         let fd = build_file_diff(&entry("M", "100644", "100644"), patch, 1024);
         assert_eq!(fd.render, Render::Text);
         assert_eq!(fd.hunks.len(), 1);
+    }
+
+    fn hunk(lines: &[(Sign, &str)]) -> Vec<HunkLine> {
+        lines
+            .iter()
+            .map(|(sign, text)| HunkLine {
+                sign: *sign,
+                old_ln: None,
+                new_ln: None,
+                text: text.to_string(),
+            })
+            .collect()
+    }
+
+    /// The marked text of every line, for assertions a reader can check.
+    fn marked(lines: &[HunkLine]) -> Vec<Option<Vec<String>>> {
+        intraline(lines)
+            .into_iter()
+            .zip(lines)
+            .map(|(m, l)| m.map(|m| m.into_iter().map(|r| l.text[r].to_string()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn intraline_marks_the_changed_words_of_a_pair() {
+        let lines = hunk(&[
+            (Sign::Del, "  const t = await exchange(code)"),
+            (Sign::Add, "  const t = await exchange(code, verifier)"),
+        ]);
+        assert_eq!(marked(&lines), vec![Some(vec![]), Some(vec![", verifier".to_string()])]);
+        let lines =
+            hunk(&[(Sign::Del, "let n = d.files.len();"), (Sign::Add, "let n = d.rows.len();")]);
+        assert_eq!(marked(&lines), vec![Some(vec!["files".into()]), Some(vec!["rows".into()])]);
+    }
+
+    /// delta's pairing, not a positional one: a line written above the edited
+    /// one is skipped over and stays unpaired.
+    #[test]
+    fn intraline_pairs_across_an_inserted_line() {
+        let lines = hunk(&[
+            (Sign::Ctx, "  let code = get();"),
+            (Sign::Del, "  let t = exchange(code);"),
+            (Sign::Add, "  let verifier = store.take(state);"),
+            (Sign::Add, "  let t = exchange(code, verifier);"),
+            (Sign::Ctx, "  persist(t)"),
+            (Sign::Add, "  metrics.ok();"),
+        ]);
+        let m = marked(&lines);
+        assert_eq!(m[0], None, "context is never marked");
+        assert_eq!(m[1], Some(vec![]));
+        assert_eq!(m[2], None, "the inserted line keeps the whole-line treatment");
+        assert_eq!(m[3], Some(vec![", verifier".to_string()]));
+        assert_eq!(m[5], None, "an add with no delete before it is unpaired");
+    }
+
+    #[test]
+    fn intraline_leaves_a_rewritten_line_whole() {
+        let lines = hunk(&[(Sign::Del, "    let a = foo();"), (Sign::Add, "    return None;")]);
+        assert_eq!(marked(&lines), vec![None, None]);
+        // Shared indentation is not likeness: this pair differs in all of
+        // its content, and would pass the ratio if the indent counted.
+        let lines = hunk(&[(Sign::Del, "            }"), (Sign::Add, "            return x;")]);
+        assert_eq!(marked(&lines), vec![None, None]);
+    }
+
+    #[test]
+    fn intraline_skips_a_line_past_the_byte_cap() {
+        let long = format!("let x = \"{}\";", "a".repeat(INTRALINE_MAX_BYTES));
+        let edited = long.replace("let x", "let y");
+        let lines = hunk(&[(Sign::Del, &long), (Sign::Add, &edited)]);
+        assert_eq!(marked(&lines), vec![None, None]);
+    }
+
+    #[test]
+    fn intraline_joins_marks_across_whitespace_and_keeps_char_boundaries() {
+        let lines =
+            hunk(&[(Sign::Del, "call(alpha beta, x)"), (Sign::Add, "call(gamma delta, x)")]);
+        assert_eq!(
+            marked(&lines),
+            vec![Some(vec!["alpha beta".into()]), Some(vec!["gamma delta".into()])]
+        );
+        let lines = hunk(&[(Sign::Del, "let שם = \"א\";"), (Sign::Add, "let שם = \"ב\";")]);
+        assert_eq!(marked(&lines), vec![Some(vec!["א".into()]), Some(vec!["ב".into()])]);
+    }
+
+    /// A CRLF → LF rewrite is exactly the edit the eye cannot find.
+    #[test]
+    fn intraline_marks_a_carriage_return() {
+        let lines = hunk(&[(Sign::Del, "fn main() {}\r"), (Sign::Add, "fn main() {}")]);
+        assert_eq!(marked(&lines), vec![Some(vec!["\r".into()]), Some(vec![])]);
     }
 
     #[test]

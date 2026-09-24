@@ -4464,6 +4464,86 @@ fn diff_registers_hold(flavor: Flavor) {
     assert_eq!(buf[(118u16, 3u16)].bg, band_bg, "{flavor:?} top band spans the width");
 }
 
+/// T-454: a paired line marks its changed words — bold on the line's
+/// ground a step stronger in truecolor, bold alone on the indexed cube —
+/// and its other words drop to regular weight; an unpaired line changed
+/// whole and has no strong cell anywhere.
+#[test]
+fn test_diff_marks_the_changed_words() {
+    use mesimon_core::diff::{FileDiff, Hunk, HunkLine, Render, Sign};
+    let line =
+        |sign, text: &str| HunkLine { sign, old_ln: Some(1), new_ln: Some(1), text: text.into() };
+    let fd = FileDiff {
+        path: "src/auth/callback.ts".into(),
+        old_path: None,
+        render: Render::Text,
+        hunks: vec![Hunk {
+            old_start: 1,
+            old_len: 5,
+            new_start: 1,
+            new_len: 5,
+            header: String::new(),
+            lines: vec![
+                line(Sign::Ctx, "fn persist(token: Token) {"),
+                line(Sign::Del, "    let enc = seal(token);"),
+                line(Sign::Add, "    let enc = seal_v2(token, &key);"),
+                line(Sign::Add, "    metrics.increment('persist');"),
+                line(Sign::Ctx, "    store(enc);"),
+                line(Sign::Del, "    audit(token);"),
+                line(Sign::Ctx, "}"),
+            ],
+        }],
+    };
+    let bold = |c: &ratatui::buffer::Cell| c.modifier.contains(Modifier::BOLD);
+    for flavor in Flavor::ALL {
+        for profile in [Profile::TrueColor, Profile::Ansi256] {
+            let theme = Theme::new(flavor, profile);
+            let mut app = App::for_test(fixture(false), Theme::new(flavor, profile));
+            install_diff(&mut app);
+            let d = app.diff.as_mut().expect("installed");
+            d.cache.insert(fd.path.clone(), std::rc::Rc::new(fd.clone()));
+            let buf = cells(&app, 120, 30);
+            let lines = render(&app, 120, 30);
+            let row =
+                |needle: &str| lines.iter().position(|l| l.contains(needle)).expect(needle) as u16;
+            let at = |y: u16, needle: &str| {
+                let l = &lines[y as usize];
+                let ix = l.find(needle).expect(needle);
+                &buf[(l[..ix].chars().count() as u16, y)]
+            };
+            let (del, add) = (row("seal(token)"), row("seal_v2"));
+            let tag = format!("{flavor:?}/{profile:?}");
+            for (y, changed, same, hi, ground) in [
+                (del, "seal(", "enc", theme.diff_del_hi(), theme.diff_del_bg()),
+                (add, "seal_v2", "enc", theme.diff_add_hi(), theme.diff_add_bg()),
+            ] {
+                let (c, s) = (at(y, changed), at(y, same));
+                assert!(bold(c), "{tag}: the changed word {changed:?} is bold");
+                assert!(!bold(s), "{tag}: the unchanged word {same:?} drops to regular");
+                if let (Some(hi), Some(ground)) = (hi, ground) {
+                    assert_eq!(c.bg, hi, "{tag}: {changed:?} sits on the strong ground");
+                    assert_eq!(s.bg, ground, "{tag}: {same:?} keeps the line's ground");
+                }
+            }
+            assert!(bold(at(add, ", &key")), "{tag}: an inserted clause is marked too");
+            // The unpaired lines are drawn as before: the add is bold end to
+            // end, the del regular, and neither holds a strong ground.
+            let (metrics, audit) = (row("metrics.increment"), row("audit(token)"));
+            assert!(bold(at(metrics, "metrics")) && bold(at(metrics, "persist'")), "{tag}");
+            assert!(!bold(at(audit, "audit")), "{tag}: an unpaired del stays regular");
+            for y in [metrics, audit, row("store(enc)")] {
+                for x in 0..120u16 {
+                    let bg = Some(buf[(x, y)].bg);
+                    assert!(
+                        bg != theme.diff_add_hi() && bg != theme.diff_del_hi(),
+                        "{tag}: row {y} col {x} holds a strong ground off a pair"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The diff footer mirrors the ticket rule: a status outranks the hints.
 #[test]
 fn test_diff_footer_shows_status() {

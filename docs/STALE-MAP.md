@@ -13609,3 +13609,41 @@ every state maps; no two states open on the same face except the two waits; ever
 but the exited body moves; the installer and icon goldens),
 `the_shin_acts_out_every_agent_state`, `the_companion_stands_beside_a_reply_on_a_wide_zone`,
 and the reminted ticket-page goldens.
+
+## The diff viewer marks the changed words of an edited line (T-454, 2026-09-24)
+
+**Shipped.** The intraline emphasis M4b dogfood round 1 deferred. `core::diff::intraline`
+pairs the lines of a change block (a run of deletes, then a run of adds) and word-diffs each
+pair with `similar` (Myers over tokens: a word run, a whitespace run, or one other
+character; marks with only whitespace between them join). A paired line's text drops to its
+register's regular weight and the changed words are bold on `Theme::diff_add_hi` /
+`diff_del_hi` in truecolor, bold alone below it. An unpaired line is drawn as before. The
+adds losing their bold on a paired line is the new part: an add was already bold end to end,
+so bold could not mark a word on the indexed profiles.
+
+**Pairing is by likeness, not position.** The brief said "paired positionally"; that pairs a
+line written above the edited one with the deleted line (the diff fixture's own shape: a new
+`verifier` line, then the edited `exchange` call). delta pairs by similarity, and so does
+this: each delete takes the most similar of the next four adds after the last pair, if at
+most 60% of the pair's content changed. Content is what follows the indentation, or two
+unrelated lines at one depth pair. 60% is delta's `max-line-distance`; the brief's ~70% paired
+`let base8 = d.base_oid;` with `let against = "uncommitted";` and lit every word but `let`.
+A side over 2 KiB is not diffed.
+
+**Colour.** `TrueColor::diff_hi`, hand-set per palette: each line tint 9 L* further from a
+dark page (7 from a light one), on its own hue, chroma ×1.3 (×1 on the navy). The chroma
+law's `assert_diff_hi` holds every flavor to it: within 5° of the line's hue, at least 5 L*
+past it, the register at least 3.5:1 on it, and C* at least 12 under `attn`.
+`attn_is_its_own_colour` lists both.
+
+**Where it runs.** In the TUI, when a file is laid out (`ui::diff::cached_body`), not in the
+daemon: no wire field, so no skew with a daemon still running old code. The marks are kept on
+`Body`, so a resize does not diff again. Measured in release on a 20,000-line block: 26 ms
+rewritten wholesale (a shared-token bound turns a pair down before Myers runs), 74 ms where
+every line pairs. `similar` 3 is taken with default features off and brings nothing else in.
+
+**Tests.** Core: the six `intraline_*` tests (the pair, the step over an inserted line, a
+rewrite left whole, the byte cap, whitespace joins and char boundaries, a `\r`). TUI:
+`marks_follow_their_bytes_into_cells` (a tab, a `^M`, a wrap) and
+`test_diff_marks_the_changed_words` (every flavor at truecolor and 256). The diff goldens
+did not change: they are text, and the text is the same.

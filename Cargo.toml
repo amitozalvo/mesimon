@@ -51,6 +51,10 @@ unicode-segmentation = "1"
 # transitive dependency the tree did not already carry (memchr,
 # unicode-segmentation).
 nucleo-matcher = "0.3"
+# T-454: the diff viewer's intraline marks. Myers over a token slice, the
+# `capture_diff_slices` road only — the text layer is off, so it compiles
+# no transitive dependency at all. Apache-2.0.
+similar = { version = "3", default-features = false, features = ["std"] }
 
 [workspace.lints.clippy]
 # D26: silent degradation is banned; unwraps in non-test code are review flags

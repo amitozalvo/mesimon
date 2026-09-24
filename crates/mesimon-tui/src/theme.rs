@@ -228,6 +228,11 @@ pub(crate) struct TrueColor {
     /// The diff pane's (add, del) line grounds; `None` where there is no
     /// second hue to blend toward.
     pub diff: Option<(u32, u32)>,
+    /// The grounds of the changed words on a paired line (T-454): each line
+    /// ground one step further from the page, on its own hue — 9 L* on a
+    /// dark ground, 7 on a light one, chroma ×1.3 (×1 on the navy, already
+    /// the most chromatic ground there is). Present exactly when `diff` is.
+    pub diff_hi: Option<(u32, u32)>,
     /// The tag ring. Every shipped palette has one — the phosphors were built
     /// without and the author asked for it back the same day ("it's simply
     /// amber / green"); the `Option` stays because a palette with no second
@@ -302,6 +307,7 @@ static GRAPHITE: Palette = Palette {
         dormant: 0x8C8880,
         cursor: 0xF1EFE9,
         diff: Some((0x1E2C28, 0x2E2127)),
+        diff_hi: Some((0x2D413B, 0x45333B)),
         tints: Some(Tints {
             // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
             // to this ground, gamut-mapped at fixed hue. No selection fade.
@@ -356,6 +362,7 @@ static CHALK: Palette = Palette {
         dormant: 0x5F6169,
         cursor: 0x1B1E23,
         diff: Some((0xDFEBE4, 0xF2E0E4)),
+        diff_hi: Some((0xC9D8CF, 0xE2CBD0)),
         tints: Some(Tints {
             // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
             // to this ground, gamut-mapped at fixed hue. No selection fade.
@@ -416,6 +423,7 @@ static BLUE: Palette = Palette {
         dormant: 0xB0AAA2,
         cursor: 0xFCF6ED,
         diff: Some((0x102695, 0x2E177D)),
+        diff_hi: Some((0x383AAE, 0x482C95)),
         tints: Some(Tints {
             // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
             // to this ground, gamut-mapped at fixed hue. No selection fade.
@@ -490,6 +498,7 @@ static AMBER: Palette = Palette {
         // 49° off the phosphor and dE 22 from the cursor surface, which is
         // what makes the delete flash a RED flash here.
         diff: Some((0x33280A, 0x4E1717)),
+        diff_hi: Some((0x4A3B14, 0x6F2324)),
         tints: Some(Tints {
             // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
             // to this ground, gamut-mapped at fixed hue. No selection fade.
@@ -559,6 +568,7 @@ static GREEN: Palette = Palette {
         // L* 84, C* 35.
         cursor: 0x9FE0AF,
         diff: Some((0x123A20, 0x4A171A)),
+        diff_hi: Some((0x19512D, 0x6A2428)),
         tints: Some(Tints {
             // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
             // to this ground, gamut-mapped at fixed hue. No selection fade.
@@ -629,6 +639,7 @@ static SOLARIZED: Palette = Palette {
         cursor: 0x073642,
         // The cream a step toward green and toward red.
         diff: Some((0xE9EBCB, 0xF6DDD3)),
+        diff_hi: Some((0xD5D8AF, 0xE7C8BB)),
         tints: Some(Tints {
             // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
             // to this ground, gamut-mapped at fixed hue. No selection fade.
@@ -890,6 +901,25 @@ impl Theme {
             return None;
         }
         self.flavor.palette().truecolor.diff.map(|(a, d)| (hex(a), hex(d)))
+    }
+
+    /// The changed words of a paired diff line (T-454) sit on their line's
+    /// ground one step stronger, in bold. Value and weight only — the same
+    /// hue as the line, and nothing that rivals `attn` (`test_chroma_law`).
+    /// TrueColor only, like the line grounds; below it the bold is the mark.
+    pub fn diff_add_hi(&self) -> Option<Color> {
+        self.diff_hi().map(|(add, _)| add)
+    }
+
+    pub fn diff_del_hi(&self) -> Option<Color> {
+        self.diff_hi().map(|(_, del)| del)
+    }
+
+    fn diff_hi(&self) -> Option<(Color, Color)> {
+        if self.profile != Profile::TrueColor {
+            return None;
+        }
+        self.flavor.palette().truecolor.diff_hi.map(|(a, d)| (hex(a), hex(d)))
     }
 
     /// The surface a transcript's code sits on. There is exactly ONE
@@ -1381,6 +1411,8 @@ mod tests {
     /// rung is under C* 16 and ≥ 90° of hue from the paper, the register
     /// budget holds, the diff tints are a step down from the paper, and the
     /// fade target is the paper itself (measured: the ring drifts ≤ 20°).
+    /// Every kind: the changed-word tints are their lines' tints a step
+    /// stronger (`assert_diff_hi`).
     #[test]
     fn test_chroma_law() {
         for f in Flavor::ALL {
@@ -1581,6 +1613,36 @@ mod tests {
                     assert_eq!(t.shadow, t.bg, "{f:?}: tinted paper fades into its own ground");
                 }
             }
+            assert_diff_hi(f);
+        }
+    }
+
+    /// Every kind, one clause (T-454): a changed word's ground is its line's
+    /// ground one visible step further from the page on the line's own hue
+    /// — value, not a new colour — its register stays legible on it in
+    /// bold, and it sits a register-budget margin under `attn` in chroma, so
+    /// the Diff screen spends nothing saturated.
+    fn assert_diff_hi(f: Flavor) {
+        let t = tc(f);
+        assert_eq!(t.diff.is_some(), t.diff_hi.is_some(), "{f:?}: hi tints without line tints");
+        let (Some((add, del)), Some((add_hi, del_hi))) = (t.diff, t.diff_hi) else { return };
+        let (lb, _) = lch(t.bg);
+        let (_, ca) = lch(t.attn);
+        for (name, line, hi, reg) in [("add", add, add_hi, t.calm), ("del", del, del_hi, t.err)] {
+            let gap = hue_gap(hi, line);
+            assert!(gap <= 5.0, "{f:?}: the {name} hi tint is {gap:.1}° off its line");
+            let ((ll, _), (lh, ch)) = (lch(line), lch(hi));
+            let step = match f.ground() {
+                Ground::Dark => lh - ll,
+                Ground::Light => ll - lh,
+            };
+            assert!(
+                step >= 5.0 && (lh - lb).abs() > (ll - lb).abs(),
+                "{f:?}: the {name} hi tint L* {lh:.1} is not a step past its line's {ll:.1}"
+            );
+            let c = contrast(reg, hi);
+            assert!(c >= 3.5, "{f:?}: the {name} register is {c:.2}:1 on its hi tint");
+            assert!(ca - ch >= 12.0, "{f:?}: the {name} hi tint C* {ch:.1} rivals attn C* {ca:.1}");
         }
     }
 
@@ -1732,6 +1794,8 @@ mod tests {
                 others.extend(t.selected_bg);
                 others.extend(t.diff_add_bg());
                 others.extend(t.diff_del_bg());
+                others.extend(t.diff_add_hi());
+                others.extend(t.diff_del_hi());
                 others.extend((0..PIPS).map(|n| t.pip(n)));
                 assert!(!others.contains(&t.attn), "{f:?}/{p:?}: attn {:?} is spent twice", t.attn);
             }

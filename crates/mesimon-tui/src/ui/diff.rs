@@ -6,9 +6,10 @@
 //! registers (muted green/red; author 2026-08-30 amendment) plus glyph AND
 //! weight, so review still reads correctly in mono.
 
+use std::ops::Range;
 use std::rc::Rc;
 
-use mesimon_core::diff::{FileDiff, Render, Sign};
+use mesimon_core::diff::{self, FileDiff, Marks, Render, Sign};
 use mesimon_core::keymap::{self, Scope, Verb};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -436,6 +437,9 @@ pub(crate) struct Body {
     file: Rc<FileDiff>,
     width: usize,
     flavor: Flavor,
+    /// `diff::intraline` of each hunk. It is the file's and not the
+    /// width's, so a resize lays the rows out again without diffing again.
+    marks: Rc<Vec<Vec<Option<Marks>>>>,
     rows: Vec<Line<'static>>,
 }
 
@@ -447,18 +451,28 @@ pub(crate) struct Body {
 /// PREVIEW zone's `ticket::rendered`.
 fn cached_body(d: &DiffState, fd: &Rc<FileDiff>, width: usize, theme: &Theme) -> Rc<Body> {
     let mut slot = d.body.borrow_mut();
-    if let Some(b) = slot.as_ref() {
-        if Rc::ptr_eq(&b.file, fd) && b.width == width && b.flavor == theme.flavor {
-            return Rc::clone(b);
+    let marks = match slot.as_ref() {
+        Some(b) if Rc::ptr_eq(&b.file, fd) => {
+            if b.width == width && b.flavor == theme.flavor {
+                return Rc::clone(b);
+            }
+            Rc::clone(&b.marks)
         }
-    }
-    let rows = body_rows(fd, d.is_branch(), width, theme);
-    let b = Rc::new(Body { file: Rc::clone(fd), width, flavor: theme.flavor, rows });
+        _ => Rc::new(fd.hunks.iter().map(|h| diff::intraline(&h.lines)).collect()),
+    };
+    let rows = body_rows(fd, &marks, d.is_branch(), width, theme);
+    let b = Rc::new(Body { file: Rc::clone(fd), width, flavor: theme.flavor, marks, rows });
     *slot = Some(Rc::clone(&b));
     b
 }
 
-fn body_rows(fd: &FileDiff, branch: bool, w: usize, theme: &Theme) -> Vec<Line<'static>> {
+fn body_rows(
+    fd: &FileDiff,
+    marks: &[Vec<Option<Marks>>],
+    branch: bool,
+    w: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     // Body content by render kind — the exhaustive enum (a skipped case is a
     // day-one panic, docs/08 §1.3).
     let mut body: Vec<Line<'static>> = Vec::new();
@@ -478,7 +492,7 @@ fn body_rows(fd: &FileDiff, branch: bool, w: usize, theme: &Theme) -> Vec<Line<'
             let tier = theme.glyph_tier();
             let cont = if tier == Tier::Ascii { '>' } else { '↳' };
             let code_w = w.saturating_sub(9).max(8);
-            for h in &fd.hunks {
+            for (h, marks) in fd.hunks.iter().zip(marks) {
                 // Hunk header: a painted band row, never a drawn rule (L1).
                 // A Line's style covers only its text cells, so the band (and
                 // every tinted row below) pads to the pane width by hand.
@@ -494,38 +508,70 @@ fn body_rows(fd: &FileDiff, branch: bool, w: usize, theme: &Theme) -> Vec<Line<'
                     Line::from(Span::styled(pad_to(truncate(&band_text, w), w), theme.dim1()))
                         .style(band_style),
                 );
-                for l in &h.lines {
+                for (l, marks) in h.lines.iter().zip(marks) {
                     // Adds/deletes in colour (author 2026-08-30, amending the
                     // grey-ramp-only rule): the calm/err registers — muted
                     // green/red, theme- and profile-aware — never raw RGB.
                     // Full-line grounds ride the diff tints where the profile
                     // has them (a Line's style paints the whole row, the
                     // band-row precedent). Glyph + weight stay for mono.
-                    let (sign, num, style, line_bg) = match l.sign {
-                        Sign::Ctx => (' ', l.new_ln, theme.dim2(), None),
+                    let (sign, num, style, line_bg, hi_bg) = match l.sign {
+                        Sign::Ctx => (' ', l.new_ln, theme.dim2(), None, None),
                         Sign::Add => (
                             '+',
                             l.new_ln,
                             theme.calm_text().add_modifier(Modifier::BOLD),
                             theme.diff_add_bg(),
+                            theme.diff_add_hi(),
                         ),
-                        Sign::Del => ('-', l.old_ln, theme.err_text(), theme.diff_del_bg()),
+                        Sign::Del => (
+                            '-',
+                            l.old_ln,
+                            theme.err_text(),
+                            theme.diff_del_bg(),
+                            theme.diff_del_hi(),
+                        ),
+                    };
+                    // A paired line (T-454) says where it changed: its words
+                    // drop to the register's regular weight and the changed
+                    // ones are bold on the line's ground a step stronger —
+                    // bold alone where the profile has no quiet tint. An
+                    // unpaired line changed whole and keeps the line's style.
+                    let (text_style, mark_style) = match marks {
+                        Some(_) => {
+                            let plain = style.remove_modifier(Modifier::BOLD);
+                            let strong = plain.add_modifier(Modifier::BOLD);
+                            (plain, hi_bg.map_or(strong, |bg| strong.bg(bg)))
+                        }
+                        None => (style, style),
                     };
                     let num = num.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
-                    for (j, seg) in wrap_code(&l.text, code_w).into_iter().enumerate() {
-                        let row = if j == 0 {
-                            format!("{sign} {num}  {seg}")
+                    let rows = wrap_code(&l.text, code_w, marks.as_deref().unwrap_or_default());
+                    for (j, runs) in rows.into_iter().enumerate() {
+                        let gutter = if j == 0 {
+                            format!("{sign} {num}  ")
                         } else {
                             // Continuation: gutter marker, blank number
-                            // column, and the seg's own 2-space indent — the
+                            // column, and the row's own 2-space indent — the
                             // prefix must stay 9 cols like "X 12345  " or the
                             // row overflows the pane (docs/08 §1.3).
-                            format!("{cont}        {seg}")
+                            format!("{cont}        ")
                         };
+                        let mut used = gutter.width();
+                        let mut spans = vec![Span::styled(gutter, style)];
+                        for (run, marked) in runs {
+                            used += run.width();
+                            spans.push(Span::styled(
+                                run,
+                                if marked { mark_style } else { text_style },
+                            ));
+                        }
                         let line = match line_bg {
-                            Some(bg) => Line::from(Span::styled(pad_to(row, w), style))
-                                .style(Style::default().bg(bg)),
-                            None => Line::from(Span::styled(row, style)),
+                            Some(bg) => {
+                                spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+                                Line::from(spans).style(Style::default().bg(bg))
+                            }
+                            None => Line::from(spans),
                         };
                         body.push(line);
                     }
@@ -619,60 +665,80 @@ fn pad_to(mut s: String, width: usize) -> String {
 /// Soft-wrap one code line to `width` columns — long lines wrap, never
 /// truncate (a truncated line is how you miss the thing you were reviewing).
 /// Tabs expand at 8; a `\r` renders as a visible `^M` (a CRLF-vs-LF rewrite
-/// must not be invisible). Continuations carry a 2-space indent.
-pub(crate) fn wrap_code(text: &str, width: usize) -> Vec<String> {
+/// must not be invisible). Continuations carry a 2-space indent. Each row
+/// comes back as runs, each saying whether its cells fall inside `marks` —
+/// byte ranges of `text`, `diff::intraline`'s — so a changed word keeps its
+/// mark across a tab, a `^M` and a wrap.
+pub(crate) fn wrap_code(
+    text: &str,
+    width: usize,
+    marks: &[Range<usize>],
+) -> Vec<Vec<(String, bool)>> {
     let width = width.max(4);
     // Expand tabs / make \r visible first, so wrapping sees real cells.
-    let mut expanded = String::new();
+    let mut expanded: Vec<(char, bool)> = Vec::new();
     let mut col = 0usize;
-    for ch in text.chars() {
+    for (at, ch) in text.char_indices() {
+        let marked = marks.iter().any(|m| m.contains(&at));
         match ch {
             '\t' => {
                 let next = (col / TAB_W + 1) * TAB_W;
                 for _ in col..next {
-                    expanded.push(' ');
+                    expanded.push((' ', marked));
                 }
                 col = next;
             }
             '\r' => {
-                expanded.push_str("^M");
+                expanded.extend([('^', marked), ('M', marked)]);
                 col += 2;
             }
             c => {
-                expanded.push(c);
+                expanded.push((c, marked));
                 col += c.width().unwrap_or(0);
             }
         }
     }
-    let mut rows = Vec::new();
-    let mut row = String::new();
+    let mut rows: Vec<Vec<(char, bool)>> = Vec::new();
+    let mut row = Vec::new();
     let mut row_w = 0usize;
     let cont_budget = width.saturating_sub(2);
-    for c in expanded.chars() {
+    for (c, marked) in expanded {
         let cw = c.width().unwrap_or(0);
         let budget = if rows.is_empty() { width } else { cont_budget };
         if row_w + cw > budget && row_w > 0 {
             rows.push(std::mem::take(&mut row));
             row_w = 0;
         }
-        row.push(c);
+        row.push((c, marked));
         row_w += cw;
     }
     rows.push(row);
     let mut out = Vec::with_capacity(rows.len());
     for (i, r) in rows.into_iter().enumerate() {
-        if i == 0 {
-            out.push(r);
-        } else {
-            out.push(format!("  {r}"));
+        let mut runs: Vec<(String, bool)> = Vec::new();
+        if i > 0 {
+            runs.push(("  ".to_string(), false));
         }
+        for (c, marked) in r {
+            match runs.last_mut() {
+                Some((run, m)) if *m == marked => run.push(c),
+                _ => runs.push((c.to_string(), marked)),
+            }
+        }
+        out.push(runs);
     }
     out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_code;
+    /// The rows as text, marks dropped.
+    fn wrap_code(text: &str, width: usize) -> Vec<String> {
+        super::wrap_code(text, width, &[])
+            .into_iter()
+            .map(|runs| runs.into_iter().map(|(run, _)| run).collect())
+            .collect()
+    }
 
     #[test]
     fn preserves_indentation_and_wraps() {
@@ -701,5 +767,27 @@ mod tests {
     #[test]
     fn short_line_single_row() {
         assert_eq!(wrap_code("fn main() {}", 80), vec!["fn main() {}".to_string()]);
+    }
+
+    /// A mark is on bytes of the raw line and has to land on the cells they
+    /// became: a tab's eight spaces, a `\r`'s `^M`, the far side of a wrap.
+    #[test]
+    fn marks_follow_their_bytes_into_cells() {
+        let rows = super::wrap_code("\tab\r", 40, &[0..1, 3..4]);
+        assert_eq!(
+            rows,
+            vec![vec![
+                ("        ".to_string(), true),
+                ("ab".to_string(), false),
+                ("^M".to_string(), true)
+            ]]
+        );
+        let rows = super::wrap_code("aaaa bbbbbb", 6, &[0..1, 5..11]);
+        assert_eq!(
+            rows[0],
+            vec![("a".to_string(), true), ("aaa ".to_string(), false), ("b".to_string(), true)]
+        );
+        assert_eq!(rows[1], vec![("  ".to_string(), false), ("bbbb".to_string(), true)]);
+        assert_eq!(rows[2], vec![("  ".to_string(), false), ("b".to_string(), true)]);
     }
 }
