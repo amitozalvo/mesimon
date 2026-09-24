@@ -13527,3 +13527,17 @@ holds still, a move that landed does not shake), `delete_refused_over_an_unmerge
 `snooze_refuses_a_working_claude_before_it_arms`, and the workspace toggle's refusal test
 each assert `shake_dx` on the press. No new goldens: the motion is T-423's and
 `board_archive_refused_120x30` pins it.
+
+## A refused nudge leaves the cursor on the card (T-450, 2026-09-24, user: "rejected move with SHIFT+h/l should remain cursor on ticket ∙ currently moving to the target column as if move was successful")
+
+**Shipped.** `HJKL` (and the Alt atoms) carry the cursor with the card; `drop_ghost` set the
+cursor to the target cell after `send_on` whatever the daemon answered, so a move the DONE
+gate refused left the card home and the cursor in the next column, on another card or none.
+`drop_ghost` now asks with `req` itself: on a `Response::Err` it refuses (status + shake,
+T-448) and returns through `refresh`, whose ticket-follow (T-335) holds the cursor on the card
+where it still stands. It also stopped arming `.` before the answer — a refused move no longer
+replaces the last move that did land. `>` `>` and `.` were already right: both put the cursor
+back home after the drop regardless.
+
+**Test.** `refused_nudge_keeps_the_cursor_on_the_card`: a refused `L` keeps (col, row), the
+selection and the shake, arms no `.`, and an accepted `L` still carries the cursor.

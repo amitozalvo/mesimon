@@ -9133,7 +9133,8 @@ impl App {
     }
 
     /// Commit the MOVE ghost: reinsert `ticket` at (`col`, `idx`) and land the
-    /// cursor on it.
+    /// cursor on it. A refused move lands nothing (T-450): the card never
+    /// left, so the cursor stays on it and `.` is not armed with it.
     fn drop_ghost(
         &mut self,
         cols: &[String],
@@ -9155,10 +9156,17 @@ impl App {
         // `repeat_target` refuses to repeat one anyway (the card is already
         // there). Arming on it would leave `.` aimed at whichever column the
         // cursor happened to be standing in.
-        if self.board.ticket(ticket).is_some_and(|t| t.column != target_col) {
-            self.last_action = Some(LastAction::Move { column: target_col.clone() });
+        let filing = self.board.ticket(ticket).is_some_and(|t| t.column != target_col);
+        let command = Command::MoveTicket { id: ticket, column: target_col.clone(), before };
+        if let Response::Err { message } = self.req(command) {
+            // `refresh` holds the cursor on its ticket, which is still home.
+            self.refuse(ticket, message);
+            return self.refresh();
         }
-        self.send_on(ticket, Command::MoveTicket { id: ticket, column: target_col, before })?;
+        if filing {
+            self.last_action = Some(LastAction::Move { column: target_col });
+        }
+        self.refresh()?;
         self.cursor_col = col;
         self.cursor_row = Some(idx);
         Ok(())
@@ -17168,6 +17176,29 @@ mod tests {
         assert_eq!(app.status, "worktree unmerged — merge before DONE");
         assert_eq!(app.shake_dx(ulid::Ulid(1)), 1, "a refused move shakes the card (T-448)");
         assert!(app.animating(), "a shake wants the 16 ms frame");
+    }
+
+    /// T-450: a refused `H`/`L` leaves the cursor on the card, which never
+    /// left its column — it used to jump to the target as if the move landed.
+    #[test]
+    fn refused_nudge_keeps_the_cursor_on_the_card() {
+        let mut b = board_three_columns();
+        b.columns[1].name = "DONE".into();
+        b.tickets[1].workspace = Some(WorkspaceStrategy::Worktree);
+        let mut app = App::for_test(b, theme());
+        app.cursor_row = Some(1);
+        press(&mut app, 'L');
+        assert_eq!(app.board.ticket(ulid::Ulid(2)).unwrap().column, "todo");
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)));
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+        assert_eq!(app.status, "worktree unmerged — merge before DONE");
+        assert_eq!(app.shake_dx(ulid::Ulid(2)), 1, "a refused nudge shakes the card");
+        assert!(!app.ctx().can_repeat, "a refused move arms no `.`");
+        // The same key on a card the gate lets through still carries the cursor.
+        app.cursor_row = Some(0);
+        press(&mut app, 'L');
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)));
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
     }
 
     #[test]
