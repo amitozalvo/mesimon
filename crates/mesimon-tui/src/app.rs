@@ -1835,6 +1835,25 @@ impl App {
         self.refused = Some((ticket, Instant::now()));
     }
 
+    /// A verb pressed on `ticket` was refused (T-448): say why in the status
+    /// line and shake the card. Every card-scoped refusal that lands in the
+    /// status line goes through here — the board's own pre-checks and the
+    /// daemon's word alike — so a card says no the same way whatever said it.
+    /// A refusal that keeps a text field open or lands in a dialog does not:
+    /// those surfaces carry their own answer.
+    fn refuse(&mut self, ticket: ulid::Ulid, why: impl Into<String>) {
+        self.status = why.into();
+        self.shake(ticket);
+    }
+
+    /// `send`, for a command whose subject is a card: a refusal shakes it.
+    fn send_on(&mut self, ticket: ulid::Ulid, command: Command) -> Result<()> {
+        if let Response::Err { message } = self.req(command) {
+            self.refuse(ticket, message);
+        }
+        self.refresh()
+    }
+
     /// Is a refusal shake still running?
     fn shaking(&self) -> bool {
         self.refused.is_some_and(|(_, at)| at.elapsed() < SHAKE_STEP * SHAKE_OFFSETS.len() as u32)
@@ -3580,7 +3599,7 @@ impl App {
         // over one still working); the count is read off the board it judged.
         let awake = self.board.ticket_awake_sessions(id);
         match self.req(Command::SnoozeTicket { id, until, needs_you }) {
-            Response::Err { message } => self.status = message,
+            Response::Err { message } => self.refuse(id, message),
             _ => {
                 // Undo is the restore: an archive with a deadline is undone
                 // the way an archive is, and the restore cancels the deadline.
@@ -4551,7 +4570,7 @@ impl App {
                             self.select_ticket(id);
                             self.status = "ticket duplicated".into();
                         }
-                        Response::Err { message } => self.status = message,
+                        Response::Err { message } => self.refuse(id, message),
                         _ => {}
                     }
                 }
@@ -4760,7 +4779,7 @@ impl App {
                     // board cannot judge (a shell's children, a pin) is the
                     // Enter's to hear.
                     if let Some(why) = self.snooze_blocked(id) {
-                        self.status = why;
+                        self.refuse(id, why);
                     } else {
                         self.snooze_armed = Some((id, Preset::OneHour));
                         self.snooze_status();
@@ -4790,7 +4809,7 @@ impl App {
                     let on = !self.board.ticket(id).is_some_and(|t| t.manual_merge);
                     let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
                     match self.client.request(Command::SetManualMerge { id, on })? {
-                        Response::Err { message } => self.status = message,
+                        Response::Err { message } => self.refuse(id, message),
                         _ => {
                             self.refresh()?;
                             self.status = if on {
@@ -4808,7 +4827,7 @@ impl App {
                     let on = !self.board.is_crowned(id);
                     let cmd = if on { Command::CrownTicket { id } } else { Command::Uncrown };
                     match self.client.request(cmd)? {
-                        Response::Err { message } => self.status = message,
+                        Response::Err { message } => self.refuse(id, message),
                         _ => {
                             self.refresh()?;
                             self.status = if on {
@@ -4920,9 +4939,9 @@ impl App {
             }
             Verb::SendQueuedAsk => {
                 if let Some(ticket) = self.subject() {
-                    self.status = match self.req(Command::SendQueuedAsk { ticket }) {
-                        Response::Err { message } => message,
-                        _ => "queued prompt sent now".into(),
+                    match self.req(Command::SendQueuedAsk { ticket }) {
+                        Response::Err { message } => self.refuse(ticket, message),
+                        _ => self.status = "queued prompt sent now".into(),
                     };
                     self.refresh()?;
                 }
@@ -4935,7 +4954,7 @@ impl App {
                     let accept_plan = self.pending_of(ticket).is_some_and(|p| p.accept_plan);
                     let plan = self.pending_of(ticket).is_some_and(|p| p.plan);
                     match self.req(Command::TakeQueuedAsk { ticket }) {
-                        Response::Err { message } => self.status = message,
+                        Response::Err { message } => self.refuse(ticket, message),
                         Response::PromptTakenBack { text } => {
                             self.mode = Mode::Editor(self.ask_room(
                                 AskTarget::Ticket(ticket),
@@ -6996,18 +7015,24 @@ impl App {
             // through the drawer; only the rail stops showing it. Before
             // this, the press reached `SleepSession` and came back "only idle
             // sessions sleep", which is true and useless.
+            let ticket = self.board.sessions.iter().find(|s| s.id == sid).map(|s| s.ticket);
             if ctx.sel_dead {
                 let resp = self.req(Command::KillSession { id: sid });
-                self.status = match resp {
+                match resp {
                     // NOT "still in the drawer": the drawer is a transcript
                     // census, so a dismissed record only reappears there if
                     // it has one — which the no-transcript corpse, now the
                     // commonest kind reaching this key, does not. What IS
                     // unconditionally true is that dismissing touches the
                     // record and never Claude's own store.
-                    Response::Ok => "dismissed ∙ the conversation is untouched".into(),
-                    Response::Err { message } => message,
-                    _ => String::new(),
+                    Response::Ok => {
+                        self.status = "dismissed ∙ the conversation is untouched".into()
+                    }
+                    Response::Err { message } => match ticket {
+                        Some(t) => self.refuse(t, message),
+                        None => self.status = message,
+                    },
+                    _ => self.status = String::new(),
                 };
                 return self.refresh();
             }
@@ -7016,7 +7041,10 @@ impl App {
             } else {
                 Command::SleepSession { id: sid }
             };
-            return self.send(cmd);
+            return match ticket {
+                Some(t) => self.send_on(t, cmd),
+                None => self.send(cmd),
+            };
         }
         let Some(id) = self.subject() else {
             return Ok(());
@@ -7033,7 +7061,7 @@ impl App {
             .map(|s| s.id)
             .collect();
         if ids.is_empty() {
-            self.status = if wake { "nothing to wake".into() } else { "already asleep".into() };
+            self.refuse(id, if wake { "nothing to wake" } else { "already asleep" });
             return Ok(());
         }
         let n = ids.len();
@@ -7044,7 +7072,7 @@ impl App {
                 Command::SleepSession { id: sid }
             };
             if let Response::Err { message } = self.req(cmd) {
-                self.status = message;
+                self.refuse(id, message);
                 return self.refresh();
             }
         }
@@ -8512,7 +8540,7 @@ impl App {
         }
         let word = next.clone().unwrap_or_else(|| "none".into());
         if let Response::Err { message } = self.req(Command::SetTag { id, group, name: next }) {
-            self.status = message;
+            self.refuse(id, message);
         } else {
             self.status = format!("group {group} ∙ {word}");
             // Show the change where it will be read from now on. The status
@@ -8599,15 +8627,18 @@ impl App {
         // is a card (`m`'s shape) precisely so these can be said: the first
         // cut left the press silent and it read as a broken key.
         if self.board.sessions.iter().any(|s| s.ticket == ticket && s.state.has_pane()) {
-            self.status = format!("{key} has an agent running — its directory is where it is");
+            self.refuse(
+                ticket,
+                format!("{key} has an agent running — its directory is where it is"),
+            );
             return Ok(());
         }
         if self.wt_item(ticket).is_some() {
-            self.status = format!("{key} already has a worktree");
+            self.refuse(ticket, format!("{key} already has a worktree"));
             return Ok(());
         }
         let workspace = if worktree { None } else { Some(WorkspaceStrategy::Worktree) };
-        self.send(Command::SetWorkspace { id: ticket, workspace })?;
+        self.send_on(ticket, Command::SetWorkspace { id: ticket, workspace })?;
         // Only when the daemon took it: a refusal has already said why.
         if self
             .board
@@ -8766,9 +8797,11 @@ impl App {
                 if !w.branch.is_empty() && !w.merged {
                     // Name the two ways out in the keymap's own words, so this
                     // refusal cannot outlive the keys it teaches.
-                    self.status = "the branch is not merged ∙ m merges it ∙ d D deletes \
-                                   the ticket and discards the branch"
-                        .into();
+                    self.refuse(
+                        id,
+                        "the branch is not merged ∙ m merges it ∙ d D deletes the ticket and \
+                         discards the branch",
+                    );
                     return Ok(());
                 }
             }
@@ -8777,7 +8810,7 @@ impl App {
             self.to_board();
         }
         self.last_undo = Some(LastUndo::Delete);
-        self.send(Command::DeleteTicket { id, discard_worktree: discard })
+        self.send_on(id, Command::DeleteTicket { id, discard_worktree: discard })
     }
 
     /// The m state machine: stage derives from git state; the first press
@@ -9125,7 +9158,7 @@ impl App {
         if self.board.ticket(ticket).is_some_and(|t| t.column != target_col) {
             self.last_action = Some(LastAction::Move { column: target_col.clone() });
         }
-        self.send(Command::MoveTicket { id: ticket, column: target_col, before })?;
+        self.send_on(ticket, Command::MoveTicket { id: ticket, column: target_col, before })?;
         self.cursor_col = col;
         self.cursor_row = Some(idx);
         Ok(())
@@ -9235,10 +9268,10 @@ impl App {
                 // `now` they mean start it, which is the only way a queued
                 // start — whose field is empty by nature — jumps its queue.
                 if self.ticket_queued(ticket) && !(starts && !queued) {
-                    self.status = match self.req(Command::DropQueuedAsk { ticket }) {
-                        Response::Ok => "queued ask dropped".into(),
-                        Response::Err { message } => message,
-                        _ => String::new(),
+                    match self.req(Command::DropQueuedAsk { ticket }) {
+                        Response::Ok => self.status = "queued ask dropped".into(),
+                        Response::Err { message } => self.refuse(ticket, message),
+                        _ => self.status = String::new(),
                     };
                     self.refresh()?;
                     return Ok(());
@@ -9262,7 +9295,7 @@ impl App {
                 )?;
             }
             InputPurpose::Rename { id } => {
-                self.send(Command::RenameTicket { id, title })?;
+                self.send_on(id, Command::RenameTicket { id, title })?;
             }
             InputPurpose::RenameColumn { name } => {
                 if name != title {
@@ -9474,6 +9507,9 @@ impl App {
             Response::Err { message } => message,
             _ => String::new(),
         };
+        if refused {
+            self.shake(ticket);
+        }
         if let Some(on) = on_tier.filter(|_| !refused && !self.status.is_empty()) {
             self.status.push_str(&on);
         }
@@ -9544,13 +9580,15 @@ impl App {
         let word = keymap::AGENT_WORD;
         let cmd = Command::SpawnSession { ticket, kind, submit_prompt: true, plan };
         let mode = if plan { " in plan mode" } else { "" };
-        self.status = match self.req(cmd) {
-            Response::Spawned { .. } => format!("{word} started on the title{mode}"),
+        match self.req(cmd) {
+            Response::Spawned { .. } => self.status = format!("{word} started on the title{mode}"),
             // M4: the worktree is still being cut. The daemon replays the
             // parked spawn — submit flag and all — when it lands.
-            Response::Provisioning => format!("provisioning worktree ∙ {word} starts when ready"),
-            Response::Err { message } => message,
-            _ => String::new(),
+            Response::Provisioning => {
+                self.status = format!("provisioning worktree ∙ {word} starts when ready")
+            }
+            Response::Err { message } => self.refuse(ticket, message),
+            _ => self.status = String::new(),
         };
         let _ = self.refresh();
     }
@@ -9638,7 +9676,7 @@ impl App {
                 self.pending_spawn_focus = Some((ticket, kind));
                 self.refresh()?;
             }
-            Response::Err { message } => self.status = message,
+            Response::Err { message } => self.refuse(ticket, message),
             _ => self.refresh()?,
         }
         Ok(())
@@ -9685,7 +9723,7 @@ impl App {
                         // processes, inspection errors and other refusals
                         // revoke any stale acknowledgement from an earlier try.
                         self.resume_refused = resume_confirmation_offered(&message).then_some(sid);
-                        self.status = message;
+                        self.refuse(ticket, message);
                         self.refresh()?;
                         return Ok(());
                     }
@@ -12081,6 +12119,7 @@ mod tests {
         assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
         assert_eq!(app.board.tickets[0].workspace, None);
         assert_eq!(app.status, "T-1 has an agent running — its directory is where it is");
+        assert_eq!(app.shake_dx(ulid::Ulid(1)), 1, "a refused workspace toggle shakes (T-448)");
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
         app.status.clear();
         back(&mut app);
@@ -16942,6 +16981,7 @@ mod tests {
         assert_eq!(app.cursor_col, 0);
         assert!(app.board.column_tickets("todo").is_empty());
         assert_eq!(app.status, "moved to done");
+        assert_eq!(app.shake_dx(ulid::Ulid(1)), 0, "a move that landed does not shake");
     }
 
     /// A refused repeat reports the refusal, not the move. The daemon's DONE
@@ -16966,6 +17006,9 @@ mod tests {
         press(&mut app, '.');
         assert_eq!(app.board.ticket(ulid::Ulid(2)).unwrap().column, "todo");
         assert_eq!(app.status, "worktree unmerged — merge before DONE");
+        // And the card itself says no (T-448), the way a refused archive does.
+        assert_eq!(app.shake_dx(ulid::Ulid(2)), 1, "the refused card shakes");
+        assert_eq!(app.shake_dx(ulid::Ulid(1)), 0, "the card that moved holds still");
     }
 
     /// The other half: the key is inert AND unhinted where repeating means
@@ -17123,6 +17166,8 @@ mod tests {
         assert_eq!(app.cursor_col, 0);
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
         assert_eq!(app.status, "worktree unmerged — merge before DONE");
+        assert_eq!(app.shake_dx(ulid::Ulid(1)), 1, "a refused move shakes the card (T-448)");
+        assert!(app.animating(), "a shake wants the 16 ms frame");
     }
 
     #[test]
@@ -17269,6 +17314,34 @@ mod tests {
         assert_eq!(app.snooze_armed, None);
     }
 
+    /// `d d` on a ticket whose branch has not merged is refused by the
+    /// board's own gate, and the card says no the way a refused archive does
+    /// (T-448): the status names the ways out and the card shakes.
+    #[test]
+    fn delete_refused_over_an_unmerged_branch_shakes_the_card() {
+        let mut app = app_three_columns();
+        app.worktrees.push(WorktreeItem {
+            ticket: ulid::Ulid(1),
+            branch: "msmn/T-1-x".into(),
+            status: "attached".into(),
+            merged: false,
+            merged_in: String::new(),
+            merged_oid: String::new(),
+            conflict: false,
+            ahead: 2,
+            needs_rebase: false,
+            detail: None,
+            path: None,
+            repos: vec![],
+        });
+        press(&mut app, 'd');
+        press(&mut app, 'd');
+        assert!(app.board.ticket(ulid::Ulid(1)).is_some(), "the ticket stays");
+        assert!(app.status.starts_with("the branch is not merged"), "{}", app.status);
+        assert_eq!(app.shake_dx(ulid::Ulid(1)), 1, "the refused card shakes");
+        assert_eq!(app.shake_dx(ulid::Ulid(2)), 0, "bystanders hold still");
+    }
+
     /// A claude still working refuses the snooze at the FIRST press, in the
     /// daemon's words — the chord never arms for an Enter that would only be
     /// refused.
@@ -17278,6 +17351,7 @@ mod tests {
         press(&mut app, 'z');
         assert_eq!(app.snooze_armed, None);
         assert_eq!(app.status, "agent still awake — only idle sessions sleep");
+        assert_eq!(app.shake_dx(ulid::Ulid(1)), 1, "the first-press refusal shakes (T-448)");
     }
 
     /// An idle claude is put to sleep BY the snooze (user 2026-09-04:

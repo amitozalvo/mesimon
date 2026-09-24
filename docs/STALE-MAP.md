@@ -13471,3 +13471,35 @@ the tail no longer shows the dialog; with the hook road in place the lost-frame 
 `hooks::tests::pretooluse_maps_the_two_tools_and_starts_the_rest`,
 `plan_accept_e2e::a_refused_plan_clears_on_the_agents_next_tool_call` (through the real hook
 binary: a subagent's call leaves the dialog held, the lead's clears it, for both tools).
+
+## Every refused card verb shakes the card (T-448, 2026-09-24, user: "shake tickets when more actions are rejected ∙ already happens during archive rejection, map other rejections and lead them to shake. for example, move rejection")
+
+**Shipped.** T-423's shake was the archive's alone; every other refusal of a verb pressed on
+a card — the DONE gate refusing `>` `>` or `.`, `d d` over an unmerged branch, `z` over a
+working claude, Shift+Tab on a ticket with an agent running, `c` on a taken seat, `x` with
+nothing to wake, a refused resume, crown, manual-merge, tag cycle or queued-ask verb — landed
+in the status line only, a screen-width from the card the eye was on. They now shake the
+card too, the same motion, the same 360 ms.
+
+**The rule.** A verb pressed with a card as its subject, whose refusal goes to the status
+line, shakes that card — whether the board's own pre-check said no or the daemon did. A
+refusal that keeps a text field open (a tag rename, a note save) or lands in a dialog (the
+merge dialog's note) does not: that surface carries its own answer, and a shake behind it
+would be a second, contradictory gesture.
+
+**Mechanics.** Two helpers beside `App::shake` in `app.rs`: `App::refuse(ticket, why)` sets
+the status and shakes, and `App::send_on(ticket, command)` is `send` for a command whose
+subject is a card — a `Response::Err` goes through `refuse`. Every site above calls one of
+the two; `archive_gated` is unchanged. `send_on` takes the ticket explicitly rather than
+reading `Command::meta().subject`: that field is the activity feed's ("which ticket does the
+feed line name") and is deliberately `None` for `MoveTicket`, whose feed line `place_ticket`
+writes itself. A `PromptSession` refusal shakes through the `refused` flag it already
+computed. Nothing in `ui/` changed — the shake's drawing was T-423's, per card, and reads
+`shake_dx` for whichever card `refused` names.
+
+**Tests.** `refused_double_move_keeps_the_ticket_selected` and
+`a_refused_repeat_keeps_the_refusal_on_screen` (the refused card shakes, the one that moved
+holds still, a move that landed does not shake), `delete_refused_over_an_unmerged_branch_shakes_the_card`,
+`snooze_refuses_a_working_claude_before_it_arms`, and the workspace toggle's refusal test
+each assert `shake_dx` on the press. No new goldens: the motion is T-423's and
+`board_archive_refused_120x30` pins it.
