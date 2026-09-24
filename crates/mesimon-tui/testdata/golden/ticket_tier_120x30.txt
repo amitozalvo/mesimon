@@ -6,20 +6,20 @@
 
   PREVIEW                                                                                  SESSIONS                  0
 
-                                    ▄█▄                                                    + agent session
-                    ▄█▄    ▄▄▄     ▄███
-                    ▀██▄   ███    ▄███▀
-                     ▀███████████████▀
-                     ████  █████  ████
-                     ▀███▄▄█████▄▄███▀
-                       ▀▀█████████▀▀
+                    ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                       + agent session
+                     ▀▀▀▄▀█▀▀    ███
+                     ▄▀███▀▄▄▄▄▄▄▀█▀▄
+                   ▄▀████████████████▀▄
+                   ████▀████████▀██████
+                   ████▀▀▀██████▀▀▀████
+                   ▀▀▀█████▀▀▀▀█████▀▀▀
+                    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
 
     enter start agent
 
     starts on coder ∙ in the checkout
     types the ticket title into its box, and sends nothing
     another agent is already writing in this checkout
-
 
 
 

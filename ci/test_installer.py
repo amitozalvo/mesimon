@@ -92,7 +92,7 @@ case "$url" in *.sha256) cp "$FIXTURE_ASSET.sha256" "$out" ;; *) cp "$FIXTURE_AS
     def test_utf8_terminal_gets_the_resting_mascot_after_success(self):
         output = self.install()
         self.assertIn("mesimon is ready", output)
-        self.assertIn("█████▄▄██████▄▄█████", output)
+        self.assertIn("███████████▄▄███████████", output)
         self.assertLess(output.index("installed mesimon-test"), output.index("mesimon is ready"))
         self.assertIn("mesimon doctor", output)
         self.assertNotIn("\x1b", output)

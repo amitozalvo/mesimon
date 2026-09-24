@@ -1484,8 +1484,13 @@ pub struct App {
     /// hands out. Rebuilt by `reindex_columns` whenever `board` is
     /// replaced; a test that edits `board.columns` in place calls it too.
     columns_sorted: Vec<String>,
-    /// The compact shin's exact bounds, for the scoped block-glyph law.
-    pub mascot: std::cell::RefCell<Option<ratatui::layout::Rect>>,
+    /// Where the shin stood in the last frame and what it drew there, for
+    /// the scoped block-glyph law (T-451).
+    pub mascot: std::cell::RefCell<Option<crate::creature::Drawn>>,
+    /// The shin's own clock: what it is acting out (a hash of the subject
+    /// and the animation) and since when. Draw-side, like `spin_epoch`, so
+    /// the first frame of anything is frame 0 and the goldens stay stable.
+    pub creature_clock: Cell<Option<(u64, Instant)>>,
     /// Working-spinner clock: epoch of the first draw (draw-side state, so
     /// the first rendered frame is always frame 0 — goldens stay stable).
     pub spin_epoch: Cell<Option<std::time::Instant>>,
@@ -1740,6 +1745,7 @@ impl App {
             frame_ctx: std::cell::RefCell::new(None),
             columns_sorted,
             mascot: std::cell::RefCell::new(None),
+            creature_clock: Cell::new(None),
             spin_epoch: Cell::new(None),
             diff: None,
             releases: None,
@@ -1882,6 +1888,19 @@ impl App {
             Screen::Ticket { .. } => Some(&self.preview),
             Screen::Diff => self.diff.as_ref().map(|d| &d.pager),
             Screen::Releases => self.releases.as_ref().map(|r| &r.pager),
+        }
+    }
+
+    /// How long the shin has been acting out `key` (T-451). The clock
+    /// restarts whenever the subject or the animation changes, so a turn
+    /// that just ended hops now rather than somewhere mid-loop.
+    pub fn creature_ms(&self, key: u64) -> u64 {
+        match self.creature_clock.get() {
+            Some((k, at)) if k == key => at.elapsed().as_millis() as u64,
+            _ => {
+                self.creature_clock.set(Some((key, Instant::now())));
+                0
+            }
         }
     }
 

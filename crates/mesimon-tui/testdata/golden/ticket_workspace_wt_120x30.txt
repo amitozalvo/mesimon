@@ -6,18 +6,18 @@
 
 
   PREVIEW                                                                                  SESSIONS                  1
+    ▄▄▄         ▄▄▄
+    ▀▀█▀ ▄▀▀▀   ▀▀█▀                                                                      ✓ ✻ claude               >1y
+      ██▀█▀▀     ███   ✦                                                                   x sleep
+    ▄▀█████▀▀▀▀▀▀███▀▄
+  ✦█████▀████████▀████▀
+   ████▀█▀██████▀█▀████
+   █▀▀█████▀▀▀▀█████▀▀█
+   ▀▀▀██████▀▀██████▀▀▀
+      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀
 
-    done                                                                                  ✓ ✻ claude               >1y
-    it left no transcript                                                                  x sleep
-
-
-
-
-
-
-
-
-
+    done
+    it left no transcript
 
 
 

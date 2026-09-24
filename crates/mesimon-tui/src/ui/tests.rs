@@ -5405,7 +5405,7 @@ fn golden_ticket_new_claude_120() {
     golden("ticket_new_claude_120x30", &lines);
     // The zone the row sits beside is no longer blank (T-308): the mark, the
     // press in the keymap's own words, and what the session would be.
-    assert!(lines.iter().any(|l| l.contains("▀███████████████▀")), "the mark: {lines:?}");
+    assert!(app.mascot.borrow().is_some(), "the shin: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("starts in the checkout")), "where: {lines:?}");
     assert!(
         lines.iter().any(|l| l.contains("types the ticket title into its box, and sends nothing")),
@@ -5465,7 +5465,7 @@ fn golden_ticket_starting_120() {
     let mut app = app_graphite(b);
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("▀███████████████▀")), "the mark: {lines:?}");
+    assert!(app.mascot.borrow().is_some(), "the shin: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("starting up")), "the state: {lines:?}");
     assert!(
         lines.iter().any(|l| l.contains("mesimon presses enter when it is ready")),
@@ -5538,11 +5538,11 @@ fn the_empty_seat_drops_its_mark_before_its_words() {
     app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let tall = render(&app, 120, 30);
-    assert!(tall.iter().any(|l| l.contains("▀███████████████▀")), "the mark fits at 30: {tall:?}");
+    assert!(app.mascot.borrow().is_some(), "the shin fits at 30: {tall:?}");
     // A description takes the rows off the top of the zone, which is the
     // ordinary way it runs out.
     let short = render(&app, 120, 20);
-    assert!(!short.iter().any(|l| l.contains("▀███████████████▀")), "the mark goes: {short:?}");
+    assert!(app.mascot.borrow().is_none(), "the shin goes: {short:?}");
     assert!(short.iter().any(|l| l.contains("enter start agent")), "the press stays: {short:?}");
     assert!(
         short.iter().any(|l| l.contains("starts in the checkout")),
@@ -5550,23 +5550,35 @@ fn the_empty_seat_drops_its_mark_before_its_words() {
     );
 }
 
+/// The shin (T-451): drawn exactly where the draw records it, moving on its
+/// own clock, standing over every agent state and no shell, beside a reply
+/// on a wide zone only, and never on the board.
 #[test]
-fn the_shin_is_static_grey_and_only_precedes_a_conversation() {
+fn the_shin_acts_out_every_agent_state() {
     let mut app = app_graphite(fixture(false));
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let buf = cells(&app, 120, 30);
-    let rect = app.mascot.borrow().expect("the empty seat has a mascot");
-    for (dy, row) in crate::mascot::COMPACT.lines().enumerate() {
-        for (dx, ch) in row.chars().enumerate() {
-            if ch != ' ' {
-                let cell = &buf[(rect.x + dx as u16, rect.y + dy as u16)];
-                assert_eq!(cell.symbol(), ch.to_string());
-                assert_eq!(Some(cell.fg), app.theme.dim1().fg);
+    let drawn = app.mascot.borrow().clone().expect("the empty seat has the shin");
+    let mut blocks = 0;
+    for y in drawn.rect.y..drawn.rect.bottom() {
+        for x in drawn.rect.x..drawn.rect.right() {
+            let want = drawn.glyph(x, y).expect("inside the stage");
+            if matches!(want, '▀' | '▄' | '█') {
+                assert_eq!(buf[(x, y)].symbol(), want.to_string(), "at {x},{y}");
+                blocks += 1;
             }
         }
     }
-    app.spin_epoch.set(Some(std::time::Instant::now() - std::time::Duration::from_secs(10)));
-    assert_eq!(buf, cells(&app, 120, 30), "the mascot never animates");
+    assert!(blocks > 60, "the medium shin is a picture, {blocks} cells");
+    // Frame 0 is what a first draw shows; its own clock moves it on.
+    assert_eq!(buf, cells(&app, 120, 30), "a redraw inside a frame is the same frame");
+    let at = |ms: u64| {
+        let (key, _) = app.creature_clock.get().expect("the shin keeps its clock");
+        app.creature_clock
+            .set(Some((key, std::time::Instant::now() - std::time::Duration::from_millis(ms))));
+        cells(&app, 120, 30)
+    };
+    assert_ne!(buf, at(2850), "the invitation waves");
 
     app.theme = Theme::new(Flavor::Graphite, Profile::Mono);
     let lines = render(&app, 120, 30);
@@ -5578,22 +5590,57 @@ fn the_shin_is_static_grey_and_only_precedes_a_conversation() {
     );
 
     app.theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-    app.board.sessions.retain(|s| s.ticket != ulid_n(1));
-    for (state, expected) in [
-        (SessionState::Spawning, true),
-        (SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Unknown }, true),
-        (SessionState::Running, false),
-        (SessionState::Sleeping, false),
-        (SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }, false),
-    ] {
+    let states = [
+        SessionState::Spawning,
+        SessionState::Idle { stop_reason: StopReason::Unknown },
+        SessionState::Running,
+        SessionState::RequiresAction { reason: Reason::Permission },
+        SessionState::Idle { stop_reason: StopReason::EndTurn },
+        SessionState::Sleeping,
+        SessionState::Throttled,
+        SessionState::Exited { reason: ExitReason::Crashed },
+        SessionState::Exited { reason: ExitReason::Killed },
+        SessionState::Unknown { reason: mesimon_core::board::UnknownReason::NoSignal },
+    ];
+    for state in states {
         app.board.sessions.retain(|s| s.ticket != ulid_n(1));
         app.board.sessions.push(session(11, ulid_n(1), SessionKind::Claude, state.clone()));
         let _ = cells(&app, 120, 30);
-        assert_eq!(app.mascot.borrow().is_some(), expected, "{state:?}");
+        assert!(app.mascot.borrow().is_some(), "{state:?}");
     }
+    app.board.sessions.retain(|s| s.ticket != ulid_n(1));
+    app.board.sessions.push(session(11, ulid_n(1), SessionKind::Bash, SessionState::Running));
+    let _ = cells(&app, 120, 30);
+    assert!(app.mascot.borrow().is_none(), "a shell has no agent to be");
+
     app.screen = Screen::Board;
     let _ = cells(&app, 120, 30);
     assert!(app.mascot.borrow().is_none(), "a previous preview never exempts the board");
+}
+
+/// Beside a reply the shin is the small companion in the zone's top-right
+/// corner, and the reply wraps short of it; a narrow zone keeps its width.
+#[test]
+fn the_companion_stands_beside_a_reply_on_a_wide_zone() {
+    let path = write_transcript("companion", &reply_record(RICH_REPLY));
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let buf = cells(&app, 120, 30);
+    let drawn = app.mascot.borrow().clone().expect("a reply on a wide zone has its companion");
+    assert!(drawn.rect.height <= 8 && drawn.rect.width <= 17, "the small shin: {:?}", drawn.rect);
+    for y in drawn.rect.y..drawn.rect.bottom() {
+        for x in drawn.rect.x..drawn.rect.right() {
+            let cell = buf[(x, y)].symbol().to_string();
+            if drawn.glyph(x, y) == Some(' ') {
+                assert_eq!(cell, " ", "the reply never runs under the companion at {x},{y}");
+            }
+        }
+    }
+    let _ = cells(&app, 80, 24);
+    assert!(app.mascot.borrow().is_none(), "an 80-column page keeps the reply's width");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
 /// EXACTLY one rail row wears the cursor surface, wherever `rail_idx` sits.
@@ -5975,14 +6022,13 @@ fn test_no_banned_sgr() {
                 // sentences that stand where the zone used to be blank.
                 let mut seat = App::for_test(fixture(false), Theme::new(flavor, profile));
                 seat.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+                let lines = render(&seat, 120, 30);
                 assert!(
-                    render(&seat, 120, 30).iter().any(|l| l.contains(
-                        if profile == Profile::Mono {
-                            "mesimon"
-                        } else {
-                            "▀███████████████▀"
-                        }
-                    )),
+                    if profile == Profile::Mono {
+                        lines.iter().any(|l| l.contains("mesimon"))
+                    } else {
+                        seat.mascot.borrow().is_some()
+                    },
                     "the empty seat's mark must be ON SCREEN, or this law does not bite"
                 );
                 cells(&seat, 120, 30)
@@ -6099,11 +6145,15 @@ fn test_no_drawn_structure() {
     // else (T-158, the one allowlisted role), and the perimeter is a fact of
     // the frame the draw itself reported — the test transcribes nothing.
     type DrawnFrame =
-        (ratatui::buffer::Buffer, Vec<ratatui::layout::Rect>, Option<ratatui::layout::Rect>);
+        (ratatui::buffer::Buffer, Vec<ratatui::layout::Rect>, Option<crate::creature::Drawn>);
     let swept: std::cell::RefCell<Vec<DrawnFrame>> = std::cell::RefCell::new(Vec::new());
     let sweep = |app: &App| -> Vec<String> {
         let buf = cells(app, 120, 30);
-        swept.borrow_mut().push((buf.clone(), app.frames.borrow().clone(), *app.mascot.borrow()));
+        swept.borrow_mut().push((
+            buf.clone(),
+            app.frames.borrow().clone(),
+            app.mascot.borrow().clone(),
+        ));
         lines_of(&buf)
     };
     let path = write_transcript("drawn-law", &reply_record(RICH_REPLY));
@@ -6214,7 +6264,7 @@ fn test_no_drawn_structure() {
             seat.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
             let lines = sweep(&seat);
             assert!(
-                lines.iter().any(|l| l.contains("▀███████████████▀")),
+                seat.mascot.borrow().is_some(),
                 "the empty seat's mark must be ON SCREEN, or this law does not bite"
             );
             lines
@@ -6406,17 +6456,7 @@ fn test_no_drawn_structure() {
                         ch == '▉'
                             || ch == '▎'
                             || on_perimeter(frames, x, y)
-                            || mascot.is_some_and(|r| {
-                                x >= r.x
-                                    && y >= r.y
-                                    && x < r.right()
-                                    && y < r.bottom()
-                                    && crate::mascot::COMPACT
-                                        .lines()
-                                        .nth((y - r.y) as usize)
-                                        .and_then(|row| row.chars().nth((x - r.x) as usize))
-                                        == Some(ch)
-                            }),
+                            || mascot.as_ref().is_some_and(|d| d.glyph(x, y) == Some(ch)),
                         "drawn-structure codepoint {ch:?} at {x},{y} off any dialog frame"
                     );
                 }

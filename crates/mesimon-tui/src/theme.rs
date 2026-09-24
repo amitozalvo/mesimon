@@ -687,6 +687,26 @@ pub(crate) struct Theme {
     bar_cursor: Color,
 }
 
+/// The shin's inks for one frame (`Theme::creature_ink`): the body's four
+/// values, the face, and the props by meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CreatureInk {
+    pub hi: Color,
+    pub body: Color,
+    pub shade: Color,
+    pub deep: Color,
+    pub eye: Color,
+    pub glint: Color,
+    pub blush: Color,
+    pub dim: Color,
+    pub think: Color,
+    pub spark: Color,
+    pub drop: Color,
+    pub calm: Color,
+    pub attn: Color,
+    pub err: Color,
+}
+
 /// How many tag tints exist. A tag's index is `stable_hash(name) % PIPS`, so
 /// the same tag is the same colour on every machine and in every screenshot —
 /// never its position in a list, or two people see different boards.
@@ -983,6 +1003,74 @@ impl Theme {
     }
     pub fn calm_text(&self) -> Style {
         Style::default().fg(self.calm)
+    }
+
+    /// The shin's inks (T-451), every one a token this theme already has.
+    /// The value ramp carries the form: top edges catch the light and the
+    /// underside falls away. The tag ring lends the blush and the props
+    /// their tints, and `attn` is the needs-you "!" and nothing else of it.
+    /// Truecolor may blend two of its own tokens; an indexed profile picks
+    /// from its ramp, with no blush where there is no ring. No ink is ever
+    /// `Reset`: a half block paints its lower pixel as a background, where
+    /// `Reset` means the terminal's ground, not its ink. Mono draws no
+    /// picture at all: `None`, and the page keeps the wordmark. `faded` is
+    /// the exited body, sunk toward the ground.
+    pub(crate) fn creature_ink(&self, faded: bool) -> Option<CreatureInk> {
+        let light = self.flavor.ground() == Ground::Light;
+        let (i0, i7, i8, i15) = (I0, I7, I8, Color::Indexed(15));
+        let r = &self.rest;
+        let (hi, body, shade, deep, eye, glint) = match self.profile {
+            Profile::Mono => return None,
+            Profile::TrueColor => {
+                let bg = self.bg.unwrap_or(hex(self.flavor.palette().truecolor.bg));
+                if light {
+                    (mix(r.dim3, bg, 0.45), mix(r.dim3, bg, 0.75), r.dim3, r.dim2, r.base, bg)
+                } else {
+                    (r.base, r.dim1, r.dim2, r.dim3, bg, self.sel.base)
+                }
+            }
+            Profile::Ansi256 if light => (r.dim3, r.dim3, r.dim2, r.dim1, r.base, i15),
+            Profile::Ansi256 => (r.base, r.dim1, r.dim2, r.dim3, self.bg.unwrap_or(i0), r.base),
+            Profile::Ansi16 | Profile::Ansi8 if light => (i7, i8, i8, i0, i0, i15),
+            Profile::Ansi16 => (i15, i7, i8, i8, i0, i15),
+            Profile::Ansi8 => (i7, i7, i8, i8, i0, i7),
+        };
+        let blush = match self.tints() {
+            Some(_) => mix(self.pip(9), body, if light { 0.55 } else { 0.65 }),
+            None => body,
+        };
+        let mut ink = CreatureInk {
+            hi,
+            body,
+            shade,
+            deep,
+            eye,
+            glint,
+            blush,
+            dim: r.dim2,
+            think: self.pip(7),
+            spark: self.pip(1),
+            drop: self.pip(5),
+            calm: self.calm,
+            attn: self.attn,
+            err: self.err,
+        };
+        if faded {
+            let sink = |c: Color| match self.bg {
+                Some(bg) if self.profile == Profile::TrueColor => mix(c, bg, 0.4),
+                _ => r.dim3,
+            };
+            ink.hi = sink(ink.hi);
+            ink.body = sink(ink.body);
+            ink.shade = sink(ink.shade);
+            ink.deep = sink(ink.deep);
+            ink.glint = sink(ink.glint);
+            ink.blush = ink.body;
+            if light {
+                ink.eye = sink(ink.eye);
+            }
+        }
+        Some(ink)
     }
 
     /// The MOVE ghost's blink (author 2026-08-30, "I press `<`, I expect the

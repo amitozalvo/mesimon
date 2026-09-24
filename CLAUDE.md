@@ -184,6 +184,11 @@ with `seed_pref`, never by assignment, and `save_prefs` writes `machine_prefs`.
 in `tui/src/ui/tests.rs`. The L1 law tests (`test_no_banned_sgr`, `test_no_drawn_structure`) and
 the colour laws in `theme.rs` run in `cargo ut` and say what is wrong.
 
+**The shin (the mascot):** pixels in `assets/mascot/shin.txt`, the engine in `tui/src/creature.rs`,
+inks from `Theme::creature_ink`. A new `SessionState` does not compile until `Anim::of` gives it
+an animation. The notification PNGs and the installer's welcome are the engine's goldens:
+`MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`.
+
 **An e2e test** (`crates/mesimon/tests/<name>_e2e.rs`): `mod common; use common::*;`, then
 `let Some(h) = Harness::boot("name", Some(STUB)) else { return };` — the daemon, the private
 tmux, the seams and the teardown are the harness's; `h.client("name")` speaks the wire,

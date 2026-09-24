@@ -7,19 +7,19 @@
 
   PREVIEW                                                                                  SESSIONS                  0
 
-                                     ▄█▄                                                   + agent session
-                     ▄█▄    ▄▄▄     ▄███
-                     ▀██▄   ███    ▄███▀
-                      ▀███████████████▀
-                      ████  █████  ████
-                      ▀███▄▄█████▄▄███▀
-                        ▀▀█████████▀▀
+                     ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                      + agent session
+                      ▀▀▀▄▀█▀▀    ███
+                      ▄▀███▀▄▄▄▄▄▄▀█▀▄
+                    ▄▀████████████████▀▄
+                    ████▀████████▀██████
+                    ████▀▀▀██████▀▀▀████
+                    ▀▀▀█████▀▀▀▀█████▀▀▀
+                     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
 
     enter start agent
 
     starts in a worktree of its own ∙ plan mode ∙ read tools
     types the ticket title into its box, and sends nothing
-
 
 
 

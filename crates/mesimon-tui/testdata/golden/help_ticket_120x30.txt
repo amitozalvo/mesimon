@@ -5,18 +5,18 @@
                                  │   jk        select session                         │
                                  │   q         board                                  │
   PREVIEW                        │                                                    │    SESSIONS                  2
-                                 │ TICKETS                                            │
-    ● working                    │   ^o        crown                                  │   ⠋ ✻ claude               >1y
-    nothing said yet ∙ the first │   r         rename                                 │   ◦ $ bash                 >1y
-                                 │   n         describe                               │    x sleep
-                                 │   N         new note                               │
-                                 │   ^t        tags                                   │
-                                 │   a         archive                                │
-                                 │   z         snooze                                 │
-                                 │   d         delete                                 │
+                      ✦          │ TICKETS                                            │
+                     ▀▀▀▄  ▄▄▄   │   ^o        crown                                  │   ⠋ ✻ claude               >1y
+                       ▀▀▀▄▀█▀▀  │   r         rename                                 │   ◦ $ bash                 >1y
+                       ▄▀███▀▄▄▄▄│   n         describe                               │    x sleep
+                     ▄▀██████████│   N         new note                               │
+                     ████▀▀▀█████│   ^t        tags                                   │
+                     ████▀▀▀█████│   a         archive                                │
+                     ▀▀▀██████▀▀█│   z         snooze                                 │
+                      ▀▀▀▀▀▀▀▀▀▀▀│   d         delete                                 │
                                  │                                                    │
-                                 │ SESSIONS                                           │
-                                 │   enter     focus                                  │
+    ● working                    │ SESSIONS                                           │
+    nothing said yet ∙ the first │   enter     focus                                  │
                                  │   !         terminal                               │
                                  │   x         sleep                                  │
                                  │                                                    │

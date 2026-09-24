@@ -52,6 +52,9 @@ Preserve these boundaries:
   the MCP shim, which is an untrusted transport process.
 - Rendering changes must preserve the tested color and geometry laws. Regenerate goldens only
   for deliberate visual changes and inspect their diffs.
+- The mascot's pixels live in `assets/mascot/shin.txt` and its engine in
+  `crates/mesimon-tui/src/creature.rs`; the notification PNGs and the installer's welcome are
+  that engine's goldens (`MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`).
 - `team/` is reserved for a future source-available tier. Do not mix it with Apache-2.0 core
   code. `mt/` is research scratch, not project content.
 

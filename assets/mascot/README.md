@@ -1,23 +1,32 @@
 # The mesimon shin
 
-The three uneven prongs borrow the silhouette of ש. Two small eyes make it a
-creature. The detached amber tip means an actual needs-you event; a completed
-turn uses the resting drawing.
+The mascot is the letter ש as a creature (T-451): the middle arm grows out of
+the left arm, as in the printed letter, and each arm ends in the letter's head
+stroke. It is pixel art drawn in terminal half blocks, two square pixels to a
+cell.
 
-- `resting.txt`: the 24-column, 12-row installer drawing.
-- `compact.txt`: the 20-column, 7-row preview drawing, tuned for terminal cells.
-- `resting.svg` / `needs-you.svg`: filled vector drawings on a graphite tile.
-- `resting.png` / `needs-you.png`: 256px notification assets embedded in the binary.
+- `shin.txt`: the one source of pixels. Three drawings (small, medium, large)
+  with the face's anchors marked in the grid; the file's header says how.
+- `resting.png` / `needs-you.png`: 256px notification assets embedded in the
+  binary. Both are the medium shin on a graphite tile: resting is the empty
+  seat's face, and needs-you is the pose the ticket page opens it on, with the
+  amber "!" in pixels beside the waving arm.
 
-Run `python3 -B ci/mascot.py` to regenerate all assets and the installer's
-embedded drawing. `python3 -B ci/mascot.py --check` checks for drift. The PNG
-renderer uses the same filled geometry as the SVG, with antialiasing and a
-transparent exterior; no rasterizer or runtime dependency is needed.
+`crates/mesimon-tui/src/creature.rs` is the engine: it parses `shin.txt`,
+stamps a face over the anchors, places props around the body, and plays one
+timeline per state. The PNGs and the installer's embedded welcome are goldens
+of that engine. Remint them with
+`MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`; a plain
+`cargo ut` fails when they drift from the pixels.
 
-The preview uses its theme's `dim1`, with no animation or attention color. It
-gives space back to the instructions when the full drawing cannot fit. Mono
-gets the wordmark. The installer draws only after success, to a UTF-8 TTY;
-pipes and dumb terminals get its normal text.
+On the ticket page the medium shin stands over the empty seat's words and over
+a session with nothing to read, acting out its state; beside a reply, the small
+shin stands in the zone's top-right corner on a zone at least 72 columns wide.
+The body is the theme's greyscale ramp, the blush and the props borrow the tag
+ring's tints, and only the needs-you "!" wears `attn`. Below truecolor there is
+no blush; mono draws no picture and keeps the wordmark. The installer draws the
+large shin in two tones (it writes no escapes), only after success, to a UTF-8
+TTY; pipes and dumb terminals get its normal text.
 
 Linux uses `notify-send --icon`. On macOS, Mesimon copies an installed
 terminal-notifier app bundle into its own notification state directory, sets the

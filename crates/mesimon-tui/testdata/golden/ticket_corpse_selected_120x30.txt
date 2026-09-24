@@ -6,17 +6,17 @@
 
   PREVIEW                                                                                  SESSIONS                  3
 
-    exited                                                                                ⠋ ✻ claude               >1y
-    it left no transcript                                                                 ◦ $ bash                 >1y
-                                                                                          ✓ ✻ claude               >1y
-                                                                                              enter resumes
-                                                                                           x dismiss
+    ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                                      ⠋ ✻ claude               >1y
+     ▀▀▀▄▀█▀▀    ███                                                                      ◦ $ bash                 >1y
+     ▄▀███▀▄▄▄▄▄▄▀█▀▄                                                                     ✓ ✻ claude               >1y
+   ▄▀████████████████▀▄                                                                       enter resumes
+   ████▀▀▀██████▀▀▀████                                                                    x dismiss
+   ████████████████████
+   ▀██████████████████▀
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
 
-
-
-
-
-
+    exited
+    it left no transcript
 
 
 

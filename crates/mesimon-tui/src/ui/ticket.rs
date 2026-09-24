@@ -20,6 +20,7 @@ use unicode_width::UnicodeWidthStr;
 use mesimon_core::keymap;
 
 use crate::app::{App, InputPurpose, Mode, RailRow, TailKey, View};
+use crate::creature::{self, Anim, Size};
 use crate::glyphs;
 use crate::text::{
     age_created, age_in_column, age_slot, created_at_epoch_ms, edit_window, marquee_offset,
@@ -723,6 +724,9 @@ fn draw_preview(
     // Until something below measures a document, there is nothing to page.
     app.preview.view.set(View::default());
     app.preview_measured();
+    // The small shin standing beside a reply, painted over the zone once
+    // the words are down.
+    let mut beside: Option<(creature::Stage, u16, u16)> = None;
 
     // The selected session's latest assistant reply, wrapped into whatever
     // height the zone has left. Absent transcript (bash, fresh spawn) means
@@ -795,6 +799,10 @@ fn draw_preview(
     } else if reply.is_some() {
         lines.push(heading("PREVIEW"));
         lines.push(Line::default());
+        // The reply wraps short of the companion's corner, and so does the
+        // working row under it.
+        beside = record.and_then(|rec| companion(app, area, rec, peek));
+        let gutter = beside.as_ref().map_or(0, |(stage, ..)| stage.cols as usize + 1);
         if let Some(text) = reply {
             // Reserve the indicator's rows so a long reply never pushes it off.
             let reserve = if working { 2 } else { 0 };
@@ -802,7 +810,7 @@ fn draw_preview(
             // Rich text, not the source: an agent reply is markdown, and the
             // ticket page is the surface with room to read it as such
             // (rich.rs — value, weight, paint and space only).
-            let width = (area.width as usize).saturating_sub(4);
+            let width = (area.width as usize).saturating_sub(4 + gutter);
             // Keyed to the reply as well as the session: a page into this
             // reply must not open the next one halfway down.
             let key = session.map(|s| doc_key(s, Some(text)));
@@ -821,7 +829,7 @@ fn draw_preview(
             }
         }
         if working {
-            lines.push(working_row(app, peek, area.width as usize));
+            lines.push(working_row(app, peek, (area.width as usize).saturating_sub(gutter)));
         }
     } else if let Some(rec) = record {
         // A session with nothing to read (T-308): the young one whose first
@@ -835,6 +843,10 @@ fn draw_preview(
         lines.extend(empty_seat(app, ticket, area));
     }
     f.render_widget(Paragraph::new(lines), area);
+    if let Some((stage, x, y)) = beside {
+        stage.paint(f.buffer_mut(), x, y, area);
+        *app.mascot.borrow_mut() = Some(stage.drawn(x, y));
+    }
 }
 
 /// The working indicator: what the agent is DOING, not just that it is —
@@ -904,26 +916,26 @@ fn quiet_session(
         }
     }
     let block_w = text.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0).min(w);
-    // The mark stands while the conversation has not STARTED — the empty
-    // seat's own face, one beat later, so the zone does not blink between the
-    // press and the first prompt. A turn in flight is a conversation, and
-    // there the live pulse is the focal point: a static mascot over it was
-    // built, seen, and cut the same hour (it read as "nothing here" beside a
-    // row saying something was happening). Never over a corpse, a sleeper, a
-    // failure or a raised permission prompt either — the mascot has nothing
-    // to say about any of those.
-    let unspoken = rec.kind.is_agent()
-        && rec.transcript_path.is_none()
-        && matches!(
-            rec.state,
-            SessionState::Spawning | SessionState::Idle { stop_reason: StopReason::Unknown }
-        );
-    let mut lines: Vec<Line<'static>> = vec![Line::default()];
-    if unspoken {
-        lines.extend(mascot_rows(app, area, block_w, text.len()));
-    }
+    // The shin acts out every state an agent can be in (T-451). T-308 cut a
+    // static mark from over a turn in flight the hour it was built, because
+    // a still picture beside a row saying something was happening read as
+    // "nothing here"; a creature that is visibly working says the same thing
+    // the row does. A shell has no agent to be.
+    let mut lines = if rec.kind.is_agent() {
+        creature_rows(app, area, block_w, text.len(), agent_anim(rec, peek), rec.id)
+    } else {
+        vec![Line::default()]
+    };
     lines.extend(text);
     lines
+}
+
+/// What the shin acts out for an agent session: its state, with the peek's
+/// word for a turn thinking rather than calling a tool.
+fn agent_anim(rec: &mesimon_core::board::SessionRecord, peek: Option<&crate::peek::Peek>) -> Anim {
+    let thinking =
+        matches!(peek.and_then(|p| p.activity.as_ref()), Some(crate::peek::Doing::Thinking));
+    Anim::of(&rec.state, thinking)
 }
 
 /// Why there is nothing to read, and what the session is doing instead. Pure
@@ -1045,39 +1057,77 @@ fn empty_seat(app: &App, ticket: &mesimon_core::board::Ticket, area: Rect) -> Ve
     }
     let block_w = text.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0).min(w);
 
-    let mut lines: Vec<Line<'static>> = vec![Line::default()];
-    lines.extend(mascot_rows(app, area, block_w, text.len()));
+    let mut lines = creature_rows(app, area, block_w, text.len(), Anim::Seat, ticket.id);
     lines.extend(text);
     lines
 }
 
-/// The shin is centred over the words. Reserve the heading, leading blank,
-/// one breathing row and ALL text before admitting the art. Mono gets the
-/// wordmark; a short or narrow preview gives the space back to its sentences.
-fn mascot_rows(app: &App, area: Rect, block_w: usize, text_h: usize) -> Vec<Line<'static>> {
-    let unicode = app.theme.glyph_tier() == glyphs::Tier::Unicode;
-    let art = if unicode { crate::mascot::COMPACT } else { "mesimon" };
-    let art_h = art.lines().count();
-    let art_w = art.lines().map(|r| r.width()).max().unwrap_or(0);
-    if (area.height as usize) < 2 + art_h + 1 + text_h || (area.width as usize) < art_w + 6 {
-        return Vec::new();
+/// The rows from the heading down to the words: the shin acting out `anim`,
+/// centred over the block with its props, then a breathing row (T-451). The
+/// heading, the whole stage, that row and ALL text are reserved before the
+/// art is admitted; a short or narrow preview gives the space back to its
+/// sentences and keeps one blank row. Mono draws no picture: the wordmark
+/// stands where the old mark stood (the invitation and a session not yet
+/// spoken to), and elsewhere nothing does.
+fn creature_rows(
+    app: &App,
+    area: Rect,
+    block_w: usize,
+    text_h: usize,
+    anim: Anim,
+    subject: impl std::hash::Hash,
+) -> Vec<Line<'static>> {
+    let blank = vec![Line::default()];
+    let ms = app.creature_ms(crate::text::hash64((subject, anim)));
+    let Some(stage) = creature::stage_for(Size::Medium, anim, ms, &app.theme) else {
+        let word = "mesimon";
+        if !anim.unspoken()
+            || (area.height as usize) < 2 + 1 + 1 + text_h
+            || (area.width as usize) < word.len() + 6
+        {
+            return blank;
+        }
+        let pad = block_w.max(word.len()).saturating_sub(word.len()) / 2;
+        return vec![
+            Line::default(),
+            Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(word, app.theme.dim1())]),
+            Line::default(),
+        ];
+    };
+    let (cols, rows) = (stage.cols as usize, stage.rows as usize);
+    if (area.height as usize) < 1 + rows + 1 + text_h || (area.width as usize) < cols + 2 {
+        return blank;
     }
-    let pad = block_w.max(art_w).saturating_sub(art_w) / 2;
-    if unicode {
-        *app.mascot.borrow_mut() =
-            Some(Rect::new(area.x + pad as u16, area.y + 2, art_w as u16, art_h as u16));
-    }
-    let mut lines: Vec<Line<'static>> = art
-        .lines()
-        .map(|row| {
-            Line::from(vec![
-                Span::raw(" ".repeat(pad)),
-                Span::styled(row.to_string(), app.theme.dim1()),
-            ])
-        })
-        .collect();
+    // Centre the body, not the stage: its props hang off to the right.
+    let body_w = cols - creature::MARGIN as usize;
+    let x = ((block_w.max(body_w) - body_w) / 2).saturating_sub(creature::LEFT as usize);
+    *app.mascot.borrow_mut() = Some(stage.drawn(area.x + x as u16, area.y + 1));
+    let mut lines: Vec<Line<'static>> = (0..stage.rows).map(|r| stage.line(r, x)).collect();
     lines.push(Line::default());
     lines
+}
+
+/// The small shin beside a reply (T-451) and where it stands: the zone's
+/// top-right corner, from the row under the heading, its props in the
+/// blank row and in the gutter it keeps. `None` in mono, and in a zone too
+/// narrow to give a reply the columns it leaves or too short for its stage.
+fn companion(
+    app: &App,
+    area: Rect,
+    rec: &mesimon_core::board::SessionRecord,
+    peek: Option<&crate::peek::Peek>,
+) -> Option<(creature::Stage, u16, u16)> {
+    const MIN_ZONE: u16 = 72;
+    if !rec.kind.is_agent() || area.width < MIN_ZONE {
+        return None;
+    }
+    let anim = agent_anim(rec, peek);
+    let ms = app.creature_ms(crate::text::hash64((rec.id, anim)));
+    let stage = creature::stage_for(Size::Small, anim, ms, &app.theme)?;
+    (area.height > stage.rows).then(|| {
+        let x = area.right() - stage.cols;
+        (stage, x, area.y + 1)
+    })
 }
 
 /// The sentences under the mark. The first says what the session will be, in

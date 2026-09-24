@@ -1,4 +1,5 @@
-//! The shin's terminal drawing and embedded notification assets.
+//! The shin's embedded notification assets, rendered from its pixels by
+//! `creature.rs`'s goldens.
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -6,7 +7,6 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-pub(crate) const COMPACT: &str = include_str!("../../../assets/mascot/compact.txt");
 const RESTING: &[u8] = include_bytes!("../../../assets/mascot/resting.png");
 const NEEDS_YOU: &[u8] = include_bytes!("../../../assets/mascot/needs-you.png");
 

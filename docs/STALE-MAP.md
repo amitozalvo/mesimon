@@ -13541,3 +13541,71 @@ back home after the drop regardless.
 
 **Test.** `refused_nudge_keeps_the_cursor_on_the_card`: a refused `L` keeps (col, row), the
 selection and the shake, arms no `.`, and an accepted `L` still carries the cursor.
+
+## The shin becomes an animated creature (T-451, 2026-09-24, user: "redesign the mesimon mascot … a cute "shin" hebrew letter (ש) and the middle horn should come from the left horn … every state should have a matching animation in transcript preview")
+
+**Chosen.** A design sheet (artifact `U4fmhjTo7mzUJdfSFhHGmJ`) showed three bodies animated
+through every state in the TUI's six themes: Ot (letter first), Mochi (round, short arms,
+big eyes) and Scout (with feet). The user picked **Mochi** ("BEAUTIFUL! mochi"). The user
+also approved reversing two recorded decisions: "the mascot never animates" (2026-09-08)
+and T-308's cut of a mark from over a turn in flight, which had read as "nothing here"
+beside a row saying something was happening. A creature that visibly works says what the
+row says. Scope, also the user's: the TUI, the installer welcome and both notification
+icons, all from one set of pixels.
+
+**The drawing.** Pixel art in half blocks, two square pixels to a cell.
+`assets/mascot/shin.txt` is the only source: small (12×10 px, the companion), medium
+(20×16, the preview) and large (24×24, the installer). Face anchors (`E` `M` `B`), the
+status light (`L`) and the sweat drop's path (`D`) are marked in the grid. The middle arm
+joins the left arm below its head, as in the printed letter, and every arm ends in the
+letter's head stroke; heads are wider than stems, which is what stops it reading as ears.
+
+**The engine** is `crates/mesimon-tui/src/creature.rs`. A frame is a face (eyes, mouth,
+blush) stamped over the anchors, plus arm moves (`wave`, `wig`, `tilt`) and props. A
+mark is a text glyph in a cell no pixel touches; the light and the drop are pixels. Rim
+light is computed, not drawn: top and left edges are `hi`, the right edge is `shade`,
+and the body's underside is `deep`. Each `Anim` has an intro played once and a cycle
+(`Done` hops, then settles). `Anim::of` is exhaustive over `SessionState`, so a new state
+will not compile until someone gives it an animation. `Idle{Background}` shares
+Monitoring's watch with `Idle{Monitoring}`; `Exited{Crashed}` is Failed's dizzy star.
+The clock is draw-side (`App::creature_clock`) and restarts when the subject or the
+animation changes. A first draw is therefore frame 0, which keeps the goldens stable,
+and a turn that just ended hops now rather than mid-loop. Every frame's `ms` is a
+multiple of 100, the redraw clock's step; the event loop already redraws that often, so
+the creature costs no new wakeups.
+
+**Where it stands.** The medium shin stands over the empty seat's words and over every
+agent session with nothing to read, acting out its state. The words are still reserved
+first, so a short zone drops the art before a sentence. Beside a reply, the small
+companion stands in the zone's top-right corner. The reply and the working row wrap one
+column short of its stage, and a zone narrower than 72 columns keeps the reply's full
+width. Shells get no creature, and the board none: mesimatron, the board's creature, is
+its own ticket. The medium stage keeps one row above the body and the small stage two.
+The thought dots rise inside the arms' gap wherever it is open that far down
+(`Body::think_base`). This kept the empty seat's art on a 120×30 page with a
+description, which the old mark managed and a two-row stage did not.
+
+**Colour.** `Theme::creature_ink`, from tokens only. The body is the value ramp. The
+blush is the tag ring's pink blended over the body (truecolor); the props borrow the
+ring's tints (dots violet, sparks yellow, drop cyan), with `calm` for the done sparkle
+and the status light and `err` for the failed star. `attn` is the needs-you "!" and
+nothing else; `only_needs_you_wears_attn` holds every pose to that. No ink is ever
+`Reset`: a half block paints its lower pixel as a background, where `Reset` means the
+terminal's ground. Indexed profiles pick from their ramp with no blush. Mono draws no
+picture, and the wordmark keeps the old mark's reach (the invitation and a session not
+yet spoken to).
+
+**L1.** `App::mascot` is now a `creature::Drawn`: the stage's rect and every glyph it
+put there. `test_no_drawn_structure` admits `▄` and `█` only where `Drawn::glyph` says
+this draw put that glyph. `ci/mascot.py`, `compact.txt`, `resting.txt` and the two SVGs
+are gone. The PNGs and the installer block are goldens of the engine
+(`MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`). The installer still
+writes no escapes: it draws the large shin in two tones, the face as holes and the eye
+glints as ink.
+
+**Tests.** `creature::tests` (the source parses with its anchors; every pose composes
+inside its stage; every timeline steps on the redraw clock; only needs-you wears `attn`;
+every state maps; no two states open on the same face except the two waits; everything
+but the exited body moves; the installer and icon goldens),
+`the_shin_acts_out_every_agent_state`, `the_companion_stands_beside_a_reply_on_a_wide_zone`,
+and the reminted ticket-page goldens.

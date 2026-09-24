@@ -1,0 +1,70 @@
+# The shin (T-451): the letter ש as a creature, and the one source of its
+# pixels. The terminal draws two square pixels per cell with a half block, so
+# a body N rows tall here is N/2 rows on screen. The TUI animates it; the
+# notification icons and the installer's welcome are rendered from it by
+# `crates/mesimon-tui/src/creature.rs` (remint them with
+# `MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`).
+#
+#   #  body          E  an eye's top-left      M  the mouth's top-left
+#   .  nothing       B  a blush's left end     L  the status light (a body pixel)
+#                    D  the sweat drop's path, top to bottom (an empty pixel)
+#
+# The middle arm grows out of the left arm, as in the printed letter. The
+# right arm is everything from the start of row 0's last run; the body starts
+# at the first row with a run at least half the drawing wide.
+
+[small]
+##..##...L#.
+D#.##....##.
+D###.....##.
+############
+############
+##E#####E###
+############
+#B###M####B#
+############
+.##########.
+
+[medium]
+.###.........#L#....
+.####..###...####...
+..###.####....###...
+...######.....###...
+D..#####......###...
+D.################..
+D##################.
+####################
+####E########E######
+####################
+####################
+####################
+#B######M########B##
+####################
+.##################.
+...##############...
+
+[large]
+.####..........####.....
+.#####..####...#####....
+..####.#####....####....
+...#########....####....
+....#######.....####....
+....######......####....
+..####################..
+.######################.
+########################
+########################
+#####E#########E########
+########################
+########################
+########################
+########################
+##B#######M########B####
+########################
+########################
+########################
+########################
+########################
+########################
+.######################.
+...##################...
