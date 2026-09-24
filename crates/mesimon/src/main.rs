@@ -42,6 +42,8 @@ fn main() -> Result<()> {
         }
         // The pane launcher: applies the captured environment and execs.
         Some("exec") => exec::run(&args[1..]),
+        // First-attach practice pane; tmux owns the actual detach keys.
+        Some("detach-guide") => mesimon_tui::run_detach_guide(),
         Some("agent-runtime") => {
             let path = arg_value(&args, "--config")
                 .ok_or_else(|| anyhow::anyhow!("agent-runtime needs --config"))?;

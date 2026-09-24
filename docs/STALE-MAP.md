@@ -13472,6 +13472,30 @@ the tail no longer shows the dialog; with the hook road in place the lost-frame 
 `plan_accept_e2e::a_refused_plan_clears_on_the_agents_next_tool_call` (through the real hook
 binary: a subagent's call leaves the dialog held, the lead's clears it, for both tools).
 
+## First attach demonstrates the way back (T-446, 2026-09-24)
+
+The first-attach practice pane now runs the internal `mesimon detach-guide` renderer
+instead of a shell printing a first-run explanation. A centered SESSION → BOARD
+route and two keycaps cycle through holding Ctrl, tapping 5 while Ctrl stays held,
+and highlighting the board. Ctrl + 5 is the primary example because it works across
+keyboard layouts; Ctrl + ] remains a quiet alternative. The screen uses the board's
+palette and preference resolution, with painted keycaps, ASCII/monochrome fallbacks,
+and a compact layout on short panes. Its only instruction is to try the shortcut
+to open the requested session.
+
+The guide remains a real private-tmux session. It discards ordinary input and never
+implements its own completion key: the existing tmux bindings, GatePassed persistence,
+and subsequent attach still own the ceremony. The renderer has no daemon connection
+or board mutation. Passing the gate kills its pane and animation as before.
+
+Tests cover the animation phases and simultaneous key highlighting, small geometry
+and theme ink across all palettes/profiles, a reviewed new golden, and the real
+daemon's guide launch/reuse/persistence in `m1_acceptance_headless`.
+
+The copy now introduces the pause: “Before we connect you, here's your shortcut back
+to the board.” The closing “Give it a try, then you're in.” links the practice to
+entering the session. Short or narrow panes retain the compact key reminder.
+
 ## Every refused card verb shakes the card (T-448, 2026-09-24, user: "shake tickets when more actions are rejected ∙ already happens during archive rejection, map other rejections and lead them to shake. for example, move rejection")
 
 **Shipped.** T-423's shake was the archive's alone; every other refusal of a verb pressed on

@@ -10,6 +10,7 @@ mod keys;
 // Public so an integration test can drive the real connect path (the
 // build-skew daemon restart lives in it); the TUI itself uses it internally.
 pub mod client;
+mod detach_guide;
 mod detect;
 mod external;
 mod glyphs;
@@ -83,6 +84,7 @@ pub fn ticket_shells_status() -> String {
 /// whether it is on, and which rung would hold it — named even while it is
 /// off, and named plainly when nothing here can.
 pub use caffeine::doctor_line as keep_awake_status;
+pub use detach_guide::run as run_detach_guide;
 /// What `mesimon doctor` says about the note editor's `^g`: which program
 /// opens, and which variable named it.
 pub use external::doctor_line as editor_status;

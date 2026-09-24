@@ -139,6 +139,42 @@ fn m1_acceptance_headless() {
     // Gate: not passed initially, gate session attachable; GatePassed persists.
     let r = c.request(Command::GateStatus);
     assert!(matches!(r, Response::Gate { passed: false, attach_argv: Some(_) }), "{r:?}");
+    // The practice pane runs the native animated guide, not a shell message.
+    // Wait for its initial terminal detection and first paint.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let out = common::tmux(&paths.tmux_sock())
+            .args(["capture-pane", "-p", "-t", "msmn-gate"])
+            .output()
+            .unwrap();
+        let pane = String::from_utf8_lossy(&out.stdout);
+        if pane.contains("Before we connect you,") && pane.contains("Ctrl + ] works too") {
+            assert!(pane.contains("Ctrl  +  5"), "guide key row: {pane:?}");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "guide never painted: {pane}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Ordinary keys cannot complete practice. Repeated status calls reuse it.
+    let pane_id = common::tmux(&paths.tmux_sock())
+        .args(["display-message", "-p", "-t", "msmn-gate", "#{pane_id}"])
+        .output()
+        .unwrap()
+        .stdout;
+    common::tmux(&paths.tmux_sock())
+        .args(["send-keys", "-t", "msmn-gate", "Enter", "Escape", "C-c"])
+        .output()
+        .unwrap();
+    assert!(matches!(c.request(Command::GateStatus), Response::Gate { passed: false, .. }));
+    let current = common::tmux(&paths.tmux_sock())
+        .args(["display-message", "-p", "-t", "msmn-gate", "#{pane_id} #{pane_dead}"])
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(
+        String::from_utf8_lossy(&current).trim(),
+        format!("{} 0", String::from_utf8_lossy(&pane_id).trim())
+    );
     c.request(Command::GatePassed);
     let r = c.request(Command::GateStatus);
     assert!(matches!(r, Response::Gate { passed: true, .. }), "{r:?}");

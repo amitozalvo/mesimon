@@ -11233,12 +11233,7 @@ impl Daemon {
             return Response::Gate { passed: true, attach_argv: None };
         }
         // Create (idempotently) the gate session the first-run ceremony attaches to (D20).
-        let msg = "mesimon first-run check:\\n\\n  This is a live session view.\\n  Press Ctrl+] (or Ctrl+5, on any layout) to return to the board.\\n";
-        let argv = vec![
-            "sh".into(),
-            "-c".into(),
-            format!("printf '{msg}'; while true; do sleep 3600; done"),
-        ];
+        let argv = vec![self.self_exe.display().to_string(), "detach-guide".into()];
         let alive = self
             .backend
             .snapshot()
