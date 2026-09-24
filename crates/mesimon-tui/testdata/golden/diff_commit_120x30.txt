@@ -1,0 +1,30 @@
+ DIFF   mesimon › kanban-tui
+
+ bbbbbbb Prepare Git view ∙ to push ∙ 1 file ∙ +2 -0
+
+
+  FILES                  (1)    src/lib.rs ∙ file 1/1 ∙ 0 hunks
+
+  M  src/lib.rs        +2 -0    no content change
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ z context, layout… ∙ R refresh ∙ q back                                                                         ? keys

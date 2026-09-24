@@ -186,6 +186,21 @@ pub struct DiffState {
     /// a checkout target — the working tree IS the thing being read — which is
     /// why `Ctx::worktree_present` reads the TARGET as well as this flag.
     pub worktree_present: bool,
+    /// The push / pull lists' cursor: an index into `App::commit_rows`,
+    /// the outgoing commits first. Clamped where it is read, because a
+    /// snapshot can shorten the lists under it (a push, a fetch).
+    pub commit_idx: usize,
+    /// On a commit's diff: the list row it was opened from, and the
+    /// checkout diff that `q` returns to, cursor and all.
+    pub from_list: Option<FromList>,
+}
+
+/// Where a commit's diff came from (see `DiffState::from_list`).
+pub struct FromList {
+    pub parent: Box<DiffState>,
+    pub subject: String,
+    /// A row of TO PULL, not TO PUSH.
+    pub incoming: bool,
 }
 
 impl DiffState {
@@ -199,6 +214,12 @@ impl DiffState {
     /// offered.
     pub fn is_branch(&self) -> bool {
         matches!(self.target, DiffTarget::Ticket { .. })
+    }
+
+    /// The board's own checkout — the one diff with push / pull lists
+    /// behind `tab`, and the one whose identity row carries the arrows.
+    pub fn is_checkout(&self) -> bool {
+        matches!(self.target, DiffTarget::Checkout)
     }
 }
 
@@ -3991,8 +4012,10 @@ impl App {
             merge_actionable: merge.is_some(),
             merge_word: merge.unwrap_or("merge"),
             merge_confirm: self.merge_confirm_word(),
-            checkout_diff: self.diff.as_ref().is_some_and(|d| !d.is_branch()),
+            checkout_diff: self.diff.as_ref().is_some_and(|d| d.is_checkout()),
             git_commits: self.diff.as_ref().is_some_and(|d| d.commits),
+            commit_row: self.diff.as_ref().is_some_and(|d| d.commits)
+                && !self.commit_rows().is_empty(),
             two_pane: self.diff_two_pane.get(),
             // Whether `!` has a worktree to open. The checkout diff always
             // has a working tree, and offers no shell for it: the user is
@@ -5368,9 +5391,14 @@ impl App {
             // ---- the reading keys: one pair each, three read-only zones ----
             // The diff's pane, the ticket page's preview and the release
             // notes. Which one is the screen's to say, once, in `pager()`.
+            // The push / pull lists are the one picked part of the diff
+            // screen: there the reading keys walk the commits, and the draw
+            // keeps the cursor in the window.
             Verb::ScrollDown | Verb::ScrollUp => {
                 let dir: isize = if verb == Verb::ScrollDown { 1 } else { -1 };
-                if let Some(p) = self.pager() {
+                if self.on_commit_list() {
+                    self.commit_nav(dir);
+                } else if let Some(p) = self.pager() {
                     p.scroll(dir);
                 }
             }
@@ -5378,10 +5406,15 @@ impl App {
                 let dir: isize =
                     if matches!(verb, Verb::PageDown | Verb::HalfPageDown) { 1 } else { -1 };
                 let half = matches!(verb, Verb::HalfPageDown | Verb::HalfPageUp);
-                if let Some(p) = self.pager() {
+                if self.on_commit_list() {
+                    let page = self.pager().map_or(1, |p| p.view.get().page);
+                    let rows = if half { page / 2 } else { page };
+                    self.commit_nav(dir * rows.max(1) as isize);
+                } else if let Some(p) = self.pager() {
                     p.page(dir, half);
                 }
             }
+            Verb::OpenCommit => self.open_commit(),
             Verb::NextFile | Verb::PrevFile => {
                 let dir: isize = if verb == Verb::NextFile { 1 } else { -1 };
                 match self.screen {
@@ -5390,7 +5423,7 @@ impl App {
                 }
             }
             Verb::GitCommits => {
-                if let Some(d) = self.diff.as_mut().filter(|d| !d.is_branch()) {
+                if let Some(d) = self.diff.as_mut().filter(|d| d.is_checkout()) {
                     d.commits = !d.commits;
                     d.pager.reset();
                 }
@@ -6014,16 +6047,19 @@ impl App {
         match scope {
             Scope::Ticket => self.to_board(),
             // Back to whatever opened it: the ticket page for a branch diff,
-            // the board for the checkout's.
+            // the board for the checkout's, the push / pull list for a
+            // commit's.
             Scope::Diff => {
-                let Some(d) = self.diff.as_ref() else { return };
-                let (target, rail_idx) = (d.target, d.rail_idx);
-                self.diff = None;
-                match target {
+                let Some(d) = self.diff.take() else { return };
+                if let Some(from) = d.from_list {
+                    self.diff = Some(*from.parent);
+                    return;
+                }
+                match d.target {
                     DiffTarget::Ticket { id } => {
-                        self.screen = Screen::Ticket { ticket: id, rail_idx }
+                        self.screen = Screen::Ticket { ticket: id, rail_idx: d.rail_idx }
                     }
-                    DiffTarget::Checkout => self.to_board(),
+                    DiffTarget::Checkout | DiffTarget::Commit { .. } => self.to_board(),
                 }
             }
             Scope::Theme => {
@@ -8705,9 +8741,20 @@ impl App {
 
     /// The one road onto `Screen::Diff`, whichever key opened it.
     fn enter_diff(&mut self, target: DiffTarget, rail_idx: usize) -> Result<()> {
-        match self.req(Command::DiffList { target }) {
+        if let Some(d) = self.load_diff(target, rail_idx) {
+            self.diff = Some(d);
+            self.screen = Screen::Diff;
+            self.diff_fetch(0);
+        }
+        Ok(())
+    }
+
+    /// A fresh diff of `target`, its first file not yet fetched — or `None`,
+    /// with the daemon's refusal on the status row and the screen as it was.
+    fn load_diff(&mut self, target: DiffTarget, rail_idx: usize) -> Option<DiffState> {
+        match self.req(Command::DiffList { target: target.clone() }) {
             Response::DiffList { branch, base_oid, branch_oid, files, worktree_present } => {
-                self.diff = Some(DiffState {
+                Some(DiffState {
                     target,
                     commits: false,
                     rail_idx,
@@ -8724,14 +8771,62 @@ impl App {
                     z_armed: false,
                     swap: false,
                     worktree_present,
-                });
-                self.screen = Screen::Diff;
-                self.diff_fetch(0);
+                    commit_idx: 0,
+                    from_list: None,
+                })
             }
-            Response::Err { message } => self.status = message,
-            _ => {}
+            Response::Err { message } => {
+                self.status = message;
+                None
+            }
+            _ => None,
         }
-        Ok(())
+    }
+
+    /// The push / pull lists' rows as the draw lists them, outgoing first,
+    /// each with whether it is incoming. Empty wherever the lists are not
+    /// drawn — no sample, a detached HEAD, no upstream — and a direction
+    /// whose count is zero lists nothing, as its "Nothing pending" says.
+    pub(crate) fn commit_rows(&self) -> Vec<(&mesimon_core::command::GitCommit, bool)> {
+        let g = &self.git;
+        if !g.sampled || g.detached || g.upstream.is_none() {
+            return Vec::new();
+        }
+        let push = g.to_push.iter().flatten().filter(|_| g.ahead > 0).map(|c| (c, false));
+        let pull = g.to_pull.iter().flatten().filter(|_| g.behind > 0).map(|c| (c, true));
+        push.chain(pull).collect()
+    }
+
+    fn on_commit_list(&self) -> bool {
+        matches!(self.screen, Screen::Diff) && self.diff.as_ref().is_some_and(|d| d.commits)
+    }
+
+    /// Move the push / pull cursor by `delta` rows, held to the lists.
+    fn commit_nav(&mut self, delta: isize) {
+        let n = self.commit_rows().len();
+        let Some(d) = self.diff.as_mut() else { return };
+        if n > 0 {
+            let at = d.commit_idx.min(n - 1) as isize;
+            d.commit_idx = (at + delta).clamp(0, n as isize - 1) as usize;
+        }
+    }
+
+    /// Enter on a push / pull row: that commit's diff on this screen. The
+    /// checkout diff rides along untouched inside it, so `q` lands back on
+    /// the same row of the same list.
+    fn open_commit(&mut self) {
+        let Some(d) = self.diff.as_ref().filter(|d| d.commits) else { return };
+        let rows = self.commit_rows();
+        let Some((commit, incoming)) = rows.get(d.commit_idx.min(rows.len().saturating_sub(1)))
+        else {
+            return;
+        };
+        let (oid, subject, incoming) = (commit.oid.clone(), commit.subject.clone(), *incoming);
+        let Some(mut next) = self.load_diff(DiffTarget::Commit { oid }, 0) else { return };
+        let Some(parent) = self.diff.take() else { return };
+        next.from_list = Some(FromList { parent: Box::new(parent), subject, incoming });
+        self.diff = Some(next);
+        self.diff_fetch(0);
     }
 
     /// Re-run DiffList in place (R, and the density cycle's cache flush).
@@ -8739,7 +8834,7 @@ impl App {
     fn diff_refresh(&mut self) {
         let Some(d) = self.diff.as_ref() else { return };
         let keep = d.files.get(d.file_idx).map(|f| f.path.clone());
-        let target = d.target;
+        let target = d.target.clone();
         match self.req(Command::DiffList { target }) {
             Response::DiffList { branch, base_oid, branch_oid, files, worktree_present } => {
                 let Some(d) = self.diff.as_mut() else { return };
@@ -8779,7 +8874,7 @@ impl App {
             if f.status.is_empty() || d.cache.contains_key(&f.path) {
                 continue;
             }
-            let (target, path, context) = (d.target, f.path.clone(), d.density);
+            let (target, path, context) = (d.target.clone(), f.path.clone(), d.density);
             match self.req(Command::DiffFile { target, path: path.clone(), context }) {
                 Response::DiffFile { file } => {
                     if let Some(d) = self.diff.as_mut() {
@@ -10384,7 +10479,13 @@ pub(crate) mod test_support {
                 // dead-ends: the fake snapshot carries no worktrees, which is
                 // what `install_diff` seeds by hand instead.
                 Command::DiffList { target } => {
-                    if target != DiffTarget::Checkout {
+                    // A commit of the push / pull lists opens on one file;
+                    // an oid of `e`s is one the repository does not have.
+                    if let DiffTarget::Commit { oid } = &target {
+                        if oid.starts_with('e') {
+                            return Ok(Response::Err { message: "no such commit here".into() });
+                        }
+                    } else if target != DiffTarget::Checkout {
                         return Ok(Response::Err { message: "no worktree".into() });
                     }
                     let row =
@@ -10401,6 +10502,15 @@ pub(crate) mod test_support {
                             dirty: !untracked,
                             untracked,
                         };
+                    if let DiffTarget::Commit { oid } = target {
+                        return Ok(Response::DiffList {
+                            branch: String::new(),
+                            base_oid: "p".repeat(40),
+                            branch_oid: oid,
+                            files: vec![row("src/lib.rs", "M", 2, false)],
+                            worktree_present: false,
+                        });
+                    }
                     return Ok(Response::DiffList {
                         branch: "main".into(),
                         base_oid: "c".repeat(40),
@@ -17246,12 +17356,19 @@ mod tests {
     #[test]
     fn ctrl_bracket_pops_diff_to_its_origin() {
         for key in [']', '5'] {
-            for target in [DiffTarget::Checkout, DiffTarget::Ticket { id: ulid::Ulid(1) }] {
+            for target in [
+                DiffTarget::Checkout,
+                DiffTarget::Ticket { id: ulid::Ulid(1) },
+                // Only reachable from the push / pull list, which `q` returns
+                // to (`commit_list_walks_opens_and_returns`); without one, the
+                // commit belongs to the checkout, and so does its way out.
+                DiffTarget::Commit { oid: "a".repeat(40) },
+            ] {
                 for view_chord in [false, true] {
                     let mut app = app_three_columns();
                     // The fake transport serves checkout diffs; seed the return target.
                     app.enter_diff(DiffTarget::Checkout, 2).unwrap();
-                    app.diff.as_mut().unwrap().target = target;
+                    app.diff.as_mut().unwrap().target = target.clone();
                     assert_eq!(app.screen, Screen::Diff);
                     if view_chord {
                         press(&mut app, 'z');
@@ -17259,7 +17376,7 @@ mod tests {
                     }
                     app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL).unwrap();
                     let expected = match target {
-                        DiffTarget::Checkout => Screen::Board,
+                        DiffTarget::Checkout | DiffTarget::Commit { .. } => Screen::Board,
                         DiffTarget::Ticket { id } => Screen::Ticket { ticket: id, rail_idx: 2 },
                     };
                     assert_eq!(app.screen, expected, "ctrl+{key}, chord={view_chord}");
@@ -17292,6 +17409,83 @@ mod tests {
         app.diff.as_mut().unwrap().target = DiffTarget::Ticket { id: ulid::Ulid(1) };
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert!(!app.diff.as_ref().unwrap().commits, "ticket diffs keep their own scope");
+    }
+
+    /// The push / pull lists are picked (T-454's follow-up): j/k walk the
+    /// commits across both directions, Enter opens one's diff on the same
+    /// screen, and `q` comes back to the list on the same row.
+    #[test]
+    fn commit_list_walks_opens_and_returns() {
+        use mesimon_core::command::{GitCommit, RepoGit};
+        let commit =
+            |c: &str, subject: &str| GitCommit { oid: c.repeat(40), subject: subject.into() };
+        let mut app = app_three_columns();
+        app.git = RepoGit {
+            sampled: true,
+            branch: "main".into(),
+            upstream: Some("origin/main".into()),
+            ahead: 2,
+            behind: 1,
+            to_push: Some(vec![commit("a", "Add commit lists"), commit("b", "Prepare Git view")]),
+            to_pull: Some(vec![commit("c", "Fix upstream regression")]),
+            ..Default::default()
+        };
+        app.enter_diff(DiffTarget::Checkout, 0).unwrap();
+        assert!(keymap::binding_for(Scope::Diff, Verb::OpenCommit, &app.ctx()).is_none());
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            keymap::hint_for(Scope::Diff, Verb::ScrollDown, &app.ctx()),
+            Some(("jk", "commit"))
+        );
+        assert_eq!(
+            keymap::hint_for(Scope::Diff, Verb::OpenCommit, &app.ctx()),
+            Some(("enter", "open"))
+        );
+
+        // Down into TO PULL and held at its end; back up one.
+        for _ in 0..4 {
+            press(&mut app, 'j');
+        }
+        assert_eq!(app.diff.as_ref().unwrap().commit_idx, 2);
+        press(&mut app, 'k');
+        assert_eq!(app.diff.as_ref().unwrap().commit_idx, 1);
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.screen, Screen::Diff);
+        let d = app.diff.as_ref().unwrap();
+        assert_eq!(d.target, DiffTarget::Commit { oid: "b".repeat(40) });
+        assert!(!d.commits, "the commit's files, not the lists");
+        assert_eq!(d.files.len(), 1);
+        let from = d.from_list.as_ref().unwrap();
+        assert_eq!((from.subject.as_str(), from.incoming), ("Prepare Git view", false));
+        let ctx = app.ctx();
+        assert!(keymap::binding_for(Scope::Diff, Verb::GitCommits, &ctx).is_none(), "no tab here");
+        assert!(keymap::binding_for(Scope::Diff, Verb::OpenCommit, &ctx).is_none());
+
+        press(&mut app, 'q');
+        assert_eq!(app.screen, Screen::Diff);
+        let d = app.diff.as_ref().unwrap();
+        assert_eq!((d.target.clone(), d.commits, d.commit_idx), (DiffTarget::Checkout, true, 1));
+        press(&mut app, 'q');
+        assert_eq!(app.screen, Screen::Board);
+        assert!(app.diff.is_none());
+
+        // A commit the daemon cannot open leaves the list where it was.
+        app.git.to_push = Some(vec![commit("e", "Gone since"), commit("b", "Prepare Git view")]);
+        app.enter_diff(DiffTarget::Checkout, 0).unwrap();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let d = app.diff.as_ref().unwrap();
+        assert_eq!((d.target.clone(), d.commits), (DiffTarget::Checkout, true));
+        assert_eq!(app.status, "no such commit here");
+
+        // A snapshot that shortens the lists under the cursor: it is held
+        // to what is left, and Enter still opens a row that exists.
+        app.diff.as_mut().unwrap().commit_idx = 2;
+        app.git.behind = 0;
+        app.git.to_pull = Some(Vec::new());
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.diff.as_ref().unwrap().target, DiffTarget::Commit { oid: "b".repeat(40) });
     }
 
     #[test]

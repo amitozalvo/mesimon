@@ -13647,3 +13647,40 @@ rewrite left whole, the byte cap, whitespace joins and char boundaries, a `\r`).
 `marks_follow_their_bytes_into_cells` (a tab, a `^M`, a wrap) and
 `test_diff_marks_the_changed_words` (every flavor at truecolor and 256). The diff goldens
 did not change: they are text, and the text is the same.
+
+## The push / pull lists open a commit's diff (T-454 follow-up, 2026-09-24, user: "is it easy to add an option to navigate and open to push / to pull lines to enter their diffs?" then "implement")
+
+**Shipped.** On the checkout diff's `tab` view, `j`/`k` walk one cursor through TO PUSH
+then TO PULL, `{ }` and the page keys move it by a page, and `enter` opens the commit under
+it on the same screen. `q` returns to the list, on the same row. The list was built as
+"read, not picked" (T-347's binding comment); this reverses that for the lists only. The
+diff itself still scrolls. `j`/`k` stay ONE binding (`ScrollDown`, hint `commit` or
+`scroll`), because `no_key_bound_twice_in_a_chain` forbids a second binding gated the other
+way. `App::dispatch` sends the verb to the cursor when the lists are showing.
+
+**The wire.** `DiffTarget::Commit { oid }`, which cost the enum its `Copy`. The daemon
+diffs `PARENT..OID` against the first parent (a merge reads as what it brought into the
+branch it landed on), or against the empty tree for a root commit. That reuses
+`diff_list_at` / `diff_file_at`, which now take the range rather than building
+`BASE...BRANCH` themselves. No working tree is read: `worktree_present` is false and there
+are no status flags. The oid reaches git's argv, so the daemon takes a full 40- or 64-hex
+name and nothing else (`a_commit_id_is_hex_and_nothing_else`: an option, `HEAD`, `HEAD~1`,
+a short id and a range are all refused) and checks `^{commit}` before diffing. Authorized as
+a read of `Resource::Board`, like the checkout. Agents stay denied (`DiffList` is not in
+their tier).
+
+**The TUI.** `DiffState::commit_idx` is the cursor, clamped where it is read, because a
+snapshot can shorten the lists under it. `App::commit_rows` is the lists as the draw lists
+them. `DiffState::from_list` carries the checkout diff it was opened from, whole, plus the
+row's subject and direction. So `q` needs no refetch, and the identity row names the commit
+(`bbbbbbb Prepare Git view ∙ to push ∙ 1 file ∙ +2 -0`) without a second git call. The
+arrows and `tab` belong to the checkout only (`DiffState::is_checkout`). The window follows
+the cursor in the draw, keeping the heading of a list above its first commit. A commit
+the daemon cannot open leaves the list where it was, with the refusal on the status row.
+
+**Tests.** Daemon: `a_commit_diffs_against_its_first_parent` (a merge included),
+`a_root_commit_diffs_against_the_empty_tree`, `a_commit_id_is_hex_and_nothing_else`. E2e:
+`the_board_diffs_one_commit_of_its_history` (the working tree stays out). TUI:
+`commit_list_walks_opens_and_returns`, `a_commit_row_is_picked_and_opens_to_its_own_diff` and
+its golden `diff_commit_120x30`. The two `git_commits` goldens changed only in their hint
+row (`jk commit ∙ enter open`). The scroll test now moves the cursor instead of the pager.

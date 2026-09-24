@@ -87,14 +87,34 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
             Some(upstream) => format!("push / pull ∙ {}", crate::text::one_line(upstream)),
             None => "push / pull".to_string(),
         }
+    } else if let Some(from) = &d.from_list {
+        let list = if from.incoming { "to pull" } else { "to push" };
+        match n {
+            0 => format!("{list} ∙ no changes"),
+            _ => format!("{list} ∙ {n} {noun} ∙ +{adds} -{dels}"),
+        }
     } else if n == 0 {
         "no changes".to_string()
     } else {
         format!("{against} ∙ {n} {noun} ∙ +{adds} -{dels}")
     };
     let branch = if d.commits { &app.git.branch } else { &d.branch };
-    let mut ident =
-        vec![Span::styled(format!(" ⎇ {}", crate::text::one_line(branch)), theme.dim1())];
+    // A commit is named the way its list row named it, oid and subject; the
+    // subject yields to the counts on a narrow row.
+    let mut ident = match &d.from_list {
+        Some(from) => {
+            let oid: String = d.branch_oid.chars().take(7).collect();
+            let room = (area.width as usize).saturating_sub(summary.width() + oid.width() + 12);
+            vec![
+                Span::styled(format!(" {oid}"), theme.dim2()),
+                Span::styled(
+                    format!(" {}", truncate(&crate::text::one_line(&from.subject), room)),
+                    theme.dim1(),
+                ),
+            ]
+        }
+        None => vec![Span::styled(format!(" ⎇ {}", crate::text::one_line(branch)), theme.dim1())],
+    };
     // The checkout's push/pull state belongs on the title, not behind a key
     // press (T-347): before this, the only thing the screen said about it was
     // the footer's standing `tab` — an offer that read the same whether or
@@ -195,7 +215,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
 /// nothing pending, the same silence the header keeps.
 fn sync_marks(app: &App, d: &DiffState) -> String {
     let g = &app.git;
-    if d.is_branch() || !g.sampled {
+    if !d.is_checkout() || !g.sampled {
         return String::new();
     }
     let tier = app.theme.glyph_tier();
@@ -209,12 +229,17 @@ fn sync_marks(app: &App, d: &DiffState) -> String {
     out
 }
 
-/// Both directions share the reading keys and a single scroll position.
-/// Counts stay exact even when the snapshot's bounded history is truncated.
+/// Both directions share one cursor (`App::commit_rows`' order: outgoing
+/// first) and a window that follows it. Counts stay exact even when the
+/// snapshot's bounded history is truncated; only a listed commit opens.
 fn draw_commits(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
     let theme = &app.theme;
     let g = &app.git;
     let w = area.width as usize;
+    let listed = app.commit_rows().len();
+    let cursor = (listed > 0).then(|| d.commit_idx.min(listed - 1));
+    // The flat index of the next commit drawn, and the row the cursor's is.
+    let (mut idx, mut cursor_row) = (0usize, None);
     let mut rows = Vec::new();
     if !g.sampled {
         rows.push(Line::from(Span::styled(" Git status unavailable", theme.dim2())));
@@ -241,11 +266,31 @@ fn draw_commits(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
             } else if let Some(commits) = commits {
                 for commit in commits {
                     let oid: String = commit.oid.chars().take(7).collect();
-                    let subject = crate::text::one_line(&commit.subject);
-                    rows.push(Line::from(vec![
-                        Span::styled(format!(" {oid}  "), theme.dim2()),
-                        Span::styled(truncate(&subject, w.saturating_sub(10)), theme.base()),
-                    ]));
+                    let subject =
+                        truncate(&crate::text::one_line(&commit.subject), w.saturating_sub(10));
+                    let selected = cursor == Some(idx);
+                    idx += 1;
+                    if !selected {
+                        rows.push(Line::from(vec![
+                            Span::styled(format!(" {oid}  "), theme.dim2()),
+                            Span::styled(subject, theme.base()),
+                        ]));
+                        continue;
+                    }
+                    // The file list's selected row, spelled the same way.
+                    cursor_row = Some(rows.len());
+                    let fill = w.saturating_sub(10 + subject.width());
+                    rows.push(
+                        Line::from(vec![
+                            Span::styled(format!(" {oid}  "), theme.dim2()),
+                            Span::styled(
+                                subject,
+                                Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::raw(" ".repeat(fill)),
+                        ])
+                        .style(theme.selected_row()),
+                    );
                 }
                 let remaining = (count as usize).saturating_sub(commits.len());
                 if remaining > 0 {
@@ -266,9 +311,25 @@ fn draw_commits(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
         )));
     }
     let visible = (area.height as usize).saturating_sub(2);
+    // The window follows the cursor, and a list's first commit keeps its
+    // heading in view above it.
+    if let Some(row) = cursor_row {
+        let top = match d.pager.request.get() {
+            Some((COMMITS_KEY, n)) => n,
+            _ => 0,
+        };
+        let want = if row < top.saturating_add(2) {
+            row.saturating_sub(2)
+        } else if row >= top.saturating_add(visible) {
+            row + 1 - visible
+        } else {
+            top
+        };
+        d.pager.request.set(Some((COMMITS_KEY, want)));
+    }
     let at = d.pager.window(Some(COMMITS_KEY), rows.len(), visible, false);
-    let mut lines =
-        vec![Line::from(hints(app, &[Verb::PageDown, Verb::ScrollDown], w)), Line::default()];
+    let keys = [Verb::PageDown, Verb::ScrollDown, Verb::OpenCommit];
+    let mut lines = vec![Line::from(hints(app, &keys, w)), Line::default()];
     lines.extend(rows.into_iter().skip(at).take(visible));
     f.render_widget(Paragraph::new(lines), area);
 }
@@ -294,7 +355,9 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
     let mut lines: Vec<Line<'static>> = vec![Line::from(head), Line::default()];
 
     if d.files.is_empty() {
-        let empty = if d.is_branch() {
+        let empty = if d.from_list.is_some() {
+            " an empty commit".to_string()
+        } else if d.is_branch() {
             format!(" no commits on {} yet", d.branch)
         } else {
             format!(" nothing uncommitted on {}", d.branch)

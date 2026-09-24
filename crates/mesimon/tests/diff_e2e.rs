@@ -111,3 +111,48 @@ fn the_board_diffs_its_own_checkout() {
         "no worktree",
     );
 }
+
+/// A row of the push / pull lists, opened over the wire: the commit against
+/// its parent, read from the object store with nothing of the working tree
+/// on it, and an id that is not a full hex name refused before git sees it.
+#[test]
+fn the_board_diffs_one_commit_of_its_history() {
+    if Proc::new("git").arg("--version").output().is_err() {
+        eprintln!("git not installed; skipping");
+        return;
+    }
+    let Some(h) = Harness::boot("diffcommit", None) else { return };
+    let repo = h.repo.clone();
+    init_repo(&repo, "kept.txt", "one\ntwo\n");
+    std::fs::write(repo.join("kept.txt"), "one\nTWO\n").unwrap();
+    git(&repo, &["commit", "-qam", "shout two"]);
+    let oid = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    // Uncommitted work beside it must not leak into the commit's diff.
+    std::fs::write(repo.join("kept.txt"), "one\nTWO\nthree\n").unwrap();
+    let mut c = h.client("diffcommit");
+
+    let target = DiffTarget::Commit { oid: oid.clone() };
+    let resp = c.request(Command::DiffList { target: target.clone() });
+    match &resp {
+        Response::DiffList { branch_oid, worktree_present, .. } => {
+            assert_eq!(branch_oid, &oid);
+            assert!(!worktree_present);
+        }
+        other => panic!("expected DiffList, got {other:?}"),
+    }
+    let listed = files_of(&resp);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!((listed[0].adds, listed[0].dels), (Some(1), Some(1)));
+    match c.request(Command::DiffFile { target, path: "kept.txt".into(), context: 3 }) {
+        Response::DiffFile { file } => {
+            let lines: Vec<_> = file.hunks.iter().flat_map(|hk| hk.lines.iter()).collect();
+            assert!(lines.iter().any(|l| l.sign == Sign::Add && l.text == "TWO"));
+            assert!(!lines.iter().any(|l| l.text == "three"), "the working tree stays out");
+        }
+        other => panic!("expected DiffFile, got {other:?}"),
+    }
+    err_containing(
+        c.request(Command::DiffList { target: DiffTarget::Commit { oid: "HEAD~1".into() } }),
+        "not a commit id",
+    );
+}

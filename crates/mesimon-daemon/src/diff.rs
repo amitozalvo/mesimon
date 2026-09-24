@@ -86,8 +86,8 @@ fn git_bytes_ok(repo: &Path, args: &[&str], ok: impl Fn(i32) -> bool) -> Result<
 /// "what did this ticket change" — right even after base moved).
 pub fn diff_list(repo: &Path, binding: &Binding) -> Result<Response> {
     let worktree_present = binding.status == BindingStatus::Attached && binding.path.is_dir();
-    let files =
-        diff_list_at(repo, &binding.path, &binding.branch, &binding.base_oid, worktree_present)?;
+    let range = format!("{}...{}", binding.base_oid, binding.branch);
+    let files = diff_list_at(repo, &binding.path, &range, worktree_present)?;
     Ok(Response::DiffList {
         branch: binding.branch.clone(),
         base_oid: binding.base_oid.clone(),
@@ -108,7 +108,8 @@ pub fn workspace_diff_list(repo_root: &Path, binding: &Binding) -> Result<Respon
     let mut root: Option<(String, String)> = None;
     for leg in binding.legs(repo_root, "") {
         let present = worktree_present && leg.path.is_dir();
-        let rows = diff_list_at(&leg.repo, &leg.path, &binding.branch, &leg.base_oid, present)?;
+        let range = format!("{}...{}", leg.base_oid, binding.branch);
+        let rows = diff_list_at(&leg.repo, &leg.path, &range, present)?;
         if leg.name.is_empty() {
             root = Some((leg.base_oid.clone(), branch_tip(&leg.repo, &binding.branch)));
         }
@@ -136,14 +137,15 @@ pub fn workspace_diff_file(
     let legs = binding.legs(repo_root, "");
     if let Some((name, rest)) = path.split_once('/') {
         if let Some(leg) = legs.iter().find(|l| !l.name.is_empty() && l.name == name) {
-            let fd = diff_file_at(&leg.repo, &binding.branch, &leg.base_oid, rest, context)?;
+            let range = format!("{}...{}", leg.base_oid, binding.branch);
+            let fd = diff_file_at(&leg.repo, &range, rest, context)?;
             return Ok(prefix_file(name, fd));
         }
     }
     let Some(root) = legs.iter().find(|l| l.name.is_empty()) else {
         bail!("no such file in this diff");
     };
-    diff_file_at(&root.repo, &binding.branch, &root.base_oid, path, context)
+    diff_file_at(&root.repo, &format!("{}...{}", root.base_oid, binding.branch), path, context)
 }
 
 /// `<name>/` in front of every row's path (and rename source) — the one
@@ -170,16 +172,15 @@ pub(crate) fn prefix_file(name: &str, mut fd: FileDiff) -> FileDiff {
     fd
 }
 
-/// `diff_list`'s body for ONE checkout: the rows of BASE...BRANCH in `repo`,
-/// with the working tree's own status flags from `wt` where it stands.
+/// `diff_list`'s body for ONE checkout: the rows of `range` in `repo` —
+/// BASE...BRANCH for a ticket, PARENT..COMMIT for a commit — with the working
+/// tree's own status flags from `wt` where it stands.
 fn diff_list_at(
     repo: &Path,
     wt: &Path,
-    branch: &str,
-    base_oid: &str,
+    range: &str,
     worktree_present: bool,
 ) -> Result<Vec<FileEntry>> {
-    let range = format!("{base_oid}...{branch}");
     let raw = git_bytes(
         repo,
         &[
@@ -190,7 +191,7 @@ fn diff_list_at(
             "--abbrev=40",
             "--find-renames",
             "--no-ext-diff",
-            &range,
+            range,
         ],
     )
     .map_err(|e| anyhow::anyhow!("git diff failed: {}", first_line(&e.to_string())))?;
@@ -200,7 +201,7 @@ fn diff_list_at(
     // gets a rename's badge off the add's numstat row.
     if let Ok(numstat) = git_bytes(
         repo,
-        &["--no-pager", "diff", "--numstat", "-z", "--find-renames", "--no-ext-diff", &range],
+        &["--no-pager", "diff", "--numstat", "-z", "--find-renames", "--no-ext-diff", range],
     ) {
         merge_numstat(&mut files, &parse_numstat_z(&numstat));
     }
@@ -219,17 +220,10 @@ fn diff_list_at(
 /// (`Unresolvable`, stderr verbatim in the errored register), not a wire
 /// error — the pane must show it.
 pub fn diff_file(repo: &Path, binding: &Binding, path: &str, context: u32) -> Result<FileDiff> {
-    diff_file_at(repo, &binding.branch, &binding.base_oid, path, context)
+    diff_file_at(repo, &format!("{}...{}", binding.base_oid, binding.branch), path, context)
 }
 
-fn diff_file_at(
-    repo: &Path,
-    branch: &str,
-    base_oid: &str,
-    path: &str,
-    context: u32,
-) -> Result<FileDiff> {
-    let range = format!("{base_oid}...{branch}");
+fn diff_file_at(repo: &Path, range: &str, path: &str, context: u32) -> Result<FileDiff> {
     // The list entry supplies modes/blobs for classification (and the rename
     // source path). ~30 ms even on huge diffs [M]; keeps the wire stateless.
     let raw = git_bytes(
@@ -242,7 +236,7 @@ fn diff_file_at(
             "--abbrev=40",
             "--find-renames",
             "--no-ext-diff",
-            &range,
+            range,
         ],
     )?;
     let files = parse_raw_z(&raw);
@@ -265,7 +259,7 @@ fn diff_file_at(
     if entry.old_path.is_some() {
         args.push("--find-renames");
     }
-    args.push(&range);
+    args.push(range);
     args.push("--");
     if let Some(old) = &entry.old_path {
         args.push(old);
@@ -280,6 +274,46 @@ fn diff_file_at(
             hunks: Vec::new(),
         }),
     }
+}
+
+/// A row of the push / pull lists, opened: the commit against its first
+/// parent — what it changed on the branch it landed on, a merge included —
+/// or against the empty tree when it is a root. Nothing of the working tree
+/// rides it, so `worktree_present` is false and no status is read.
+pub fn commit_diff_list(repo: &Path, oid: &str) -> Result<Response> {
+    let (parent, range) = commit_range(repo, oid)?;
+    let files = diff_list_at(repo, repo, &range, false)?;
+    Ok(Response::DiffList {
+        branch: String::new(),
+        base_oid: parent,
+        branch_oid: oid.to_string(),
+        files,
+        worktree_present: false,
+    })
+}
+
+pub fn commit_diff_file(repo: &Path, oid: &str, path: &str, context: u32) -> Result<FileDiff> {
+    let (_, range) = commit_range(repo, oid)?;
+    diff_file_at(repo, &range, path, context)
+}
+
+/// `(parent, "PARENT..COMMIT")`. The oid arrives from a client and lands in
+/// git's argv, so it must be a full object name and nothing else: a leading
+/// `-` would be an option, and `HEAD~3` or `a..b` a revision expression the
+/// list never offered.
+fn commit_range(repo: &Path, oid: &str) -> Result<(String, String)> {
+    if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("not a commit id: {oid}");
+    }
+    let short: String = oid.chars().take(7).collect();
+    git_bytes(repo, &["rev-parse", "--verify", "--quiet", &format!("{oid}^{{commit}}")])
+        .map_err(|_| anyhow::anyhow!("no such commit here: {short}"))?;
+    let parent = match git_bytes(repo, &["rev-parse", "--verify", "--quiet", &format!("{oid}^1")]) {
+        Ok(out) => String::from_utf8_lossy(&out).trim().to_string(),
+        Err(_) => empty_tree(repo)?,
+    };
+    let range = format!("{parent}..{oid}");
+    Ok((parent, range))
 }
 
 fn first_line(s: &str) -> &str {
@@ -961,6 +995,93 @@ mod tests {
         // `--no-index` takes two plain paths; the list is what fences it.
         assert!(checkout_diff_file(&repo, "../../etc/passwd", 3).is_err());
         assert!(checkout_diff_file(&repo, "clean-but-unchanged", 3).is_err());
+    }
+
+    // ---- one commit of the checkout's history (the push / pull rows) -----------
+
+    /// `checkout_scratch`'s repository with a history to open: a commit on
+    /// `main`, a side branch merged into it, and the oid of every step.
+    fn history(name: &str) -> Option<(PathBuf, [String; 4])> {
+        let repo = checkout_scratch(name)?;
+        let git = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let root = git(&["rev-list", "--max-parents=0", "HEAD"]);
+        std::fs::write(repo.join("keep.txt"), "line one\nline 2\n").unwrap();
+        git(&["commit", "-qam", "edit keep"]);
+        let edit = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-qb", "side", &root]);
+        std::fs::write(repo.join("side.txt"), "from the side\n").unwrap();
+        git(&["add", "side.txt"]);
+        git(&["commit", "-qm", "side"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+        let merge = git(&["rev-parse", "HEAD"]);
+        let side = git(&["rev-parse", "side"]);
+        Some((repo, [root, edit, side, merge]))
+    }
+
+    #[test]
+    fn a_commit_diffs_against_its_first_parent() {
+        let Some((repo, [root, edit, _, merge])) = history("commit") else { return };
+        let resp = commit_diff_list(&repo, &edit).unwrap();
+        match &resp {
+            Response::DiffList { base_oid, branch_oid, worktree_present, .. } => {
+                assert_eq!(base_oid, &root, "measured against its parent");
+                assert_eq!(branch_oid, &edit);
+                assert!(!worktree_present, "a commit reads no working tree");
+            }
+            other => panic!("expected DiffList, got {other:?}"),
+        }
+        let files = files_of(&resp);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(
+            (files[0].path.as_str(), files[0].adds, files[0].dels),
+            ("keep.txt", Some(1), Some(1))
+        );
+        let fd = commit_diff_file(&repo, &edit, "keep.txt", 3).unwrap();
+        let lines: Vec<_> = fd.hunks[0].lines.iter().map(|l| (l.sign, l.text.as_str())).collect();
+        assert!(lines.contains(&(Sign::Del, "line two")) && lines.contains(&(Sign::Add, "line 2")));
+        // A merge reads against the branch it landed on: what the side
+        // branch brought in, and nothing `main` already had.
+        let files = files_of(&commit_diff_list(&repo, &merge).unwrap());
+        let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["side.txt"]);
+    }
+
+    #[test]
+    fn a_root_commit_diffs_against_the_empty_tree() {
+        let Some((repo, [root, ..])) = history("root") else { return };
+        let files = files_of(&commit_diff_list(&repo, &root).unwrap());
+        assert!(files.iter().all(|f| f.status == "A"), "{files:?}");
+        assert!(files.iter().any(|f| f.path == "keep.txt"), "{files:?}");
+        assert_eq!(commit_diff_file(&repo, &root, "keep.txt", 3).unwrap().render, Render::Text);
+    }
+
+    /// The oid reaches git's argv: only a full object name may.
+    #[test]
+    fn a_commit_id_is_hex_and_nothing_else() {
+        let Some((repo, [_, edit, ..])) = history("refuse") else { return };
+        let short: String = edit.chars().take(12).collect();
+        for oid in ["--output=/tmp/x", "HEAD", "HEAD~1", &short, &format!("{edit}..HEAD")] {
+            assert!(commit_diff_list(&repo, oid).is_err(), "{oid:?} was accepted");
+            assert!(commit_diff_file(&repo, oid, "keep.txt", 3).is_err(), "{oid:?} was accepted");
+        }
+        // Well formed but not here, and well formed but not a commit.
+        assert!(commit_diff_list(&repo, &"a".repeat(40)).is_err());
+        let tree = String::from_utf8(
+            Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["rev-parse", "HEAD^{tree}"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        assert!(commit_diff_list(&repo, tree.trim()).is_err(), "a tree is not a commit");
     }
 
     // ---- a workspace: repositories nested under the root (T-225) --------------

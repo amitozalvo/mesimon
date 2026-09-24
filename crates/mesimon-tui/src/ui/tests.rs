@@ -342,6 +342,8 @@ fn install_diff(app: &mut App) {
         z_armed: false,
         swap: false,
         worktree_present: true,
+        commit_idx: 0,
+        from_list: None,
     });
     app.screen = Screen::Diff;
 }
@@ -428,6 +430,8 @@ fn install_checkout_diff(app: &mut App) {
         z_armed: false,
         swap: false,
         worktree_present: true,
+        commit_idx: 0,
+        from_list: None,
     });
     app.screen = Screen::Diff;
 }
@@ -2227,6 +2231,54 @@ fn checkout_commits_show_both_directions_and_empty_states() {
     assert!(render(&app, 120, 30).join("\n").contains("Git status unavailable"));
 }
 
+/// The push / pull row under the cursor wears the file list's selection,
+/// and Enter opens that commit on the same screen, named on the identity
+/// row by the oid and subject its list row showed.
+#[test]
+fn a_commit_row_is_picked_and_opens_to_its_own_diff() {
+    use mesimon_core::command::GitCommit;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture(false));
+    install_checkout_diff(&mut app);
+    app.diff.as_mut().unwrap().commits = true;
+    app.git = git_state("main", 2, 1, 0);
+    let commit =
+        |oid: &str, subject: &str| GitCommit { oid: oid.repeat(40), subject: subject.into() };
+    app.git.to_push = Some(vec![commit("a", "Add commit lists"), commit("b", "Prepare Git view")]);
+    app.git.to_pull = Some(vec![commit("c", "Fix upstream regression")]);
+    press(&mut app, 'j');
+
+    let buf = cells(&app, 120, 30);
+    let rows = render(&app, 120, 30);
+    let at = |needle: &str| {
+        let y = rows.iter().position(|r| r.contains(needle)).expect(needle);
+        let x = rows[y][..rows[y].find(needle).expect(needle)].chars().count() as u16;
+        (buf[(x, y as u16)].clone(), buf[(118, y as u16)].bg)
+    };
+    let band = app.theme.selected_bg.expect("graphite paints a selection");
+    let (cell, tail) = at("Prepare Git view");
+    assert!(cell.modifier.contains(Modifier::BOLD), "the picked row is bold");
+    assert_eq!((cell.bg, tail), (band, band), "and banded to the pane's edge");
+    let (cell, _) = at("Add commit lists");
+    assert!(!cell.modifier.contains(Modifier::BOLD) && cell.bg != band, "one row is picked");
+
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("key");
+    let rows = render(&app, 120, 30);
+    assert!(
+        rows[2].contains(" bbbbbbb Prepare Git view ∙ to push ∙ 1 file ∙ +2 -0"),
+        "{}",
+        rows[2]
+    );
+    assert!(!rows[2].contains('↑'), "the arrows are the checkout's, not the commit's");
+    assert!(!rows[2].contains("tab"), "{}", rows[2]);
+    golden("diff_commit_120x30", &rows);
+    // An empty commit says so, not "nothing uncommitted".
+    app.diff.as_mut().unwrap().files.clear();
+    let rows = render(&app, 120, 30);
+    assert!(rows[2].contains("∙ to push ∙ no changes"), "{}", rows[2]);
+    assert!(rows.iter().any(|r| r.contains("an empty commit")), "{}", rows.join("\n"));
+}
+
 #[test]
 fn checkout_commits_scroll_to_incoming_and_clamp_after_snapshot_shrinks() {
     let mut app = app_graphite(fixture(false));
@@ -2248,11 +2300,19 @@ fn checkout_commits_scroll_to_incoming_and_clamp_after_snapshot_shrinks() {
     let text = render(&app, 60, 20).join("\n");
     assert!(text.contains("outgoing 0"));
     assert!(!text.contains("incoming commit"));
-    app.diff.as_ref().unwrap().pager.request.set(Some((crate::ui::diff::COMMITS_KEY, usize::MAX)));
+    // The window follows the cursor: onto the one incoming commit, the
+    // 101st row of the lists, and the truncation note above it.
+    app.diff.as_mut().unwrap().commit_idx = 100;
     let text = render(&app, 60, 20).join("\n");
     assert!(text.contains("5 more commits"));
     assert!(text.contains("incoming commit"));
+    assert!(text.contains("TO PULL (1)"), "a list's first commit keeps its heading");
+    assert!(!text.contains("outgoing 0"));
     assert!(app.diff.as_ref().unwrap().pager.view.get().max > 0);
+    // And back up to the top, heading and all.
+    app.diff.as_mut().unwrap().commit_idx = 0;
+    let text = render(&app, 60, 20).join("\n");
+    assert!(text.contains("TO PUSH (105)") && text.contains("outgoing 0"), "{text}");
     app.git.ahead = 0;
     app.git.behind = 0;
     let _ = render(&app, 60, 20);

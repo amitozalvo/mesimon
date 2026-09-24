@@ -1537,7 +1537,7 @@ fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
         return Response::Err { message: "principal cannot be claimed by a client".into() };
     }
     let target = match &env.command {
-        Command::DiffList { target } | Command::DiffFile { target, .. } => *target,
+        Command::DiffList { target } | Command::DiffFile { target, .. } => target.clone(),
         _ => return Response::Err { message: "not a diff command".into() },
     };
     // The short-circuit runs before `handle_agent`, so `mcp::agent_allows` —
@@ -1548,17 +1548,30 @@ fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
         return Response::Err { message: "denied: not in the agent tier".into() };
     }
     // D32c invariant 2 holds on this path too — the short-circuit must not
-    // bypass the chokepoint. The checkout is the board's own, so it is a read
-    // of the board rather than of any one ticket.
+    // bypass the chokepoint. The checkout is the board's own, and so is its
+    // history, so either is a read of the board rather than of any one ticket.
     let resource = match target {
         DiffTarget::Ticket { id } => Resource::Ticket { id },
-        DiffTarget::Checkout => Resource::Board,
+        DiffTarget::Checkout | DiffTarget::Commit { .. } => Resource::Board,
     };
     if let Decision::Deny { reason } = authorize(&env.principal, &Action::Read, &resource) {
         return Response::Err { message: format!("denied: {reason}") };
     }
     let _permit = PermitGuard::acquire(&ctx.permits);
     let repo = &ctx.paths.repo_root;
+    if let DiffTarget::Commit { oid } = &target {
+        return match &env.command {
+            Command::DiffList { .. } => crate::diff::commit_diff_list(repo, oid)
+                .unwrap_or_else(|e| Response::Err { message: e.to_string() }),
+            Command::DiffFile { path, context, .. } => {
+                match crate::diff::commit_diff_file(repo, oid, path, *context) {
+                    Ok(file) => Response::DiffFile { file },
+                    Err(e) => Response::Err { message: e.to_string() },
+                }
+            }
+            _ => unreachable!(),
+        };
+    }
     let DiffTarget::Ticket { id: ticket } = target else {
         return match &env.command {
             Command::DiffList { .. } => crate::diff::checkout_diff_list(repo)

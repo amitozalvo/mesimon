@@ -701,6 +701,9 @@ pub enum Verb {
     NextFile,
     /// Switch the checkout diff between changes and upstream commit lists.
     GitCommits,
+    /// Enter on a push / pull row: that commit's own diff, on the same
+    /// screen, `q` back to the list.
+    OpenCommit,
     PrevFile,
     Refresh,
     ViewPrefix,
@@ -998,6 +1001,8 @@ pub struct Ctx {
     /// The diff belongs to the checkout, so upstream history is available.
     pub checkout_diff: bool,
     pub git_commits: bool,
+    /// The push / pull list has a commit under its cursor to open.
+    pub commit_row: bool,
     /// The checkout's branch tracks a remote branch, so a fetch has
     /// somewhere to go. Gates the menu row: without an upstream there are no
     /// arrows on the header either.
@@ -1463,6 +1468,7 @@ fn needs_repository(b: &Binding) -> bool {
             Verb::OpenDiff
                 | Verb::GitFetch
                 | Verb::GitCommits
+                | Verb::OpenCommit
                 | Verb::Terminal
                 | Verb::Peek
                 | Verb::PeekAll
@@ -2861,15 +2867,26 @@ static DIFF: &[Binding] = &[
         keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
         verb: Verb::ScrollDown,
         show: "jk",
-        // The one place j/k does not move a selection. This screen is read,
-        // not picked — so the reading keys stay under the fingers and the
-        // hint says so out loud.
-        hint: |_| "scroll",
+        // The diff is read, not picked, so here j/k scroll and the hint says
+        // so out loud. The push / pull lists are the one part that is picked:
+        // there the same keys walk the commits, and the window follows.
+        hint: |c| if c.git_commits { "commit" } else { "scroll" },
         avail: always,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
-        prio: 0, // Beside the hunk pane.
+        prio: 0, // Beside the hunk pane, or above the lists.
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::OpenCommit,
+        show: "enter",
+        hint: |_| "open",
+        avail: |c| c.git_commits && c.commit_row,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0, // Above the lists, beside `jk commit`.
     },
     Binding {
         keys: &[Key::Char('n'), Key::Char('N')],

@@ -3,7 +3,7 @@
  ⎇ main ↑2 ↓1 ∙ push / pull ∙ origin/main   tab uncommitted
 
 
- { } page ∙ jk scroll
+ { } page ∙ jk commit ∙ enter open
 
   TO PUSH (2)
 

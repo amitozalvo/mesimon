@@ -981,7 +981,7 @@ fn default_diff_context() -> u32 {
 /// [`crate::mcp::agent_allows`] exist to refuse: the two targets read
 /// different things through different git plumbing, and one of them has no
 /// ticket at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiffTarget {
     /// The ticket's worktree branch, BASE...BRANCH — what this ticket changed,
@@ -990,15 +990,21 @@ pub enum DiffTarget {
     /// The board's own checkout, HEAD vs the working tree — what is
     /// uncommitted here, right now. No ticket, no worktree binding.
     Checkout,
+    /// One commit of the checkout's repository against its first parent (the
+    /// empty tree for a root commit): a row of the push / pull lists, opened.
+    /// `oid` is full hex and nothing else — the daemon refuses anything that
+    /// could reach git's argv as an option or a revision expression.
+    Commit { oid: String },
 }
 
 impl DiffTarget {
-    /// The ticket this diff belongs to, if any. The checkout belongs to none,
-    /// which is what every screen-to-ticket map in the TUI has to say.
+    /// The ticket this diff belongs to, if any. The checkout and its commits
+    /// belong to none, which is what every screen-to-ticket map in the TUI
+    /// has to say.
     pub fn ticket(&self) -> Option<ulid::Ulid> {
         match self {
             DiffTarget::Ticket { id } => Some(*id),
-            DiffTarget::Checkout => None,
+            DiffTarget::Checkout | DiffTarget::Commit { .. } => None,
         }
     }
 }
