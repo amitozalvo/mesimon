@@ -2385,6 +2385,67 @@ fn a_workspace_lists_each_repo_and_opens_a_commit_in_it() {
     assert_eq!(app.commit_rows()[0].repo, None);
 }
 
+/// `f` on the push / pull lists fetches (T-455): hinted above the lists
+/// where there is a remote to reach, and each repo's row answers for itself
+/// — `fetching…` while it runs, git's own words in the error colour when it
+/// failed. Nothing to fetch, or a fetch already running: no hint, no key.
+#[test]
+fn a_workspace_fetches_from_its_lists_and_each_row_answers() {
+    use mesimon_core::command::{RepoGit, RepoSync};
+    let repo = |name: &str| RepoSync {
+        name: name.into(),
+        branch: "main".into(),
+        upstream: Some(format!("gitlab/{name}")),
+        ..RepoSync::default()
+    };
+    let seed = |app: &mut App| {
+        app.git = RepoGit {
+            sampled: true,
+            repos: vec!["api".into(), "web".into()],
+            nested: vec![repo("api"), repo("web")],
+            ..RepoGit::default()
+        };
+    };
+    let (mut app, sent) = App::for_test_logged(
+        fixture(false),
+        Theme::new(Flavor::Graphite, Profile::TrueColor),
+        false,
+    );
+    install_checkout_diff(&mut app);
+    app.diff.as_mut().unwrap().commits = true;
+    seed(&mut app);
+    let rows = render(&app, 120, 30);
+    assert!(rows[5].contains("f fetch"), "{}", rows[5]);
+    press(&mut app, 'f');
+    assert!(sent.borrow().iter().any(|c| c == "GitFetch"), "{:?}", sent.borrow());
+
+    seed(&mut app);
+    app.git.nested[0].fetching = true;
+    app.git.nested[1].fetch_error = Some("fatal: Authentication failed".into());
+    let rows = render(&app, 120, 30);
+    let row = |needle: &str| rows.iter().position(|r| r.contains(needle)).expect(needle);
+    assert!(rows[row("  api ")].ends_with("✓ in sync   fetching…"), "{}", rows[row("  api ")]);
+    let web = &rows[row("  web ")];
+    assert!(web.ends_with("fetch failed: fatal: Authentication failed"), "{web}");
+    let buf = cells(&app, 120, 30);
+    let y = row("  web ");
+    let x = web.find("fetch failed").map(|b| web[..b].chars().count()).unwrap();
+    assert_eq!(buf[(x as u16, y as u16)].fg, app.theme.err);
+    assert!(!rows[5].contains("f fetch"), "a fetch is running: {}", rows[5]);
+    sent.borrow_mut().clear();
+    press(&mut app, 'f');
+    assert!(!sent.borrow().iter().any(|c| c == "GitFetch"), "the key stands down too");
+
+    // Nothing compared with a remote: nowhere to fetch from.
+    seed(&mut app);
+    for s in &mut app.git.nested {
+        s.upstream = None;
+    }
+    assert!(!render(&app, 120, 30)[5].contains("f fetch"));
+    press(&mut app, 'f');
+    assert!(!sent.borrow().iter().any(|c| c == "GitFetch"));
+}
+
 #[test]
 fn checkout_commits_scroll_to_incoming_and_clamp_after_snapshot_shrinks() {
     let mut app = app_graphite(fixture(false));

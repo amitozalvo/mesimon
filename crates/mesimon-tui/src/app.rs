@@ -230,6 +230,10 @@ pub(crate) struct SyncGroup<'a> {
     pub to_pull: Option<&'a [mesimon_core::command::GitCommit]>,
     /// When it was last fetched (unix ms), 0 = unknown.
     pub fetched_ms: u64,
+    /// A fetch press is fetching it now.
+    pub fetching: bool,
+    /// mesimon's last fetch of it failed: git's first stderr line.
+    pub fetch_error: Option<&'a str>,
 }
 
 impl SyncGroup<'_> {
@@ -2245,7 +2249,9 @@ impl App {
         if parts.is_empty() {
             parts.push("in sync".into());
         }
-        if let Some(e) = &g.fetch_error {
+        if g.fetching {
+            parts.push("fetching…".into());
+        } else if let Some(e) = &g.fetch_error {
             parts.push(format!("fetch failed: {}", crate::text::truncate(e, 48)));
         } else if g.fetched_at_ms > 0 {
             let now = mesimon_core::clock::now_ms();
@@ -4019,7 +4025,9 @@ impl App {
                 .and_then(|u| u.split_once('/'))
                 .map(|(remote, _)| remote.to_string())
                 .unwrap_or_default(),
-            git_fetching: self.git.fetching,
+            git_fetchable: self.git.upstream.is_some()
+                || self.git.nested.iter().any(|s| s.upstream.is_some() && !s.detached),
+            git_fetching: self.git.fetching || self.git.nested.iter().any(|s| s.fetching),
             git_fetch_on: self.git.fetch_every_secs > 0,
             git_fetch_note: self.git_fetch_note(),
             sel_session: selected.is_some(),
@@ -5247,9 +5255,9 @@ impl App {
             Verb::GitFetch => {
                 match self.req(Command::GitFetch) {
                     Response::Err { message } => self.status = message,
-                    // "fetching", not "fetched": the header's arrows are the
-                    // answer, and they move when the sample lands.
-                    _ => self.status = "fetching ∙ the header follows".into(),
+                    // No word on success: each row of the lists says
+                    // `fetching…` itself, and its arrows move when it lands.
+                    _ => self.status.clear(),
                 }
                 self.refresh()?;
             }
@@ -8839,6 +8847,8 @@ impl App {
             to_push: g.to_push.as_deref(),
             to_pull: g.to_pull.as_deref(),
             fetched_ms: g.fetched_at_ms,
+            fetching: g.fetching,
+            fetch_error: g.fetch_error.as_deref(),
         });
         let nested = g.nested.iter().map(|s| SyncGroup {
             repo: Some(&s.name),
@@ -8850,6 +8860,8 @@ impl App {
             to_push: s.to_push.as_deref(),
             to_pull: s.to_pull.as_deref(),
             fetched_ms: s.fetched_at_ms,
+            fetching: s.fetching,
+            fetch_error: s.fetch_error.as_deref(),
         });
         own.into_iter().chain(nested).collect()
     }

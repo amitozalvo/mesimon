@@ -425,6 +425,79 @@ pub fn fetch(repo: &Path, remote: &str) -> Result<(), String> {
     }
 }
 
+/// How many fetches a press runs at once. Twelve repos one after another is
+/// twelve round trips of waiting; four at a time is three, and still a
+/// handful of connections to one forge.
+const FETCH_WIDTH: usize = 4;
+
+/// What one fetch pass brought back: the board's own branch, if it was
+/// fetched, and each nested repo that was, by census name.
+#[derive(Debug, Default)]
+pub struct Fetched {
+    pub root: Option<Result<(), String>>,
+    pub nested: Vec<(String, Result<(), String>)>,
+}
+
+/// The remote a nested repo's comparison reads (T-455): its branch's
+/// configured remote, or for a same-name match the remote the match came
+/// from — the segment before the first `/`, exactly, because the pattern's
+/// `*` matched one segment. None where nothing is over the network: no
+/// comparison, a detached HEAD, a local branch as upstream.
+pub fn nested_remote(dir: &Path, s: &RepoSync) -> Option<String> {
+    let upstream = s.upstream.as_deref().filter(|_| !s.detached)?;
+    if s.by_name {
+        return upstream.split_once('/').map(|(remote, _)| remote.to_string());
+    }
+    remote_of(dir, &s.branch)
+}
+
+/// One fetch pass (T-455): the board's own branch (`own` is where it lives
+/// and its name) and each of `nested`, `FETCH_WIDTH` at a time, each with
+/// [`fetch`]'s fences. A repo with no remote to reach is left out of the
+/// answer rather than failed — there was nothing to try.
+pub fn fetch_pass(
+    root: &Path,
+    own: Option<(std::path::PathBuf, String)>,
+    nested: &[RepoSync],
+) -> Fetched {
+    let mut jobs: Vec<(Option<String>, std::path::PathBuf, String)> = Vec::new();
+    if let Some((dir, branch)) = own {
+        if let Some(remote) = remote_of(&dir, &branch) {
+            jobs.push((None, dir, remote));
+        }
+    }
+    for s in nested {
+        let dir = root.join(&s.name);
+        if let Some(remote) = nested_remote(&dir, s) {
+            jobs.push((Some(s.name.clone()), dir, remote));
+        }
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: Vec<(Option<String>, Result<(), String>)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..FETCH_WIDTH.min(jobs.len()))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((name, dir, remote)) = jobs.get(i) else { break done };
+                        done.push((name.clone(), fetch(dir, remote)));
+                    }
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap_or_default()).collect()
+    });
+    let mut out = Fetched::default();
+    for (name, verdict) in results {
+        match name {
+            None => out.root = Some(verdict),
+            Some(name) => out.nested.push((name, verdict)),
+        }
+    }
+    out
+}
+
 /// `MESIMON_GIT_FETCH=<minutes>` — the periodic fetch's cadence, zero when
 /// unset, unparsable or 0. Read once at daemon start; `doctor` prints it.
 pub fn fetch_every_from_env() -> Duration {
@@ -698,6 +771,95 @@ mod tests {
         assert!(sample(&root).nested.is_empty());
         assert_eq!(commit_dir(&root, None).unwrap(), root);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A fetch press over a workspace (T-455), against bare repositories on
+    /// disk: each repo reaches its own remote — the linked one, the one
+    /// matched by name — a broken remote fails only its own repo, a local
+    /// upstream is not fetched at all, and no `FETCH_HEAD` is written.
+    #[test]
+    fn a_fetch_pass_reaches_each_repo_by_its_own_remote() {
+        if !crate::worktree::have_git() {
+            return;
+        }
+        let base =
+            std::env::temp_dir().join(format!("msmn-gitstatus-fetch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("ws");
+        let git = |dir: &Path, args: &[&str]| -> String {
+            std::fs::create_dir_all(dir).unwrap();
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let bare = |name: &str| {
+            let dir = base.join(format!("{name}.git"));
+            git(&base, &["init", "-q", "--bare", "-b", "main", dir.to_str().unwrap()]);
+            dir
+        };
+        for repo in ["api", "local", "web", "broken"] {
+            git(&root.join(repo), &["init", "-q", "-b", "main"]);
+            git(&root.join(repo), &["commit", "-q", "--allow-empty", "-m", "base"]);
+        }
+        // api: linked the usual way. web: pushed without `-u`, never linked.
+        let api_remote = bare("api");
+        git(&root.join("api"), &["remote", "add", "origin", api_remote.to_str().unwrap()]);
+        git(&root.join("api"), &["push", "-q", "-u", "origin", "main"]);
+        let web_remote = bare("web");
+        git(&root.join("web"), &["remote", "add", "gitlab", web_remote.to_str().unwrap()]);
+        git(&root.join("web"), &["push", "-q", "gitlab", "main"]);
+        // broken: linked to a remote that is not there.
+        git(&root.join("broken"), &["remote", "add", "origin", "/nonexistent/msmn-remote.git"]);
+        git(&root.join("broken"), &["config", "branch.main.remote", "origin"]);
+        git(&root.join("broken"), &["config", "branch.main.merge", "refs/heads/main"]);
+        // local: its upstream is a local branch — nothing over the network.
+        git(&root.join("local"), &["branch", "upstream"]);
+        git(&root.join("local"), &["branch", "-q", "--set-upstream-to=upstream", "main"]);
+        // Somebody else pushes to both remotes.
+        for (remote, name) in [(&api_remote, "api-other"), (&web_remote, "web-other")] {
+            let other = base.join(name);
+            git(&base, &["clone", "-q", remote.to_str().unwrap(), other.to_str().unwrap()]);
+            git(&other, &["commit", "-q", "--allow-empty", "-m", "from elsewhere"]);
+            git(&other, &["push", "-q", "origin", "main"]);
+        }
+
+        let sync = |name: &str, upstream: &str, by_name: bool| RepoSync {
+            name: name.into(),
+            branch: "main".into(),
+            upstream: Some(upstream.into()),
+            by_name,
+            ..RepoSync::default()
+        };
+        let nested = [
+            sync("api", "origin/main", false),
+            sync("broken", "origin/main", false),
+            sync("local", "upstream", false),
+            sync("web", "gitlab/main", true),
+        ];
+        assert_eq!(nested_remote(&root.join("web"), &nested[3]).as_deref(), Some("gitlab"));
+        assert_eq!(nested_remote(&root.join("local"), &nested[2]), None);
+        let detached = RepoSync { detached: true, ..nested[0].clone() };
+        assert_eq!(nested_remote(&root.join("api"), &detached), None);
+
+        let mut got = fetch_pass(&root, None, &nested);
+        got.nested.sort_by(|a, b| a.0.cmp(&b.0));
+        assert!(got.root.is_none());
+        let names: Vec<_> = got.nested.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["api", "broken", "web"], "a local upstream is not fetched");
+        assert!(got.nested[0].1.is_ok() && got.nested[2].1.is_ok(), "{got:?}");
+        assert!(got.nested[1].1.is_err(), "{got:?}");
+        for (repo, tracking) in [("api", "origin/main"), ("web", "gitlab/main")] {
+            let subject = git(&root.join(repo), &["log", "-1", "--format=%s", tracking]);
+            assert_eq!(subject, "from elsewhere", "{repo}'s remote-tracking ref moved");
+            assert!(!root.join(repo).join(".git/FETCH_HEAD").exists(), "no FETCH_HEAD in {repo}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

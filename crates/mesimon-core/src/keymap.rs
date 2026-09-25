@@ -1009,6 +1009,10 @@ pub struct Ctx {
     pub git_upstream: bool,
     /// That remote's name (`origin`), for the row's label.
     pub git_remote: String,
+    /// Somewhere to fetch from: the checkout's upstream, or on a workspace
+    /// any repo compared with a remote (T-455). Gates `f` on the push /
+    /// pull lists.
+    pub git_fetchable: bool,
     /// A fetch is running now — the row stands down until it lands.
     pub git_fetching: bool,
     /// `MESIMON_GIT_FETCH` armed the periodic fetch; the row says so.
@@ -2886,6 +2890,21 @@ static DIFF: &[Binding] = &[
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
+        prio: 0, // Above the lists, beside `jk commit`.
+    },
+    Binding {
+        // Every repo the lists compare, fetched at once (T-455): the remote
+        // is what the TO PULL side reads, so the key sits above the lists.
+        // Stands down while a fetch runs; the rows say `fetching…`.
+        keys: &[Key::Char('f')],
+        verb: Verb::GitFetch,
+        show: "f",
+        hint: |_| "fetch",
+        avail: |c| c.git_commits && c.git_fetchable && !c.git_fetching,
+        class: Class::Plain,
+        group: Group::Worktree,
+        // It writes remote-tracking refs: not an observer's to press.
+        mutates: true,
         prio: 0, // Above the lists, beside `jk commit`.
     },
     Binding {

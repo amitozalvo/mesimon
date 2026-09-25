@@ -320,7 +320,7 @@ fn draw_commits(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
         d.pager.request.set(Some((COMMITS_KEY, want)));
     }
     let at = d.pager.window(Some(COMMITS_KEY), rows.len(), visible, false);
-    let keys = [Verb::PageDown, Verb::ScrollDown, Verb::OpenCommit];
+    let keys = [Verb::PageDown, Verb::ScrollDown, Verb::OpenCommit, Verb::GitFetch];
     let mut lines = vec![Line::from(hints(app, &keys, w)), Line::default()];
     lines.extend(rows.into_iter().skip(at).take(visible));
     f.render_widget(Paragraph::new(lines), area);
@@ -452,10 +452,25 @@ fn workspace_commits(rows: &mut CommitLines<'_>) {
             ),
             Span::styled(cell(&state, state_w), state_style),
         ];
-        if s.compared() && s.fetched_ms > 0 {
+        // How fresh the row's answer is: fetching now, the failure of the
+        // last try, or its age. A repo compared with nothing has none.
+        let used = super::spans_width(&line) + 3;
+        let fresh = if !s.compared() {
+            None
+        } else if s.fetching {
+            Some(("fetching…".to_string(), theme.dim2()))
+        } else if let Some(e) = s.fetch_error {
+            let e = crate::text::one_line(e);
+            let text = truncate(&format!("fetch failed: {e}"), rows.w.saturating_sub(used));
+            Some((text, theme.err_text()))
+        } else if s.fetched_ms > 0 {
             let since = std::time::Duration::from_millis(now.saturating_sub(s.fetched_ms));
-            let when = format!("   fetched {}", crate::release::ago(since));
-            line.push(Span::styled(when, theme.dim3()));
+            Some((format!("fetched {}", crate::release::ago(since)), theme.dim3()))
+        } else {
+            None
+        };
+        if let Some((text, style)) = fresh {
+            line.push(Span::styled(format!("   {text}"), style));
         }
         rows.lines.push(Line::from(line));
         if !pending {

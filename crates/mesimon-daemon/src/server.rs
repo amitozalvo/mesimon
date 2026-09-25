@@ -285,7 +285,7 @@ enum Msg {
     ExternalScanned(Vec<ExternalItem>),
     /// A git sample of the board's own checkout landed (T-124), with the
     /// verdict of the fetch that preceded it when one was asked for.
-    GitSampled(mesimon_core::command::RepoGit, Option<std::result::Result<(), String>>),
+    GitSampled(mesimon_core::command::RepoGit, crate::gitstatus::Fetched),
     /// A client's reader thread returned: its connection is closed. The
     /// merge train it may have armed disarms with it (2026-09-04).
     ClientGone(Arc<Mutex<UnixStream>>),
@@ -584,6 +584,25 @@ pub struct Daemon {
     git_fetched_at_ms: u64,
     /// The last fetch's first stderr line; cleared by the next success.
     git_fetch_error: Option<String>,
+    /// The next sample also fetches every nested repo with a remote — a
+    /// person's press on the push / pull lists (T-455). The periodic fetch
+    /// never sets it: it stays the board's own branch.
+    git_fetch_nested_wanted: bool,
+    /// The nested repos the in-flight pass is fetching, by census name.
+    git_fetching_repos: std::collections::HashSet<String>,
+    /// Each nested repo's fetches by mesimon, stamped into its `RepoSync`
+    /// the way the root's are into `RepoGit`: this fetch writes no
+    /// `FETCH_HEAD`, so the sample alone would never see it happen.
+    git_nested_fetch: HashMap<String, NestedFetch>,
+}
+
+/// mesimon's own fetches of one nested repo (T-455).
+#[derive(Debug, Default)]
+struct NestedFetch {
+    /// The last success (unix ms), 0 = none.
+    ok_at_ms: u64,
+    /// The last failure since then: when, and git's first stderr line.
+    error: Option<(u64, String)>,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -952,6 +971,9 @@ pub fn run(paths: Paths) -> Result<()> {
         git_last_fetch: None,
         git_fetched_at_ms: 0,
         git_fetch_error: None,
+        git_fetch_nested_wanted: false,
+        git_fetching_repos: std::collections::HashSet::new(),
+        git_nested_fetch: HashMap::new(),
     };
     // The restored entries (T-418), judged once as any entry is (a gone
     // ticket, a seat someone took) and written back so the file is the list
@@ -2001,10 +2023,14 @@ impl Daemon {
                 Response::Ok
             }
             Command::GitFetch => {
-                if self.git_cache.upstream.is_none() {
+                // The board's own upstream, or any workspace repo compared
+                // with a remote (T-455): a press fetches all of them.
+                let nested = self.git_cache.nested.iter().any(|s| s.upstream.is_some());
+                if self.git_cache.upstream.is_none() && !nested {
                     return Response::Err { message: "no upstream to fetch".into() };
                 }
                 self.git_fetch_wanted = true;
+                self.git_fetch_nested_wanted = true;
                 self.queue_git_sample();
                 // `fetching` becoming true is what the menu row shows for the
                 // press; a slow remote must not leave the row looking missed.
@@ -5286,6 +5312,7 @@ impl Daemon {
                 fetch_every_secs: self.git_fetch_every.as_secs(),
                 fetched_at_ms: self.git_fetched_at_ms,
                 fetch_error: self.git_fetch_error.clone(),
+                nested: self.stamped_nested(),
                 ..self.git_cache.clone()
             },
             pending,
@@ -5444,6 +5471,25 @@ impl Daemon {
         !self.subscribers.is_empty() || self.train.is_armed()
     }
 
+    /// The sampled nested repos with mesimon's own fetch bookkeeping on them
+    /// (T-455): fetching now, the newer of `FETCH_HEAD` and our last success,
+    /// and our last failure while nothing has fetched the repo since.
+    fn stamped_nested(&self) -> Vec<mesimon_core::command::RepoSync> {
+        let mut nested = self.git_cache.nested.clone();
+        for s in &mut nested {
+            s.fetching = self.git_fetching_repos.contains(&s.name);
+            if let Some(seen) = self.git_nested_fetch.get(&s.name) {
+                s.fetched_at_ms = s.fetched_at_ms.max(seen.ok_at_ms);
+                s.fetch_error = seen
+                    .error
+                    .as_ref()
+                    .filter(|(at, _)| *at > s.fetched_at_ms)
+                    .map(|(_, e)| e.clone());
+            }
+        }
+        nested
+    }
+
     /// Sample the checkout's git state on a worker thread — fetching first
     /// when a fetch is wanted. One at a time: a second ask while one is in
     /// flight is remembered and run when it lands, never dropped.
@@ -5456,6 +5502,14 @@ impl Daemon {
         self.git_wanted = false;
         let fetch = std::mem::take(&mut self.git_fetch_wanted) && self.git_cache.upstream.is_some();
         self.git_fetching = fetch;
+        let nested: Vec<mesimon_core::command::RepoSync> =
+            if std::mem::take(&mut self.git_fetch_nested_wanted) {
+                let compared = self.git_cache.nested.iter();
+                compared.filter(|s| s.upstream.is_some() && !s.detached).cloned().collect()
+            } else {
+                Vec::new()
+            };
+        self.git_fetching_repos = nested.iter().map(|s| s.name.clone()).collect();
         let repo = self.paths.repo_root.clone();
         // The one nested repo that stands in for the checkout (T-225) is
         // where its branch's remote is configured.
@@ -5463,13 +5517,9 @@ impl Daemon {
         let branch = self.git_cache.branch.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let verdict = if fetch {
-                crate::gitstatus::remote_of(&fetch_in, &branch)
-                    .map(|remote| crate::gitstatus::fetch(&fetch_in, &remote))
-            } else {
-                None
-            };
-            let _ = tx.send(Msg::GitSampled(crate::gitstatus::sample(&repo), verdict));
+            let own = fetch.then_some((fetch_in, branch));
+            let fetched = crate::gitstatus::fetch_pass(&repo, own, &nested);
+            let _ = tx.send(Msg::GitSampled(crate::gitstatus::sample(&repo), fetched));
         });
     }
 
@@ -5478,11 +5528,29 @@ impl Daemon {
     fn on_git_sampled(
         &mut self,
         sample: mesimon_core::command::RepoGit,
-        fetched: Option<std::result::Result<(), String>>,
+        fetched: crate::gitstatus::Fetched,
     ) {
         self.git_inflight = false;
         let mut changed = std::mem::replace(&mut self.git_fetching, false);
-        if let Some(verdict) = fetched {
+        if !self.git_fetching_repos.is_empty() {
+            self.git_fetching_repos.clear();
+            changed = true;
+        }
+        let now = now_ms();
+        for (name, verdict) in fetched.nested {
+            let seen = self.git_nested_fetch.entry(name).or_default();
+            match verdict {
+                Ok(()) => {
+                    (seen.ok_at_ms, seen.error) = (now, None);
+                    // A leg's remote-tracking ref lives in its own repo
+                    // (T-267, keyed by leg name), and this fetch can move it.
+                    self.upstreams.clear();
+                }
+                Err(e) => seen.error = Some((now, e)),
+            }
+            changed = true;
+        }
+        if let Some(verdict) = fetched.root {
             self.git_last_fetch = Some(Instant::now());
             match verdict {
                 Ok(()) => {

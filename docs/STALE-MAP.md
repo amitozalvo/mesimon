@@ -13750,12 +13750,48 @@ and that clause gives way whole on a tight header row. `chrome::arrows` is now t
 spelling of ` ↑N ↓N`. A commit opened from a child names it: ` web ∙ ddddddd Web older ∙
 to push ∙ …`.
 
-**Not done.** "Fetch all remotes" (deferred since T-225): a child's incoming list moves only
-when that repo is fetched outside mesimon.
+**`f` fetches from the lists (same day; author: "how would you add an ability to fetch from
+the push pull page?" then "implement. no periodic").** Fetch had no key at all: the Esc
+menu's `Fetch origin` row was removed in an earlier pass, which left `Verb::GitFetch` and its
+dispatch arm reachable only from `MESIMON_GIT_FETCH`. Now `f fetch` is a Diff-scope binding,
+`prio: 0` and drawn on the lists' hint row. It is live when `Ctx::git_fetchable` holds (the
+root has an upstream, or any child is compared) and no fetch is running (`git_fetching` now
+counts the children too). `mutates: true`, because it writes remote-tracking refs, and an
+observer does not press it. `f` was unbound on every screen.
+
+- **One press, every repo.** `Command::GitFetch` now also sets `git_fetch_nested_wanted`,
+  and it refuses only when neither the root nor any child has an upstream. The worker's
+  `gitstatus::fetch_pass` fetches the root (as before) and each compared child, 4 at a time
+  (`FETCH_WIDTH`) on scoped threads, each through `fetch`'s existing fences, then samples
+  once.
+- **Which remote a child uses** (`nested_remote`): its branch's configured remote, or, for a
+  by-name match, the segment before the first `/`. That segment is exact because the
+  match's `*` covers one segment. A local-branch upstream or a detached HEAD is left out
+  rather than failed.
+- **The periodic fetch is untouched** (author: "no periodic"): it sets only
+  `git_fetch_wanted` and still fetches the root alone.
+- **Bookkeeping, stamped and never sampled** (the T-124 pattern): `git_fetching_repos`, and
+  `git_nested_fetch` holding the last success and the last failure with its time.
+  `stamped_nested()` writes these into each `RepoSync`: `fetching`, `fetched_at_ms` as the
+  newer of `FETCH_HEAD` and our success, and `fetch_error` only while it is newer than any
+  fetch. mesimon's fetch writes no `FETCH_HEAD` (`--no-write-fetch-head`, README promise 1),
+  so the sample alone would never see it happen. A child's success also clears
+  `upstreams`, because a leg's remote-tracking ref (T-267) lives in that child.
+- **Each row answers for itself.** `fetching…` in `dim2`, then the age. On failure,
+  `fetch failed: <git's first line>` appears in `err` on that row only; the others land.
+  The success status text is gone: the rows are the answer. The single-repo note gains
+  `fetching…`.
+
+Goldens: `git_commits_60x30`, `git_commits_120x30` and `git_commits_workspace_120x30` each
+changed one line, the hint row (`∙ f fetch`).
 
 **Tests.** Daemon: `a_workspace_lists_each_repo_against_its_remote`, which covers linked, by
 name, no remote, detached, two candidate remotes refused, `commit_dir`'s census check, and
 the one-repo folder's commit road. E2e: `workspace_e2e` sends the nested lists over the wire
 and opens a commit in `api` only. TUI: `a_workspace_lists_each_repo_and_opens_a_commit_in_it`
 (row order, the calm `✓`, the fetch age) with the new golden `git_commits_workspace_120x30`, and the summed-arrows cases added to
-`test_git_clause_names_a_workspace_by_its_count`. No existing golden moved.
+`test_git_clause_names_a_workspace_by_its_count`. Fetch: `a_fetch_pass_reaches_each_repo_by_its_own_remote`
+(bare remotes on disk: linked, by name, broken, local upstream skipped, no `FETCH_HEAD`);
+`workspace_e2e` presses `GitFetch` and waits for `web` to fetch and `api` to fail on its own
+row; `a_workspace_fetches_from_its_lists_and_each_row_answers` (the hint and key, `fetching…`,
+the error in `err`, the key standing down).

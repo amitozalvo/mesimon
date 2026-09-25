@@ -5,7 +5,8 @@
 //! rows prefixed by their name, and `DiffFile` opens through the prefix. And
 //! (T-368) a worktree ticket there gets one worktree per repo under one
 //! container, merged leg by leg. And (T-455) each child's push / pull lists ride
-//! the snapshot, and a listed commit opens in the repo it was listed under.
+//! the snapshot, a listed commit opens in the repo it was listed under, and a
+//! `GitFetch` press fetches each child from its own remote.
 //!
 //! The harness boots on a bare directory and the boot sample sees no repo;
 //! the next sample is the 10 s bucket's, so the census is waited for (a
@@ -152,6 +153,43 @@ fn a_workspace_of_repos_stands_on_the_wire() {
         let resp = open(&mut c, repo);
         assert!(matches!(resp, Response::Err { .. }), "{repo:?}: {resp:?}");
     }
+
+    // ---- a fetch press reaches every repo (T-455) ---------------------------
+    // `web` gets a real remote under its `gitlab` name, and somebody else
+    // pushes to it; `api` is re-linked to a remote that is not there. The
+    // meta has no upstream at all, and the press is still accepted.
+    let remote = h.dir.join("web-remote.git");
+    git(&h.dir, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
+    git(&web, &["remote", "add", "gitlab", remote.to_str().unwrap()]);
+    git(&web, &["push", "-q", "gitlab", "main"]);
+    let other = h.dir.join("web-other");
+    git(&h.dir, &["clone", "-q", remote.to_str().unwrap(), other.to_str().unwrap()]);
+    git(&other, &["config", "user.email", "e2e@t"]);
+    git(&other, &["config", "user.name", "e2e"]);
+    git(&other, &["commit", "-q", "--allow-empty", "-m", "web incoming"]);
+    git(&other, &["push", "-q", "origin", "main"]);
+    git(&api, &["remote", "add", "origin", "/nonexistent/msmn-e2e-remote.git"]);
+    git(&api, &["config", "branch.main.remote", "origin"]);
+    git(&api, &["config", "branch.main.merge", "refs/heads/main"]);
+    assert!(matches!(c.request(Command::GitFetch), Response::Ok));
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let g = loop {
+        let g = git_of(c.request(Command::Snapshot));
+        let web = g.nested.iter().find(|s| s.name == "web").unwrap();
+        let api = g.nested.iter().find(|s| s.name == "api").unwrap();
+        if web.behind == 1 && !web.fetching && api.fetch_error.is_some() {
+            break g;
+        }
+        assert!(Instant::now() < deadline, "never saw web fetched and api refused; last: {g:?}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let web_sync = g.nested.iter().find(|s| s.name == "web").unwrap();
+    assert_eq!(web_sync.to_pull.as_ref().unwrap()[0].subject, "web incoming");
+    assert!(web_sync.fetched_at_ms > 0 && web_sync.fetch_error.is_none(), "{web_sync:?}");
+    assert!(!web.join(".git/FETCH_HEAD").exists(), "mesimon's fetch writes no FETCH_HEAD");
+    let api_sync = g.nested.iter().find(|s| s.name == "api").unwrap();
+    assert_eq!(api_sync.fetched_at_ms, 0, "a failed fetch is not a fetch: {api_sync:?}");
+    assert!(g.fetch_error.is_none(), "the meta was never fetched: {g:?}");
 }
 
 /// Stub claude: records its cwd beside itself, dies politely on TERM. The

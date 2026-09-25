@@ -3,7 +3,7 @@
  ⎇ main ↑2 ↓1 ∙ push / pull ∙ origin/main   tab uncommitted
 
 
- { } page ∙ jk commit ∙ enter open
+ { } page ∙ jk commit ∙ enter open ∙ f fetch
 
   TO PUSH (2)
 

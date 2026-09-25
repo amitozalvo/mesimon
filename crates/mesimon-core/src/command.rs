@@ -2248,10 +2248,19 @@ pub struct RepoSync {
     #[serde(default)]
     pub to_pull: Option<Vec<GitCommit>>,
     /// When this repo was last fetched (unix ms): its `FETCH_HEAD`'s mtime,
-    /// which every `git fetch` and `git pull` rewrites. 0 = never, or not
-    /// known. Incoming commits are only as fresh as this.
+    /// which every `git fetch` and `git pull` rewrites, or mesimon's own
+    /// fetch, which writes no `FETCH_HEAD` — whichever is newer. 0 = never,
+    /// or not known. Incoming commits are only as fresh as this.
     #[serde(default)]
     pub fetched_at_ms: u64,
+    /// A fetch press is fetching this repo right now. Stamped by the daemon
+    /// from its bookkeeping, like [`RepoGit::fetching`], never sampled.
+    #[serde(default)]
+    pub fetching: bool,
+    /// mesimon's last fetch of this repo failed, and nothing has fetched it
+    /// since: git's first stderr line. Stamped, like `fetching`.
+    #[serde(default)]
+    pub fetch_error: Option<String>,
 }
 
 /// Pushed to subscribed clients whenever board state changes.
