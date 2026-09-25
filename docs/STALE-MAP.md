@@ -13875,3 +13875,22 @@ the wire tells it apart from a real `.`.
 `app::a_hebrew_key_pauses_the_board_until_an_english_letter`,
 `app::esc_dismisses_the_layout_pause`, `app::a_hebrew_title_pauses_the_board_before_its_first_key`,
 and the golden `board_layout_pause_80x24` (the sentence whole at 80 columns).
+
+## `write_note` says an approved plan is already a note (T-459, 2026-09-25, user: "agents attempt to save plan to notes even though it happens automatically" ∙ "they need to know, so to prevent this")
+
+`record_plan` has written the approved plan as the session's note since 2026-09-03, but nothing
+told the agent. The `ExitPlanMode` response names only `~/.claude/plans/<slug>.md`, so an agent
+went on to `write_note` the same plan by hand: a second copy on the ticket, and one no re-plan
+revises.
+
+**The fix is one sentence in `write_note`'s description**: "A plan from plan mode is already a
+note, saved by the board and revised on each re-plan." Tool text is where the agent looks at the
+moment it is about to save, and it reaches every session mesimon spawns, Claude and Codex alike.
+It passes the lint (it describes, it does not forbid) and the tool is 794 of 820 bytes.
+
+**Considered and not taken.** The agent brief: it is opt-in and off by default, so it would
+reach almost nobody. A `plan` marker on `get_ticket`'s note rows: it only helps an agent that
+checks `get_ticket` before it writes, and this agent did not.
+
+**Test.** `mcp::write_note_says_the_plan_is_already_a_note`; the budget and lint tests cover the
+rest.

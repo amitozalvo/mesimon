@@ -238,11 +238,15 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "write_note",
+            // The plan clause (T-459): agents saved their approved plan here
+            // by hand, a second copy of the note `record_plan` had already
+            // written off the same approval.
             "description": "Creates a markdown note on this session's ticket, or with key \
                             another ticket's (crown only), or replaces the whole text of an \
                             existing one. The first note is the ticket's description. Empty \
                             text deletes an existing note. Text past 32 KiB is refused, not \
-                            cut; the refusal names both sizes.",
+                            cut; the refusal names both sizes. A plan from plan mode is \
+                            already a note, saved by the board and revised on each re-plan.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1523,6 +1527,21 @@ mod tests {
             let bytes = serde_json::to_vec(tool).unwrap().len();
             assert!(bytes <= MAX_TOOL_BYTES, "{name} is {bytes} bytes, cap is {MAX_TOOL_BYTES}");
         }
+    }
+
+    /// T-459: an agent that does not know the board saved its approved plan
+    /// saves it again by hand. The tool it would do that with is where it
+    /// learns the note already exists.
+    #[test]
+    fn write_note_says_the_plan_is_already_a_note() {
+        let registry = tools();
+        let tool = registry.iter().find(|t| t["name"] == "write_note").unwrap();
+        let description = tool["description"].as_str().unwrap();
+        assert!(
+            description.contains("A plan from plan mode is already a note, saved by the board"),
+            "{description}"
+        );
+        assert!(description.contains("revised on each re-plan"), "{description}");
     }
 
     /// Descriptions describe; they do not instruct. This walks the tool
