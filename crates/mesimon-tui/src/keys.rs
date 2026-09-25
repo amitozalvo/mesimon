@@ -91,6 +91,91 @@ pub fn word_wise(mods: KeyModifiers) -> bool {
     mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
+/// The keyboard is on a layout whose letters are not the keymap's (T-458).
+/// Every key is a Latin letter, so a Hebrew `ח` on the board is no key at
+/// all: it is the keyboard saying which layout it is on. `script` names the
+/// layout where the letter's block does, for the footer's sentence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignLayout {
+    pub script: Option<&'static str>,
+}
+
+impl ForeignLayout {
+    /// `None` for a Latin letter — ASCII, a French `é`, the `µ` and `ø`
+    /// macOS composes under Option — and for anything that is not a letter:
+    /// Terminal's `˙` for `⌥h` is a symbol, not a layout. The two Greek
+    /// letters US macOS composes under Option (`⌥p` is `π`, `⌥z` is `Ω`) are
+    /// not a layout either.
+    pub fn of(c: char) -> Option<Self> {
+        let latin = matches!(c, '\0'..='\u{036F}' | '\u{1E00}'..='\u{1EFF}');
+        if !c.is_alphabetic() || latin || matches!(c, 'π' | 'Ω') {
+            return None;
+        }
+        let script = match c {
+            '\u{0370}'..='\u{03FF}' | '\u{1F00}'..='\u{1FFF}' => "Greek",
+            '\u{0400}'..='\u{052F}' => "Cyrillic",
+            '\u{0530}'..='\u{058F}' => "Armenian",
+            '\u{0590}'..='\u{05FF}' | '\u{FB1D}'..='\u{FB4F}' => "Hebrew",
+            '\u{0600}'..='\u{06FF}' | '\u{0750}'..='\u{077F}' | '\u{FB50}'..='\u{FDFF}' => "Arabic",
+            '\u{0E00}'..='\u{0E7F}' => "Thai",
+            '\u{10A0}'..='\u{10FF}' => "Georgian",
+            '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' | '\u{AC00}'..='\u{D7AF}' => "Korean",
+            '\u{3040}'..='\u{30FF}' => "Japanese",
+            _ => return Some(Self { script: None }),
+        };
+        Some(Self { script: Some(script) })
+    }
+
+    /// The footer's sentence while the keys are paused.
+    pub fn warning(self) -> String {
+        let which = match self.script {
+            Some(name) => format!("keyboard is in {name}"),
+            None => "keyboard is on another layout".to_string(),
+        };
+        format!("{which} — switch to English ∙ keys paused ∙ esc dismisses")
+    }
+}
+
+/// What one key does to the layout pause (T-458), outside a text field. Only
+/// a character is read: arrows, Enter, Esc, Tab, Space and every Ctrl chord
+/// are the same key on every layout, so they act whatever the pause says —
+/// no one is ever locked in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauseStep {
+    /// The key acts; the pause, if any, stands.
+    Pass,
+    /// A foreign letter: the pause starts (or renames itself), the key is dropped.
+    Arm(ForeignLayout),
+    /// An English letter: the pause ends and the key acts — the person
+    /// switched layout and pressed what they meant.
+    Resume,
+    /// Esc while paused: the pause ends and the key is spent on it.
+    Dismiss,
+    /// Paused: dropped. Every other character — above all the punctuation a
+    /// Hebrew layout puts on letter keys, where physical `q` types `/`
+    /// (search) and physical `/` types `.` (repeat the last move).
+    Drop,
+}
+
+pub fn pause_step(paused: bool, key: Key) -> PauseStep {
+    let c = match key {
+        Key::Char(c) => c,
+        Key::Esc if paused => return PauseStep::Dismiss,
+        _ => return PauseStep::Pass,
+    };
+    if let Some(layout) = ForeignLayout::of(c) {
+        return PauseStep::Arm(layout);
+    }
+    match c {
+        _ if !paused => PauseStep::Pass,
+        'a'..='z' => PauseStep::Resume,
+        // A digit is the same key on these layouts, and a capital is what
+        // Shift gives where the layout's shift level is Latin.
+        'A'..='Z' | '0'..='9' => PauseStep::Pass,
+        _ => PauseStep::Drop,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +242,59 @@ mod tests {
     fn shift_letter_is_the_uppercase_atom() {
         assert_eq!(to_key(KeyCode::Char('D'), KeyModifiers::SHIFT), Some(Key::Char('D')));
         assert_eq!(to_key(KeyCode::Char('d'), KeyModifiers::NONE), Some(Key::Char('d')));
+    }
+
+    /// A letter from another script names its layout where it can; a Latin
+    /// letter or a composed symbol is no layout at all (T-458).
+    #[test]
+    fn a_foreign_letter_names_its_layout() {
+        let named = |c| ForeignLayout::of(c).and_then(|l| l.script);
+        assert_eq!(named('ח'), Some("Hebrew"));
+        assert_eq!(named('й'), Some("Cyrillic"));
+        assert_eq!(named('λ'), Some("Greek"));
+        assert_eq!(named('ش'), Some("Arabic"));
+        // A letter from a block we do not name still pauses, unnamed.
+        assert_eq!(ForeignLayout::of('क'), Some(ForeignLayout { script: None }));
+        for latin in ['j', 'J', 'é', 'ß', 'ø', 'µ', 'ı', 'ạ'] {
+            assert_eq!(ForeignLayout::of(latin), None, "{latin} is Latin");
+        }
+        // macOS Terminal's Option compositions: `⌥h` `⌥j` `⌥k` `⌥p` `⌥z`.
+        for composed in ['˙', '∆', '˚', 'π', 'Ω', '/', '.', '1', ' '] {
+            assert_eq!(ForeignLayout::of(composed), None, "{composed} is no layout");
+        }
+        assert_eq!(
+            ForeignLayout::of('ח').map(ForeignLayout::warning).as_deref(),
+            Some("keyboard is in Hebrew — switch to English ∙ keys paused ∙ esc dismisses")
+        );
+    }
+
+    /// The pause drops every character but an English letter or a digit,
+    /// ends on a lowercase letter, and never holds a key that is the same
+    /// on every layout.
+    #[test]
+    fn the_pause_holds_characters_only() {
+        let hebrew = ForeignLayout { script: Some("Hebrew") };
+        assert_eq!(pause_step(false, Key::Char('ח')), PauseStep::Arm(hebrew));
+        assert_eq!(pause_step(true, Key::Char('ח')), PauseStep::Arm(hebrew));
+        for pass in [Key::Char('/'), Key::Char('.'), Key::Char('j'), Key::Esc] {
+            assert_eq!(pause_step(false, pass), PauseStep::Pass, "{pass:?} unpaused");
+        }
+        for drop in ['/', '.', '\'', ',', ';', '[', ']', '?', 'é', '˙'] {
+            assert_eq!(pause_step(true, Key::Char(drop)), PauseStep::Drop, "{drop}");
+        }
+        assert_eq!(pause_step(true, Key::Char('j')), PauseStep::Resume);
+        assert_eq!(pause_step(true, Key::Esc), PauseStep::Dismiss);
+        for pass in [
+            Key::Char('J'),
+            Key::Char('3'),
+            Key::Enter,
+            Key::Down,
+            Key::Tab,
+            Key::Space,
+            Key::Ctrl('t'),
+        ] {
+            assert_eq!(pause_step(true, pass), PauseStep::Pass, "{pass:?} paused");
+        }
     }
 
     #[test]

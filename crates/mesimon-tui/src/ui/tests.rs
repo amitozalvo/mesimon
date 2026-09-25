@@ -496,6 +496,24 @@ fn golden_waiting_board_120() {
     golden("board_waiting_120x30", &render(&app, 120, 30));
 }
 
+/// A Hebrew key on the board (T-458): the footer's hints give way to the
+/// pause's sentence, whole at 80 columns, and nothing else on the board
+/// moves.
+#[test]
+fn golden_layout_pause_board_80() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    press(&mut app, 'ח');
+    let lines = render(&app, 80, 24);
+    let footer = lines.last().expect("a footer row");
+    assert!(
+        footer.trim_end().ends_with("keys paused ∙ esc dismisses"),
+        "the sentence fits whole: {footer}"
+    );
+    golden("board_layout_pause_80x24", &lines);
+}
+
 /// A raised hand (T-107): the mark replaces the done mark on the card, and
 /// the cursor card carries the agent's own sentence in the context row the
 /// snooze preset and the owed row share.

@@ -169,6 +169,12 @@ interrupts the agent instead of detaching. `ctrl-5` is bound for exactly that an
 layout; in iTerm2 you can also fix the keystroke itself, leaving Escape alone: Keys → Key
 Bindings → `ctrl-]` → Send Hex Code → `0x1d`.
 
+Every key is an English letter, so on a layout whose letters are not Latin (Hebrew, Russian,
+Greek, Arabic) a letter pressed on the board is no key at all. mesimon pauses instead of
+guessing: the footer names the layout, and every character key is ignored until you switch to
+English and press a letter, which then acts. `esc` dismisses the pause. Arrows, `enter`, digits
+and the `ctrl` keys keep working, and text fields take any language.
+
 If `shift-enter` does nothing and `?` does not list it, the terminal never reported the key:
 mesimon asks for it through the kitty keyboard protocol and leaves the key unbound where the
 answer is no. On iTerm2 the usual cause is a key binding on Shift+Enter — Claude Code's

@@ -504,6 +504,17 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
         let used: usize = super::spans_width(spans);
         spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
     };
+    // The layout pause outranks the status (T-458): it stands until it is
+    // answered, and every key it drops would leave the same footer behind.
+    // Bold, never the attention hue — the one saturated colour is needs-you.
+    if let Some(layout) = app.keys_paused() {
+        let mut spans = vec![Span::styled(
+            format!(" {}", layout.warning()),
+            Style::default().fg(ink.base).add_modifier(Modifier::BOLD),
+        )];
+        pad_to(&mut spans);
+        return Line::from(spans).style(band);
+    }
     if !app.status.is_empty() {
         let mut spans = vec![Span::styled(
             format!(" {}", crate::text::one_line(&app.status)),

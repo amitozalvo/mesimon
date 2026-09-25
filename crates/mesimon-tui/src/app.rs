@@ -28,6 +28,7 @@ use ratatui::crossterm::event::{
 };
 
 use crate::client::Transport;
+use crate::keys::PauseStep;
 use crate::prefs::PeekLevel;
 use crate::text::{EditBuffer, TextArea};
 use crate::theme::{Flavor, Ground, Theme};
@@ -1497,6 +1498,12 @@ pub struct App {
     /// shakes for `SHAKE_OFFSETS` from that instant. Board-side and per
     /// board, like `tag_flash` — a refusal is about the card you pressed on.
     pub refused: Option<(ulid::Ulid, Instant)>,
+    /// The keyboard's last letter was not a Latin one (T-458): outside a
+    /// text field every character but an English letter or a digit is
+    /// dropped, and the footer says why, until an English letter or Esc.
+    /// Kept up to date inside a text field too, where it is neither read nor
+    /// drawn — a Hebrew title means the board's next key is Hebrew as well.
+    pub layout_pause: Option<crate::keys::ForeignLayout>,
     /// The ticket page's preview zone: the selected shell's pane tail, and
     /// when it was fetched. Per-view and in memory only — a shell has no
     /// transcript file to read the way `peek_cache` reads an agent's, so
@@ -1794,6 +1801,7 @@ impl App {
             searcher: std::cell::RefCell::new(None),
             tag_flash: None,
             refused: None,
+            layout_pause: None,
             shell_tail: None,
             terminals: Vec::new(),
             crown_touches: Vec::new(),
@@ -3812,6 +3820,29 @@ impl App {
             || self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some())
     }
 
+    /// Every field that takes a key as text — `typing` plus the picker's
+    /// query and the in-place fields of the dialogs, which is each barrier
+    /// `handle_key_inner` routes before the keymap. Hebrew there is a
+    /// title's letters, not a stray key, so the layout pause is not read.
+    fn text_field(&self) -> bool {
+        self.typing()
+            || matches!(
+                self.mode,
+                Mode::Search(_)
+                    | Mode::ColumnSettings { naming: Some(_), .. }
+                    | Mode::Prompts { editing: Some(_), .. }
+                    | Mode::Sharing { editing: Some(_), .. }
+                    | Mode::Tiers { naming: Some(_), .. }
+                    | Mode::TierEdit { field: Some(_), .. }
+            )
+    }
+
+    /// The layout pause the footer shows (T-458): not inside a text field,
+    /// and not over the tag picker, which reads its own keys first.
+    pub(crate) fn keys_paused(&self) -> Option<crate::keys::ForeignLayout> {
+        self.layout_pause.filter(|_| !self.text_field() && self.tag_armed.is_none())
+    }
+
     /// Which keymap owns this keypress. Derived, never stored — the chord
     /// tails (`d`, `z`) are scopes too, which is what makes a stray key inside
     /// a chord resolve to nothing and cancel instead of acting.
@@ -4373,6 +4404,15 @@ impl App {
     /// verb it returns is matched exhaustively below — so a binding with no
     /// handler is a compile error, not a dead key.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // A letter typed into a field says which layout the keyboard is on
+        // (T-458), so leaving a Hebrew title for the board finds the pause
+        // already up — before its first key, which on Hebrew is `q` typing
+        // `/`. A Latin letter there ends it the same way.
+        if let KeyCode::Char(c) = code {
+            if self.text_field() && c.is_alphabetic() && !mods.contains(KeyModifiers::CONTROL) {
+                self.layout_pause = crate::keys::ForeignLayout::of(c);
+            }
+        }
         let out = self.handle_key_inner(code, mods);
         // Observed AFTER the press, not at each of the several places that
         // open a page: a ticket the reader is now looking at is a ticket
@@ -4453,6 +4493,24 @@ impl App {
         let Some(key) = crate::keys::to_key(code, mods) else {
             return Ok(());
         };
+        // No key is spelled in a Hebrew letter (T-458). One arriving here is
+        // the keyboard on another layout, and the next few keys would be
+        // nothing — or, where that layout types punctuation on a letter key,
+        // the wrong verb. So the characters stop until an English letter,
+        // and the footer says why.
+        match crate::keys::pause_step(self.layout_pause.is_some(), key) {
+            PauseStep::Pass => {}
+            PauseStep::Resume => self.layout_pause = None,
+            PauseStep::Dismiss => {
+                self.layout_pause = None;
+                return Ok(());
+            }
+            PauseStep::Arm(layout) => {
+                self.layout_pause = Some(layout);
+                return Ok(());
+            }
+            PauseStep::Drop => return Ok(()),
+        }
         // The help overlay swallows the next key, whatever it is: it is a
         // reference card, and any key is "I'm done reading".
         if self.help {
@@ -12856,6 +12914,82 @@ mod tests {
 
     fn press(app: &mut App, c: char) {
         app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+    }
+
+    // ---- the layout pause (T-458) ----------------------------------------
+
+    fn esc(app: &mut App) {
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    }
+
+    /// A Hebrew key on the board pauses the characters and the footer says
+    /// why; the punctuation Hebrew puts on letter keys (physical `q` types
+    /// `/`) is dropped rather than opening search; an English letter ends
+    /// the pause and acts.
+    #[test]
+    fn a_hebrew_key_pauses_the_board_until_an_english_letter() {
+        let mut app = app_three_columns();
+        app.cursor_col = 0;
+        app.cursor_row = Some(0);
+        press(&mut app, 'ח');
+        assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+        assert_eq!(app.cursor_row, Some(0), "a Hebrew letter is no key");
+        let footer = footer_text(&app);
+        assert!(footer.contains("keyboard is in Hebrew — switch to English"), "{footer}");
+        press(&mut app, '/');
+        assert!(matches!(app.mode, Mode::Normal), "physical q must not search: {:?}", app.mode);
+        press(&mut app, 'j');
+        assert_eq!(app.cursor_row, Some(1), "the English letter acts");
+        assert!(app.layout_pause.is_none());
+        assert!(!footer_text(&app).contains("keyboard"), "{}", footer_text(&app));
+        press(&mut app, '/');
+        assert!(matches!(app.mode, Mode::Search(_)), "unpaused, / searches: {:?}", app.mode);
+    }
+
+    /// Esc answers the pause without acting, for a keyboard that is already
+    /// English again and wants a punctuation key first.
+    #[test]
+    fn esc_dismisses_the_layout_pause() {
+        let mut app = app_three_columns();
+        press(&mut app, 'ש');
+        assert!(app.keys_paused().is_some());
+        esc(&mut app);
+        assert!(app.layout_pause.is_none());
+        press(&mut app, '/');
+        assert!(matches!(app.mode, Mode::Search(_)), "{:?}", app.mode);
+    }
+
+    /// Hebrew in a text field is text, and the footer there stays the
+    /// field's; leaving it finds the pause already up, so the board's first
+    /// key — Hebrew's `/` for `q` — is held too. An English letter typed in
+    /// a field ends the pause the same way.
+    #[test]
+    fn a_hebrew_title_pauses_the_board_before_its_first_key() {
+        let mut app = app_three_columns();
+        app.cursor_col = 0;
+        app.cursor_row = Some(0);
+        press(&mut app, 'r');
+        press(&mut app, 'ש');
+        match &app.mode {
+            Mode::Input { buffer, .. } => assert!(buffer.as_str().ends_with('ש')),
+            other => panic!("rename is open: {other:?}"),
+        }
+        assert!(app.layout_pause.is_some() && app.keys_paused().is_none());
+        assert!(!footer_text(&app).contains("keyboard"), "{}", footer_text(&app));
+        esc(&mut app);
+        assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+        assert!(footer_text(&app).contains("keyboard is in Hebrew"), "{}", footer_text(&app));
+        press(&mut app, '/');
+        assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+        // The search field is a text field: Hebrew is its query, and an
+        // English letter there answers the pause.
+        press(&mut app, 'j');
+        press(&mut app, '/');
+        press(&mut app, 'ש');
+        assert!(matches!(app.mode, Mode::Search(_)), "{:?}", app.mode);
+        press(&mut app, 'a');
+        esc(&mut app);
+        assert!(app.layout_pause.is_none(), "the last letter typed was English");
     }
 
     // ---- the search picker (T-349) ---------------------------------------

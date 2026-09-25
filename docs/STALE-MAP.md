@@ -13833,3 +13833,45 @@ every step; lines are added and one deleted; the save is plain; the hand moves; 
 delete squeezes), `thinking_rolls_its_eyes_up_at_a_cloud` (the cloud stays, its dots fill
 and clear, the eyes have whites), the stage-width assertions in
 `every_pose_composes_inside_its_stage`, and the reminted ticket-page goldens.
+
+## A non-Latin keyboard pauses the board's keys (T-458, 2026-09-25, user: "if not in English, mesimon doesn't react to keypresses" ∙ "warn the user and prevent unsupported further keypresses while also not accepting them")
+
+**What it was.** On a Hebrew layout the physical `j` sends `ח`, which no binding names, so
+the board did nothing and said nothing. Worse, Hebrew puts ASCII punctuation on letter keys:
+physical `q` types `/` (search, not back) and physical `/` types `.` (repeat the last move,
+a mutation). Those resolve, to the wrong verb.
+
+**What shipped.** `keys::pause_step` over `App::layout_pause`, read in `handle_key_inner`
+after the text barriers and the tag picker, before the keymap. A letter from a non-Latin
+script (`keys::ForeignLayout::of`) arms the pause and is dropped. While paused, every other
+character is dropped except `a`–`z` (which ends the pause *and acts*: the person switched and
+pressed what they meant), `A`–`Z` and digits. Esc ends it without acting. Everything that is
+not a character (arrows, Enter, Tab, Space, every Ctrl chord) acts regardless, so no one is
+locked in. The footer (`chrome::footer_line`) outranks the status with one bold sentence
+naming the script, `keyboard is in Hebrew — switch to English ∙ keys paused ∙ esc dismisses`,
+never in the attention hue.
+
+**Armed early.** A letter typed into any text field (`App::text_field`: `typing` plus the
+search query and the dialogs' in-place fields) sets the pause to that letter's layout,
+unread and undrawn there. Leaving a Hebrew title finds the pause already up before the
+board's first key, which is the likeliest `q`→`/`. A Latin letter in a field clears it.
+
+**Not a layout.** Latin letters (`\0`–`U+036F`, `U+1E00`–`U+1EFF`: French `é`, Turkish `ı`,
+Vietnamese), non-letters (Terminal.app's `˙` for `⌥h`, `∆` for `⌥j`), and the two Greek
+letters US macOS composes under Option (`π` for `⌥p`, `Ω` for `⌥z`).
+
+**Considered and not taken.** A per-layout letter table (`ח`→`j`, Vim's `langmap`): it
+cannot touch the `/`/`.` collisions, which are real bound keys, and it is a table per layout.
+The kitty protocol's base-layout key (flag 4 with flag 8): layout-exact, but crossterm 0.29
+parses only the shifted-key field and drops base-layout (`parse.rs:594`), flag 8 turns every
+key into CSI-u across the tmux handover (the key-release trap), iTerm2's support for the
+field is unmeasured, and Terminal.app has no protocol.
+
+**The hole left.** A layout switched outside mesimon, then a first key that Hebrew spells as
+ASCII punctuation: physical `/` arrives as `.` and repeats the last move once. Nothing on
+the wire tells it apart from a real `.`.
+
+**Tests.** `keys::a_foreign_letter_names_its_layout`, `keys::the_pause_holds_characters_only`,
+`app::a_hebrew_key_pauses_the_board_until_an_english_letter`,
+`app::esc_dismisses_the_layout_pause`, `app::a_hebrew_title_pauses_the_board_before_its_first_key`,
+and the golden `board_layout_pause_80x24` (the sentence whole at 80 columns).

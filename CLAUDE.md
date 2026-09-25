@@ -202,7 +202,8 @@ another process. The hazard lists live there and nowhere else — **do not write
 **A paste is one event, and only a text field takes it.** `App::tick` routes `Event::Paste` to
 `App::on_paste`; `EditBuffer::paste` flattens to one line (newlines become spaces) under the
 field's byte `limit` — the same number the daemon caps at. A new text field passes its limit to
-`EditBuffer::new`. `TextArea::paste` is the multi-line counterpart: newlines kept, CRLF
+`EditBuffer::new` and joins `App::text_field`, or the layout pause (T-458) reads its Hebrew as
+a stray key. `TextArea::paste` is the multi-line counterpart: newlines kept, CRLF
 normalised, same limit.
 
 **Notes are markdown files under the ticket, and `notes[0]` is the description.**
