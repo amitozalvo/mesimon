@@ -506,12 +506,17 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
     };
     // The layout pause outranks the status (T-458): it stands until it is
     // answered, and every key it drops would leave the same footer behind.
-    // Bold, never the attention hue — the one saturated colour is needs-you.
+    // Each no flashes the row in the pending delete's treatment — the diff's
+    // del tint under an `err` sentence — then it rests bold. Never the
+    // attention hue: the one saturated colour is needs-you.
     if let Some(layout) = app.keys_paused() {
-        let mut spans = vec![Span::styled(
-            format!(" {}", layout.warning()),
-            Style::default().fg(ink.base).add_modifier(Modifier::BOLD),
-        )];
+        let (band, text) = if app.layout_flash_lit() {
+            (theme.delete_row(), theme.err_text())
+        } else {
+            (band, Style::default().fg(ink.base))
+        };
+        let mut spans =
+            vec![Span::styled(format!(" {}", layout.warning()), text.add_modifier(Modifier::BOLD))];
         pad_to(&mut spans);
         return Line::from(spans).style(band);
     }

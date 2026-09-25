@@ -603,6 +603,11 @@ pub struct Glide {
 /// screen gets one speed of motion, not a second one for scrolling.
 pub const GLIDE: Duration = GROW;
 
+/// The layout pause's flash (T-458): one phase of it, on the delete flash's
+/// cadence, and how many phases it runs — lit, dark, lit.
+const LAYOUT_FLASH_PHASE: Duration = Duration::from_millis(400);
+const LAYOUT_FLASH_PHASES: u32 = 3;
+
 /// How far a motion that began at `at` and lasts `over` has come, 0.0 to
 /// 1.0, `None` once landed. Eased out: it leaves fast and settles gently.
 fn eased(at: Instant, over: Duration) -> Option<f32> {
@@ -1504,6 +1509,10 @@ pub struct App {
     /// Kept up to date inside a text field too, where it is neither read nor
     /// drawn — a Hebrew title means the board's next key is Hebrew as well.
     pub layout_pause: Option<crate::keys::ForeignLayout>,
+    /// When the pause last said no — a key it dropped, or its sentence
+    /// newly on the footer. The footer flashes from that instant
+    /// (`layout_flash_lit`), so a repeated press is a repeated no.
+    pub layout_flash: Option<Instant>,
     /// The ticket page's preview zone: the selected shell's pane tail, and
     /// when it was fetched. Per-view and in memory only — a shell has no
     /// transcript file to read the way `peek_cache` reads an agent's, so
@@ -1802,6 +1811,7 @@ impl App {
             tag_flash: None,
             refused: None,
             layout_pause: None,
+            layout_flash: None,
             shell_tail: None,
             terminals: Vec::new(),
             crown_touches: Vec::new(),
@@ -1891,13 +1901,30 @@ impl App {
 
     /// Whether something on screen is mid-motion and wants the next frame
     /// sooner than the spinner's cadence: the composer dialog growing, the
-    /// screen's reading zone turning a page, a refused card shaking, or the
-    /// crowning sweeping a title.
+    /// screen's reading zone turning a page, a refused card shaking, the
+    /// layout pause flashing the footer, or the crowning sweeping a title.
     pub fn animating(&self) -> bool {
         matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
             || self.pager().is_some_and(Pager::animating)
             || self.shaking()
+            || self.layout_flashing()
             || self.board.crown.is_some_and(|id| self.crowning_ms(id).is_some())
+    }
+
+    /// Is the layout pause's flash still running?
+    fn layout_flashing(&self) -> bool {
+        self.layout_flash.is_some_and(|at| at.elapsed() < LAYOUT_FLASH_PHASE * LAYOUT_FLASH_PHASES)
+    }
+
+    /// Whether the footer's pause sentence is in a lit phase of its flash
+    /// (T-458): lit, dark, lit on the delete flash's 400 ms cadence, then
+    /// the sentence rests bold. Counted from the refusal, not the frame
+    /// clock, so every no starts lit.
+    pub(crate) fn layout_flash_lit(&self) -> bool {
+        self.layout_flashing()
+            && self.layout_flash.is_some_and(|at| {
+                (at.elapsed().as_millis() / LAYOUT_FLASH_PHASE.as_millis()) % 2 == 0
+            })
     }
 
     /// How long ago `id` was crowned, while the crowning still runs on it
@@ -4413,7 +4440,13 @@ impl App {
                 self.layout_pause = crate::keys::ForeignLayout::of(c);
             }
         }
+        let shown = self.keys_paused().is_some();
         let out = self.handle_key_inner(code, mods);
+        // The sentence arriving on the footer is itself a no worth seeing —
+        // leaving a Hebrew title puts it there before any key is dropped.
+        if !shown && self.keys_paused().is_some() {
+            self.layout_flash = Some(Instant::now());
+        }
         // Observed AFTER the press, not at each of the several places that
         // open a page: a ticket the reader is now looking at is a ticket
         // they entered, whichever key got them there.
@@ -4507,9 +4540,13 @@ impl App {
             }
             PauseStep::Arm(layout) => {
                 self.layout_pause = Some(layout);
+                self.layout_flash = Some(Instant::now());
                 return Ok(());
             }
-            PauseStep::Drop => return Ok(()),
+            PauseStep::Drop => {
+                self.layout_flash = Some(Instant::now());
+                return Ok(());
+            }
         }
         // The help overlay swallows the next key, whatever it is: it is a
         // reference card, and any key is "I'm done reading".
@@ -12979,6 +13016,7 @@ mod tests {
         esc(&mut app);
         assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
         assert!(footer_text(&app).contains("keyboard is in Hebrew"), "{}", footer_text(&app));
+        assert!(app.layout_flash_lit(), "the sentence arriving flashes, no key dropped yet");
         press(&mut app, '/');
         assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
         // The search field is a text field: Hebrew is its query, and an

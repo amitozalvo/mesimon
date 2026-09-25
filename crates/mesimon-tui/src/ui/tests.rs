@@ -514,6 +514,39 @@ fn golden_layout_pause_board_80() {
     golden("board_layout_pause_80x24", &lines);
 }
 
+/// Every no from the layout pause flashes the footer in the pending
+/// delete's treatment — lit, dark, lit — and then the sentence rests bold
+/// on the ordinary band (T-458). A dropped key starts it over.
+#[test]
+fn test_layout_pause_flashes_the_footer() {
+    let mut app = app_graphite(fixture(false));
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let lit_bg = theme.delete_row().bg.expect("truecolor tints the delete row");
+    let footer_bg = |app: &App| cells(app, 80, 24)[(1, 23)].bg;
+    let seed = |app: &mut App, ms: u64| {
+        app.layout_flash = Some(std::time::Instant::now() - std::time::Duration::from_millis(ms));
+    };
+    press(&mut app, 'ח');
+    assert_eq!(footer_bg(&app), lit_bg, "the first no is lit at once");
+    assert!(app.animating(), "a flash asks for fast frames");
+    seed(&mut app, 500);
+    let rest_bg = footer_bg(&app);
+    assert_ne!(rest_bg, lit_bg, "then dark");
+    seed(&mut app, 900);
+    assert_eq!(footer_bg(&app), lit_bg, "then lit again");
+    seed(&mut app, 1300);
+    assert_eq!(footer_bg(&app), rest_bg, "then it rests");
+    assert!(!app.animating(), "a settled flash no longer asks for fast frames");
+    let cell = &cells(&app, 80, 24)[(1, 23)];
+    assert!(cell.modifier.contains(Modifier::BOLD), "resting, still bold");
+    press(&mut app, '/');
+    assert_eq!(footer_bg(&app), lit_bg, "a dropped key is a new no");
+    seed(&mut app, 1300);
+    press(&mut app, 'j');
+    assert!(app.keys_paused().is_none());
+    assert!(!app.layout_flash_lit(), "an English letter ends it, flash and all");
+}
+
 /// A raised hand (T-107): the mark replaces the done mark on the card, and
 /// the cursor card carries the agent's own sentence in the context row the
 /// snooze preset and the owed row share.

@@ -13856,6 +13856,14 @@ search query and the dialogs' in-place fields) sets the pause to that letter's l
 unread and undrawn there. Leaving a Hebrew title finds the pause already up before the
 board's first key, which is the likeliest `q`→`/`. A Latin letter in a field clears it.
 
+**The flash** (same day, user: "maybe make this more noticable, like flash the hin?"). Every no
+flashes the footer row in the pending delete's treatment (`Theme::delete_row` ground,
+`err_text` ink): lit, dark, lit at 400 ms a phase, counted from the refusal
+(`App::layout_flash`), then the sentence rests bold. A no is a dropped key or the sentence
+newly on the footer, so leaving a Hebrew title flashes too. It is fg/bg repainted on the frame
+clock, never SGR 5 and never the attention hue. `test_layout_pause_flashes_the_footer` walks
+the phases.
+
 **Not a layout.** Latin letters (`\0`–`U+036F`, `U+1E00`–`U+1EFF`: French `é`, Turkish `ı`,
 Vietnamese), non-letters (Terminal.app's `˙` for `⌥h`, `∆` for `⌥j`), and the two Greek
 letters US macOS composes under Option (`π` for `⌥p`, `Ω` for `⌥z`).
