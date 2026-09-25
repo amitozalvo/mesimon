@@ -2235,7 +2235,7 @@ pub struct RepoSync {
     pub upstream: Option<String>,
     /// No upstream is configured, so `upstream` is the one remote branch
     /// with this branch's name. `git status` and a bare `git push` see no
-    /// link; the lists do, and say so.
+    /// link; the lists compare against it all the same.
     #[serde(default)]
     pub by_name: bool,
     #[serde(default)]
@@ -2247,6 +2247,11 @@ pub struct RepoSync {
     pub to_push: Option<Vec<GitCommit>>,
     #[serde(default)]
     pub to_pull: Option<Vec<GitCommit>>,
+    /// When this repo was last fetched (unix ms): its `FETCH_HEAD`'s mtime,
+    /// which every `git fetch` and `git pull` rewrites. 0 = never, or not
+    /// known. Incoming commits are only as fresh as this.
+    #[serde(default)]
+    pub fetched_at_ms: u64,
 }
 
 /// Pushed to subscribed clients whenever board state changes.

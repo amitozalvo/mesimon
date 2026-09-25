@@ -291,7 +291,7 @@ fn draw_commits(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
             if count == 0 {
                 rows.lines.push(Line::from(Span::styled(" Nothing pending", theme.dim3())));
             } else {
-                rows.commits(0, count, commits.as_deref());
+                rows.commits(&[], count, commits.as_deref());
             }
             rows.lines.push(Line::default());
             rows.lines.push(Line::default());
@@ -342,14 +342,20 @@ impl CommitLines<'_> {
         self.lines.push(Line::from(Span::styled(text.to_string(), self.app.theme.dim2())));
     }
 
-    /// One direction's commits, `pad` cells in: the rows, the count the
-    /// bounded history left out, or the words for a list that is missing.
-    fn commits(&mut self, pad: usize, count: u32, commits: Option<&[GitCommit]>) {
+    /// One direction's commits after `lead` (the workspace's `↑`/`↓`, or
+    /// nothing): the rows, the count the bounded history left out, or the
+    /// words for a list that is missing.
+    fn commits(&mut self, lead: &[Span<'static>], count: u32, commits: Option<&[GitCommit]>) {
         let theme = &self.app.theme;
-        let indent = " ".repeat(pad);
+        let pad = super::spans_width(lead);
+        let with_lead = |mut rest: Vec<Span<'static>>| {
+            let mut spans = lead.to_vec();
+            spans.append(&mut rest);
+            spans
+        };
         let Some(commits) = commits else {
-            let text = format!("{indent} Commit list unavailable");
-            self.lines.push(Line::from(Span::styled(text, theme.dim2())));
+            let text = Span::styled(" Commit list unavailable", theme.dim2());
+            self.lines.push(Line::from(with_lead(vec![text])));
             return;
         };
         for commit in commits {
@@ -358,100 +364,114 @@ impl CommitLines<'_> {
                 truncate(&crate::text::one_line(&commit.subject), self.w.saturating_sub(10 + pad));
             let selected = self.cursor == Some(self.idx);
             self.idx += 1;
-            let head = Span::styled(format!("{indent} {oid}  "), theme.dim2());
+            let head = Span::styled(format!(" {oid}  "), theme.dim2());
             if !selected {
-                self.lines.push(Line::from(vec![head, Span::styled(subject, theme.base())]));
+                let rest = vec![head, Span::styled(subject, theme.base())];
+                self.lines.push(Line::from(with_lead(rest)));
                 continue;
             }
             // The file list's selected row, spelled the same way.
             self.cursor_row = Some(self.lines.len());
             let fill = self.w.saturating_sub(10 + pad + subject.width());
-            self.lines.push(
-                Line::from(vec![
-                    head,
-                    Span::styled(
-                        subject,
-                        Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" ".repeat(fill)),
-                ])
-                .style(theme.selected_row()),
-            );
+            let rest = vec![
+                head,
+                Span::styled(
+                    subject,
+                    Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" ".repeat(fill)),
+            ];
+            self.lines.push(Line::from(with_lead(rest)).style(theme.selected_row()));
         }
         let remaining = (count as usize).saturating_sub(commits.len());
         if remaining > 0 {
-            let text = format!("{indent} … {remaining} more commits");
+            let text = format!("{} … {remaining} more commits", " ".repeat(pad));
             self.lines.push(Line::from(Span::styled(text, theme.dim3())));
         }
     }
 }
 
-/// A workspace's lists (T-455): one section per repo with something to push
-/// or pull — the board's own branch first where the root has one — headed by
-/// the repo, its branch, its arrows and what it is measured against; then
-/// every other repo by name, one line per reason, so a repo in sync costs a
-/// word rather than a section and nineteen of them still fit a screen.
+/// A workspace's lists (T-455): one row per repo — name, branch, state and
+/// when it was last fetched — so the whole workspace reads down one column
+/// at a glance. Repos with something to push or pull come first, each with
+/// its commits under it marked `↑` (to push) or `↓` (to pull), the way the
+/// header's arrows mark them; then the repos in sync, whose `✓` is the calm
+/// register the card's done mark wears; then the ones with nothing to
+/// compare against. The board's own branch is a row like any other, named
+/// by the board, where the root is a repository.
 fn workspace_commits(rows: &mut CommitLines<'_>) {
     let app = rows.app;
     let theme = &app.theme;
     let tier = theme.glyph_tier();
     let board = app.board_name();
-    let (mut in_sync, mut no_upstream, mut detached) = (Vec::new(), Vec::new(), Vec::new());
-    for s in app.sync_groups() {
-        let name = s.repo.unwrap_or(&board).to_string();
-        if !s.pending() {
-            match (s.detached, s.compared()) {
-                (true, _) => detached.push(name),
-                (false, true) => in_sync.push(name),
-                (false, false) => no_upstream.push(name),
-            }
+    let mut groups = app.sync_groups();
+    // Stable, so each state keeps census order — and the pending ones stay
+    // in `commit_rows`' order, which is the cursor's.
+    groups.sort_by_key(|s| match (s.pending(), s.compared(), s.detached) {
+        (true, _, _) => 0,
+        (false, true, _) => 1,
+        (false, false, false) => 2,
+        (false, false, true) => 3,
+    });
+    let name_of = |s: &crate::app::SyncGroup<'_>| crate::text::one_line(s.repo.unwrap_or(&board));
+    let name_w = groups.iter().map(|s| name_of(s).width()).max().unwrap_or(0).min(28);
+    let branch_w =
+        groups.iter().map(|s| crate::text::one_line(s.branch).width()).max().unwrap_or(0).min(24);
+    let state_of = |s: &crate::app::SyncGroup<'_>| -> (String, Style) {
+        if s.pending() {
+            (chrome::arrows(tier, s.ahead, s.behind).trim_start().to_string(), theme.calm_text())
+        } else if s.compared() {
+            (format!("{} in sync", crate::glyphs::merged_mark(tier)), theme.calm_text())
+        } else if s.detached {
+            ("detached".to_string(), theme.dim2())
+        } else {
+            ("no upstream".to_string(), theme.dim2())
+        }
+    };
+    let state_w = groups.iter().map(|s| state_of(s).0.width()).max().unwrap_or(0);
+    let now = mesimon_core::clock::now_ms();
+    let cell = |text: &str, w: usize| {
+        let text = truncate(text, w);
+        let fill = w.saturating_sub(text.width());
+        format!("{text}{}", " ".repeat(fill))
+    };
+    for s in &groups {
+        let pending = s.pending();
+        let (state, state_style) = state_of(s);
+        let name_style =
+            if pending { theme.base().add_modifier(Modifier::BOLD) } else { theme.dim1() };
+        let mut line = vec![
+            Span::styled(format!(" {}   ", cell(&name_of(s), name_w)), name_style),
+            Span::styled(
+                format!(
+                    "{} {}   ",
+                    crate::glyphs::branch_mark(tier),
+                    cell(&crate::text::one_line(s.branch), branch_w)
+                ),
+                theme.dim2(),
+            ),
+            Span::styled(cell(&state, state_w), state_style),
+        ];
+        if s.compared() && s.fetched_ms > 0 {
+            let since = std::time::Duration::from_millis(now.saturating_sub(s.fetched_ms));
+            let when = format!("   fetched {}", crate::release::ago(since));
+            line.push(Span::styled(when, theme.dim3()));
+        }
+        rows.lines.push(Line::from(line));
+        if !pending {
             continue;
         }
-        let mut head = vec![
-            Span::styled(
-                format!(" {}", crate::text::one_line(&name)),
-                theme.dim1().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("  ⎇ {}", crate::text::one_line(s.branch)), theme.dim2()),
-            Span::styled(chrome::arrows(tier, s.ahead, s.behind), theme.calm_text()),
-        ];
-        let against = format!(
-            " ∙ {}{}",
-            crate::text::one_line(s.upstream.unwrap_or_default()),
-            if s.by_name { " (no upstream set)" } else { "" }
-        );
-        let room = rows.w.saturating_sub(super::spans_width(&head));
-        head.push(Span::styled(truncate(&against, room), theme.dim3()));
-        rows.lines.push(Line::from(head));
-        for (label, count, commits) in
-            [("TO PUSH", s.ahead, s.to_push), ("TO PULL", s.behind, s.to_pull)]
-        {
-            if count == 0 {
-                continue;
+        for (mark, count, commits) in [
+            (crate::glyphs::ahead_mark(tier), s.ahead, s.to_push),
+            (crate::glyphs::behind_mark(tier), s.behind, s.to_pull),
+        ] {
+            if count > 0 {
+                let lead = [Span::raw("   "), Span::styled(mark.to_string(), theme.calm_text())];
+                rows.commits(&lead, count, commits);
             }
-            let text = format!("   {label} ({count})");
-            rows.lines.push(Line::from(Span::styled(text, theme.dim2())));
-            rows.commits(2, count, commits);
         }
         rows.lines.push(Line::default());
     }
-    for (label, names) in
-        [("in sync", in_sync), ("no upstream", no_upstream), ("detached", detached)]
-    {
-        if names.is_empty() {
-            continue;
-        }
-        let label = format!(" {label:<13}");
-        let room = rows.w.saturating_sub(label.width());
-        rows.lines.push(Line::from(vec![
-            Span::styled(label, theme.dim1()),
-            Span::styled(truncate(&crate::text::one_line(&names.join(" ∙ ")), room), theme.dim2()),
-        ]));
-    }
-    rows.lines.push(Line::default());
-    // mesimon fetches only the board's own remote; a child's incoming
-    // commits are what its own last fetch brought.
-    rows.dim(" To pull is as of each repo's own last fetch");
 }
 
 /// The file-list pane: 2-cell gutter (stable letter + in-flight flag), path,

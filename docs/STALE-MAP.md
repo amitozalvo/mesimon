@@ -13719,14 +13719,29 @@ one repo of a folder of one. That fixes the refused rows.
 **The TUI.** `App::sync_groups` presents the board's own branch (when the root has one)
 and each child the same way, and `commit_rows` walks them in drawn order. So one cursor
 spans every repo, and `open_commit` sends the row's repo. `draw_commits` keeps the
-single-repo layout byte for byte. A workspace gets `workspace_commits`, which draws:
+single-repo layout byte for byte. A workspace gets `workspace_commits`, a table with one
+row per repo: name, `⎇ branch`, state, and `fetched 5d ago` where the repo is compared.
+Rows are ordered by state (stable, so census order within each):
 
-- one section per repo with something pending: ` api  ⎇ main ↑1 ↓1 ∙ gitlab/api`, then
-  `TO PUSH (n)` / `TO PULL (n)` indented, with empty directions left out. The root's
-  section is named by `board_name()`.
-- the other repos, one line per reason: `in sync`, `no upstream`, `detached`.
-- a closing line saying incoming commits are as of each repo's own last fetch. mesimon
-  fetches only the board's remote.
+- repos with something pending, their commits under them marked `↑` (to push) or `↓`
+  (to pull), the header's own arrows;
+- `✓ in sync`, in `calm`, the register and `merged_mark` the card's done/merged check wears;
+- `no upstream`, then `detached`.
+
+The root's row is named by `board_name()`.
+
+**Revised the same day on the author's screenshot** ("hard to understand at a glance. we don't
+need to apologise, think about a better wording. also, in sync should be colored to give
+reassurance to the user"). The first cut drew headed sections, with every other repo
+joined by `∙` on one line per reason, and ended with "To pull is as of each repo's own last
+fetch". On simbly that was one run-on line of eleven names. The closing sentence and the
+heading's `(no upstream set)` both read as apologies. They are gone. The per-row fetch age
+states the same limit as a fact: `RepoSync.fetched_at_ms` is `FETCH_HEAD`'s mtime (one
+`stat`; `git fetch` and `git pull` rewrite it, and a clone writes none), and the root row
+uses the daemon's own `fetched_at_ms`. The compared ref is no longer drawn; `by_name` stays
+on the wire. `no upstream` was chosen over the friendlier `local only` because it is
+true on every road: the root gets no same-name lookup, and two remotes carrying the name
+is also a no-upstream row.
 
 The summed arrows (`RepoGit::nested_ahead_behind`) appear on the header and on the diff
 screen's identity row. They follow the count when the count is the name (`⎇ 5 repos ↑3 ↓1`).
@@ -13742,5 +13757,5 @@ when that repo is fetched outside mesimon.
 name, no remote, detached, two candidate remotes refused, `commit_dir`'s census check, and
 the one-repo folder's commit road. E2e: `workspace_e2e` sends the nested lists over the wire
 and opens a commit in `api` only. TUI: `a_workspace_lists_each_repo_and_opens_a_commit_in_it`
-with the new golden `git_commits_workspace_120x30`, and the summed-arrows cases added to
+(row order, the calm `✓`, the fetch age) with the new golden `git_commits_workspace_120x30`, and the summed-arrows cases added to
 `test_git_clause_names_a_workspace_by_its_count`. No existing golden moved.

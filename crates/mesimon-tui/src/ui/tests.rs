@@ -2279,10 +2279,10 @@ fn a_commit_row_is_picked_and_opens_to_its_own_diff() {
     assert!(rows.iter().any(|r| r.contains("an empty commit")), "{}", rows.join("\n"));
 }
 
-/// A folder of repos with no branch of its own (T-455): each repo with
-/// something pending gets a section headed by its branch, arrows and what it
-/// is measured against; the rest are named on one line per reason. The
-/// cursor walks every section, and Enter opens the commit in its own repo.
+/// A folder of repos with no branch of its own (T-455): one row per repo,
+/// the ones with something to push or pull first with their commits under
+/// them, then the ones in sync, then the ones with nothing to compare. The
+/// cursor walks every repo's commits, and Enter opens one in its own repo.
 #[test]
 fn a_workspace_lists_each_repo_and_opens_a_commit_in_it() {
     use mesimon_core::command::{DiffTarget, GitCommit, RepoGit, RepoSync};
@@ -2310,7 +2310,7 @@ fn a_workspace_lists_each_repo_and_opens_a_commit_in_it() {
                 ..repo("api")
             },
             RepoSync { upstream: None, ..repo("docs") },
-            repo("forms"),
+            RepoSync { branch: "master".into(), ..repo("forms") },
             RepoSync { detached: true, branch: "1a2b3c4".into(), upstream: None, ..repo("tools") },
             RepoSync {
                 upstream: Some("gitlab/main".into()),
@@ -2326,18 +2326,37 @@ fn a_workspace_lists_each_repo_and_opens_a_commit_in_it() {
     let rows = render(&app, 120, 30);
     let text = rows.join("\n");
     assert!(rows[2].contains(" ⎇ 5 repos ↑3 ↓1 ∙ push / pull"), "{}", rows[2]);
-    assert!(text.contains(" api  ⎇ main ↑1 ↓1 ∙ gitlab/api"), "{text}");
-    assert!(text.contains(" web  ⎇ main ↑2 ∙ gitlab/main (no upstream set)"), "{text}");
-    assert!(text.contains("   TO PUSH (2)"), "{text}");
-    assert!(!text.contains("TO PULL (0)"), "an empty direction is left out: {text}");
-    assert!(text.contains(" in sync      forms"), "{text}");
-    assert!(text.contains(" no upstream  docs"), "{text}");
-    assert!(text.contains(" detached     tools"), "{text}");
-    assert!(!text.contains("No upstream configured"), "{text}");
+    let row = |needle: &str| rows.iter().position(|r| r.contains(needle)).expect(needle);
+    assert!(text.contains(" api     ⎇ main      ↑1 ↓1"), "{text}");
+    assert!(text.contains("    ↑ aaaaaaa  Add the endpoint"), "{text}");
+    assert!(text.contains("    ↓ ccccccc  Fix the schema"), "{text}");
+    assert!(text.contains(" web     ⎇ main      ↑2"), "{text}");
+    assert!(text.contains(" forms   ⎇ master    ✓ in sync"), "{text}");
+    assert!(text.contains(" docs    ⎇ main      no upstream"), "{text}");
+    assert!(text.contains(" tools   ⎇ 1a2b3c4   detached"), "{text}");
+    // Pending first, then in sync, then nothing to compare against.
+    let order = ["Fix the schema", " web ", " forms ", " docs ", " tools "].map(row);
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "{text}");
+    assert!(!text.contains("upstream set") && !text.contains("last fetch"), "{text}");
     golden("git_commits_workspace_120x30", &rows);
 
-    // One cursor over every section, in the order drawn: api's push, api's
-    // pull, then web's two.
+    // In sync is the calm register — reassurance, not the needs-you accent.
+    let buf = cells(&app, 120, 30);
+    let y = row(" forms ") as u16;
+    let x = rows[y as usize].find('✓').map(|b| rows[y as usize][..b].chars().count()).unwrap();
+    assert_eq!(buf[(x as u16, y)].fg, app.theme.calm);
+
+    // Each compared repo says how fresh its answer is.
+    let hours_ago = mesimon_core::clock::now_ms() - 3 * 3_600_000 - 60_000;
+    app.git.nested[2].fetched_at_ms = hours_ago;
+    app.git.nested[1].fetched_at_ms = hours_ago;
+    let rows = render(&app, 120, 30);
+    let forms = &rows[row(" forms ")];
+    assert!(forms.contains("✓ in sync") && forms.ends_with("fetched 3h ago"), "{forms}");
+    assert!(!rows[row(" docs ")].contains("fetched"), "nothing compared, no age");
+
+    // One cursor over every repo's commits, in the order drawn: api's push,
+    // api's pull, then web's two.
     assert_eq!(app.commit_rows().len(), 4);
     for _ in 0..3 {
         press(&mut app, 'j');
@@ -2349,8 +2368,8 @@ fn a_workspace_lists_each_repo_and_opens_a_commit_in_it() {
     let rows = render(&app, 120, 30);
     assert!(rows[2].contains(" web ∙ ddddddd Web older ∙ to push ∙ 1 file"), "{}", rows[2]);
 
-    // A meta repo's own branch leads, named by the board, and the repos'
-    // sum rides a clause of its own on the checkout's title.
+    // A meta repo's own branch is a row too, named by the board, and the
+    // repos' sum rides a clause of its own on the checkout's title.
     app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE).expect("key");
     app.git.branch = "master".into();
     app.git.upstream = Some("origin/master".into());
@@ -2359,8 +2378,9 @@ fn a_workspace_lists_each_repo_and_opens_a_commit_in_it() {
     let rows = render(&app, 120, 30);
     let text = rows.join("\n");
     let board = app.board_name();
-    let meta = text.find(&format!(" {board}  ⎇ master ↑1 ∙ origin/master")).expect(&text);
-    assert!(meta < text.find(" api  ⎇").unwrap(), "{text}");
+    let meta = rows.iter().position(|r| r.starts_with(&format!("  {board} "))).expect(&text);
+    assert!(rows[meta].contains("⎇ master") && rows[meta].contains("↑1"), "{}", rows[meta]);
+    assert!(meta < rows.iter().position(|r| r.starts_with("  api ")).unwrap(), "{text}");
     assert!(rows[2].contains(" ⎇ master ↑1 ∙ 5 repos ↑3 ↓1 ∙ push / pull"), "{}", rows[2]);
     assert_eq!(app.commit_rows()[0].repo, None);
 }

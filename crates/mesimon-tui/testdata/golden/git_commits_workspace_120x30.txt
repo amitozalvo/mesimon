@@ -5,22 +5,22 @@
 
  { } page ∙ jk commit ∙ enter open
 
-  api  ⎇ main ↑1 ↓1 ∙ gitlab/api
-    TO PUSH (1)
-    aaaaaaa  Add the endpoint
-    TO PULL (1)
-    ccccccc  Fix the schema
+  api     ⎇ main      ↑1 ↓1
+    ↑ aaaaaaa  Add the endpoint
+    ↓ ccccccc  Fix the schema
 
-  web  ⎇ main ↑2 ∙ gitlab/main (no upstream set)
-    TO PUSH (2)
-    bbbbbbb  Web newer
-    ddddddd  Web older
+  web     ⎇ main      ↑2
+    ↑ bbbbbbb  Web newer
+    ↑ ddddddd  Web older
 
-  in sync      forms
-  no upstream  docs
-  detached     tools
+  forms   ⎇ master    ✓ in sync
+  docs    ⎇ main      no upstream
+  tools   ⎇ 1a2b3c4   detached
 
-  To pull is as of each repo's own last fetch
+
+
+
+
 
 
 

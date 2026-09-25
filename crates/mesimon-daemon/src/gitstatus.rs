@@ -69,6 +69,7 @@ fn nested_sync(dir: &Path, name: &str, g: RepoGit) -> RepoSync {
         upstream: g.upstream.clone(),
         ahead: g.ahead,
         behind: g.behind,
+        fetched_at_ms: fetched_at_ms(dir),
         ..RepoSync::default()
     };
     if s.detached {
@@ -87,6 +88,17 @@ fn nested_sync(dir: &Path, name: &str, g: RepoGit) -> RepoSync {
     s.to_push = commits(dir, &format!("{rev}..HEAD"), s.ahead);
     s.to_pull = commits(dir, &format!("HEAD..{rev}"), s.behind);
     s
+}
+
+/// `FETCH_HEAD`'s mtime in unix ms, 0 when there is none. A census repo's
+/// `.git` is a directory, so the file is where git writes it. One `stat`,
+/// read-only.
+fn fetched_at_ms(dir: &Path) -> u64 {
+    std::fs::metadata(dir.join(".git/FETCH_HEAD"))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// `refs/remotes/<remote>/<branch>` when exactly one remote carries the
@@ -650,6 +662,10 @@ mod tests {
         assert_eq!(web.to_pull, Some(Vec::new()));
         let docs = by("docs");
         assert!(docs.upstream.is_none() && docs.to_push.is_none(), "no remote, no comparison");
+        assert_eq!(docs.fetched_at_ms, 0, "never fetched");
+        std::fs::write(root.join("docs/.git/FETCH_HEAD"), "").unwrap();
+        let docs = sample(&root).nested.into_iter().find(|s| s.name == "docs").unwrap();
+        assert!(docs.fetched_at_ms > 0, "a fetch leaves FETCH_HEAD behind");
         let tools = by("tools");
         assert!(tools.detached && tools.upstream.is_none());
         assert_eq!(g.nested_ahead_behind(), (3, 1));

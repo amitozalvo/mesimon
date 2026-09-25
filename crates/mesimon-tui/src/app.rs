@@ -224,12 +224,12 @@ pub(crate) struct SyncGroup<'a> {
     pub branch: &'a str,
     pub detached: bool,
     pub upstream: Option<&'a str>,
-    /// Compared with the same-name remote branch, no upstream configured.
-    pub by_name: bool,
     pub ahead: u32,
     pub behind: u32,
     pub to_push: Option<&'a [mesimon_core::command::GitCommit]>,
     pub to_pull: Option<&'a [mesimon_core::command::GitCommit]>,
+    /// When it was last fetched (unix ms), 0 = unknown.
+    pub fetched_ms: u64,
 }
 
 impl SyncGroup<'_> {
@@ -8834,22 +8834,22 @@ impl App {
             branch: &g.branch,
             detached: g.detached,
             upstream: g.upstream.as_deref(),
-            by_name: false,
             ahead: g.ahead,
             behind: g.behind,
             to_push: g.to_push.as_deref(),
             to_pull: g.to_pull.as_deref(),
+            fetched_ms: g.fetched_at_ms,
         });
         let nested = g.nested.iter().map(|s| SyncGroup {
             repo: Some(&s.name),
             branch: &s.branch,
             detached: s.detached,
             upstream: s.upstream.as_deref(),
-            by_name: s.by_name,
             ahead: s.ahead,
             behind: s.behind,
             to_push: s.to_push.as_deref(),
             to_pull: s.to_pull.as_deref(),
+            fetched_ms: s.fetched_at_ms,
         });
         own.into_iter().chain(nested).collect()
     }
