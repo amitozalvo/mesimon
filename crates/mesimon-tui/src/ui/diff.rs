@@ -9,6 +9,7 @@
 use std::ops::Range;
 use std::rc::Rc;
 
+use mesimon_core::command::GitCommit;
 use mesimon_core::diff::{self, FileDiff, Marks, Render, Sign};
 use mesimon_core::keymap::{self, Scope, Verb};
 use ratatui::layout::Rect;
@@ -82,10 +83,13 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     } else {
         "uncommitted".to_string()
     };
+    // A workspace's lists name each repo's upstream on its own heading.
     let summary = if d.commits {
         match &app.git.upstream {
-            Some(upstream) => format!("push / pull ∙ {}", crate::text::one_line(upstream)),
-            None => "push / pull".to_string(),
+            Some(upstream) if app.git.nested.is_empty() => {
+                format!("push / pull ∙ {}", crate::text::one_line(upstream))
+            }
+            _ => "push / pull".to_string(),
         }
     } else if let Some(from) = &d.from_list {
         let list = if from.incoming { "to pull" } else { "to push" };
@@ -98,14 +102,25 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     } else {
         format!("{against} ∙ {n} {noun} ∙ +{adds} -{dels}")
     };
-    let branch = if d.commits { &app.git.branch } else { &d.branch };
-    // A commit is named the way its list row named it, oid and subject; the
-    // subject yields to the counts on a narrow row.
+    // A folder of repos has no branch; the checkout's list names it by its
+    // count (`checkout_diff_list`), and the commits view says the same.
+    let branch = match (d.commits, app.git.branch.is_empty()) {
+        (true, true) => mesimon_core::workspace::repos_word(app.git.repos.len()),
+        (true, false) => app.git.branch.clone(),
+        (false, _) => d.branch.clone(),
+    };
+    // A commit is named the way its list row named it, oid and subject — and
+    // on a workspace the repo it was listed under; the subject yields to the
+    // counts on a narrow row.
     let mut ident = match &d.from_list {
         Some(from) => {
             let oid: String = d.branch_oid.chars().take(7).collect();
-            let room = (area.width as usize).saturating_sub(summary.width() + oid.width() + 12);
+            let repo = from.repo.as_deref().map(|r| format!(" {} ∙", crate::text::one_line(r)));
+            let repo = repo.unwrap_or_default();
+            let room = (area.width as usize)
+                .saturating_sub(summary.width() + oid.width() + repo.width() + 12);
             vec![
+                Span::styled(repo, theme.dim1()),
                 Span::styled(format!(" {oid}"), theme.dim2()),
                 Span::styled(
                     format!(" {}", truncate(&crate::text::one_line(&from.subject), room)),
@@ -113,7 +128,9 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
                 ),
             ]
         }
-        None => vec![Span::styled(format!(" ⎇ {}", crate::text::one_line(branch)), theme.dim1())],
+        None => {
+            vec![Span::styled(format!(" ⎇ {}", crate::text::one_line(&branch)), theme.dim1())]
+        }
     };
     // The checkout's push/pull state belongs on the title, not behind a key
     // press (T-347): before this, the only thing the screen said about it was
@@ -121,10 +138,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     // not anything was pending, so the only way to learn there were commits
     // was to go and look. The arrows hang off the branch in the board
     // header's exact spelling and register, so the two surfaces read alike.
-    let sync = sync_marks(app, d);
-    if !sync.is_empty() {
-        ident.push(Span::styled(sync, theme.calm_text()));
-    }
+    ident.extend(sync_marks(app, d));
     ident.push(Span::styled(format!(" ∙ {summary}"), theme.dim2()));
     if d.is_branch() && !d.worktree_present {
         ident.push(Span::styled(" ∙ worktree evicted".to_string(), theme.dim2()));
@@ -212,19 +226,29 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
 /// as the board header spells it. Empty on a ticket's branch diff (the
 /// worktree's branch is not what `app.git` measures), before a sample lands,
 /// and when the branch is level with its upstream — an absent clause reads as
-/// nothing pending, the same silence the header keeps.
-fn sync_marks(app: &App, d: &DiffState) -> String {
+/// nothing pending, the same silence the header keeps. A workspace's repos
+/// add their sum (T-455): after the count where the count is the name, else
+/// as a clause of its own after the root's.
+fn sync_marks(app: &App, d: &DiffState) -> Vec<Span<'static>> {
     let g = &app.git;
     if !d.is_checkout() || !g.sampled {
-        return String::new();
+        return Vec::new();
     }
     let tier = app.theme.glyph_tier();
-    let mut out = String::new();
-    if g.ahead > 0 {
-        out.push_str(&format!(" {}{}", crate::glyphs::ahead_mark(tier), g.ahead));
+    let (na, nb) = g.nested_ahead_behind();
+    let mut own = chrome::arrows(tier, g.ahead, g.behind);
+    let nested = chrome::arrows(tier, na, nb);
+    let mut out = Vec::new();
+    if g.branch.is_empty() {
+        own.push_str(&nested);
     }
-    if g.behind > 0 {
-        out.push_str(&format!(" {}{}", crate::glyphs::behind_mark(tier), g.behind));
+    if !own.is_empty() {
+        out.push(Span::styled(own, app.theme.calm_text()));
+    }
+    if !g.branch.is_empty() && !nested.is_empty() {
+        let word = mesimon_core::workspace::repos_word(g.repos.len());
+        out.push(Span::styled(format!(" ∙ {word}"), app.theme.dim2()));
+        out.push(Span::styled(nested, app.theme.calm_text()));
     }
     out
 }
@@ -237,79 +261,47 @@ fn draw_commits(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
     let g = &app.git;
     let w = area.width as usize;
     let listed = app.commit_rows().len();
-    let cursor = (listed > 0).then(|| d.commit_idx.min(listed - 1));
-    // The flat index of the next commit drawn, and the row the cursor's is.
-    let (mut idx, mut cursor_row) = (0usize, None);
-    let mut rows = Vec::new();
+    let mut rows = CommitLines {
+        app,
+        w,
+        cursor: (listed > 0).then(|| d.commit_idx.min(listed - 1)),
+        idx: 0,
+        cursor_row: None,
+        lines: Vec::new(),
+    };
     if !g.sampled {
-        rows.push(Line::from(Span::styled(" Git status unavailable", theme.dim2())));
+        rows.dim(" Git status unavailable");
+    } else if !g.nested.is_empty() {
+        workspace_commits(&mut rows);
     } else if g.detached || g.upstream.is_none() {
-        rows.push(Line::from(Span::styled(
-            if g.detached {
-                " Detached HEAD — no upstream comparison"
-            } else {
-                " No upstream configured"
-            },
-            theme.dim2(),
-        )));
+        rows.dim(if g.detached {
+            " Detached HEAD — no upstream comparison"
+        } else {
+            " No upstream configured"
+        });
     } else {
         for (label, count, commits) in
             [("TO PUSH", g.ahead, &g.to_push), ("TO PULL", g.behind, &g.to_pull)]
         {
-            rows.push(Line::from(Span::styled(
+            rows.lines.push(Line::from(Span::styled(
                 format!(" {label} ({count})"),
                 theme.dim1().add_modifier(Modifier::BOLD),
             )));
-            rows.push(Line::default());
+            rows.lines.push(Line::default());
             if count == 0 {
-                rows.push(Line::from(Span::styled(" Nothing pending", theme.dim3())));
-            } else if let Some(commits) = commits {
-                for commit in commits {
-                    let oid: String = commit.oid.chars().take(7).collect();
-                    let subject =
-                        truncate(&crate::text::one_line(&commit.subject), w.saturating_sub(10));
-                    let selected = cursor == Some(idx);
-                    idx += 1;
-                    if !selected {
-                        rows.push(Line::from(vec![
-                            Span::styled(format!(" {oid}  "), theme.dim2()),
-                            Span::styled(subject, theme.base()),
-                        ]));
-                        continue;
-                    }
-                    // The file list's selected row, spelled the same way.
-                    cursor_row = Some(rows.len());
-                    let fill = w.saturating_sub(10 + subject.width());
-                    rows.push(
-                        Line::from(vec![
-                            Span::styled(format!(" {oid}  "), theme.dim2()),
-                            Span::styled(
-                                subject,
-                                Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
-                            ),
-                            Span::raw(" ".repeat(fill)),
-                        ])
-                        .style(theme.selected_row()),
-                    );
-                }
-                let remaining = (count as usize).saturating_sub(commits.len());
-                if remaining > 0 {
-                    rows.push(Line::from(Span::styled(
-                        format!(" … {remaining} more commits"),
-                        theme.dim3(),
-                    )));
-                }
+                rows.lines.push(Line::from(Span::styled(" Nothing pending", theme.dim3())));
             } else {
-                rows.push(Line::from(Span::styled(" Commit list unavailable", theme.dim2())));
+                rows.commits(0, count, commits.as_deref());
             }
-            rows.push(Line::default());
-            rows.push(Line::default());
+            rows.lines.push(Line::default());
+            rows.lines.push(Line::default());
         }
-        rows.push(Line::from(Span::styled(
+        rows.lines.push(Line::from(Span::styled(
             truncate(&format!(" {}", app.git_fetch_note()), w),
             theme.dim2(),
         )));
     }
+    let CommitLines { cursor_row, lines: rows, .. } = rows;
     let visible = (area.height as usize).saturating_sub(2);
     // The window follows the cursor, and a list's first commit keeps its
     // heading in view above it.
@@ -332,6 +324,134 @@ fn draw_commits(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
     let mut lines = vec![Line::from(hints(app, &keys, w)), Line::default()];
     lines.extend(rows.into_iter().skip(at).take(visible));
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// The push / pull lists' rows as they are built, with the flat index of
+/// the next commit and the row the cursor's commit landed on.
+struct CommitLines<'a> {
+    app: &'a App,
+    w: usize,
+    cursor: Option<usize>,
+    idx: usize,
+    cursor_row: Option<usize>,
+    lines: Vec<Line<'static>>,
+}
+
+impl CommitLines<'_> {
+    fn dim(&mut self, text: &str) {
+        self.lines.push(Line::from(Span::styled(text.to_string(), self.app.theme.dim2())));
+    }
+
+    /// One direction's commits, `pad` cells in: the rows, the count the
+    /// bounded history left out, or the words for a list that is missing.
+    fn commits(&mut self, pad: usize, count: u32, commits: Option<&[GitCommit]>) {
+        let theme = &self.app.theme;
+        let indent = " ".repeat(pad);
+        let Some(commits) = commits else {
+            let text = format!("{indent} Commit list unavailable");
+            self.lines.push(Line::from(Span::styled(text, theme.dim2())));
+            return;
+        };
+        for commit in commits {
+            let oid: String = commit.oid.chars().take(7).collect();
+            let subject =
+                truncate(&crate::text::one_line(&commit.subject), self.w.saturating_sub(10 + pad));
+            let selected = self.cursor == Some(self.idx);
+            self.idx += 1;
+            let head = Span::styled(format!("{indent} {oid}  "), theme.dim2());
+            if !selected {
+                self.lines.push(Line::from(vec![head, Span::styled(subject, theme.base())]));
+                continue;
+            }
+            // The file list's selected row, spelled the same way.
+            self.cursor_row = Some(self.lines.len());
+            let fill = self.w.saturating_sub(10 + pad + subject.width());
+            self.lines.push(
+                Line::from(vec![
+                    head,
+                    Span::styled(
+                        subject,
+                        Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" ".repeat(fill)),
+                ])
+                .style(theme.selected_row()),
+            );
+        }
+        let remaining = (count as usize).saturating_sub(commits.len());
+        if remaining > 0 {
+            let text = format!("{indent} … {remaining} more commits");
+            self.lines.push(Line::from(Span::styled(text, theme.dim3())));
+        }
+    }
+}
+
+/// A workspace's lists (T-455): one section per repo with something to push
+/// or pull — the board's own branch first where the root has one — headed by
+/// the repo, its branch, its arrows and what it is measured against; then
+/// every other repo by name, one line per reason, so a repo in sync costs a
+/// word rather than a section and nineteen of them still fit a screen.
+fn workspace_commits(rows: &mut CommitLines<'_>) {
+    let app = rows.app;
+    let theme = &app.theme;
+    let tier = theme.glyph_tier();
+    let board = app.board_name();
+    let (mut in_sync, mut no_upstream, mut detached) = (Vec::new(), Vec::new(), Vec::new());
+    for s in app.sync_groups() {
+        let name = s.repo.unwrap_or(&board).to_string();
+        if !s.pending() {
+            match (s.detached, s.compared()) {
+                (true, _) => detached.push(name),
+                (false, true) => in_sync.push(name),
+                (false, false) => no_upstream.push(name),
+            }
+            continue;
+        }
+        let mut head = vec![
+            Span::styled(
+                format!(" {}", crate::text::one_line(&name)),
+                theme.dim1().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  ⎇ {}", crate::text::one_line(s.branch)), theme.dim2()),
+            Span::styled(chrome::arrows(tier, s.ahead, s.behind), theme.calm_text()),
+        ];
+        let against = format!(
+            " ∙ {}{}",
+            crate::text::one_line(s.upstream.unwrap_or_default()),
+            if s.by_name { " (no upstream set)" } else { "" }
+        );
+        let room = rows.w.saturating_sub(super::spans_width(&head));
+        head.push(Span::styled(truncate(&against, room), theme.dim3()));
+        rows.lines.push(Line::from(head));
+        for (label, count, commits) in
+            [("TO PUSH", s.ahead, s.to_push), ("TO PULL", s.behind, s.to_pull)]
+        {
+            if count == 0 {
+                continue;
+            }
+            let text = format!("   {label} ({count})");
+            rows.lines.push(Line::from(Span::styled(text, theme.dim2())));
+            rows.commits(2, count, commits);
+        }
+        rows.lines.push(Line::default());
+    }
+    for (label, names) in
+        [("in sync", in_sync), ("no upstream", no_upstream), ("detached", detached)]
+    {
+        if names.is_empty() {
+            continue;
+        }
+        let label = format!(" {label:<13}");
+        let room = rows.w.saturating_sub(label.width());
+        rows.lines.push(Line::from(vec![
+            Span::styled(label, theme.dim1()),
+            Span::styled(truncate(&crate::text::one_line(&names.join(" ∙ ")), room), theme.dim2()),
+        ]));
+    }
+    rows.lines.push(Line::default());
+    // mesimon fetches only the board's own remote; a child's incoming
+    // commits are what its own last fetch brought.
+    rows.dim(" To pull is as of each repo's own last fetch");
 }
 
 /// The file-list pane: 2-cell gutter (stable letter + in-flight flag), path,

@@ -1559,12 +1559,16 @@ fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
     }
     let _permit = PermitGuard::acquire(&ctx.permits);
     let repo = &ctx.paths.repo_root;
-    if let DiffTarget::Commit { oid } = &target {
+    if let DiffTarget::Commit { oid, repo: nested } = &target {
+        let repo = match crate::gitstatus::commit_dir(repo, nested.as_deref()) {
+            Ok(dir) => dir,
+            Err(message) => return Response::Err { message },
+        };
         return match &env.command {
-            Command::DiffList { .. } => crate::diff::commit_diff_list(repo, oid)
+            Command::DiffList { .. } => crate::diff::commit_diff_list(&repo, oid)
                 .unwrap_or_else(|e| Response::Err { message: e.to_string() }),
             Command::DiffFile { path, context, .. } => {
-                match crate::diff::commit_diff_file(repo, oid, path, *context) {
+                match crate::diff::commit_diff_file(&repo, oid, path, *context) {
                     Ok(file) => Response::DiffFile { file },
                     Err(e) => Response::Err { message: e.to_string() },
                 }

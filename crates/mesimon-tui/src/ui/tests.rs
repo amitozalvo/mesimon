@@ -2279,6 +2279,92 @@ fn a_commit_row_is_picked_and_opens_to_its_own_diff() {
     assert!(rows.iter().any(|r| r.contains("an empty commit")), "{}", rows.join("\n"));
 }
 
+/// A folder of repos with no branch of its own (T-455): each repo with
+/// something pending gets a section headed by its branch, arrows and what it
+/// is measured against; the rest are named on one line per reason. The
+/// cursor walks every section, and Enter opens the commit in its own repo.
+#[test]
+fn a_workspace_lists_each_repo_and_opens_a_commit_in_it() {
+    use mesimon_core::command::{DiffTarget, GitCommit, RepoGit, RepoSync};
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let commit =
+        |oid: &str, subject: &str| GitCommit { oid: oid.repeat(40), subject: subject.into() };
+    let repo = |name: &str| RepoSync {
+        name: name.into(),
+        branch: "main".into(),
+        upstream: Some(format!("gitlab/{name}")),
+        ..RepoSync::default()
+    };
+    let mut app = app_graphite(fixture(false));
+    install_checkout_diff(&mut app);
+    app.diff.as_mut().unwrap().commits = true;
+    app.git = RepoGit {
+        sampled: true,
+        repos: ["api", "docs", "forms", "tools", "web"].map(String::from).to_vec(),
+        nested: vec![
+            RepoSync {
+                ahead: 1,
+                behind: 1,
+                to_push: Some(vec![commit("a", "Add the endpoint")]),
+                to_pull: Some(vec![commit("c", "Fix the schema")]),
+                ..repo("api")
+            },
+            RepoSync { upstream: None, ..repo("docs") },
+            repo("forms"),
+            RepoSync { detached: true, branch: "1a2b3c4".into(), upstream: None, ..repo("tools") },
+            RepoSync {
+                upstream: Some("gitlab/main".into()),
+                by_name: true,
+                ahead: 2,
+                to_push: Some(vec![commit("b", "Web newer"), commit("d", "Web older")]),
+                to_pull: Some(Vec::new()),
+                ..repo("web")
+            },
+        ],
+        ..RepoGit::default()
+    };
+    let rows = render(&app, 120, 30);
+    let text = rows.join("\n");
+    assert!(rows[2].contains(" ⎇ 5 repos ↑3 ↓1 ∙ push / pull"), "{}", rows[2]);
+    assert!(text.contains(" api  ⎇ main ↑1 ↓1 ∙ gitlab/api"), "{text}");
+    assert!(text.contains(" web  ⎇ main ↑2 ∙ gitlab/main (no upstream set)"), "{text}");
+    assert!(text.contains("   TO PUSH (2)"), "{text}");
+    assert!(!text.contains("TO PULL (0)"), "an empty direction is left out: {text}");
+    assert!(text.contains(" in sync      forms"), "{text}");
+    assert!(text.contains(" no upstream  docs"), "{text}");
+    assert!(text.contains(" detached     tools"), "{text}");
+    assert!(!text.contains("No upstream configured"), "{text}");
+    golden("git_commits_workspace_120x30", &rows);
+
+    // One cursor over every section, in the order drawn: api's push, api's
+    // pull, then web's two.
+    assert_eq!(app.commit_rows().len(), 4);
+    for _ in 0..3 {
+        press(&mut app, 'j');
+    }
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("key");
+    let d = app.diff.as_ref().unwrap();
+    let want = DiffTarget::Commit { oid: "d".repeat(40), repo: Some("web".into()) };
+    assert_eq!(d.target, want);
+    let rows = render(&app, 120, 30);
+    assert!(rows[2].contains(" web ∙ ddddddd Web older ∙ to push ∙ 1 file"), "{}", rows[2]);
+
+    // A meta repo's own branch leads, named by the board, and the repos'
+    // sum rides a clause of its own on the checkout's title.
+    app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE).expect("key");
+    app.git.branch = "master".into();
+    app.git.upstream = Some("origin/master".into());
+    app.git.ahead = 1;
+    app.git.to_push = Some(vec![commit("e", "Meta change")]);
+    let rows = render(&app, 120, 30);
+    let text = rows.join("\n");
+    let board = app.board_name();
+    let meta = text.find(&format!(" {board}  ⎇ master ↑1 ∙ origin/master")).expect(&text);
+    assert!(meta < text.find(" api  ⎇").unwrap(), "{text}");
+    assert!(rows[2].contains(" ⎇ master ↑1 ∙ 5 repos ↑3 ↓1 ∙ push / pull"), "{}", rows[2]);
+    assert_eq!(app.commit_rows()[0].repo, None);
+}
+
 #[test]
 fn checkout_commits_scroll_to_incoming_and_clamp_after_snapshot_shrinks() {
     let mut app = app_graphite(fixture(false));
@@ -7483,6 +7569,25 @@ fn test_git_clause_names_a_workspace_by_its_count() {
     let head = &render(&app, 120, 30)[0];
     assert!(head.contains("⎇ 3 repos   "), "{head:?}");
     golden("board_workspace_120x30", &render(&app, 120, 30));
+
+    // The repos' own arrows, summed (T-455): on the count where the count is
+    // the name, after the count's clause where the root's branch leads.
+    let sync = |name: &str, ahead, behind| mesimon_core::command::RepoSync {
+        name: name.into(),
+        branch: "main".into(),
+        upstream: Some("origin/main".into()),
+        ahead,
+        behind,
+        ..Default::default()
+    };
+    app.git.nested = vec![sync("api", 2, 0), sync("infra", 0, 0), sync("web", 1, 1)];
+    app.git.changed = 7;
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("⎇ 3 repos ↑3 ↓1 ∙ 7 changed"), "{head:?}");
+    app.git.branch = "master".into();
+    app.git.ahead = 2;
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("⎇ master ↑2 ∙ 3 repos ↑3 ↓1 ∙ 7 changed"), "{head:?}");
 }
 
 /// One nested repo never reads `1 repo`: a root that is a repository keeps

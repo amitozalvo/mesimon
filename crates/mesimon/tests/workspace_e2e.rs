@@ -4,7 +4,8 @@
 //! sum across all three → `DiffList { Checkout }` is one list, the children's
 //! rows prefixed by their name, and `DiffFile` opens through the prefix. And
 //! (T-368) a worktree ticket there gets one worktree per repo under one
-//! container, merged leg by leg.
+//! container, merged leg by leg. And (T-455) each child's push / pull lists ride
+//! the snapshot, and a listed commit opens in the repo it was listed under.
 //!
 //! The harness boots on a bare directory and the boot sample sees no repo;
 //! the next sample is the 10 s bucket's, so the census is waited for (a
@@ -113,6 +114,44 @@ fn a_workspace_of_repos_stands_on_the_wire() {
         context: 3,
     });
     assert!(matches!(resp, Response::Err { .. }), "{resp:?}");
+
+    // ---- each repo's push / pull lists (T-455) -----------------------------
+    // `api` tracks a local branch and is one ahead; `web` has a `gitlab/main`
+    // nobody linked and is one ahead of it.
+    let api = root.join("api");
+    git(&api, &["branch", "upstream"]);
+    git(&api, &["branch", "-q", "--set-upstream-to=upstream", "main"]);
+    git(&api, &["commit", "-qam", "api outgoing"]);
+    let web = root.join("web");
+    git(&web, &["update-ref", "refs/remotes/gitlab/main", "HEAD"]);
+    git(&web, &["commit", "-qam", "web outgoing"]);
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let g = loop {
+        let g = git_of(c.request(Command::Snapshot));
+        if g.nested.iter().map(|s| s.ahead).sum::<u32>() == 2 {
+            break g;
+        }
+        assert!(Instant::now() < deadline, "never saw api and web one ahead each; last: {g:?}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let (api_sync, web_sync) = (&g.nested[0], &g.nested[1]);
+    assert_eq!((api_sync.name.as_str(), api_sync.upstream.as_deref()), ("api", Some("upstream")));
+    assert_eq!((web_sync.upstream.as_deref(), web_sync.by_name), (Some("gitlab/main"), true));
+    let pushed = &api_sync.to_push.as_ref().unwrap()[0];
+    assert_eq!(pushed.subject, "api outgoing");
+
+    // A listed commit opens in the repo it was listed under, and only there.
+    let open = |c: &mut TestClient, repo: Option<&str>| {
+        let target = DiffTarget::Commit { oid: pushed.oid.clone(), repo: repo.map(Into::into) };
+        c.request(Command::DiffList { target })
+    };
+    let resp = open(&mut c, Some("api"));
+    let paths: Vec<String> = files_of(&resp).into_iter().map(|f| f.path).collect();
+    assert_eq!(paths, ["server.ts"]);
+    for repo in [None, Some("web"), Some("../api"), Some("nope")] {
+        let resp = open(&mut c, repo);
+        assert!(matches!(resp, Response::Err { .. }), "{repo:?}: {resp:?}");
+    }
 }
 
 /// Stub claude: records its cwd beside itself, dies politely on TERM. The

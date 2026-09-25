@@ -26,7 +26,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use mesimon_core::command::{GitCommit, RepoGit};
+use mesimon_core::command::{GitCommit, RepoGit, RepoSync};
 
 /// A fetch that has not answered in this long is killed. A detached daemon
 /// has no tty, so nothing on the other side of a passphrase prompt will ever
@@ -46,14 +46,85 @@ pub fn sample_one(repo: &Path) -> RepoGit {
     }
 }
 
-/// History belongs only to the branch named by the sample. Nested repos
-/// whose dirty counts are merely summed need no history subprocesses.
+/// History belongs only to the branch named by the sample.
 fn with_commits(repo: &Path, mut g: RepoGit) -> RepoGit {
     if g.upstream.is_some() && !g.detached {
         g.to_push = commits(repo, "@{upstream}..HEAD", g.ahead);
         g.to_pull = commits(repo, "HEAD..@{upstream}", g.behind);
     }
     g
+}
+
+/// One nested repo of a workspace against its remote (T-455). Its own
+/// upstream when one is configured; otherwise the one remote branch with the
+/// same name — the author's workspace had eight of twelve repos pushed with
+/// `git push gitlab main` and never linked, so `git status` saw nothing to
+/// compare while `gitlab/main` sat right there. Read-only either way: no
+/// config is written to make the link.
+fn nested_sync(dir: &Path, name: &str, g: RepoGit) -> RepoSync {
+    let mut s = RepoSync {
+        name: name.to_string(),
+        branch: g.branch.clone(),
+        detached: g.detached,
+        upstream: g.upstream.clone(),
+        ahead: g.ahead,
+        behind: g.behind,
+        ..RepoSync::default()
+    };
+    if s.detached {
+        s.upstream = None;
+        return s;
+    }
+    let rev = if s.upstream.is_some() {
+        "@{upstream}".to_string()
+    } else {
+        let Some((refname, ahead, behind)) = same_name_remote(dir, &s.branch) else { return s };
+        s.upstream = Some(refname.trim_start_matches("refs/remotes/").to_string());
+        s.by_name = true;
+        (s.ahead, s.behind) = (ahead, behind);
+        refname
+    };
+    s.to_push = commits(dir, &format!("{rev}..HEAD"), s.ahead);
+    s.to_pull = commits(dir, &format!("HEAD..{rev}"), s.behind);
+    s
+}
+
+/// `refs/remotes/<remote>/<branch>` when exactly one remote carries the
+/// branch, with HEAD's (ahead, behind) against it. Two remotes with the name
+/// is a guess this refuses to make. `*` matches one path segment in git's
+/// ref patterns, and a branch name cannot hold a glob character, so the
+/// pattern names exactly the candidates.
+fn same_name_remote(dir: &Path, branch: &str) -> Option<(String, u32, u32)> {
+    if branch.is_empty() {
+        return None;
+    }
+    let out = crate::git::git(dir)
+        .args(["--no-optional-locks", "for-each-ref", "--format=%(refname)"])
+        .arg(format!("refs/remotes/*/{branch}"))
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut refs = text.lines().filter(|l| !l.is_empty());
+    let (Some(only), None) = (refs.next(), refs.next()) else { return None };
+    // An unborn HEAD has nothing to count, and the comparison fails here.
+    let out = crate::git::git(dir)
+        .args(["--no-optional-locks", "rev-list", "--left-right", "--count"])
+        .arg(format!("HEAD...{only}"))
+        .arg("--")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let counts = String::from_utf8_lossy(&out.stdout);
+    let mut n = counts.split_whitespace().map(|t| t.parse::<u32>().ok());
+    let (Some(Some(ahead)), Some(Some(behind))) = (n.next(), n.next()) else { return None };
+    Some((only.to_string(), ahead, behind))
 }
 
 /// Bounded, read-only history on the same worker as status. Only local refs
@@ -116,8 +187,18 @@ pub fn sample(root: &Path) -> RepoGit {
             return child;
         }
     }
+    // Each child's branch against its remote rides along where the header
+    // names the workspace by its count — two or more. One child under a
+    // repository root is not a workspace to the header (`mt/` again), and
+    // its lists would be the only ones drawn about a repo it never names.
+    let workspace = repos.len() > 1;
     for name in &repos {
-        g.changed += sample_one(&root.join(name)).changed;
+        let dir = root.join(name);
+        let child = sample_one(&dir);
+        g.changed += child.changed;
+        if workspace && child.sampled {
+            g.nested.push(nested_sync(&dir, name, child));
+        }
     }
     g.sampled = true;
     g.repos = repos;
@@ -128,9 +209,27 @@ pub fn sample(root: &Path) -> RepoGit {
 /// the one nested repo that stands in for it. The fetch runs there, because
 /// `branch.<b>.remote` is that repository's config.
 pub fn branch_dir(root: &Path, git: &RepoGit) -> std::path::PathBuf {
-    match &git.repos[..] {
+    stand_in(root, &git.repos)
+}
+
+fn stand_in(root: &Path, repos: &[String]) -> std::path::PathBuf {
+    match repos {
         [only] if !root.join(".git").exists() => root.join(only),
         _ => root.to_path_buf(),
+    }
+}
+
+/// The repository a listed commit is read in (T-455): a nested repo the
+/// list named — a census name and nothing else, so a client cannot aim git
+/// at any other directory — or else where the board's own branch is sampled.
+/// That second road is the one-repo folder's too: its lists are the child's,
+/// and the root it sits in is no repository at all.
+pub fn commit_dir(root: &Path, repo: Option<&str>) -> Result<std::path::PathBuf, String> {
+    let repos = census(root);
+    match repo {
+        Some(name) if repos.iter().any(|r| r == name) => Ok(root.join(name)),
+        Some(name) => Err(format!("no repository {name} in this workspace")),
+        None => Ok(stand_in(root, &repos)),
     }
 }
 
@@ -489,6 +588,100 @@ mod tests {
         assert!(g.to_push.is_none());
         assert!(g.to_pull.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder of four repos, one per way a child can stand (T-455): a
+    /// linked upstream, a same-name remote branch nobody linked, no remote
+    /// at all, and a detached HEAD.
+    #[test]
+    fn a_workspace_lists_each_repo_against_its_remote() {
+        if !crate::worktree::have_git() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("msmn-gitstatus-ws-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let git = |repo: &str, args: &[&str]| -> String {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(root.join(repo))
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let commit = |repo: &str, subject: &str| {
+            git(repo, &["commit", "-q", "--allow-empty", "-m", subject]);
+        };
+        for repo in ["api", "docs", "tools", "web"] {
+            std::fs::create_dir_all(root.join(repo)).unwrap();
+            git(repo, &["init", "-q", "-b", "main"]);
+            commit(repo, "base");
+        }
+        // api: linked to a local branch, one commit each way.
+        git("api", &["branch", "upstream"]);
+        git("api", &["branch", "--set-upstream-to=upstream", "main"]);
+        commit("api", "api outgoing");
+        git("api", &["checkout", "-q", "upstream"]);
+        commit("api", "api incoming");
+        git("api", &["checkout", "-q", "main"]);
+        // web: `gitlab/main` is there and nothing links it; two ahead.
+        git("web", &["update-ref", "refs/remotes/gitlab/main", "HEAD"]);
+        commit("web", "web older");
+        commit("web", "web newer");
+        // tools: detached.
+        git("tools", &["checkout", "-q", "--detach"]);
+
+        let g = sample(&root);
+        assert_eq!(g.repos, ["api", "docs", "tools", "web"]);
+        assert!(g.branch.is_empty() && g.upstream.is_none(), "a folder has no branch");
+        let by = |name: &str| g.nested.iter().find(|s| s.name == name).unwrap().clone();
+        let api = by("api");
+        assert_eq!((api.upstream.as_deref(), api.by_name), (Some("upstream"), false));
+        assert_eq!((api.ahead, api.behind), (1, 1));
+        assert_eq!(api.to_push.unwrap()[0].subject, "api outgoing");
+        assert_eq!(api.to_pull.unwrap()[0].subject, "api incoming");
+        let web = by("web");
+        assert_eq!((web.upstream.as_deref(), web.by_name), (Some("gitlab/main"), true));
+        assert_eq!((web.ahead, web.behind), (2, 0));
+        let subjects: Vec<_> = web.to_push.unwrap().into_iter().map(|c| c.subject).collect();
+        assert_eq!(subjects, ["web newer", "web older"]);
+        assert_eq!(web.to_pull, Some(Vec::new()));
+        let docs = by("docs");
+        assert!(docs.upstream.is_none() && docs.to_push.is_none(), "no remote, no comparison");
+        let tools = by("tools");
+        assert!(tools.detached && tools.upstream.is_none());
+        assert_eq!(g.nested_ahead_behind(), (3, 1));
+
+        // Two remotes carrying the name is a guess the fallback refuses.
+        git("web", &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let web = sample(&root).nested.into_iter().find(|s| s.name == "web").unwrap();
+        assert!(web.upstream.is_none(), "{web:?}");
+
+        // A commit is read in the repo its list named, and only a census
+        // name routes anywhere.
+        assert_eq!(commit_dir(&root, Some("api")).unwrap(), root.join("api"));
+        assert!(commit_dir(&root, Some("..")).is_err());
+        assert!(commit_dir(&root, Some("api/../web")).is_err());
+        assert!(commit_dir(&root, Some("missing")).is_err());
+        assert_eq!(commit_dir(&root, None).unwrap(), root);
+
+        // A folder of ONE: the lists are that repo's, and so is the road a
+        // listed commit is opened on — the root holds no repository.
+        for repo in ["docs", "tools", "web"] {
+            std::fs::remove_dir_all(root.join(repo)).unwrap();
+        }
+        let g = sample(&root);
+        assert!(g.nested.is_empty(), "one repo is not a workspace to the header");
+        assert_eq!(g.to_push.unwrap()[0].subject, "api outgoing");
+        assert_eq!(commit_dir(&root, None).unwrap(), root.join("api"));
+
+        // One nested repo under a repository root stays the root's view.
+        git("", &["init", "-q", "-b", "main"]);
+        assert!(sample(&root).nested.is_empty());
+        assert_eq!(commit_dir(&root, None).unwrap(), root);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

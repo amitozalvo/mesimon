@@ -131,7 +131,7 @@ fn the_board_diffs_one_commit_of_its_history() {
     std::fs::write(repo.join("kept.txt"), "one\nTWO\nthree\n").unwrap();
     let mut c = h.client("diffcommit");
 
-    let target = DiffTarget::Commit { oid: oid.clone() };
+    let target = DiffTarget::Commit { oid: oid.clone(), repo: None };
     let resp = c.request(Command::DiffList { target: target.clone() });
     match &resp {
         Response::DiffList { branch_oid, worktree_present, .. } => {
@@ -152,7 +152,9 @@ fn the_board_diffs_one_commit_of_its_history() {
         other => panic!("expected DiffFile, got {other:?}"),
     }
     err_containing(
-        c.request(Command::DiffList { target: DiffTarget::Commit { oid: "HEAD~1".into() } }),
+        c.request(Command::DiffList {
+            target: DiffTarget::Commit { oid: "HEAD~1".into(), repo: None },
+        }),
         "not a commit id",
     );
 }

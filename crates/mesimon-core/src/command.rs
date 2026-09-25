@@ -994,7 +994,14 @@ pub enum DiffTarget {
     /// empty tree for a root commit): a row of the push / pull lists, opened.
     /// `oid` is full hex and nothing else — the daemon refuses anything that
     /// could reach git's argv as an option or a revision expression.
-    Commit { oid: String },
+    Commit {
+        oid: String,
+        /// The nested repository of a workspace the commit was listed under
+        /// (T-455): a census name, checked against the census. `None` is the
+        /// repository the board's own branch is sampled in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repo: Option<String>,
+    },
 }
 
 impl DiffTarget {
@@ -2180,6 +2187,12 @@ pub struct RepoGit {
     /// root's own and speak for nothing under it.
     #[serde(default)]
     pub repos: Vec<String>,
+    /// Each nested repo's own branch against its remote, in census order
+    /// (T-455) — the push / pull lists of a workspace. Filled only where the
+    /// header names the workspace by its count (`repos` holds two or more);
+    /// a folder of one takes that one's comparison as its own, above.
+    #[serde(default)]
+    pub nested: Vec<RepoSync>,
     /// A fetch is running right now.
     #[serde(default)]
     pub fetching: bool,
@@ -2194,6 +2207,46 @@ pub struct RepoGit {
     /// remote-tracking refs stand, so `behind` is simply older than it looks.
     #[serde(default)]
     pub fetch_error: Option<String>,
+}
+
+impl RepoGit {
+    /// The nested repos' arrows summed: what the workspace as a whole has
+    /// to push and to pull, beside the root's own.
+    pub fn nested_ahead_behind(&self) -> (u32, u32) {
+        self.nested.iter().fold((0, 0), |(a, b), r| (a + r.ahead, b + r.behind))
+    }
+}
+
+/// One nested repository of a workspace against its remote (T-455): the
+/// fields of [`RepoGit`] that the push / pull lists read, for a child.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoSync {
+    /// The census name: the child directory under the board root.
+    #[serde(default)]
+    pub name: String,
+    /// The branch name, or the short oid while HEAD is detached.
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub detached: bool,
+    /// The remote branch this one is measured against. None means no
+    /// comparison, and then the counts and lists are empty.
+    #[serde(default)]
+    pub upstream: Option<String>,
+    /// No upstream is configured, so `upstream` is the one remote branch
+    /// with this branch's name. `git status` and a bare `git push` see no
+    /// link; the lists do, and say so.
+    #[serde(default)]
+    pub by_name: bool,
+    #[serde(default)]
+    pub ahead: u32,
+    #[serde(default)]
+    pub behind: u32,
+    /// As on [`RepoGit`]: newest first, capped at 100, None = unavailable.
+    #[serde(default)]
+    pub to_push: Option<Vec<GitCommit>>,
+    #[serde(default)]
+    pub to_pull: Option<Vec<GitCommit>>,
 }
 
 /// Pushed to subscribed clients whenever board state changes.

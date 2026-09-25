@@ -201,6 +201,47 @@ pub struct FromList {
     pub subject: String,
     /// A row of TO PULL, not TO PUSH.
     pub incoming: bool,
+    /// The workspace repo it was listed under (T-455); None for the
+    /// board's own.
+    pub repo: Option<String>,
+}
+
+/// A row of the push / pull lists (`App::commit_rows`).
+pub(crate) struct CommitRow<'a> {
+    pub commit: &'a mesimon_core::command::GitCommit,
+    /// A row of TO PULL, not TO PUSH.
+    pub incoming: bool,
+    /// The workspace repo it is listed under; None for the board's own.
+    pub repo: Option<&'a str>,
+}
+
+/// One repository's standing as the push / pull lists draw it (T-455): the
+/// board's own branch — the root's, or the one repo a folder holds — or a
+/// workspace child's. The root and a child read alike from here on.
+pub(crate) struct SyncGroup<'a> {
+    /// The census name; None for the board's own.
+    pub repo: Option<&'a str>,
+    pub branch: &'a str,
+    pub detached: bool,
+    pub upstream: Option<&'a str>,
+    /// Compared with the same-name remote branch, no upstream configured.
+    pub by_name: bool,
+    pub ahead: u32,
+    pub behind: u32,
+    pub to_push: Option<&'a [mesimon_core::command::GitCommit]>,
+    pub to_pull: Option<&'a [mesimon_core::command::GitCommit]>,
+}
+
+impl SyncGroup<'_> {
+    /// Measured against something: an upstream, on a branch.
+    pub fn compared(&self) -> bool {
+        self.upstream.is_some() && !self.detached
+    }
+
+    /// Something to push or to pull.
+    pub fn pending(&self) -> bool {
+        self.compared() && (self.ahead > 0 || self.behind > 0)
+    }
 }
 
 impl DiffState {
@@ -8783,18 +8824,55 @@ impl App {
         }
     }
 
-    /// The push / pull lists' rows as the draw lists them, outgoing first,
-    /// each with whether it is incoming. Empty wherever the lists are not
-    /// drawn — no sample, a detached HEAD, no upstream — and a direction
-    /// whose count is zero lists nothing, as its "Nothing pending" says.
-    pub(crate) fn commit_rows(&self) -> Vec<(&mesimon_core::command::GitCommit, bool)> {
+    /// Every repository the push / pull lists speak for, in the order they
+    /// are drawn: the board's own branch first where there is one (a folder
+    /// of several repos has none), then each workspace child in census order.
+    pub(crate) fn sync_groups(&self) -> Vec<SyncGroup<'_>> {
         let g = &self.git;
-        if !g.sampled || g.detached || g.upstream.is_none() {
+        let own = (!g.branch.is_empty()).then_some(SyncGroup {
+            repo: None,
+            branch: &g.branch,
+            detached: g.detached,
+            upstream: g.upstream.as_deref(),
+            by_name: false,
+            ahead: g.ahead,
+            behind: g.behind,
+            to_push: g.to_push.as_deref(),
+            to_pull: g.to_pull.as_deref(),
+        });
+        let nested = g.nested.iter().map(|s| SyncGroup {
+            repo: Some(&s.name),
+            branch: &s.branch,
+            detached: s.detached,
+            upstream: s.upstream.as_deref(),
+            by_name: s.by_name,
+            ahead: s.ahead,
+            behind: s.behind,
+            to_push: s.to_push.as_deref(),
+            to_pull: s.to_pull.as_deref(),
+        });
+        own.into_iter().chain(nested).collect()
+    }
+
+    /// The push / pull lists' rows as the draw lists them: repo by repo,
+    /// each one's outgoing before its incoming. Empty wherever the lists
+    /// are not drawn — no sample, a detached HEAD, no upstream — and a
+    /// direction whose count is zero lists nothing, as its "Nothing pending"
+    /// says.
+    pub(crate) fn commit_rows(&self) -> Vec<CommitRow<'_>> {
+        if !self.git.sampled {
             return Vec::new();
         }
-        let push = g.to_push.iter().flatten().filter(|_| g.ahead > 0).map(|c| (c, false));
-        let pull = g.to_pull.iter().flatten().filter(|_| g.behind > 0).map(|c| (c, true));
-        push.chain(pull).collect()
+        let mut rows = Vec::new();
+        for s in self.sync_groups().into_iter().filter(|s| s.compared()) {
+            for (count, list, incoming) in
+                [(s.ahead, s.to_push, false), (s.behind, s.to_pull, true)]
+            {
+                let list = list.filter(|_| count > 0).unwrap_or_default();
+                rows.extend(list.iter().map(|commit| CommitRow { commit, incoming, repo: s.repo }));
+            }
+        }
+        rows
     }
 
     fn on_commit_list(&self) -> bool {
@@ -8817,14 +8895,15 @@ impl App {
     fn open_commit(&mut self) {
         let Some(d) = self.diff.as_ref().filter(|d| d.commits) else { return };
         let rows = self.commit_rows();
-        let Some((commit, incoming)) = rows.get(d.commit_idx.min(rows.len().saturating_sub(1)))
-        else {
+        let Some(row) = rows.get(d.commit_idx.min(rows.len().saturating_sub(1))) else {
             return;
         };
-        let (oid, subject, incoming) = (commit.oid.clone(), commit.subject.clone(), *incoming);
-        let Some(mut next) = self.load_diff(DiffTarget::Commit { oid }, 0) else { return };
+        let (oid, subject) = (row.commit.oid.clone(), row.commit.subject.clone());
+        let (incoming, repo) = (row.incoming, row.repo.map(str::to_string));
+        let target = DiffTarget::Commit { oid, repo: repo.clone() };
+        let Some(mut next) = self.load_diff(target, 0) else { return };
         let Some(parent) = self.diff.take() else { return };
-        next.from_list = Some(FromList { parent: Box::new(parent), subject, incoming });
+        next.from_list = Some(FromList { parent: Box::new(parent), subject, incoming, repo });
         self.diff = Some(next);
         self.diff_fetch(0);
     }
@@ -10481,7 +10560,7 @@ pub(crate) mod test_support {
                 Command::DiffList { target } => {
                     // A commit of the push / pull lists opens on one file;
                     // an oid of `e`s is one the repository does not have.
-                    if let DiffTarget::Commit { oid } = &target {
+                    if let DiffTarget::Commit { oid, .. } = &target {
                         if oid.starts_with('e') {
                             return Ok(Response::Err { message: "no such commit here".into() });
                         }
@@ -10502,7 +10581,7 @@ pub(crate) mod test_support {
                             dirty: !untracked,
                             untracked,
                         };
-                    if let DiffTarget::Commit { oid } = target {
+                    if let DiffTarget::Commit { oid, .. } = target {
                         return Ok(Response::DiffList {
                             branch: String::new(),
                             base_oid: "p".repeat(40),
@@ -17362,7 +17441,7 @@ mod tests {
                 // Only reachable from the push / pull list, which `q` returns
                 // to (`commit_list_walks_opens_and_returns`); without one, the
                 // commit belongs to the checkout, and so does its way out.
-                DiffTarget::Commit { oid: "a".repeat(40) },
+                DiffTarget::Commit { oid: "a".repeat(40), repo: None },
             ] {
                 for view_chord in [false, true] {
                     let mut app = app_three_columns();
@@ -17453,7 +17532,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.screen, Screen::Diff);
         let d = app.diff.as_ref().unwrap();
-        assert_eq!(d.target, DiffTarget::Commit { oid: "b".repeat(40) });
+        assert_eq!(d.target, DiffTarget::Commit { oid: "b".repeat(40), repo: None });
         assert!(!d.commits, "the commit's files, not the lists");
         assert_eq!(d.files.len(), 1);
         let from = d.from_list.as_ref().unwrap();
@@ -17485,7 +17564,10 @@ mod tests {
         app.git.behind = 0;
         app.git.to_pull = Some(Vec::new());
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.diff.as_ref().unwrap().target, DiffTarget::Commit { oid: "b".repeat(40) });
+        assert_eq!(
+            app.diff.as_ref().unwrap().target,
+            DiffTarget::Commit { oid: "b".repeat(40), repo: None }
+        );
     }
 
     #[test]

@@ -13684,3 +13684,63 @@ the daemon cannot open leaves the list where it was, with the refusal on the sta
 `commit_list_walks_opens_and_returns`, `a_commit_row_is_picked_and_opens_to_its_own_diff` and
 its golden `diff_commit_120x30`. The two `git_commits` goldens changed only in their hint
 row (`jk commit ∙ enter open`). The scroll test now moves the cursor instead of the pager.
+
+## A workspace's push / pull lists are per repo (T-455, 2026-09-25, user: "push / pull commits from subrepos in a multirepo mesimon board" → "does it work? if not, easy to add?" then "implement")
+
+**What it was.** T-322 asked only the root for history, and T-225's sample ran `git status
+--branch` in every nested repo and kept only `.changed`. On simbly (a meta repo with no
+upstream over twelve repos) `tab` read "No upstream configured". A plain folder of repos read
+the same. A folder of ONE showed that repo's lists, but `enter` on a row failed: the T-454
+follow-up diffed `DiffTarget::Commit` in `repo_root`, which is not a repository there, so
+every row was refused with "no such commit here".
+
+**The sample.** `RepoGit.nested: Vec<RepoSync>` (`#[serde(default)]`) holds each child's
+branch, what it is compared against, the arrows and the two lists, in census order. It is
+filled only where the header names the workspace by its count (`repos.len() > 1`). A folder
+of one keeps T-225's stand-in, and one child under a repository root (mesimon's `mt/`) is
+still the root's view. The root's own fields are unchanged and still drive the fetch.
+
+**The same-name fallback, nested only.** Eight of simbly's twelve repos had `gitlab/<branch>`
+refs and no `branch.<b>.remote`/`.merge` (the author had pushed with `git push gitlab
+main`). `git status` shows no upstream there. With no configured upstream, `nested_sync`
+compares the branch against `refs/remotes/*/<branch>` when exactly one remote carries it:
+one `for-each-ref` (its `*` matches a single path segment, and a branch name cannot hold a
+glob character) plus one `rev-list --left-right --count`. Two candidates means no guess.
+`RepoSync.by_name` marks the result, and the heading says `(no upstream set)`. mesimon only
+reads; it writes no git config. The root does not get the fallback, because its `upstream`
+gates `GitFetch` and `remote_of` reads the config. `git log` runs only for a repo with
+something pending, as on the root.
+
+**The wire.** `DiffTarget::Commit` has gained `repo: Option<String>` (`serde(default)`,
+skipped when None). `gitstatus::commit_dir` routes a census name to that child and refuses
+any other name. `None` resolves to where the board's branch is sampled: the root, or the
+one repo of a folder of one. That fixes the refused rows.
+
+**The TUI.** `App::sync_groups` presents the board's own branch (when the root has one)
+and each child the same way, and `commit_rows` walks them in drawn order. So one cursor
+spans every repo, and `open_commit` sends the row's repo. `draw_commits` keeps the
+single-repo layout byte for byte. A workspace gets `workspace_commits`, which draws:
+
+- one section per repo with something pending: ` api  ⎇ main ↑1 ↓1 ∙ gitlab/api`, then
+  `TO PUSH (n)` / `TO PULL (n)` indented, with empty directions left out. The root's
+  section is named by `board_name()`.
+- the other repos, one line per reason: `in sync`, `no upstream`, `detached`.
+- a closing line saying incoming commits are as of each repo's own last fetch. mesimon
+  fetches only the board's remote.
+
+The summed arrows (`RepoGit::nested_ahead_behind`) appear on the header and on the diff
+screen's identity row. They follow the count when the count is the name (`⎇ 5 repos ↑3 ↓1`).
+Otherwise they form their own clause after the root's arrows (`⎇ master ↑1 ∙ 5 repos ↑3 ↓1`),
+and that clause gives way whole on a tight header row. `chrome::arrows` is now the one
+spelling of ` ↑N ↓N`. A commit opened from a child names it: ` web ∙ ddddddd Web older ∙
+to push ∙ …`.
+
+**Not done.** "Fetch all remotes" (deferred since T-225): a child's incoming list moves only
+when that repo is fetched outside mesimon.
+
+**Tests.** Daemon: `a_workspace_lists_each_repo_against_its_remote`, which covers linked, by
+name, no remote, detached, two candidate remotes refused, `commit_dir`'s census check, and
+the one-repo folder's commit road. E2e: `workspace_e2e` sends the nested lists over the wire
+and opens a commit in `api` only. TUI: `a_workspace_lists_each_repo_and_opens_a_commit_in_it`
+with the new golden `git_commits_workspace_120x30`, and the summed-arrows cases added to
+`test_git_clause_names_a_workspace_by_its_count`. No existing golden moved.

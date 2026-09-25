@@ -195,6 +195,19 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
 /// keeps a floor for the same reason (`ticket.rs::WT_BRANCH_FLOOR`).
 const GIT_BRANCH_FLOOR: usize = 10;
 
+/// ` ↑2 ↓1` — what is ahead and behind, each only when it is not zero. One
+/// spelling for the header and the diff screen's identity row.
+pub(crate) fn arrows(tier: crate::glyphs::Tier, ahead: u32, behind: u32) -> String {
+    let mut out = String::new();
+    if ahead > 0 {
+        out.push_str(&format!(" {}{ahead}", crate::glyphs::ahead_mark(tier)));
+    }
+    if behind > 0 {
+        out.push_str(&format!(" {}{behind}", crate::glyphs::behind_mark(tier)));
+    }
+    out
+}
+
 /// The board's own checkout, as a clause after the breadcrumb (T-124):
 /// ` ⎇ main ↑2 ↓1 ∙ 3 changed`. The glyph and the name are quiet identity
 /// (`dim3`/`dim2` — the same weight as `mesimon` in the crumb), the arrows
@@ -234,19 +247,28 @@ fn git_clause(app: &App, room: usize, focused: bool) -> Vec<Span<'static>> {
     };
     let theme = &app.theme;
     let tier = theme.glyph_tier();
-    let mut state = String::new();
-    if g.ahead > 0 {
-        state.push_str(&format!(" {}{}", crate::glyphs::ahead_mark(tier), g.ahead));
+    // The workspace's repos carry their own arrows (T-455), summed, after
+    // the count that names them: on the name where a folder is named by its
+    // count, on the `N repos` clause where the root's branch leads.
+    let (na, nb) = g.nested_ahead_behind();
+    let nested = arrows(tier, na, nb);
+    let mut state = arrows(tier, g.ahead, g.behind);
+    if g.branch.is_empty() {
+        state.push_str(&nested);
     }
-    if g.behind > 0 {
-        state.push_str(&format!(" {}{}", crate::glyphs::behind_mark(tier), g.behind));
-    }
-    let mut changed = String::new();
+    let ink = if focused { &theme.sel } else { &theme.rest };
+    // The clauses that give way first, whole, on a tight row.
+    let mut tail: Vec<Span<'static>> = Vec::new();
     if g.repos.len() > 1 && !g.branch.is_empty() {
-        changed.push_str(&format!(" ∙ {}", mesimon_core::workspace::repos_word(g.repos.len())));
+        let word = mesimon_core::workspace::repos_word(g.repos.len());
+        tail.push(Span::styled(format!(" ∙ {word}"), Style::default().fg(ink.dim2)));
+        if !nested.is_empty() {
+            tail.push(Span::styled(nested, theme.calm_text()));
+        }
     }
     if g.changed > 0 {
-        changed.push_str(&format!(" ∙ {} changed", g.changed));
+        let count = format!(" ∙ {} changed", g.changed);
+        tail.push(Span::styled(count, Style::default().fg(ink.dim2)));
     }
     // The terminal's `!` (T-273) is NOT here: it drew ` ! terminal` after
     // ` v diff` for a day and was cut (T-277, user: "keep only on ? help
@@ -255,12 +277,11 @@ fn git_clause(app: &App, room: usize, focused: bool) -> Vec<Span<'static>> {
     //
     // The gap belongs to the page, not the highlight. Focus changes only
     // style, so neither the branch nor the following count moves.
-    let ink = if focused { &theme.sel } else { &theme.rest };
     let fixed = 3 + state.width();
     let floor = name.width().min(GIT_BRANCH_FLOOR);
-    let mut name_room = room.saturating_sub(fixed + changed.width());
+    let mut name_room = room.saturating_sub(fixed + super::spans_width(&tail));
     if name_room < floor {
-        changed.clear();
+        tail.clear();
         name_room = room.saturating_sub(fixed);
     }
     if name_room < floor {
@@ -276,9 +297,7 @@ fn git_clause(app: &App, room: usize, focused: bool) -> Vec<Span<'static>> {
     if !state.is_empty() {
         out.push(Span::styled(state, theme.calm_text()));
     }
-    if !changed.is_empty() {
-        out.push(Span::styled(changed, Style::default().fg(ink.dim2)));
-    }
+    out.extend(tail);
     if focused {
         // Where the profile can paint no surface and may not reverse
         // (light-256, a phosphor at 16) the cursor would be invisible on a
