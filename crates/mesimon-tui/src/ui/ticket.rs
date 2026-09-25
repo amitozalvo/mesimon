@@ -1098,8 +1098,9 @@ fn creature_rows(
     if (area.height as usize) < 1 + rows + 1 + text_h || (area.width as usize) < cols + 2 {
         return blank;
     }
-    // Centre the body, not the stage: its props hang off to the right.
-    let body_w = cols - creature::MARGIN as usize;
+    // Centre the body, not the stage: its props and its scene hang off to
+    // the right.
+    let body_w = stage.body as usize;
     let x = ((block_w.max(body_w) - body_w) / 2).saturating_sub(creature::LEFT as usize);
     *app.mascot.borrow_mut() = Some(stage.drawn(area.x + x as u16, area.y + 1));
     let mut lines: Vec<Line<'static>> = (0..stage.rows).map(|r| stage.line(r, x)).collect();

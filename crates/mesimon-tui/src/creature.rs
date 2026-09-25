@@ -71,24 +71,6 @@ impl Body {
         x >= 0 && y >= 0 && x < self.w && y < self.h && self.solid[(y * self.w + x) as usize]
     }
 
-    /// The cell row the first thought dot rises from: inside the gap
-    /// between the middle and right arms when it is open that far down,
-    /// else the top row. A dot rises one row a step, and the stage keeps
-    /// room above for the last one (`above`).
-    fn think_base(&self) -> i16 {
-        let x = self.split - 2;
-        if !self.solid(x, 2) && !self.solid(x, 3) {
-            1
-        } else {
-            0
-        }
-    }
-
-    /// The stage's rows above the body: the highest a mark ever stands.
-    fn above(&self) -> u16 {
-        (2 - self.think_base()).max(1) as u16
-    }
-
     /// Row `y`'s solid runs, as (start, length).
     fn runs(&self, y: i16) -> Vec<(i16, i16)> {
         let mut runs: Vec<(i16, i16)> = Vec::new();
@@ -157,10 +139,23 @@ enum Eyes {
     Wide,
     Lid,
     X,
+    /// White eyes, the pupils rolled up to the right or the left: thinking.
+    /// A solid eye cannot look anywhere, so this is the one face with whites.
+    UpRight,
+    UpLeft,
+    /// Squeezed shut, `>` `<`: the effort of a hard keystroke. The right eye
+    /// is the left one mirrored.
+    Squeeze,
 }
 
-/// An eye, from its top-left anchor: `o` is the eye, `*` its glint, `.`
-/// leaves the body showing.
+impl Eyes {
+    fn mirrored(self) -> bool {
+        self == Eyes::Squeeze
+    }
+}
+
+/// An eye, from its top-left anchor: `o` is the eye, `*` its glint (or the
+/// white of an eye that has one), `.` leaves the body showing.
 fn eye(size: Size, e: Eyes) -> &'static [&'static str] {
     match (size, e) {
         (Size::Small, Eyes::Open) => &["*o", "oo"],
@@ -169,6 +164,9 @@ fn eye(size: Size, e: Eyes) -> &'static [&'static str] {
         (Size::Small, Eyes::Wide) => &["*o", "oo", "oo"],
         (Size::Small, Eyes::Lid) => &["..", "*o"],
         (Size::Small, Eyes::X) => &["o.", ".o"],
+        (Size::Small, Eyes::UpRight) => &["*o", "**"],
+        (Size::Small, Eyes::UpLeft) => &["o*", "**"],
+        (Size::Small, Eyes::Squeeze) => &["o.", ".o"],
         (Size::Medium, Eyes::Open) => &["*oo", "ooo", "oo*"],
         (Size::Medium, Eyes::Blink) => &["...", "ooo", "..."],
         (Size::Medium, Eyes::Closed) => &["...", "o.o", ".o."],
@@ -176,6 +174,9 @@ fn eye(size: Size, e: Eyes) -> &'static [&'static str] {
         (Size::Medium, Eyes::Wide) => &["*oo", "ooo", "ooo", "oo*"],
         (Size::Medium, Eyes::Lid) => &["...", "*oo", "ooo"],
         (Size::Medium, Eyes::X) => &["o.o", ".o.", "o.o"],
+        (Size::Medium, Eyes::UpRight) => &["*oo", "*oo", "***"],
+        (Size::Medium, Eyes::UpLeft) => &["oo*", "oo*", "***"],
+        (Size::Medium, Eyes::Squeeze) => &["oo.", "..o", "oo."],
         (Size::Large, Eyes::Open) => &["*ooo", "oooo", "oooo", "oo*o"],
         (Size::Large, Eyes::Blink) => &["....", "....", "oooo", "...."],
         (Size::Large, Eyes::Closed) => &["....", "o..o", ".oo.", "...."],
@@ -183,6 +184,9 @@ fn eye(size: Size, e: Eyes) -> &'static [&'static str] {
         (Size::Large, Eyes::Wide) => &["*ooo", "oooo", "oooo", "oooo", "oo*o"],
         (Size::Large, Eyes::Lid) => &["....", "*ooo", "oooo", "oo*o"],
         (Size::Large, Eyes::X) => &["o..o", ".oo.", ".oo.", "o..o"],
+        (Size::Large, Eyes::UpRight) => &["**oo", "**oo", "****", "****"],
+        (Size::Large, Eyes::UpLeft) => &["oo**", "oo**", "****", "****"],
+        (Size::Large, Eyes::Squeeze) => &["oo..", "..oo", "..oo", "oo.."],
     }
 }
 
@@ -193,6 +197,10 @@ enum Mouth {
     O,
     Grin,
     Wavy,
+    /// Set straight across: resolve.
+    Firm,
+    /// A short line pushed to one side: "hmm".
+    Hmm,
     None,
 }
 
@@ -200,12 +208,15 @@ fn mouth(size: Size, m: Mouth) -> &'static [&'static str] {
     match (size, m) {
         (_, Mouth::None) => &[],
         (Size::Small, Mouth::O) => &["oo", "oo"],
+        (Size::Small, Mouth::Hmm) => &[".o"],
         (Size::Small, _) => &["oo"],
         (_, Mouth::Smile) => &["o..o", ".oo."],
         (_, Mouth::Flat) => &["....", ".oo."],
         (_, Mouth::O) => &[".oo.", ".oo."],
         (_, Mouth::Grin) => &["oooo", ".oo."],
         (_, Mouth::Wavy) => &["o.o.", ".o.o"],
+        (_, Mouth::Firm) => &["....", "oooo"],
+        (_, Mouth::Hmm) => &["....", "..oo"],
     }
 }
 
@@ -220,15 +231,23 @@ enum Prop {
     /// The sleeper's rising z, small or big, by rung.
     Z(usize),
     BigZ(usize),
-    /// The first n thought dots out of the middle arm.
-    Dots(usize),
-    Sparks(usize),
     Sparkle(usize),
     Star(usize),
     /// The right arm's head, lit like a status light.
     Light,
     /// The sweat drop, by rung down its path.
     Drop(usize),
+}
+
+/// What stands beside the body and widens the stage for it: the laptop the
+/// creature types at, or the cloud it thinks in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scene {
+    /// The laptop at step `step` of its diff, the hand pressing a key or
+    /// raised, and the cursor shown or not.
+    Laptop { step: u8, press: bool, cursor: bool },
+    /// The thought cloud with its first n dots filled in.
+    Cloud(u8),
 }
 
 // -- frames and timelines ---------------------------------------------------------
@@ -251,6 +270,7 @@ pub(crate) struct Frame {
     faded: bool,
     blush: bool,
     props: &'static [Prop],
+    scene: Option<Scene>,
     ms: u32,
 }
 
@@ -266,6 +286,7 @@ const fn f(ms: u32) -> Frame {
         faded: false,
         blush: true,
         props: &[],
+        scene: None,
         ms,
     }
 }
@@ -298,10 +319,9 @@ impl Frame {
     const fn gone(self) -> Self {
         Frame { faded: true, blush: false, ..self }
     }
-}
-
-const fn busy(ms: u32) -> Frame {
-    f(ms).eyes(Eyes::Lid).mouth(Mouth::Flat)
+    const fn scene(self, scene: Scene) -> Self {
+        Frame { scene: Some(scene), ..self }
+    }
 }
 const fn alarmed(ms: u32) -> Frame {
     f(ms).eyes(Eyes::Wide).mouth(Mouth::O)
@@ -349,28 +369,65 @@ const SPAWNING: &[Frame] = &[
     f(400),
     BLINK,
 ];
-/// Eyes up, thought dots rising one at a time.
+const fn ponder(ms: u32, eyes: Eyes, dots: u8) -> Frame {
+    f(ms).eyes(eyes).mouth(Mouth::Hmm).scene(Scene::Cloud(dots))
+}
+/// Eyes rolled up, a "hmm", the head tilted toward a thought cloud whose
+/// dots fill in one by one; now and then a glance the other way.
 const THINKING: &[Frame] = &[
-    plain(400).look(0, -1).props(&[Prop::Dots(1)]),
-    plain(400).look(0, -1).props(&[Prop::Dots(2)]),
-    plain(500).look(0, -1).props(&[Prop::Dots(3)]),
-    plain(300).look(0, -1),
-    plain(400).look(-1, -1).props(&[Prop::Dots(1)]),
-    plain(400).look(-1, -1).props(&[Prop::Dots(2)]),
-    plain(500).look(-1, -1).props(&[Prop::Dots(3)]),
-    plain(100).eyes(Eyes::Blink),
+    ponder(400, Eyes::UpRight, 0).tilt(1),
+    ponder(400, Eyes::UpRight, 1).tilt(1),
+    ponder(400, Eyes::UpRight, 2).tilt(1),
+    ponder(600, Eyes::UpRight, 3).tilt(1),
+    ponder(100, Eyes::Blink, 3).tilt(1),
+    ponder(300, Eyes::UpRight, 0).tilt(1),
+    ponder(400, Eyes::UpLeft, 1),
+    ponder(400, Eyes::UpLeft, 2),
+    ponder(600, Eyes::UpLeft, 3),
+    ponder(300, Eyes::UpLeft, 0),
 ];
-/// Focused, the heads wiggling to the beat, sparks off them.
+
+/// At the laptop, eyes on the screen, `step` of the diff showing.
+const fn typing(ms: u32, step: u8, press: bool, cursor: bool) -> Frame {
+    f(ms).look(1, 0).mouth(Mouth::Flat).scene(Scene::Laptop { step, press, cursor })
+}
+/// A keystroke: the hand comes down and the head strokes nod at the screen,
+/// then the hand comes up.
+const fn key(step: u8) -> [Frame; 2] {
+    [typing(200, step, true, true).tilt(1), typing(100, step, false, true)]
+}
+/// Typing at the laptop, the screen a diff (`Laptop::script`): new lines
+/// type out a keystroke a character; a line turns red, the mouth sets, and
+/// one hard keystroke with the eyes squeezed shut deletes it; a save turns
+/// everything plain, with a grin. Every size's script has these 13 steps.
 const WORKING: &[Frame] = &[
-    busy(200).wig(1).props(&[Prop::Sparks(0)]),
-    busy(200).wig(-1).props(&[Prop::Sparks(1)]),
-    busy(200).wig(1).lift().props(&[Prop::Sparks(2)]),
-    busy(200).wig(-1),
-    busy(200).wig(1).props(&[Prop::Sparks(1)]),
-    busy(200).wig(-1).props(&[Prop::Sparks(0)]),
-    busy(200).wig(1).lift().props(&[Prop::Sparks(2)]),
-    plain(100).eyes(Eyes::Blink),
+    key(0)[0],
+    key(0)[1],
+    key(1)[0],
+    key(1)[1],
+    key(2)[0],
+    key(2)[1],
+    key(3)[0],
+    key(3)[1],
+    key(4)[0],
+    key(4)[1],
+    key(5)[0],
+    key(5)[1],
+    key(6)[0],
+    key(6)[1],
+    typing(700, 7, false, false).mouth(Mouth::Firm),
+    typing(300, 8, true, true).eyes(Eyes::Squeeze).mouth(Mouth::Firm).tilt(1),
+    typing(200, 8, false, true).eyes(Eyes::Squeeze).mouth(Mouth::Firm),
+    key(9)[0],
+    key(9)[1],
+    key(10)[0],
+    key(10)[1],
+    key(11)[0],
+    key(11)[1],
+    typing(800, 12, false, false).eyes(Eyes::Happy).mouth(Mouth::Grin),
+    typing(100, 12, false, false).eyes(Eyes::Blink),
 ];
+const TYPING_STEPS: usize = 13;
 /// Wide eyes on you, the right arm waving beside an amber "!".
 const NEEDS_YOU: &[Frame] = &[
     alarmed(300).wave().props(BANG),
@@ -569,12 +626,16 @@ pub(crate) enum Role {
     Glint,
     Blush,
     Dim,
-    Think,
-    Spark,
     Drop,
     Calm,
     Attn,
     Err,
+    /// The laptop: its frame, its dark screen, and the diff on it.
+    Bezel,
+    Screen,
+    Code,
+    Add,
+    Del,
 }
 
 impl Role {
@@ -588,12 +649,15 @@ impl Role {
             Role::Glint => ink.glint,
             Role::Blush => ink.blush,
             Role::Dim => ink.dim,
-            Role::Think => ink.think,
-            Role::Spark => ink.spark,
             Role::Drop => ink.drop,
             Role::Calm => ink.calm,
             Role::Attn => ink.attn,
             Role::Err => ink.err,
+            Role::Bezel => ink.bezel,
+            Role::Screen => ink.screen,
+            Role::Code => ink.code,
+            Role::Add => ink.add,
+            Role::Del => ink.del,
         }
     }
 }
@@ -650,11 +714,19 @@ fn shift(
     }
 }
 
-pub(crate) fn compose(size: Size, fr: &Frame) -> Picture {
+/// One frame, composed `pad` pixels wider than the body so a scene fits
+/// beside it (`anim_pad`: every frame of an animation gets its widest).
+pub(crate) fn compose(size: Size, fr: &Frame, pad: i16) -> Picture {
     let b = Body::get(size);
-    let (w, h) = (b.w, b.h);
+    let (bw, h) = (b.w, b.h);
+    let w = bw + pad;
     let idx = |x: i16, y: i16| (x >= 0 && y >= 0 && x < w && y < h).then(|| (y * w + x) as usize);
-    let mut grid: Vec<Option<Role>> = b.solid.iter().map(|s| s.then_some(Role::Body)).collect();
+    let mut grid: Vec<Option<Role>> = vec![None; (w * h) as usize];
+    for y in 0..h {
+        for x in (0..bw).filter(|&x| b.solid(x, y)) {
+            grid[(y * w + x) as usize] = Some(Role::Body);
+        }
+    }
 
     // The arms first, so the face is stamped on a body that stands still.
     let split = b.split;
@@ -669,24 +741,27 @@ pub(crate) fn compose(size: Size, fr: &Frame) -> Picture {
         shift(&mut grid, w, 0..=b.top / 2, |_| true, fr.tilt);
     }
 
-    let stamp = |grid: &mut Vec<Option<Role>>, pat: &[&str], ax: i16, ay: i16| {
+    let stamp = |grid: &mut Vec<Option<Role>>, pat: &[&str], ax: i16, ay: i16, mirror: bool| {
         for (dy, line) in pat.iter().enumerate() {
+            let width = line.len();
             for (dx, ch) in line.bytes().enumerate() {
                 let role = match ch {
                     b'o' => Role::Eye,
                     b'*' => Role::Glint,
                     _ => continue,
                 };
+                let dx = if mirror { width - 1 - dx } else { dx };
                 if let Some(i) = idx(ax + dx as i16, ay + dy as i16) {
                     grid[i] = Some(role);
                 }
             }
         }
     };
-    for &(x, y) in &b.eyes {
-        stamp(&mut grid, eye(size, fr.eyes), x + fr.look.0, y + fr.look.1);
+    for (n, &(x, y)) in b.eyes.iter().enumerate() {
+        let mirror = n == 1 && fr.eyes.mirrored();
+        stamp(&mut grid, eye(size, fr.eyes), x + fr.look.0, y + fr.look.1, mirror);
     }
-    stamp(&mut grid, mouth(size, fr.mouth), b.mouth.0, b.mouth.1);
+    stamp(&mut grid, mouth(size, fr.mouth), b.mouth.0, b.mouth.1, false);
     if fr.blush {
         for &(x, y) in &b.blush {
             for i in (0..size.blush_w()).filter_map(|dx| idx(x + dx, y)) {
@@ -727,29 +802,16 @@ pub(crate) fn compose(size: Size, fr: &Frame) -> Picture {
     let mut mark = |(col, row): (i16, i16), ch: char, role: Role| {
         marks.push(Mark { col, row, ch, role, bold: role == Role::Attn });
     };
-    let zz = [(w - 1, 1), (w, 0), (w + 1, -1)];
-    let base = b.think_base();
-    let think = [(split - 2, base), (split - 1, base - 1), (split, base - 2)];
-    let sparks: [&[(i16, i16)]; 3] =
-        [&[(1, -1), (split + 1, -1)], &[(split / 2, -1)], &[(2, -1), (split + 2, -1)]];
-    let sparkle = [[(-1, 3), (w, 1)], [(-1, 1), (w, 3)]];
-    let stars = [(w / 5, -1), (2 * w / 5, -1), (3 * w / 5, -1), (4 * w / 5, -1)];
+    // Marks stand around the body itself, not around its scene.
+    let zz = [(bw - 1, 1), (bw, 0), (bw + 1, -1)];
+    let sparkle = [[(-1, 3), (bw, 1)], [(-1, 1), (bw, 3)]];
+    let stars = [(bw / 5, -1), (2 * bw / 5, -1), (3 * bw / 5, -1), (4 * bw / 5, -1)];
     for &p in fr.props {
         match p {
-            Prop::Ask => mark((w / 2, -1), '?', Role::Dim),
-            Prop::Bang => mark((w - 1, 0), '!', Role::Attn),
+            Prop::Ask => mark((bw / 2, -1), '?', Role::Dim),
+            Prop::Bang => mark((bw - 1, 0), '!', Role::Attn),
             Prop::Z(i) => mark(zz[i.min(2)], 'z', Role::Dim),
             Prop::BigZ(i) => mark(zz[i.min(2)], 'Z', Role::Dim),
-            Prop::Dots(n) => {
-                for (at, ch) in think.into_iter().zip(['·', '∘', '○']).take(n) {
-                    mark(at, ch, Role::Think);
-                }
-            }
-            Prop::Sparks(i) => {
-                for &at in sparks[i.min(2)] {
-                    mark(at, if i == 1 { '+' } else { '✦' }, Role::Spark);
-                }
-            }
             Prop::Sparkle(i) => {
                 for at in sparkle[i.min(1)] {
                     mark(at, if i == 0 { '✦' } else { '✧' }, Role::Calm);
@@ -769,35 +831,293 @@ pub(crate) fn compose(size: Size, fr: &Frame) -> Picture {
             }
         }
     }
+    // The scene last, over everything: the hand rests in front of the body.
+    let mut put = |x: i16, y: i16, role: Role| {
+        if let Some(i) = idx(x, y) {
+            px[i] = Some(role);
+        }
+    };
+    match fr.scene {
+        Some(Scene::Laptop { step, press, cursor }) => {
+            if let Some(l) = laptop(size) {
+                l.draw(step as usize, press, cursor, &mut put);
+            }
+        }
+        Some(Scene::Cloud(dots)) => {
+            if let Some(c) = cloud(size) {
+                c.draw(dots as usize, &mut put);
+            }
+        }
+        None => {}
+    }
     Picture { w, h, px, lift: fr.lift, marks }
+}
+
+// -- the scenes -----------------------------------------------------------------
+
+/// A line of code on the laptop's screen: its indent, its length, and whether
+/// it is old, just added or about to go.
+type CodeLine = Option<(i16, i16, Diff)>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Diff {
+    Code,
+    Add,
+    Del,
+}
+
+/// The laptop beside a body, open and facing the reader: its screen's bezel,
+/// the deck in front of it, the hand's two poses, the key a press lights,
+/// the columns it adds to the stage, and the diff its screen plays, one
+/// entry per step of `WORKING` (lines on every other row of the screen).
+struct Laptop {
+    screen: (i16, i16, i16, i16),
+    deck: &'static [(i16, i16, i16, Role)],
+    up: &'static [(i16, i16, Role)],
+    down: &'static [(i16, i16, Role)],
+    key: (i16, i16),
+    pad: i16,
+    script: [[CodeLine; 3]; TYPING_STEPS],
+}
+
+const fn c(indent: i16, len: i16) -> CodeLine {
+    Some((indent, len, Diff::Code))
+}
+const fn a(indent: i16, len: i16) -> CodeLine {
+    Some((indent, len, Diff::Add))
+}
+const fn d(indent: i16, len: i16) -> CodeLine {
+    Some((indent, len, Diff::Del))
+}
+
+const SMALL_LAPTOP: Laptop = Laptop {
+    screen: (13, 2, 18, 7),
+    deck: &[(12, 19, 8, Role::Bezel), (11, 20, 9, Role::Deep)],
+    up: &[(12, 6, Role::Hi), (13, 6, Role::Hi), (12, 7, Role::Body), (13, 7, Role::Shade)],
+    down: &[(12, 7, Role::Hi), (13, 7, Role::Hi), (12, 8, Role::Body), (13, 8, Role::Shade)],
+    key: (14, 8),
+    pad: 9,
+    script: [
+        [c(0, 2), a(0, 1), None],
+        [c(0, 2), a(0, 2), None],
+        [c(0, 2), a(0, 3), None],
+        [a(0, 3), a(0, 1), None],
+        [a(0, 3), a(0, 2), None],
+        [a(0, 3), a(0, 3), None],
+        [a(0, 3), a(1, 1), None],
+        [d(0, 3), a(1, 1), None],
+        [a(1, 1), None, None],
+        [a(1, 1), a(0, 1), None],
+        [a(1, 1), a(0, 2), None],
+        [a(1, 1), a(0, 3), None],
+        [c(1, 1), c(0, 3), None],
+    ],
+};
+
+const MEDIUM_LAPTOP: Laptop = Laptop {
+    screen: (22, 5, 30, 12),
+    deck: &[(21, 31, 13, Role::Bezel), (20, 32, 14, Role::Deep)],
+    up: &[
+        (20, 11, Role::Hi),
+        (21, 11, Role::Hi),
+        (22, 11, Role::Hi),
+        (20, 12, Role::Body),
+        (21, 12, Role::Body),
+        (22, 12, Role::Shade),
+    ],
+    down: &[
+        (20, 12, Role::Hi),
+        (21, 12, Role::Hi),
+        (22, 12, Role::Hi),
+        (20, 13, Role::Body),
+        (21, 13, Role::Body),
+        (22, 13, Role::Shade),
+    ],
+    key: (23, 13),
+    pad: 13,
+    script: [
+        [c(0, 4), c(1, 3), a(1, 1)],
+        [c(0, 4), c(1, 3), a(1, 2)],
+        [c(0, 4), c(1, 3), a(1, 3)],
+        [c(0, 4), c(1, 3), a(1, 4)],
+        [c(1, 3), a(1, 4), a(1, 1)],
+        [c(1, 3), a(1, 4), a(1, 2)],
+        [c(1, 3), a(1, 4), a(1, 3)],
+        [d(1, 3), a(1, 4), a(1, 3)],
+        [a(1, 4), a(1, 3), None],
+        [a(1, 4), a(1, 3), a(0, 1)],
+        [a(1, 4), a(1, 3), a(0, 2)],
+        [a(1, 4), a(1, 3), a(0, 3)],
+        [c(1, 4), c(1, 3), c(0, 3)],
+    ],
+};
+
+fn laptop(size: Size) -> Option<&'static Laptop> {
+    match size {
+        Size::Small => Some(&SMALL_LAPTOP),
+        Size::Medium => Some(&MEDIUM_LAPTOP),
+        Size::Large => None,
+    }
+}
+
+impl Laptop {
+    fn draw(&self, step: usize, press: bool, cursor: bool, put: &mut impl FnMut(i16, i16, Role)) {
+        let (x0, y0, x1, y1) = self.screen;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let edge = y == y0 || y == y1 || x == x0 || x == x1;
+                put(x, y, if edge { Role::Bezel } else { Role::Screen });
+            }
+        }
+        let mut end = None;
+        for (i, line) in self.script[step.min(TYPING_STEPS - 1)].iter().enumerate() {
+            let Some((indent, len, diff)) = *line else { continue };
+            let y = y0 + 1 + 2 * i as i16;
+            let role = match diff {
+                Diff::Code => Role::Code,
+                Diff::Add => Role::Add,
+                Diff::Del => Role::Del,
+            };
+            for x in 0..len {
+                put(x0 + 1 + indent + x, y, role);
+            }
+            end = Some((x0 + 1 + indent + len, y));
+        }
+        if let Some((x, y)) = end.filter(|_| cursor) {
+            put(x, y, Role::Glint);
+        }
+        for &(from, to, y, role) in self.deck {
+            for x in from..=to {
+                put(x, y, role);
+            }
+        }
+        for &(x, y, role) in if press { self.down } else { self.up } {
+            put(x, y, role);
+        }
+        if press {
+            put(self.key.0, self.key.1, Role::Glint);
+        }
+    }
+}
+
+/// The thought cloud beside a body: the trailing bubbles (x, y, side), the
+/// cloud's own pixels from its top-left, its dots and their size, and the
+/// columns it adds to the stage.
+struct Cloud {
+    trail: &'static [(i16, i16, i16)],
+    rows: &'static [&'static str],
+    at: (i16, i16),
+    dots: [(i16, i16); 3],
+    dot: i16,
+    pad: i16,
+}
+
+const SMALL_CLOUD: Cloud = Cloud {
+    trail: &[(12, 3, 1)],
+    rows: &[".##.###.", "########", "########", "########", ".###.##."],
+    at: (14, 0),
+    dots: [(2, 2), (4, 2), (6, 2)],
+    dot: 1,
+    pad: 10,
+};
+
+const MEDIUM_CLOUD: Cloud = Cloud {
+    trail: &[(18, 5, 1), (20, 3, 2)],
+    rows: &[
+        "..###..###..",
+        ".##########.",
+        "############",
+        "############",
+        "############",
+        ".##########.",
+        "...###.##...",
+    ],
+    at: (23, 0),
+    dots: [(2, 3), (5, 3), (8, 3)],
+    dot: 2,
+    pad: 15,
+};
+
+fn cloud(size: Size) -> Option<&'static Cloud> {
+    match size {
+        Size::Small => Some(&SMALL_CLOUD),
+        Size::Medium => Some(&MEDIUM_CLOUD),
+        Size::Large => None,
+    }
+}
+
+impl Cloud {
+    fn draw(&self, dots: usize, put: &mut impl FnMut(i16, i16, Role)) {
+        for &(x, y, side) in self.trail {
+            for dy in 0..side {
+                for dx in 0..side {
+                    put(x + dx, y + dy, Role::Hi);
+                }
+            }
+        }
+        let (ax, ay) = self.at;
+        for (y, row) in self.rows.iter().enumerate() {
+            for (x, ch) in row.bytes().enumerate() {
+                if ch == b'#' {
+                    put(ax + x as i16, ay + y as i16, Role::Hi);
+                }
+            }
+        }
+        for &(x, y) in self.dots.iter().take(dots) {
+            for dy in 0..self.dot {
+                for dx in 0..self.dot {
+                    put(ax + x + dx, ay + y + dy, Role::Eye);
+                }
+            }
+        }
+    }
+}
+
+/// How much wider than the body an animation draws: its widest scene.
+fn anim_pad(size: Size, anim: Anim) -> i16 {
+    let (intro, cycle) = anim.timeline();
+    intro
+        .iter()
+        .chain(cycle)
+        .filter_map(|fr| match fr.scene? {
+            Scene::Laptop { .. } => laptop(size).map(|l| l.pad),
+            Scene::Cloud(_) => cloud(size).map(|c| c.pad),
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 // -- the stage ------------------------------------------------------------------
 
-/// Room around the body for its props: a column left, three right, and
-/// above it the rows its highest mark needs (`Body::above`).
+/// Room around the body for its props: a column left, three right, and a
+/// row above, which is as high as any mark stands.
 pub(crate) const LEFT: u16 = 1;
 const RIGHT: u16 = 3;
-/// The stage's columns that are not the body's.
-pub(crate) const MARGIN: u16 = LEFT + RIGHT;
+const ABOVE: u16 = 1;
 
 /// A picture in terminal cells, inked: `None` is a cell the creature leaves
-/// alone.
+/// alone. `body` is the body's own columns, which a layout centres; the rest
+/// is margin and scene.
 pub(crate) struct Stage {
     pub cols: u16,
     pub rows: u16,
+    pub body: u16,
     cells: Vec<Option<(char, Style)>>,
 }
 
 /// The stage for `anim`, `ms` into it, in `theme`'s inks. `None` where the
-/// theme draws no picture (mono).
+/// theme draws no picture (mono). Every frame of one animation has the same
+/// stage, so a reply beside it wraps once per state, not once per frame.
 pub(crate) fn stage_for(size: Size, anim: Anim, ms: u64, theme: &Theme) -> Option<Stage> {
     let frame = frame_at(anim, ms);
     let ink = theme.creature_ink(frame.faded)?;
-    Some(stage(&compose(size, frame), &ink, Body::get(size).above()))
+    let mut st = stage(&compose(size, frame, anim_pad(size, anim)), &ink);
+    st.body = Body::get(size).w as u16;
+    Some(st)
 }
 
-fn stage(pic: &Picture, ink: &CreatureInk, above: u16) -> Stage {
+fn stage(pic: &Picture, ink: &CreatureInk) -> Stage {
+    let above = ABOVE;
     let cols = pic.w as u16 + LEFT + RIGHT;
     let rows = pic.h as u16 / 2 + above;
     let mut cells = vec![None; cols as usize * rows as usize];
@@ -827,7 +1147,7 @@ fn stage(pic: &Picture, ink: &CreatureInk, above: u16) -> Stage {
             *cell = Some((m.ch, if m.bold { style.add_modifier(Modifier::BOLD) } else { style }));
         }
     }
-    Stage { cols, rows, cells }
+    Stage { cols, rows, body: pic.w as u16, cells }
 }
 
 impl Stage {
@@ -954,8 +1274,9 @@ mod tests {
         for size in [Size::Small, Size::Medium] {
             let b = Body::get(size);
             for anim in Anim::ALL {
+                let pad = anim_pad(size, anim);
                 for fr in frames(anim) {
-                    let pic = compose(size, fr);
+                    let pic = compose(size, fr, pad);
                     let solid = pic.px.iter().filter(|p| p.is_some()).count();
                     let body = b.solid.iter().filter(|s| **s).count();
                     assert!(solid + 4 >= body, "{size:?} {anim:?}: the arms lost pixels");
@@ -963,7 +1284,7 @@ mod tests {
                         assert!(
                             m.col >= -(LEFT as i16)
                                 && m.col < b.w + RIGHT as i16
-                                && m.row >= -(b.above() as i16),
+                                && m.row >= -(ABOVE as i16),
                             "{size:?} {anim:?}: {:?} off the stage at {},{}",
                             m.ch,
                             m.col,
@@ -971,8 +1292,9 @@ mod tests {
                         );
                     }
                     let ink = theme.creature_ink(fr.faded).expect("truecolor draws");
-                    let st = stage(&pic, &ink, b.above());
-                    assert_eq!((st.cols, st.rows), (b.w as u16 + 4, b.h as u16 / 2 + b.above()));
+                    let st = stage(&pic, &ink);
+                    let want = (b.w as u16 + pad as u16 + 4, b.h as u16 / 2 + ABOVE);
+                    assert_eq!((st.cols, st.rows), want, "{size:?} {anim:?}");
                 }
             }
         }
@@ -1003,7 +1325,7 @@ mod tests {
         for size in [Size::Small, Size::Medium] {
             for anim in Anim::ALL {
                 let lit = frames(anim).into_iter().any(|fr| {
-                    let pic = compose(size, fr);
+                    let pic = compose(size, fr, anim_pad(size, anim));
                     pic.marks.iter().any(|m| m.role == Role::Attn)
                         || pic.px.contains(&Some(Role::Attn))
                 });
@@ -1047,7 +1369,7 @@ mod tests {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
         let glyphs = |fr: &Frame| {
             let ink = theme.creature_ink(fr.faded).expect("ink");
-            stage(&compose(Size::Medium, fr), &ink, Body::get(Size::Medium).above()).cells
+            stage(&compose(Size::Medium, fr, 0), &ink).cells
         };
         let firsts: Vec<_> = Anim::ALL.iter().map(|&a| glyphs(frame_at(a, 0))).collect();
         for (i, a) in Anim::ALL.iter().enumerate() {
@@ -1062,6 +1384,80 @@ mod tests {
             assert!(moves, "{anim:?} never moves");
         }
         assert_eq!(frames(Anim::Exited).len(), 1, "the exited body is still");
+    }
+
+    /// Working is typing at a laptop whose screen is a diff: every size's
+    /// script has a step for every step of the timeline, the hand is down
+    /// on a keystroke and up between them, lines are added and one is
+    /// deleted, and the save turns the screen back to plain code.
+    #[test]
+    fn working_types_a_diff_at_the_laptop() {
+        let roles = |size: Size, fr: &Frame| compose(size, fr, anim_pad(size, Anim::Working)).px;
+        for size in [Size::Small, Size::Medium] {
+            let l = laptop(size).expect("an animated size has a laptop");
+            let (x0, y0, x1, y1) = l.screen;
+            let lines = ((y1 - y0 - 1) as usize).div_ceil(2);
+            assert!(
+                l.script.iter().all(|step| step[lines..].iter().all(Option::is_none)),
+                "{size:?}"
+            );
+            for step in &l.script {
+                for (indent, len, _) in step.iter().flatten() {
+                    // A line and the cursor after it stay inside the screen.
+                    assert!(x0 + 1 + indent + len < x1, "{size:?}: a line runs off the screen");
+                }
+            }
+            let has = |fr: &Frame, role: Role| roles(size, fr).contains(&Some(role));
+            assert!(WORKING.iter().any(|fr| has(fr, Role::Add)), "{size:?}: lines are added");
+            assert!(WORKING.iter().any(|fr| has(fr, Role::Del)), "{size:?}: a line goes");
+            let saved = WORKING.iter().rev().find(|fr| fr.eyes == Eyes::Happy).expect("a save");
+            assert!(has(saved, Role::Code) && !has(saved, Role::Add) && !has(saved, Role::Del));
+            let press = WORKING
+                .iter()
+                .find(|fr| matches!(fr.scene, Some(Scene::Laptop { press: true, .. })));
+            let raised = WORKING
+                .iter()
+                .find(|fr| matches!(fr.scene, Some(Scene::Laptop { press: false, .. })));
+            let (press, raised) = (press.expect("a press"), raised.expect("a raise"));
+            let &(hx, hy, _) = l.down.last().expect("a hand");
+            let at = |fr: &Frame| roles(size, fr)[(hy * (Body::get(size).w + l.pad) + hx) as usize];
+            assert_ne!(at(press), at(raised), "{size:?}: the hand moves");
+        }
+        // The step each frame names is the script's, and every step is shown.
+        let steps: std::collections::BTreeSet<u8> = WORKING
+            .iter()
+            .filter_map(|fr| match fr.scene {
+                Some(Scene::Laptop { step, .. }) => Some(step),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(steps.len(), TYPING_STEPS);
+        assert!(WORKING.iter().any(|fr| fr.eyes == Eyes::Squeeze), "the delete is an effort");
+    }
+
+    /// Thinking is white eyes rolled up and a cloud beside the head whose
+    /// dots fill in; the cloud stays inside the stage it widens.
+    #[test]
+    fn thinking_rolls_its_eyes_up_at_a_cloud() {
+        for size in [Size::Small, Size::Medium] {
+            let pad = anim_pad(size, Anim::Thinking);
+            let bw = Body::get(size).w;
+            assert!(pad > 0, "{size:?}: the cloud widens the stage");
+            let beside = |fr: &Frame, role: Role| {
+                let pic = compose(size, fr, pad);
+                (0..pic.h)
+                    .any(|y| (bw..pic.w).any(|x| pic.px[(y * pic.w + x) as usize] == Some(role)))
+            };
+            assert!(THINKING.iter().all(|fr| beside(fr, Role::Hi)), "{size:?}: the cloud stays");
+            assert!(THINKING.iter().any(|fr| beside(fr, Role::Eye)), "{size:?}: its dots fill in");
+            assert!(THINKING.iter().any(|fr| !beside(fr, Role::Eye)), "{size:?}: and clear");
+            let whites = compose(size, &THINKING[0], pad)
+                .px
+                .iter()
+                .filter(|p| **p == Some(Role::Glint))
+                .count();
+            assert!(whites >= 4, "{size:?}: the eyes have whites to roll in");
+        }
     }
 
     // -- the assets: goldens of this engine --------------------------------------
@@ -1087,7 +1483,7 @@ mod tests {
     /// installer writes no escapes. Every body pixel is ink and the face is
     /// the terminal's own ground showing through.
     fn installer_art() -> String {
-        let pic = compose(Size::Large, frame_at(Anim::Seat, 0));
+        let pic = compose(Size::Large, frame_at(Anim::Seat, 0), 0);
         let ink = |x: i16, y: i16| pic.at(x, y).is_some_and(|r| r != Role::Eye);
         let mut out = String::new();
         for r in 0..pic.h / 2 {
@@ -1131,7 +1527,7 @@ mod tests {
         let ink = theme.creature_ink(false).expect("truecolor draws");
         let anim = if needs_you { Anim::NeedsYou } else { Anim::Seat };
         let fr = frame_at(anim, 0);
-        let mut pic = compose(Size::Medium, fr);
+        let mut pic = compose(Size::Medium, fr, 0);
         if fr.props.contains(&Prop::Bang) {
             let x = pic.w - 1;
             for y in [0, 1, 2, 4] {

@@ -13795,3 +13795,41 @@ and opens a commit in `api` only. TUI: `a_workspace_lists_each_repo_and_opens_a_
 `workspace_e2e` presses `GitFetch` and waits for `web` to fetch and `api` to fail on its own
 row; `a_workspace_fetches_from_its_lists_and_each_row_answers` (the hint and key, `fetching…`,
 the error in `err`, the key standing down).
+
+## The shin works at a laptop and thinks in a cloud (T-451 follow-up, 2026-09-25, user: "the working animation not read as working" ∙ "the bubbles don't read as thinking")
+
+**Refuted.** The first working pose used the throttled face (half lids), a one-pixel head
+wiggle and sparks: it read as tired, jittery or magic. The first thinking pose moved solid
+eyes up a pixel beside loose dots. A solid eye cannot look anywhere, and dots are not a
+thought. Five rounds on the design sheet (artifact `U4fmhjTo7mzUJdfSFhHGmJ`, "Working" and
+"Thinking") settled both. The laptop seen from behind read as a mouth: what says "laptop"
+is its screen. Beside it but passive, the screen looked like it was doing the work. A
+tongue went unrecognised, and angled brows on the delete read as "very scary".
+
+**Working.** An open laptop stands beside the body, facing the reader. Mochi looks at it,
+its hand comes down on the deck for every keystroke (the key lights), and its head
+strokes nod at the screen. The screen is a diff in the diff viewer's own registers: new
+lines type out in `calm` a character a keystroke. A line turns `err`, the mouth sets, and
+one hard keystroke with the eyes squeezed shut (`Eyes::Squeeze`, `>` `<`, the right eye
+mirrored) deletes it. The save turns everything plain, with a grin. Each size has a
+13-step `Laptop::script`, and `WORKING` shows every step.
+
+**Thinking.** White eyes with the pupils rolled up to one corner (`UpRight`/`UpLeft`, the
+one face with whites), a "hmm" mouth pushed to one side, the head tilted toward a
+thought cloud with trailing bubbles whose three dots fill in and clear.
+
+**Mechanics.** A scene (`Scene::Laptop`, `Scene::Cloud`) is a frame field, not a prop,
+and draws last, so the hand rests in front of the body. It widens the picture:
+`anim_pad` is the animation's widest scene, and every frame of one animation gets it. A
+reply beside the companion therefore wraps once per state change, not once per frame.
+`Stage::body` is what a layout centres. Marks still stand around the body, not the
+scene. Stages keep one row above the body at every size; the thought dots that needed
+two are gone. The laptop's inks are tokens: bezel a ramp step, screen darker than the
+ground, old code in a quiet ramp ink. `Role::Think`/`Spark` and `Prop::Dots`/`Sparks`
+went with the poses that used them.
+
+**Tests.** `working_types_a_diff_at_the_laptop` (scripts fit their screens and cover
+every step; lines are added and one deleted; the save is plain; the hand moves; the
+delete squeezes), `thinking_rolls_its_eyes_up_at_a_cloud` (the cloud stays, its dots fill
+and clear, the eyes have whites), the stage-width assertions in
+`every_pose_composes_inside_its_stage`, and the reminted ticket-page goldens.

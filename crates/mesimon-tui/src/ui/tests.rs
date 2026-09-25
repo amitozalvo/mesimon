@@ -5936,7 +5936,8 @@ fn the_companion_stands_beside_a_reply_on_a_wide_zone() {
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     let buf = cells(&app, 120, 30);
     let drawn = app.mascot.borrow().clone().expect("a reply on a wide zone has its companion");
-    assert!(drawn.rect.height <= 8 && drawn.rect.width <= 17, "the small shin: {:?}", drawn.rect);
+    // The small shin, its laptop beside it: a working session's companion.
+    assert!(drawn.rect.height <= 7 && drawn.rect.width <= 26, "the small shin: {:?}", drawn.rect);
     for y in drawn.rect.y..drawn.rect.bottom() {
         for x in drawn.rect.x..drawn.rect.right() {
             let cell = buf[(x, y)].symbol().to_string();

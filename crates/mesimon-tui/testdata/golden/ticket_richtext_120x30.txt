@@ -6,21 +6,21 @@
 
   PREVIEW                                                                                  SESSIONS                  2
 
-    What changed                                                          ✦        ✦      ⠋ ✻ claude               >1y
-                                                                         ▀▄ █▀    ▄▀▀     ◦ $ bash                 >1y
-    The OSC-11 query now runs once, before raw mode, and the answer is   ▄▀▀▀▄▄▄▄▄▀▀▄      x sleep
-    cached for the session.                                              ████████████
-                                                                         █▀▀▀█▀▀█▀▀▀█
-    • detect.rs asks the terminal, then hands the flavor to Theme::new   ▀▀▀▀▀▀▀▀▀▀▀▀
+    What changed                                                 ▀█ ▄▀▀   █▀              ⠋ ✻ claude               >1y
+                                                                ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█       ◦ $ bash                 >1y
+    The OSC-11 query now runs once, before raw mode, and the    ███▀▀████▀▀█ █▀▀███        x sleep
+    answer is cached for the session.                           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+                                                                ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
+    • detect.rs asks the terminal, then hands the flavor to
+      Theme::new
     • the goldens moved with it
 
       cargo test -p mesimon-tui
 
-    Still open: the --color=never path is untested covered now.
+    Still open: the --color=never path is untested covered
+    now.
 
     ● working
-
-
 
 
 

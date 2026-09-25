@@ -710,12 +710,15 @@ pub(crate) struct CreatureInk {
     pub glint: Color,
     pub blush: Color,
     pub dim: Color,
-    pub think: Color,
-    pub spark: Color,
     pub drop: Color,
     pub calm: Color,
     pub attn: Color,
     pub err: Color,
+    pub bezel: Color,
+    pub screen: Color,
+    pub code: Color,
+    pub add: Color,
+    pub del: Color,
 }
 
 /// How many tag tints exist. A tag's index is `stable_hash(name) % PIPS`, so
@@ -1037,8 +1040,10 @@ impl Theme {
 
     /// The shin's inks (T-451), every one a token this theme already has.
     /// The value ramp carries the form: top edges catch the light and the
-    /// underside falls away. The tag ring lends the blush and the props
-    /// their tints, and `attn` is the needs-you "!" and nothing else of it.
+    /// underside falls away. The tag ring lends the blush and the drop their
+    /// tints, and `attn` is the needs-you "!" and nothing else of it. The
+    /// laptop's screen is a diff in the diff viewer's own registers, `calm`
+    /// added and `err` removed, on a screen darker than the ground.
     /// Truecolor may blend two of its own tokens; an indexed profile picks
     /// from its ramp, with no blush where there is no ring. No ink is ever
     /// `Reset`: a half block paints its lower pixel as a background, where
@@ -1069,6 +1074,18 @@ impl Theme {
             Some(_) => mix(self.pip(9), body, if light { 0.55 } else { 0.65 }),
             None => body,
         };
+        // The laptop: a frame a step off the body, a screen darker than
+        // anything around it, and old code in a quiet ink on it.
+        let (bezel, screen, code) = match self.profile {
+            Profile::TrueColor if light => (r.dim1, r.base, r.dim3),
+            Profile::TrueColor => {
+                let bg = self.bg.unwrap_or(hex(self.flavor.palette().truecolor.bg));
+                (r.dim3, mix(bg, Color::Rgb(0, 0, 0), 0.65), r.dim1)
+            }
+            Profile::Ansi256 if light => (r.dim1, r.base, r.dim3),
+            Profile::Ansi256 => (r.dim3, Color::Indexed(16), r.dim1),
+            _ => (i8, i0, i7),
+        };
         let mut ink = CreatureInk {
             hi,
             body,
@@ -1078,12 +1095,15 @@ impl Theme {
             glint,
             blush,
             dim: r.dim2,
-            think: self.pip(7),
-            spark: self.pip(1),
             drop: self.pip(5),
             calm: self.calm,
             attn: self.attn,
             err: self.err,
+            bezel,
+            screen,
+            code,
+            add: self.calm,
+            del: self.err,
         };
         if faded {
             let sink = |c: Color| match self.bg {
