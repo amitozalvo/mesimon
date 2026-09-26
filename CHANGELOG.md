@@ -6,6 +6,61 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.27 — 2026-09-26
+
+### Added
+
+- **The diff viewer marks the changed words of an edited line.** A removed
+  line and the added line most like it are paired, and the words that
+  differ are bold on a slightly stronger tint; the rest of the pair drops to
+  regular weight. Lines with no partner, pairs more than 60% rewritten and
+  lines over 2 KiB keep the whole-line colour.
+- **The push / pull lists open a commit's diff.** On the checkout diff's
+  push / pull view, `j`/`k` move through TO PUSH and TO PULL and `Enter`
+  opens that commit's diff against its first parent; `q` returns to the
+  list on the same row.
+- **A board over several repositories lists push / pull per repository.**
+  Each repository gets one row with its name, branch, state and when it was
+  last fetched. Repositories with commits to push or pull come first, their
+  commits underneath (`↑` to push, `↓` to pull); then those in sync (`✓`);
+  then those with no upstream or a detached HEAD. A repository with no
+  upstream is compared against the one remote branch with its name; no git
+  config is written. The header sums every repository's arrows.
+- **`f` on the push / pull view fetches every repository.** It fetches the
+  board's branch and, on a multi-repository board, each repository compared
+  with a remote, four at a time. Each row shows `fetching…`, then its fetch
+  age or `fetch failed: <git's message>`. The periodic `MESIMON_GIT_FETCH`
+  still fetches the root repository only.
+- **A non-Latin keyboard layout pauses the board's keys.** Typing a Hebrew
+  (or other non-Latin) letter on the board no longer does nothing, or the
+  wrong thing through punctuation such as `/` and `.`. The footer names the
+  layout and flashes on each dropped key; an English letter ends the pause
+  and acts, and `Esc` dismisses it. Arrows, `Enter`, `Tab`, digits and
+  `Ctrl` chords keep working. A Hebrew letter typed in a text field arms the
+  pause before you return to the board. Known gap: if the layout changed
+  outside mesimon, the first key can still arrive as `.` and repeat the last
+  move.
+
+### Changed
+
+- **The mascot is an animated ש with one animation per agent state.** On
+  the ticket page it stands over the empty seat and over a session with
+  nothing to show, acting out waking, thinking, working, needs you, done,
+  sleeping, failed and the other states; working types at a laptop and
+  thinking fills a thought cloud. A small copy stands beside an agent's
+  reply when the preview is at least 72 columns wide. Notification images
+  and the installer's welcome use the new drawing.
+- **The agents' `write_note` tool says an approved plan is already a
+  note.** Agents were saving their plan a second time after mesimon had
+  recorded it from the plan approval.
+
+### Fixed
+
+- **A refused `H`/`L` move leaves the cursor on the card.** When the DONE
+  gate refused a nudge, the card stayed but the cursor moved to the next
+  column. The card now shakes, the cursor stays on it, and `.` does not
+  repeat the refused move.
+
 ## v0.1.0-alpha.26 — 2026-09-24
 
 ### Compatibility
