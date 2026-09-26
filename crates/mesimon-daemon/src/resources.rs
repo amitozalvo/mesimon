@@ -65,7 +65,7 @@ pub fn pty_figures() -> PtyFigures {
             |p: &str| -> Option<u32> { std::fs::read_to_string(p).ok()?.trim().parse().ok() };
         let total = read("/proc/sys/kernel/pty/max").unwrap_or(0);
         let used = read("/proc/sys/kernel/pty/nr").unwrap_or(0);
-        return PtyFigures { total, used, budget: budget_of(total, used) };
+        PtyFigures { total, used, budget: budget_of(total, used) }
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -93,7 +93,7 @@ pub fn free_ram_bytes() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-        return parse_meminfo(&text);
+        parse_meminfo(&text)
     }
     #[cfg(not(target_os = "linux"))]
     {
