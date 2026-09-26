@@ -62,7 +62,11 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new(name: &str, tmux: &str) -> Self {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ci/test_guard.py");
+        // This repository, or — compiled into the relay's tests from the
+        // sibling checkout — the one its `.cargo/config.toml` names.
+        let core = option_env!("MESIMON_CORE_DIR")
+            .unwrap_or(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let script = Path::new(core).join("ci/test_guard.py");
         let mut child = Command::new("python3")
             .arg("-u")
             .arg(script)

@@ -28,10 +28,19 @@ use serde_json::{json, Value};
 #[path = "../../../../ci/test_support.rs"]
 pub mod support;
 
-// Also used by the paid relay's product tests; those build mesimon first.
+// Also used by the paid relay's product tests, compiled from its own repository
+// beside this one: there `MESIMON_CORE_DIR` (its `.cargo/config.toml`) names
+// this checkout, and those tests build mesimon first.
 fn mesimon_binary() -> &'static str {
-    option_env!("CARGO_BIN_EXE_mesimon")
-        .unwrap_or(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/mesimon"))
+    static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        if let Some(bin) = option_env!("CARGO_BIN_EXE_mesimon") {
+            return bin.to_string();
+        }
+        let core = option_env!("MESIMON_CORE_DIR")
+            .unwrap_or(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        format!("{core}/target/debug/mesimon")
+    })
 }
 
 /// The seams the daemon reads and an e2e sets. The child's environment is

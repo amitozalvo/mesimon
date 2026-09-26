@@ -20,9 +20,8 @@ Use this precedence when sources disagree:
 1. Code and tests are the specification.
 2. `docs/STALE-MAP.md` is the durable design record of what shipped, what was refuted, and why.
 3. The promises in `README.md` bind product behavior.
-4. `docs/spikes/` contains measured evidence.
-5. The rest of `docs/` is pre-implementation research and idea stock, not authority. Recheck
-   its version numbers and external API claims before relying on them.
+4. The pre-code research corpus the source cites (`07 §4.2`-style) is not in this repository;
+   those citations are provenance, not authority.
 
 For a behavioral change, update tests and append the resulting decision or deviation to
 `docs/STALE-MAP.md`. Avoid adding historical implementation detail to this file.
@@ -55,8 +54,10 @@ Preserve these boundaries:
 - The mascot's pixels live in `assets/mascot/shin.txt` and its engine in
   `crates/mesimon-tui/src/creature.rs`; the notification PNGs and the installer's welcome are
   that engine's goldens (`MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`).
-- `team/` is reserved for a future source-available tier. Do not mix it with Apache-2.0 core
-  code. `mt/` is research scratch, not project content.
+- The paid Teams relay is a separate, private repository (`mesimon-relay`) built against this
+  one as a sibling checkout; `crates/mesimon-team`, `crates/mesimon-web` and `web/mesophon` are
+  its Apache clients. Do not bring relay code into this repository. `mt/` is gitignored research
+  scratch, not project content.
 
 The README promises are hard constraints: Mesimon writes only to its documented allowlist,
 `doctor` diagnoses without applying configuration changes, and Mesimon never rewrites or adds

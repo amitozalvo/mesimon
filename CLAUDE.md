@@ -45,14 +45,14 @@ user drive the real TUI. E2e tests are safe: they use their own `/tmp/msmn-e2e-*
    it before changing something you did not build, and **append a block when you ship
    something** — that is how a decision survives.
 3. **The README's three promises bind** (see Boundaries). They are commitments to users.
-4. **`docs/spikes/` is trustworthy** — it measured a live system rather than reasoning about one.
-5. **Everything else in `docs/`, `00-DECISIONS` included, is idea stock.** It is a ~346k-word
-   corpus written before any code existed and the code has overtaken it. Read it for its
-   measurements and its failure catalogue; never cite it as the reason something must be a
-   certain way; re-verify every version number and API claim at implementation time. Where it
-   disagrees with the code, the code is right and the doc is history.
+4. **The pre-code research corpus is not in this repository.** The ~346k-word planning corpus
+   (`00-DECISIONS` through `19-tmux-backend-v01`, the proposals, the spikes and the agent-state
+   research) was written before any code existed and the code has overtaken it; the author
+   keeps it privately. Where a doc disagrees with the code, the code is right and the doc is
+   history.
 
-The 261 `07 §4.2`-style citations in the source are provenance, not obligation.
+The 261 `07 §4.2`-style citations in the source point into that corpus. They are provenance,
+not obligation.
 
 ## Commands
 
@@ -510,8 +510,10 @@ tags are unique and newest-first, and the top entry is `v{CARGO_PKG_VERSION}`.
 
 ## Boundaries
 
-- Apache-2.0 core; **`team/` is reserved for a future source-available tier** — never mix code
-  across that boundary (CONTRIBUTING.md records the CLA rule). `mt/` is research scratch.
+- Apache-2.0 core. **The paid Teams relay is a separate, private repository (`mesimon-relay`)**
+  that builds against this one as a sibling checkout; its clients — `crates/mesimon-team`,
+  `crates/mesimon-web`, `web/mesophon` — are Apache and live here. Never bring relay code into
+  this repo (CONTRIBUTING.md records the CLA rule). `mt/` is gitignored research scratch.
 - **The three README promises.** A strict write allowlist: mesimon writes to `<repo>/.mesimon`,
   the state dir, `$GIT_DIR/info/exclude`, the worktrees it cuts and the remote-tracking refs an
   opt-in fetch updates, and nowhere else. No config mutation: `doctor` prints fixes and never

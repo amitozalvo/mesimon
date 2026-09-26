@@ -16,13 +16,15 @@ controlled M1/M2 replies. The latter start a loopback HTTP fixture and write ign
 screenshots to `test-results/`. Playwright's Chromium and WebKit must be installed.
 The fixture deliberately replaces crypto; it does not validate the relay or Wasm.
 
-`browser.test.js` runs only inside the supervised Rust acceptance fixture. Build
-Mesimon and Wasm assets first. Set `PLAYWRIGHT_BROWSERS_PATH` to your installed
-browser cache because the supervised fixture uses a private home directory. Then
-use the bounded runner and disposable database:
+`browser.test.js` runs only inside the supervised Rust acceptance fixture, which
+lives with the relay in its own repository (`mesimon-relay`, checked out beside
+this one). Build Mesimon and Wasm assets first. Set `PLAYWRIGHT_BROWSERS_PATH` to
+your installed browser cache because the supervised fixture uses a private home
+directory. Then, from the relay repository, use the bounded runner and disposable
+database:
 
 ```sh
-python3 -B ci/test-run.py -- python3 -B team/relay/tests/run_postgres.py -- \
+python3 -B ../mesimon/ci/test-run.py -- python3 -B relay/tests/run_postgres.py -- \
   cargo test -p mesimon-relay --test mesophon -- --ignored --test-threads=1
 ```
 

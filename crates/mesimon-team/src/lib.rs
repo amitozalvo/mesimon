@@ -2,8 +2,8 @@
 //!
 //! The Apache half of Teams. The daemon is the Teams client: it holds the
 //! device keys and every board key, seals records before they leave the
-//! machine and opens the ones that arrive. The relay under `team/relay` stores
-//! ciphertext and membership and never sees plaintext.
+//! machine and opens the ones that arrive. The relay (a separate repository)
+//! stores ciphertext and membership and never sees plaintext.
 //!
 //! - [`crypto`]: device keys, board keys, key wrapping and record sealing.
 //! - [`invite`]: the one-time invite code a person types to join a board.

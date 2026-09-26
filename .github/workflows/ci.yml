@@ -1,18 +1,23 @@
 name: ci
 
-# MANUAL ONLY. GitHub-hosted macOS runners bill at 10x minutes on a private
-# repo, and the macOS target mesimon ships is the machine it is developed on,
-# so the real gate is `ci/release.sh`, which runs this same suite locally
-# before it will cut a release — on macOS directly, and on Linux in Docker
-# (ci/test-linux.sh).
+# The Linux job runs on every push to main and every pull request: a fresh
+# checkout, an empty ~/.local/state, no leftover tmux servers — the clean-room
+# check a laptop cannot give you, and the machine a WSL tester looks like. The
+# real release gate is still `ci/release.sh`, which runs this same suite
+# locally before it will cut a release — on macOS directly, and on Linux in
+# Docker (ci/test-linux.sh).
 #
-# This workflow is kept for the clean-room check a laptop cannot give you —
-# a fresh checkout, an empty ~/.local/state, no leftover tmux servers. Run it
-# from the Actions tab (or `gh workflow run ci.yml`) when that is worth the
-# minutes, typically before handing the thing to someone new. The Linux job
-# is the cheap half (1x billing) and the one a WSL tester's machine looks like.
+# The macOS job is manual (Actions tab, or `gh workflow run ci.yml`): the macOS
+# target mesimon ships is the machine it is developed on, and a shared runner
+# adds minutes, not evidence.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,6 +40,7 @@ jobs:
         # on macOS, and the suite has to pass on what a Linux user has.
         os: [macos-14, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    if: matrix.os == 'ubuntu-24.04' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

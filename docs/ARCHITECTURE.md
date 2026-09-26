@@ -1921,8 +1921,9 @@ available in `crates/mesimon/tests/`).
 
 ## Boundaries
 
-- Apache-2.0 core; `team/` is reserved for a future source-available tier — never mix code across
-  that boundary (CONTRIBUTING.md records the CLA rule).
+- Apache-2.0 core; the paid Teams relay is a separate, private repository (`mesimon-relay`) and
+  its clients (`crates/mesimon-team`, `crates/mesimon-web`, `web/mesophon`) are Apache and live
+  here — never bring relay code across that boundary (CONTRIBUTING.md records the CLA rule).
 - Product promises (README): strict write allowlist, no config mutation (`doctor` prints fixes,
   never applies), zero PROMPT injection — mesimon adds, removes and reorders no token of the
   conversation, and the three MCP tool definitions are the one named exception (T-84 narrowed

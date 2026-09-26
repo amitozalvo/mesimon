@@ -7,11 +7,11 @@ members = [
     "crates/mesimon-tui",
     "crates/mesimon-backend-tmux",
     "crates/mesimon-team",
-    "team/relay",
     "crates/mesimon-web",
 ]
-# `team/relay` is the paid relay (T-332): `--workspace` commands cover it, a
-# plain `cargo build`/`cargo run` does not, and neither does the release build.
+# `crates/mesimon-web` is the Remote Control Wasm client: `--workspace` commands
+# cover it, a plain `cargo build`/`cargo run` does not, and neither does the
+# release build. The paid relay is a separate repository (T-456).
 default-members = [
     "crates/mesimon",
     "crates/mesimon-core",

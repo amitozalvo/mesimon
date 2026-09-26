@@ -272,24 +272,25 @@ Inside the board, `X` parks every idle agent in DONE, which is the gentler versi
 Nothing else. If you ever find mesimon writing outside that list, that is a bug worth reporting
 above all others.
 
-The [Teams relay](team/README.md) is a separate server binary with its own
+The Teams relay is a separate server binary, in its own repository, with its own
 database; nothing in this list is written by it, and nothing it stores is
 readable to it.
 
 ## Investigating agent state
 
 `mesimon state explain [session-prefix] --repo <repo>` shows the current state,
-confidence, recent inference decisions and board-movement decisions. See the
-[Claude state map](docs/claude-state-map.md) for supported evidence and known gaps,
-and the [state lab](docs/claude-state-lab.md) for offline replay, isolated
-before/after boards and occasional Haiku/Sonnet compatibility captures.
+confidence, recent inference decisions and board-movement decisions. The
+compatibility manifests it ran against are `docs/claude-compatibility.json` and
+`docs/codex-compatibility.json`.
 
 ## Layout
 
-- `docs/` — a pre-code research corpus, kept for its measurements and reasoning. It is not the
-  spec; the code is. `docs/STALE-MAP.md` is the design record: what was built, and why.
 - `crates/` — the Rust workspace.
-- `team/` — reserved for the future source-available team tier (see `docs/00-DECISIONS.md` D3a).
+- `docs/` — `STALE-MAP.md`, the design record (what was built, and why), `ARCHITECTURE.md`, the
+  agent-state scenario fixtures and the compatibility manifests. The code is the spec.
+- `web/mesophon` — the Remote Control browser client.
+- The paid Teams relay is a separate, private repository; `crates/mesimon-team` is its Apache
+  client.
 
 ## License
 
@@ -313,8 +314,8 @@ and publish port 8444 on loopback only. Run `mesimon mesophon setup` to check th
 connection and open the browser; there is no certificate or Keychain setup.
 `mesimon mesophon setup --check` checks without opening a browser. A phone or
 another computer needs a reachable HTTPS relay with a browser-trusted certificate;
-`localhost` always means the device running the browser. See
-[relay deployment](team/relay/README.md#mesophon-browser-listener).
+`localhost` always means the device running the browser. The relay's deployment
+guide ships with the relay.
 
 A prompt targets the session shown when you send it. **Submitted** means delivery
 to the agent’s input, not completion of its work. Waiting Codex prompts retain the

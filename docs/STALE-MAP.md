@@ -13902,3 +13902,58 @@ checks `get_ticket` before it writes, and this agent did not.
 
 **Test.** `mcp::write_note_says_the_plan_is_already_a_note`; the budget and lint tests cover the
 rest.
+
+## Going open source: the relay and the research corpus leave the repository (T-456, 2026-09-26, user: "going open source" ∙ "how do we keep teams (paid) out of open source" ∙ "clean up personal data and keep docs and researches out of git")
+
+The repository was never public. Before the flip three things had to leave: the paid relay
+(`team/`), the pre-code research corpus (`docs/00`–`19`, the proposals, the spikes, the
+agent-state research, `project.md`, `opus-feedback.md`), and personal data (the author's email on
+every commit, machine paths in old blobs). Deleting at the tip hides nothing in a public repo, so
+history was rewritten — once, in place, and only possible before the flip.
+
+**The relay is its own private repository, `mesimon-relay`, with its own history**
+(`git filter-repo --subdirectory-filter team`). It builds against a checkout of this repository
+beside it: its workspace root path-depends on `../mesimon/crates/*`, and its acceptance tests
+reach `../mesimon` for the shared harness, `web/mesophon` and the built binary. That reach is why
+two harness fallbacks changed: `common::mesimon_binary` and `test_support::Fixture::new` resolve
+through `MESIMON_CORE_DIR` — a compile-time `[env]` in the relay's `.cargo/config.toml`,
+`relative = true` — before `CARGO_MANIFEST_DIR/../..`, because `CARGO_MANIFEST_DIR` is the
+relay's when those files are compiled into its tests. The clients — `crates/mesimon-team`,
+`crates/mesimon-web`, `web/mesophon` — stay here under Apache. The stale `teams-validation.yml`
+(it named a `team/Cargo.toml` that no longer existed) went with the relay. Its image now clones
+the core at `MESIMON_REF` instead of building from the core's root; that build is unverified
+here (Docker stays closed).
+
+**The corpus is out of git, not out of reach.** It lives on the author's disk
+(`~/Documents/code/mesimon-research/`) and in the pre-rewrite bundle. `docs/` keeps
+`STALE-MAP.md`, `ARCHITECTURE.md`, the `state-scenarios/` fixtures `state_replay` reads, the two
+compatibility manifests `include_str!`'d into the binary, and `release-notes/`. The 261 citations
+in the source keep pointing at the corpus as provenance; `docs/README.md` says so.
+
+**The rewrite.** `git bundle create --all` first (`~/Documents/code/mesimon-archive-2026-09-26.bundle`,
+every branch and tag). Then `git filter-repo` on a fresh clone: the paths above stripped from
+every commit, empty commits pruned, the author email mapped to the GitHub noreply address,
+`/Users/<author>` in old blobs replaced. A full-history `gitleaks` scan ran before and after: six
+findings before, all false positives (IETF MLS test vectors, a lockfile hash, a WebSocket
+handshake constant) and all under paths that left; none after. The remote held only `main` and
+the release tags, so the force-push replaced exactly those. The 52 local `msmn/*` branches were
+re-pointed through filter-repo's commit map (every one was already merged into `main`), and
+`mesimon-releases` — public all along, and where installed binaries look — was untouched.
+
+**Public-repo hygiene that shipped with it:** `SECURITY.md` (private vulnerability reporting, the
+three promises as the scope), the Linux CI job on push and pull request (Actions is free on a
+public repo, which retires the "manual only" rationale; macOS stays manual),
+`CONTRIBUTING.md` reworded — it claimed per-file license headers mark the boundary, none exist,
+and with the boundary now a repository wall the claim was dropped rather than 600 headers added.
+A one-off license audit of the resolved dependency graph found only the MPL-2.0 `NOTICE` already
+names and `webpki-roots`' CDLA-Permissive-2.0.
+
+**Not done here.** The visibility flip itself, private vulnerability reporting, secret scanning
+and push protection, branch protection on `main` — the runbook is a ticket, because the flip is
+the user's to press. The launch assets (demo GIF, the safety-contract post, a Homebrew tap, the
+staged announcements) are tickets of their own.
+
+**Tests.** `cargo ut`, the release clippy and `prompt_e2e` on the split tip; `cargo ut` and
+`cargo nextest run --workspace` in a fresh clone of the rewritten history before the force-push;
+`cargo check --all-targets`, `cargo ut` and clippy in `mesimon-relay` against the sibling
+checkout.
