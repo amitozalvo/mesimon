@@ -1,0 +1,8 @@
+# gitleaks: the default rules, plus what a scan of this history flags and is
+# not a secret. `gitleaks git .` should report zero leaks.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "The RFC 6455 handshake nonce a browser test sends as Sec-WebSocket-Key is a fixture, not a credential"
+paths = ['''^web/mesophon/browser\.test\.js$''']
