@@ -34,13 +34,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-14 is arm64, the macOS target shipped. ubuntu-24.04 is x86_64
-        # with apt's tmux 3.4 — a distro tmux, which is the point: every tmux
-        # before 3.6 sanitizes format output differently from the one bundled
-        # on macOS, and the suite has to pass on what a Linux user has.
-        os: [macos-14, ubuntu-24.04]
+        # ubuntu-24.04 is x86_64 with apt's tmux 3.4 — a distro tmux, which is
+        # the point: every tmux before 3.6 sanitizes format output differently
+        # from the one bundled on macOS, and the suite has to pass on what a
+        # Linux user has. macos-14 is arm64, the macOS target shipped, and joins
+        # only on a manual dispatch. (A job-level `if` cannot see `matrix`, so
+        # the event picks the matrix instead.)
+        os: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["ubuntu-24.04", "macos-14"]') || fromJSON('["ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
-    if: matrix.os == 'ubuntu-24.04' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
