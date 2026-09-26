@@ -5,11 +5,22 @@
 #
 # So this gates on DRIFT, not on zero duplicates. The allowlist is the set we
 # have accepted; anything new fails and has to be looked at. Regenerate with:
-#   cargo tree -d --workspace | grep -E '^[a-z0-9_-]+ v' | sort -u > ci/dup-deps.allow
+#   ci/check-dup-deps.sh --regen
+# `--target all` so the set is the same on every host (a macOS-generated list
+# must hold on the Linux runner), `--color never` because CI exports
+# CARGO_TERM_COLOR=always and a coloured `(*)` never equals a plain one.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-got=$(cargo tree -d --workspace 2>/dev/null | grep -E '^[a-z0-9_-]+ v' | sort -u)
+tree() { cargo tree -d --workspace --target all --color never 2>/dev/null | grep -E '^[a-z0-9_-]+ v' | sort -u; }
+
+if [ "${1:-}" = "--regen" ]; then
+  tree > ci/dup-deps.allow
+  echo "ci/dup-deps.allow regenerated ($(wc -l < ci/dup-deps.allow | tr -d ' ') entries)"
+  exit 0
+fi
+
+got=$(tree)
 want=$(cat ci/dup-deps.allow)
 
 if [ "$got" != "$want" ]; then

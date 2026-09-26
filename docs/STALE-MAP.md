@@ -13946,7 +13946,12 @@ public repo, which retires the "manual only" rationale; macOS stays manual),
 `CONTRIBUTING.md` reworded — it claimed per-file license headers mark the boundary, none exist,
 and with the boundary now a repository wall the claim was dropped rather than 600 headers added.
 A one-off license audit of the resolved dependency graph found only the MPL-2.0 `NOTICE` already
-names and `webpki-roots`' CDLA-Permissive-2.0.
+names and `webpki-roots`' CDLA-Permissive-2.0. The first clean-room runs on the rewritten history
+caught three things the macOS gate cannot: two `needless_return`s inside `cfg(target_os =
+"linux")` blocks in `resources.rs`; `ci/dup-deps.allow` still listing the relay's duplicates
+(regenerated, and `check-dup-deps.sh` now takes `--regen`); and that script comparing coloured
+`cargo tree` output against a plain allowlist under CI's `CARGO_TERM_COLOR=always` — it now
+passes `--color never` and `--target all`, so the list is host-independent.
 
 **Not done here.** The visibility flip itself, private vulnerability reporting, secret scanning
 and push protection, branch protection on `main` — the runbook is a ticket, because the flip is
