@@ -6,6 +6,7 @@ The [README](../README.md) gets you to a first agent. This page is the rest.
 - [Installing](#installing)
 - [Updating](#updating)
 - [On the board](#on-the-board)
+- [Descriptions, notes and links](#descriptions-notes-and-links)
 - [Keyboard layouts and terminals](#keyboard-layouts-and-terminals)
 - [Agents and follow-ups](#agents-and-follow-ups)
 - [Sleeping idle agents](#sleeping-idle-agents)
@@ -129,6 +130,25 @@ does not stop your agents** — that is the point of the daemon.
 
 The footer names the main keys for whatever you are looking at; `?` opens the complete key
 reference for the current screen.
+
+## Descriptions, notes and links
+
+![Writing a ticket's description with tab, opening its page, and opening a link from its agent's note with ctrl-k](../assets/demo/ticket-page.gif)
+
+<sub>`tab` adds two lines to the brief, `enter` opens the page with the note its agent left, and
+`ctrl-k` opens one of that note's links.</sub>
+
+`tab` on a card opens its description, the brief its agent starts from. `ctrl-s` saves it and
+closes the editor, and `ctrl-g` opens the text in your own editor instead. The description is a
+ticket's first note. Every other note is listed under NOTES on the ticket page, whether you
+wrote it with `N` or the ticket's agent wrote it; `j` and `k` walk down to a note and show it.
+Notes are markdown.
+
+`ctrl-k`, on the board or on a ticket page, lists every link in the ticket's notes and in its
+agent's latest reply: web addresses, files in the ticket's worktree or checkout (with a line
+number when one is written), other tickets, and pasted pictures. `enter` opens one: a web
+address in your browser, a text file in your editor, another ticket by moving to it. `c` copies
+it instead.
 
 ## Keyboard layouts and terminals
 

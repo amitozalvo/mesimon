@@ -82,7 +82,20 @@ CROWN_BOARD = [
     ("DONE", "Set up CI", None, "Run the tests on every push."),
 ]
 
-BOARDS = {"demo": TICKETS, "search": SEARCH, "crown": CROWN_BOARD}
+# ticket-page.tape: the demo's board, with one card whose agent has already
+# left a note on it. The title is this board's own: stub-claude.py keys the
+# note-writing turn off it, and the crown clip starts a working agent on
+# "Expire old links". The description is one editor row and ends in a
+# newline, as a file does, so the tape's Down lands on the line under it.
+NOTED = "Retire old links"
+PAGE_BOARD = [
+    (c, NOTED, g, "A link nobody clicked in 30 days should 404.\n")
+    if t == "Expire old links" else (c, t, g, d)
+    for c, t, g, d in TICKETS
+]
+
+BOARDS = {"demo": TICKETS, "search": SEARCH, "crown": CROWN_BOARD,
+          "ticket-page": PAGE_BOARD}
 # The ticket whose agent is already at work, where it is not BUSY.
 AT_WORK = {"crown": CROWN}
 
@@ -135,6 +148,29 @@ def board(repo, tape="demo"):
     at_work = ids[AT_WORK.get(tape, BUSY)]
     w.ask({"cmd": "spawn_session", "ticket": at_work, "kind": "claude",
            "submit_prompt": True, "plan": False})
+    if tape == "ticket-page":
+        noted(w, ids)
+
+
+def noted(w, ids):
+    """Run the ticket-page take's agent to the end of its turn: it reads the
+    code, writes its note through the board's own tool and stops. The turn
+    carries the card TODO → IN PROGRESS → REVIEW by the columns' rules, so
+    it is put back at the top of TODO by hand, as a person who has more to
+    say about the work would, where the board's cursor starts."""
+    ticket = ids[NOTED]
+    w.ask({"cmd": "spawn_session", "ticket": ticket, "kind": "claude",
+           "submit_prompt": True, "plan": False})
+    deadline = time.time() + 30
+    while True:
+        snap = w.ask({"cmd": "snapshot"})
+        t = next(t for t in snap["board"]["tickets"] if t["id"] == ticket)
+        if len(t["notes"]) == 2 and t["column"] == "REVIEW":
+            break
+        if time.time() > deadline:
+            sys.exit(f"seed: {NOTED}'s agent did not leave its note")
+        time.sleep(0.2)
+    w.ask({"cmd": "move_ticket", "id": ticket, "column": "TODO", "before": ids[DEMO]})
 
 
 def stop(repo):

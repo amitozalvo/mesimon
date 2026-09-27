@@ -14557,3 +14557,45 @@ ran the whole 36 s take, `raise_hand` through `Board` included, and the committe
 was kept. After the rebase onto T-477 the crown clip was recorded again from the merged kit
 (the same 13.4 s, now the committed GIF), and the demo and search takes each ran to the end;
 their committed GIFs were kept.
+
+## Tour clip: the ticket page (T-478, 2026-09-28, "Tour clip: the ticket page — describe with Tab, notes, and the ^k links menu")
+
+The README's Tour opens with `assets/demo/ticket-page.gif`, 10.6 s and 0.4 MB. A new
+`docs/USING.md` section, "Descriptions, notes and links", embeds it too. In one take, `tab` on a
+card opens its description, two bullet lines go under the one already there, and `^s` saves.
+Enter opens the ticket page, with the shin beside the agent's last words. `j j` walks the rail to
+the note the agent left. `^k` lists its two links, a file in the repo and an https URL, and Down
++ Enter on the URL ends on `opening https://…`.
+
+- **Its own board, `ticket-page` in `seed.py`'s `BOARDS`** (T-477's per-tape seed). It is the
+  demo's board, except that "Expire old links" becomes **"Retire old links"**. The title is what
+  `stub-claude.py` keys the note-writing turn on, and the crown clip starts a working agent on
+  "Expire old links"; sharing that title would have made the crown's agent write this note and
+  stop. It is 16 characters because that is what a card fits beside its `✓` ("Expire idle
+  links" was cut to `Expire idle lin~` on the board).
+- **The note is written by an agent through the real road.** An agent-authored note needs a
+  session. A note written before the description would *become* the description, because
+  `notes[0]` is the description. So the seed spawns the stub on the ticket: two tool calls,
+  then `write_note` through the `mesimon mcp` shim, then a closing line and `Stop`. That turn
+  automoves the card TODO → IN PROGRESS → REVIEW. The seed waits for two notes and REVIEW, then
+  moves the ticket back to the top of TODO as a person (`before` the demo ticket), where the
+  cursor starts. An Idle claude is not `is_hot`, so Enter opens the page and does not attach.
+- **The seeded description is one editor row and ends in `\n`.** A note opens with its cursor
+  at 0 and VHS has no `End` key. On a line that wraps in the dialog, Down stopped on the wrapped
+  row and the typing landed mid-sentence (the first take). With one row plus the trailing
+  newline, Down lands on a fresh empty line.
+- **`MESIMON_OPEN=true` for every take.** A link opened on camera goes through the real
+  `open_outside`, and the board says `opening …`. Without the seam, macOS `open` would launch
+  the recording machine's browser. The brief said to stop at the menu if the opener would launch
+  something. With the seam, the whole gesture shows and nothing launches.
+- **Seen in the clip, not fixed here:** the description editor's header reads `edited by you
+  now ago`. `age_slot` returns `now` under a minute, and `ui/editor.rs` appends ` ago`. It shows
+  whenever the note was edited in the last minute.
+
+**Tests.** Seven VHS takes. The first put the typed lines mid-sentence and cut the note's name
+in the rail (`Where expiry g~`, now `Where it goes`). The next three got it right and trimmed
+pauses and typing speed. After the rebase onto T-477 and T-479, the sixth showed the retitled card
+cut short, and the seventh is the committed one: 10.6 s and 420 KB. Frames were checked by eye on
+a contact sheet. The crown and search clips were re-recorded once on the merged kit to check the
+shared stub and seed (13.5 s with the crown's whole script, and 8.0 s); their GIFs were not
+kept.

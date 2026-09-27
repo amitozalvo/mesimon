@@ -59,6 +59,9 @@ export MESIMON_NO_UPDATE_CHECK=1
 # The worktree flags (`1 to merge`) refresh every 2 s, not every 10 s, so the
 # take does not sit on a finished agent waiting for the merge offer.
 export MESIMON_WT_REFRESH_TICKS=8
+# A link a take opens goes nowhere: the board says `opening …` and no
+# browser starts on the machine doing the recording.
+export MESIMON_OPEN=true
 export MESIMON_THEME=graphite
 export MESIMON_COLOR=truecolor
 export DEMO_MESIMON=$MESIMON

@@ -11,8 +11,9 @@ config. Nothing on the board is faked -- only the model is.
 What it does is keyed off the ticket title in its first prompt (seed.py):
 the demo ticket works, raises its hand with a question, takes the answer,
 commits and stops; the crown clip's ticket works until a person crowns it,
-then runs the board through the crown's tools; any other ticket just keeps
-working.
+then runs the board through the crown's tools; the ticket-page clip's
+ticket reads the code, leaves a note with two links and stops; any other
+ticket just keeps working.
 """
 
 import json
@@ -27,6 +28,18 @@ import uuid
 DEMO = "Stats as JSON"
 QUESTION = "Include expired links?"
 CROWN = "Plan 1.0"
+NOTED = "Retire old links"
+
+# The note the ticket-page take opens: markdown, one link into the repo and
+# one out of it, so `^k` has both kinds to list.
+NOTE = """# Where it goes
+
+The check is one line in `links()`, ./store.py:20 — skip a link whose last
+click is older than 30 days, and free its slug.
+
+A freed slug should answer 410 rather than 404, so a client can tell it from
+a typo: [RFC 9110, 410 Gone](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.11).
+"""
 
 
 def flag(name):
@@ -262,6 +275,20 @@ def crown(first):
     hook("Stop", stop_hook_active=False)
 
 
+def noted(first):
+    """Read the code, leave a note on this ticket through the board's own
+    tool, and stop."""
+    submitted(first)
+    text("I'll find where links are kept before changing anything.")
+    tool("Read", "Read store.py", file_path=os.path.join(CWD, "store.py"))
+    tool("Grep", "Find where a slug resolves", pattern="def links")
+    board = Board()
+    board.call("write_note", text=NOTE)
+    board.close()
+    text("Left a note on the ticket: where the check goes, and why 410.", last=True)
+    hook("Stop", stop_hook_active=False)
+
+
 def seen(board, key):
     """The stamp a keyed edit carries: proof the crown read the card first."""
     return board.call("get_ticket", key=key)["seen"]
@@ -343,6 +370,8 @@ def main():
             demo(keys, first)
         elif first.startswith(CROWN):
             crown(first)
+        elif first.startswith(NOTED):
+            noted(first)
         else:
             busy(first)
     except Exception:

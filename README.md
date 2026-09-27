@@ -70,6 +70,14 @@ and type the task into it.
 
 ## Tour
 
+**The ticket page.** `tab` on a card writes its description, and `ctrl-k` lists the links in
+its notes.
+
+![Writing a ticket's description with tab, opening its page, and opening a link from its agent's note with ctrl-k](assets/demo/ticket-page.gif)
+
+<sub>`tab` adds two lines to the brief, `enter` opens the page with the note its agent left, and
+`ctrl-k` opens one of that note's links.</sub>
+
 **Search.** `/` finds any ticket by a few letters of its title, key, column or tag.
 
 ![Typing csv into the search picker narrows fifteen tickets to one, and enter puts the cursor on its card](assets/demo/search.gif)
