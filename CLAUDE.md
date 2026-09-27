@@ -468,6 +468,10 @@ will not show up in our tests until they break something.
   it to the pane as text. `restore_terminal` pops the flags and then fences on a
   cursor-position reply before the attach (`settle_key_reports`), so nothing reported under the
   flags reaches the tmux client.
+- **A `SubagentStop`'s `background_tasks` is the whole session's list**, not the subagent's
+  (2.1.283 fills both Stop hooks from one task registry), and its type labels spell the Bash
+  tool's background commands and the Monitor tool's watches both `shell`. Only the tool result
+  that started a task (`backgroundTaskId`, `taskId`) says which it is (T-483).
 - **Plan mode admits an MCP tool only on `annotations.readOnlyHint: true` and ignores allow
   rules; default and auto mode admit only on an allow rule and ignore the hint** (2.1.270). A
   read tool needs both, and `read_rung_is_hinted_read_only` keeps them one list.

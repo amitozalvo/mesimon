@@ -439,6 +439,13 @@ pub struct Machine {
     /// the park, or a subagent/teammate/nested-tool frame since.
     /// `PARK_STALE_MS` runs from here.
     background_at: u64,
+    /// Where a park lands when `PARK_STALE_MS` runs out: what the last
+    /// top-level `Stop` said without the Working inference — `Monitoring`
+    /// if it listed a live shell or watch, `EndTurn` if not. A background
+    /// command sends no frame while it runs (T-483), so a dev server parks
+    /// as working after every turn; when the clock runs out it reads
+    /// monitoring again, as every background shell did before.
+    park_fallback: StopReason,
     manual_compact_prior: Option<(SessionState, Confidence)>,
 }
 
@@ -480,6 +487,7 @@ impl Machine {
             recent_left: None,
             idle_teammates: BTreeSet::new(),
             background_at: now,
+            park_fallback: StopReason::EndTurn,
             manual_compact_prior: None,
         }
     }
@@ -577,6 +585,10 @@ impl Machine {
         // `None` to, so nothing else in this machine ever sees them.
         if proves_background(sig) {
             self.background_at = now;
+        }
+        if let Signal::Stop { has_agent_id: false, monitoring_tasks, .. } = sig {
+            self.park_fallback =
+                if *monitoring_tasks { StopReason::Monitoring } else { StopReason::EndTurn };
         }
         // Sleeping latches: the daemon's own SIGTERM produces SessionEnd and
         // pane-died, and neither those nor any straggler frame may flip a
@@ -691,15 +703,16 @@ impl Machine {
             return Some(self.commit(to, Confidence::Stale, now));
         }
         // Park demotion: a park nothing has proved in PARK_STALE_MS falls back
-        // to what the `Stop` that made it plainly said — the turn ended. Only
-        // the background half of that Stop was ever inference, so only the
-        // confidence drops; any later frame promotes straight back to Running.
-        // `Idle{Monitoring}` is left alone: a watch is MEANT to be silent, and
-        // it already spells itself "monitoring" and counts as quiet.
+        // to what the `Stop` that made it plainly said (`park_fallback`) — the
+        // turn ended, beside any shell it listed. Only the background half of
+        // that Stop was ever inference, so only the confidence drops; any
+        // later frame promotes straight back to Running. `Idle{Monitoring}`
+        // is left alone: a watch is MEANT to be silent, and it already spells
+        // itself "monitoring" and counts as quiet.
         if self.state == (SessionState::Idle { stop_reason: StopReason::Background })
             && now.saturating_sub(self.background_at) >= PARK_STALE_MS
         {
-            let to = SessionState::Idle { stop_reason: StopReason::EndTurn };
+            let to = SessionState::Idle { stop_reason: self.park_fallback };
             return Some(self.commit(to, Confidence::Medium, now));
         }
         None
@@ -1440,6 +1453,36 @@ mod tests {
         // The demote is not a latch either: the next real frame resumes.
         let c = m.apply(&Signal::UserPromptSubmit, parked + PARK_STALE_MS + 1).expect("resumes");
         assert_eq!(c.to, SessionState::Running);
+    }
+
+    /// T-483. A background command parks the lead as working, and nothing in
+    /// the hook stream proves it alive — a build and a dev server look the
+    /// same. When the clock runs out the park falls back to what its Stop
+    /// said beside the inference: a shell is live, so monitoring, never done.
+    #[test]
+    fn a_command_park_falls_back_to_monitoring() {
+        let mut m = m(SessionState::Running);
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: true,
+            monitoring_tasks: true,
+            teammates: 0,
+        };
+        assert!(m.apply(&stop, 1000).is_none(), "leave settles");
+        let parked = 1000 + SETTLE_MS;
+        let c = m.tick(parked).expect("parks");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Background });
+        let c = m.tick(parked + PARK_STALE_MS).expect("the park times out");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Monitoring });
+        assert_eq!(c.confidence, Confidence::Medium);
+        // The next turn's plain Stop resets the fallback.
+        m.apply(&Signal::UserPromptSubmit, parked + PARK_STALE_MS + 1);
+        m.apply(&stop_with_teammates(1), parked + PARK_STALE_MS + 2);
+        let c = m.tick(parked + PARK_STALE_MS + 2 + SETTLE_MS).expect("parks");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Background });
+        let c = m.tick(parked + 3 * PARK_STALE_MS).expect("the park times out");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
     }
 
     /// The other half: a team that is plainly working keeps its park, however

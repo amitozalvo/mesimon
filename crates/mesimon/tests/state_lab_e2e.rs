@@ -274,3 +274,45 @@ fn background_liveness_reclassifies_and_restart_drops_the_registry() {
     assert!(matches!(client.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
 }
+
+/// T-483, the dogfood sequence of 2026-09-28: the lead backgrounds a command
+/// and ends its turn, and an internal agent's `SubagentStop` lists the
+/// session's tasks four seconds later. The lead parks as working — the
+/// keep-awake hold's own predicate says so — and the nested stop leaves it
+/// parked. The turn the command's completion starts ends the park.
+#[test]
+fn a_background_command_parks_the_lead_through_a_nested_stop() {
+    let Some(h) = Harness::boot_with_env("bg-command", Some(STUB), &[]) else { return };
+    let mut client = h.client("bg-command");
+    let sid = spawn(&mut client, "Release in the background");
+    let send = |event, body: &str| hook_send(&h.paths.hook_sock(), &sid.to_string(), event, body);
+    let mut record = || client.board().sessions.into_iter().find(|s| s.id == sid).unwrap();
+    send("SessionStart", r#"{"source":"startup"}"#);
+    send("UserPromptSubmit", "{}");
+    send(
+        "PostToolUse",
+        r#"{"tool_name":"Bash","tool_response":{"stdout":"","stderr":"","backgroundTaskId":"b8km0xm1p"}}"#,
+    );
+    let row = r#"{"id":"b8km0xm1p","type":"shell","status":"running","description":"release"}"#;
+    send("Stop", &format!(r#"{{"background_tasks":[{row}]}}"#));
+    wait_until(Duration::from_secs(5), "a background command parks the lead as working", || {
+        let rec = record();
+        rec.state == SessionState::Idle { stop_reason: StopReason::Background }
+            && mesimon_core::quiet::is_mid_turn(&rec)
+    });
+    send(
+        "SubagentStop",
+        &format!(r#"{{"agent_id":"a1","agent_type":"x","background_tasks":[{row}]}}"#),
+    );
+    std::thread::sleep(Duration::from_millis(2 * mesimon_core::attention::SETTLE_MS));
+    assert_eq!(
+        record().state,
+        SessionState::Idle { stop_reason: StopReason::Background },
+        "a nested stop took back the lead's command"
+    );
+    send("UserPromptSubmit", "{}");
+    send("Stop", r#"{"background_tasks":[]}"#);
+    wait_until(Duration::from_secs(5), "the command's turn ends the park", || {
+        record().state == SessionState::Idle { stop_reason: StopReason::EndTurn }
+    });
+}

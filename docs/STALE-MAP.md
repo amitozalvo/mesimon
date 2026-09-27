@@ -14648,3 +14648,43 @@ the unmerged one stays, and each ticket has its `archive_all` row.
 with the bucket out of reach, so only the start's sweep can act. With the three changes
 reverted, all three fail and the old three pass. Unit: `read_archived_counts_archives_only_and_touches_nothing`,
 `tree_bytes_sums_a_tree_and_owns_up_to_a_spent_budget`.
+
+## T-483 — a background command is agent work (2026-09-28)
+
+**What broke.** The lead ran `ci/release.sh` with `run_in_background` and ended its turn. The
+card read `monitoring` (the slow bar, keep-awake released, per T-389), and four seconds later an
+internal agent's `SubagentStop` dropped it to `Idle{Unknown}`: no glyph at all for three minutes
+of release. The feed shows the same drop on 2 of 21 monitoring parks that week.
+
+**Why the drop.** Claude Code 2.1.283 builds both Stop hooks' `background_tasks` from
+`taskRegistry.all()`, so a `SubagentStop` lists the LEAD's tasks, and `Registry::record` read
+every row there as the subagent's own shell ("internal nested shells do not create independent
+work") and removed it. A nested snapshot row now never takes back a task the registry already
+holds; a terminal status still ends it, and a nested shell it introduces still does not count.
+
+**Why working, not monitoring.** A backgrounded command is work the agent will resume on:
+Claude Code sends a task notification when it ends, as it does for a background agent, and
+while it runs the machine is busy for the agent. The payload labels it `shell` — the same word
+it gives the Monitor tool's watches — which is why T-389 classed every shell as a watch. The
+tool result tells them apart: the lead's `PostToolUse` for `Bash` carries `backgroundTaskId`
+(also on a Ctrl+B), and arms the task as `background::BACKGROUND_COMMAND`, classed `Working`.
+A task a tool armed (`Transition::Started`) keeps its tool's class against every later label,
+Listed or Updated; status and snapshot absence still end it. A subagent's background command is
+not armed: Claude Code kills an exiting agent's shells (`killShellTasksForAgent`). The card
+spins and reads `working`, the keep-awake hold and the quiet gates hold, `on_working` fires.
+Monitor watches are unchanged.
+
+**The bound.** A command sends no frame while it runs, so a dev server and a build look the
+same. `Idle{Background}` already runs on `PARK_STALE_MS` (10 min, T-403); the machine now keeps
+`park_fallback` from the last top-level Stop — `Monitoring` when it listed a live shell or watch,
+else `EndTurn` — and a stale park lands there. A dev server therefore reads `working` for ten
+minutes after each turn and then `monitoring`, as every shell did before; it never reads done
+and never fires `on_done` while listed. A build past ten minutes loses the keep-awake hold at
+the ten-minute mark. After a daemon restart the registry is empty and a listed shell is a watch
+again until the next backgrounded command — the same hole T-408 accepts for Monitor provenance.
+
+Tests: `background::an_armed_command_outranks_its_shell_label`,
+`a_nested_snapshot_keeps_the_leads_tasks`; `hooks::a_background_command_parks_the_lead_as_working`
+(the captured sequence); `attention::a_command_park_falls_back_to_monitoring`;
+`state_lab_e2e::a_background_command_parks_the_lead_through_a_nested_stop`, which fails with the
+nested-snapshot guard removed.

@@ -5,7 +5,7 @@ use mesimon_core::attention::{
     StopFailureClass,
 };
 use mesimon_core::background::{
-    classify, is_live_status, is_monitor_kind, Liveness, Registry, Transition,
+    classify, is_live_status, is_monitor_kind, Liveness, Registry, Transition, BACKGROUND_COMMAND,
 };
 use mesimon_core::board::SessionRecord;
 use serde_json::Value;
@@ -81,6 +81,15 @@ pub fn signal_with_background(frame: &HookFrame, tasks: &mut Registry) -> Option
             Some("Monitor") => {
                 if let Some(id) = response.get("taskId").and_then(Value::as_str) {
                     tasks.record(id, Some("monitor"), None, Transition::Started, owner);
+                }
+            }
+            // The lead's own command, backgrounded (T-483). A subagent's is
+            // not recorded: Claude Code kills an exiting agent's shells, so
+            // one cannot outlive the turn it belongs to — the rule `record`
+            // keeps for every nested shell.
+            Some("Bash") if owner.is_none() => {
+                if let Some(id) = response.get("backgroundTaskId").and_then(Value::as_str) {
+                    tasks.record(id, Some(BACKGROUND_COMMAND), None, Transition::Started, None);
                 }
             }
             Some("TaskStop") => {
@@ -528,6 +537,48 @@ mod tests {
             ),
             Some(Signal::BackgroundChanged { liveness: Liveness::Monitoring })
         );
+    }
+
+    /// The lead backgrounds a command and ends its turn; four seconds later an
+    /// internal agent's `SubagentStop` lists the session's tasks again — the
+    /// dogfood sequence of 2026-09-28 (T-483), payload shapes from 2.1.283.
+    /// The lead parks as working, the nested stop leaves it there, and a
+    /// subagent's own background command never counts.
+    #[test]
+    fn a_background_command_parks_the_lead_as_working() {
+        let mut tasks = Registry::default();
+        signal_with_background(
+            &frame(
+                "PostToolUse",
+                None,
+                r#"{"tool_name":"Bash","tool_response":{"stdout":"","stderr":"","interrupted":false,"backgroundTaskId":"b8km0xm1p"}}"#,
+            ),
+            &mut tasks,
+        );
+        let row = r#"{"id":"b8km0xm1p","type":"shell","status":"running","description":"release","command":"ci/release.sh"}"#;
+        assert!(matches!(
+            signal_with_background(
+                &frame("Stop", None, &format!(r#"{{"background_tasks":[{row}]}}"#)),
+                &mut tasks
+            ),
+            Some(Signal::Stop { blocking_tasks: true, monitoring_tasks: true, .. })
+        ));
+        let nested = format!(r#"{{"agent_id":"a1","agent_type":"x","background_tasks":[{row}]}}"#);
+        assert_eq!(
+            signal_with_background(&frame("SubagentStop", None, &nested), &mut tasks),
+            Some(Signal::SubagentStop)
+        );
+        assert_eq!(tasks.liveness(), Liveness::Working);
+        // A foreground command carries no task id and arms nothing.
+        let mut fresh = Registry::default();
+        signal_with_background(
+            &frame("PostToolUse", None, r#"{"tool_name":"Bash","tool_response":{"stdout":"ok"}}"#),
+            &mut fresh,
+        );
+        let sub =
+            r#"{"tool_name":"Bash","agent_id":"a1","tool_response":{"backgroundTaskId":"s1"}}"#;
+        signal_with_background(&frame("PostToolUse", None, sub), &mut fresh);
+        assert_eq!(fresh.liveness(), Liveness::None);
     }
 
     /// The Stop payload of a session that published an artifact (2.1.278):

@@ -1060,7 +1060,15 @@ means only shells or Monitor watches remain and reads `monitoring`. Both avoid
 interrupted. Background agent work triggers `on_working` and holds quiet gates;
 monitoring does neither. Only `EndTurn` triggers `on_done`. Both retain Idle's
 rank 13. Task liveness is transient, reclassified at each transition, and empty
-after restart; fresh Stop evidence can reclassify the persisted state.
+after restart; fresh Stop evidence can reclassify the persisted state. **A command
+the lead's Bash tool backgrounded is agent work (T-483)**: its `backgroundTaskId`
+arms it as `background_command`, and a task a tool armed keeps its tool's class
+against the payload's `shell` label, which the Monitor tool's watches share. It
+parks as `Idle{Background}` (spinner, keep-awake, quiet gates) and, since it sends
+no frame while it runs, falls back to `Idle{Monitoring}` when `PARK_STALE_MS`
+passes — the machine's `park_fallback`, what the Stop said beside the inference.
+A `SubagentStop` lists the whole session's tasks, so its rows never take back a
+task the registry already holds.
 The wake arrives as a `UserPromptSubmit` only when a
 TASK NOTIFICATION delivers it (a background shell, an unnamed subagent); a named agent in an
 interactive session is an in-process TEAMMATE whose report wakes the lead as a teammate message
