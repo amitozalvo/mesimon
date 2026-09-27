@@ -14416,3 +14416,10 @@ now point at the new pages.
 
 **Tests.** A link check covered every relative link and `#anchor` in the README, the three new
 pages, `docs/README.md`, `SECURITY.md` and `TESTING.md`: none were broken.
+
+**The releases repo's README** (`ci/releases-readme.md`, which `release.sh` publishes) got the same
+treatment. It said the source was private, which it has not been since T-456. Its write list left
+out the runtime dir and put the tmux socket in the state dir. It named `Z` for parking idle
+agents, where the board's key is `X`, and it listed Claude Code without Codex. It now carries
+the README's pitch, install, requirements and promise lines, and it links to
+`docs/PROMISES.md` and `docs/USING.md` on GitHub instead of keeping its own copy of either.
