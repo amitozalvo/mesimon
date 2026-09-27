@@ -852,6 +852,13 @@ impl CodexApproval {
 /// says only what was chosen.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ColumnSettings {
+    /// What the column is for, in the user's words (T-467): one line,
+    /// `sanitize_column_description`'s bound. Agents read it in `list_board`
+    /// and `get_ticket` — a tool RESULT, the same road a note takes, never
+    /// tool text — so "BACKLOG vs TODO" is the user's answer and not a
+    /// guess. `None` = no description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Pinned as a one-cell spine unless the cursor is in it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub collapsed: bool,
@@ -913,6 +920,9 @@ impl ColumnSettings {
     /// The non-default settings in words, for `doctor` and the dialog.
     pub fn summary(&self) -> Vec<String> {
         let mut out = Vec::new();
+        if let Some(d) = &self.description {
+            out.push(format!("about: {d}"));
+        }
         if self.collapsed {
             out.push("collapsed".into());
         }
@@ -1303,6 +1313,19 @@ pub const COLUMN_NAME_MAX_BYTES: usize = 24;
 pub fn sanitize_column_name(raw: &str) -> Option<String> {
     use crate::text::{cap_bytes, nonblank, scrub_cells};
     nonblank(cap_bytes(&scrub_cells(raw, false), COLUMN_NAME_MAX_BYTES))
+}
+
+/// The longest a column's description may be, in bytes (T-467). A sentence
+/// or two: it is one line in the column dialog, and every agent's
+/// `get_ticket` carries every column's.
+pub const COLUMN_DESCRIPTION_MAX_BYTES: usize = 300;
+
+/// The daemon-side boundary for a column's description: drawn in the dialog
+/// and read by agents, so `scrub_cells` on one line, which also removes
+/// everything `scrub_text` does. `None` for one that is blank once scrubbed.
+pub fn sanitize_column_description(raw: &str) -> Option<String> {
+    use crate::text::{cap_bytes, nonblank, scrub_cells};
+    nonblank(cap_bytes(&scrub_cells(raw, false), COLUMN_DESCRIPTION_MAX_BYTES))
 }
 
 /// The longest a raised hand's reason may be, in bytes (T-107). One line on
@@ -3491,6 +3514,22 @@ mod tests {
         let long = "x".repeat(COLUMN_NAME_MAX_BYTES + 5);
         assert_eq!(sanitize_column_name(&long).unwrap().len(), COLUMN_NAME_MAX_BYTES);
         assert_eq!(COLUMN_NAME_MAX_BYTES, TAG_MAX_BYTES);
+    }
+
+    /// T-467: a description is one line agents read and the dialog draws.
+    #[test]
+    fn column_description_is_one_scrubbed_bounded_line() {
+        assert_eq!(
+            sanitize_column_description(" ideas\n not yet\u{202e} planned \u{1b}[31m"),
+            Some("ideas not yet planned [31m".into())
+        );
+        assert_eq!(sanitize_column_description(" \t "), None);
+        let long = "é".repeat(COLUMN_DESCRIPTION_MAX_BYTES);
+        let cut = sanitize_column_description(&long).unwrap();
+        assert!(cut.len() <= COLUMN_DESCRIPTION_MAX_BYTES && cut.len() % 2 == 0);
+        let s = ColumnSettings { description: Some("someday".into()), ..Default::default() };
+        assert_eq!(s.summary(), ["about: someday"]);
+        assert!(!s.automated());
     }
 
     /// D10: a column narrows what the user configured, never hands out a mode

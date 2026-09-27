@@ -1999,6 +1999,7 @@ order = "a0"
                 name: "TODO".into(),
                 order: "a0".into(),
                 settings: mesimon_core::board::ColumnSettings {
+                    description: Some("planned for this version".into()),
                     collapsed: true,
                     workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                     claude_mode: mesimon_core::board::ClaudeMode::Plan,
@@ -2033,6 +2034,7 @@ order = "a0"
         assert_eq!(back.columns, cf.columns);
         assert!(text.contains("claude_mode = \"plan\""), "{text}");
         assert!(text.contains("agent_tools = \"read\""), "{text}");
+        assert!(text.contains("description = \"planned for this version\""), "{text}");
         assert!(!text.contains("on_done"), "{text}");
         assert_eq!(back.tags.len(), 2);
         assert_eq!(back.tags[0].name, "BUG");

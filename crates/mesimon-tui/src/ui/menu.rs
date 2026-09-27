@@ -57,7 +57,7 @@ fn scoped(app: &App, name: &str) -> String {
 /// row would not fit `layout::MIN_H`. The Name row is a text field while
 /// the mode says so, edited in place with the hardware cursor.
 pub(super) fn draw_column(f: &mut Frame, app: &App) {
-    let Mode::ColumnSettings { subject, idx, naming, .. } = &app.mode else { return };
+    let Mode::ColumnSettings { subject, idx, naming, describing, .. } = &app.mode else { return };
     let ctx = app.frame_ctx();
     let items = keymap::column_items(&ctx);
     let title = match subject {
@@ -67,7 +67,11 @@ pub(super) fn draw_column(f: &mut Frame, app: &App) {
         ColumnSubject::Existing(name) => format!("COLUMN ∙ {}", name.to_uppercase()),
         ColumnSubject::New { .. } => "NEW COLUMN".to_string(),
     };
-    draw_dense(f, app, &ctx, *idx, &title, &items, naming.as_ref().map(|b| ("Name: ", b)));
+    let field = naming
+        .as_ref()
+        .map(|b| ("Name: ", b))
+        .or_else(|| describing.as_ref().map(|b| ("Description: ", b)));
+    draw_dense(f, app, &ctx, *idx, &title, &items, field);
 }
 
 /// The agent-prompt list (T-353): the four sentences mesimon types into an

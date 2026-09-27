@@ -152,7 +152,7 @@ pub fn tools() -> Vec<Value> {
             "description": "Returns the mesimon ticket this session is attached to, or with \
                             key another ticket (crown only): key, title, column, workspace, \
                             branch, merge state (per repo on a workspace), the column names \
-                            move_ticket accepts, tags, \
+                            move_ticket accepts and what each column is for, tags, \
                             every tag the board knows (allowed_tags), the description (first \
                             note), every note's id, name and author, the agent's state word \
                             and a seen stamp keyed edits require. The prompt that starts a \
@@ -169,7 +169,8 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "list_board",
-            "description": "Returns the mesimon board: every column in order, and every \
+            "description": "Returns the mesimon board: every column in order, what each \
+                            column is for in the user's words (column_descriptions), and every \
                             ticket's key, title and column. Session and process information \
                             is excluded. Title comparison here is the pre-check for \
                             create_ticket: work extending a ticket in todo, in progress \
@@ -1514,10 +1515,16 @@ mod tests {
             (
                 "list_board",
                 vec![
+                    // T-467: where a new ticket's column is chosen from.
+                    "what each column is for in the user's words (column_descriptions)",
                     "Title comparison here is the pre-check for create_ticket",
                     "todo, in progress or review belongs on that ticket as scope, not as a sibling",
                     "A near-duplicate title means the older ticket wins",
                 ],
+            ),
+            (
+                "get_ticket",
+                vec!["the column names move_ticket accepts and what each column is for"],
             ),
         ] {
             let tool = registry.iter().find(|t| t["name"] == name).unwrap();

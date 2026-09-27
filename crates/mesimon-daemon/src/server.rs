@@ -4842,6 +4842,17 @@ impl Daemon {
             .collect()
     }
 
+    /// Every column's description (T-467), keyed by name, for `get_ticket`
+    /// and `list_board` alike: the user's words on what each column is for,
+    /// so an agent choosing between BACKLOG and TODO is not guessing.
+    fn agent_column_descriptions(&self) -> std::collections::BTreeMap<String, String> {
+        self.board
+            .columns
+            .iter()
+            .filter_map(|c| Some((c.name.clone(), c.settings.description.clone()?)))
+            .collect()
+    }
+
     /// The ticket holds a worktree branch that has not landed on the base.
     fn ticket_unmerged(&self, id: ulid::Ulid) -> bool {
         self.worktrees.get(&id).is_some_and(|b| !b.branch.is_empty() && !self.ticket_merged(id))
@@ -4883,6 +4894,7 @@ impl Daemon {
             merge_state: self.merge_state_word(id).map(str::to_string),
             repos: self.agent_repo_views(id),
             allowed_columns: self.agent_allowed_columns(id),
+            column_descriptions: self.agent_column_descriptions(),
             automove: self
                 .board
                 .column(&t.column)
@@ -4966,6 +4978,7 @@ impl Daemon {
             .collect();
         AgentBoardView {
             columns,
+            column_descriptions: self.agent_column_descriptions(),
             tickets,
             board_version: self.board_version,
             crown: self.board.crown_holder().map(|t| t.short_key.clone()),
@@ -8939,6 +8952,13 @@ impl Daemon {
         let Some(col) = self.board.column(name) else {
             return Response::Err { message: format!("no such column: {name}") };
         };
+        // The description is text agents read (T-467): scrubbed and capped
+        // on the way in, so the bytes on disk are the bytes a tool returns.
+        let description = settings
+            .description
+            .as_deref()
+            .and_then(mesimon_core::board::sanitize_column_description);
+        let settings = mesimon_core::board::ColumnSettings { description, ..settings };
         if col.settings == settings {
             return Response::Ok;
         }

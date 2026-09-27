@@ -470,6 +470,9 @@ pub enum Verb {
     /// `ColumnName` (the name edited in place), `SortColumn` (one-shot) and
     /// `DeleteColumn` (armed by its first Enter).
     ColumnName,
+    /// The Description row (T-467): a text field in place, the Name row's
+    /// shape, saved whole through `SetColumnSettings`.
+    ColumnDescription,
     ColumnCollapse,
     SortColumn,
     ColumnWorkspace,
@@ -1295,6 +1298,8 @@ pub struct Ctx {
     /// targets are the user's own words, so they are `String`s; the rest are
     /// words from a fixed set.
     pub col_name: String,
+    /// The column's description (T-467), the user's words; empty when none.
+    pub col_description: String,
     /// The dialog is on a column that does not exist yet (`O`): only the
     /// Name row stands.
     pub col_new: bool,
@@ -4700,6 +4705,19 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::ColumnDescription,
+        label: |c| {
+            if c.col_description.is_empty() {
+                "Description: none".into()
+            } else {
+                format!("Description: {}", c.col_description)
+            }
+        },
+        detail: |_| "what this column is for ∙ agents read it to pick a column".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::ColumnCollapse,
         label: |c| format!("Collapsed: {}", yes_no(c.col_collapsed)),
         detail: |_| "a one-cell spine until the cursor enters it".into(),
@@ -7710,7 +7728,7 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 7);
+        assert_eq!(column_items(&other).len(), 8);
         assert!(!column_items(&other)
             .iter()
             .any(|m| matches!(m.verb, Verb::ColumnName | Verb::DeleteColumn)));

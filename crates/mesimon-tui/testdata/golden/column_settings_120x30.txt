@@ -8,6 +8,7 @@
 
 
                            ╭─ COLUMN ∙ IN PROGRESS ─────────────────────────────────────────╮
+                           │   Description: none                                            │
                            │   Collapsed: no                                                │
                            │   Sort now: newest first                                       │
                            │   Workspace for new tickets: board default                     │
@@ -16,9 +17,8 @@
                            │   Offer: off                                                   │
                            │   Auto merge: off                                              │
                            │                                                                │
-                           │     a one-cell spine until the cursor enters it                │
+                           │     what this column is for ∙ agents read it to pick a column  │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

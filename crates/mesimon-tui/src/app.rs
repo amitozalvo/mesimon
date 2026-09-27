@@ -466,6 +466,9 @@ pub enum Mode {
         /// `naming`): the column renamed in place, or a new one named before
         /// it exists.
         naming: Option<EditBuffer>,
+        /// The Description row is a text field while `Some` (T-467), in place
+        /// like `naming` — but the list stays, so the row keeps its place.
+        describing: Option<EditBuffer>,
         /// The `Sort now` row's pending order: `h`/`l` step it, Enter runs it.
         sort: SortBy,
         /// The Delete row was chosen once; the next Enter on it sends.
@@ -2742,6 +2745,8 @@ impl App {
             ("a prompt", buf.paste(text), buf.limit())
         } else if let Mode::ColumnSettings { naming: Some(buf), .. } = &mut self.mode {
             ("a column name", buf.paste(text), buf.limit())
+        } else if let Mode::ColumnSettings { describing: Some(buf), .. } = &mut self.mode {
+            ("a column description", buf.paste(text), buf.limit())
         } else if let Mode::Tiers { naming: Some(buf), .. } = &mut self.mode {
             ("a tier name", buf.paste(text), buf.limit())
         } else if let Mode::TierEdit { field: Some(buf), .. } = &mut self.mode {
@@ -3857,6 +3862,7 @@ impl App {
                 self.mode,
                 Mode::Search(_)
                     | Mode::ColumnSettings { naming: Some(_), .. }
+                    | Mode::ColumnSettings { describing: Some(_), .. }
                     | Mode::Prompts { editing: Some(_), .. }
                     | Mode::Sharing { editing: Some(_), .. }
                     | Mode::Tiers { naming: Some(_), .. }
@@ -3929,7 +3935,8 @@ impl App {
             Mode::Search(_) => Scope::Search,
             // Naming a column IS a text field (the tag picker's rule), and
             // saying so is what puts `enter save ∙ esc cancel` in the edge.
-            Mode::ColumnSettings { naming: Some(_), .. } => Scope::Input,
+            Mode::ColumnSettings { naming: Some(_), .. }
+            | Mode::ColumnSettings { describing: Some(_), .. } => Scope::Input,
             Mode::ColumnSettings { .. } => Scope::ColumnSettings,
             _ => match self.screen {
                 Screen::Diff => Scope::Diff,
@@ -4017,6 +4024,7 @@ impl App {
             search_archived: search.is_some_and(|s| s.archived),
             col_header: self.on_column_header(),
             col_name: col.map(|c| c.name.clone()).unwrap_or_default(),
+            col_description: cs.description.clone().unwrap_or_default(),
             col_new,
             col_on_sort: false,
             col_sort_word,
@@ -4510,6 +4518,9 @@ impl App {
         }
         if let Mode::ColumnSettings { naming: Some(_), .. } = self.mode {
             return self.key_column_name(code, mods);
+        }
+        if let Mode::ColumnSettings { describing: Some(_), .. } = self.mode {
+            return self.key_column_description(code, mods);
         }
         if let Mode::Prompts { editing: Some(_), .. } = self.mode {
             return self.key_agent_prompt(code, mods);
@@ -5691,6 +5702,7 @@ impl App {
                     subject: ColumnSubject::New { after },
                     idx: 0,
                     naming: Some(EditBuffer::new(mesimon_core::board::COLUMN_NAME_MAX_BYTES)),
+                    describing: None,
                     sort: SortBy::NewestArrival,
                     delete_armed: false,
                     from_menu: self.menu_dispatch,
@@ -5705,6 +5717,18 @@ impl App {
                     *naming = Some(EditBuffer::from_text(
                         text,
                         mesimon_core::board::COLUMN_NAME_MAX_BYTES,
+                    ));
+                }
+            }
+            Verb::ColumnDescription => {
+                let text = self
+                    .dialog_column()
+                    .and_then(|c| c.settings.description.clone())
+                    .unwrap_or_default();
+                if let Mode::ColumnSettings { describing, .. } = &mut self.mode {
+                    *describing = Some(EditBuffer::from_text(
+                        text,
+                        mesimon_core::board::COLUMN_DESCRIPTION_MAX_BYTES,
                     ));
                 }
             }
@@ -6295,6 +6319,7 @@ impl App {
             subject: ColumnSubject::Existing(name),
             idx: 0,
             naming: None,
+            describing: None,
             sort: SortBy::NewestArrival,
             delete_armed: false,
             from_menu: self.menu_dispatch,
@@ -6435,6 +6460,50 @@ impl App {
                         ColumnSubject::Existing(_) => *naming = None,
                         ColumnSubject::New { .. } => self.mode = Mode::Normal,
                     }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The Description row's field (T-467): the Name row's shape. Enter saves
+    /// the whole settings struct with the new words — blank clears them —
+    /// and closes the field; a text nobody changed sends nothing. Esc drops
+    /// the edit. The daemon scrubs and caps on the way in.
+    fn key_column_description(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        if let Mode::ColumnSettings { describing: Some(buf), .. } = &mut self.mode {
+            edit_buffer_key(buf, code, mods);
+        }
+        let ctx = self.ctx();
+        let verb = crate::keys::to_key_text(code, mods)
+            .and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
+        match verb {
+            Some(Verb::Save | Verb::SaveStart) => {
+                let Mode::ColumnSettings { describing: Some(buf), .. } = &self.mode else {
+                    return Ok(());
+                };
+                let text = mesimon_core::board::sanitize_column_description(buf.as_str());
+                let Some(col) = self.dialog_column() else { return Ok(()) };
+                if col.settings.description != text {
+                    let name = col.name.clone();
+                    let settings = ColumnSettings { description: text, ..col.settings.clone() };
+                    match self.req(Command::SetColumnSettings { name, settings }) {
+                        Response::Ok => self.refresh()?,
+                        Response::Err { message } => {
+                            self.status = message;
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+                if let Mode::ColumnSettings { describing, .. } = &mut self.mode {
+                    *describing = None;
+                }
+            }
+            Some(Verb::Cancel) => {
+                if let Mode::ColumnSettings { describing, .. } = &mut self.mode {
+                    *describing = None;
                 }
             }
             _ => {}
@@ -17151,11 +17220,14 @@ mod tests {
         let mut app = App::for_test(board, theme());
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        // Collapsed is the second row, under Description.
+        press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.board.column("todo").unwrap().settings.collapsed);
         assert_eq!(app.cursor_col, 0, "the collapse just chosen keeps the cursor");
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(!app.board.column("todo").unwrap().settings.collapsed);
@@ -17183,11 +17255,12 @@ mod tests {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        // Collapsed is the first row.
+        // Collapsed is the second row, under Description.
+        press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "SetColumnSettings { name: \"todo\""), "{sent:?}");
         assert!(sent_contains(&sent, "collapsed: true"), "{sent:?}");
-        assert!(matches!(&app.mode, Mode::ColumnSettings { idx: 0, .. }), "the dialog stays");
+        assert!(matches!(&app.mode, Mode::ColumnSettings { idx: 1, .. }), "the dialog stays");
         assert!(
             app.board.column("todo").unwrap().settings.collapsed,
             "relabelled off the snapshot"
@@ -17219,6 +17292,48 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.board.column("todo").unwrap().settings.on_working, None);
         assert_eq!(app.ctx().col_on_working, "");
+    }
+
+    /// T-467: the Description row is a field in place. Enter saves the
+    /// words into the whole settings struct and closes the field; the dialog
+    /// and the row stay; Esc drops an edit; a blank field clears them.
+    #[test]
+    fn the_description_row_edits_in_place_and_blank_clears() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(keymap::column_items(&app.ctx())[0].verb, Verb::ColumnDescription);
+        assert_eq!((keymap::column_items(&app.ctx())[0].label)(&app.ctx()), "Description: none");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::ColumnSettings { describing: Some(_), .. }));
+        assert_eq!(app.scope(), Scope::Input);
+        assert!(app.text_field(), "Hebrew here is words, not a stray key");
+        for c in "next up ".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        assert!(app.on_paste("this\nversion").unwrap());
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "description: Some(\"next up this version\")"), "{sent:?}");
+        assert!(matches!(app.mode, Mode::ColumnSettings { describing: None, idx: 0, .. }));
+        assert_eq!(
+            app.board.column("todo").unwrap().settings.description.as_deref(),
+            Some("next up this version")
+        );
+        assert_eq!(app.ctx().col_description, "next up this version");
+
+        // Esc drops an edit and sends nothing.
+        let before = sent.borrow().len();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::ColumnSettings { describing: None, .. }));
+        assert_eq!(sent.borrow().len(), before);
+
+        // Emptied, Enter clears the description.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.board.column("todo").unwrap().settings.description, None);
     }
 
     #[test]

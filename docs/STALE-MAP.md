@@ -14024,3 +14024,41 @@ tape opens the page to merge. The tape still answers the agent from the board, b
 first failed on a regex that did not allow for the padding between a title and its branch glyph.
 The last is the committed GIF. Its frames were checked by eye. After every run,
 `/tmp/mesimon-<uid>` held only the directories that were there before.
+
+## A column says what it is for, and agents read it (T-467, 2026-09-27, user: "column description so that agents would know how to use them" ∙ "I have TODO and BACKLOG. agents sometimes open tickets in todo and sometimes in backlog without any consistent reasoning")
+
+`create_ticket` takes a column name, and all an agent knew about a column was its name. BACKLOG and
+TODO are two words for "later" to anyone who is not the user, so agents chose one at random.
+
+**`ColumnSettings.description: Option<String>`**, the user's own words, one line, at most
+`COLUMN_DESCRIPTION_MAX_BYTES` (300). It is saved in the column's `[[columns]]` table. `None`
+is today's behaviour, and an older build that drops it widens nothing, so there is **no schema
+bump**. The daemon runs `sanitize_column_description` (`scrub_cells` on one line, which also
+removes everything `scrub_text` would) before comparing and storing, so the bytes on disk are
+the bytes a tool returns.
+
+**Agents get it in a tool result, not in tool text.** `list_board` (the pre-check `create_ticket`
+already names) and `get_ticket` (a session's first call, and where `allowed_columns` lives) both
+carry `column_descriptions`: a map from column name to description, listing only described
+columns and absent when none are. It is a map beside `columns` and not objects inside it, so a
+shim from an older build still parses the answer. This is the note road: text the user wrote,
+returned when the agent asks. It is not a sentence mesimon adds to a conversation, so promise 3
+is untouched and the tool-text lint does not apply to it. The two tool descriptions gained one
+clause each saying that the map exists (get_ticket 803/820 bytes).
+
+**Considered and not taken.** Objects in `columns`, because an older shim would fail to parse
+them. A default description on the template columns, because that would be mesimon's words
+about the user's workflow. A sentence in `create_ticket`'s text, because the tool is at 813 of
+820 bytes and `list_board` is already where it sends the agent.
+
+**In the dialog.** `Description` is the first row of an existing column's dialog, above
+`Collapsed`. It is a text field in place: `describing: Option<EditBuffer>` beside `naming`, but
+the list stays open so the row keeps its place. Enter saves the whole settings struct, a blank
+field clears the description, and Esc drops the edit. The field joins `text_field` and
+`on_paste`. `ColumnSettings::summary` prints `about: <words>` for doctor.
+
+**Tests.** `column_description_is_one_scrubbed_bounded_line` (core);
+`the_description_row_edits_in_place_and_blank_clears` (TUI); the store round-trip carries the
+field to disk; `column_description_e2e` sets dirty words over the wire and reads them back
+through the real `mesimon mcp` shim from both tools, and checks that clearing them removes the
+key. Golden `column_settings_120x30` reminted with the new row.

@@ -1629,6 +1629,11 @@ pub struct AgentTicketView {
     /// result data instead of permanent context.
     #[serde(default)]
     pub allowed_columns: Vec<String>,
+    /// What each column is for, in the user's words (T-467), keyed by column
+    /// name; a column with no description is absent. Beside
+    /// `allowed_columns` because a move is where a column's meaning matters.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub column_descriptions: std::collections::BTreeMap<String, String>,
     /// What the board does to this ticket on its own (T-376): the automove
     /// rules of the column it sits in NOW, read off `ColumnSettings`. An
     /// agent that sees `on_done: "REVIEW"` knows ending its turn IS the move,
@@ -1763,6 +1768,12 @@ pub struct AgentTicketRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentBoardView {
     pub columns: Vec<String>,
+    /// What each column is for, in the user's words (T-467): `get_ticket`'s
+    /// map, here for the `create_ticket` that `list_board` is the pre-check
+    /// of. A map beside `columns` rather than objects in it, so a shim from
+    /// before the field still parses the answer.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub column_descriptions: std::collections::BTreeMap<String, String>,
     pub tickets: Vec<AgentTicketRow>,
     #[serde(default)]
     pub board_version: u64,
@@ -2455,6 +2466,7 @@ mod tests {
             merge_state: Some("ahead".into()),
             repos: vec![],
             allowed_columns: vec![],
+            column_descriptions: Default::default(),
             automove: AgentAutomoveView::default(),
             tags: vec![],
             allowed_tags: vec![],
@@ -2466,14 +2478,18 @@ mod tests {
             seen: None,
         };
         assert!(!serde_json::to_string(&t).unwrap().contains("repos"));
+        // A board with no column described says nothing about it (T-467).
+        assert!(!serde_json::to_string(&t).unwrap().contains("column_descriptions"));
         t.repos = vec![AgentRepoView {
             name: "api".into(),
             base: "main".into(),
             merge_state: "ahead".into(),
         }];
+        t.column_descriptions.insert("BACKLOG".into(), "someday".into());
         let back: AgentTicketView =
             serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
         assert_eq!(back.repos, t.repos);
+        assert_eq!(back.column_descriptions, t.column_descriptions);
     }
 
     /// `Notice.kind` is a String precisely so a kind this build has never heard
