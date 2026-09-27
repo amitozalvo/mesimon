@@ -129,8 +129,8 @@ Additional targeted gates:
   never publish as part of an ordinary development task.
 - Homebrew formula: `ci/homebrew/mesimon.rb` is the template `release.sh` fills and pushes to
   `amitozalvo/homebrew-tap`; its header gives the local-tap check for a change.
-- README demo: `assets/demo/record.sh` re-records `assets/demo.gif` (needs `vhs`) after a
-  change the recording shows.
+- README GIFs: `assets/demo/record.sh [tape]` re-records the clip `assets/demo/<tape>.tape`
+  names, `demo` (`assets/demo.gif`) by default (needs `vhs`), after a change the recording shows.
 
 Before handing off, run `git diff --check` and report which checks ran, which were skipped, and
 why. Never turn a skipped tmux integration into an implied pass.

@@ -5,6 +5,10 @@ Kubernetes is to containers, mesimon is to Claude Code and Codex. This repositor
 releases only. The source, and the full documentation, are at
 [amitozalvo/mesimon](https://github.com/amitozalvo/mesimon).
 
+Your agent is the real Claude Code or Codex, in its own terminal: step into it and you have the
+same prompt, the same slash commands and the same permission dialogs, and mesimon never sits
+between you and it.
+
 **Alpha.** It works and it is used every day, and it will change under you.
 
 ## Install

@@ -23,13 +23,22 @@ TAPE=${1:-demo}
 SANDBOX=$(mktemp -d /tmp/msmn-demo.XXXXXX)
 REPO=$SANDBOX/shortlink
 RT=
+DAEMON=
 
 cleanup() {
     python3 -B "$HERE/seed.py" stop "$REPO" 2>/dev/null || true
-    sleep 1
+    # The daemon's last writes land in the sandbox; let it finish them.
+    n=0
+    while [ -n "$DAEMON" ] && kill -0 "$DAEMON" 2>/dev/null && [ "$n" -lt 50 ]; do
+        sleep 0.1
+        n=$((n + 1))
+    done
     [ -n "$RT" ] && [ -S "$RT/tmux.sock" ] && tmux -S "$RT/tmux.sock" kill-server 2>/dev/null || true
     [ -n "$RT" ] && rm -rf "$RT"
-    rm -rf "$SANDBOX"
+    # Something else on its way out (the browser VHS drove, which keeps its
+    # profile under this HOME) can still write mid-removal; a second pass
+    # takes what it left.
+    rm -rf "$SANDBOX" 2>/dev/null || { sleep 1; rm -rf "$SANDBOX"; }
 }
 trap cleanup EXIT INT TERM
 
@@ -69,6 +78,7 @@ export DEMO_REPO=$REPO
 export DEMO_TERM=$HERE/kitty-term.py
 
 "$MESIMON" daemon --repo "$REPO" >"$SANDBOX/daemon.out" 2>&1 &
+DAEMON=$!
 python3 -B "$HERE/seed.py" board "$REPO" "$TAPE"
 
 cd "$HERE"

@@ -116,10 +116,20 @@ marked; `tab` takes them out again.
 
 In the new-ticket composer, `shift-tab` cycles between the shared checkout and a dedicated
 worktree; that choice locks once a session exists. On a ticket page: `c` starts an agent session,
-`!` opens a terminal in the ticket's worktree or checkout, and `enter` focuses a live session —
-that hands your whole terminal over. Detach with `ctrl-]` (or `ctrl-5`) and you are back where
-you were. `v` shows the diff once there is a worktree, and `m` on the branch line merges it:
+`!` opens a terminal in the ticket's worktree or checkout, and `enter` steps into a live session:
+its own terminal takes over your whole screen. `ctrl-]` (or `ctrl-5`) steps back out to where you
+were. `v` shows the diff once there is a worktree, and `m` on the branch line merges it:
 fast-forward only, so mesimon never mints a merge commit.
+
+What you step into is the agent itself: Claude Code or Codex exactly as you run it without
+mesimon, with the same prompt, the same slash commands and the same permission dialogs. Type to
+it, answer its questions, interrupt it: mesimon never sits between you and it.
+
+![From a ticket page into the agent's own terminal, a message typed to it, and back to the board](../assets/demo/agent.gif)
+
+<sub>`enter` steps into the agent's own terminal, where you type to it as you always do, and
+`ctrl-]` steps back out while it keeps working (the agent here is a scripted stand-in; yours is
+the real Claude Code or Codex).</sub>
 
 The board is deliberately quiet — exactly one saturated colour exists, and it means *this
 session is waiting on you*.

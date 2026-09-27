@@ -4,6 +4,10 @@
 board that runs your coding agents. Like Kubernetes is to containers, mesimon is to Claude Code
 and Codex.
 
+Your agent is the real Claude Code or Codex, in its own terminal: step into it and you have the
+same prompt, the same slash commands and the same permission dialogs, and mesimon never sits
+between you and it.
+
 ![Starting an agent from the board, answering it from the ticket page, and merging its branch](assets/demo.gif)
 
 <sub>Start an agent with Shift+Enter on the board. When its card lights, open the ticket and
@@ -69,6 +73,15 @@ and type the task into it.
 [Stopping everything](docs/USING.md#stopping-everything) says how to.
 
 ## Tour
+
+**Your agent, your way.** `enter` on a ticket with a working agent takes you into the agent
+itself: Claude Code or Codex, exactly as you know it.
+
+![From a ticket page into the agent's own terminal, a message typed to it, and back to the board](assets/demo/agent.gif)
+
+<sub>`enter` steps into the agent's own terminal, where you type to it as you always do, and
+`ctrl-]` steps back out while it keeps working (the agent here is a scripted stand-in; yours is
+the real Claude Code or Codex).</sub>
 
 **The ticket page.** `tab` on a card writes its description, and `ctrl-k` lists the links in
 its notes.

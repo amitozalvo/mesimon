@@ -94,8 +94,9 @@ PAGE_BOARD = [
     for c, t, g, d in TICKETS
 ]
 
-BOARDS = {"demo": TICKETS, "search": SEARCH, "crown": CROWN_BOARD,
-          "ticket-page": PAGE_BOARD}
+# agent.tape steps into BUSY's agent, so it needs no board of its own.
+BOARDS = {"demo": TICKETS, "agent": TICKETS, "search": SEARCH,
+          "crown": CROWN_BOARD, "ticket-page": PAGE_BOARD}
 # The ticket whose agent is already at work, where it is not BUSY.
 AT_WORK = {"crown": CROWN}
 
@@ -144,6 +145,9 @@ def board(repo, tape="demo"):
             w.ask({"cmd": "set_tag", "id": made["id"], "group": 1, "name": tag})
     # The first-run offer to write an agent brief would sit in the header.
     w.ask({"cmd": "ignore_brief_offer"})
+    # The first step into an agent practises the way back first; the person
+    # on the tape has done that once already (agent.tape steps in).
+    w.ask({"cmd": "gate_passed"})
     # One agent already at work, so the board opens with a spinner on it.
     at_work = ids[AT_WORK.get(tape, BUSY)]
     w.ask({"cmd": "spawn_session", "ticket": at_work, "kind": "claude",

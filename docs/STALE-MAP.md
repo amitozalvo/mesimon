@@ -14688,3 +14688,58 @@ Tests: `background::an_armed_command_outranks_its_shell_label`,
 (the captured sequence); `attention::a_command_park_falls_back_to_monitoring`;
 `state_lab_e2e::a_background_command_parks_the_lead_through_a_nested_stop`, which fails with the
 nested-snapshot guard removed.
+
+## The tour opens with stepping into the agent (T-480, 2026-09-27, "Tour clip + README line: your agent, your way — step into the real Claude Code / Codex and back")
+
+The README says under its pitch that the agent is the real Claude Code or Codex in its own
+terminal, with its own prompt, slash commands and permission dialogs, and that mesimon never sits
+between you and it; `ci/releases-readme.md` carries the same line. `assets/demo/agent.gif` is the
+first entry of the README's Tour, ahead of the ticket page, search and the crown, and it sits in
+`docs/USING.md` beside the ticket page's `enter`, which that paragraph now calls stepping in and
+out rather than focusing and detaching. The reader never meets the word tmux.
+
+The take is 9.7 s and about 350 KB at the demo's 1132×590: the board with one agent working,
+`space` to its ticket page and the live preview, `enter` into the agent's pane, a message typed
+there, the agent's answer, `ctrl-]` back to the page, `q` to the board with the card still
+spinning. It runs on T-477's `record.sh [tape]` and seeds `demo`'s board, since the working agent
+it steps into is already on it.
+
+- **Space, then Enter.** The brief read the board's Enter as opening the page. On a card with a
+  live agent it goes straight in (`go to the agent`); the take opens the page with `space` so the
+  preview is seen first, then uses the page's `enter` (`focus`), as the brief asked.
+- **The stand-in, not the real claude.** A sandbox `HOME` has no sign-in of its own. The only one
+  on the machine is the author's, in the login keychain, which a sandboxed claude would read and
+  could refresh. The recording session's auto-mode classifier refused even a read-only probe of
+  that entry, so the take uses the stub and the caption says so. A real take needs a sign-in made
+  for the sandbox (a token from `claude setup-token` is the likely road) and a seeded
+  `.claude.json` that has onboarding done and the sandbox trusted. Neither exists yet.
+- **The stub has a prompt line.** `Pane` in `stub-claude.py` keeps the output above a dim rule
+  that reads `demo stand-in for claude · scripted, no model`, and a `>` line that echoes what is
+  typed or pasted; Enter submits it (transcript line, `UserPromptSubmit`). The working agent
+  answers `ASIDE` and goes on working. A pane is born at tmux's default size and resizes when the
+  board attaches, so SIGWINCH redraws the prompt (a wakeup fd, because PEP 475 retries `select`
+  across a signal).
+- **Raw before `SessionStart`.** The daemon pastes the first prompt on that edge. The old stub
+  sent it before leaving cooked mode, and the tty echoed the title onto the pane's first row;
+  `demo.gif` never steps in, so it never showed.
+- **The pane title says `demo stand-in`.** The startup probe needs a title, any title
+  (`Signal::SpawnProbe { osc0 }`), and the board shows it as the session's name on the rail and
+  in the status crumb. `✳ Claude Code` put Claude Code's name on a stand-in. `demo.gif` was not
+  re-recorded; its next take shows the new name.
+- **The practice screen is passed over the wire.** The first step into any session opens the
+  detach practice until the daemon hears `gate_passed`; `seed.py` sends it beside
+  `ignore_brief_offer`.
+- **Cleanup waits for the daemon.** `record.sh` removed the sandbox a fixed second after asking
+  the daemon to stop, and a failed take left one behind. It now waits for the daemon's pid, and a
+  second removal pass takes what VHS's browser, whose profile lives under the sandbox `HOME`,
+  wrote on its way out.
+
+**Tests.** Six `agent` takes: the first two stopped on the practice screen, the third showed
+the echoed title and the old name, the last three were clean, the last on the tree rebased over
+T-477; its frames were checked by eye at 1, 2 and 4 fps. A deliberately failing tape left no
+sandbox, runtime dir or process. Rebased over T-478 and T-479, the stub keeps its prompt line
+and gains their crown and note-writing agents: their tool lines drop `⏺` for the bold tool name
+like the rest, `WORK`'s steps carry their tool, and a pause reads the pane rather than sleeping.
+All five tapes then ran on that tree and passed; `crown` and `ticket-page` were checked frame by
+frame. Only `agent.gif` was kept; the other four still name the session `✳ Claude Code` until
+their next take.
