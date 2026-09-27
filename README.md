@@ -68,6 +68,14 @@ and type the task into it.
 `?` lists every key on the screen you are on. Closing the board does not stop your agents:
 [Stopping everything](docs/USING.md#stopping-everything) says how to.
 
+## Tour
+
+**Search.** `/` finds any ticket by a few letters of its title, key, column or tag.
+
+![Typing csv into the search picker narrows fifteen tickets to one, and enter puts the cursor on its card](assets/demo/search.gif)
+
+<sub>Three letters narrow fifteen tickets to one, and `enter` scrolls the board to its card.</sub>
+
 ## Three promises
 
 1. **A strict write allowlist.** mesimon writes to a short list of paths, every one named, and

@@ -109,6 +109,10 @@ list narrows as you go; `ctrl-n` / `ctrl-p` walk it, `enter` puts the cursor on 
 leaves the board where it was. Archived tickets are in the list, ranked under every live one and
 marked; `tab` takes them out again.
 
+![Typing csv into the search picker narrows fifteen tickets to one, and enter puts the cursor on its card](../assets/demo/search.gif)
+
+<sub>Three letters narrow fifteen tickets to one, and `enter` scrolls the board to its card.</sub>
+
 In the new-ticket composer, `shift-tab` cycles between the shared checkout and a dedicated
 worktree; that choice locks once a session exists. On a ticket page: `c` starts an agent session,
 `!` opens a terminal in the ticket's worktree or checkout, and `enter` focuses a live session —

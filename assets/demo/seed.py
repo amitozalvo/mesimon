@@ -38,7 +38,34 @@ TICKETS = [
     ("DONE", "Set up CI", None, "Run the tests on every push."),
 ]
 
-BOARDS = {"demo": TICKETS}
+# search.tape: a TODO column longer than the screen, so the ticket the tape
+# looks for, the last one, starts below the fold. `csv` narrows the picker
+# 15, 9, 4, 1 as it is typed; a new title must keep that true.
+SEARCH = [
+    ("TODO", "Custom slugs", "FEATURE", "Let a link ask for its own slug."),
+    ("TODO", "Expire old links", "FEATURE",
+     "A link nobody clicked for 30 days should 404 and free its slug."),
+    ("TODO", "Document config", None,
+     "Every key in shortlink.toml, its default, and an example."),
+    ("TODO", "QR code per link", "FEATURE", "An SVG QR code at /<slug>.svg."),
+    ("TODO", "Admin login", "FEATURE", "Protect /admin with a password."),
+    ("TODO", "Double redirect", "BUG",
+     "A slug that points at another slug redirects twice."),
+    ("TODO", "Clicks per day", "FEATURE", "A per-day breakdown in stats."),
+    ("TODO", "Trim slug spaces", "BUG", "' abc' and 'abc' are two slugs."),
+    ("TODO", "Bulk import", "FEATURE", "Shorten every URL in a text file."),
+    ("TODO", "API keys", "FEATURE", "One key per script, revocable."),
+    ("TODO", "Webhook on click", "FEATURE", "POST to a URL on every click."),
+    ("TODO", "Export as CSV", "FEATURE",
+     "Every link with its clicks, as CSV, for the spreadsheet people."),
+    ("IN PROGRESS", BUSY, "FEATURE",
+     "At most 20 new links a minute per client IP; answer 429 past that."),
+    ("REVIEW", "Fix slash 404", "BUG",
+     "GET /abc/ should redirect like GET /abc."),
+    ("DONE", "Set up CI", None, "Run the tests on every push."),
+]
+
+BOARDS = {"demo": TICKETS, "search": SEARCH}
 
 
 def sock_path(repo):

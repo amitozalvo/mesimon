@@ -14482,3 +14482,29 @@ then is refused. `record.sh` sets `MESIMON_WT_REFRESH_TICKS=8`, so the merge off
 **Tests.** One trial ran in a detached tmux, then two VHS takes. The first stopped at the
 merge dialog because of the early `m` above. The second is the committed GIF: 34 s and
 0.5 MB. Its frames were checked by eye.
+
+## Tour clip: search (T-477, 2026-09-27, user: "we need more to showcase more features such as … search")
+
+`assets/demo/search.gif` is 8 s, 1132×590 and about 260 KB, recorded by VHS from
+`assets/demo/search.tape` with T-461's kit: same sandbox, stub agent, theme and size. The README
+has a **Tour** section after First run with one line, the GIF and a one-sentence caption;
+`docs/USING.md` shows the same GIF under the search paragraph.
+
+**`record.sh [tape]`.** The script records `<tape>.tape` (default `demo`) and `seed.py board
+<repo> <tape>` seeds that tape's list from `BOARDS`. Each tape's `Output` line decides where its
+GIF goes. The "your agent, your way" clip ticket (T-480) was to add the tape argument first; it
+had not committed when this ticket needed it, so the change is here in its own commit, and a
+rebase onto T-480's version should keep whichever landed first.
+
+**The board is lopsided on purpose.** A card is one row plus a blank, so at 30 rows a column
+shows ten before `↓ 2 below`. "A title not on the first screen" with fifteen tickets therefore
+means one long column: TODO holds twelve, and the target, `Export as CSV`, is the last. The
+query `csv` narrows the picker 15 → 9 → 4 → 1, one letter at a time; the fuzzy match runs over
+key, title, column and tags together, so a new title in `SEARCH` can change those counts.
+
+**The tape waits for `GiB` before it shows.** The header's memory reading arrives a few seconds
+after the agent starts spinning, and in the first take it appeared in the middle of typing.
+
+**Tests.** Two VHS takes; frames checked by eye at each stage (board, 15/15, 9/15, 4/15, 1/15,
+the landed card with `↑ 2 above`). `/tmp/mesimon-<uid>` held the same directories before and
+after each run. No code changed.
