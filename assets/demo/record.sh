@@ -1,7 +1,8 @@
 #!/bin/sh
-# Re-record the README demo, assets/demo.gif, with VHS.
+# Re-record one of the README's clips with VHS: the demo (assets/demo.gif)
+# by default, or the tape named, e.g. `search` for assets/demo/search.gif.
 #
-#   cargo build --release -p mesimon && assets/demo/record.sh
+#   cargo build --release -p mesimon && assets/demo/record.sh [tape]
 #
 # Needs vhs (brew install vhs), python3 and tmux. Everything the run touches
 # lives in a throwaway sandbox: its own HOME (so its own state dir and
@@ -16,6 +17,8 @@ ROOT=$(cd "$HERE/../.." && pwd)
 MESIMON=${MESIMON:-$ROOT/target/release/mesimon}
 [ -x "$MESIMON" ] || { echo "record: no $MESIMON; cargo build --release -p mesimon" >&2; exit 1; }
 command -v vhs >/dev/null || { echo "record: vhs missing; brew install vhs" >&2; exit 1; }
+TAPE=${1:-demo}
+[ -f "$HERE/$TAPE.tape" ] || { echo "record: no tape $HERE/$TAPE.tape" >&2; exit 1; }
 
 SANDBOX=$(mktemp -d /tmp/msmn-demo.XXXXXX)
 REPO=$SANDBOX/shortlink
@@ -63,8 +66,8 @@ export DEMO_REPO=$REPO
 export DEMO_TERM=$HERE/kitty-term.py
 
 "$MESIMON" daemon --repo "$REPO" >"$SANDBOX/daemon.out" 2>&1 &
-python3 -B "$HERE/seed.py" board "$REPO"
+python3 -B "$HERE/seed.py" board "$REPO" "$TAPE"
 
 cd "$HERE"
-vhs demo.tape
-ls -l "$ROOT/assets/demo.gif"
+vhs "$TAPE.tape"
+ls -l "$(sed -n 's/^Output //p' "$TAPE.tape")"

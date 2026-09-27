@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Seed the demo board, or stop its daemon, over the daemon's own socket.
 
-Usage: seed.py board <repo>   create the demo's tickets and start the
-                              background agent on one of them
-       seed.py stop <repo>    shut the demo daemon down
+Usage: seed.py board <repo> [tape]   create the tape's tickets (demo's by
+                                     default) and start the background
+                                     agent on one of them
+       seed.py stop <repo>           shut the demo daemon down
 
 Speaks the wire protocol the TUI speaks: newline-delimited JSON
 `{"principal", "command"}` envelopes to `orch.sock`, a `hello` first.
@@ -37,6 +38,8 @@ TICKETS = [
     ("DONE", "Set up CI", None, "Run the tests on every push."),
 ]
 
+BOARDS = {"demo": TICKETS}
+
 
 def sock_path(repo):
     canon = os.path.realpath(repo).encode()
@@ -69,10 +72,10 @@ class Wire:
         return reply
 
 
-def board(repo):
+def board(repo, tape="demo"):
     w = Wire(repo)
     ids = {}
-    for column, title, tag, description in TICKETS:
+    for column, title, tag, description in BOARDS[tape]:
         made = w.ask({"cmd": "create_ticket", "column": column, "title": title,
                       "workspace": "worktree"})
         ids[title] = made["id"]
@@ -95,6 +98,12 @@ def stop(repo):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] not in ("board", "stop"):
+    args = sys.argv[1:]
+    if args[:1] == ["board"] and len(args) in (2, 3):
+        if args[2:] and args[2] not in BOARDS:
+            sys.exit(f"seed: no board for tape {args[2]!r}; add one to BOARDS")
+        board(*args[1:])
+    elif args[:1] == ["stop"] and len(args) == 2:
+        stop(args[1])
+    else:
         sys.exit(__doc__)
-    {"board": board, "stop": stop}[sys.argv[1]](sys.argv[2])
