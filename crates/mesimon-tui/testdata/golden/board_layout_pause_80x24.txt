@@ -20,5 +20,5 @@
 
 
 
-  T-3 Fix OSC-11 detection ∙ created >1y ago
+ T-3 Fix OSC-11 detection ∙ created >1y ago
  keyboard is in Hebrew — switch to English ∙ keys paused ∙ esc dismisses

@@ -16,5 +16,5 @@
 
 
 
-  T-11 Load 11 ∙ created >1y ago
+ T-11 Load 11 ∙ created >1y ago
  enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename                          esc menu ∙ ? keys

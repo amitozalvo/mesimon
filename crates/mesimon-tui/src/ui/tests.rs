@@ -3478,22 +3478,22 @@ fn test_the_hover_row_names_the_cursor_card() {
     let mut app = app_graphite(b);
     (app.cursor_col, app.cursor_row) = (0, Some(1));
     let hover = |app: &App, w: u16| render(app, w, 30)[28].trim_end().to_string();
-    assert_eq!(hover(&app, 120), "  T-1024 Keymap validator ∙ created >1y ago by agent on T-2048");
+    assert_eq!(hover(&app, 120), " T-1024 Keymap validator ∙ created >1y ago by agent on T-2048");
     // Grey, and the title a step above its key and clause.
     let buf = cells(&app, 120, 30);
-    assert_eq!(buf[(2, 28)].fg, app.theme.rest.dim2, "the key");
-    assert_eq!(buf[(9, 28)].fg, app.theme.rest.dim1, "the title");
+    assert_eq!(buf[(1, 28)].fg, app.theme.rest.dim2, "the key");
+    assert_eq!(buf[(8, 28)].fg, app.theme.rest.dim1, "the title");
     // At 60 cells the clause would leave the title under its floor: it goes.
-    assert_eq!(hover(&app, 60), "  T-1024 Keymap validator");
+    assert_eq!(hover(&app, 60), " T-1024 Keymap validator");
     // A person's ticket names no author, as on the page.
     app.cursor_row = Some(0);
-    assert_eq!(hover(&app, 120), "  T-1 Decay treatments ∙ created >1y ago");
+    assert_eq!(hover(&app, 120), " T-1 Decay treatments ∙ created >1y ago");
     // A title the card cuts reads whole here, and one too long for the row
     // is cut before the clause is.
     app.board.tickets[0].title = "Decay treatments for every ramp of every flavor".into();
     assert_eq!(
         hover(&app, 120),
-        "  T-1 Decay treatments for every ramp of every flavor ∙ created >1y ago"
+        " T-1 Decay treatments for every ramp of every flavor ∙ created >1y ago"
     );
     let narrow = hover(&app, 64);
     assert!(narrow.ends_with("~ ∙ created >1y ago"), "{narrow:?}");
@@ -3511,7 +3511,15 @@ fn test_the_hover_row_names_the_cursor_card() {
     app.mode = Mode::Normal;
     app.notices =
         vec![mesimon_core::command::Notice::new("shell_env", "could not read the login shell")];
-    assert_eq!(hover(&app, 120), "  could not read the login shell");
+    assert_eq!(hover(&app, 120), " could not read the login shell");
+    // The row starts where the footer does (T-473), and a notice cut to fit
+    // keeps its count: the tail is inside the budget, not pushed off.
+    assert_eq!(render(&app, 120, 30)[29].find(|c: char| c != ' '), Some(1), "the footer's inset");
+    app.notices[0].text = "could not read the login shell: zsh exited 1 after 2s".into();
+    app.notices.push(mesimon_core::command::Notice::new("other", "a second one"));
+    let narrow = hover(&app, 60);
+    assert!(narrow.ends_with("~ ∙ +1 more"), "{narrow:?}");
+    assert!(narrow.width() <= 59, "a cell of padding: {narrow:?}");
 }
 
 #[test]

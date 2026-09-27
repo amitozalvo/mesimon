@@ -26,5 +26,5 @@
 
 
 
-  T-3 Fix OSC-11 detection ∙ created >1y ago
+ T-3 Fix OSC-11 detection ∙ created >1y ago
  its sessions are awake — sleep them first (x)

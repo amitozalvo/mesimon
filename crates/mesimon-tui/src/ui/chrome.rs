@@ -358,10 +358,13 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
         if let Some(n) = app.notices.first() {
             let more = app.notices.len();
             let tail = if more > 1 { format!(" ∙ +{} more", more - 1) } else { String::new() };
+            // One cell in from each edge, the footer's inset, and the tail
+            // is counted so a long notice never pushes it off the row.
+            let room = (area.width as usize).saturating_sub(2 + tail.width());
             // The value step, not the accent: this is a warning, and the one
             // saturated colour stays reserved for needs-you (L3).
             let line = Line::from(Span::styled(
-                format!("  {}{tail}", truncate(&n.text, area.width.saturating_sub(4) as usize)),
+                format!(" {}{tail}", truncate(&n.text, room)),
                 app.theme.base(),
             ));
             f.render_widget(Paragraph::new(line), area);
@@ -377,7 +380,7 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
     };
     let line = Line::from(Span::styled(
         format!(
-            "  deleted \"{}\"{} ∙ u to undo ({}s)",
+            " deleted \"{}\"{} ∙ u to undo ({}s)",
             truncate(&g.title, 30),
             sessions,
             g.expires_in_secs
@@ -407,7 +410,7 @@ fn hover_line(app: &App, width: usize) -> Option<Line<'static>> {
     }
     let ticket = app.selected_ticket()?;
     let theme = &app.theme;
-    let key = format!("  {} ", ticket.short_key);
+    let key = format!(" {} ", ticket.short_key);
     let mut stats = super::ticket::created_clause(ticket, app, mesimon_core::clock::now_ms())
         .map(|c| format!(" ∙ {c}"))
         .unwrap_or_default();

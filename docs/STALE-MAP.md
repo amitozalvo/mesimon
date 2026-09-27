@@ -14194,3 +14194,22 @@ card's title or key now stop above the advisory row: `test_the_peek_names_the_ti
 asserts the hover row names the key), `test_clipped_columns_keep_whole_cards_and_count_hidden_tickets`
 and `the_crowning_sweeps_the_title_on_the_card_and_the_page`. 35 board goldens reminted, each
 by one line: the blank advisory row became the hover line.
+
+## The advisory row starts at cell 1, the footer's inset (T-473, 2026-09-27)
+
+The advisory row sits directly on the footer, and its text started at cell 2 while the footer's
+starts at cell 1, so the two stacked rows had two left edges. The user chose the footer's edge
+after T-471 shipped the hover line. Shipped, in `chrome.rs`, all three things the row says
+together, since moving one leaves the row with two edges of its own:
+
+- **Grace:** ` deleted "…" ∙ u to undo (9s)`.
+- **Notice:** ` could not read the login shell`. Its budget was `width - 4` and did not count
+  the ` ∙ +N more` tail, so a long notice pushed the count off the row. It is now one cell in
+  from each edge, the tail counted: `width - 2 - tail`, the title cut first.
+- **Hover line** (`hover_line`): ` T-12 Title ∙ …`. Its budget reads `key.width()`, so it
+  followed on its own; the right edge keeps its one cell.
+
+**Tests.** `test_the_hover_row_names_the_cursor_card` asserts the one-space strings, moves its
+two colour probes one cell left, pins the row's first cell to the footer's (1) and cuts a
+two-notice row at 60 cells with the tail kept. 36 goldens reminted, each one line losing one
+leading space: the 35 hover rows from T-471 and `train_blocked_120x30`'s notice.

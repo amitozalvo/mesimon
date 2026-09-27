@@ -26,5 +26,5 @@
 
 
 
-  merge train held for T-5 — uncommitted changes in the main checkout — commit or stash them first
+ merge train held for T-5 — uncommitted changes in the main checkout — commit or stash them first
  enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename                          esc menu ∙ ? keys
