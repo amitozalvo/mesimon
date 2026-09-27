@@ -394,7 +394,7 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
 const HOVER_TITLE_FLOOR: usize = 16;
 
 /// The card under the cursor, named in full (T-471): `T-12 Title ∙ created
-/// 2d ago by agent on T-9`. A card cuts its title to its column and shows
+/// 2d ago by T-9`. A card cuts its title to its column and shows
 /// its key only when opened (T-410); this row has the frame's width, so a
 /// key a session quotes and a title the card cut both read without leaving
 /// the board. The clause is the ticket page's own (`ticket::created_clause`).
@@ -403,7 +403,7 @@ const HOVER_TITLE_FLOOR: usize = 16;
 /// those report something that happened and this repeats what the cursor
 /// already points at. Only while the card is drawn as the cursor card — a
 /// mode, a dialog or a header under the cursor leaves the row blank.
-fn hover_line(app: &App, width: usize) -> Option<Line<'static>> {
+pub(super) fn hover_line(app: &App, width: usize) -> Option<Line<'static>> {
     let at_rest = matches!(app.screen, Screen::Board) && matches!(app.mode, Mode::Normal);
     if !at_rest || app.header_focus || app.tag_armed.is_some() {
         return None;

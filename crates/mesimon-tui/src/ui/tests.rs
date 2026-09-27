@@ -1699,12 +1699,13 @@ fn ticket_page_names_an_agent_creator() {
     assert!(after.contains("created >1y ago by agent"), "{after}");
     assert!(!after.contains(" on T-"), "{after}");
 
-    // The parent ticket names itself by key while it is on the board…
+    // The parent ticket stands for the author while it is on the board (T-475)…
     let parent_key = app.board.ticket(ulid_n(4)).unwrap().short_key.clone();
     let t = app.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
     t.created_from = Some(ulid_n(4));
     let with_parent = render(&app, 120, 30).join("\n");
-    assert!(with_parent.contains(&format!("by agent on {parent_key}")), "{with_parent}");
+    assert!(with_parent.contains(&format!("created >1y ago by {parent_key}")), "{with_parent}");
+    assert!(!with_parent.contains("by agent"), "{with_parent}");
 
     // …and a deleted parent takes its key with it, leaving the author.
     app.board.tickets.retain(|t| t.id != ulid_n(4));
@@ -3478,13 +3479,16 @@ fn test_the_hover_row_names_the_cursor_card() {
     let mut app = app_graphite(b);
     (app.cursor_col, app.cursor_row) = (0, Some(1));
     let hover = |app: &App, w: u16| render(app, w, 30)[28].trim_end().to_string();
-    assert_eq!(hover(&app, 120), " T-1024 Keymap validator ∙ created >1y ago by agent on T-2048");
+    assert_eq!(hover(&app, 120), " T-1024 Keymap validator ∙ created >1y ago by T-2048");
     // Grey, and the title a step above its key and clause.
     let buf = cells(&app, 120, 30);
     assert_eq!(buf[(1, 28)].fg, app.theme.rest.dim2, "the key");
     assert_eq!(buf[(8, 28)].fg, app.theme.rest.dim1, "the title");
-    // At 60 cells the clause would leave the title under its floor: it goes.
-    assert_eq!(hover(&app, 60), " T-1024 Keymap validator");
+    // The board's 60-cell floor keeps the whole clause since T-475 shortened
+    // it; on a narrower row it would leave the title under its floor: it goes.
+    assert_eq!(hover(&app, 60), " T-1024 Keymap validator ∙ created >1y ago by T-2048");
+    let row = |w| super::chrome::hover_line(&app, w).map(|l| l.to_string()).unwrap_or_default();
+    assert_eq!(row(50), " T-1024 Keymap validator");
     // A person's ticket names no author, as on the page.
     app.cursor_row = Some(0);
     assert_eq!(hover(&app, 120), " T-1 Decay treatments ∙ created >1y ago");

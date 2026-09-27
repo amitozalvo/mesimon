@@ -14347,3 +14347,18 @@ ahead…`), then `MergeTicket` and the merged notice's turn plus one more idle t
 prompted exactly twice. Then new work is a third wake, and a person's `MergeToAgent Rebase`
 followed by a real rebase to a new tip is silent. With the `Merge` tag removed, that last
 assertion fails.
+
+## An agent's ticket is created by its parent's key (T-475, 2026-09-27, user: "remove \"by agent on [ticketId]\" and use \"by [ticketId]\"")
+
+`ticket::created_clause` said `created 2d ago by agent on T-9` for a ticket an agent filed while
+working on T-9. Every agent-filed ticket carries the `agent` word, so it added nothing beside the
+key. Shipped: the parent's key takes the author's place, `created 2d ago by T-9`, on the ticket
+page's state line and the board's hover row (T-471), which share the clause. Once the parent is
+off the board the clause falls back to the author word, `by agent`, as before. A person's ticket
+still names no author.
+
+**Tests.** `ticket_page_names_an_agent_creator` asserts `by T-…` with no `by agent` beside it,
+and the orphan's `by agent`. `test_the_hover_row_names_the_cursor_card` expects the shorter
+clause. That clause now fits at the board's 60-cell floor, so the test asserts the whole line
+there and checks the drop at 50 cells by calling `chrome::hover_line` directly (now
+`pub(super)`). No golden held the clause.

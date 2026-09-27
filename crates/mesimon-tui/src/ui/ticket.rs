@@ -69,23 +69,24 @@ pub(super) fn author_word(by: &str, _app: &App) -> String {
     }
 }
 
-/// `created 2d ago by agent on T-241`: the ticket's age, and since T-253 its
-/// author only when that was NOT the person reading — with the ticket the
-/// agent was working on while that ticket is still on the board. `None`
-/// when the stamp does not parse. The ticket page's state line and the
-/// board's hover row (T-471) say it in these same words.
+/// `created 2d ago by T-241`: the ticket's age, and since T-253 its author
+/// only when that was NOT the person reading — named by the ticket the
+/// agent was working on while that ticket is still on the board (T-475),
+/// and as `agent` once it is gone. `None` when the stamp does not parse.
+/// The ticket page's state line and the board's hover row (T-471) say it in
+/// these same words.
 pub(super) fn created_clause(
     ticket: &mesimon_core::board::Ticket,
     app: &App,
     now: u64,
 ) -> Option<String> {
     let by = if ticket.agent_created() {
-        let on = ticket
+        let who = ticket
             .created_from
             .and_then(|from| app.board.ticket(from))
-            .map(|parent| format!(" on {}", parent.short_key))
-            .unwrap_or_default();
-        format!(" by {}{on}", author_word(&ticket.created_by, app))
+            .map(|parent| parent.short_key.clone())
+            .unwrap_or_else(|| author_word(&ticket.created_by, app));
+        format!(" by {who}")
     } else {
         String::new()
     };
