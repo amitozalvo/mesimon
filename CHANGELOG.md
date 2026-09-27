@@ -6,6 +6,61 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.28 — 2026-09-28
+
+### Added
+
+- **mesimon is open source.** The code is public at
+  https://github.com/amitozalvo/mesimon under Apache-2.0, with a `SECURITY.md`
+  for private vulnerability reports. Binaries still install from
+  `mesimon-releases`; nothing changes for an existing install.
+- **Install with Homebrew: `brew install amitozalvo/tap/mesimon`.** It installs
+  the same published binaries as the curl installer; on macOS the bundled
+  `mesimon-tmux` is installed beside it, on Linux the distro's tmux is used.
+  A Homebrew-installed mesimon does not replace its own binary on an update
+  offer: the Esc menu row reads `Upgrade to <tag> with brew` and copies
+  `brew upgrade mesimon`, and `mesimon doctor` says `installed by Homebrew`.
+- **A column can carry a one-line description, and agents read it.** Set it
+  in the column's settings dialog (the first row, up to 300 bytes).
+  `list_board` and `get_ticket` return the descriptions, so an agent filing a
+  ticket can tell BACKLOG from TODO by your words instead of guessing.
+- **Shift+Enter on the ticket page asks the ticket's agent.** The same ask
+  field the board opens on a card appears under the page's content, and
+  Enter sends it without leaving the page.
+- **The row above the footer names the card under the cursor** —
+  `T-12 Title ∙ created 2d ago by T-9` — whenever no undo or notice is
+  showing. A ticket an agent filed reads `by T-9`, the ticket that agent was
+  working on, instead of `by agent on T-9`.
+- **The README has a recorded demo and a tour.** One take of starting an
+  agent, answering it and merging its branch, plus clips of search, the
+  crown and the ticket page. The README is rewritten for a newcomer; the
+  reference material moved to `docs/USING.md`, `docs/PROMISES.md` and
+  `docs/REMOTE-CONTROL.md`.
+
+### Changed
+
+- **Archiving DONE in bulk (the header's X offer) now removes merged
+  tickets' worktrees**, as archiving a single ticket already did. Earlier
+  bulk archives left every worktree, and its build output of several GB, on
+  disk; a sweep removes those too. Unmerged work keeps its worktree.
+- **The crown is woken by what happened to a ticket, not by every turn its
+  agents end:** a delivery (something new to merge), the answer to its own
+  `ask_agent`, and a raised hand. Each wake line names the change.
+- **The automatic-move fuse no longer trips on one agent's own turn
+  cadence.** A blown fuse lapses on its own after two quiet minutes, and its
+  notice names the ticket to move by hand to clear it sooner.
+- **The crown's `start_agent` answers `status: "started"` or
+  `"waiting_for_worktree"`** instead of `session_started: true/false`. A
+  start parked while the worktree is being cut is not a refusal; refusals
+  are errors.
+- **ratatui 0.30; building from source needs Rust 1.88.** This closes the
+  `lru` advisory (GHSA-rhfx-m35p-ff5j). Nothing visible changes.
+
+### Fixed
+
+- **The advisory row starts at the footer's left edge.** A long notice no
+  longer pushes its `+N more` count off the row.
+
 ## v0.1.0-alpha.27 — 2026-09-26
 
 ### Added
