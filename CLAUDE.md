@@ -44,7 +44,8 @@ user drive the real TUI. E2e tests are safe: they use their own `/tmp/msmn-e2e-*
 2. **`docs/STALE-MAP.md` is the design record**: what shipped, what was refuted, and why. Read
    it before changing something you did not build, and **append a block when you ship
    something** — that is how a decision survives.
-3. **The README's three promises bind** (see Boundaries). They are commitments to users.
+3. **The README's three promises bind** (see Boundaries). They are commitments to users; the
+   README gives each one line, and `docs/PROMISES.md` holds their full text.
 4. **The pre-code research corpus is not in this repository.** The ~346k-word planning corpus
    (`00-DECISIONS` through `19-tmux-backend-v01`, the proposals, the spikes and the agent-state
    research) was written before any code existed and the code has overtaken it; the author
@@ -326,7 +327,7 @@ never-writes-stdout invariant stays literally true. It is the 32nd entry — `Pr
 `<repo>/.mesimon` and the state dir. **`core/src/verdict.rs`'s `Verdict` has `Deny` and
 `NoOpinion` and no `Allow`, ever**; a repo-wide test asserts no source line puts `"allow"` or
 `"ask"` in a `permissionDecision` position. The decision is local and static from argv, so a
-dead daemon cannot make it fail open. **Bash is not hooked** and the README says so:
+dead daemon cannot make it fail open. **Bash is not hooked** and `docs/USING.md` says so:
 command-shape matching is an evasion hole.
 
 **The agent tier (T-84): eight tools, three named movers.** Every Claude session mesimon spawns
@@ -529,4 +530,5 @@ tags are unique and newest-first, and the top entry is `v{CARGO_PKG_VERSION}`.
   opt-in fetch updates, and nowhere else. No config mutation: `doctor` prints fixes and never
   applies them. **Zero prompt injection**: mesimon adds, removes and reorders no token of the
   conversation — the MCP tool definitions and the opt-in agent brief are the two named, consented
-  exceptions. Don't write code that violates them, and don't reword promise 1 unasked.
+  exceptions. Don't write code that violates them, and don't reword promise 1 unasked — its full text in
+  `docs/PROMISES.md` or its line in the README.

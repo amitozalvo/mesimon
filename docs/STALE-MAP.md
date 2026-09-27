@@ -14362,3 +14362,57 @@ and the orphan's `by agent`. `test_the_hover_row_names_the_cursor_card` expects 
 clause. That clause now fits at the board's 60-cell floor, so the test asserts the whole line
 there and checks the drop at 50 cells by calling `chrome::hover_line` directly (now
 `pub(super)`). No golden held the clause.
+
+## The README is written for a newcomer, and the depth moves to docs/ (T-472, 2026-09-27, user: "the readme is not written for humans right now, it's super technical and there's too much emphasis for decisions that should just be implicit.. it's not ready.")
+
+The README was 3,601 words and read as the design record: promise 1's fine print came before
+Install, and ticket numbers, D-numbers and the reasons for each decision were in the prose. It
+is now about 700 words: the pitch, the GIF with T-461's caption, a one-line alpha status that
+points at the CHANGELOG, five outcome bullets, install with the requirements in two sentences,
+a five-step first run, the three promises one line each, links, and the license.
+
+**Moved, not deleted.** Every line of the old README has a home:
+
+- `docs/PROMISES.md` holds the three promises word for word, except for the two fixes below.
+  Each promise is now a heading, so the README can link to it. A word-level diff against the
+  old README shows only that heading form and the two fixes. "What mesimon writes" and its two closing paragraphs follow, because the table
+  belongs with promise 1.
+- `docs/USING.md` holds requirements, installing, updating, the board, keyboard layouts and
+  terminals, agents and follow-ups, sleeping idle agents, keeping the machine awake, pictures in
+  notes, what agents can see, stopping everything, and `mesimon state explain`.
+- `docs/REMOTE-CONTROL.md` holds the preview's text unchanged, with section headings added.
+- `docs/README.md` lists the three pages and takes the repository layout.
+
+**Corrected on the way.** Each fix was checked against `keymap.rs`, `app.rs` and the goldens:
+
+- `o` adds a ticket; `a` is the archive chord.
+- `HJKL`, or `>`/`<` twice, moves a card. `m` is bound only on the ticket page, where it merges.
+- `p` shows each agent's latest reply under its card. No key peeks at a pane.
+- `tab` on the board is *describe*. The attention jump it used to name is gone, so the sentence
+  was dropped.
+- On the ticket page, `!` opens the terminal. `s` needs `MESIMON_TICKET_SHELLS`.
+- A detach returns to where the focus started.
+- `X` sleeps finished agents in reclaim columns.
+- The ready chip reads `◦ update ready (U ∙ esc)`.
+- The provider is chosen with Settings › Agents › Default tier.
+- Ctrl+K is the links menu on the board and the ticket page, not in the note editor.
+- "There is no tool, at any tier, to spawn … archive or rename" contradicted the crown
+  (T-411/T-412). The page now says those belong to the crowned ticket.
+- `CARGO_NET_GIT_FETCH_WITH_CLI` is gone, because the repo has been public since T-456.
+
+**Changed with the author.** The README's three one-line summaries were proposals, and the
+author approved them. Two phrases in the promise text were out of date, and the author approved
+both fixes. Promise 1 said "press *Fetch origin* in the Esc menu", but that row is gone: a
+fetch is now `f` in the push / pull view (`v` on the board, then `tab`; T-455). Promise 3 said
+"*Settings › Agent brief*", but the row is in Settings › Agents. No other promise wording
+changed.
+
+**Rebased over T-463**, which had added the Homebrew road to the old README's Install and
+Updating sections. That text moved to `docs/USING.md` as written, and the README's Install now
+shows `brew install amitozalvo/tap/mesimon` below the curl line.
+
+`CLAUDE.md`, `AGENTS.md`, `SECURITY.md`, `TESTING.md` and one comment in `hook_settings.rs`
+now point at the new pages.
+
+**Tests.** A link check covered every relative link and `#anchor` in the README, the three new
+pages, `docs/README.md`, `SECURITY.md` and `TESTING.md`: none were broken.

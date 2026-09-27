@@ -106,7 +106,7 @@ fn entry(
 /// check is exact and cannot be dodged by quoting. `Bash` is deliberately NOT
 /// matched: a command-shape pre-filter is a documented evasion hole, and
 /// hooking it would put a blocking round trip on every shell call the agent
-/// makes. That the shell path stays open is written down in the README rather
+/// makes. That the shell path stays open is written down in `docs/USING.md` rather
 /// than papered over.
 ///
 /// Synchronous (no `async`) — an async hook cannot return a decision.

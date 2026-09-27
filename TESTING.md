@@ -18,8 +18,9 @@ versions, the daemon's build, and anything mesimon could not read. Almost every
 
 **Anything in this list, however small:**
 
-- mesimon wrote somewhere outside the allowlist in the README. This is the most
-  important possible bug — it is a product promise, not a preference.
+- mesimon wrote somewhere outside the allowlist in
+  [`docs/PROMISES.md`](docs/PROMISES.md). This is the most important possible
+  bug — it is a product promise, not a preference.
 - A session you did not start, or a session that survived something that should
   have stopped it. Cost and lifecycle are the whole reason this exists.
 - The board says a session needs you and it does not, or the reverse. The

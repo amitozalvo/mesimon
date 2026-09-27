@@ -1,7 +1,8 @@
 # Security policy
 
 mesimon's product promises are security promises: a strict write allowlist, no configuration
-mutation, and zero prompt injection (README, "Three promises"). A way to make mesimon break any
+mutation, and zero prompt injection (README, "Three promises"; in full in
+[`docs/PROMISES.md`](docs/PROMISES.md)). A way to make mesimon break any
 of them — write outside the allowlist, change a config it says it never touches, or add, remove
 or reorder a token of an agent's conversation — is a security bug. So is anything that lets
 another user on the machine reach the agent tool socket or a pane's environment file, or that

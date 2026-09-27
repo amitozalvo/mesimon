@@ -19,7 +19,7 @@ Use this precedence when sources disagree:
 
 1. Code and tests are the specification.
 2. `docs/STALE-MAP.md` is the durable design record of what shipped, what was refuted, and why.
-3. The promises in `README.md` bind product behavior.
+3. The promises in `README.md` (full text in `docs/PROMISES.md`) bind product behavior.
 4. The pre-code research corpus the source cites (`07 §4.2`-style) is not in this repository;
    those citations are provenance, not authority.
 
