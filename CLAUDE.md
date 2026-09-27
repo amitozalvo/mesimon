@@ -71,6 +71,7 @@ python3 -B ci/test-run.py                             # bounded runner: 20-min d
 ci/test-linux.sh                                      # whole suite on Debian 12 in Docker (~90 s warm)
 ci/build-linux.sh                                     # the two Linux release binaries, cross-linked here
 ci/release.sh --dry-run                               # the full release gate, minus the upload
+assets/demo/record.sh                                 # re-record README's demo.gif (vhs; after a visible change)
 ```
 
 `cargo test --workspace` is valid but runs the e2e binaries serially (~2.5 min). Tests are

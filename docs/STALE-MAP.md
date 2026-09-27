@@ -13989,3 +13989,38 @@ replayed by `on_provisioned`), and the bool described that instant.
 **Tests.** `a_start_receipt_says_started_or_waiting_never_false` (the shim's JSON for both
 cases); `crown_e2e` starts a crown agent on an uncut worktree ticket and asserts the parked
 receipt, that it already holds its seat, and that the replayed spawn carries `started_by`.
+
+## The README demo is recorded, with a scripted agent (T-461, 2026-09-27, "README demo GIF: board → spawn → attention → merge, in 30–45 seconds")
+
+`assets/demo.gif` sits under the README's pitch. It is 36 s, 1132×590 and about 0.5 MB, recorded
+by VHS from `assets/demo/demo.tape`. `assets/demo/record.sh` re-records it. The take runs the
+real release binary, the real daemon and the real private tmux in a throwaway sandbox (its own
+`HOME`, `SHELL=/bin/sh`, and every inherited `MESIMON_*` and `TMUX*` unset). Only the model is
+scripted: `stub-claude.py` runs through `MESIMON_CLAUDE_BIN`. It reads claude's own argv, runs
+the hook commands its `--settings` file names, calls `raise_hand` through the `--mcp-config`
+shim, and writes a transcript for the ticket-page preview. The README caption says the agent
+is a stand-in.
+
+**Shift+Enter through a shim, not a seam.** xterm.js, which VHS records through, does not answer
+`CSI ? u`. tmux 3.6a does not answer it either (both were probed). So in VHS the board rightly
+treats the terminal as legacy-floor and Shift+Enter is inert and unhinted. A
+`MESIMON_RICH_KEYS` seam would not help, because xterm.js sends a plain CR for Shift+Enter.
+`kitty-term.py` is a pty that stands in for a kitty-capable terminal. It answers the query ahead
+of xterm.js's DA reply, drops the flag push and pop, and turns the tape's `Alt+Enter`
+(`ESC CR`) into `CSI 13;2u`. The product has no code for the demo.
+
+**120×30, not the ticket's 100×30.** At 100 columns DONE collapses to a spine, and the take ends
+on a card moving into DONE. 120 columns is also the goldens' width. Titles on the board are 15
+characters or fewer: DONE's title field is one cell narrower than the others once a glyph
+leads, and a longer title on the cursor card loses its first letters there.
+
+**The merge happens on the ticket page.** `m` is bound only in the ticket page's scope, beside
+the branch line that offers it (`⎇ … ∙ 1 to merge ∙ m merge`). On the board it is unbound, so the
+tape opens the page to merge. The tape still answers the agent from the board, because Shift+Enter
+(`Verb::Prompt`) is bound on the board and not on the page.
+
+**Tests.** Two full takes ran in a detached tmux (`-L msmn-demo-view`). Keys went in by
+`send-keys`, and each stage was checked with `capture-pane`. Three VHS recordings followed. The
+first failed on a regex that did not allow for the padding between a title and its branch glyph.
+The last is the committed GIF. Its frames were checked by eye. After every run,
+`/tmp/mesimon-<uid>` held only the directories that were there before.

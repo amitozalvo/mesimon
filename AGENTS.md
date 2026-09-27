@@ -127,6 +127,8 @@ Additional targeted gates:
 - Linux release artifacts: `ci/build-linux.sh`.
 - Release rehearsal: `ci/release.sh --dry-run`; follow the script's current Docker policy and
   never publish as part of an ordinary development task.
+- README demo: `assets/demo/record.sh` re-records `assets/demo.gif` (needs `vhs`) after a
+  change the recording shows.
 
 Before handing off, run `git diff --check` and report which checks ran, which were skipped, and
 why. Never turn a skipped tmux integration into an implied pass.

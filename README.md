@@ -5,6 +5,12 @@ board that orchestrates many coding-agent sessions: like Kubernetes is to contai
 Claude Code and Codex. Tickets outlive sessions; columns carry policy; a per-repo
 daemon keeps everything alive when the TUI closes.
 
+![Starting an agent from the board, answering it from the ticket page, and merging its branch](assets/demo.gif)
+
+<sub>Start an agent with Shift+Enter, answer it when its card lights, merge its branch with
+`m`. Recorded with a scripted stand-in agent so the take is reproducible;
+[`assets/demo/`](assets/demo) re-records it.</sub>
+
 **Status: v0.1 alpha — early, and shared with a small group for feedback.** It runs, it is
 dogfooded daily, and it will change under you. The current version and its history live in
 [CHANGELOG.md](CHANGELOG.md); see [TESTING.md](TESTING.md) for what is useful to report.
