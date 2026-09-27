@@ -1521,6 +1521,39 @@ impl MenuItem {
 /// The key stays live there so it can say why; only the hint stands down.
 /// (A workspace of repositories held it too until T-368: a worktree there
 /// now cuts one worktree per nested repo.)
+/// The ask key's word for ONE seat, at every stage of it: the board card's
+/// Shift+Enter and the ticket page's (T-476) say the same thing, because
+/// they open the same field on the same seat.
+///
+/// A parked agent has no box to type into, and until 2026-09-04 that left
+/// the key inert there — `c`, wait, come back, ask. Now the press opens the
+/// same field and the daemon wakes the agent on the way (user: "ask claude
+/// on sleeping agent auto wakes it for the user"); the hint says the extra
+/// thing it does. Live but paneless is exactly Sleeping.
+fn ask_hint(c: &Ctx) -> &'static str {
+    if c.ticket_queued {
+        "edit the queued ask"
+    } else if c.ticket_plan_ready {
+        // The agent is on its plan dialog (T-420): the field opens at
+        // `accept plan`, a blank Enter presses the harness's default, words
+        // wait for the turn after. The same shape as `start + ask`: the
+        // extra thing the press does, then the ask.
+        "accept plan + ask"
+    } else if c.ticket_has_agent && !c.ticket_promptable {
+        "wake + ask agent"
+    } else if c.ticket_has_agent {
+        "ask agent"
+    } else {
+        // An empty seat (T-379): the press opens the field, and the daemon
+        // starts claude on the way — the words are its first prompt, a
+        // blank field is the title. The same shape as `wake + ask`: the
+        // extra thing the press does, then the ask. Until T-379 a quiet
+        // checkout spawned on the title with no field (`ask the agent the
+        // title`), and only a busy one (T-294) stopped to open it.
+        "start + ask agent"
+    }
+}
+
 fn workspace_hint(c: &Ctx) -> &'static str {
     if !c.workspace_open {
         ""
@@ -1753,35 +1786,7 @@ static BOARD: &[Binding] = &[
                 // goes quiet.
                 return if c.col_plan_able { "accept plans + ask" } else { "ask every agent" };
             }
-            // A parked agent has no box to type into, and until 2026-09-04
-            // that left the key inert there — `c`, wait, come back, ask.
-            // Now the press opens the same field and the daemon wakes the
-            // agent on the way (user: "ask claude on sleeping agent auto
-            // wakes it for the user"); the hint says the extra thing it
-            // does. Live but paneless is exactly Sleeping.
-            if c.ticket_queued {
-                "edit the queued ask"
-            } else if c.ticket_plan_ready {
-                // The agent is on its plan dialog (T-420): the field opens
-                // at `accept plan`, a blank Enter presses the harness's
-                // default, words wait for the turn after. The same shape
-                // as `start + ask`: the extra thing the press does, then
-                // the ask.
-                "accept plan + ask"
-            } else if c.ticket_has_agent && !c.ticket_promptable {
-                "wake + ask agent"
-            } else if c.ticket_has_agent {
-                "ask agent"
-            } else {
-                // An empty seat (T-379): the press opens the field, and
-                // the daemon starts claude on the way — the words are its
-                // first prompt, a blank field is the title. The same
-                // shape as `wake + ask`: the extra thing the press does,
-                // then the ask. Until T-379 a quiet checkout spawned on
-                // the title with no field (`ask the agent the title`), and
-                // only a busy one (T-294) stopped to open it.
-                "start + ask agent"
-            }
+            ask_hint(c)
         },
         // Every ticket, at every stage of its seat: empty (the title is the
         // prompt), parked (wake, then ask), paned (ask). `rich_keys` is the
@@ -2499,6 +2504,31 @@ static TICKET: &[Binding] = &[
         group: Group::Sessions,
         mutates: true,
         prio: 20,
+    },
+    Binding {
+        // The board's ask key, on the page that shows the same ticket
+        // (T-476): the same verb, the same field, the same sentence — ask
+        // this ticket's agent from where you are standing, without spending
+        // the terminal on a handover. Beside `enter` here as there: go
+        // there / ask from here is one choice, read together. The field
+        // hangs under the zone's content — the transcript or the note being
+        // read — and stays at the zone's foot when that content overflows,
+        // the way the card's hangs under the card. "Which agent" has one
+        // answer on this page since one claude per ticket, so the rail's
+        // selected row does not change where the words go: they reach the
+        // ticket's agent, exactly as the board's key sends them.
+        keys: &[Key::ShiftEnter],
+        verb: Verb::Prompt,
+        show: "shift+enter",
+        hint: ask_hint,
+        // The ShiftEnter clause, as on the board: where the terminal spells
+        // this as a plain Enter the key must be inert AND unhinted, or the
+        // press would act on the rail row instead of opening a field.
+        avail: |c| c.has_ticket && c.rich_keys,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 21,
     },
     Binding {
         keys: &[Key::Char('c')],
@@ -6779,6 +6809,23 @@ mod tests {
         // press, said to a column instead of a card.
         let header = Ctx { col_header: true, col_live: 1, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &header), Some(Verb::Prompt));
+        // The ticket page (T-476) is the card's home on the screen that
+        // shows the same ticket: the same verb, the same field, and the same
+        // words for the seat — and inert where the terminal cannot spell
+        // the key, on the board's own clause.
+        assert_eq!(resolve(Scope::Ticket, Key::ShiftEnter, &onboard), Some(Verb::Prompt));
+        assert_eq!(
+            hint_for(Scope::Ticket, Verb::Prompt, &onboard),
+            hint_for(Scope::Board, Verb::Prompt, &onboard)
+        );
+        let parked = Ctx { ticket_promptable: false, ..onboard.clone() };
+        assert_eq!(
+            hint_for(Scope::Ticket, Verb::Prompt, &parked),
+            Some(("shift+enter", "wake + ask agent"))
+        );
+        let legacy = Ctx { rich_keys: false, ..onboard.clone() };
+        assert_eq!(resolve(Scope::Ticket, Key::ShiftEnter, &legacy), None);
+        assert_eq!(hint_for(Scope::Ticket, Verb::Prompt, &legacy), None);
         // The editor the composer grows into is NOT a fourth home: there
         // Shift+Enter is a newline, composing or noting alike (2026-09-03),
         // because a body is where the finger expects it to break a line.

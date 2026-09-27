@@ -5454,7 +5454,7 @@ impl App {
                         if text.contains('\n') {
                             let mut ed =
                                 self.ask_room(target, true, accept_plan, plan, None, &text);
-                            ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
+                            ed.grow = self.card_grow();
                             self.mode = Mode::Editor(ed);
                         } else {
                             self.mode = Mode::Input {
@@ -7660,7 +7660,7 @@ impl App {
                     }
                 };
                 // The dialog grows out of the card the last frame drew.
-                ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
+                ed.grow = self.card_grow();
                 self.mode = Mode::Editor(ed);
                 return Ok(());
             }
@@ -8452,11 +8452,20 @@ impl App {
         // Over the board the editor is a dialog, and it grows out of the
         // cursor card the last frame drew — the composer's motion, on a
         // ticket that exists. From the ticket page it takes the screen.
-        if matches!(self.screen, Screen::Board) {
-            ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
-        }
+        ed.grow = self.card_grow();
         self.mode = Mode::Editor(ed);
         Ok(())
+    }
+
+    /// Where a room grows from: the cursor card the last board frame drew,
+    /// and nothing off the board — there the editor takes the screen, and a
+    /// grow from a rectangle the board left behind would only run the
+    /// animation clock (`App::animating`) over a dialog nobody draws (T-476:
+    /// the ask field opens from the ticket page too, and `tab` grows it).
+    fn card_grow(&self) -> Option<(ratatui::layout::Rect, Instant)> {
+        matches!(self.screen, Screen::Board)
+            .then(|| self.cursor_card.get().map(|r| (r, Instant::now())))
+            .flatten()
     }
 
     /// The editor on one of a ticket's notes, read from the daemon, or a
@@ -14273,6 +14282,58 @@ mod tests {
         assert_eq!(app.screen, Screen::Board, "focus starts from the board");
         // Consumed: a third Enter (post-unfocus) must not spawn again — the
         // awake-claude fast path owns it now.
+    }
+
+    /// The board's ask key on the ticket page (T-476): the same field, the
+    /// same target — the page's ticket, whatever rail row the cursor is on —
+    /// and Enter sends the words without leaving the page. On the legacy
+    /// floor the key is a plain Enter, which acts on the rail row and never
+    /// opens the field.
+    #[test]
+    fn shift_enter_prompts_a_live_agent_from_the_ticket_page() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        app.rich_keys = true;
+        assert_eq!(
+            keymap::hint_for(Scope::Ticket, Verb::Prompt, &app.ctx()),
+            Some(("shift+enter", "ask agent"))
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(
+            matches!(
+                app.mode,
+                Mode::Input { purpose: InputPurpose::Prompt { target: AskTarget::Ticket(t), .. }, .. } if t == ulid::Ulid(1)
+            ),
+            "{:?}",
+            app.mode
+        );
+        assert!(!sent_contains(&sent, "PromptSession"));
+        for c in "run the tests".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "run the tests"));
+        assert!(matches!(app.screen, Screen::Ticket { .. }), "the page never leaves");
+        assert!(app.pending_attach.is_none(), "no handover");
+        assert_eq!(app.mode, Mode::Normal, "the field closed");
+        // `tab` grows the field into the room, which takes the screen here:
+        // nothing grows out of a board rectangle the page does not draw.
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Editor(ed) => {
+                assert!(ed.asking(), "the ask room");
+                assert!(ed.grow.is_none(), "no grow off the board");
+            }
+            other => panic!("expected the ask room, got {other:?}"),
+        }
+        // On the legacy floor the same press is a plain Enter: the rail
+        // row's verb, and no field.
+        app.mode = Mode::Normal;
+        app.rich_keys = false;
+        assert_eq!(keymap::hint_for(Scope::Ticket, Verb::Prompt, &app.ctx()), None);
+        assert_eq!(keymap::resolve(Scope::Ticket, Key::ShiftEnter, &app.ctx()), None);
     }
 
     /// The same key one stage later. The ticket exists and an agent is on

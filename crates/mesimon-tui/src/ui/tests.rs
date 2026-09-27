@@ -6191,6 +6191,115 @@ fn golden_ticket_note_selected_120() {
     golden("ticket_note_selected_120x30", &lines);
 }
 
+/// The ask field for T-3 with `text` typed, as the board's prompt golden
+/// opens it: the page's ticket is the target whatever rail row is under
+/// the cursor.
+fn ticket_prompting(rail_idx: usize, text: &str) -> App {
+    let mut app = app_noted();
+    app.rich_keys = true;
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx };
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
+    for c in text.chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        buffer,
+    };
+    app
+}
+
+/// The board's ask field on the ticket page (T-476): the same rows the card
+/// draws — the prompt row and its delivery row — hanging under the content
+/// the zone is reading, here the second note, whole. The rail does not
+/// move, and the footer says ASK as it does on the board.
+#[test]
+fn golden_ticket_prompt_field_120() {
+    let app = ticket_prompting(3, "rebase onto main");
+    let lines = render(&app, 120, 30);
+    let last = lines.iter().position(|l| l.contains("3. watch the peek")).expect("the note");
+    assert!(
+        lines[last + 1].contains("› rebase onto main"),
+        "the field hangs right under the note's last row:\n{}",
+        lines.join("\n")
+    );
+    assert!(lines[last + 2].contains("now  shift+tab"), "the delivery row, as on the card");
+    assert!(lines.last().is_some_and(|l| l.contains("ASK")), "{:?}", lines.last());
+    let rail_y = lines.iter().position(|l| l.contains("SESSIONS")).expect("rail");
+    let resting = render(&app_noted_at(3), 120, 30);
+    let resting_rail = resting.iter().position(|l| l.contains("SESSIONS")).expect("rail");
+    assert_eq!(rail_y, resting_rail, "the rail keeps its place while the field is open");
+    golden("ticket_prompt_120x30", &lines);
+}
+
+/// The note at rail row 3 with no field open — the resting page the field
+/// golden is measured against.
+fn app_noted_at(rail_idx: usize) -> App {
+    let mut app = app_noted();
+    app.rich_keys = true;
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx };
+    app
+}
+
+/// A zone the content overflows (the description at a short terminal): the
+/// field is sticky at the zone's foot — the content gives the rows up and
+/// is cut at the field, so the field never scrolls away under a long reply
+/// or note, and the footer under it is untouched.
+#[test]
+fn ticket_prompt_field_sticks_to_the_zone_foot() {
+    let app = ticket_prompting(2, "rebase onto main");
+    // The layout floor is 20 rows; the description runs ~11 rows and the
+    // zone has 13, so the field's two rows push it over.
+    let h = 20u16;
+    let lines = render(&app, 120, h);
+    let field_y = lines
+        .iter()
+        .position(|l| l.contains("› rebase onto main"))
+        .unwrap_or_else(|| panic!("field:\n{}", lines.join("\n")));
+    assert_eq!(
+        field_y,
+        h as usize - 3,
+        "the prompt row is over the delivery row:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        lines[h as usize - 2].contains("now  shift+tab"),
+        "the delivery row is the zone's last"
+    );
+    assert!(lines[h as usize - 1].contains("ASK"), "the footer keeps its row");
+    // The content over the field is the description, cut at the field: the
+    // zone's own cut mark closes the row over it, in the left zone.
+    assert!(lines.iter().any(|l| l.contains("DESCRIPTION")), "the zone reads the description");
+    let cut = &lines[field_y - 1];
+    let cut_at = cut.trim_end().chars().count();
+    assert!(cut.trim_end().ends_with('~'), "the row over the field is the cut row: {cut:?}");
+    assert!(cut_at < 120 - 30, "the cut mark is in the left zone, not the rail");
+    // The board's field keeps the card whole; here the heading and the top
+    // of the content stay, and only the tail gives way.
+    assert!(lines.iter().any(|l| l.contains("What changed")), "the content's top stays");
+}
+
+/// Below the two-zone width the rail is the screen and there is no content
+/// to hang under: the field takes the last rows over the footer, and the
+/// rail loses exactly those rows.
+#[test]
+fn ticket_prompt_field_sits_over_the_footer_on_a_narrow_page() {
+    let app = ticket_prompting(3, "rebase onto main");
+    let h = 24u16;
+    let lines = render(&app, 100, h);
+    assert!(lines[h as usize - 3].contains("› rebase onto main"), "{}", lines.join("\n"));
+    assert!(lines[h as usize - 2].contains("now  shift+tab"));
+    assert!(lines[h as usize - 1].contains("ASK"));
+    assert!(lines.iter().any(|l| l.contains("SESSIONS")), "the rail is still the screen");
+}
+
 /// The cursor on the DESCRIPTION row: the band's excerpt has gone, the zone
 /// reads the whole thing under its own heading, and the rail has not moved
 /// (T-344).

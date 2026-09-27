@@ -120,6 +120,56 @@ pub(super) fn render_prompt(
     (Line::from(spans).style(theme.selected_row()), LEAD + cx)
 }
 
+/// The whole ask field for one ticket's seat — the prompt row and, when the
+/// seat has a delivery to name, the row under it — with the cursor's x
+/// offset in the prompt row. The board card (under the card) and the ticket
+/// page (under the zone's content, T-476) draw the same rows from here, so
+/// the two surfaces cannot say different things about one seat.
+///
+/// The placeholder is what a blank Enter would do, in the seat's own words,
+/// and by the same rule `commit_input` judges it: drop the entry that is
+/// waiting, start the agent on the title where the seat is empty and the
+/// toggle says now (T-294), accept the plan at `accept plan` (T-420), or
+/// nothing at all.
+#[allow(clippy::too_many_arguments)] // the field's state, spelled out; two call sites
+pub(super) fn render_ask_field(
+    ctx: &CardCtx,
+    app: &crate::app::App,
+    ticket: ulid::Ulid,
+    buffer: &EditBuffer,
+    queued: bool,
+    accept_plan: bool,
+    plan: bool,
+    tier: Option<&str>,
+) -> (Vec<Line<'static>>, u16) {
+    let starts = app.board.live_agent(ticket).is_none();
+    let placeholder = if accept_plan {
+        "enter accepts the plan"
+    } else if app.ticket_queued(ticket) && !(starts && !queued) {
+        "enter drops"
+    } else if starts {
+        "start on the title"
+    } else {
+        "ask agent"
+    };
+    let (line, x_off) = render_prompt(ctx, buffer, placeholder);
+    let mut rows = vec![line];
+    // The delivery row, where the ask can wait (2026-09-04): after the
+    // field, so the cursor row is unchanged. Plan mode (T-434) shows on the
+    // same row, so a seat that cannot wait — a worktree ticket's empty seat
+    // — still gets the row while the flag is on.
+    let tier_word = app.field_tier_word(Some(ticket), tier);
+    if app.ask_queueable(ticket) || plan || tier_word.is_some() {
+        rows.push(render_ask_mode(
+            ctx,
+            crate::app::App::ask_mode_word(accept_plan, queued, plan),
+            app.ask_queueable(ticket) && !app.ticket_plan_ready(ticket),
+            tier_word.as_deref(),
+        ));
+    }
+    (rows, x_off)
+}
+
 /// The composer's workspace row (M4): git glyph + one word, Shift+Tab cycles.
 /// Rendered on the phantom card's selected surface, dim — a setting, not text.
 pub(super) fn render_workspace_selector(

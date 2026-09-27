@@ -214,38 +214,12 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
         let edit_cursor = prompt_of(t).map(|(buf, queued, accept_plan, plan, tier)| {
-            // What a blank Enter would do, in the seat's own words, and by
-            // the same rule `commit_input` judges it: drop the entry that is
-            // waiting, start the agent on the title where the seat is empty and
-            // the toggle says now (T-294), or nothing at all.
-            let starts = app.board.live_agent(t.id).is_none();
-            // At `accept plan` (T-420) a blank Enter IS the accept.
-            let placeholder = if accept_plan {
-                "enter accepts the plan"
-            } else if app.ticket_queued(t.id) && !(starts && !queued) {
-                "enter drops"
-            } else if starts {
-                "start on the title"
-            } else {
-                "ask agent"
-            };
-            let (line, x_off) = card::render_prompt(&ctx, buf, placeholder);
-            lines.push(line);
-            let at = lines.len() - 1;
-            // The delivery row, where the ask can wait (2026-09-04): after
-            // the field, so the cursor row is unchanged. Plan mode (T-434)
-            // shows on the same row, so a seat that cannot wait — a
-            // worktree ticket's empty seat — still gets the row while the
-            // flag is on.
-            let tier_word = app.field_tier_word(Some(t.id), tier);
-            if app.ask_queueable(t.id) || plan || tier_word.is_some() {
-                lines.push(card::render_ask_mode(
-                    &ctx,
-                    crate::app::App::ask_mode_word(accept_plan, queued, plan),
-                    app.ask_queueable(t.id) && !app.ticket_plan_ready(t.id),
-                    tier_word.as_deref(),
-                ));
-            }
+            // The prompt row and its delivery row, shared with the ticket
+            // page (T-476): the cursor is in the first of them.
+            let (rows, x_off) =
+                card::render_ask_field(&ctx, app, t.id, buf, queued, accept_plan, plan, tier);
+            let at = lines.len();
+            lines.extend(rows);
             (at, x_off)
         });
         groups.push(Group {

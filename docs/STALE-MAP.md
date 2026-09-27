@@ -14423,3 +14423,43 @@ out the runtime dir and put the tmux socket in the state dir. It named `Z` for p
 agents, where the board's key is `X`, and it listed Claude Code without Codex. It now carries
 the README's pitch, install, requirements and promise lines, and it links to
 `docs/PROMISES.md` and `docs/USING.md` on GitHub instead of keeping its own copy of either.
+
+## Shift+Enter asks the agent from the ticket page (T-476, 2026-09-27, user: "exactly same as in board")
+
+The board's ask key was deliberately board-only (2026-09-01: "the ticket page has a rail with its
+own selected session, so *which claude* has a different answer there"). One claude per ticket made
+that answer the same on both surfaces, and the page was the one screen about a ticket where the
+key did nothing. Shipped: **Shift+Enter on the ticket page opens the board's ask field for the
+page's ticket, and Enter sends it without leaving the page.** The same `Verb::Prompt`, the same
+`InputPurpose::Prompt` state, the same dispatch arm (`App::subject` already named the shown
+ticket), the same commit road — only the binding and the drawing are new.
+
+- **The field hangs under the zone's content and is sticky at its foot.** The card's field hangs
+  under the card because the card names where the words go; on the page the whole screen does, so
+  the field hangs under what the zone is reading — the transcript preview or the note — directly
+  under its last row when the content fits, and pinned to the zone's last rows when it does not:
+  the content gives the rows up and is cut at the field (`draw_preview` now returns the rows it
+  wrote, capped at the zone). The rail is placed as before, so the row under the cursor does not
+  move when the field opens. Below the two-zone width there is no content to hang under, and the
+  field takes the page's last rows over the footer; a body with no room for the field draws none
+  and the footer's `ASK` still says the mode.
+- **One renderer for both surfaces.** `card::render_ask_field` draws the prompt row and the
+  delivery row (placeholder rule, `now`/`queued`, plan mode, the tier word) for a seat; the board
+  card and the page both call it, so they cannot disagree about one seat. `keymap::ask_hint` is the
+  seat's hint word, shared the same way; the board's binding keeps only the column-header branch.
+- **Off-floor as before.** The binding is gated on `rich_keys` (the `ShiftEnter` clause): where
+  the terminal spells the key as a plain Enter it is inert and unhinted, and Enter keeps acting on
+  the rail row. It sits beside `enter` in the footer (prio 21 next to `Act`'s 20) — go there / ask
+  from here is one choice, read together.
+- **`tab` grows the field into the room, which takes the screen off the board.** `Editor::grow`
+  is now set only on the board (`App::card_grow`): the page draws no dialog, and a grow from a
+  rectangle the board left behind only ran the animation clock over nothing.
+
+**Tests.** `shift_enter_asks_the_agent_at_every_stage` gains the page as the card's home (same
+hint as the board, `wake + ask agent` on a parked seat, inert and unhinted on the legacy floor).
+`shift_enter_prompts_a_live_agent_from_the_ticket_page` opens the field from the page, sends
+`PromptSession` on Enter with the screen unchanged, grows into the room with no `grow`, and
+checks the legacy floor. Goldens: `ticket_prompt_120x30` (the field under a short note, the rail
+in its resting place); `ticket_prompt_field_sticks_to_the_zone_foot` at the 20-row floor (the
+description overflows, the field is the zone's last two rows, the cut mark closes the row over
+it, the content's top stays); `ticket_prompt_field_sits_over_the_footer_on_a_narrow_page`.

@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap;
 
-use crate::app::{App, InputPurpose, Mode, RailRow, TailKey, View};
+use crate::app::{App, AskTarget, InputPurpose, Mode, RailRow, TailKey, View};
 use crate::creature::{self, Anim, Size};
 use crate::glyphs;
 use crate::text::{
@@ -28,6 +28,7 @@ use crate::text::{
 };
 use crate::theme::CrownSweep;
 
+use super::card::CardCtx;
 use super::chrome;
 
 /// Below this width the rail IS the screen (06 §6.5 band model, simplified:
@@ -592,9 +593,61 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // The workspace row is in neither group — it is drawn whenever it exists,
     // so both zones start under it.
     let rail_y = area.y + 6 + wt_row + extra;
-    let rail_h = area.height.saturating_sub(7 + wt_row + extra);
+    let mut rail_h = area.height.saturating_sub(7 + wt_row + extra);
     let body_y = area.y + 6 + wt_row + shown;
     let body_h = area.height.saturating_sub(7 + wt_row + shown);
+    // The ask field (T-476): the board card's Shift+Enter field, on the page
+    // that shows the same ticket. The card's hangs UNDER the card because the
+    // card is what names where the words go; here the whole page names it,
+    // so the field hangs under what the zone is reading — the transcript or
+    // the note — and when that content overflows the zone it stays at the
+    // zone's foot, the content giving the rows up, the way a card's field
+    // takes rows from the column and never from the card. Same rows, same
+    // renderer as the board's (`card::render_ask_field`), so the two
+    // surfaces cannot say different things about one seat.
+    let ask = match &app.mode {
+        Mode::Input {
+            purpose:
+                InputPurpose::Prompt {
+                    target: AskTarget::Ticket(t),
+                    queued,
+                    accept_plan,
+                    plan,
+                    tier,
+                    ..
+                },
+            buffer,
+        } if *t == ticket_id => Some((buffer, *queued, *accept_plan, *plan, tier.as_deref())),
+        _ => None,
+    };
+    // The field's rows at the width they will be drawn at: the zone's in the
+    // two-zone layout, the page's where the rail is the screen.
+    let field_w = if two_zone { area.width - RAIL_W - 3 } else { area.width.saturating_sub(2) };
+    let field = ask.map(|(buf, queued, accept_plan, plan, tier)| {
+        let ctx = CardCtx {
+            theme,
+            width: field_w,
+            now_ms: now,
+            spin: app.spin_frame(),
+            names_key: false,
+        };
+        super::card::render_ask_field(&ctx, app, ticket_id, buf, queued, accept_plan, plan, tier)
+    });
+    // A field the body has no room for is not drawn; the mode word in the
+    // footer still says ASK, and the keys still work.
+    let field_rows = field.as_ref().map_or(0, |(rows, _)| rows.len() as u16);
+    let field = field.filter(|_| body_h > field_rows && rail_h > field_rows);
+    let field_rows = if field.is_some() { field_rows } else { 0 };
+    let draw_field = |f: &mut Frame, x: u16, y: u16| {
+        if let Some((rows, x_off)) = field.as_ref() {
+            f.render_widget(
+                Paragraph::new(rows.clone()),
+                Rect { x, y, width: field_w, height: field_rows },
+            );
+            // The hardware cursor in the prompt row (06 §5.7), as on the card.
+            f.set_cursor_position((x + (*x_off).min(field_w.saturating_sub(1)), y));
+        }
+    };
     if two_zone {
         // Transcript preview: the selected rail session's latest assistant
         // reply, read through the same draw cache as the board's `p` peek
@@ -644,9 +697,12 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // SESSION the press would start instead of standing empty.
         let seat = matches!(row, Some(RailRow::NewAgent)).then_some(ticket_id);
         let left_w = area.width - RAIL_W - 3; // 1 pad + 2-cell divider gap
-        draw_preview(
+                                              // The content keeps the rows over the field: a zone that overflows
+                                              // is cut at the field, not under it.
+        let content_h = body_h - field_rows;
+        let used = draw_preview(
             f,
-            Rect { x: area.x + 1, y: body_y, width: left_w, height: body_h },
+            Rect { x: area.x + 1, y: body_y, width: left_w, height: content_h },
             app,
             sel,
             peek.as_deref(),
@@ -655,6 +711,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             note,
             seat,
         );
+        // Under the content where it ends, at the zone's foot where it does
+        // not: `used` is the whole zone exactly when the content overflowed.
+        draw_field(f, area.x + 1, body_y + (used as u16).min(content_h));
         draw_rail(
             f,
             Rect {
@@ -672,6 +731,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // No zone, nothing to page: the footer must not offer `{ }`.
         app.preview.view.set(View::default());
         app.preview_measured();
+        // With the rail as the screen there is no content to hang under, so
+        // the field takes the page's last rows over the footer — the one
+        // place a field can sit here without moving the row under the cursor.
+        rail_h -= field_rows;
         draw_rail(
             f,
             Rect { x: area.x + 1, y: rail_y, width: area.width.saturating_sub(2), height: rail_h },
@@ -680,6 +743,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             rail_idx,
             now,
         );
+        draw_field(f, area.x + 1, area.y + area.height - 1 - field_rows);
     }
 
     // ---- footer -----------------------------------------------------------
@@ -693,6 +757,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     );
 }
 
+/// Draws the zone and returns the rows it wrote, capped at the zone's height.
 #[allow(clippy::too_many_arguments)] // one call site; a params struct would just rename the args
 fn draw_preview(
     f: &mut Frame,
@@ -704,7 +769,7 @@ fn draw_preview(
     shell: Option<ShellView<'_>>,
     note: Option<NoteView<'_>>,
     seat: Option<ulid::Ulid>,
-) {
+) -> usize {
     let theme = &app.theme;
     let session = record.map(|s| s.id);
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -755,8 +820,9 @@ fn draw_preview(
         lines.push(Line::default());
         let Some(tail) = tail else {
             lines.push(Line::from(Span::styled("   reading its pane", theme.dim3())));
+            let used = lines.len();
             f.render_widget(Paragraph::new(lines), area);
-            return;
+            return used;
         };
         if tail.is_empty() {
             lines.push(Line::from(Span::styled("   nothing on screen yet", theme.dim3())));
@@ -854,11 +920,16 @@ fn draw_preview(
         lines.push(heading("PREVIEW"));
         lines.extend(empty_seat(app, ticket, area));
     }
+    // How many rows the zone wrote, for the ask field to hang under (T-476)
+    // — never more than the zone has, which is what pins the field at the
+    // foot when the content overflows.
+    let used = lines.len().min(area.height as usize);
     f.render_widget(Paragraph::new(lines), area);
     if let Some((stage, x, y)) = beside {
         stage.paint(f.buffer_mut(), x, y, area);
         *app.mascot.borrow_mut() = Some(stage.drawn(x, y));
     }
+    used
 }
 
 /// The working indicator: what the agent is DOING, not just that it is —

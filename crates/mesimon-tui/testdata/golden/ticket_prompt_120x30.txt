@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
+
+
+  NOTE
+
+    Repro steps
+
+    1. open the board
+    2. press p
+    3. watch the peek
+    › rebase onto main                                                                     SESSIONS                  2
+    now  shift+tab
+                                                                                          ⠋ ✻ claude               >1y
+                                                                                          ◦ $ bash                 >1y
+
+                                                                                           NOTES                     2
+
+                                                                                           ≡ description       you >1y
+                                                                                           ≡ Repro steps     agent >1y
+                                                                                           N new note
+
+
+
+
+
+
+ ASK  enter send ∙ esc cancel ∙ tab expand ∙ shift+tab now / queued
