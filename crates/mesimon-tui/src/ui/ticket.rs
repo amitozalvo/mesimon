@@ -69,6 +69,29 @@ pub(super) fn author_word(by: &str, _app: &App) -> String {
     }
 }
 
+/// `created 2d ago by agent on T-241`: the ticket's age, and since T-253 its
+/// author only when that was NOT the person reading — with the ticket the
+/// agent was working on while that ticket is still on the board. `None`
+/// when the stamp does not parse. The ticket page's state line and the
+/// board's hover row (T-471) say it in these same words.
+pub(super) fn created_clause(
+    ticket: &mesimon_core::board::Ticket,
+    app: &App,
+    now: u64,
+) -> Option<String> {
+    let by = if ticket.agent_created() {
+        let on = ticket
+            .created_from
+            .and_then(|from| app.board.ticket(from))
+            .map(|parent| format!(" on {}", parent.short_key))
+            .unwrap_or_default();
+        format!(" by {}{on}", author_word(&ticket.created_by, app))
+    } else {
+        String::new()
+    };
+    created_at_epoch_ms(&ticket.created_at).map(|ms| format!("{}{by}", age_created(now, ms)))
+}
+
 /// One clause per leg of a workspace binding with something to say
 /// (T-368): `api +3` ahead, `web ✓` landed, `root ↓` behind its base
 /// (`+2↓` when it is both), `infra !` shared. A leg with no commits and
@@ -222,19 +245,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let here = created_at_epoch_ms(ticket.column_since())
         .map(|ms| format!(" {}", age_in_column(now, ms)))
         .unwrap_or_default();
-    let by = if ticket.agent_created() {
-        let on = ticket
-            .created_from
-            .and_then(|from| app.board.ticket(from))
-            .map(|parent| format!(" on {}", parent.short_key))
-            .unwrap_or_default();
-        format!(" by {}{on}", author_word(&ticket.created_by, app))
-    } else {
-        String::new()
-    };
-    let created = created_at_epoch_ms(&ticket.created_at)
-        .map(|ms| format!(" ∙ {}{by}", age_created(now, ms)))
-        .unwrap_or_default();
+    let created = created_clause(ticket, app, now).map(|c| format!(" ∙ {c}")).unwrap_or_default();
     let previous = ticket
         .previous_column
         .as_ref()

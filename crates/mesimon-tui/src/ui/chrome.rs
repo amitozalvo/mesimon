@@ -347,12 +347,12 @@ fn suggestion_chip(app: &App, budget: usize) -> Vec<Span<'static>> {
 
 /// The one-line advisory row. Grace wins when both are present: it is a 9 s
 /// countdown with an undo behind it, while a notice is a standing condition
-/// that will still be there next frame.
+/// that will still be there next frame. With neither, it names the card
+/// under the cursor (`hover_line`).
 ///
 /// Notices live here rather than in the header because the header already
 /// carries up to five optional `∙` clauses and a sixth pushes the update chip
-/// off a 100-column terminal. The row early-returns when there is nothing to
-/// say, which is why adding this drifted no existing golden.
+/// off a 100-column terminal.
 pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
     let Some(g) = app.grace.last() else {
         if let Some(n) = app.notices.first() {
@@ -364,6 +364,8 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
                 format!("  {}{tail}", truncate(&n.text, area.width.saturating_sub(4) as usize)),
                 app.theme.base(),
             ));
+            f.render_widget(Paragraph::new(line), area);
+        } else if let Some(line) = hover_line(app, area.width as usize) {
             f.render_widget(Paragraph::new(line), area);
         }
         return;
@@ -383,6 +385,44 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
         app.theme.dim1(),
     ));
     f.render_widget(Paragraph::new(line), area);
+}
+
+/// What the hover row's title keeps before the created clause gives way.
+const HOVER_TITLE_FLOOR: usize = 16;
+
+/// The card under the cursor, named in full (T-471): `T-12 Title ∙ created
+/// 2d ago by agent on T-9`. A card cuts its title to its column and shows
+/// its key only when opened (T-410); this row has the frame's width, so a
+/// key a session quotes and a title the card cut both read without leaving
+/// the board. The clause is the ticket page's own (`ticket::created_clause`).
+///
+/// The quietest thing the row says: a grace or a notice outranks it, since
+/// those report something that happened and this repeats what the cursor
+/// already points at. Only while the card is drawn as the cursor card — a
+/// mode, a dialog or a header under the cursor leaves the row blank.
+fn hover_line(app: &App, width: usize) -> Option<Line<'static>> {
+    let at_rest = matches!(app.screen, Screen::Board) && matches!(app.mode, Mode::Normal);
+    if !at_rest || app.header_focus || app.tag_armed.is_some() {
+        return None;
+    }
+    let ticket = app.selected_ticket()?;
+    let theme = &app.theme;
+    let key = format!("  {} ", ticket.short_key);
+    let mut stats = super::ticket::created_clause(ticket, app, mesimon_core::clock::now_ms())
+        .map(|c| format!(" ∙ {c}"))
+        .unwrap_or_default();
+    // One cell of page padding at the right edge. The title gives way
+    // first; at its floor the clause goes whole, and the name keeps the row.
+    let room = width.saturating_sub(key.width() + 1);
+    if room.saturating_sub(stats.width()) < HOVER_TITLE_FLOOR.min(ticket.title.width()) {
+        stats.clear();
+    }
+    let title = truncate(&ticket.title, room.saturating_sub(stats.width()));
+    Some(Line::from(vec![
+        Span::styled(key, theme.dim2()),
+        Span::styled(title, theme.dim1()),
+        Span::styled(stats, theme.dim2()),
+    ]))
 }
 
 /// Bindings as hint spans — `key` in `ink.base` + bold (06 §5.1 clause 3:

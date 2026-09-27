@@ -14163,3 +14163,34 @@ alert closes when Dependabot re-scans `Cargo.lock` after the push.
 
 **Gate:** `cargo ut`; `cargo nextest run --workspace`, 1,780 passed, 3 skipped (the `#[ignore]`
 set); the release clippy; `ci/check-dup-deps.sh`.
+
+## The hover row names the cursor card (T-471, 2026-09-27, user: "while hovering a ticket, show it's name and stats on the row above hint line ∙ for example: T-123 {NAME} created 1d ago by agent on T-456")
+
+A card cuts its title to its column and shows its key only when opened (T-410), so a key a
+session quoted or a title the card cut meant entering the ticket. The board's advisory row, the
+one above the footer, was blank whenever no undo or notice stood. Shipped:
+
+- **`chrome::hover_line`.** With neither a grace nor a notice, the advisory row reads
+  `  T-12 Title ∙ created 2d ago by agent on T-9` for the card under the cursor. The key and the
+  clause are `dim2` and the title is `dim1`. The grey ramp only, never the accent (L3), and
+  not the crown's tint on a holder's title: the row repeats the card, it is not the card.
+- **One clause, two surfaces.** `ticket::created_clause` is the ticket page's state-line clause,
+  lifted out of `draw` unchanged, and the hover row calls it. The author is named only when an
+  agent filed the ticket, and `on T-9` appears only while that ticket is on the board.
+- **Lowest rank on the row.** Grace, then notice, then the hover line. The first two report
+  something that happened. The hover line repeats what the cursor already points at.
+- **Only on the cursor card at rest.** `Screen::Board`, `Mode::Normal`, not `header_focus`, no
+  `^t` panel, and `selected_ticket()` is some. That is the condition the card itself is drawn
+  as the cursor card under, so a column header, the header's git clause, `Mode::Move`, an inline
+  text field and every dialog leave the row blank.
+- **Overflow.** One cell of padding at the right edge. The title is cut first. Once it would
+  fall under `HOVER_TITLE_FLOOR` (16 cells, or the whole title if shorter) the created clause
+  goes whole, and the key and title keep the row.
+
+**Tests.** `test_the_hover_row_names_the_cursor_card` covers the agent clause with its parent,
+a person's ticket, the ramp, the long title, the clause dropped at 60 cells, the three
+off-card cases and a notice outranking it. Three tests that searched the whole frame for a
+card's title or key now stop above the advisory row: `test_the_peek_names_the_ticket` (and it
+asserts the hover row names the key), `test_clipped_columns_keep_whole_cards_and_count_hidden_tickets`
+and `the_crowning_sweeps_the_title_on_the_card_and_the_page`. 35 board goldens reminted, each
+by one line: the blank advisory row became the hover line.

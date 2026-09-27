@@ -26,5 +26,5 @@
 
 
 
-
+  T-3 Fix OSC-11 detection ∙ created >1y ago
  enter go to the agent ∙ space ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe             esc menu ∙ ? keys

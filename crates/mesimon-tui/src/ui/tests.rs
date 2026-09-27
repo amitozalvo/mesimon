@@ -3427,9 +3427,12 @@ fn test_the_peek_names_the_ticket() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 1;
     app.cursor_row = Some(0);
-    // Off: the key is nowhere on the board.
+    // Off: no card names the key. The hover row does (T-471), under the
+    // columns, which is not the card's row.
     let lines = render(&app, 120, 30);
-    assert!(!lines.iter().any(|l| l.contains("T-3")), "no key before `p`");
+    let (columns, below) = lines.split_at(lines.len() - 2);
+    assert!(!columns.iter().any(|l| l.contains("T-3")), "no key before `p`");
+    assert!(below[0].contains("T-3"), "the hover row names it: {:?}", below[0]);
     app.peek = true;
     let lines = render(&app, 120, 30);
     let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
@@ -3451,6 +3454,64 @@ fn test_the_peek_names_the_ticket() {
     let k1 = lines[t1 + 1].find("T-1").expect("key 1");
     let k2 = row2.find("T-2").expect("key 2");
     assert_eq!(k1, k2, "keys in one column under P");
+}
+
+/// The hover row (T-471): the cursor card, named in full on the row above
+/// the footer — its key, its whole title and the ticket page's created
+/// clause — in the grey ramp. The title gives way first and the clause goes
+/// whole at the title's floor. A notice outranks it, and with the cursor off
+/// a card the row does not name one.
+#[test]
+fn test_the_hover_row_names_the_cursor_card() {
+    let mut b = fixture(false);
+    for t in &mut b.tickets {
+        match t.short_key.as_str() {
+            "T-2" => {
+                t.short_key = "T-1024".into();
+                t.created_by = format!("agent:{}", uuid_n(31));
+                t.created_from = Some(ulid_n(3));
+            }
+            "T-3" => t.short_key = "T-2048".into(),
+            _ => {}
+        }
+    }
+    let mut app = app_graphite(b);
+    (app.cursor_col, app.cursor_row) = (0, Some(1));
+    let hover = |app: &App, w: u16| render(app, w, 30)[28].trim_end().to_string();
+    assert_eq!(hover(&app, 120), "  T-1024 Keymap validator ∙ created >1y ago by agent on T-2048");
+    // Grey, and the title a step above its key and clause.
+    let buf = cells(&app, 120, 30);
+    assert_eq!(buf[(2, 28)].fg, app.theme.rest.dim2, "the key");
+    assert_eq!(buf[(9, 28)].fg, app.theme.rest.dim1, "the title");
+    // At 60 cells the clause would leave the title under its floor: it goes.
+    assert_eq!(hover(&app, 60), "  T-1024 Keymap validator");
+    // A person's ticket names no author, as on the page.
+    app.cursor_row = Some(0);
+    assert_eq!(hover(&app, 120), "  T-1 Decay treatments ∙ created >1y ago");
+    // A title the card cuts reads whole here, and one too long for the row
+    // is cut before the clause is.
+    app.board.tickets[0].title = "Decay treatments for every ramp of every flavor".into();
+    assert_eq!(
+        hover(&app, 120),
+        "  T-1 Decay treatments for every ramp of every flavor ∙ created >1y ago"
+    );
+    let narrow = hover(&app, 64);
+    assert!(narrow.ends_with("~ ∙ created >1y ago"), "{narrow:?}");
+    assert!(narrow.width() <= 63, "a cell of padding: {narrow:?}");
+    // Off a card: the column header, the header's git clause, a dialog.
+    app.cursor_row = None;
+    assert_eq!(hover(&app, 120), "");
+    app.cursor_row = Some(0);
+    app.header_focus = true;
+    assert_eq!(hover(&app, 120), "");
+    app.header_focus = false;
+    app.mode = Mode::Menu { idx: 0 };
+    assert!(!hover(&app, 120).contains("T-1"));
+    // A notice is about something that happened; it keeps the row.
+    app.mode = Mode::Normal;
+    app.notices =
+        vec![mesimon_core::command::Notice::new("shell_env", "could not read the login shell")];
+    assert_eq!(hover(&app, 120), "  could not read the login shell");
 }
 
 #[test]
@@ -7535,7 +7596,9 @@ fn test_clipped_columns_keep_whole_cards_and_count_hidden_tickets() {
                 let buf = cells(&app, 120, 20);
                 let lines = lines_of(&buf);
                 let mut visible = Vec::new();
-                for y in 0..20u16 {
+                // The columns' rows: the hover row (T-471) and the footer
+                // under them name the cursor card too, and are not the column.
+                for y in 0..18u16 {
                     let row: String = (0..40).map(|x| buf[(x, y)].symbol()).collect();
                     if let Some(byte_x) = row.find("Load ") {
                         let x = row[..byte_x].chars().count() as u16;
@@ -7582,7 +7645,7 @@ fn test_clipped_columns_keep_whole_cards_and_count_hidden_tickets() {
                 } else {
                     assert!(!lines.iter().any(|l| l.contains("below")));
                 }
-                for line in &lines[16..19] {
+                for line in &lines[16..18] {
                     assert!(line.trim().is_empty(), "footer clearance: {line:?}");
                 }
                 let card = app.cursor_card.get().expect("whole cursor card");
@@ -8087,11 +8150,12 @@ fn the_crowning_sweeps_the_title_on_the_card_and_the_page() {
         app.screen = screen;
         app
     };
-    // The title's own cells, on every row that shows it.
+    // The title's own cells, on every row that shows it — above the board's
+    // hover row (T-471), which names the card in the grey ramp.
     let title_cells = |app: &App| {
         let buf = cells(app, 120, 30);
         let mut out = Vec::new();
-        for (y, line) in lines_of(&buf).iter().enumerate() {
+        for (y, line) in lines_of(&buf).iter().enumerate().take(28) {
             let Some(at) = line.find(title) else { continue };
             let x0 = line[..at].width() as u16;
             for x in x0..x0 + title.width() as u16 {
