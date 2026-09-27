@@ -14508,3 +14508,52 @@ after the agent starts spinning, and in the first take it appeared in the middle
 **Tests.** Two VHS takes; frames checked by eye at each stage (board, 15/15, 9/15, 4/15, 1/15,
 the landed card with `↑ 2 above`). `/tmp/mesimon-<uid>` held the same directories before and
 after each run. No code changed.
+
+## Tour clip: the crown runs the board (T-479, 2026-09-28, "Tour clip: the crown — one agent runs the board")
+
+`assets/demo/crown.gif` sits in the README's **Tour** section after search, and in the new
+`docs/USING.md` section "The crown: one agent runs the board". It is 13.4 s, 1132×590 and about
+0.25 MB, recorded by `assets/demo/record.sh crown` from `crown.tape` with T-461's kit, theme and
+size. The take is one agent at work on "Plan 1.0". The tape presses `^o` on its card, and the
+title sweeps. The crowned agent then files two tickets, moves "Custom slugs" from IN PROGRESS
+back to TODO, tags one of the new tickets MILESTONE, and starts an agent on "Expire old links",
+whose card lights `♛ started`, spins and moves to IN PROGRESS. The take ends on the crowned
+ticket's page with the agent's own summary, "2 starts left in the crown's budget".
+
+**On T-477's `record.sh [tape]`.** T-477 landed the tape argument and `seed.py`'s `BOARDS`
+first, so this branch was rebased onto it and kept none of its own version of that change.
+The crown adds its board to `BOARDS` and one table: `AT_WORK` names the ticket whose agent is
+already at work for a tape whose working agent is not the demo's "Rate limiting".
+
+**The crowned agent is the stub, through the real shim.** `stub-claude.py`'s one-shot
+`raise_hand` became `Board`, an MCP session held open (initialize, then one `tools/call` per
+tool), and a refusal raises. Nothing reaches a pane when its ticket is crowned, so the stub
+polls `get_ticket`'s `crowned` every 0.25 s while its current step runs. That is also how a
+model learns it. Every keyed edit reads `seen` with `get_ticket key=…` first. The helpers' own
+parameters are positional-only, because `create_ticket` takes `description` and `tag_ticket`
+takes `name`. A script that throws leaves its traceback in the pane: the first takes died
+silently, and the pane took the private tmux server down with it.
+
+**What the brief assumed and the product does not have.**
+- There is no budget chip on the board. The only budget text is the Settings › Agents row. The
+  "start consumed" beat is the crowned agent's closing words, built from the `start_agent`
+  receipt's `budget_left`, on its ticket page.
+- `create_ticket` lights no card; only keyed edits record a `CrownTouch`. The two new tickets
+  appear unlit, and the move, tag and start each light their card.
+- The crowned agent's turn ends after the start, so automove takes its card to REVIEW before
+  the page opens. The cursor follows the card, so the tape's Space opens the right page. That
+  is what a real crown does, so the take keeps it.
+
+**"Plan 1.0", not "Plan the 1.0 release".** Under the cursor a spinning, crowned card has about
+14 cells for its title. The longer title was cut to "Plan the 1.0 ~", and the sweep never
+reached its end.
+
+**Tests.** Nothing in the product changed. Three sandbox dry runs without VHS (daemon, seed,
+`crown_ticket` over the wire, `capture-pane` of every pane) found the two argument clashes and
+then showed the whole sequence. Three VHS takes followed. The first failed on the crash. The
+second had the cut title. The third is the committed GIF, checked frame by frame at 2 fps.
+`record.sh` with no argument then re-recorded the README demo once through the changed kit. It
+ran the whole 36 s take, `raise_hand` through `Board` included, and the committed `demo.gif`
+was kept. After the rebase onto T-477 the crown clip was recorded again from the merged kit
+(the same 13.4 s, now the committed GIF), and the demo and search takes each ran to the end;
+their committed GIFs were kept.

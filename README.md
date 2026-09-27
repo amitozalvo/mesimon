@@ -76,6 +76,13 @@ and type the task into it.
 
 <sub>Three letters narrow fifteen tickets to one, and `enter` scrolls the board to its card.</sub>
 
+**The crown.** `ctrl-o` on a card lets its agent file, move, tag and start the other tickets.
+
+![Crowning a working agent's ticket with ctrl-o: its agent files two tickets, moves one, tags one and starts an agent on another](assets/demo/crown.gif)
+
+<sub>The crowned agent runs the board, and you keep the crown: `ctrl-o` on its card takes it
+back. [More on the crown](docs/USING.md#the-crown-one-agent-runs-the-board).</sub>
+
 ## Three promises
 
 1. **A strict write allowlist.** mesimon writes to a short list of paths, every one named, and

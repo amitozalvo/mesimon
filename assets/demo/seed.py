@@ -65,7 +65,26 @@ SEARCH = [
     ("DONE", "Set up CI", None, "Run the tests on every push."),
 ]
 
-BOARDS = {"demo": TICKETS, "search": SEARCH}
+# crown.tape: the agent at work is the one the tape crowns, and
+# stub-claude.py runs the board from it. "Custom slugs" sits in IN PROGRESS
+# with nobody on it, for the crown to move back.
+CROWN = "Plan 1.0"
+CROWN_BOARD = [
+    ("TODO", "Expire old links", "FEATURE",
+     "A link nobody clicked for 30 days should 404 and free its slug."),
+    ("TODO", "Document config", None,
+     "Every key in shortlink.toml, its default, and an example."),
+    ("IN PROGRESS", CROWN, "MILESTONE", "Decide what 1.0 needs, and file it."),
+    ("IN PROGRESS", "Custom slugs", "FEATURE",
+     "Let a user pick the slug instead of getting a random one."),
+    ("REVIEW", "Fix slash 404", "BUG",
+     "GET /abc/ should redirect like GET /abc."),
+    ("DONE", "Set up CI", None, "Run the tests on every push."),
+]
+
+BOARDS = {"demo": TICKETS, "search": SEARCH, "crown": CROWN_BOARD}
+# The ticket whose agent is already at work, where it is not BUSY.
+AT_WORK = {"crown": CROWN}
 
 
 def sock_path(repo):
@@ -113,7 +132,8 @@ def board(repo, tape="demo"):
     # The first-run offer to write an agent brief would sit in the header.
     w.ask({"cmd": "ignore_brief_offer"})
     # One agent already at work, so the board opens with a spinner on it.
-    w.ask({"cmd": "spawn_session", "ticket": ids[BUSY], "kind": "claude",
+    at_work = ids[AT_WORK.get(tape, BUSY)]
+    w.ask({"cmd": "spawn_session", "ticket": at_work, "kind": "claude",
            "submit_prompt": True, "plan": False})
 
 
