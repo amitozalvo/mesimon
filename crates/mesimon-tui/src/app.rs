@@ -4078,6 +4078,7 @@ impl App {
             // `install.sh` run in another terminal.
             release_available: self.release.available() && !self.update_ready(),
             release_tag: self.release.tag(),
+            release_by_brew: self.release.by_brew(),
             // `reloading` takes the offer down the instant the press lands, so
             // a slow rc file does not leave the chip standing as if it missed.
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
@@ -4623,6 +4624,12 @@ impl App {
             Verb::Reload => {
                 let _ = self.client.request(Command::Shutdown);
                 self.pending_reexec = true;
+            }
+            Verb::InstallUpdate if self.release.by_brew() => {
+                // Once brew has swapped the binary, the exe's mtime moves and
+                // the board offers `U` like after any install.
+                self.status =
+                    crate::clipboard::copy_status("brew upgrade mesimon", "brew upgrade mesimon");
             }
             Verb::InstallUpdate => {
                 if let Some(tag) = self.release.begin_install() {

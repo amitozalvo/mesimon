@@ -86,6 +86,11 @@ runner. **Both Docker steps are paused by the author** until they say Windows/WS
 operational — the script prints `SKIPPED`, `MESIMON_RELEASE_DOCKER=1` runs them, and you should
 not open Docker Desktop for a release.
 
+**The Homebrew tap** (`brew install amitozalvo/tap/mesimon`) is one formula, generated from
+`ci/homebrew/mesimon.rb` by `ci/homebrew-formula.sh` and pushed to `amitozalvo/homebrew-tap` by
+`release.sh` after `gh release create`. The template's header says how to check a change. The
+updater never replaces a binary brew installed (`release.rs::by_homebrew`).
+
 `ci/prune-deps.py` deletes split-debuginfo objects no current binary references (the runner
 calls it after every run). It is what keeps the first-exec Gatekeeper hold down: syspolicyd's
 scan is slow in proportion to the *directory*, and one edit to a core crate mints ~6,500 `.o`
@@ -435,7 +440,9 @@ will not show up in our tests until they break something.
 - **`/proc/self/exe` reads `…/mesimon (deleted)`** the moment an install renames a new file over
   the running one. Ask for the binary's path through `mesimon_core::exe::current_exe`, which
   caches the first answer and strips the suffix; a core test scans `src/` for a raw
-  `std::env::current_exe`.
+  `std::env::current_exe`. Under Homebrew on Linux it names the versioned keg
+  (`Cellar/mesimon/<v>/bin`), which `brew upgrade` deletes; `current_exe` takes it through
+  `opt/mesimon`. macOS names brew's `bin/` link, which survives.
 - **A human refusing a dialog fires no hook.** "No, keep planning", an Esc out of a question or a
   denied permission emits no `PostToolUse`, no `PostToolUseFailure` and no `PermissionDenied`
   (that one is auto mode's classifier). The agent's next `PreToolUse` is the first frame that

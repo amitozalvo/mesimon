@@ -127,6 +127,8 @@ Additional targeted gates:
 - Linux release artifacts: `ci/build-linux.sh`.
 - Release rehearsal: `ci/release.sh --dry-run`; follow the script's current Docker policy and
   never publish as part of an ordinary development task.
+- Homebrew formula: `ci/homebrew/mesimon.rb` is the template `release.sh` fills and pushes to
+  `amitozalvo/homebrew-tap`; its header gives the local-tap check for a change.
 - README demo: `assets/demo/record.sh` re-records `assets/demo.gif` (needs `vhs`) after a
   change the recording shows.
 

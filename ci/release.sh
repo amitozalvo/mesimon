@@ -23,6 +23,8 @@
 #   * the macOS binary is never stripped, and its signature is verified
 #   * every packaged artifact is executed before it is published, the Linux
 #     ones inside a Debian container of their own architecture
+#   * the Homebrew formula is filled from the checksums just written, and is
+#     pushed to the tap only after the release it names is published
 #
 # Usage:  ci/release.sh              build, verify, package, publish
 #         ci/release.sh --dry-run    everything except the upload
@@ -54,6 +56,9 @@ LINUX_TARGETS="x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
 # while the code stays private.
 SRC_REPO="amitozalvo/mesimon"
 DIST_REPO="amitozalvo/mesimon-releases"
+# The Homebrew tap: `brew install amitozalvo/tap/mesimon`. Its one formula is
+# generated from ci/homebrew/mesimon.rb and names DIST_REPO's tarballs.
+TAP_REPO="amitozalvo/homebrew-tap"
 
 die() { echo "error: $1" >&2; [ $# -gt 1 ] && echo "  fix: $2" >&2; exit 1; }
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
@@ -309,6 +314,15 @@ $said" "MESIMON_RELEASE=1 must reach ci/build-linux.sh, and release.rs must name
   esac
 done
 
+# --- the Homebrew formula ---------------------------------------------------
+
+# Filled from the .sha256 files above, so it names exactly these tarballs. It
+# is written here, before the dry-run exit, so a dry run shows the formula the
+# tap would get.
+step "Homebrew formula"
+./ci/homebrew-formula.sh "$tag" dist > dist/mesimon.rb
+grep -E '^ *(url|sha256) ' dist/mesimon.rb
+
 # --- notes ------------------------------------------------------------------
 
 # The tag's section: from its `## <tag> — <date>` heading to the next one.
@@ -321,7 +335,7 @@ awk -v want="## $tag" '
 
 if [ "$DRY_RUN" = "1" ]; then
   step "dry run — nothing published"
-  echo "artifacts in dist/, notes in dist/notes.md"
+  echo "artifacts in dist/, notes in dist/notes.md, the tap's formula in dist/mesimon.rb"
   echo "publish with: ci/release.sh"
   exit 0
 fi
@@ -334,6 +348,11 @@ gh auth status >/dev/null 2>&1 || die "gh is not logged in" "gh auth login"
 gh repo view "$DIST_REPO" >/dev/null 2>&1 || \
   die "the public releases repo does not exist yet" \
       "gh repo create $DIST_REPO --public --add-readme"
+# Checked BEFORE the release exists: a tap that cannot be written would
+# otherwise leave `brew install` on the previous version.
+gh repo view "$TAP_REPO" >/dev/null 2>&1 || \
+  die "the Homebrew tap does not exist yet" \
+      "gh repo create $TAP_REPO --public --add-readme"
 
 # The dist repo carries no source, so its tag would otherwise name nothing.
 # Record the commit this artifact was actually built from.
@@ -354,20 +373,27 @@ gh release create "$tag" \
 # Keep the public repo's install.sh and README in step with what was just
 # released — the curl one-liner reads them straight off its main branch.
 publish_file() {
-  local src="$1" dest="$2" existing
-  existing=$(gh api "repos/$DIST_REPO/contents/$dest" --jq .sha 2>/dev/null || true)
-  set -- -X PUT "repos/$DIST_REPO/contents/$dest" \
+  local repo="$1" src="$2" dest="$3" existing
+  existing=$(gh api "repos/$repo/contents/$dest" --jq .sha 2>/dev/null || true)
+  set -- -X PUT "repos/$repo/contents/$dest" \
     -f message="sync $dest ($tag)" \
     -f content="$(base64 < "$src" | tr -d '\n')"
   [ -n "$existing" ] && set -- "$@" -f sha="$existing"
   gh api "$@" --silent
 }
 step "sync install.sh + README to $DIST_REPO"
-publish_file install.sh install.sh
-publish_file ci/releases-readme.md README.md
+publish_file "$DIST_REPO" install.sh install.sh
+publish_file "$DIST_REPO" ci/releases-readme.md README.md
+
+# After the release, never before: the formula's urls are its assets, and a
+# `brew install` against a formula pushed first would 404.
+step "bump the Homebrew tap ($TAP_REPO)"
+publish_file "$TAP_REPO" dist/mesimon.rb Formula/mesimon.rb
 
 echo
 echo "published $tag"
 echo
 echo "share this line:"
 echo "  curl -fsSL https://raw.githubusercontent.com/$DIST_REPO/main/install.sh | sh"
+echo "or, with Homebrew:"
+echo "  brew install ${TAP_REPO%%/*}/tap/mesimon"

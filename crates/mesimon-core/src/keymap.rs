@@ -972,6 +972,9 @@ pub struct Ctx {
     /// name it, because "an update is available" with no version is a claim
     /// you cannot look up, decline, or report a bug against.
     pub release_tag: String,
+    /// Homebrew installed this binary, so the offer is `brew upgrade mesimon`
+    /// and the row copies it rather than downloading (T-463).
+    pub release_by_brew: bool,
     /// A shell startup file has changed since the environment mesimon is
     /// handing to new panes was captured.
     pub shell_env_stale: bool,
@@ -3733,11 +3736,24 @@ static MENU_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::InstallUpdate,
-        label: |c| format!("Install {}", c.release_tag),
+        label: |c| {
+            if c.release_by_brew {
+                format!("Upgrade to {} with brew", c.release_tag)
+            } else {
+                format!("Install {}", c.release_tag)
+            }
+        },
         // Says where it stops. The download is not the restart: a board that
         // swapped its own binary out from under a running session without
-        // saying so would be the trespass `U` exists to avoid.
-        detail: |_| "downloads and verifies it ∙ nothing restarts yet".into(),
+        // saying so would be the trespass `U` exists to avoid. A binary brew
+        // installed is brew's to replace, so that row hands over the command.
+        detail: |c| {
+            if c.release_by_brew {
+                "copies brew upgrade mesimon, to run in a shell".into()
+            } else {
+                "downloads and verifies it ∙ nothing restarts yet".into()
+            }
+        },
         // The tag is half the row, so a flag without one is not an offer.
         avail: |c| c.release_available && !c.release_tag.is_empty(),
         key: "",
@@ -8361,6 +8377,18 @@ mod tests {
         let sleep = MENU_ITEMS.iter().find(|m| m.verb == Verb::SleepAllDone).expect("row");
         assert!(!(sleep.detail)(&thin).contains("GiB"), "a ~0.0GiB payoff must not be claimed");
         assert!((sleep.detail)(&fat).contains("~3.0GiB"));
+        // A binary brew installed is offered the same version, and the row
+        // says brew does the installing (T-463).
+        let brew = Ctx {
+            release_available: true,
+            release_tag: "v0.1.0-alpha.5".into(),
+            release_by_brew: true,
+            ..Default::default()
+        };
+        let install = MENU_ITEMS.iter().find(|m| m.verb == Verb::InstallUpdate).expect("row");
+        assert_eq!((install.label)(&ctx), "Install v0.1.0-alpha.5");
+        assert_eq!((install.label)(&brew), "Upgrade to v0.1.0-alpha.5 with brew");
+        assert!((install.detail)(&brew).contains("brew upgrade mesimon"));
     }
 
     #[test]

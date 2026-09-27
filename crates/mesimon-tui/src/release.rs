@@ -21,6 +21,13 @@
 //!
 //! `MESIMON_NO_UPDATE_CHECK=1` is the opt-out for a shipped build, and it is
 //! read before anything else: no stamp, no thread, no request.
+//!
+//! **A binary Homebrew installed is asked about, never replaced** (T-463).
+//! The board still hears of a newer tag and says so, but taking the offer
+//! names `brew upgrade mesimon` instead of downloading: a file swapped in at
+//! brew's `bin/` link is one brew no longer tracks, and its next upgrade
+//! refuses to link over it. The tap is bumped by the same `ci/release.sh`
+//! run that publishes the tag, so the two answers agree.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -122,6 +129,8 @@ struct Eligible {
     /// Where a download is unpacked, inside the 0700 runtime dir. A
     /// half-fetched tarball is not state and a reboot should take it.
     stage_dir: PathBuf,
+    /// Homebrew installed this binary: see [`by_homebrew`].
+    brew: bool,
 }
 
 pub struct ReleaseWatch {
@@ -245,7 +254,7 @@ impl ReleaseWatch {
             return None;
         };
         let tag = tag.clone();
-        let e = self.eligible.as_ref()?;
+        let e = self.eligible.as_ref().filter(|e| !e.brew)?;
         let (exe, stage_dir) = (e.exe.clone(), e.stage_dir.clone());
         self.stage = Stage::Installing(tag.clone());
         let t = tag.clone();
@@ -259,6 +268,12 @@ impl ReleaseWatch {
     /// A newer release is published and nothing is in flight.
     pub fn available(&self) -> bool {
         matches!(self.stage, Stage::Available(_))
+    }
+
+    /// Homebrew installed this binary, so the offer is `brew upgrade
+    /// mesimon` and `begin_install` takes nothing.
+    pub fn by_brew(&self) -> bool {
+        self.eligible.as_ref().is_some_and(|e| e.brew)
     }
 
     /// The tag the offer names. Empty when there is no offer — the menu row
@@ -338,7 +353,21 @@ fn eligibility(repo_root: &Path) -> Option<Eligible> {
     }
     let exe = mesimon_core::exe::current_exe().ok()?;
     let paths = mesimon_daemon::Paths::for_repo(repo_root).ok()?;
-    Some(Eligible { exe, stamp: stamp_path()?, stage_dir: paths.rt_dir.join("update") })
+    Some(Eligible {
+        exe,
+        stamp: stamp_path()?,
+        stage_dir: paths.rt_dir.join("update"),
+        brew: by_homebrew(),
+    })
+}
+
+/// Homebrew installed this binary: its real path is inside a keg. macOS
+/// starts us by brew's `bin/` link and Linux by the keg's `opt/` link
+/// (`exe::current_exe`), so the answer is read off the canonical path.
+fn by_homebrew() -> bool {
+    mesimon_core::exe::current_exe()
+        .and_then(std::fs::canonicalize)
+        .is_ok_and(|p| mesimon_core::exe::keg_opt_path(&p).is_some())
 }
 
 /// Why this build does not check, or `None` when it does. One function, so
@@ -392,14 +421,21 @@ pub fn doctor_line() -> String {
     if let Some(why) = why_off() {
         return format!("off ∙ {why}");
     }
-    let Some(stamp) = stamp_path().and_then(|p| read_stamp(&p)) else {
-        return format!("on ∙ never asked ∙ {DIST_REPO}");
+    let line = match stamp_path().and_then(|p| read_stamp(&p)) {
+        None => format!("on ∙ never asked ∙ {DIST_REPO}"),
+        Some(stamp) => {
+            let ago = ago(stamp.age());
+            match stamp.latest {
+                Some(t) if is_newer(&t) => format!("on ∙ {t} is out ∙ asked {ago}"),
+                Some(t) => format!("on ∙ {t} is the newest ∙ asked {ago}"),
+                None => format!("on ∙ asked {ago}"),
+            }
+        }
     };
-    let ago = ago(stamp.age());
-    match stamp.latest {
-        Some(t) if is_newer(&t) => format!("on ∙ {t} is out ∙ asked {ago}"),
-        Some(t) => format!("on ∙ {t} is the newest ∙ asked {ago}"),
-        None => format!("on ∙ asked {ago}"),
+    if by_homebrew() {
+        format!("{line} ∙ installed by Homebrew, so brew upgrade mesimon updates it")
+    } else {
+        line
     }
 }
 
@@ -629,9 +665,17 @@ pub fn update_command(check_only: bool) -> i32 {
         println!("{ours} is the newest");
         return 0;
     }
+    let brew = by_homebrew();
     if check_only {
-        println!("{tag} is out ∙ this is {ours} ∙ mesimon update installs it");
+        let how = if brew { "brew upgrade mesimon" } else { "mesimon update" };
+        println!("{tag} is out ∙ this is {ours} ∙ {how} installs it");
         return 0;
+    }
+    if brew {
+        eprintln!(
+            "mesimon update: {tag} is out ∙ Homebrew installed {ours} ∙ brew upgrade mesimon"
+        );
+        return 1;
     }
     let exe = match mesimon_core::exe::current_exe() {
         Ok(exe) => exe,
@@ -820,6 +864,7 @@ mod tests {
             exe: dir.join("mesimon"),
             stamp: dir.join("update-check.json"),
             stage_dir: dir.join("update"),
+            brew: false,
         });
         w
     }
@@ -913,6 +958,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A binary Homebrew installed hears of a newer tag like any other, and
+    /// taking the offer downloads nothing: the board says `brew upgrade
+    /// mesimon` instead, and the offer stays up until brew has done it.
+    #[test]
+    fn a_brew_install_is_offered_and_never_downloaded() {
+        let dir = scratch("brew");
+        let mut w = eligible_watch(&dir, a_newer_one);
+        if let Some(e) = w.eligible.as_mut() {
+            e.brew = true;
+        }
+        w.check_now();
+        settle(&mut w);
+        assert!(w.available(), "a brew install was not told");
+        assert!(w.by_brew());
+        assert_eq!(w.begin_install(), None);
+        assert!(!w.working, "a brew install sent a download");
+        assert!(w.available(), "the offer came down with nothing taken");
+        assert!(!dir.join("update").exists(), "staged a download");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// And the guard under the gate: a binary inside a build tree is refused
     /// whatever the channel says, because the alternative is a download
     /// landing on somebody's `cargo build` output.
@@ -1001,12 +1067,17 @@ mod tests {
         let release_sh = include_str!("../../../ci/release.sh");
         let build_linux_sh = include_str!("../../../ci/build-linux.sh");
         let install_sh = include_str!("../../../install.sh");
+        let formula = include_str!("../../../ci/homebrew/mesimon.rb");
         for t in PUBLISHED {
             assert!(
                 release_sh.contains(t) || build_linux_sh.contains(t),
                 "{t} is built by no script in ci/"
             );
             assert!(install_sh.contains(t), "install.sh cannot name the {t} asset");
+            assert!(
+                formula.contains(&format!("@SHA256:{t}@")),
+                "the Homebrew formula has no checksum slot for {t}"
+            );
         }
         if let Some(t) = TARGET {
             assert!(PUBLISHED.contains(&t), "this binary's target {t} is not a published one");

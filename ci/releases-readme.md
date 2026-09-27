@@ -16,6 +16,12 @@ curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/in
 On macOS there is nothing else to install first. On Linux, tmux from your
 package manager (`sudo apt install tmux`).
 
+Or with Homebrew:
+
+```sh
+brew install amitozalvo/tap/mesimon
+```
+
 Then:
 
 ```sh
@@ -23,7 +29,8 @@ mesimon doctor            # checks your environment, prints fixes, changes nothi
 cd <a git repo> && mesimon
 ```
 
-Re-running the install line is how you update.
+Re-running the install line is how you update. With Homebrew, `brew upgrade
+mesimon`.
 
 ## Requirements
 

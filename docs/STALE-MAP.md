@@ -14213,3 +14213,65 @@ together, since moving one leaves the row with two edges of its own:
 two colour probes one cell left, pins the row's first cell to the footer's (1) and cuts a
 two-notice row at 60 cells with the tail kept. 36 goldens reminted, each one line losing one
 leading space: the 35 hover rows from T-471 and `train_blocked_120x30`'s notice.
+
+## Homebrew tap: `brew install amitozalvo/tap/mesimon` (T-463, 2026-09-27, "Homebrew tap: brew install amitozalvo/tap/mesimon")
+
+A second install road beside the curl line, for the audience that expects one. It installs the
+same published tarballs as `install.sh`; nothing is built from source.
+
+**The formula is generated, not edited in the tap.** `ci/homebrew/mesimon.rb` is a template with
+`@VERSION@` and one `@SHA256:<target>@` slot per published target. `ci/homebrew-formula.sh <tag>
+<dir>` fills it from the release's `.sha256` files and refuses to print a formula with a slot left
+empty. `release.sh` writes `dist/mesimon.rb` before the dry-run exit, checks that `$TAP_REPO`
+exists before `gh release create`, and pushes `Formula/mesimon.rb` through the contents API after
+the release exists, so the formula never names a 404. `release.rs`'s published-target test now also
+requires a checksum slot per target in the template.
+
+**What the formula does.** macOS: `bin.install` both `mesimon` and `mesimon-tmux`. Brew links both
+into `<prefix>/bin`, `tmux_bin()`'s sibling rung finds the bundled tmux there, and it never shadows a
+`tmux`. The tmux licenses go to `share/doc/mesimon`. Linux: `mesimon` only, plus a caveat naming the
+distro tmux. No `depends_on "tmux"`, because the ticket says Linux runs the distro's. No `version`
+line: brew reads `0.1.0-alpha.27` off all three urls and orders alpha.10 after alpha.9, and
+`brew audit --strict` calls a stated one redundant. `url` sits in `on_arm`/`on_intel`, because
+`FormulaAudit/ComponentsOrder` refuses a `url` directly in `on_macos`. On an Intel Mac the formula
+has no url and brew refuses it; the `depends_on arch: :arm64` states the intent. The test runs
+`--version` and, on macOS, checks that doctor resolves `/mesimon-tmux`.
+
+**Verified against alpha.27 on this machine**, through a throwaway local tap (`brew tap-new
+--no-git`): style clean, `audit --strict --online` clean, `brew install` put both links in
+`/opt/homebrew/bin`, and `brew test` passed. The installed board reported `binary
+/opt/homebrew/bin/mesimon` and `tmux binary /opt/homebrew/bin/mesimon-tmux (shipped with
+mesimon)`. Both Linux tarballs were downloaded and matched the formula's checksums. Then uninstall
+and untap.
+
+**The updater: detect Homebrew and hand over `brew upgrade mesimon`** (the ticket's "cleaner"
+option). alpha.27 installed by brew reports `update checks on`, and taking the offer would
+`rename` a plain file over brew's `bin/mesimon` link. Brew no longer tracks that file, and its
+next upgrade fails to link over it. Now `release.rs::by_homebrew` (the canonical exe path is
+inside a keg) makes the watch keep asking and keep the chip, while `begin_install` takes nothing.
+The menu row reads `Upgrade to <tag> with brew` and copies `brew upgrade mesimon` (`Ctx::
+release_by_brew`). `mesimon update --check` names brew; `mesimon update` prints the command and
+exits 1. The doctor line appends `installed by Homebrew`. After a `brew upgrade`, the exe's mtime
+moves and `U` is offered as after any install. **Seed the tap from the first release that carries
+this, not alpha.27**, or the first brew users can still clobber the link.
+
+**Linux keg paths are taken through `opt/`** (`exe::current_exe`). macOS's `current_exe` is the
+path the shell exec'd, which is brew's `bin/` link (measured with a symlinked binary). That link
+survives an upgrade. Linux's `/proc/self/exe` is the canonical keg path,
+`Cellar/mesimon/<v>/bin/mesimon`, and `brew upgrade` deletes that directory. Every hook set would
+then name a dead binary, the update watch would stat nothing, and `U` would exec a missing file.
+`<prefix>/opt/mesimon` is the link brew keeps on the linked keg. It is taken only when it
+canonicalizes to the running file, so a keg run directly while another version is linked keeps its
+own path. `doctor`'s `on PATH` check now also accepts a PATH entry whose `mesimon` is the same
+file, since `opt/mesimon/bin` is never on PATH itself.
+
+**Considered and not taken.** Turning the check off under brew: brew users would lose the in-board
+notice, and this project ships alphas often. Running `brew upgrade` from the board: it can take
+minutes and prompt, and it is not the board's process to own. A `depends_on "tmux"` on Linux: brew's
+tmux would replace the distro one the ticket names.
+
+**Tests:** `exe::a_keg_path_is_named_through_brews_opt_link`,
+`exe::the_opt_link_is_taken_only_for_the_linked_keg` (a keg laid out in tmp),
+`release::a_brew_install_is_offered_and_never_downloaded`,
+`release::every_published_target_is_built_by_ci_and_installable` (the template's slots), and the
+brew row in `keymap::every_menu_row_is_spelled`.

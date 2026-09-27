@@ -105,6 +105,15 @@ curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/in
 mesimon doctor    # confirm the environment
 ```
 
+Or with Homebrew, on macOS (Apple Silicon) or Linux:
+
+```sh
+brew install amitozalvo/tap/mesimon
+```
+
+The formula installs the same published binaries, and on macOS the same bundled tmux as
+`mesimon-tmux`. Homebrew updates it: `brew upgrade mesimon`.
+
 Binaries are published from
 [amitozalvo/mesimon-releases](https://github.com/amitozalvo/mesimon-releases), a public repo that
 carries releases and nothing else — so installing needs no GitHub account, no login, and no access
@@ -138,6 +147,12 @@ restarts nothing: an open board offers `U`. `mesimon update --check` only asks.
   it heard.
 - Development builds never check. Only the binary `ci/release.sh` cuts is stamped to, so a
   `cargo build` board makes no request and can never have its binary replaced by a download.
+
+**Installed with Homebrew?** Then `brew upgrade mesimon` updates it, and mesimon never replaces a
+binary Homebrew installed. The board still says when a newer version is out; its menu row reads
+`Upgrade to v0.1.0-alpha.5 with brew` and copies `brew upgrade mesimon` for you to run.
+`mesimon update` prints the same command instead of downloading. After the upgrade an open board
+offers `U`, as below.
 
 **Or re-run the install line**, which is still the whole procedure and the only one on a machine
 where the check is off.

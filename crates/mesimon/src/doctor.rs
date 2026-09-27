@@ -281,9 +281,21 @@ fn install(verbose: bool) -> Section {
             // path, and the TUI's `update ready` offer watches its mtime. A
             // binary that moves per version breaks both, silently.
             let dir = exe.parent().map(|d| d.display().to_string()).unwrap_or_default();
-            let on_path = std::env::var("PATH").unwrap_or_default().split(':').any(|p| p == dir);
-            records.push(if on_path {
-                rec(Level::Ok, "on PATH", redact(&dir, verbose))
+            // By the directory, or by a PATH entry whose `mesimon` IS this
+            // file: Homebrew on Linux runs us as `<prefix>/opt/mesimon/bin/
+            // mesimon` and puts `<prefix>/bin`, a link to the same file, on
+            // PATH (exe.rs).
+            let same = |p: &str| {
+                let found = exe.file_name().map(|n| Path::new(p).join(n));
+                matches!(
+                    (found.map(std::fs::canonicalize), std::fs::canonicalize(&exe)),
+                    (Some(Ok(a)), Ok(b)) if a == b
+                )
+            };
+            let path = std::env::var("PATH").unwrap_or_default();
+            let on_path = path.split(':').find(|p| *p == dir || same(p));
+            records.push(if let Some(on_path) = on_path {
+                rec(Level::Ok, "on PATH", redact(on_path, verbose))
             } else {
                 rec(Level::Warn, "on PATH", format!("{} is not in PATH", redact(&dir, verbose)))
                     .advice(format!("Add it: export PATH=\"{}:$PATH\"", redact_cmd(&dir)))
