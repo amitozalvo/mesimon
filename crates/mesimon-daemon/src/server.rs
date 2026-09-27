@@ -1050,6 +1050,9 @@ pub fn run(paths: Paths) -> Result<()> {
         }
     }
     d.refresh_worktree_flags();
+    // On fresh flags: the landed trees of archived tickets the last daemon
+    // left standing (T-481). The first tick tears them down.
+    d.reclaim_archived();
     // Whether the repo already tells its sessions to read their ticket. One
     // read at startup, then only when a `stat` says the file moved.
     d.claude_md.refresh(&d.paths.repo_root);
@@ -5791,6 +5794,10 @@ impl Daemon {
 
     /// X: archive every ticket the offer prices. Per-ticket gate re-checked
     /// (a session can wake between pricing and the keypress); one broadcast.
+    /// Each ticket goes down `archive_one`, the road `a a` takes, and gets a
+    /// feed row of its own: the chokepoint logs a command that names one
+    /// ticket, and this one names none (T-481 — the offer left no row at
+    /// all, which is how its skipped reclaim went unseen).
     fn archive_all(&mut self) -> (usize, usize) {
         let ids = self.archive_candidates();
         let at = now_iso();
@@ -5801,21 +5808,10 @@ impl Daemon {
                 skipped += 1;
                 continue;
             }
-            if let Some(t) = self.board.ticket_mut(id) {
-                t.archived = Some(Archived {
-                    at: at.clone(),
-                    by: "local".into(),
-                    until: None,
-                    needs_you: false,
-                });
-                let t = t.clone();
-                let _ = store::save_ticket(&self.paths, &t);
+            if self.archive_one(id, at.clone(), "local".into()) {
+                self.feed.board("local", "archive_all", Some(id));
                 archived += 1;
             }
-            // The offer archives like `a a` does: a crowned ticket leaving
-            // the board takes the crown with it (T-411). A snooze is the one
-            // archive that keeps it — that absence is temporary.
-            self.drop_crown_if(id);
         }
         self.archive_cache = self.archive_figures();
         (archived, skipped)
@@ -8507,17 +8503,29 @@ impl Daemon {
         if self.board.ticket_awake_sessions(id) > 0 {
             return Response::Err { message: "sessions still awake — sleep them first".into() };
         }
-        let at = now_iso();
-        let by = by.note_author();
-        let resp = self.with_ticket(id, |t| {
-            t.archived = Some(Archived { at, by, until: None, needs_you: false })
-        });
-        // A crowned ticket leaving the board takes the crown with it (T-411).
-        self.drop_crown_if(id);
+        self.archive_one(id, now_iso(), by.note_author());
         // Re-price now — a taken offer must not linger until the next bucket.
         self.archive_cache = self.archive_figures();
+        self.broadcast();
+        Response::Ok
+    }
+
+    /// One ticket off the board, whichever gesture asked — `a a` or the
+    /// offer's X, which once set the flag on its own and skipped the reclaim
+    /// (T-481: 49 landed worktrees outlived their archive, ~126 GB of
+    /// `target/`). The caller has judged the gates; this is the rest, so the
+    /// two cannot drift again: the flag on disk, the crown (a crowned ticket
+    /// leaving the board takes it along, T-411 — a snooze is the one archive
+    /// that keeps it, and does not come here), the reclaim. False when the
+    /// ticket is not on the board.
+    fn archive_one(&mut self, id: ulid::Ulid, at: String, by: String) -> bool {
+        let Some(t) = self.board.ticket_mut(id) else { return false };
+        t.archived = Some(Archived { at, by, until: None, needs_you: false });
+        let t = t.clone();
+        let _ = store::save_ticket(&self.paths, &t);
+        self.drop_crown_if(id);
         self.reclaim_on_archive(id);
-        resp
+        true
     }
 
     /// The archive is where the disk went to hide (T-278, 2026-09-06: 14 of
@@ -8548,6 +8556,40 @@ impl Daemon {
             why: TeardownWhy::Archived,
             sids: vec![],
         });
+    }
+
+    /// The archive's reclaim, for the trees it never reached (T-481): the
+    /// offer's X skipped it until then, and the queue it feeds is memory
+    /// only, so an archive that raced a restart lost its teardown. At start
+    /// and whenever a worktree sample lands, an archived ticket (never a
+    /// snooze — a snooze is a return) whose tree still stands on disk and
+    /// whose sample reads merged goes to `reclaim_on_archive`, and its fresh
+    /// `ticket_merged` and pane gates decide. The sample is the prefilter,
+    /// so an unmerged archived tree costs no fork per bucket; a tree already
+    /// gone is left alone, so the squash-merged branch `branch -d` refuses
+    /// (`Evicted`, kept on purpose) is not re-queued, and re-logged, every
+    /// bucket. A ticket whose `!` terminal is open waits for it to close:
+    /// nobody asked for this teardown just now, and it would kill that shell.
+    fn reclaim_archived(&mut self) {
+        let due: Vec<ulid::Ulid> = self
+            .worktrees
+            .iter()
+            .filter(|(id, b)| {
+                let archived = self
+                    .board
+                    .ticket(**id)
+                    .and_then(|t| t.archived.as_ref())
+                    .is_some_and(|a| a.until.is_none());
+                archived
+                    && self.wt_merged.get(*id).copied().unwrap_or(false)
+                    && b.path.is_dir()
+                    && !self.terminals.contains_key(&Some(**id))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            self.reclaim_on_archive(id);
+        }
     }
 
     /// Snooze: an archive with a deadline (T-74). `archive_ticket`'s gates
@@ -9792,6 +9834,9 @@ impl Daemon {
             });
         }
         let changed = self.absorb_worktree_flags(samples);
+        // A merge that lands after the archive (a PR squashed later, a
+        // `git merge` by hand) is one only the sample can see (T-481).
+        self.reclaim_archived();
         let acted = self.train_pass();
         if acted {
             self.persist_sessions();

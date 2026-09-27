@@ -849,6 +849,22 @@ pub fn read_note(paths: &Paths, short_key: &str, id: ulid::Ulid) -> std::io::Res
     std::fs::read_to_string(note_path(paths, short_key, id))
 }
 
+/// The tickets archived on disk, snoozes left out (a snooze is a return),
+/// read with no side effect: `doctor` counts their worktrees (T-481), and
+/// `load` would quarantine a file it cannot parse. Such a file is simply
+/// not counted here.
+pub fn read_archived(paths: &Paths) -> std::collections::HashSet<ulid::Ulid> {
+    let Ok(rd) = std::fs::read_dir(paths.board_dir.join("board/tickets")) else {
+        return Default::default();
+    };
+    rd.flatten()
+        .filter_map(|e| std::fs::read_to_string(e.path().join("ticket.toml")).ok())
+        .filter_map(|text| toml::from_str::<TicketFile>(&text).ok())
+        .filter(|f| f.ticket.archived.as_ref().is_some_and(|a| a.until.is_none()))
+        .map(|f| f.ticket.id)
+        .collect()
+}
+
 pub fn delete_note(paths: &Paths, short_key: &str, id: ulid::Ulid) -> Result<()> {
     match std::fs::remove_file(note_path(paths, short_key, id)) {
         Ok(()) => Ok(()),
@@ -1691,6 +1707,30 @@ by = "local"
         let back: Ticket = toml::from_str(&s).unwrap();
         assert_eq!(back.archived, t.archived);
         assert_eq!(back.column, "DONE");
+    }
+
+    /// `doctor`'s count (T-481): an archive counts, a snooze and a board
+    /// ticket do not, and a file that does not parse is skipped, not moved.
+    #[test]
+    fn read_archived_counts_archives_only_and_touches_nothing() {
+        let (dir, paths) = scratch("read-archived");
+        let tickets = paths.board_dir.join("board/tickets");
+        let archived = "[archived]\nat = \"@1\"\nby = \"local\"\n";
+        write(
+            &tickets.join("T-1/ticket.toml"),
+            &format!("{}{archived}", ticket_body("T-1", "DONE")),
+        );
+        write(
+            &tickets.join("T-2/ticket.toml"),
+            &format!("{}{archived}until = \"@9999999999\"\n", ticket_body("T-2", "DONE")),
+        );
+        write(&tickets.join("T-3/ticket.toml"), &ticket_body("T-3", "TODO"));
+        write(&tickets.join("T-4/ticket.toml"), "not = [toml");
+        let got = read_archived(&paths);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got.contains(&"01J8ZQ7VJ00000000000000001".parse().unwrap()));
+        assert!(tickets.join("T-4/ticket.toml").is_file(), "no quarantine from a read");
+        cleanup(&dir, &paths);
     }
 
     /// A hand-written ticket.toml with the trailing `[archived]` table parses.

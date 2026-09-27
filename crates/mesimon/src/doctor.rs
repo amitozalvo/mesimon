@@ -833,7 +833,103 @@ fn daemon(repo: &Path, verbose: bool) -> Section {
             quarantined.iter().map(|p| redact_cmd(p)).collect::<Vec<_>>().join("  ")
         ))
     });
+    records.push(archived_trees(&paths));
     Section { name: "daemon", records }
+}
+
+/// How long `archived_trees` walks for a size before it settles for a floor.
+const TREE_SIZE_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The worktrees of archived tickets still on disk (T-481): the number that
+/// would have said "126 GB" weeks before the disk filled. An archived
+/// ticket's tree stays while its work has not landed, which is what keeps
+/// the archive reversible, and the daemon tears it down once it has — so a
+/// merged one still standing is a WARN, a reclaim that never reached it.
+/// Shown as `ok` otherwise, never as a note: a note is hidden without
+/// `--verbose`, and the size is the point.
+fn archived_trees(paths: &mesimon_daemon::Paths) -> Record {
+    use mesimon_daemon::worktree;
+    let archived = mesimon_daemon::store::read_archived(paths);
+    let bindings = match worktree::load_bindings(paths) {
+        Ok(b) => b,
+        Err(e) => return rec(Level::Warn, "archived trees", format!("unreadable: {e}")),
+    };
+    let standing: Vec<&worktree::Binding> = bindings
+        .iter()
+        .filter(|(id, b)| archived.contains(id) && b.path.is_dir())
+        .map(|(_, b)| b)
+        .collect();
+    if standing.is_empty() {
+        return rec(Level::Ok, "archived trees", "none on disk");
+    }
+    let repo = &paths.repo_root;
+    let base = worktree::default_branch(repo).unwrap_or_default();
+    let merged = standing
+        .iter()
+        .filter(|b| {
+            !b.branch.is_empty()
+                && b.legs(repo, &base)
+                    .iter()
+                    .all(|l| !l.base.is_empty() && worktree::is_merged(&l.repo, &b.branch, &l.base))
+        })
+        .count();
+    let deadline = std::time::Instant::now() + TREE_SIZE_BUDGET;
+    let mut bytes = 0;
+    let mut whole = true;
+    for b in &standing {
+        whole &= tree_bytes(&b.path, deadline, &mut bytes);
+    }
+    let value = format!(
+        "{} on disk, {}{}, {merged} merged",
+        standing.len(),
+        if whole { "" } else { "at least " },
+        gib(bytes)
+    );
+    if merged == 0 {
+        return rec(Level::Ok, "archived trees", value);
+    }
+    rec(Level::Warn, "archived trees", value).advice(
+        "An archived ticket whose work is on the base branch should not keep its worktree: \
+         the daemon tears these down when it starts and each time it samples the worktrees. \
+         Open the board, since a daemon older than this build restarts itself, then run \
+         doctor again. One whose ticket has its terminal open waits for that terminal to \
+         close. If the rest stay, `pkill -f \"mesimon daemon\"` stops the daemon (sessions \
+         survive it) and the next board starts a fresh one.",
+    )
+}
+
+/// Bytes allocated under `root` (what `du` counts; symlinks are not
+/// followed), added to `total`. False when `deadline` came first, and the
+/// total is then a floor: a tree with a `target/` holds hundreds of
+/// thousands of files, and doctor is not the place to wait on them.
+fn tree_bytes(root: &Path, deadline: std::time::Instant, total: &mut u64) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            // `DirEntry::metadata` does not traverse a symlink.
+            let Ok(m) = e.metadata() else { continue };
+            *total += m.blocks() * 512;
+            if m.is_dir() {
+                dirs.push(e.path());
+            }
+        }
+    }
+    true
+}
+
+fn gib(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    let mib = bytes as f64 / MIB;
+    if mib < 1024.0 {
+        format!("{mib:.0} MiB")
+    } else {
+        format!("{:.1} GiB", mib / 1024.0)
+    }
 }
 
 /// `mesimon doctor --mcp` — everything mesimon adds to a spawned session's
@@ -1000,6 +1096,27 @@ mod tests {
     }
 
     use super::*;
+
+    /// The size walk counts what is under the root, and a budget already
+    /// spent says the figure is a floor rather than pretending it is whole.
+    #[test]
+    fn tree_bytes_sums_a_tree_and_owns_up_to_a_spent_budget() {
+        let dir = std::env::temp_dir().join(format!("msmn-doctor-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("target/debug")).unwrap();
+        std::fs::write(dir.join("a.txt"), vec![b'a'; 64 * 1024]).unwrap();
+        std::fs::write(dir.join("target/debug/b.o"), vec![b'b'; 64 * 1024]).unwrap();
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut total = 0;
+        assert!(tree_bytes(&dir, later, &mut total));
+        assert!(total >= 128 * 1024, "both files counted: {total}");
+        let mut floor = 0;
+        assert!(!tree_bytes(&dir, std::time::Instant::now(), &mut floor), "the budget ran out");
+        assert!(floor <= total);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(gib(3 * 1024 * 1024), "3 MiB");
+        assert_eq!(gib(126 * 1024 * 1024 * 1024), "126.0 GiB");
+    }
 
     #[test]
     fn missing_selected_provider_fails_without_requiring_both_installations() {

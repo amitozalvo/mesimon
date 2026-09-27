@@ -14599,3 +14599,52 @@ cut short, and the seventh is the committed one: 10.6 s and 420 KB. Frames were 
 a contact sheet. The crown and search clips were re-recorded once on the merged kit to check the
 shared stub and seed (13.5 s with the crown's whole script, and 8.0 s); their GIFs were not
 kept.
+
+## The X offer reclaims like `a a`, and a sweep takes what it missed (T-481, 2026-09-28)
+
+Found chasing a full disk (126 GB of `target/` under 53 ticket worktrees): 49 archived tickets,
+merged, binding `attached`, still had their tree. T-278 wired the reclaim into `archive_ticket`
+only; `archive_all` — the header's X offer, the road a person takes to archive DONE in bulk —
+set `t.archived` itself and never queued a teardown. The feed hid it: `ArchiveAll` was logged
+by the chokepoint, which writes a row only for `Ok`-shaped responses, and `Response::Archived`
+is not one, so the offer left no row at all (59 `archive_ticket` rows, zero
+`worktree_torn_down`).
+
+**One road.** `Daemon::archive_one(id, at, by)` is the flag on disk, the crown drop and
+`reclaim_on_archive`; `archive_ticket` and `archive_all` judge their own gates and call it, so
+the two cannot drift again. `ArchiveAll` moved to the `PromptColumn` arm of `Command::meta`
+(`logged: false`): the handler writes one `archive_all` row per ticket archived, since the
+chokepoint's `subject` names one ticket.
+
+**The sweep** (`Daemon::reclaim_archived`) runs at start, after the synchronous
+`refresh_worktree_flags`, and in `on_worktree_flags` when a sample lands — which covers the 49
+already leaked, an archive whose teardown a restart swallowed (`pending_teardown` is memory
+only), and work that lands after its archive (a PR merged later, a `git merge` by hand), a merge
+only the sample can see. It asks `reclaim_on_archive`, whose fresh `ticket_merged` and pane
+gates decide, for each ticket that is archived (not snoozed), whose sample reads merged, whose
+tree still stands on disk, and whose `!` terminal is not open. Three of those are narrower than
+the gate on purpose. **The sample is the prefilter**, so an unmerged archived tree costs no
+fork per bucket (T-216 moved 53 forks off the writer for that reason). **A tree already gone is
+skipped**: `Evicted` with a branch is the squash-merged branch `branch -d` refused, and
+re-queuing it would re-run the teardown and re-log `worktree_torn_down:branch_kept` every 10 s,
+for no disk. **An open terminal waits**: the person's `a a` kills that terminal because they
+just asked; the sweep acts unasked.
+
+**`doctor`'s `archived trees` line** (daemon section): the worktrees of archived tickets still
+on disk, their size and how many are merged by ancestry. `ok` when none is merged, `WARN` with
+advice when one is, since a merged one standing is a reclaim that never reached it. Never a
+`note`, which `doctor` hides without `--verbose`. The size is a `du`-style walk
+(`blocks * 512`, symlinks not followed) under a 2 s budget, reported as "at least" when the
+budget runs out, because a tree with a `target/` holds hundreds of thousands of files. The
+archived set comes from `store::read_archived`, a read that never quarantines. On the live
+board before the fix shipped it read `50 on disk, 449 MiB, 49 merged` (the `target/` dirs had
+already been cleared by hand).
+
+Tests: `archive_reclaim_e2e` grew three. `the_offer_reclaims_like_a_single_archive` runs with
+the slow bucket out of reach, so the sweep cannot stand in for the offer: the landed tree goes,
+the unmerged one stays, and each ticket has its `archive_all` row.
+`the_sweep_reclaims_an_archived_tree_whose_work_landed_later` merges by hand after the archive.
+`a_restart_reclaims_a_tree_whose_archived_work_landed_meanwhile` merges while no daemon runs,
+with the bucket out of reach, so only the start's sweep can act. With the three changes
+reverted, all three fail and the old three pass. Unit: `read_archived_counts_archives_only_and_touches_nothing`,
+`tree_bytes_sums_a_tree_and_owns_up_to_a_spent_budget`.

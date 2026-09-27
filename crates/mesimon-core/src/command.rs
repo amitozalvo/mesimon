@@ -1140,7 +1140,8 @@ impl Command {
             // A column's worth of tickets: `subject` names one, so the
             // handler writes the feed itself — a line per ticket delivered,
             // the way the ask queue does.
-            PromptColumn { .. } => m(Mutate, false, None),
+            // The offer's X is the same: a row per ticket archived (T-481).
+            PromptColumn { .. } | ArchiveAll => m(Mutate, false, None),
             AttachExternal { ticket, .. } | ResumeExternal { ticket, .. } => {
                 m(Mutate, true, *ticket)
             }
@@ -1149,7 +1150,6 @@ impl Command {
             | RenameTag { .. }
             | SetTagColor { .. }
             | MoveTag { .. }
-            | ArchiveAll
             | ReloadShellEnv
             | GitFetch
             | SetAutomation { .. }
