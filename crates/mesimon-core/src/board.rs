@@ -3526,7 +3526,7 @@ mod tests {
         assert_eq!(sanitize_column_description(" \t "), None);
         let long = "é".repeat(COLUMN_DESCRIPTION_MAX_BYTES);
         let cut = sanitize_column_description(&long).unwrap();
-        assert!(cut.len() <= COLUMN_DESCRIPTION_MAX_BYTES && cut.len() % 2 == 0);
+        assert!(cut.len() <= COLUMN_DESCRIPTION_MAX_BYTES && cut.len().is_multiple_of(2));
         let s = ColumnSettings { description: Some("someday".into()), ..Default::default() };
         assert_eq!(s.summary(), ["about: someday"]);
         assert!(!s.automated());

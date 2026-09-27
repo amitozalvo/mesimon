@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # The root Cargo.toml claims "CI enforces via `cargo tree -d`" for the D22/05
-# one-unicode-width invariant. It never did — and the invariant is already
-# violated: unicode-width 0.1.14 arrives via ratatui 0.29 -> unicode-truncate.
+# one-unicode-width invariant; this script is that enforcement. The invariant
+# holds since ratatui 0.30 (T-470); until then unicode-width 0.1.14 arrived via
+# ratatui 0.29 -> unicode-truncate.
 #
-# So this gates on DRIFT, not on zero duplicates. The allowlist is the set we
-# have accepted; anything new fails and has to be looked at. Regenerate with:
+# Other duplicates remain, so this gates on DRIFT, not on zero duplicates. The
+# allowlist is the set we have accepted; anything new fails and has to be
+# looked at. Regenerate with:
 #   ci/check-dup-deps.sh --regen
 # `--target all` so the set is the same on every host (a macOS-generated list
 # must hold on the Linux runner), `--color never` because CI exports

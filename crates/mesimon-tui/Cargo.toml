@@ -16,7 +16,12 @@ ulid.workspace = true
 uuid.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
-ratatui = { version = "0.29", features = ["underline-color"] }
+# T-470: 0.29's feature set. Underline colour arrives through ratatui-crossterm's
+# own defaults; naming `underline-color` here would lock (never build) the
+# termwiz and termina backends through its weak `?/` features, ~90 crates that
+# Dependabot then scans. `Cell::underline_color` in ui/tests.rs stops compiling
+# if it ever goes.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }
 libc = "0.2"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 image = { version = "=0.25.6", default-features = false, features = ["png"] }

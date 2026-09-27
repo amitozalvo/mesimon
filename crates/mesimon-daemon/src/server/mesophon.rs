@@ -377,7 +377,7 @@ impl Daemon {
             }));
             self.control.retry = Instant::now() + Duration::from_secs(5);
         }
-        if self.control.dirty && self.ticks % 4 == 0 {
+        if self.control.dirty && self.ticks.is_multiple_of(4) {
             self.control.dirty = false;
             let peers: Vec<_> = self
                 .control

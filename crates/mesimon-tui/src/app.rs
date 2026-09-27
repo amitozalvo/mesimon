@@ -1307,7 +1307,7 @@ const TAG_FLASH: Duration = Duration::from_millis(1500);
 /// (`2 KB`, `4 KB`), a tag's `24 bytes`. Bytes, honestly — the cap is a byte
 /// cap at the daemon, and a character count would be wrong in Hebrew.
 fn limit_words(bytes: usize) -> String {
-    if bytes > 0 && bytes % 1024 == 0 {
+    if bytes > 0 && bytes.is_multiple_of(1024) {
         format!("{} KB", bytes / 1024)
     } else {
         format!("{bytes} bytes")
@@ -1926,7 +1926,7 @@ impl App {
     pub(crate) fn layout_flash_lit(&self) -> bool {
         self.layout_flashing()
             && self.layout_flash.is_some_and(|at| {
-                (at.elapsed().as_millis() / LAYOUT_FLASH_PHASE.as_millis()) % 2 == 0
+                (at.elapsed().as_millis() / LAYOUT_FLASH_PHASE.as_millis()).is_multiple_of(2)
             })
     }
 

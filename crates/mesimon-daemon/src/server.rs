@@ -2215,7 +2215,7 @@ impl Daemon {
                 r
             }};
         }
-        if self.ticks % 4 == 0 {
+        if self.ticks.is_multiple_of(4) {
             stage!("expire_grace", self.expire_grace());
             stage!("sweep_reaping", self.sweep_reaping());
             stage!("sweep_codex_orphans", self.sweep_codex_orphans());
@@ -2230,7 +2230,7 @@ impl Daemon {
         for (id, change) in fired {
             changed |= stage!("apply_change", self.apply_change(id, &change, None, None));
         }
-        if self.ticks % 4 == 0 {
+        if self.ticks.is_multiple_of(4) {
             changed |= stage!("probe_spawning", self.probe_spawning());
             changed |= stage!("probe_activity", self.probe_activity());
             changed |= stage!("wake_snoozed", self.wake_snoozed(now / 1000));
@@ -2254,28 +2254,28 @@ impl Daemon {
                 changed = true;
             }
         }
-        if self.ticks % TAIL_POLL_TICKS == 0 {
+        if self.ticks.is_multiple_of(TAIL_POLL_TICKS) {
             changed |= stage!("poll_tails", self.poll_tails());
             changed |= stage!("probe_status_files", self.probe_status_files());
             changed |= stage!("refresh_panes", self.refresh_panes());
         }
-        if self.ticks % inactivity_park_ticks() == 0 {
+        if self.ticks.is_multiple_of(inactivity_park_ticks()) {
             changed |= stage!("park_inactive", self.park_inactive(now));
         }
-        if self.ticks % RSS_TICKS == 0 {
+        if self.ticks.is_multiple_of(RSS_TICKS) {
             changed |= stage!("refresh_rss", self.refresh_rss());
         }
         // The worktree flags on their own cadence (a seam for the train's
         // e2e), sampled on a worker; the train's pass runs when they land
         // (`on_worktree_flags`), on fresh flags.
-        if self.ticks % wt_refresh_ticks() == 0 && !self.worktrees.is_empty() {
+        if self.ticks.is_multiple_of(wt_refresh_ticks()) && !self.worktrees.is_empty() {
             stage!("queue_worktree_flags", self.queue_worktree_flags());
         }
         // The CLAUDE.md sample, on the same slow bucket but off the worktree
         // guard: a board with no worktrees still has a CLAUDE.md. Two `stat`s
         // unless something moved, so it costs the same as asking whether to
         // ask.
-        if self.ticks % wt_refresh_ticks() == 0 {
+        if self.ticks.is_multiple_of(wt_refresh_ticks()) {
             changed |= stage!("claude_md", self.claude_md.refresh(&self.paths.repo_root));
         }
         if self.ticks % wt_refresh_ticks() == 1 {
@@ -2296,7 +2296,7 @@ impl Daemon {
                 stage!("queue_git_sample", self.queue_git_sample());
             }
         }
-        if self.ticks % server_guard_ticks() == 0 {
+        if self.ticks.is_multiple_of(server_guard_ticks()) {
             changed |= stage!("guard_server", self.guard_server());
         }
         if changed {

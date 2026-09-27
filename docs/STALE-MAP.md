@@ -14118,3 +14118,48 @@ does not promise one.
   `FLAP_WINDOW` to its words.
 
 Also fixed: `asked_by_hand`'s doc comment had drifted above `rename_column`.
+
+## ratatui 0.30, and the Rust minimum moves to 1.88 (T-470, 2026-09-27)
+
+Dependabot alert #1 (GHSA-rhfx-m35p-ff5j, low): `lru` 0.12.5, whose `IterMut` breaks Stacked
+Borrows, fixed in 0.16.3. `lru` was never a direct dependency. ratatui 0.29 pinned `lru = "0.12"`,
+so no `cargo update` could clear it. ratatui 0.30.2 brings `lru` 0.18.5.
+
+**The upgrade needed no source change.** Every `ratatui::` path we use still resolves through the
+facade crate. crossterm still arrives only as `ratatui::crossterm` (now 0.29, through
+ratatui-crossterm), so the backend and our own event reading share one crossterm. No golden moved.
+
+**Features: 0.29's set, spelled without `underline-color`.** 0.30's defaults add `all-widgets`
+(the calendar widget, which brings `time`) and `macros`. `default-features = false` drops them,
+and `crossterm` + `layout-cache` keep what 0.29 did unconditionally. Underline colour still
+arrives: ratatui takes ratatui-crossterm with its defaults, and those turn on
+`ratatui-core/underline-color`. Naming `ratatui/underline-color` ourselves would put ~90 crates we
+never build into `Cargo.lock` (termwiz, termina, wezterm-*, pest, regex, phf). Its weak
+`ratatui-termwiz?/underline-color` features are enough for Cargo's lockfile resolver to lock those
+optional backends, and Dependabot scans the lockfile. `Cell::underline_color` in `ui/tests.rs`
+exists only under the feature, so losing it fails `cargo ut`. The lockfile went from 237 packages
+to 258; with the feature named it was 313.
+
+**Duplicates.** `unicode-width` 0.1.14 is gone (it came from 0.29's `unicode-truncate` 1.x), so
+D22/05's one-major invariant holds for the first time since the dup gate was written.
+`rustix` 0.38 and `linux-raw-sys` 0.4 went with crossterm 0.28. New: `hashbrown` 0.16.1 from
+`kasuari` 0.4.12 (ratatui's layout solver; its latest release pins it), and a `foldhash` 0.1/0.2
+split (petgraph's `hashbrown` 0.15 against the rest). Allowlist regenerated: 27 entries.
+
+**Rust minimum 1.85 → 1.88.** Every ratatui 0.30 release needs at least 1.86 (0.30.1 onward needs
+1.88), and 0.29 cannot leave `lru` 0.12, so the alert could not close under 1.85. The 1.85
+claim was already false for a `--locked` build: HEAD's lock carried `instability` 0.3.13 and
+`darling` 0.24.1, both 1.88. The workspace is on resolver 2, which ignores `rust-version`, so the
+bump re-resolves nothing. It does un-gate clippy's MSRV-aware lints: `manual_is_multiple_of`
+(1.87) and `chunks_exact` → `as_chunks` (1.88) fired on 17 sites across core, daemon, team and
+the TUI, all rewritten as clippy suggested. `x % n == 0` panics where `x.is_multiple_of(n)`
+answers `x == 0`, but only at `n = 0`, and every tick seam already filters 0, so behaviour is
+unchanged. The README's install line says 1.88+. The Teams workspace declares 1.91 and is
+unaffected.
+
+**Not verified here:** the real terminal. crossterm 0.28 → 0.29 sits under the kitty probe, the
+paste path and the OSC swallow, and the suite drives those with synthetic events, not a tty. The
+alert closes when Dependabot re-scans `Cargo.lock` after the push.
+
+**Gate:** `cargo ut`; `cargo nextest run --workspace`, 1,780 passed, 3 skipped (the `#[ignore]`
+set); the release clippy; `ci/check-dup-deps.sh`.

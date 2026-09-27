@@ -1156,7 +1156,7 @@ impl Theme {
     /// red `err` (2026-09-03): on the first amber the flash was amber.
     pub fn delete_lit(&self, frame: usize) -> bool {
         const PHASE_FRAMES: usize = 4; // 4 × 100 ms redraw-clock frames
-        !self.has_colour() || (frame / PHASE_FRAMES) % 2 == 0
+        !self.has_colour() || (frame / PHASE_FRAMES).is_multiple_of(2)
     }
 
     pub fn delete_row(&self) -> Style {

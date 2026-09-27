@@ -17,7 +17,7 @@ pub fn decode<const N: usize>(text: &str) -> Option<[u8; N]> {
         return None;
     }
     let mut out = [0u8; N];
-    for (slot, pair) in out.iter_mut().zip(text.chunks_exact(2)) {
+    for (slot, pair) in out.iter_mut().zip(text.as_chunks::<2>().0) {
         *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
     Some(out)
@@ -45,7 +45,9 @@ pub mod vec {
             return Err(serde::de::Error::custom("odd hex length"));
         }
         text.as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 std::str::from_utf8(pair)
                     .ok()

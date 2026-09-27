@@ -112,7 +112,7 @@ to this repo. `install.sh` verifies the checksum, runs the binary once before in
 tells you exactly what to fix if anything is missing.
 
 Working on mesimon itself? `cargo install --git https://github.com/amitozalvo/mesimon --locked
-mesimon` (Rust 1.85+, and `CARGO_NET_GIT_FETCH_WITH_CLI=true` for the private fetch).
+mesimon` (Rust 1.88+, and `CARGO_NET_GIT_FETCH_WITH_CLI=true` for the private fetch).
 
 ## Updating
 

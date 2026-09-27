@@ -58,7 +58,7 @@ const PULSE_STEP_TICKS: usize = 10;
 /// tier — never the terminal's blink attribute, which is unreliable and
 /// which nothing else on the board uses.
 pub(crate) fn pulse_lit(frame: usize) -> bool {
-    (frame / PULSE_STEP_TICKS) % 2 == 0
+    (frame / PULSE_STEP_TICKS).is_multiple_of(2)
 }
 
 /// The animated working glyph for `frame` (any monotonically increasing
