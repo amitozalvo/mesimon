@@ -14062,3 +14062,59 @@ field clears the description, and Esc drops the edit. The field joins `text_fiel
 field to disk; `column_description_e2e` sets dirty words over the wire and reads them back
 through the real `mesimon mcp` shim from both tools, and checks that clearing them removes the
 key. Golden `column_settings_120x30` reminted with the new row.
+
+## The move fuse stops counting one agent's turns, lapses when quiet, and names its clear (T-468, 2026-09-27, user: "there's a constant line reading: 'automatic moves suspended for T-456 — moved too often, too fast. Moving one by hand clears it.' it doesn't clear. and I'm not sure if it's important for the user.")
+
+T-456's agent had a run of sub-minute turns while the user worked through the publish runbook.
+Each turn start fired REVIEW's on-working rule and each turn end fired IN PROGRESS's on-done
+rule: seven automoves in two and a half minutes, so the fuse (six automatic moves of one ticket
+in 120 s) tripped. The ticket then sat in REVIEW while its agent worked, and the advisory stayed
+up for the rest of the session. The user moved five other tickets by hand and nothing cleared,
+because only a hand move of *that* ticket to another column clears the fuse.
+
+**A session's card following its own turns is not counted.** `MoveGate::record` takes
+`turn_of: Option<Uuid>`, the session whose own state edge made the move. `auto_move` passes its
+session through `place_ticket`, and every other mover passes `None`. The fuse skips a move when
+`turn_of` is set and the ticket's previous move had the same `turn_of`. This does not look at
+columns: a one-session cycle through three columns is still paced by that session's turns, and
+the attention machine's own flap pin (`FLAP_MAX`) already guards a flapping state. What the fuse
+was built for still counts:
+- **Two sessions dragging one card.** Each move follows the *other* session's move. One agent
+  per ticket (2026-09-02) mostly retired this case, but a board written before that rule keeps
+  both seats.
+- **An agent calling `move_ticket` back and forth.** No turn edge made those moves.
+  `mcp_e2e`'s fuse section drives this case over the real wire, unchanged.
+
+The no-undo rule is untouched; it still compares actor words.
+
+**A blown fuse lapses after `FLAP_WINDOW` with no automatic attempt.** `fused` is now a map to
+the last time the fuse had a reason to hold: when it tripped, or the latest attempt it refused.
+`check` refreshes that stamp on every refusal, so a fight still in progress stays fused. An
+attempt that finds the window already passed lets the fuse lapse and is judged normally.
+`MoveGate::expire` runs on the daemon's one-second bucket so the advisory goes away even when no
+attempt ever comes. A person's hand move still clears the fuse immediately.
+
+**The words name the act.** The notice lives in `movegate::suspended_notice`, next to the
+constants, as does `FLAP_WINDOW_WORDS`. It reads "Moving T-456 to another column by hand resumes
+them, and so do two minutes with no automatic attempt to move it." `Refusal::Fused`, which an
+agent sees as a tool error, says the same thing. A same-column reorder still does not clear the
+fuse (the reorder block above explains why), and the text says "to another column" so that it
+does not promise one.
+
+**Considered and not taken.**
+- **Counting only reversals by a different mover.** The no-undo rule already refuses those
+  inside 60 s, so the fuse would almost never fire.
+- **Widening the window or the limit.** Turn cadence has no ceiling, so any number is one fast
+  conversation away from tripping.
+
+**Tests** (all in `movegate.rs`):
+- `one_sessions_turn_cadence_never_fuses` replays the T-456 feed. It fails at move 5 with the
+  exemption disabled.
+- `two_sessions_turns_on_one_card_still_fuse` and `an_agent_moving_back_and_forth_still_fuses`
+  cover what the fuse is for.
+- `a_blown_fuse_lapses_after_a_quiet_window` and `expire_drops_a_quiet_fuse_and_says_so` cover
+  the lapse.
+- `the_notice_names_the_ticket_and_the_act_that_clears_it` checks the wording and pins
+  `FLAP_WINDOW` to its words.
+
+Also fixed: `asked_by_hand`'s doc comment had drifted above `rename_column`.

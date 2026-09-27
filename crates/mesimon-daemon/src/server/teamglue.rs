@@ -1246,7 +1246,7 @@ impl Daemon {
         let (from, was_archived) =
             self.board.ticket(id).map(|t| (t.column.clone(), t.is_archived())).unwrap_or_default();
         if from != column && !was_archived && !shared.archived {
-            if let Err(why) = self.place_ticket(id, &column, Position::Top, by, "team") {
+            if let Err(why) = self.place_ticket(id, &column, Position::Top, by, None, "team") {
                 // The board's own rules held (the DONE gate, say). The next
                 // diff sends the local truth back.
                 self.feed.board(by.actor(), &format!("team_move_refused:{why}"), Some(id));

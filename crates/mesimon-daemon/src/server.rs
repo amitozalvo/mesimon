@@ -2234,6 +2234,9 @@ impl Daemon {
             changed |= stage!("probe_spawning", self.probe_spawning());
             changed |= stage!("probe_activity", self.probe_activity());
             changed |= stage!("wake_snoozed", self.wake_snoozed(now / 1000));
+            // A blown move fuse that went a window with nothing trying lapses
+            // (T-468); its advisory goes with it.
+            changed |= self.moves.expire(Instant::now());
             // The queued asks' safety net: the edge above is the road, this
             // is the clock (a paste that never got its ack, a target that
             // went without a state change of its own).
@@ -3593,7 +3596,7 @@ impl Daemon {
         {
             self.lower_hand_on(snapshot.ticket);
         }
-        self.auto_move(snapshot.ticket, &change.to, change.confidence);
+        self.auto_move(snapshot.ticket, id, &change.to, change.confidence);
         // An agent the crown started ended its turn (T-414): the crown is
         // owed a wake. Only on the edge (`from != to`, the same test that
         // stamped `state_changed_at`), only `EndTurn` — `Background` is a
@@ -3646,7 +3649,17 @@ impl Daemon {
     /// to tell the two apart: to restrict one without breaking the other, to
     /// say in the feed who moved a card, and to refuse a move that would undo
     /// one the other just made.
-    fn auto_move(&mut self, ticket: ulid::Ulid, to: &SessionState, confidence: Confidence) {
+    ///
+    /// `session` is whose edge this is: the move gate does not count a
+    /// session's card following that session's own turns toward its fuse
+    /// (T-468).
+    fn auto_move(
+        &mut self,
+        ticket: ulid::Ulid,
+        session: uuid::Uuid,
+        to: &SessionState,
+        confidence: Confidence,
+    ) {
         let Some(t) = self.board.ticket(ticket) else { return };
         // The rule is the ticket's COLUMN's (T-117): `on_working`/`on_done`,
         // never a column name compared here.
@@ -3659,11 +3672,12 @@ impl Daemon {
             return;
         };
         let by = Principal::Automation { rule: "automove".into() };
-        let outcome = match self.place_ticket(ticket, &dest, Position::Top, &by, "automove") {
-            Ok(_) if from == dest => "already_in_column".to_string(),
-            Ok(_) => "moved".to_string(),
-            Err(reason) => format!("refused: {reason}"),
-        };
+        let outcome =
+            match self.place_ticket(ticket, &dest, Position::Top, &by, Some(session), "automove") {
+                Ok(_) if from == dest => "already_in_column".to_string(),
+                Ok(_) => "moved".to_string(),
+                Err(reason) => format!("refused: {reason}"),
+            };
         self.feed.movement_decision(ticket, &from, Some(&dest), &outcome);
     }
 
@@ -3804,7 +3818,7 @@ impl Daemon {
                     },
                 };
                 let by = Principal::Agent { session };
-                match self.place_ticket(target, &to_column, pos, &by, "agent_move") {
+                match self.place_ticket(target, &to_column, pos, &by, None, "agent_move") {
                     Ok(column) => {
                         if let Some(key) = idempotency_key {
                             self.remember_agent_result(
@@ -4993,13 +5007,15 @@ impl Daemon {
     /// meant the DONE gate bound only one of them and nothing could see that
     /// two movers were undoing each other. Everything a move must obey now
     /// lives here, so a new mover obeys it by construction rather than by
-    /// somebody remembering.
+    /// somebody remembering. `turn_of` is the session whose own turn edge
+    /// made the move (automove), for the move gate's fuse.
     fn place_ticket(
         &mut self,
         id: ulid::Ulid,
         dest: &str,
         pos: Position,
         by: &Principal,
+        turn_of: Option<uuid::Uuid>,
         rule: &str,
     ) -> std::result::Result<String, String> {
         let Some(t) = self.board.ticket(id) else { return Err("no such ticket".into()) };
@@ -5068,7 +5084,7 @@ impl Daemon {
             let t = t.clone();
             let _ = store::save_ticket(&self.paths, &t);
         }
-        self.moves.record(id, &from, dest, by, Instant::now());
+        self.moves.record(id, &from, dest, by, turn_of, Instant::now());
         if by.is_human() {
             self.train.hand_touched(id);
         }
@@ -5279,11 +5295,7 @@ impl Daemon {
             fused.sort();
             notices.push(Notice::new(
                 "automation_suspended",
-                format!(
-                    "automatic moves suspended for {} — moved too often, too fast. \
-                     Moving one by hand clears it.",
-                    fused.join(", ")
-                ),
+                crate::movegate::suspended_notice(&fused),
             ));
         }
         // The machine's tiers file, quarantined or from a newer build
@@ -9243,6 +9255,7 @@ impl Daemon {
             &column,
             Position::Before(before),
             &Principal::Local,
+            None,
             "move_ticket",
         ) {
             Ok(_) => Response::Ok,

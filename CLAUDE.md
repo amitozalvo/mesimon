@@ -238,8 +238,10 @@ function that moves a ticket** — the DONE gate lives in it, so every mover obe
 `daemon/src/movegate.rs` restrains everything that is not a person and never a person: no undo
 (an automatic mover may not reverse another principal's move inside 60 s), depth zero (no
 automation inside an automation's move), and a fuse (6 automatic moves of one ticket in 120 s
-suspends automation for it). Its state is in memory on purpose — a debounce, not a security
-control. A person's prompt reaching the agent supersedes that person's own last move
+suspends automation for it until a person moves that ticket to another column or 120 s pass
+with no automatic attempt; a move on a session's turn edge that follows that same session's
+last one is cadence and not counted — `place_ticket`'s `turn_of`). Its state is in memory on
+purpose — a debounce, not a security control. A person's prompt reaching the agent supersedes that person's own last move
 (`MoveGate::asked_by_hand`).
 
 **Wire protocol.** Newline-delimited JSON over `orch.sock`: `Envelope { principal, command }` →
