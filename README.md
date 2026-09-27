@@ -6,8 +6,8 @@ and Codex.
 
 ![Starting an agent from the board, answering it from the ticket page, and merging its branch](assets/demo.gif)
 
-<sub>Start an agent with Shift+Enter, answer it when its card lights, merge its branch with
-`m`. Recorded with a scripted stand-in agent so the take is reproducible;
+<sub>Start an agent with Shift+Enter on the board. When its card lights, open the ticket and
+answer with Shift+Enter there, then merge its branch with `m`. Recorded with a scripted stand-in agent so the take is reproducible;
 [`assets/demo/`](assets/demo) re-records it.</sub>
 
 **Alpha.** It works and it is used every day, and it will change under you. Each version's

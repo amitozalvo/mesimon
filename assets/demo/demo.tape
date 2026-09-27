@@ -1,5 +1,5 @@
 # The README demo: start an agent from the board, watch it work, answer it
-# when its card lights, merge its branch. Run through record.sh, never
+# from its ticket page when its card lights, merge its branch. Run through record.sh, never
 # alone: it builds the sandbox this tape expects in DEMO_* and MESIMON_*.
 #
 # Alt+Enter below is Shift+Enter: kitty-term.py delivers it as the kitty
@@ -40,25 +40,19 @@ Enter
 Wait+Screen@30s /REVIEW +2/
 Sleep 2.5s
 
-# The ticket page: the agent's words, and the shin.
+# The ticket page: the agent's question, its words, and the shin.
 Space
-Sleep 3.5s
+Sleep 3s
 
-# Answer from the board with Shift+Enter; the agent picks it up.
-Type "q"
-Sleep 0.8s
+# Answer from the page with Shift+Enter; the page shows the agent at work.
 Alt+Enter
 Sleep 0.6s
 Type "Yes, include them"
 Sleep 0.6s
 Enter
 
-# Done: back in REVIEW, one commit ahead of main.
-Wait+Screen@30s /✓ Stats as JSON +⎇↑/
-Sleep 1.5s
-
-# Merge it from the ticket page, where the branch line offers `m`.
-Space
+# Done, and the branch line offers the merge.
+Wait+Screen@30s /1 to merge ∙ m merge/
 Sleep 2s
 Type "m"
 Sleep 1.5s

@@ -178,9 +178,10 @@ def demo(keys, first):
     submitted(keys.prompt())
     tool("Edit", "Add an expired field", file_path=os.path.join(CWD, "stats.py"))
     write_json_flag(expired=True)
-    tool("Bash", "Commit", command="git commit -am 'stats: --json output'")
+    tool("Bash", "Run the stats tests", command="python3 -m pytest -q")
     subprocess.run(["git", "commit", "-qam", "stats: add --json output"], cwd=CWD,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    tool("Bash", "Commit", command="git commit -am 'stats: add --json output'")
     text("Done: `stats --json` prints one object per link, expired ones included "
          "with \"expired\": true. Committed on this ticket's branch.", last=True)
     hook("Stop", stop_hook_active=False)

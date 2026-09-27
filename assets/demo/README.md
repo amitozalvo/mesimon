@@ -15,6 +15,8 @@ What each file does:
 - **`record.sh`** builds a throwaway sandbox under `/tmp`: its own `HOME`, and a small git repo
   copied from `project/`. It starts the release binary's daemon there, seeds the board, runs
   the tape, then stops the daemon and removes everything, including the daemon's private tmux.
+  It also sets one timing seam: the worktree flags refresh every 2 s instead of every 10 s, so
+  the merge offer appears soon after the agent finishes.
 - **`seed.py`** creates the tickets over the daemon's socket, using the same wire protocol as
   the TUI. It also starts the agent that is already at work when the recording opens.
 - **`stub-claude.py`** stands in for `claude` through `MESIMON_CLAUDE_BIN`. The daemon launches

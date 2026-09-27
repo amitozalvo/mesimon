@@ -14463,3 +14463,22 @@ checks the legacy floor. Goldens: `ticket_prompt_120x30` (the field under a shor
 in its resting place); `ticket_prompt_field_sticks_to_the_zone_foot` at the 20-row floor (the
 description overflows, the field is the zone's last two rows, the cut mark closes the row over
 it, the content's top stays); `ticket_prompt_field_sits_over_the_footer_on_a_narrow_page`.
+
+## The demo answers from the ticket page (T-461 follow-up, 2026-09-27, user: "now that shift+enter in ticket page landed, we can show it in the gif")
+
+Once T-476 bound Shift+Enter on the ticket page, the take no longer had to go back to the board
+to answer. It now opens the lit ticket and answers there. The field opens under the agent's
+words, and the page stays up while the agent works: the shin sits at its laptop and the preview
+steps through `working ∙ …`. When the agent finishes, the take merges from the same page and
+returns to the board only to move the card into DONE. The first answer still starts from the
+board's Shift+Enter, so both places show. The stub's answer turn gained a test step, so the
+working phase lasts long enough to see.
+
+**Two timing fixes.** The tape now waits for `1 to merge ∙ m merge`, not `1 to merge`: the
+branch line shows the count while the agent is still in its 1.5 s settle, and an `m` pressed
+then is refused. `record.sh` sets `MESIMON_WT_REFRESH_TICKS=8`, so the merge offer comes within
+2 s of the commit instead of up to 10 s. `assets/demo/README.md` says so.
+
+**Tests.** One trial ran in a detached tmux, then two VHS takes. The first stopped at the
+merge dialog because of the early `m` above. The second is the committed GIF: 34 s and
+0.5 MB. Its frames were checked by eye.
