@@ -14275,3 +14275,75 @@ tmux would replace the distro one the ticket names.
 `release::a_brew_install_is_offered_and_never_downloaded`,
 `release::every_published_target_is_built_by_ci_and_installable` (the template's slots), and the
 brew row in `keymap::every_menu_row_is_spelled`.
+
+## The crown wakes on what happened to a ticket, not on every Stop (T-469, 2026-09-27)
+
+**Seen on T-456 (crowned) with T-461.** One ticket landing woke the crown three times with
+`T-461 "…" finished its turn`: the delivery (branch ahead, `needs_rebase`), the rebase the crown
+itself had queued with `ask_agent`, and the merged notice the person's `m` sent. Only the first
+was news. Each wake is a crown turn (a `get_ticket` plus git checks), and the automove churn
+from those short turns is what tripped the move fuse (T-468). `Stop` says how the agent process
+breathes, not what happened to the ticket.
+
+**Shipped: three events, each line with its delta** (`server/crownwake.rs`).
+- **Delivered.** A worker this crown started ends a turn (`EndTurn`, Medium or better, the edge
+  T-414 used) with something to merge at a tip the crown has not heard of: a worktree branch
+  ahead and not merged (`needs_rebase` counts), or, in a shared checkout, a new HEAD. A second
+  idle at the same tip is silent, and so is an idle with nothing to merge.
+- **Answered your ask.** The turn that took the crown's held `ask_agent` words, sent by a
+  person's `^y`, ended. It always wakes the crown, whatever the turn left, and wakes it even for
+  a ticket the crown did not start.
+- **Raised its hand.** Unchanged. **The reason still never rides the sentence.** The ticket's
+  example delta was `hand: <the question>`; that would break T-413/T-414's rule that one agent's
+  words never reach another's turn with no person between. The line says a hand went up and
+  `get_ticket` has the reason.
+
+**A turn knows what it was asked for.** `Owed.asked: Option<TurnAsk>` is stamped where words go
+in: `send_queued_ask` on a held ask tags `Crown(crown)`, and `merge_to_agent` (both `m` and the
+train) tags `Merge`. The paste's ack (`UserPromptSubmit`, or a Codex new turn) moves it to
+`Daemon::turn_asks`, and the turn's end takes it (`turn_ended`, on the same "no longer working"
+edge `train.settle` uses). Stamping on the ack rather than the paste means the turn that TOOK
+the words is marked, not whichever turn was running when they were pasted. A `Merge` turn never
+wakes the crown, even at a new tip: the person pressed `m` or armed the train, so they already
+know. The crown learns on its next `get_ticket`.
+
+**The look is off the writer.** `probe_turn` sends a thread one ticket's flags sample (the same
+`compute_repo_flags` the tick runs, narrowed by `wt_queries(_, Some(ticket))`, legs folded by
+`aggregate`) or one `rev-parse HEAD` of a checkout, and the answer lands as `Msg::TurnProbed`.
+The cached `wt_*` flags could not be used because they are up to one slow bucket old, and a
+commit made just before `Stop` would read as nothing new. The sample is not absorbed into the
+maps: a one-ticket sample would replace the board-wide `wt_conflicts`.
+
+**Two baselines per worker** (`crown_heard: HashMap<Ulid, Heard>`). `judged` is the work as the
+last looked-at turn left it, and novelty is judged against it. A merge step's rebased tip
+therefore is not news on the next idle. `told` is the work as the last wake described it, and
+the delta runs from there, so a column a silent turn moved is still said. The delta reads
+`merge_state needs_rebase → ahead`, `ahead 1 → 3`, `commit 1a2b3c4` and `column REVIEW`; with
+nothing told yet, it states the state itself. Events join with `; ` and each delta sits in
+brackets after its clause. A shared-checkout worker's HEAD is recorded when `start_agent` runs
+(`ProbeWhy::Baseline`), so its first turn's commits have something to be new against. Coalescing
+keeps the strongest cause (`Raised > Answered > Delivered`) and the first `from`. All of it is in
+memory like the wakes: a restart forgets it, and the first delivery after one wakes the crown
+again. A new crown starts with it empty (`drop_crown_wakes`).
+
+**Known limits.** A shared checkout's HEAD is shared, so another agent's commit there reads as
+this worker's delivery on its next idle. A worker that ends a turn with a question in prose
+(not `raise_hand`) and no commit does not wake the crown.
+
+**Considered and not taken** (the ticket's own list): a per-column setting choosing the events
+(more settings than the problem needs), and one wake per turn carrying only the delta (still
+three wakes for one landing).
+
+**Tests.** `crownwake` unit tests: `a_second_idle_with_nothing_new_is_silent`,
+`an_answer_always_wakes_and_a_merge_step_never_does`, `a_checkout_delivers_on_a_new_head`, the
+delta's wording, and the coalescing order. `crown_e2e`:
+`the_board_wakes_the_crown_when_a_started_worker_delivers` replaces the `finished` test on a real
+repository (an empty turn is silent, a commit delivers with `commit … , column …`, a second idle
+is silent, two deliveries under a working crown make one row, and the hand, person-first and
+uncrown sections are kept). `one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask` is the
+ticket's case: a worktree delivery with main moved (`merge_state needs_rebase`), the crown's
+`ask_agent` sent by `^y` and a real `git rebase` (`answered your ask (merge_state needs_rebase →
+ahead…`), then `MergeTicket` and the merged notice's turn plus one more idle turn. The crown was
+prompted exactly twice. Then new work is a third wake, and a person's `MergeToAgent Rebase`
+followed by a real rebase to a new tip is silent. With the `Merge` tag removed, that last
+assertion fails.

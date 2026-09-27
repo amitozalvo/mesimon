@@ -36,6 +36,7 @@ use crate::movegate::{MoveGate, Position};
 use crate::paths::Paths;
 use crate::store;
 use crate::worktree::{self, Binding, BindingStatus};
+use crownwake::{CrownWake, ProbeWhy, TurnAsk, TurnProbe, WakeCause};
 
 /// Pictures a note references, prepared and ready to write: their metadata
 /// and their bytes.
@@ -80,6 +81,7 @@ impl Mint {
 }
 
 mod attachments;
+mod crownwake;
 mod mesophon;
 mod teamglue;
 mod tiers;
@@ -295,6 +297,9 @@ enum Msg {
     /// started under: a synchronous refresh in the meantime (a merge, a
     /// teardown) makes it stale, and it is dropped.
     WorktreeFlags(u64, Vec<worktree::RepoSample>),
+    /// A look at a worker's work at its turn's end (T-469): what decides
+    /// whether the crown hears of it. Off-thread because it forks git.
+    TurnProbed(TurnProbe),
     /// The relay executor finished a job (T-215). What it means is decided
     /// here, on the writer, in `teamglue`.
     Team(crate::team::sync::Done),
@@ -532,13 +537,25 @@ pub struct Daemon {
     /// changed. In memory on purpose, like the move gate's: the feed is the
     /// record, this is what the next frame needs.
     crown_touches: HashMap<ulid::Ulid, CrownTouch>,
-    /// Wakes the crown is owed (T-414): one per agent the crown started that
-    /// finished its turn or raised its hand since the crown's last turn,
-    /// rendered into ONE sentence when the crown itself is idle. In memory
-    /// on purpose, like a held ask (T-413): a restart re-derives every
-    /// worker's state at Low confidence anyway, and the crown can list the
-    /// board. Uncrowning drops them.
+    /// Wakes the crown is owed (T-414, T-469): one per worker that
+    /// delivered, answered the crown's ask or raised its hand since the
+    /// crown's last turn, rendered into ONE sentence when the crown itself
+    /// is idle. In memory on purpose, like a held ask (T-413): a restart
+    /// re-derives every worker's state at Low confidence anyway, and the
+    /// crown can list the board. Uncrowning drops them.
     crown_wakes: Vec<CrownWake>,
+    /// Each worker's work as its last judged turn left it and as the last
+    /// wake about it described it (T-469): what the next turn's end is
+    /// compared with — a second idle at the same tip is silent — and where
+    /// a wake's delta runs from. In memory like the wakes; a restart forgets
+    /// it, and the first delivery after one wakes the crown again. A new
+    /// crown starts with it empty.
+    crown_heard: HashMap<ulid::Ulid, crownwake::Heard>,
+    /// What the turn now running on a ticket was asked for (T-469), set by
+    /// the ack of words that carried a reason (`Owed::asked`) and taken by
+    /// that turn's end: the crown's ask comes back as an answer, a
+    /// merge-flow sentence as a merge step the crown is not woken for.
+    turn_asks: HashMap<ulid::Ulid, TurnAsk>,
     /// The machine's agent tiers (T-443), `tiers.toml` as last read — the
     /// layer under `board.tiers`, re-read when another board changes it.
     machine_tiers: tiers::MachineTierCache,
@@ -955,6 +972,8 @@ pub fn run(paths: Paths) -> Result<()> {
         agent_replay: HashMap::new(),
         crown_touches: HashMap::new(),
         crown_wakes: Vec::new(),
+        crown_heard: HashMap::new(),
+        turn_asks: HashMap::new(),
         machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
         tier_set_at: HashMap::new(),
         shell_env: crate::shellenv::ShellEnv::default(),
@@ -1063,6 +1082,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(..) => "git sampled".into(),
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
+            Msg::TurnProbed(..) => "turn probed".into(),
             Msg::Team(_) => "team".into(),
             Msg::Control(..) => "mesophon".into(),
         };
@@ -1094,6 +1114,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
+            Msg::TurnProbed(probe) => d.on_turn_probed(probe),
             Msg::Team(done) => d.on_team(done),
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
@@ -1343,6 +1364,9 @@ struct Owed {
     /// until a new turn is observed, and nothing here may expire under it).
     expires: Option<u64>,
     ack: Ack,
+    /// Why these words were sent, when that matters to the crown (T-469):
+    /// its ack marks the turn that took them (`Daemon::turn_asks`).
+    asked: Option<TurnAsk>,
 }
 
 impl Owed {
@@ -1355,6 +1379,7 @@ impl Owed {
             next_press: None,
             expires: None,
             ack,
+            asked: None,
         }
     }
 
@@ -1367,6 +1392,7 @@ impl Owed {
             next_press: None,
             expires: Some(now + INFLIGHT_MS),
             ack,
+            asked: None,
         }
     }
 }
@@ -1418,41 +1444,6 @@ struct QueuedAsk {
     /// woken with it once idle. Rides `queue.json` (schema 2) on the
     /// seats that ride it.
     plan: bool,
-}
-
-/// One thing the crown has yet to hear about (T-414): an agent it started
-/// finished a turn or raised its hand. Keyed by worker — a second event on
-/// the same worker before delivery replaces the cause rather than adding a
-/// clause, and the same `state_changed_at` is the same finish and adds
-/// nothing (the edge the ticket asks for).
-struct CrownWake {
-    worker: ulid::Ulid,
-    cause: WakeCause,
-    /// The worker record's `state_changed_at` for a finish; `None` for a hand.
-    changed_at: Option<u64>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum WakeCause {
-    Finished,
-    Raised,
-}
-
-impl WakeCause {
-    /// The clause after the ticket in the sentence, and the feed's word.
-    fn clause(self) -> &'static str {
-        match self {
-            WakeCause::Finished => "finished its turn",
-            WakeCause::Raised => "raised its hand",
-        }
-    }
-
-    fn word(self) -> &'static str {
-        match self {
-            WakeCause::Finished => "finished",
-            WakeCause::Raised => "raised",
-        }
-    }
 }
 
 /// Where a prompt's claude is (`Daemon::seat_of`), and therefore how it is
@@ -3317,6 +3308,9 @@ impl Daemon {
         let mut changed = false;
         if let Some(owed) = self.drop_owed(id) {
             self.feed.board(owed.ack.by, owed.ack.word, Some(ticket));
+            if let Some(ask) = owed.asked {
+                self.mark_turn(ticket, ask);
+            }
             changed = true;
         }
         changed | self.forget_queued(ticket, "queued_ask_dropped_by_hand", "local")
@@ -3597,19 +3591,23 @@ impl Daemon {
             self.lower_hand_on(snapshot.ticket);
         }
         self.auto_move(snapshot.ticket, id, &change.to, change.confidence);
-        // An agent the crown started ended its turn (T-414): the crown is
-        // owed a wake. Only on the edge (`from != to`, the same test that
-        // stamped `state_changed_at`), only `EndTurn` — `Background` is a
-        // park and the rest are guesses — and at Medium or better, the
-        // confidence automove's `on_done` takes. Not a move, so the move
-        // gate's depth rule holds by construction: nothing here calls
-        // `place_ticket`.
-        if change.from != change.to
-            && matches!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn })
-            && matches!(change.confidence, Confidence::High | Confidence::Medium)
-            && snapshot.started_by.is_some()
+        // A turn ended (T-469): what it was asked for goes with it, and an
+        // `EndTurn` — `Background` is a park and the rest are guesses — at
+        // Medium or better, the confidence automove's `on_done` takes, sends
+        // a look at what it left, which decides whether the crown hears of
+        // it. After the automove, so the look reads the column the turn
+        // left the card in. Not a move, so the move gate's depth rule holds
+        // by construction: nothing here calls `place_ticket`. An agent's
+        // turn only: a shell on the same ticket changing state must not take
+        // its claude's mark.
+        if snapshot.kind.is_agent()
+            && change.from != change.to
+            && !mesimon_core::quiet::is_working(&snapshot)
         {
-            self.note_crown_wake(snapshot.ticket, WakeCause::Finished, snapshot.state_changed_at);
+            let end_turn =
+                matches!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn })
+                    && matches!(change.confidence, Confidence::High | Confidence::Medium);
+            self.turn_ended(snapshot.ticket, end_turn);
         }
         // The agent stopped on a question (T-420): the answer may change
         // what a queued follow-up should say, so the words wait for a
@@ -4092,6 +4090,8 @@ impl Daemon {
                     };
                 self.feed.board(by.actor(), "start_agent", Some(target));
                 self.crown_touched(ticket, target, "started");
+                // A checkout worker's first delivery is a HEAD past this one.
+                self.probe_turn(target, ProbeWhy::Baseline);
                 let (held, _) = self.crown_seats();
                 Response::AgentStarted {
                     key: self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key),
@@ -4424,69 +4424,6 @@ impl Daemon {
         }
     }
 
-    /// Record that the crown is owed a wake about `worker` (T-414), and try
-    /// to deliver it now. Only while the crown is worn and only for an
-    /// agent THIS crown started: a worker left over from an earlier crown
-    /// wakes nobody. The feed line names both tickets and the cause, never
-    /// the sentence; the crown's card lights `woke` the way it lights for
-    /// the crown's own touches.
-    fn note_crown_wake(&mut self, worker: ulid::Ulid, cause: WakeCause, changed_at: Option<u64>) {
-        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return };
-        if worker == crown {
-            return;
-        }
-        let started_by_crown = self
-            .board
-            .sessions
-            .iter()
-            .any(|s| s.ticket == worker && s.holds_agent_seat() && s.started_by == Some(crown));
-        if !started_by_crown {
-            return;
-        }
-        if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
-            if w.cause == cause && changed_at.is_some() && w.changed_at == changed_at {
-                return;
-            }
-            w.cause = cause;
-            w.changed_at = changed_at;
-        } else {
-            self.crown_wakes.push(CrownWake { worker, cause, changed_at });
-        }
-        self.feed.crown_wake(crown, worker, cause.word());
-        self.crown_touched(worker, crown, "woke");
-        self.drain_crown_wakes();
-        self.broadcast();
-    }
-
-    /// The crown left, or another ticket took it: whatever it was owed goes
-    /// with it, said once in the feed.
-    fn drop_crown_wakes(&mut self) {
-        if self.crown_wakes.is_empty() {
-            return;
-        }
-        self.crown_wakes.clear();
-        self.feed.board("automation", "crown_wake_dropped", self.board.crown);
-    }
-
-    /// The sentence the crown receives: the board's `crown_wake` template
-    /// over every wake owed, in the order they happened. A worker's title is
-    /// user text headed for another process, so it crosses `scrub_text`. A
-    /// worker no longer on the board contributes nothing.
-    fn crown_wake_text(&self) -> String {
-        let mut events: Vec<String> = Vec::new();
-        let mut keys: Vec<String> = Vec::new();
-        for w in &self.crown_wakes {
-            let Some(t) = self.board.ticket(w.worker) else { continue };
-            let title = mesimon_core::text::scrub_text(&t.title);
-            events.push(format!("{} \"{title}\" {}", t.short_key, w.cause.clause()));
-            keys.push(t.short_key.clone());
-        }
-        self.board.prompts.render(
-            mesimon_core::prompts::AgentPrompt::CrownWake,
-            &[("events", &events.join(", ")), ("keys", &keys.join(", "))],
-        )
-    }
-
     /// What keeps a wake from going out right now, if anything: a person's
     /// ask queued for the crown (theirs goes first, the wake follows as its
     /// own turn), a paste of ours still owed its ack, an empty seat (the
@@ -4816,7 +4753,7 @@ impl Daemon {
         // that a hand went up, never the reason: one agent's words do not
         // start another's turn with no person between (T-413); the crown
         // reads the reason through `get_ticket`.
-        self.note_crown_wake(ticket, WakeCause::Raised, None);
+        self.note_crown_wake(ticket, WakeCause::Raised, None, None);
         Response::AgentRaised { reason, board_version: self.board_version }
     }
 
@@ -4880,16 +4817,11 @@ impl Daemon {
         if b.branch.is_empty() {
             return None;
         }
-        if self.wt_merged.get(&id).copied().unwrap_or(false) {
-            return Some("merged");
-        }
-        if self.wt_needs_rebase.get(&id).copied().unwrap_or(false) {
-            return Some("needs_rebase");
-        }
-        if self.wt_ahead.get(&id).copied().unwrap_or(0) > 0 {
-            return Some("ahead");
-        }
-        Some("clean")
+        Some(worktree::merge_word(
+            self.wt_merged.get(&id).copied().unwrap_or(false),
+            self.wt_needs_rebase.get(&id).copied().unwrap_or(false),
+            self.wt_ahead.get(&id).copied().unwrap_or(0),
+        ))
     }
 
     fn agent_ticket_view(&self, id: ulid::Ulid) -> Option<AgentTicketView> {
@@ -6996,6 +6928,9 @@ impl Daemon {
         if let Err(message) = self.paste_to_ticket(id, &text, ack) {
             return Response::Err { message };
         }
+        // The turn that takes these words is a merge step: the crown is not
+        // woken for it (T-469).
+        self.tag_owed(id, TurnAsk::Merge);
         // A delivered rebase ask is remembered against the base tip, by hand
         // or by train: the train does not ask again until the base moves
         // (2026-09-04).
@@ -8454,6 +8389,11 @@ impl Daemon {
             return Response::Err { message: "queued session changed".into() };
         }
         let response = self.deliver_queued_ask(ticket, q.seat, q.text, Ack::QUEUED, q.plan);
+        // The crown's words, sent by a person: the turn that takes them is
+        // the crown's answer (T-469).
+        if let (Some(crown), false) = (q.by, matches!(response, Response::Err { .. })) {
+            self.tag_owed(ticket, TurnAsk::Crown(crown));
+        }
         self.broadcast();
         response
     }
@@ -9690,11 +9630,17 @@ impl Daemon {
     /// workspace leg without one is a broken record and is skipped: with
     /// the leg skipped instead (before T-430) a fetch, which empties the
     /// cache, left the worker road with no query and no sample, and the
-    /// flags stood still until a synchronous road happened to run.
-    fn wt_queries(&mut self, ask_upstream: bool) -> Vec<worktree::RepoQuery> {
+    /// flags stood still until a synchronous road happened to run. `only`
+    /// narrows it to one ticket's legs: the crown's turn probe (T-469).
+    fn wt_queries(
+        &mut self,
+        ask_upstream: bool,
+        only: Option<ulid::Ulid>,
+    ) -> Vec<worktree::RepoQuery> {
         let base = self.base_branch.clone().unwrap_or_default();
         let mut queries: Vec<worktree::RepoQuery> = Vec::new();
-        let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
+        let tickets: Vec<ulid::Ulid> =
+            self.worktrees.keys().copied().filter(|t| only.is_none_or(|o| o == *t)).collect();
         for t in tickets {
             let b = &self.worktrees[&t];
             if b.branch.is_empty() {
@@ -9768,7 +9714,7 @@ impl Daemon {
         if self.base_branch.is_none() {
             return;
         }
-        let queries = self.wt_queries(true);
+        let queries = self.wt_queries(true, None);
         let samples = worktree::compute_repo_flags(&queries);
         // The callers of this road broadcast on their own terms.
         let _ = self.absorb_worktree_flags(samples);
@@ -9792,7 +9738,7 @@ impl Daemon {
         // cache empty the worker resolves it and the queries are built here
         // against that answer once it lands. A workspace leg carries its
         // own base and is queried either way.
-        let mut queries = self.wt_queries(false);
+        let mut queries = self.wt_queries(false, None);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let base = match base.or_else(|| worktree::default_branch(&repo).ok()) {
@@ -9901,22 +9847,9 @@ impl Daemon {
                     continue;
                 };
                 let Some(f) = s.flags.flags.iter().find(|f| f.ticket == t) else { continue };
-                legs.push(worktree::RepoFlags {
-                    name: leg.name.clone(),
-                    base: leg.base.clone(),
-                    base_tip: s.flags.base_tip.clone(),
-                    base_oid: leg.base_oid.clone(),
-                    tip: f.tip.clone(),
-                    ahead: f.ahead,
-                    merged: f.merged,
-                    needs_rebase: f.needs_rebase,
-                    conflict: s.flags.conflicts.contains(&branch),
-                    merged_in: f.merged_in.clone(),
-                    merged_oid: f.merged_oid.clone(),
-                    // The memo is the sampler's own working note, never
-                    // the board's.
-                    content: f.seen.clone(),
-                });
+                // The memo is the sampler's own working note, never the
+                // board's.
+                legs.push(worktree::RepoFlags::of(&leg, s, f, &branch));
             }
             if legs.is_empty() {
                 continue;

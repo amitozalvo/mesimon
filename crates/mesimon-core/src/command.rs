@@ -1805,8 +1805,9 @@ pub enum PendingAction {
     Merge,
     /// The train will ask this ticket's claude to rebase.
     Rebase,
-    /// The board's own sentence to the crown about an agent it started that
-    /// finished its turn or raised its hand (T-414); the ticket is the crown's.
+    /// The board's own sentence to the crown about a worker that delivered,
+    /// answered its ask or raised its hand (T-414, T-469); the ticket is the
+    /// crown's.
     CrownWake,
     /// A word this build does not know.
     #[serde(other)]

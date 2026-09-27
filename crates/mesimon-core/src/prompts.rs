@@ -40,10 +40,12 @@ pub enum AgentPrompt {
     Merged,
     /// A note on the ticket changed under a working agent: `NoteToAgent`.
     NoteUpdated,
-    /// An agent the crown started ended its turn or raised its hand (T-414):
-    /// the daemon's `crown_wake` rule, into the crown's own box. `{events}`
-    /// is the clause list mesimon builds (`T-14 "fix the thing" finished its
-    /// turn, T-15 "add tests" raised its hand`) and `{keys}` the keys alone.
+    /// A worker delivered, answered the crown's ask or raised its hand
+    /// (T-414, T-469): the daemon's `crown_wake` rule, into the crown's own
+    /// box. `{events}` is the clause list mesimon builds, each with what
+    /// changed (`T-14 "fix the thing" delivered (merge_state ahead, column
+    /// REVIEW); T-15 "add tests" raised its hand`) and `{keys}` the keys
+    /// alone.
     CrownWake,
 }
 
@@ -240,9 +242,9 @@ mod tests {
         assert_eq!(
             p.render(
                 AgentPrompt::CrownWake,
-                &[("events", "T-14 \"fix the thing\" finished its turn"), ("keys", "T-14")]
+                &[("events", "T-14 \"fix the thing\" delivered"), ("keys", "T-14")]
             ),
-            "T-14 \"fix the thing\" finished its turn ∙ get_ticket key=T-14 for state and notes"
+            "T-14 \"fix the thing\" delivered ∙ get_ticket key=T-14 for state and notes"
         );
     }
 

@@ -1811,6 +1811,41 @@ impl RepoFlags {
     pub fn touched(&self) -> bool {
         self.tip != self.base_oid
     }
+
+    /// One leg's answer out of a sample: the leg, the repository's sample
+    /// it was asked in, and the ticket's row there. `content` is the
+    /// sampler's memo, carried for the next pass.
+    pub fn of(leg: &Leg, sample: &RepoSample, f: &Flags, branch: &str) -> Self {
+        RepoFlags {
+            name: leg.name.clone(),
+            base: leg.base.clone(),
+            base_tip: sample.flags.base_tip.clone(),
+            base_oid: leg.base_oid.clone(),
+            tip: f.tip.clone(),
+            ahead: f.ahead,
+            merged: f.merged,
+            needs_rebase: f.needs_rebase,
+            conflict: sample.flags.conflicts.iter().any(|c| c == branch),
+            merged_in: f.merged_in.clone(),
+            merged_oid: f.merged_oid.clone(),
+            content: f.seen.clone(),
+        }
+    }
+}
+
+/// The merge state as the agent tools spell it — `get_ticket`'s
+/// `merge_state` and the crown's wake (T-469) — in precedence order: a
+/// merged branch is merged whatever else is true of it.
+pub fn merge_word(merged: bool, needs_rebase: bool, ahead: u32) -> &'static str {
+    if merged {
+        "merged"
+    } else if needs_rebase {
+        "needs_rebase"
+    } else if ahead > 0 {
+        "ahead"
+    } else {
+        "clean"
+    }
 }
 
 /// The ticket's one answer over its legs — what the card, the DONE gate and
