@@ -11,7 +11,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use mesimon_core::board::{SessionKind, SessionState};
+use mesimon_core::board::{SessionKind, SessionState, WorkspaceStrategy};
 use mesimon_core::command::{AgentTicketView, Command, CrownTouch, Response};
 use mesimon_core::Principal;
 use serde_json::json;
@@ -425,6 +425,29 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::AgentStarted { budget_left, .. } => assert_eq!(budget_left, 0),
         other => panic!("the start after a seat freed: {other:?}"),
     }
+    // A start parked behind a worktree cut (T-466) is accepted, not refused:
+    // the receipt says it is not running yet, the parked start already holds
+    // its seat, and the spawn replays as the crown's once the cut is ready.
+    init_repo(&h.repo, "a.txt", "hello\n");
+    assert!(matches!(c.request(Command::SetCrownBudget { budget: 3 }), Response::Ok));
+    let e5 = create(&mut c, "parked start");
+    let k5 = key_of(&mut c, e5);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: e5, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let v5 = read(&mut c, sa, &k5).unwrap();
+    match start(&mut c, &k5, v5.seen) {
+        Response::AgentStarted { session_started, budget_left, .. } => {
+            assert!(!session_started, "parked on the cut, not running yet");
+            assert_eq!(budget_left, 0, "the parked start holds its seat");
+        }
+        other => panic!("a start on an uncut worktree ticket: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(e5).is_some()
+    });
+    assert_eq!(c.board().live_agent(e5).unwrap().started_by, Some(a), "replayed as the crown's");
     // The feed says the agent started it (buffered; flushed on a later tick).
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     wait_until(std::time::Duration::from_secs(5), "the feed line", || {

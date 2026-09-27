@@ -202,10 +202,14 @@ fn render(resp: Response) -> Value {
         Response::AgentRaised { reason, board_version } => {
             text(&json!({ "reason": reason, "board_version": board_version }))
         }
-        // The crown's start (T-412): which ticket, whether a pane runs now
-        // (false while a worktree provisions), and the seats left.
+        // The crown's start (T-412): which ticket, whether its pane runs now
+        // or the start waits on the worktree cut, and the seats left. A word,
+        // not a bool (T-466): every refusal is `isError`, so a `false` here
+        // read as "no" when it meant "not yet".
         Response::AgentStarted { key, session_started, budget_left } => text(&json!({
-            "key": key, "session_started": session_started, "budget_left": budget_left
+            "key": key,
+            "status": if session_started { "started" } else { "waiting_for_worktree" },
+            "budget_left": budget_left
         })),
         // The crown's ask (T-413): held on the card until a person sends it.
         Response::AgentAsked { key, replaced, seen } => {
@@ -444,6 +448,29 @@ mod tests {
         });
         let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(body["seen"], "ab12");
+    }
+
+    /// A start parked behind a worktree cut is accepted, and its receipt
+    /// must not read as a refusal (T-466): the crown told a person to press
+    /// Shift+Enter on a start that landed thirty seconds later.
+    #[test]
+    fn a_start_receipt_says_started_or_waiting_never_false() {
+        let body = |session_started| {
+            let v = render(Response::AgentStarted {
+                key: "T-7".into(),
+                session_started,
+                budget_left: 0,
+            });
+            assert_eq!(v["isError"], false);
+            serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        let now = body(true);
+        assert_eq!(now["status"], "started");
+        assert_eq!(now["key"], "T-7");
+        assert_eq!(now["budget_left"], 0);
+        let parked = body(false);
+        assert_eq!(parked["status"], "waiting_for_worktree");
+        assert!(parked.get("session_started").is_none(), "no bool to read as a refusal");
     }
 
     #[test]

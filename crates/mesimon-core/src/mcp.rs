@@ -418,9 +418,11 @@ pub fn tools() -> Vec<Value> {
             "name": "start_agent",
             "description": "Starts the board's agent on another mesimon ticket (crown only), \
                             as the person's Shift+Enter does: the title and description are \
-                            its first prompt. Refused on a ticket that already has an agent, \
-                            on this session's own ticket, and past the board's budget for \
-                            crown-started agents; the receipt says how many starts remain.",
+                            its first prompt. Refused, as an error, on a ticket that already \
+                            has an agent, on this session's own ticket, and past the board's \
+                            budget for crown-started agents. The receipt's status is started, \
+                            or waiting_for_worktree while its worktree is cut (it then starts \
+                            by itself); budget_left is the starts left.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

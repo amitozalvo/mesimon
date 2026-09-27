@@ -13962,3 +13962,30 @@ staged announcements) are tickets of their own.
 `cargo nextest run --workspace` in a fresh clone of the rewritten history before the force-push;
 `cargo check --all-targets`, `cargo ut` and clippy in `mesimon-relay` against the sibling
 checkout.
+
+## `start_agent`'s receipt says "waiting", not `false`, for a start parked on a worktree cut (T-466, 2026-09-27)
+
+**Seen from a crowned session:** `set_workspace(T-461, worktree)` then `start_agent(T-461)`
+answered `{"session_started": false, "budget_left": 0}`. The crown read "refused, budget spent"
+and told the person to press Shift+Enter; thirty seconds later T-461 was working. The start had
+been accepted and parked behind the lazy provision (`spawn_session` → `Response::Provisioning`,
+replayed by `on_provisioned`), and the bool described that instant.
+
+- **The daemon was right; the word was wrong.** Every refusal — the crown's own ticket, a seated
+  ticket, the budget, plan mode — is already `Response::Err`, rendered `isError`. So the receipt
+  only ever had two outcomes, and a bare `false` read as a third that never reaches it.
+- **The shim renders a word.** `crates/mesimon/src/mcp.rs::render` sends `"status": "started"`
+  or `"status": "waiting_for_worktree"` and drops `session_started` from the model's JSON. The
+  wire keeps `Response::AgentStarted { session_started: bool }` unchanged, so a shim and a daemon
+  of different builds still understand each other.
+- **The tool description says what the word means**, and that refusals are errors (813 of 820
+  bytes). If the cut fails, `on_provisioned` drops the parked start and the binding shows the
+  error — the crown sees that on `get_ticket`.
+- **`budget_left: 0` was genuine.** That board's budget was 3, and three crown-started seats were
+  held: two sleeping workers of an earlier crown (seats are per board, not per crown) and T-461.
+  `crown_seats` counts a parked start (`pending_spawns` with `started_by`), so the number is
+  right the moment the start parks.
+
+**Tests.** `a_start_receipt_says_started_or_waiting_never_false` (the shim's JSON for both
+cases); `crown_e2e` starts a crown agent on an uncut worktree ticket and asserts the parked
+receipt, that it already holds its seat, and that the replayed spawn carries `started_by`.

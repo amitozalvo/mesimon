@@ -1578,8 +1578,9 @@ pub enum Response {
     },
     /// AgentStartTicket's receipt (T-412): which ticket, whether a session
     /// is running now (`false` while a worktree provisions — the start is
-    /// parked and replays on ready), and how many seats the budget still
-    /// has after this one.
+    /// accepted, parked and replays on ready; a refusal is `Err`, never this),
+    /// and how many seats the budget still has after this one, a parked
+    /// start's included. The shim renders the bool as a word (T-466).
     AgentStarted {
         key: String,
         session_started: bool,
