@@ -11183,10 +11183,7 @@ impl Daemon {
         } else {
             String::new()
         };
-        let line = format!(
-            " mesimon › #[bold]{repo}#[nobold]{attn} › {title} › #[bold]{}#[nobold] ",
-            self.focus_label
-        );
+        let line = status_left(&repo, &attn, &title, &self.focus_label);
         if self.last_status_left.as_deref() != Some(&line)
             && self.backend.set_status_left(&line).is_ok()
         {
@@ -11362,6 +11359,15 @@ fn ticket_crumb(key: &str, title: &str) -> String {
     }
 }
 
+/// The focused status line: ` mesimon › repo › T-12 title › leaf `. The
+/// root terminal stands on no ticket (T-489), so its ticket crumb is empty
+/// and drops out with its separator — ` mesimon › repo › terminal `, never
+/// an empty `› ›` segment.
+fn status_left(repo: &str, attn: &str, ticket: &str, leaf: &str) -> String {
+    let ticket = if ticket.is_empty() { String::new() } else { format!(" › {ticket}") };
+    format!(" mesimon › #[bold]{repo}#[nobold]{attn}{ticket} › #[bold]{leaf}#[nobold] ")
+}
+
 fn tmux_text(s: &str, max_chars: usize) -> String {
     let mut out = String::new();
     for ch in s.chars().take(max_chars) {
@@ -11467,7 +11473,21 @@ fn now_iso() -> String {
 
 #[cfg(test)]
 mod status_line_tests {
-    use super::{ticket_crumb, tmux_text};
+    use super::{status_left, ticket_crumb, tmux_text};
+
+    /// The root terminal has no ticket, so the line skips the ticket crumb
+    /// and its separator rather than draw an empty segment (T-489).
+    #[test]
+    fn the_status_line_drops_an_empty_ticket_crumb() {
+        assert_eq!(
+            status_left("mesimon", "", "", "terminal"),
+            " mesimon › #[bold]mesimon#[nobold] › #[bold]terminal#[nobold] "
+        );
+        assert_eq!(
+            status_left("mesimon", "", "#[bold]T-4#[nobold] fix", "claude"),
+            " mesimon › #[bold]mesimon#[nobold] › #[bold]T-4#[nobold] fix › #[bold]claude#[nobold] "
+        );
+    }
 
     /// The status-line crumb names the ticket by key, then title (T-428):
     /// the key is bold, the title is capped and scrubbed the way it was.
