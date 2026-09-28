@@ -19,7 +19,7 @@
                            │     green-black, white ink, a green glow                       │
                            │   solarized                                              light │
                            │     solarized light, cream and blue-grey                       │
-                           ╰──────────────────── jk preview ∙ enter keep ∙ esc put it back ─╯
+                           ╰──── jk preview ∙ enter keep ∙ tab for light ∙ esc put it back ─╯
 
 
 

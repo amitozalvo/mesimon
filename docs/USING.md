@@ -228,8 +228,9 @@ minutes; `0` disables it.
 
 The board has two theme slots, one for a dark terminal and one for a light one. At launch it
 asks the terminal which it is and wears that slot's theme. **Settings › Appearance › Theme**
-picks the theme for the terminal you are on, and the row under it picks the other slot, so
-both can be set without changing the terminal.
+opens on the state you are in; Tab switches the pick to the other state, then to both, so
+both slots can be set without changing the terminal. Moving the cursor previews the theme
+on the board behind the picker.
 
 **Settings › Appearance › Follow the OS appearance** makes the board switch between the two
 themes as macOS or your Linux desktop switches between light and dark, while the board is

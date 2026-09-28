@@ -466,8 +466,9 @@ ground has a hue the fade target `shadow` is a neutral at its lightness, never t
 Nvim's `#005faf` cursor line was refused as blue's cursor surface (2.7:1 under a mid-ramp grey;
 it is `#2C3590`). `attn_is_its_own_colour` is what keeps `test_attn_provenance*` meaningful on
 a phosphor, and both provenance laws now sweep `Flavor::ALL`. The picker is a row of the Settings submenu
-(`Verb::ThemePick` and, for the other slot, `Verb::ThemeOther` → `Mode::Theme { idx, slot }`,
-`ui/themes.rs`, `Scope::Theme` with the menu's three shapes) whose cursor IS the preview —
+(`Verb::ThemePick` → `Mode::Theme { idx, slot }`, `ui/themes.rs`, `Scope::Theme` with the
+menu's three shapes plus Tab, `Verb::ThemeSlot`, cycling `theme::Slot` current → other → both)
+whose cursor IS the preview —
 `App::preview` is the one road every retheme takes, the OS watch's included — Enter keeps, Esc
 puts `App::resting_flavor()` back. The preference is `tui/src/prefs.rs`:
 `~/.local/state/mesimon/prefs.json`, one theme per GROUND (`dark`/`light`; `App::take_ground`

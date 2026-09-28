@@ -14825,18 +14825,24 @@ answer to `detect::detect(known)`, which then skips the OSC 11 query. The one st
 the 2026-09-02 record accepted is gone for anyone who turns the switch on; it stays for a board
 that does not, because the terminal is the only authority left there.
 
-**Two theme rows, one per slot.** "Select a theme for light and dark" meant reaching the slot
-the terminal is NOT on without changing the terminal. The Theme row is unchanged (the current
-ground's slot); under it `Verb::ThemeOther` — `Light theme: chalk` on a dark terminal, `Dark
-theme: graphite` on a light one — opens the same picker for the other slot. `Mode::Theme` now
-carries its `slot`, so a ground flip under an open picker no longer moves which slot Enter
-writes (the old rule; with a slot in the mode the simpler rule is that the picker keeps the
-slot it opened on, and Esc rests on the NEW ground's pick). The cursor is still the preview,
-so opening the other slot's picker wears that slot at once and Esc puts the resting theme back;
-`commit_theme(slot, pick)` writes that slot, machine or board, and returns to the row that
-opened it (`theme_row_verb`). `Ground::other` is the one helper. Per board / global is T-361's
-scope switch, which both rows and the follow switch already honour: `b` in Settings, inherit
-row first in the picker.
+**One Theme row; Tab picks the state inside the picker.** "Select a theme for light and dark"
+meant reaching the slot the terminal is NOT on without changing the terminal. The first cut
+added a second Settings row for the other slot; the author asked the same day for the state to
+live in the picker instead: *"entering settings → appearance → theme will show theme settings
+for the current state, tab to switch state, and an extra state for both (show hint)"*. So
+`Mode::Theme { idx, slot: theme::Slot }` opens on `Slot::One(ground)`, and Tab (`Verb::ThemeSlot`,
+the picker's fourth binding) cycles `Slot::next`: the board's own ground → the other → `Both` →
+round again. Landing on a ground moves the cursor to that ground's saved pick and previews it,
+so one press shows what the other state is set to; landing on `Both` keeps the cursor, because
+both is about where the pick goes, not what it is. The header names the state (`for a light
+terminal`, `for dark and light terminals`), and the bottom edge's hint names the NEXT stop
+(`tab for light`, `tab for both`, `tab for dark`, from `Ctx::theme_tab_word`), so the cycle is
+taught one press at a time. `commit_theme(slot, pick)` writes every ground in `Slot::grounds`,
+machine or board (`both themes inherit the machine's` on the board's inherit row), and returns
+to the Theme row. A ground flip under an open picker leaves the slot alone: the picker keeps the
+state it was on, Esc rests on the NEW ground's pick. `Ground::other` is the one helper. Per
+board / global is T-361's scope switch, which the row and the follow switch already honour:
+`b` in Settings, inherit row first in the picker.
 
 **Doctor.** `theme` now says `∙ follows the OS appearance (now dark)` — the OS is a subprocess,
 so doctor may ask it where it may never ask the terminal — or `∙ set at launch by the terminal
@@ -14845,7 +14851,8 @@ so doctor may ask it where it may never ask the terminal — or `∙ set at laun
 Tests: `appearance::{defaults_spells_light_as_a_missing_key,
 the_portal_answer_is_its_last_number_in_either_tools_spelling, gnome_default_is_no_opinion,
 the_watch_reports_changes_only_and_stops_with_its_handle, take_is_the_latest_and_never_blocks}`;
-`app::{an_os_flip_moves_the_board_to_the_other_slot, the_other_slot_row_previews_and_saves_that_slot,
+`app::{an_os_flip_moves_the_board_to_the_other_slot, tab_cycles_the_state_a_pick_is_for,
 follow_os_arms_the_watch_only_with_a_probe_and_no_pin}`;
 `prefs::follow_os_round_trips_and_a_board_may_override_it`; the keymap's settings-order and
-pref-key laws; the four settings goldens reminted (two new rows under Appearance).
+pref-key laws; the settings goldens reminted (one new row under Appearance) and the two picker
+goldens (the `tab` hint on the edge).

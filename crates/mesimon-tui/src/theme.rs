@@ -64,12 +64,50 @@ impl Ground {
         }
     }
 
-    /// The other slot: what a follow of the OS appearance flips to, and the
-    /// slot the second Settings row edits (T-485).
+    /// The other slot: what a follow of the OS appearance flips to, and
+    /// where Tab in the picker goes first (T-485).
     pub(crate) fn other(self) -> Ground {
         match self {
             Ground::Dark => Ground::Light,
             Ground::Light => Ground::Dark,
+        }
+    }
+}
+
+/// What a pick in the theme picker is saved for (T-485): one ground's
+/// slot, or both at once. Tab cycles it from the ground the board is on —
+/// current, the other, both — so the picker opens on the state you are in
+/// and the other two are one and two presses away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Slot {
+    One(Ground),
+    Both,
+}
+
+impl Slot {
+    /// The picker's header word and the status line's.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            Slot::One(g) => g.word(),
+            Slot::Both => "both",
+        }
+    }
+
+    /// Tab's next stop, cycling from `current`: its slot, the other, both.
+    pub(crate) fn next(self, current: Ground) -> Slot {
+        match self {
+            Slot::One(g) if g == current => Slot::One(g.other()),
+            Slot::One(_) => Slot::Both,
+            Slot::Both => Slot::One(current),
+        }
+    }
+
+    /// The grounds a pick writes.
+    pub(crate) fn grounds(self) -> &'static [Ground] {
+        match self {
+            Slot::One(Ground::Dark) => &[Ground::Dark],
+            Slot::One(Ground::Light) => &[Ground::Light],
+            Slot::Both => &[Ground::Dark, Ground::Light],
         }
     }
 }

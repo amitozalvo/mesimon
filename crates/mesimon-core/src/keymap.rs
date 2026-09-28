@@ -459,11 +459,11 @@ pub enum Verb {
     /// picked once and lived with, the same argument that took `p` off the
     /// footer.
     ThemePick,
-    /// The same picker for the OTHER slot (T-485): the theme for a light
-    /// terminal while this one is dark, and the reverse. Both slots are
+    /// Tab in the picker (T-485): cycle which state the pick is saved for —
+    /// the terminal's current one, the other, both. Both slots are
     /// reachable without changing the terminal, which a board that follows
     /// the OS appearance needs and a board that does not still wants.
-    ThemeOther,
+    ThemeSlot,
     /// Follow the OS's light/dark appearance while the board is open
     /// (T-485): a switch on the same list, off by default.
     FollowOs,
@@ -867,11 +867,9 @@ impl SettingsSection {
 
     pub fn for_verb(verb: Verb) -> Self {
         match verb {
-            Verb::ThemePick
-            | Verb::ThemeOther
-            | Verb::FollowOs
-            | Verb::Notifications
-            | Verb::StatusLine => Self::Appearance,
+            Verb::ThemePick | Verb::FollowOs | Verb::Notifications | Verb::StatusLine => {
+                Self::Appearance
+            }
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
@@ -970,11 +968,9 @@ pub struct Ctx {
     pub theme_slot_word: &'static str,
     /// `MESIMON_THEME` is pinning the live theme; a pick still saves.
     pub theme_pinned: bool,
-    /// The OTHER slot's pick and its ground word (T-485): the theme this
-    /// board would wear on the ground it is not on.
-    pub theme_other_name: &'static str,
-    pub theme_other_blurb: &'static str,
-    pub theme_other_slot_word: &'static str,
+    /// Under the picker: the state Tab switches to next — `"dark"`,
+    /// `"light"` or `"both"` (T-485). Empty elsewhere.
+    pub theme_tab_word: &'static str,
     /// The board follows the OS's light/dark appearance (T-485).
     pub follow_os: bool,
     /// It is on, but the OS gave no answer when asked — the board keeps its
@@ -3750,6 +3746,23 @@ static THEME: &[Binding] = &[
         mutates: false,
         prio: 20,
     },
+    // Which state the pick is for (T-485): the hint names the next stop,
+    // so the footer teaches the cycle one press at a time.
+    Binding {
+        keys: &[Key::Tab],
+        verb: Verb::ThemeSlot,
+        show: "tab",
+        hint: |c| match c.theme_tab_word {
+            "light" => "for light",
+            "dark" => "for dark",
+            _ => "for both",
+        },
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 30,
+    },
     Binding {
         keys: &[Key::Char('q'), Key::Esc],
         verb: Verb::Back,
@@ -4000,19 +4013,6 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 format!("{} ∙ for a {} terminal", c.theme_blurb, c.theme_slot_word)
             }
         },
-        avail: always,
-        key: "",
-    },
-    // The other slot (T-485): the row names the ground it is for, so the
-    // two theme rows read `Theme: graphite` / `Light theme: chalk` on a
-    // dark terminal and swap their words on a light one.
-    MenuItem {
-        verb: Verb::ThemeOther,
-        label: |c| {
-            let slot = if c.theme_other_slot_word == "light" { "Light" } else { "Dark" };
-            format!("{slot} theme: {}", c.theme_other_name)
-        },
-        detail: |c| format!("{} ∙ for a {} terminal", c.theme_other_blurb, c.theme_other_slot_word),
         avail: always,
         key: "",
     },
@@ -4663,13 +4663,9 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
         SettingsSection::Root => {
             &[Verb::SettingsAppearance, Verb::SettingsBehaviour, Verb::SettingsAgents]
         }
-        SettingsSection::Appearance => &[
-            Verb::ThemePick,
-            Verb::ThemeOther,
-            Verb::FollowOs,
-            Verb::Notifications,
-            Verb::StatusLine,
-        ],
+        SettingsSection::Appearance => {
+            &[Verb::ThemePick, Verb::FollowOs, Verb::Notifications, Verb::StatusLine]
+        }
         SettingsSection::Behaviour => &[
             Verb::MergeTrain,
             Verb::MergeTrainNotice,
@@ -4706,13 +4702,6 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
     Some(match verb {
         Verb::ThemePick => {
             if c.theme_slot_word == "light" {
-                PrefKey::Light
-            } else {
-                PrefKey::Dark
-            }
-        }
-        Verb::ThemeOther => {
-            if c.theme_other_slot_word == "light" {
                 PrefKey::Light
             } else {
                 PrefKey::Dark
@@ -8297,13 +8286,7 @@ mod tests {
         for (section, expected) in [
             (
                 SettingsSection::Appearance,
-                vec![
-                    Verb::ThemePick,
-                    Verb::ThemeOther,
-                    Verb::FollowOs,
-                    Verb::Notifications,
-                    Verb::StatusLine,
-                ],
+                vec![Verb::ThemePick, Verb::FollowOs, Verb::Notifications, Verb::StatusLine],
             ),
             (
                 SettingsSection::Behaviour,
@@ -8483,9 +8466,6 @@ mod tests {
             theme_name: "graphite",
             theme_blurb: "dark, the default",
             theme_slot_word: "dark",
-            theme_other_name: "chalk",
-            theme_other_blurb: "light, the default",
-            theme_other_slot_word: "light",
             default_column: "TODO".into(),
             team_signed_in: true,
             team_shared: true,
@@ -8924,11 +8904,9 @@ mod tests {
     /// row names none — so board scope cycles exactly the preferences.
     #[test]
     fn every_preference_row_has_a_pref_key() {
-        let c =
-            Ctx { theme_slot_word: "light", theme_other_slot_word: "dark", ..Default::default() };
+        let c = Ctx { theme_slot_word: "light", ..Default::default() };
         let prefs = [
             Verb::ThemePick,
-            Verb::ThemeOther,
             Verb::FollowOs,
             Verb::StatusLine,
             Verb::KeepAwake,
@@ -8946,7 +8924,6 @@ mod tests {
         }
         assert_eq!(pref_key(Verb::ThemePick, &c), Some(PrefKey::Light));
         assert_eq!(pref_key(Verb::ThemePick, &Ctx::default()), Some(PrefKey::Dark));
-        assert_eq!(pref_key(Verb::ThemeOther, &c), Some(PrefKey::Dark), "the other slot");
         assert_eq!(pref_key(Verb::FollowOs, &c), Some(PrefKey::FollowOs));
         assert_eq!(pref_key(Verb::Notifications, &c), None, "a door");
         assert_eq!(pref_key(Verb::McpTools, &c), None, "board state");
