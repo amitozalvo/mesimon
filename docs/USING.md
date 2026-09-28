@@ -128,8 +128,7 @@ it, answer its questions, interrupt it: mesimon never sits between you and it.
 ![From a ticket page into the agent's own terminal, a message typed to it, and back to the board](../assets/demo/agent.gif)
 
 <sub>`enter` steps into the agent's own terminal, where you type to it as you always do, and
-`ctrl-]` steps back out while it keeps working (the agent here is a scripted stand-in; yours is
-the real Claude Code or Codex).</sub>
+`ctrl-]` steps back out while it keeps working.</sub>
 
 The board is deliberately quiet — exactly one saturated colour exists, and it means *this
 session is waiting on you*.

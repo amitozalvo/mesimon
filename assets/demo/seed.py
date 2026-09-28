@@ -13,7 +13,9 @@ Speaks the wire protocol the TUI speaks: newline-delimited JSON
 import hashlib
 import json
 import os
+import re
 import socket
+import subprocess
 import sys
 import time
 
@@ -100,11 +102,26 @@ BOARDS = {"demo": TICKETS, "agent": TICKETS, "search": SEARCH,
 # The ticket whose agent is already at work, where it is not BUSY.
 AT_WORK = {"crown": CROWN}
 
+# With the real claude (record.sh with a key file), BUSY's agent works on
+# this instead: it has to still be at work when the take steps into it, and
+# the stand-in's one-line task can be done, or questioned, before that.
+REAL_BUSY = (
+    "At most 20 new links a minute per client IP; answer 429 past that. "
+    "There is no server yet: write server.py on the standard library "
+    "(POST /shorten, GET /<slug>), put the limit in front of /shorten, and "
+    "cover both with unittest tests. Run them.")
+
+
+def proj16(repo):
+    return hashlib.sha256(os.path.realpath(repo).encode()).hexdigest()[:16]
+
+
+def rt_dir(repo):
+    return f"/tmp/mesimon-{os.getuid()}/{proj16(repo)}"
+
 
 def sock_path(repo):
-    canon = os.path.realpath(repo).encode()
-    proj16 = hashlib.sha256(canon).hexdigest()[:16]
-    return f"/tmp/mesimon-{os.getuid()}/{proj16}/orch.sock"
+    return os.path.join(rt_dir(repo), "orch.sock")
 
 
 class Wire:
@@ -133,9 +150,13 @@ class Wire:
 
 
 def board(repo, tape="demo"):
+    key_file = os.environ.get("DEMO_KEY_FILE")
+    tickets = BOARDS[tape]
+    if key_file:
+        tickets = [(c, t, g, REAL_BUSY if t == BUSY else d) for c, t, g, d in tickets]
     w = Wire(repo)
     ids = {}
-    for column, title, tag, description in BOARDS[tape]:
+    for column, title, tag, description in tickets:
         made = w.ask({"cmd": "create_ticket", "column": column, "title": title,
                       "workspace": "worktree"})
         ids[title] = made["id"]
@@ -150,10 +171,90 @@ def board(repo, tape="demo"):
     w.ask({"cmd": "gate_passed"})
     # One agent already at work, so the board opens with a spinner on it.
     at_work = ids[AT_WORK.get(tape, BUSY)]
+    tree = sign_in(w, repo, key_file, at_work) if key_file else None
     w.ask({"cmd": "spawn_session", "ticket": at_work, "kind": "claude",
            "submit_prompt": True, "plan": False})
+    if tree:
+        at_work_started(w, repo, at_work, tree)
     if tape == "ticket-page":
         noted(w, ids)
+
+
+def worktree(repo, ticket):
+    """Where the daemon cuts this ticket's worktree: `<state>/worktrees/
+    <KEY>-<slug>`, the slug as core/src/workspace.rs::slug makes it from a
+    short ASCII title. `at_work_started` checks the agent runs there."""
+    slug = re.sub(r"[^a-z0-9._]+", "-", ticket["title"].lower()).strip("-.")
+    state = os.path.join(os.environ["HOME"], ".local/state/mesimon", proj16(repo))
+    return os.path.join(state, "worktrees", f"{ticket['short_key']}-{slug}")
+
+
+def sign_in(w, repo, key_file, ticket):
+    """Answer the real claude's first-run screens before it starts, in the
+    sandbox's claude config: onboarding done, a theme, the key approved
+    (claude keeps its last 20 characters), the auto-mode and fast-mode
+    notices seen, and the agent's worktree trusted. A screen left on is a
+    SETUP card on the board and a take that stalls. Returns the worktree."""
+    snap = w.ask({"cmd": "snapshot"})
+    tree = worktree(repo, next(t for t in snap["board"]["tickets"] if t["id"] == ticket))
+    with open(key_file) as f:
+        tail = f.read().strip()[-20:]
+    config = {
+        "hasCompletedOnboarding": True,
+        "theme": "dark",
+        "customApiKeyResponses": {"approved": [tail], "rejected": []},
+        "hasSeenAutoDefaultNotice": True,
+        "penguinModeOrgEnabled": True,
+        # The path as the daemon spells it, and as the kernel does (/tmp is
+        # /private/tmp on macOS): claude looks up the one its cwd gives.
+        "projects": {p: {"hasTrustDialogAccepted": True}
+                     for p in {tree, os.path.realpath(tree)}},
+    }
+    home = os.environ["CLAUDE_CONFIG_DIR"]
+    os.makedirs(home, mode=0o700, exist_ok=True)
+    fd = os.open(os.path.join(home, ".claude.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(config, f, indent=2)
+    # The key reaches a pane through the shell's answer, which the daemon
+    # asks for as it starts; a claude spawned before that lands would start
+    # signed out.
+    env_file = os.path.join(rt_dir(repo), "shellenv.env")
+    deadline = time.time() + 20
+    while not os.path.exists(env_file):
+        if time.time() > deadline:
+            sys.exit("seed: the daemon never read the sandbox's shell environment")
+        time.sleep(0.1)
+    return tree
+
+
+def at_work_started(w, repo, ticket, tree):
+    """Wait for the real claude to take its first prompt. A screen it stops
+    at fails the take here, with the screen, not as a timeout in the tape."""
+    deadline = time.time() + 60
+    while True:
+        snap = w.ask({"cmd": "snapshot"})
+        s = next((s for s in snap["board"]["sessions"] if s["ticket"] == ticket), None)
+        if s is not None:
+            if os.path.realpath(s["cwd"]) != os.path.realpath(tree):
+                sys.exit(f"seed: claude runs in {s['cwd']}, but the trusted folder is {tree}")
+            state = s["state"]["state"]
+            if state == "running" and not s.get("pending_submit"):
+                return
+            if state not in ("spawning", "running", "idle"):
+                sys.exit(f"seed: claude stopped at {s['state']}:\n{pane(repo, s)}")
+        if time.time() > deadline:
+            sys.exit(f"seed: claude did not start work:\n{pane(repo, s) if s else ''}")
+        time.sleep(0.2)
+
+
+def pane(repo, session):
+    """What is on an agent's screen: the daemon's private tmux names each
+    session by the first 16 hex digits of its id."""
+    sid16 = session["id"].replace("-", "")[:16]
+    tmux = os.environ.get("MESIMON_TMUX_BIN", "tmux")
+    return subprocess.run([tmux, "-S", os.path.join(rt_dir(repo), "tmux.sock"),
+                           "capture-pane", "-p", "-t", sid16],
+                          capture_output=True, text=True).stdout
 
 
 def noted(w, ids):

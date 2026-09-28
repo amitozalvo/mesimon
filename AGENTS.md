@@ -131,6 +131,7 @@ Additional targeted gates:
   `amitozalvo/homebrew-tap`; its header gives the local-tap check for a change.
 - README GIFs: `assets/demo/record.sh [tape]` re-records the clip `assets/demo/<tape>.tape`
   names, `demo` (`assets/demo.gif`) by default (needs `vhs`), after a change the recording shows.
+  `agent.gif` is the real claude: `MESIMON_DEMO_KEY_FILE=<key file>` (see `assets/demo/README.md`).
 
 Before handing off, run `git diff --check` and report which checks ran, which were skipped, and
 why. Never turn a skipped tmux integration into an implied pass.

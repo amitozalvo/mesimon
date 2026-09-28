@@ -14856,3 +14856,75 @@ follow_os_arms_the_watch_only_with_a_probe_and_no_pin}`;
 `prefs::follow_os_round_trips_and_a_board_may_override_it`; the keymap's settings-order and
 pref-key laws; the settings goldens reminted (one new row under Appearance) and the two picker
 goldens (the `tab` hint on the edge).
+
+## The agent clip is the real claude (T-486, 2026-09-28, "Real-claude take of the agent tour clip: record.sh signs the sandbox in with a Console API key")
+
+`assets/demo/agent.gif` now shows real Claude Code (2.1.283 on Sonnet 5), not the stand-in, and
+the captions in the README and `docs/USING.md` no longer say otherwise. T-480 had used the stub
+because the sandbox had no sign-in of its own; the author then made a Console API key for the
+recordings. `MESIMON_DEMO_KEY_FILE=<file> assets/demo/record.sh agent` is the real mode. Without
+the variable every tape runs on the stub as before, and `record.sh` refuses a key file for any
+tape but `agent`: the other four depend on the stub's timing.
+
+- **The key reaches the pane through the sandbox's login profile.** A pane gets what
+  `$SHELL -l -i` exports from a clean environment (`daemon/src/shellenv.rs`), and `record.sh`
+  sets `SHELL=/bin/sh` and a sandbox `HOME`, so a 0600 `~/.profile` that reads the key file with
+  the `read` builtin is the whole road. No command line carries the key. From there it sits in
+  the daemon's `shellenv.env` (0600, runtime dir) and in claude's environment, and cleanup removes
+  both. A watcher sampled every argv on the machine and every file under the sandbox and the
+  runtime dir twice a second through the takes. It found the key in no argv, and only ever in
+  `shellenv.env`.
+- **`CLAUDE_CONFIG_DIR`, not just `HOME`.** claude 2.1.283 names its keychain item
+  `Claude Code-credentials` unless `CLAUDE_CONFIG_DIR` is set, and then appends the first 8 hex
+  digits of the directory's sha256 (read in the binary, not by probing the keychain). A sandbox
+  `HOME` alone would still have found the machine's own login. The profile sets it, and
+  `record.sh` exports it too, because a pane spawned before the daemon's first shell capture
+  lands gets the daemon's own environment. `seed.py` also waits for `shellenv.env` before its
+  spawn, or that claude would start signed out. `CLAUDE_CODE_TMPDIR` moves claude's
+  `/tmp/claude-<uid>/<cwd slug>/<session>/tasks` into the sandbox; the first real take left one
+  behind. `DISABLE_AUTOUPDATER=1` too: a take has no business updating claude, and whether the
+  updater would write into the sandbox `HOME` or the real install was not tested.
+- **claude's first-run screens are pre-answered in the sandbox's `.claude.json`**:
+  `hasCompletedOnboarding`, `theme`, `customApiKeyResponses.approved` (the key's last 20
+  characters), `hasSeenAutoDefaultNotice`, `penguinModeOrgEnabled` (it silences "Fast mode is
+  now available", which fires when the cached org flag flips), and `hasTrustDialogAccepted` on the
+  worktree. The trust entry has to name the worktree itself: claude's trust walk stops at the git
+  root, and a worktree is its own root. `seed.py` builds the path from the ticket's `short_key`
+  and core's slug rule, and checks the session's `cwd` against it. Measured first on a scratch
+  sandbox with no prompt sent: with these keys claude opens on its prompt; without the trust
+  entry it opens on "Quick safety check". `seed.py` then waits for the agent to take its prompt,
+  and a screen it stops at ends the take with the pane's text.
+- **A longer task.** With the real claude, "Rate limiting" asks for a stdlib `server.py`, the
+  limit and unittest tests. The stand-in's one line can be finished, or questioned (there is no
+  server), before the take steps in.
+- **Sonnet, and it must have auto mode.** The author asked for small models in tests and
+  recordings. The first probe ran on the default, Opus 5.5; `MESIMON_DEMO_MODEL` (default
+  `sonnet`) now sets `ANTHROPIC_MODEL`. mesimon passes no `--permission-mode` here (the sandbox's
+  settings name no `defaultMode`), and claude's default with an API key is auto mode. Haiku has
+  none: its take stopped at "Do you want to create server.py?".
+- **The tape waits on shape, and cuts the wait for the answer.** Stepping in waits for
+  `esc to interrupt` (claude's footer while it works) or `stand-in`. A message typed while claude
+  works sits in its queue ("Press up to edit queued messages") until the current step ends. Opus
+  5.5 streamed server.py and its tests as one heredoc and answered 15 s after Enter; Sonnet took
+  about 45 s. So the tape shows the queued message for 1.5 s, hides, and waits for
+  `(?s)Also log each 429.*⏺`: nothing marked `⏺` sits under a queued message, and one appears when
+  claude takes it up. The answer is whatever claude says next, which need not mention the log.
+- **Canonical sandbox.** `SANDBOX` is now `pwd -P` of `mktemp -d`, in both modes. claude's header
+  showed `/private/tmp/msmn-demo.…/home/.local/state/…` because its cwd, as the kernel spells it,
+  did not start with a `/tmp` `HOME`; now it reads `~/.local/state/…`.
+- **Cleanup waits for the panes.** claude writes an MCP log into the sandbox's
+  `Library/Caches/claude-cli-nodejs` as it dies, after `rm -rf` had run, and the first real take
+  left the sandbox behind. Cleanup reads the pane pids before `kill-server` and waits up to 5 s
+  for each to exit.
+
+**Tests.** A no-prompt probe of claude in a private tmux, with and without each pre-answer. Four
+real takes: Opus 5.5 (the default, before the model knob) passed but showed the long
+`/private/tmp` path and left the sandbox behind; Haiku stalled on the permission question;
+Sonnet twice, both clean, and the second is `agent.gif` (11.8 s, 296 frames). Its main loop used
+16.2k cache-write, 121.7k cache-read and 6.4k output tokens by the transcript, about $0.13 at
+Sonnet 5's rates, plus auto mode's classifier calls, which the transcript does not show. Its
+only blank frames are the attach and the detach, which the stub take has too. No
+`/tmp/msmn-demo.*`, `/tmp/claude-<uid>/…msmn-demo…` or runtime dir outlived a take after the
+cleanup fix. The key is in no file of the repository (all 547 scanned, with its last 20
+characters too). All five tapes then ran in stub mode and passed; their GIFs were put back from
+git.

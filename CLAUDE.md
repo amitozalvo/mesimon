@@ -73,6 +73,7 @@ ci/test-linux.sh                                      # whole suite on Debian 12
 ci/build-linux.sh                                     # the two Linux release binaries, cross-linked here
 ci/release.sh --dry-run                               # the full release gate, minus the upload
 assets/demo/record.sh [tape]                          # re-record a README GIF from <tape>.tape, default demo (vhs)
+MESIMON_DEMO_KEY_FILE=<key file> assets/demo/record.sh agent  # the agent clip with the real claude (Sonnet, cents)
 ```
 
 `cargo test --workspace` is valid but runs the e2e binaries serially (~2.5 min). Tests are

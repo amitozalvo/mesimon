@@ -2,7 +2,9 @@
 # agent's own terminal, type to it the ordinary way, and step back to the
 # board. Run through record.sh (`record.sh agent`), never alone: it builds
 # the sandbox this tape expects in DEMO_* and MESIMON_*. Same terminal as
-# demo.tape: theme, size and font.
+# demo.tape: theme, size and font. The take in the README is the real
+# claude (record.sh with a key file), so every wait on the agent is for
+# the shape of its screen, never its words; each also matches the stand-in.
 
 Output agent.gif
 
@@ -35,17 +37,23 @@ Sleep 1.3s
 Space
 Sleep 1.8s
 
-# Enter steps into the agent itself, full screen, its own prompt line.
+# Enter steps into the agent itself, full screen: claude at work, or the
+# stand-in under the rule that says what it is.
 Enter
-Wait+Screen@5s /stand-in/
-Sleep 0.8s
+Wait+Screen@10s /esc to interrupt|stand-in/
+Sleep 1s
 
-# Typed the ordinary way; the agent answers and keeps working.
+# Typed the ordinary way. A busy claude queues it and takes it up at its
+# next step, however long the step it is on runs, so the wait is cut: the
+# take picks up at the agent's answer under the message.
 Type "Also log each 429"
 Sleep 0.4s
 Enter
-Wait+Screen@5s /with the client/
-Sleep 1.4s
+Sleep 1.5s
+Hide
+Wait+Screen@120s /(?s)Also log each 429.*⏺|with the client/
+Show
+Sleep 2.5s
 
 # Step back: the ticket page, then the board, the card still spinning.
 Ctrl+]

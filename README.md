@@ -80,8 +80,7 @@ itself: Claude Code or Codex, exactly as you know it.
 ![From a ticket page into the agent's own terminal, a message typed to it, and back to the board](assets/demo/agent.gif)
 
 <sub>`enter` steps into the agent's own terminal, where you type to it as you always do, and
-`ctrl-]` steps back out while it keeps working (the agent here is a scripted stand-in; yours is
-the real Claude Code or Codex).</sub>
+`ctrl-]` steps back out while it keeps working.</sub>
 
 **The ticket page.** `tab` on a card writes its description, and `ctrl-k` lists the links in
 its notes.
