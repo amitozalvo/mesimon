@@ -519,6 +519,13 @@ impl TmuxBackend {
         // Live servers also predate the C-5 bind (extended-keys makes Ctrl+5 a
         // distinct key, so the C-] bind alone doesn't catch it).
         self.run(&["bind-key", "-T", "root", "C-5", "detach-client"])?;
+        // And predate `extended-keys on` with its Shift+Enter bind (T-488):
+        // converge, or a live server keeps typing iTerm2's XTVERSION reply
+        // into nvim until it is restarted.
+        self.run(&["set-option", "-g", "extended-keys", "on"])?;
+        let mut bind = vec!["bind-key", "-T", "root", "S-Enter", "send-keys", "-H"];
+        bind.extend(conf::SHIFT_ENTER_HEX.split(' '));
+        self.run(&bind)?;
         Ok(())
     }
 

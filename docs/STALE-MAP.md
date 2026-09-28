@@ -14968,3 +14968,42 @@ the wrap, so they were built here.
 the kitchen-sink sweep gained every new construct. Still not built, and not worth it until one
 shows up: setext headings, 4-space indented code, `<url>` autolinks, other HTML, footnotes,
 reference links.
+
+## The `!` shell's nvim typed iTerm2's version into itself — `extended-keys on`, not `always` (T-488, 2026-09-28, user: "opened nvim, pressed [space f f] to open telescope and then wrote r and it opened a split view with a new file and closed my telescope")
+
+Not the keys: a pty proxy under the pane showed nvim receiving ` ffr` and then
+`ESC [27;3;80~ >|iTerm2 3.6.11 ESC \` — iTerm2's XTVERSION reply, delivered as Alt+Shift+P
+plus text. The picker (snacks.nvim, not telescope) read it as an action, opened a split on
+nothing and closed. The chain, each link measured in a harness that drives the bundled tmux
+3.6a through a pty posing as iTerm2 (its DA1/DA2/XDA replies):
+
+- **snacks.nvim's image probe** (`snacks/image/terminal.lua`) asks the terminal its version
+  when the picker first previews. Inside tmux it has a workaround — ask tmux for
+  `#{client_termname}` instead — gated on `tmux show -g extended-keys` reading ` on`. Ours read
+  `always`, so it fell through: `tmux set -p allow-passthrough all` (a pane option, over our
+  global `off`) and `CSI > q` wrapped in a passthrough, straight to iTerm2.
+- **tmux keeps one XDA reply per client** (`tty_keys_extended_device_attributes` returns at
+  `TTY_HAVEXDA`). It already had iTerm2's from its own attach-time query, so the second
+  `ESC P >|iTerm2 3.6.11 ESC \` is not a reply but keys: `ESC P` is M-P, the rest is text.
+  The pane had asked for modified keys (nvim sends `CSI > 4;2 m`), so M-P went as
+  `CSI 27;3;80~`.
+- A client without iTerm2's XDA reply, or a detached pane, never reproduces — which is why
+  `tmux send-keys` alone showed nothing.
+
+**Fix:** `set -g extended-keys on`. Both words request modified keys from the outer terminal
+(Ctrl+5 stays a distinct key; the C-5 bind still detaches); `always` additionally hands the
+encodings to panes that never asked, and that was the only thing it bought. Measured per pane
+kind (`cat -v` after the request each app makes): Claude Code sends `CSI > 4;2 m` and nvim the
+same, so under `on` both still get `CSI 27;2;13~` for Shift+Enter. Codex sends `CSI > 4;0 m`
+and a kitty push (`CSI > 5 u`), which tmux 3.6a does not count as a request, so under bare `on`
+its Shift+Enter would arrive as `^M`. Hence `bind-key -n S-Enter send-keys -H <bytes of
+ESC[27;2;13~>` in the root table: tmux parses the outer terminal's Shift+Enter (CSI-u or xterm
+form) to `S-Enter`, the bind sends the xterm bytes to the focused pane, and every pane reads
+Shift+Enter exactly as it did under `always`. A shell that never asked still sees `[27;2;13~`
+on Shift+Enter, as before. `set_status_left` replays the option and the bind, so a live server
+converges on the next focus. `extended-keys` is a server option — no per-pane word.
+
+Not built: nothing on the snacks side (its `on` gate is theirs), no `TMUX` scrubbing (the hook's
+pane key rides it), and no attempt to keep tmux from taking the first XDA reply (it asks on
+every attach). A pane that sets `allow-passthrough` for itself still can; only the probe that
+did so is now routed around.

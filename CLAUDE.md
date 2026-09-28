@@ -464,6 +464,11 @@ will not show up in our tests until they break something.
 - **A tmux pane id is unique per server, and the server exits with its last session.** A wake
   that kills the only session restarts the server, and the new pane is `%0` like the old one;
   a pane identity must carry the server pid (`#{pid}`) beside `#{pane_id}`.
+- **tmux keeps one XTVERSION reply per client and types the next one.** Its own attach-time
+  query takes iTerm2's `ESC P >|iTerm2 …`; a pane that asks again through a passthrough gets
+  the reply back as M-P plus text (T-488). `extended-keys` stays `on`, never `always`: snacks.nvim
+  routes its probe around tmux only under `on`, and the root `S-Enter` bind carries Shift+Enter
+  to the panes that never asked.
 - **A kitty key-release report outlives the keypress, and tmux types it.** Under the pushed
   flags a release is `CSI code;mods:3 u`; tmux 3.6a's CSI-u parser stops at the `:` and passes
   it to the pane as text. `restore_terminal` pops the flags and then fences on a

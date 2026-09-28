@@ -9,6 +9,13 @@
 /// place, so the two cannot drift apart again.
 pub const STATUS_RIGHT: &str = " ^]/^5 back  ";
 
+/// `ESC [ 27 ; 2 ; 13 ~` — Shift+Enter in the xterm modified-key form — as
+/// `send-keys -H` spells it. The root-table `S-Enter` bind sends these bytes
+/// to the focused pane, so under `extended-keys on` a pane that never asked
+/// for modified keys (Codex) still tells Shift+Enter from Enter (T-488).
+/// Rendered into the conf and replayed live by `TmuxBackend::set_status_left`.
+pub const SHIFT_ENTER_HEX: &str = "1b 5b 32 37 3b 32 3b 31 33 7e";
+
 /// One line per wheel event: tmux's default five-line step amplifies trackpad
 /// gestures. Shared by fresh configs and live-server upgrades. Keep pane
 /// selection and leave root-table mouse forwarding to applications intact.
@@ -37,21 +44,31 @@ pub fn status_position(top: bool) -> &'static str {
 pub fn render(pane_died_cmd: Option<&str>, status_top: bool) -> String {
     // Spike references: T-2 (update-environment), T-6 (extended-keys, focus-events),
     // T-7 (remain-on-exit + pane-died), T-10 (clipboard/passthrough containment).
-    // C-5 needs its own bind: `extended-keys always` negotiates CSI-u with the outer
-    // terminal, so Ctrl+5 arrives as a distinct key (CSI 53;5u), not the legacy 0x1D
-    // alias docs/04 §2.14 rung 1b assumed. It is the layout-independent unfocus key
+    // C-5 needs its own bind: `extended-keys` (on or always) negotiates CSI-u with the
+    // outer terminal, so Ctrl+5 arrives as a distinct key (CSI 53;5u), not the legacy
+    // 0x1D alias docs/04 §2.14 rung 1b assumed. It is the layout-independent unfocus key
     // (digits don't move on non-US layouts; Ctrl+physical-] sends Esc on Hebrew).
+    // `on`, not `always` (T-488): `always` hands every pane the modified-key
+    // encodings whether it asked or not, and snacks.nvim's terminal probe reads
+    // that as "tmux will leak our reply" and skips its tmux-side workaround —
+    // so it sends XTVERSION through a passthrough, and tmux, which keeps only
+    // the first XDA reply per client, types iTerm2's `ESC P >|iTerm2 …` into
+    // the pane as M-P plus text. Under `on` a pane gets modified keys when it
+    // asks (Claude Code and nvim send `CSI > 4;2 m`); Codex asks in kitty terms
+    // tmux 3.6a does not honour, so Shift+Enter alone is bound in the root
+    // table and sent as bytes, which reaches every pane the way `always` did.
     let mut conf =
         r##"# mesimon private tmux server — generated, do not edit (docs/19-tmux-backend-v01.md)
 set -g prefix None
 unbind-key -a
 bind-key -n C-] detach-client
 bind-key -n C-5 detach-client
+bind-key -n S-Enter send-keys -H @SHIFT_ENTER_HEX@
 set -g remain-on-exit on
 set -g update-environment ""
 set -g set-clipboard off
 set -g allow-passthrough off
-set -g extended-keys always
+set -g extended-keys on
 set -g focus-events on
 set -g mouse on
 set -g history-limit 50000
@@ -68,6 +85,7 @@ set -g window-status-format ""
 set -g window-status-current-format ""
 "##
         .replace("@STATUS_RIGHT@", STATUS_RIGHT)
+        .replace("@SHIFT_ENTER_HEX@", SHIFT_ENTER_HEX)
         .replace("@STATUS_POSITION@", status_position(status_top));
     for (table, key, command) in SCROLL_BINDINGS {
         conf.push_str(&format!("bind-key -T {table} {key} {{ {command} }}\n"));
@@ -183,6 +201,21 @@ pub const PANE_KEY: &str = "#{pid}:#{pane_id}";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `extended-keys on`, never `always` (T-488): `always` is what made
+    /// snacks.nvim's terminal probe leak iTerm2's XTVERSION reply into the
+    /// pane as keystrokes. Shift+Enter keeps reaching every pane through the
+    /// root bind, whose bytes are the xterm form a pane that asked would get.
+    #[test]
+    fn extended_keys_on_and_shift_enter_reaches_every_pane() {
+        let conf = render(None, false);
+        assert!(conf.contains("set -g extended-keys on\n"), "{conf}");
+        assert!(!conf.contains("extended-keys always"), "{conf}");
+        assert!(conf.contains(&format!("bind-key -n S-Enter send-keys -H {SHIFT_ENTER_HEX}\n")));
+        let bytes: Vec<u8> =
+            SHIFT_ENTER_HEX.split(' ').map(|h| u8::from_str_radix(h, 16).unwrap()).collect();
+        assert_eq!(bytes, b"\x1b[27;2;13~");
+    }
 
     #[test]
     fn hookless_render_has_no_hook() {
