@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
+
+ ▎ Tables render in columns now.
+ ▎
+ ▎ file        lines   why
+ ▎ rich.rs       212   a delimiter row under a pipe row makes a table, and each cell reads inline
+ ▎ ticket.rs       0   the band already calls render_on
+ ▎ tests.rs       31   this one
+
+
+  PREVIEW                                                                                  SESSIONS                  2
+
+                       ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                   ⠋ ✻ claude               >1y
+                        ██▀▄▀▀▀▀   ▄▀▀▀                                                   ◦ $ bash                 >1y
+                       ▄▀███▀▄▄▄▄▄▄▀█▀▄    ▄▄▄▄▄▄▄▄▄                                       x sleep
+                     ▄▀████████████████▀▄  █▀▀▀▀████
+                     █████▀████████▀█████  ██▀▀▀████                                       NOTES                     2
+                     █████▀▀▀██████▀▀▀███  ██▀▀█████
+                     ▀▀▀██████▀▀██████▀▀▀▀▀▀▀███████▄                                      ≡ description       you >1y
+                      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀                                     ≡ Repro steps     agent >1y
+                                                                                           N new note
+    ● working
+    nothing said yet ∙ the first words land when the turn does
+
+
+
+ jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown                                   ? keys

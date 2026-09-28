@@ -14743,3 +14743,37 @@ like the rest, `WORK`'s steps carry their tool, and a pause reads the pane rathe
 All five tapes then ran on that tree and passed; `crown` and `ticket-page` were checked frame by
 frame. Only `agent.gif` was kept; the other four still name the session `✳ Claude Code` until
 their next take.
+
+## Markdown tables are set in columns (T-487, 2026-09-28)
+
+A pipe table in a description, a note, a reply or the release notes drew as its source: each
+line verbatim with its pipes, only the delimiter row dropped and the row above it bolded. An
+agent's table is rarely space-aligned in the source, so its columns zig-zagged, and `**x**` or
+`` `x` `` in a cell showed the markers. `rich.rs` now parses a GFM table and lays it out.
+
+- **Recognition is GFM's.** A header row followed by a delimiter row with the same cell count;
+  outer pipes optional (`a | b` over `--|--` is a table); `\|` is a pipe inside a cell; a body
+  row is padded or cut to the header's count. The table runs to the first blank line or line
+  with no pipe. Both the header and the delimiter must carry a pipe, so `text` over `---` is
+  still text and a break.
+- **Columns are set apart by space, not rules.** `|` and `│` would be drawn structure in all but
+  codepoint; the laws buy value, weight, paint and space. Three cells of gutter when the table
+  fits at its natural widths, two when only that fits. The header is in weight (`Role::Head`),
+  a cell's inline markdown renders as everywhere else, and the delimiter's colons align.
+- **Too wide, the wide columns wrap.** Water-filling: a column narrower than an even share
+  keeps its width, the rest split what is left and wrap in it (`wrap`, factored out of `flow`
+  for this). A wrapped table puts a blank row between rows, or one row runs into the next.
+- **Too narrow for columns of `MIN_COL` (10) cells, the table becomes records**: per body row,
+  a `header: value` line per non-empty cell, the header bold, a blank between rows. A 4-wide
+  column of prose is a word per line; a record reads.
+- **A pipe line with no delimiter row is not a table** and stays verbatim (`Block::Raw`): it may
+  be aligned by hand, and GFM would reflow it as a paragraph.
+
+`markdown_never_spends_a_banned_attribute_or_the_accent`'s kitchen sink gained a table that
+lands in all three layouts across its three widths. Goldens `ticket_description_table_120x30`
+(the band) and `ticket_description_table_selected_120x30` (the zone, wrapping) are new; no
+existing golden moved, since no fixture held a table.
+
+**Not built** (surveyed on this ticket, ranked in its notes): task lists, `***x***` (which leaks
+`**` and flips later emphasis on the line), hard line breaks, quotes holding blocks or GitHub
+alerts, `<br>` inside a cell, setext headings, indented code, autolinks, HTML.

@@ -6142,6 +6142,34 @@ fn golden_ticket_description_120() {
     golden("ticket_description_120x30", &lines);
 }
 
+/// A description that is a table (T-487): set in columns on the band — its
+/// pipes and delimiter row gone, the header in weight, a cell's code on the
+/// page ground — and, read whole in the narrower zone, its widest column
+/// wrapping with air between the rows.
+const TABLE_NOTE: &str = "Tables render in columns now.\n\n\
+    | file | lines | why |\n|:--|--:|:--|\n\
+    | `rich.rs` | **212** | a delimiter row under a pipe row makes a table, and each cell reads inline |\n\
+    | `ticket.rs` | 0 | the band already calls `render_on` |\n\
+    | `tests.rs` | 31 | this one |";
+
+fn app_tabled(rail_idx: usize) -> App {
+    let mut app = app_noted();
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(TABLE_NOTE)));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx };
+    app
+}
+
+#[test]
+fn golden_ticket_description_table_120() {
+    let lines = render(&app_tabled(0), 120, 30);
+    assert!(lines.iter().any(|l| l.contains("file")), "the table's header: {lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("|:--")), "the delimiter row is markup: {lines:?}");
+    golden("ticket_description_table_120x30", &lines);
+    let lines = render(&app_tabled(2), 120, 30);
+    assert!(lines.iter().any(|l| l.contains("DESCRIPTION")), "the zone reads it whole: {lines:?}");
+    golden("ticket_description_table_selected_120x30", &lines);
+}
+
 /// The state row says `description unread` exactly while there is something
 /// to have read, a claude that has had a turn, and no record of it reading
 /// (T-224). Reading it — `get_ticket`, or the composed spawn's paste — takes

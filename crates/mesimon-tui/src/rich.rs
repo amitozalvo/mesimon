@@ -135,7 +135,8 @@ pub(crate) fn render_on(
                 out.flow(&runs, lead, hang, Role::Body);
             }
             Block::Code { rows } => out.slab(&rows),
-            Block::Row { text, head } => out.row(&text, head),
+            Block::Table { head, align, rows } => out.table(&head, &align, &rows),
+            Block::Raw { text } => out.raw(&text),
         }
     }
     out.finish()
@@ -221,14 +222,28 @@ enum Block {
     Code {
         rows: Vec<String>,
     },
-    /// One row of a pipe table, kept verbatim so its columns stay lined up
-    /// (reflowing a table is what destroys it). `head` is the row above the
-    /// delimiter, which is dropped — with rules banned, the header is marked
-    /// by value instead.
-    Row {
-        text: String,
-        head: bool,
+    /// A pipe table: a header row, the delimiter row under it (dropped — with
+    /// rules banned, the header is marked by weight instead) and its body.
+    /// Every cell is parsed inline and every row holds exactly the header's
+    /// column count, padded or cut the way GFM does.
+    Table {
+        head: Vec<Vec<Run>>,
+        align: Vec<Align>,
+        rows: Vec<Vec<Vec<Run>>>,
     },
+    /// A pipe line with no delimiter row under it: not a table, but its
+    /// columns may be spaced by hand, so it is kept verbatim, not reflowed.
+    Raw {
+        text: String,
+    },
+}
+
+/// A table column's alignment, as its delimiter cell spells it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Align {
+    Left,
+    Center,
+    Right,
 }
 
 /// What is still being accumulated when the next line arrives.
@@ -244,7 +259,13 @@ fn blocks(src: &str) -> Vec<Block> {
     let mut pending = Pending::None;
     let mut fence: Option<(char, usize, Vec<String>)> = None;
 
-    for raw in src.lines() {
+    // Indexed, because a table is only a table if the line under its header
+    // is a delimiter row.
+    let lines: Vec<&str> = src.lines().collect();
+    let mut at = 0;
+    while at < lines.len() {
+        let raw = lines[at];
+        at += 1;
         // Inside a fence every line is verbatim until the closing marker.
         if let Some((ch, len, rows)) = fence.as_mut() {
             let t = raw.trim();
@@ -281,16 +302,31 @@ fn blocks(src: &str) -> Vec<Block> {
             out.push(Block::Head { level, runs: inline(text) });
             continue;
         }
+        if let Some(align) = table_head(body, lines.get(at).copied()) {
+            flush(&mut pending, &mut out);
+            at += 1; // the delimiter row
+            let n = align.len();
+            let row = |line: &str| -> Vec<Vec<Run>> {
+                let mut cs: Vec<Vec<Run>> = cells(line).iter().map(|c| inline(c)).collect();
+                cs.resize(n, Vec::new());
+                cs
+            };
+            let head = row(body);
+            let mut rows = Vec::new();
+            // The table runs to the first line that cannot be a row of it.
+            while let Some(next) = lines.get(at).map(|l| l.trim()) {
+                if next.is_empty() || !next.contains('|') || fence_open(next).is_some() {
+                    break;
+                }
+                rows.push(row(next));
+                at += 1;
+            }
+            out.push(Block::Table { head, align, rows });
+            continue;
+        }
         if body.starts_with('|') {
             flush(&mut pending, &mut out);
-            if is_table_rule(body) {
-                // Mark the row above as the header and drop this one.
-                if let Some(Block::Row { head, .. }) = out.last_mut() {
-                    *head = true;
-                }
-            } else {
-                out.push(Block::Row { text: body.to_string(), head: false });
-            }
+            out.push(Block::Raw { text: body.to_string() });
             continue;
         }
         if let Some((marker, text)) = list_marker(body) {
@@ -359,8 +395,54 @@ fn is_break(body: &str) -> bool {
     false
 }
 
-fn is_table_rule(body: &str) -> bool {
-    body.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) && body.contains('-')
+/// Is `body` a table's header row — is `next` a delimiter row with as many
+/// cells as it has? Both must carry a pipe, or `text` over `---` (a setext
+/// heading, drawn here as text and a break) would read as a one-column table.
+fn table_head(body: &str, next: Option<&str>) -> Option<Vec<Align>> {
+    let next = next?.trim();
+    if !body.contains('|') || !next.contains('|') {
+        return None;
+    }
+    let align = cells(next)
+        .iter()
+        .map(|c| {
+            let dashes = c.trim_start_matches(':').trim_end_matches(':');
+            if dashes.is_empty() || !dashes.chars().all(|ch| ch == '-') {
+                return None;
+            }
+            Some(match (c.starts_with(':'), c.ends_with(':')) {
+                (true, true) => Align::Center,
+                (false, true) => Align::Right,
+                _ => Align::Left,
+            })
+        })
+        .collect::<Option<Vec<Align>>>()?;
+    (cells(body).len() == align.len()).then_some(align)
+}
+
+/// A table row's cells, trimmed: split on every pipe but an escaped one
+/// (`\|` stays in the cell for `inline` to unescape), the outer pipes
+/// optional.
+fn cells(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = match t.strip_suffix('|') {
+        Some(rest) if !rest.ends_with('\\') => rest,
+        _ => t,
+    };
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut escaped = false;
+    for c in t.chars() {
+        if c == '|' && !escaped {
+            out.push(std::mem::take(&mut cur).trim().to_string());
+        } else {
+            cur.push(c);
+        }
+        escaped = c == '\\' && !escaped;
+    }
+    out.push(cur.trim().to_string());
+    out
 }
 
 fn heading(body: &str) -> Option<(u8, &str)> {
@@ -660,6 +742,123 @@ fn words(runs: &[Run], paint: &Paint) -> Vec<Word> {
     out
 }
 
+/// Greedy word wrap of one block into `width` cells. `lead` opens the first
+/// line (a bullet, a quote mark, an indent) and `hang` is the inset every
+/// later line of the same block keeps.
+fn wrap(
+    runs: &[Run],
+    lead: Vec<Span<'static>>,
+    hang: usize,
+    role: Role,
+    width: usize,
+    paint: &Paint,
+) -> Vec<Vec<Span<'static>>> {
+    let mut out = Vec::new();
+    let ws = words(runs, paint);
+    if ws.is_empty() {
+        return out;
+    }
+    let mut cur: Vec<Span<'static>> = lead;
+    cur.retain(|s| !s.content.is_empty());
+    let mut w: usize = crate::ui::spans_width(&cur);
+    let start = w;
+    let mut first = true;
+    // The space BETWEEN two words of one code span must be painted too, or
+    // the slab comes out with a hole in it — so a separator inherits the run
+    // it sits inside, and only falls back to the block's own style at a
+    // boundary between two different runs.
+    let mut prev: Option<Emph> = None;
+    for word in ws {
+        let sep = usize::from(w > if first { start } else { hang });
+        if w + sep + word.width > width {
+            // Flush unless the line is still empty — an over-wide word on a
+            // fresh line hard-splits below instead of looping.
+            if w > if first { start } else { hang } {
+                out.push(std::mem::take(&mut cur));
+                first = false;
+                cur = indent_spans(hang);
+                w = hang;
+            }
+            if word.width > width.saturating_sub(hang) {
+                for (text, emph) in &word.parts {
+                    for g in text.graphemes(true) {
+                        if w + g.width() > width {
+                            out.push(std::mem::take(&mut cur));
+                            first = false;
+                            cur = indent_spans(hang);
+                            w = hang;
+                        }
+                        w += g.width();
+                        push_text(&mut cur, g, style_of(*emph, role, paint));
+                    }
+                }
+                prev = word.parts.last().map(|(_, e)| *e);
+                continue;
+            }
+        }
+        if w > if first { start } else { hang } {
+            let next = word.parts.first().map(|(_, e)| *e);
+            let joined = match (prev, next) {
+                (Some(a), Some(b)) if a == b => a,
+                _ => Emph::default(),
+            };
+            push_text(&mut cur, " ", style_of(joined, role, paint));
+            w += 1;
+        }
+        for (text, emph) in &word.parts {
+            w += text.width();
+            push_text(&mut cur, text, style_of(*emph, role, paint));
+        }
+        prev = word.parts.last().map(|(_, e)| *e);
+    }
+    if cur.iter().any(|s| !s.content.trim().is_empty()) {
+        out.push(cur);
+    }
+    out
+}
+
+/// The narrowest a squeezed table column may be. Below it a column of prose
+/// is a word per row, and the table reads better as records.
+const MIN_COL: usize = 10;
+
+/// Widths for columns whose cells want `natural` cells, in `width`, and the
+/// gutter between them — `None` when a column would get fewer than
+/// `MIN_COL`. A table that fits keeps every column natural, with three
+/// cells of air if there is room for them and two if not. One that does not
+/// fit is water-filled: a column narrower than an even share keeps its
+/// width, and the wide ones split what is left evenly and wrap in it.
+fn columns(natural: &[usize], width: usize) -> Option<(Vec<usize>, usize)> {
+    let n = natural.len();
+    let total: usize = natural.iter().sum();
+    for gutter in [3, 2] {
+        if total + gutter * n.saturating_sub(1) <= width {
+            return Some((natural.to_vec(), gutter));
+        }
+    }
+    let gutter = 2;
+    let mut left = width.checked_sub(gutter * n.saturating_sub(1))?;
+    let mut widths = natural.to_vec();
+    let mut open: Vec<usize> = (0..n).collect();
+    while !open.is_empty() {
+        let share = left / open.len();
+        let (fits, wide): (Vec<usize>, Vec<usize>) =
+            open.iter().partition(|&&c| natural[c] <= share);
+        if fits.is_empty() {
+            if share < MIN_COL {
+                return None;
+            }
+            let extra = left % wide.len();
+            for (k, c) in wide.iter().enumerate() {
+                widths[*c] = share + usize::from(k < extra);
+            }
+            break;
+        }
+        left -= fits.iter().map(|c| natural[*c]).sum::<usize>();
+        open = wide;
+    }
+    Some((widths, gutter))
+}
+
 struct Out<'a> {
     lines: Vec<Line<'static>>,
     max: usize,
@@ -695,73 +894,12 @@ impl Out<'_> {
         self.lines.push(Line::default());
     }
 
-    /// Greedy word wrap of one block. `lead` opens the first line (a bullet,
-    /// a quote mark, an indent) and `hang` is the inset every later line of
-    /// the same block keeps.
+    /// One block, word-wrapped to the column (`wrap`).
     fn flow(&mut self, runs: &[Run], lead: Vec<Span<'static>>, hang: usize, role: Role) {
-        let ws = words(runs, &self.paint);
-        if ws.is_empty() {
-            return;
-        }
-        let mut cur: Vec<Span<'static>> = lead;
-        cur.retain(|s| !s.content.is_empty());
-        let mut w: usize = crate::ui::spans_width(&cur);
-        let start = w;
-        let mut first = true;
-        // The space BETWEEN two words of one code span must be painted too,
-        // or the slab comes out with a hole in it — so a separator inherits
-        // the run it sits inside, and only falls back to the block's own
-        // style at a boundary between two different runs.
-        let mut prev: Option<Emph> = None;
-        for word in ws {
-            let sep = usize::from(w > if first { start } else { hang });
-            if w + sep + word.width > self.width {
-                // Flush unless the line is still empty — an over-wide word on
-                // a fresh line hard-splits below instead of looping.
-                if w > if first { start } else { hang } {
-                    if !self.line(std::mem::take(&mut cur)) {
-                        return;
-                    }
-                    first = false;
-                    cur = indent_spans(hang);
-                    w = hang;
-                }
-                if word.width > self.width.saturating_sub(hang) {
-                    for (text, emph) in &word.parts {
-                        for g in text.graphemes(true) {
-                            if w + g.width() > self.width {
-                                if !self.line(std::mem::take(&mut cur)) {
-                                    return;
-                                }
-                                first = false;
-                                cur = indent_spans(hang);
-                                w = hang;
-                            }
-                            w += g.width();
-                            push_text(&mut cur, g, style_of(*emph, role, &self.paint));
-                        }
-                    }
-                    prev = word.parts.last().map(|(_, e)| *e);
-                    continue;
-                }
+        for line in wrap(runs, lead, hang, role, self.width, &self.paint) {
+            if !self.line(line) {
+                return;
             }
-            if w > if first { start } else { hang } {
-                let next = word.parts.first().map(|(_, e)| *e);
-                let joined = match (prev, next) {
-                    (Some(a), Some(b)) if a == b => a,
-                    _ => Emph::default(),
-                };
-                push_text(&mut cur, " ", style_of(joined, role, &self.paint));
-                w += 1;
-            }
-            for (text, emph) in &word.parts {
-                w += text.width();
-                push_text(&mut cur, text, style_of(*emph, role, &self.paint));
-            }
-            prev = word.parts.last().map(|(_, e)| *e);
-        }
-        if cur.iter().any(|s| !s.content.trim().is_empty()) {
-            self.line(cur);
         }
     }
 
@@ -793,16 +931,114 @@ impl Out<'_> {
         }
     }
 
-    /// One table row, verbatim: the columns are already aligned and any
-    /// reflow would destroy that. The header row is marked by value.
-    fn row(&mut self, text: &str, head: bool) {
-        let style = if head {
-            Style::default().fg(self.paint.ink.base).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(self.paint.ink.dim1)
+    /// A table, set in columns: each as wide as its widest cell, set apart by
+    /// space (a rule is drawn structure, L1), aligned as its delimiter cell
+    /// asked, the header in weight. Too wide for the page, the widest columns
+    /// share what is left and their cells wrap — with a blank row between
+    /// rows then, or a wrapped row runs into the next. Too narrow for even
+    /// that, the table is read out a row at a time (`records`).
+    fn table(&mut self, head: &[Vec<Run>], align: &[Align], rows: &[Vec<Vec<Run>>]) {
+        let all = || std::iter::once(head).chain(rows.iter().map(Vec::as_slice));
+        let mut natural = vec![0usize; align.len()];
+        for row in all() {
+            for (c, cell) in row.iter().enumerate() {
+                let ws = words(cell, &self.paint);
+                let w = ws.iter().map(|w| w.width).sum::<usize>() + ws.len().saturating_sub(1);
+                natural[c] = natural[c].max(w);
+            }
+        }
+        let Some((widths, gutter)) = columns(&natural, self.width) else {
+            return self.records(head, rows);
         };
-        let body = crate::text::truncate(text, self.width.saturating_sub(1));
-        self.line(vec![Span::raw(" "), Span::styled(body, style)]);
+        let laid: Vec<Vec<Vec<Vec<Span<'static>>>>> = all()
+            .enumerate()
+            .map(|(k, row)| {
+                let role = if k == 0 { Role::Head(1) } else { Role::Body };
+                row.iter()
+                    .zip(&widths)
+                    .map(|(cell, &w)| wrap(cell, Vec::new(), 0, role, w, &self.paint))
+                    .collect()
+            })
+            .collect();
+        let airy = laid.iter().flatten().any(|cell| cell.len() > 1);
+        for (k, row) in laid.iter().enumerate() {
+            if airy && k > 0 {
+                self.blank();
+            }
+            let height = row.iter().map(Vec::len).max().unwrap_or(0).max(1);
+            for y in 0..height {
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                for (c, cell) in row.iter().enumerate() {
+                    let text = cell.get(y).cloned().unwrap_or_default();
+                    let room = widths[c].saturating_sub(crate::ui::spans_width(&text));
+                    let (before, after) = match align[c] {
+                        Align::Left => (0, room),
+                        Align::Right => (room, 0),
+                        Align::Center => (room / 2, room - room / 2),
+                    };
+                    let last = c + 1 == row.len();
+                    let pad = before + if c > 0 { gutter } else { 0 };
+                    spans.extend(indent_spans(pad));
+                    spans.extend(text);
+                    if !last {
+                        spans.extend(indent_spans(after));
+                    }
+                }
+                // An empty last cell leaves only padding behind it.
+                while spans
+                    .last()
+                    .is_some_and(|s| s.style == Style::default() && s.content.trim().is_empty())
+                {
+                    spans.pop();
+                }
+                if !self.line(spans) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// A table too wide to set in columns, read out one body row at a time:
+    /// a `header: value` line per cell, a blank row between rows — what the
+    /// table says, in the order a reader would say it.
+    fn records(&mut self, head: &[Vec<Run>], rows: &[Vec<Vec<Run>>]) {
+        let label = |cell: &[Run]| -> Vec<Run> {
+            cell.iter()
+                .map(|r| Run { text: r.text.clone(), emph: Emph { strong: true, ..r.emph } })
+                .collect()
+        };
+        if rows.is_empty() {
+            let runs: Vec<Run> = head
+                .iter()
+                .flat_map(|c| {
+                    let mut l = label(c);
+                    l.push(Run { text: " ".into(), emph: Emph::default() });
+                    l
+                })
+                .collect();
+            return self.flow(&runs, Vec::new(), 0, Role::Body);
+        }
+        for row in rows {
+            self.blank();
+            for (name, cell) in head.iter().zip(row) {
+                if cell.is_empty() {
+                    continue;
+                }
+                let mut runs = label(name);
+                if !runs.is_empty() {
+                    runs.push(Run { text: ": ".into(), emph: Emph::default() });
+                }
+                runs.extend(cell.iter().cloned());
+                self.flow(&runs, Vec::new(), 2, Role::Body);
+            }
+        }
+    }
+
+    /// A pipe line that is not a table, verbatim: its columns may be spaced
+    /// by hand, and a reflow would destroy that.
+    fn raw(&mut self, text: &str) {
+        let body = crate::text::truncate(text, self.width);
+        self.line(vec![Span::styled(body, Style::default().fg(self.paint.ink.dim1))]);
     }
 
     fn finish(mut self) -> Vec<Line<'static>> {
@@ -1011,16 +1247,93 @@ mod tests {
         assert_eq!(plain(&render("# Title\nbody", 40, 8, &t)), vec!["Title", "body"]);
     }
 
-    /// A table is the one thing that must NOT reflow: its columns are its
-    /// meaning. The delimiter row is markup, so it goes — and the header it
-    /// marked is said with value instead.
+    /// A table is set in columns: its pipes and delimiter row are markup, so
+    /// they go; the columns line up on space; the header is said with
+    /// weight; and a cell's own markdown renders like any other text.
     #[test]
-    fn a_table_keeps_its_columns() {
+    fn a_table_is_set_in_columns() {
         let t = dark();
-        let src = "| key | state |\n|-----|-------|\n| T-1 | done  |";
+        let src = "| key | state |\n|---|---|\n| T-1 | **done** |\n| T-22 | `open` |";
         let out = render(src, 40, 6, &t);
-        assert_eq!(plain(&out), vec![" | key | state |", " | T-1 | done  |"]);
-        assert!(style_for(&out, "| key | state |").add_modifier.contains(Modifier::BOLD));
+        assert_eq!(plain(&out), vec!["key    state", "T-1    done", "T-22   open"]);
+        let head = style_for(&out, "key");
+        assert_eq!(head.fg, Some(t.rest.base));
+        assert!(head.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(style_for(&out, "T-1").fg, Some(t.rest.dim1), "the body is body");
+        assert!(style_for(&out, "done").add_modifier.contains(Modifier::BOLD));
+        assert_eq!(style_for(&out, "open").bg, t.code_bg());
+    }
+
+    /// The delimiter row's colons are honoured; the outer pipes are optional
+    /// (GFM); `\|` is a pipe inside a cell; a short row is padded and a long
+    /// one cut to the header's column count.
+    #[test]
+    fn a_table_aligns_and_forgives_its_source() {
+        let t = dark();
+        let src = "name | n | mid\n:--- | --: | :-:\na | 1 | x\nbb | 200 | yyy | extra\nc\\|d | 3";
+        assert_eq!(
+            plain(&render(src, 40, 8, &t)),
+            vec!["name     n   mid", "a        1    x", "bb     200   yyy", "c|d      3"]
+        );
+    }
+
+    /// Too wide for the page, the narrow column keeps its width and the wide
+    /// one wraps in what is left — with a blank row between rows, or the
+    /// wrapped row would run into the next one.
+    #[test]
+    fn a_wide_table_wraps_its_widest_column() {
+        let t = dark();
+        let src = "| file | why |\n|---|---|\n| a.rs | the parse reads a delimiter row \
+                   now |\n| b.rs | short |";
+        let out = render(src, 30, 12, &t);
+        assert_eq!(
+            plain(&out),
+            vec![
+                "file  why",
+                "",
+                "a.rs  the parse reads a",
+                "      delimiter row now",
+                "",
+                "b.rs  short",
+            ]
+        );
+        assert!(out.iter().all(|l| crate::ui::spans_width(&l.spans) <= 30));
+    }
+
+    /// Too narrow for columns worth reading, the table is read out a row at
+    /// a time: `header: value`, the header in weight.
+    #[test]
+    fn a_table_too_wide_for_columns_reads_as_records() {
+        let t = dark();
+        let src = "| key | what changed | why it changed |\n|---|---|---|\n\
+                   | T-1 | the parser | a table |\n| T-2 | the layout | columns |";
+        let out = render(src, 24, 12, &t);
+        assert_eq!(
+            plain(&out),
+            vec![
+                "key: T-1",
+                "what changed: the parser",
+                "why it changed: a table",
+                "",
+                "key: T-2",
+                "what changed: the layout",
+                "why it changed: columns",
+            ]
+        );
+        assert!(style_for(&out, "key").add_modifier.contains(Modifier::BOLD));
+    }
+
+    /// A pipe line with no delimiter row under it is not a table — it may
+    /// be spaced by hand, so it stays verbatim — and a pipe in prose over a
+    /// thematic break is a paragraph, not a one-column table.
+    #[test]
+    fn a_pipe_line_without_a_delimiter_is_not_a_table() {
+        let t = dark();
+        assert_eq!(
+            plain(&render("| a  | b |\n| cc | d |", 40, 4, &t)),
+            vec!["| a  | b |", "| cc | d |"]
+        );
+        assert_eq!(plain(&render("a | b\n---\nc", 40, 4, &t)), vec!["a | b", "", "c"]);
     }
 
     /// The zone cannot follow a link, so the target is the half worth
@@ -1057,6 +1370,8 @@ mod tests {
         let kitchen = "# Title\n\nbody with **strong**, *soft*, `code`, ~~dead~~ and a \
                        [link](http://x.test/y).\n\n- one\n- two with a much longer tail\n\n\
                        ```sh\ncargo test --workspace\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n\
+                       | file | what | why it changed, at length |\n|:--|:-:|--:|\n| `a.rs` | \
+                       **parse** | a delimiter row makes a table now |\n\n\
                        > quoted\n\n---\n\ntail_with_snake_case and 5 * 3";
         for profile in
             [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono]
