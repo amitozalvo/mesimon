@@ -392,16 +392,16 @@ retired. What holds now:
    the source are provenance, not obligation.
 
 **M3.5 (built 2026-08-29) is the design foundation**: OSC-11 light/dark detection
-(`mesimon-tui/src/detect.rs`, via terminal-colorsaurus, first asked before raw mode and then
-— optionally — re-asked every 3 s from inside `App::tick`, so an OS appearance flip repaints the board live —
-`detect::GroundWatch`, **OFF by default since 2026-09-02** (`MESIMON_GROUND_WATCH=1` arms it): a late
-reply to the periodic query kept typing into the board and opening rename, STALE-MAP "The ground
-watch is opt-in"; the terminal is the authority, never the OS, and `MESIMON_THEME`, a
-terminal that cannot answer, a waiting keypress and an open text field each disarm or defer the
-query; STALE-MAP "Light/dark follows the terminal, live"; and a reply that comes back AFTER the
-150 ms budget lands on stdin as keystrokes — `tui/src/osc.rs::ReplySwallow` recognises it on the
-raw crossterm event ahead of the keymap and the text-field barrier and discards it, STALE-MAP "A
-late reply to the colour query is caught before it can type"),
+(`mesimon-tui/src/detect.rs`, via terminal-colorsaurus, asked ONCE before raw mode and never
+again — the 3 s re-ask from inside `App::tick`, `detect::GroundWatch`, typed its late replies
+into the board twice and was removed by T-485, STALE-MAP "The ground watch is opt-in" and "The
+board follows the OS, never the terminal"; the live half is now `tui/src/appearance.rs`, an
+opt-in Settings switch that asks the OS on a thread of its own — `defaults` on macOS, the XDG
+portal or GNOME's setting on Linux — and touches no tty; a board that follows the OS skips the
+startup terminal query too. A startup reply that comes back AFTER the 150 ms budget lands on
+stdin as keystrokes — `tui/src/osc.rs::ReplySwallow` recognises it on the raw crossterm event
+ahead of the keymap and the text-field barrier and discards it, STALE-MAP "A late reply to the
+colour query is caught before it can type"),
 the token themes for all five colour profiles (`theme.rs` — graphite and chalk, then blue, amber
 and green since 2026-09-02; the colour-law tests in it are the palette's spec), pure board geometry (`layout.rs`, post-D33k arithmetic), card
 anatomy per 07 §4 (`ui/card.rs`), spines + the minted cursor-column treatment (`ui/board.rs`),
@@ -466,17 +466,18 @@ ground has a hue the fade target `shadow` is a neutral at its lightness, never t
 Nvim's `#005faf` cursor line was refused as blue's cursor surface (2.7:1 under a mid-ramp grey;
 it is `#2C3590`). `attn_is_its_own_colour` is what keeps `test_attn_provenance*` meaningful on
 a phosphor, and both provenance laws now sweep `Flavor::ALL`. The picker is a row of the Settings submenu
-(`Verb::ThemePick` → `Mode::Theme`, `ui/themes.rs`, `Scope::Theme` with the menu's three
-shapes) whose cursor IS the preview — `App::preview` is the one road every retheme takes, the
-watch's included — Enter keeps, Esc puts `App::resting_flavor()` back. The preference is
-`tui/src/prefs.rs`: `~/.local/state/mesimon/prefs.json`, one theme per GROUND (`dark`/`light`,
-what OSC 11 can say; the watch now reports a `Ground` and `App::watch_flavor` maps it to the
-slot; a pick sets the slot the terminal is on). It is a PREFERENCE, the inverse of
+(`Verb::ThemePick` and, for the other slot, `Verb::ThemeOther` → `Mode::Theme { idx, slot }`,
+`ui/themes.rs`, `Scope::Theme` with the menu's three shapes) whose cursor IS the preview —
+`App::preview` is the one road every retheme takes, the OS watch's included — Enter keeps, Esc
+puts `App::resting_flavor()` back. The preference is `tui/src/prefs.rs`:
+`~/.local/state/mesimon/prefs.json`, one theme per GROUND (`dark`/`light`; `App::take_ground`
+moves the board to the slot's pick when the OS flips, and each Settings row edits one slot,
+so a pick never moves the ground). It is a PREFERENCE, the inverse of
 `update-check.json`'s rule: a newer schema is read and never written back, garbage falls to the
 defaults with a status line, saves merge into the loaded document so a foreign name in the other
 slot survives, and `lib.rs` loads it — never `App::new`, so no test reads the developer's file
-(`prefs_path` None = never write). `MESIMON_THEME` accepts every name, still pins and disarms the
-watch (the ground is still asked ONCE so the picker sets the right slot), and a menu pick
+(`prefs_path` None = never write). `MESIMON_THEME` accepts every name, still pins and keeps the
+OS watch down (the ground is still asked ONCE so the picker sets the right slot), and a menu pick
 outranks it for the session while the status says it pins the next launch. `mesimon doctor`
 prints a `theme` line. (STALE-MAP "Five themes, and the law learns three kinds" + "Themes are a
 menu row with two slots".)

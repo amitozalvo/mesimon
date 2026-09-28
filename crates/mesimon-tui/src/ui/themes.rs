@@ -11,17 +11,16 @@ use ratatui::Frame;
 use mesimon_core::keymap::Scope;
 
 use crate::app::App;
-use crate::theme::Flavor;
+use crate::theme::{Flavor, Ground};
 
 use super::dialog::{self, ListRow};
 
-pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
-    let ctx = app.frame_ctx();
+pub(super) fn draw(f: &mut Frame, app: &App, idx: usize, slot: Ground) {
     let mut rows: Vec<ListRow> = Vec::with_capacity(app.theme_rows());
     // Board scope puts an inherit row first (T-361): its "flavor" is the
     // machine's pick for this ground, and choosing it drops the board's.
     if app.settings_board_scope {
-        let machine = app.machine_prefs.for_ground(app.ground).name();
+        let machine = app.machine_prefs.for_ground(slot).name();
         rows.push(ListRow {
             lead: "   ".into(),
             head: "inherit".into(),
@@ -37,6 +36,6 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         right: flavor.ground().word().into(),
         detail: Some(flavor.blurb().into()),
     }));
-    let name = format!("THEME ∙ for a {} terminal", ctx.theme_slot_word);
+    let name = format!("THEME ∙ for a {} terminal", slot.word());
     dialog::list(f, app, &name, false, Scope::Theme, idx, &rows);
 }

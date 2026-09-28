@@ -206,8 +206,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::ColumnSettings { .. }) {
         menu::draw_column(f, app);
     }
-    if let Mode::Theme { idx } = &app.mode {
-        themes::draw(f, app, *idx);
+    if let Mode::Theme { idx, slot } = &app.mode {
+        themes::draw(f, app, *idx, *slot);
     }
     // The search picker, over the board it is a view of (T-349). Last of the
     // dialogs and before the overlay: it is the biggest surface here, and

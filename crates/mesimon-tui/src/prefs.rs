@@ -2,10 +2,10 @@
 //!
 //! Two slots — the theme for a DARK terminal and the theme for a LIGHT one —
 //! because that is how the author already runs their editor (one scheme when
-//! macOS is dark, another when it is light) and because the terminal's
-//! OSC 11 answer is the only fact the board has about where it is being
-//! read. The watch keeps flipping between the two picks; a pick sets the
-//! slot the terminal currently reports.
+//! macOS is dark, another when it is light). Which slot is worn is the
+//! ground: the terminal's answer at launch, or, for a board that opts into
+//! `follow_os` (T-485), the OS's appearance for as long as the board is
+//! open. The Settings rows edit both slots; a pick never changes the ground.
 //!
 //! It sits at the state ROOT beside `update-check.json`: one binary per
 //! machine, so one preference per machine, and README promise 1 already
@@ -70,6 +70,12 @@ impl PeekLevel {
 pub(crate) struct Prefs {
     pub dark: Flavor,
     pub light: Flavor,
+    /// Follow the OS's light/dark appearance while the board is open
+    /// (T-485): a flip moves the board to the other slot's theme. OFF by
+    /// default and deliberately — the OS is asked, never the terminal, so
+    /// a terminal pinned to one profile would be painted for the wrong
+    /// ground; the row is the consent that this terminal follows the OS.
+    pub follow_os: bool,
     /// A ticket back from a snooze wears needs-you until looked at (T-74).
     /// On by default; the Esc menu's row flips it. Same file, no schema
     /// move: an absent key reads as the default and a save keeps it.
@@ -147,6 +153,7 @@ impl Default for Prefs {
         Prefs {
             dark: Flavor::Graphite,
             light: Flavor::Chalk,
+            follow_os: false,
             snooze_needs_you: true,
             week_start: Weekday::Monday,
             merge_train: false,
@@ -167,6 +174,7 @@ impl Default for Prefs {
 }
 
 // The JSON keys are `PrefKey::name()`, one list for both files (T-361).
+const FOLLOW_OS_KEY: &str = PrefKey::FollowOs.name();
 const SNOOZE_KEY: &str = PrefKey::SnoozeNeedsYou.name();
 const WEEK_START_KEY: &str = PrefKey::WeekStart.name();
 const MERGE_TRAIN_KEY: &str = PrefKey::MergeTrain.name();
@@ -241,6 +249,7 @@ impl Prefs {
             p.light = f;
         }
         for (key, slot) in [
+            (PrefKey::FollowOs, &mut p.follow_os),
             (PrefKey::SnoozeNeedsYou, &mut p.snooze_needs_you),
             (PrefKey::MergeTrain, &mut p.merge_train),
             (PrefKey::MergeTrainNotice, &mut p.merge_train_notice),
@@ -272,6 +281,7 @@ impl Prefs {
         match key {
             PrefKey::Dark => self.dark.name(),
             PrefKey::Light => self.light.name(),
+            PrefKey::FollowOs => onoff(self.follow_os),
             PrefKey::SnoozeNeedsYou => onoff(self.snooze_needs_you),
             PrefKey::WeekStart => self.week_start.name(),
             PrefKey::MergeTrain => onoff(self.merge_train),
@@ -309,6 +319,7 @@ impl Prefs {
                 doc.insert(key.into(), Value::from(f.name()));
             }
         }
+        doc.insert(FOLLOW_OS_KEY.into(), Value::from(self.follow_os));
         doc.insert(SNOOZE_KEY.into(), Value::from(self.snooze_needs_you));
         doc.insert(MERGE_TRAIN_KEY.into(), Value::from(self.merge_train));
         doc.insert(MERGE_TRAIN_NOTICE_KEY.into(), Value::from(self.merge_train_notice));
@@ -544,6 +555,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let slot = |key: &str, fallback: Flavor| {
         doc.get(key).and_then(Value::as_str).and_then(Flavor::from_name).unwrap_or(fallback)
     };
+    let follow_os = doc.get(FOLLOW_OS_KEY).and_then(Value::as_bool).unwrap_or(false);
     let snooze_needs_you = doc.get(SNOOZE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let merge_train = doc.get(MERGE_TRAIN_KEY).and_then(Value::as_bool).unwrap_or(false);
     let merge_train_notice =
@@ -570,6 +582,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
+        follow_os,
         snooze_needs_you,
         week_start,
         merge_train,
@@ -619,11 +632,21 @@ pub(crate) fn save(path: &Path, prefs: &Prefs) -> anyhow::Result<()> {
 
 /// What `mesimon doctor` says. Never asks the terminal which ground it is
 /// on: doctor runs in pipes, and an OSC 11 query there is exactly the tty
-/// write the query-hygiene rules forbid.
+/// write the query-hygiene rules forbid. The OS is asked when the board
+/// follows it (a subprocess, no tty), so the line says what it would wear.
 pub fn doctor_line() -> String {
     let loaded = load_home();
     let mut line =
         format!("dark: {} ∙ light: {}", loaded.prefs.dark.name(), loaded.prefs.light.name());
+    if loaded.prefs.follow_os {
+        line = match crate::appearance::probe() {
+            Some(g) => format!("{line} ∙ follows the OS appearance (now {})", g.word()),
+            None => format!("{line} ∙ follows the OS appearance (which did not answer)"),
+        };
+    } else {
+        line =
+            format!("{line} ∙ set at launch by the terminal (Settings ∙ Follow the OS appearance)");
+    }
     if let Some(f) = std::env::var("MESIMON_THEME").ok().as_deref().and_then(Flavor::from_name) {
         line = format!("pinned to {} by MESIMON_THEME ∙ {line}", f.name());
     }
@@ -711,6 +734,25 @@ mod tests {
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("\"schema_version\":1"));
         assert!(text.ends_with('\n'));
+    }
+
+    /// The OS-appearance switch (T-485): off by default, round-trips, and a
+    /// board may set it on its own.
+    #[test]
+    fn follow_os_round_trips_and_a_board_may_override_it() {
+        let p = scratch("follow");
+        let mut prefs = Prefs::default();
+        assert!(!prefs.follow_os);
+        prefs.follow_os = true;
+        save(&p, &prefs).unwrap();
+        let l = load(&p);
+        assert!(l.prefs.follow_os);
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\"follow_os\":true"));
+        let mut board = BoardPrefs::default();
+        board.set_bool(PrefKey::FollowOs, false);
+        assert!(!l.prefs.overlay(&board).follow_os);
+        assert!(board.is_set(PrefKey::FollowOs));
+        assert_eq!(l.prefs.word(PrefKey::FollowOs), "on");
     }
 
     /// The notification group (T-282): every key round-trips, and the file

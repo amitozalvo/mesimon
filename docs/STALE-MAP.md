@@ -14777,3 +14777,75 @@ existing golden moved, since no fixture held a table.
 **Not built** (surveyed on this ticket, ranked in its notes): task lists, `***x***` (which leaks
 `**` and flips later emphasis on the line), hard line breaks, quotes holding blocks or GitHub
 alerts, `<br>` inside a cell, setext headings, indented code, autolinks, HTML.
+
+## The board follows the OS, never the terminal (T-485, 2026-09-28)
+
+**The brief.** "Auto light/dark theme switch. The previous implementation caused injection of
+keypresses into the TUI and it was a disaster; figure out a solution that won't involve such a
+thing. Opt-in in settings; the user selects a theme for light and dark, per board or global."
+
+**What was wrong with the old road, restated so it is not rebuilt.** `detect::GroundWatch`
+re-asked the TERMINAL (`OSC 11`) every 3 s. Every ask was a write to the tty and a timed read
+back, and a reply arriving after the budget landed on stdin as keystrokes: `alt+]` `1` `1` `;`
+`r` `g` `b` … — `1 1` quick-tagged the cursor card twice and `r` opened rename with the colour
+in the field. `osc::ReplySwallow` caught the common shape; the split-at-Esc shape still got
+through, twice. The watch went behind `MESIMON_GROUND_WATCH=1` on 2026-09-02 and the record
+named the only root fix on that road: the watch writing the query itself and the swallow parsing
+the colour out of the reply stream. That fix still has the terminal's reply travelling through
+the key stream, which is exactly what the brief forbids. It is not built and should not be.
+
+**The road that cannot type.** `tui/src/appearance.rs` asks the **OS**, on a thread of its own,
+through a subprocess: `defaults read -g AppleInterfaceStyle` on macOS (the key is absent while
+the appearance is light — that is how macOS spells it), the XDG desktop portal's
+`org.freedesktop.appearance color-scheme` on Linux (`gdbus`, then `busctl`; `1` dark, `2`
+light, `0` no opinion), then GNOME's `gsettings` (`prefer-dark`/`prefer-light`; `default` is no
+opinion, since GNOME 42 spells a plain light shell that way and a themed dark one too). Each
+rung is bounded to 1 s and killed; a missing tool is the next rung; nothing is ever written to
+or read from the terminal. The thread sends each CHANGE of answer down a channel and
+`App::follow_appearance` drains it from `tick` — no `typing()` guard, no `poll(ZERO)` guard,
+because there is nothing on the tty to protect. Dropping the handle ends the thread on its next
+3 s beat. `GroundWatch`, `watch_enabled`, `MESIMON_GROUND_WATCH` and `App::watch_flavor` are
+gone; the swallow stays for the startup reply.
+
+**Why opt-in, and why the row says "if the terminal does too".** The 2026-09-01 record was right
+that the OS is the wrong authority for a terminal pinned to one profile: an OS flip would paint
+chalk ink on a black background. That is now the user's call, made once: `Prefs::follow_os`
+(`follow_os` in `prefs.json`, `PrefKey::FollowOs`, board-overridable like the two slots) is
+OFF by default and the Settings row's detail says the terminal must follow the OS as well.
+Under `MESIMON_THEME` the watch stays down (the row says so) and the pick that lifts the pin
+arms it — `arm_appearance` runs from `after_pref_change`, so every road that changes the
+resolved view keeps the thread in step with it. Arming asks once, synchronously, and moves the
+board on the answer; no answer is `appearance_barred`, and the row reads "this OS did not say
+light or dark" rather than promising a follow that cannot happen. The thread still runs then,
+in case the OS starts answering.
+
+**A board that follows the OS never asks the terminal at all.** `lib.rs::run` (and
+`detach_guide`) now load the prefs FIRST, probe the OS when the switch is on, and hand the
+answer to `detect::detect(known)`, which then skips the OSC 11 query. The one startup exposure
+the 2026-09-02 record accepted is gone for anyone who turns the switch on; it stays for a board
+that does not, because the terminal is the only authority left there.
+
+**Two theme rows, one per slot.** "Select a theme for light and dark" meant reaching the slot
+the terminal is NOT on without changing the terminal. The Theme row is unchanged (the current
+ground's slot); under it `Verb::ThemeOther` — `Light theme: chalk` on a dark terminal, `Dark
+theme: graphite` on a light one — opens the same picker for the other slot. `Mode::Theme` now
+carries its `slot`, so a ground flip under an open picker no longer moves which slot Enter
+writes (the old rule; with a slot in the mode the simpler rule is that the picker keeps the
+slot it opened on, and Esc rests on the NEW ground's pick). The cursor is still the preview,
+so opening the other slot's picker wears that slot at once and Esc puts the resting theme back;
+`commit_theme(slot, pick)` writes that slot, machine or board, and returns to the row that
+opened it (`theme_row_verb`). `Ground::other` is the one helper. Per board / global is T-361's
+scope switch, which both rows and the follow switch already honour: `b` in Settings, inherit
+row first in the picker.
+
+**Doctor.** `theme` now says `∙ follows the OS appearance (now dark)` — the OS is a subprocess,
+so doctor may ask it where it may never ask the terminal — or `∙ set at launch by the terminal
+(Settings ∙ Follow the OS appearance)`.
+
+Tests: `appearance::{defaults_spells_light_as_a_missing_key,
+the_portal_answer_is_its_last_number_in_either_tools_spelling, gnome_default_is_no_opinion,
+the_watch_reports_changes_only_and_stops_with_its_handle, take_is_the_latest_and_never_blocks}`;
+`app::{an_os_flip_moves_the_board_to_the_other_slot, the_other_slot_row_previews_and_saves_that_slot,
+follow_os_arms_the_watch_only_with_a_probe_and_no_pin}`;
+`prefs::follow_os_round_trips_and_a_board_may_override_it`; the keymap's settings-order and
+pref-key laws; the four settings goldens reminted (two new rows under Appearance).

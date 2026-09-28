@@ -224,6 +224,21 @@ Running turns, background work and sessions needing attention stay awake. Wake r
 same conversation. The board's `park_after_minutes` setting accepts any whole number of
 minutes; `0` disables it.
 
+## Light and dark themes
+
+The board has two theme slots, one for a dark terminal and one for a light one. At launch it
+asks the terminal which it is and wears that slot's theme. **Settings › Appearance › Theme**
+picks the theme for the terminal you are on, and the row under it picks the other slot, so
+both can be set without changing the terminal.
+
+**Settings › Appearance › Follow the OS appearance** makes the board switch between the two
+themes as macOS or your Linux desktop switches between light and dark, while the board is
+open. It is off by default. It asks the OS, never the terminal, so turn it on only if your
+terminal follows the OS appearance too: a terminal pinned to one profile would otherwise be
+painted for the wrong background. `MESIMON_THEME=<name>` pins a theme for a launch and the
+switch does nothing until a pick in the menu lifts the pin. `mesimon doctor`'s `theme` line
+says which slot the OS would choose now.
+
 ## Keeping the machine awake
 
 **Settings › Behaviour › Keep this machine awake** prevents sleep while an agent works,

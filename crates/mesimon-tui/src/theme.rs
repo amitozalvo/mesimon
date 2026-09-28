@@ -63,6 +63,15 @@ impl Ground {
             Ground::Light => "light",
         }
     }
+
+    /// The other slot: what a follow of the OS appearance flips to, and the
+    /// slot the second Settings row edits (T-485).
+    pub(crate) fn other(self) -> Ground {
+        match self {
+            Ground::Dark => Ground::Light,
+            Ground::Light => Ground::Dark,
+        }
+    }
 }
 
 /// What the colour law asks of a palette. Four kinds because four shapes of

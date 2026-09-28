@@ -11,6 +11,9 @@
 pub enum PrefKey {
     Dark,
     Light,
+    /// The board follows the OS's light/dark appearance while it is open
+    /// (T-485): a change moves it to the other slot's theme.
+    FollowOs,
     SnoozeNeedsYou,
     WeekStart,
     MergeTrain,
@@ -29,9 +32,10 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 16] = [
+    pub const ALL: [PrefKey; 17] = [
         PrefKey::Dark,
         PrefKey::Light,
+        PrefKey::FollowOs,
         PrefKey::SnoozeNeedsYou,
         PrefKey::WeekStart,
         PrefKey::MergeTrain,
@@ -53,6 +57,7 @@ impl PrefKey {
         match self {
             PrefKey::Dark => "dark",
             PrefKey::Light => "light",
+            PrefKey::FollowOs => "follow_os",
             PrefKey::SnoozeNeedsYou => "snooze_needs_you",
             PrefKey::WeekStart => "week_start",
             PrefKey::MergeTrain => "merge_train",
@@ -84,6 +89,7 @@ impl PrefKey {
         match self {
             PrefKey::Dark => "dark theme",
             PrefKey::Light => "light theme",
+            PrefKey::FollowOs => "follow the OS appearance",
             PrefKey::SnoozeNeedsYou => "snooze needs-you",
             PrefKey::WeekStart => "week start",
             PrefKey::MergeTrain => "auto merge",

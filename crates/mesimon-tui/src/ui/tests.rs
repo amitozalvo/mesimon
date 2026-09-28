@@ -1016,7 +1016,7 @@ fn the_settings_subtitle_marquees() {
 #[test]
 fn golden_theme_picker_120() {
     let mut app = app_graphite(fixture_archived());
-    app.mode = Mode::Theme { idx: 0 };
+    app.mode = Mode::Theme { idx: 0, slot: crate::theme::Ground::Dark };
     golden("theme_picker_120x30", &render(&app, 120, 30));
 }
 
@@ -1026,7 +1026,7 @@ fn golden_theme_picker_120() {
 fn golden_theme_picker_board_120() {
     let mut app = app_graphite(fixture_archived());
     app.settings_board_scope = true;
-    app.mode = Mode::Theme { idx: 0 };
+    app.mode = Mode::Theme { idx: 0, slot: crate::theme::Ground::Dark };
     golden("theme_picker_board_120x30", &render(&app, 120, 30));
 }
 
@@ -6517,7 +6517,7 @@ fn test_no_banned_sgr() {
         let mut arch = App::for_test(fixture_archived(), Theme::new(flavor, profile));
         arch.mode = Mode::Archived { idx: 0 };
         let mut picker = App::for_test(fixture(false), Theme::new(flavor, profile));
-        picker.mode = Mode::Theme { idx: 2 };
+        picker.mode = Mode::Theme { idx: 2, slot: crate::theme::Ground::Dark };
         // The snooze chord armed on a woke board: the open card's preset row
         // and the ticket-level attn mark, both new paint (T-74).
         let mut armed = App::for_test(fixture_woke(), Theme::new(flavor, profile));
@@ -6735,7 +6735,7 @@ fn test_no_drawn_structure() {
     let mut arch = app_graphite(fixture_archived());
     arch.mode = Mode::Archived { idx: 0 };
     let mut picker = app_graphite(fixture(false));
-    picker.mode = Mode::Theme { idx: 2 };
+    picker.mode = Mode::Theme { idx: 2, slot: crate::theme::Ground::Dark };
     // The cursor on a column header (T-117): its bar is a painted cell, and
     // the automation mark is outside the banned range.
     let mut header = app_graphite(fixture(false));

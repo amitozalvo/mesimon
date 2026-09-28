@@ -2,6 +2,7 @@
 //! discipline (docs/05 §13) — exercised on every focus handover (docs/19 §2).
 
 mod app;
+mod appearance;
 mod caffeine;
 mod caffeine_watch;
 mod clipboard;
@@ -112,11 +113,6 @@ pub use release::doctor_line as update_check_status;
 pub use release::update_command;
 
 pub fn run(repo_root: &Path) -> Result<()> {
-    // Capability detection runs exactly once, before raw mode and before any
-    // PTY exists (06 §2.9 query hygiene; handovers reuse the cached answers).
-    // Light/dark is the one rung that keeps asking — see `detect::GroundWatch`
-    // — but only from inside the event loop, where nothing else owns stdin.
-    let detected = detect::detect();
     // The two slots are loaded HERE and never in `App::new`, so no test app
     // ever reads the developer's own file.
     let prefs_path = prefs::prefs_path();
@@ -130,6 +126,14 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let board_prefs_path = prefs::board_prefs_path(repo_root);
     let board = board_prefs_path.as_deref().map(prefs::load_board).unwrap_or_default();
     let resolved = loaded.prefs.overlay(&board.prefs);
+    // Capability detection runs exactly once, before raw mode and before any
+    // PTY exists (06 §2.9 query hygiene; handovers reuse the cached answers).
+    // A board that follows the OS appearance (T-485) asks the OS first — a
+    // subprocess, no tty — and with an answer the terminal is not asked at
+    // all. Nothing re-asks the terminal later, ever: `appearance::Watch`
+    // is the live half, and it asks the OS on a thread of its own.
+    let known = resolved.follow_os.then(appearance::probe).flatten();
+    let detected = detect::detect(known);
     // The pin outranks the slot; the slot is the ground's.
     let flavor = detected.forced.unwrap_or(resolved.for_ground(detected.ground));
     let theme = theme::Theme::new(flavor, detected.profile);
@@ -158,9 +162,11 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let client = Client::connect(repo_root)?;
     let mut app = App::new(Box::new(client), repo_root.to_path_buf(), theme)?;
     drop(word);
-    app.flavor_watch = detected.watch;
     app.ground = detected.ground;
     app.forced = detected.forced;
+    // The OS probe, handed over here and never in `App::new`, so no test
+    // app spawns a subprocess; `resolve_prefs` below is what arms the watch.
+    app.appearance_probe = Some(appearance::probe);
     app.machine_prefs = loaded.prefs;
     app.prefs_path = prefs_path;
     app.prefs_write_barred = loaded.write_barred;
@@ -168,6 +174,7 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.board_prefs_path = board_prefs_path;
     app.board_prefs_write_barred = board.write_barred;
     app.resolve_prefs();
+    app.arm_appearance();
     // The merge train preference reaches the daemon now, not on the first
     // event: an armed board that sits quiet would otherwise never say so.
     app.reconcile_train();

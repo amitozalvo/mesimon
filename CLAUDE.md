@@ -509,7 +509,7 @@ respawns; required by `restart_skew_e2e`, the only test driving the real `Client
 checkout before the sweep goes looking for its runtime),
 `MESIMON_PANE_QUIET_MS`, `MESIMON_NO_UPDATE_CHECK`, `MESIMON_UPDATE_CHECK`,
 `MESIMON_SERVER_GUARD_TICKS`, `MESIMON_WT_REFRESH_TICKS` (the slow bucket: worktree flags, merge
-train, CLAUDE.md sample, checkout git sample), `MESIMON_GROUND_WATCH`, `MESIMON_NO_TAG_SEED`,
+train, CLAUDE.md sample, checkout git sample), `MESIMON_NO_TAG_SEED`,
 `MESIMON_TICKET_SHELLS`, `MESIMON_UPDATE_GOLDEN`.
 
 The e2e pattern is an in-process daemon thread + real tmux + the real built binary via

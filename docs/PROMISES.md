@@ -71,7 +71,7 @@ What the tools can and cannot do is in
 | `~/.local/state/mesimon/notifications/` | Notification mascot images and signed Mesimon copies of the installed macOS notification helper. |
 | `~/.local/state/mesimon/team/` | Board sharing: this machine's identity on the relay (`device.toml`), and the roots of team boards you joined without a checkout, under `boards/`. Only after you sign in. |
 | `~/.local/state/mesimon/update-check.json` | When the release check last answered, and what it heard. One per machine, not per repo. |
-| `~/.local/state/mesimon/prefs.json` | Your theme picks, one for a dark terminal and one for a light one. One per machine, not per repo. |
+| `~/.local/state/mesimon/prefs.json` | Your theme picks, one for a dark terminal and one for a light one, and whether the board follows the OS's appearance. One per machine, not per repo. |
 | `/tmp/mesimon-<uid>/<project key>/` | The daemon, hook and private-tmux sockets, the daemon lock, and the environment file panes are launched with. 0700, because that file holds your shell's environment. Gone on reboot. |
 | Worktrees and `msmn/*` branches | Only ones it created, only for tickets you set to worktree mode. |
 | mesimon's own binary | Replaced in place, only if you take an update offer, only after its published checksum verifies. |

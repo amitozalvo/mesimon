@@ -16,7 +16,6 @@ use crate::theme::Theme;
 /// Internal `mesimon detach-guide` entry point. Uses the same preferences and
 /// palette as the board, but opens no daemon connection and writes no settings.
 pub fn run() -> Result<()> {
-    let detected = crate::detect::detect();
     let prefs = crate::prefs::prefs_path()
         .as_deref()
         .map(crate::prefs::load)
@@ -27,6 +26,10 @@ pub fn run() -> Result<()> {
         .map(crate::prefs::load_board)
         .unwrap_or_default();
     let resolved = prefs.overlay(&board.prefs);
+    // The board's own order (T-485): the OS first where it is followed, the
+    // terminal otherwise, and once.
+    let known = resolved.follow_os.then(crate::appearance::probe).flatten();
+    let detected = crate::detect::detect(known);
     let theme = Theme::new(
         detected.forced.unwrap_or(resolved.for_ground(detected.ground)),
         detected.profile,

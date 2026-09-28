@@ -11,7 +11,7 @@
 
                            ╭─ SETTINGS ─────────────────────────────────────────────────────╮
                            │   Appearance & notifications                                   │
-                           │     theme, notifications, status line                          │
+                           │     themes, OS appearance, notifications, status line          │
                            │   Behaviour                                                    │
                            │     auto merge, keep awake, snooze, week start, default column │
                            │   Agents                                                       │

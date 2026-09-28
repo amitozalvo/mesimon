@@ -459,6 +459,14 @@ pub enum Verb {
     /// picked once and lived with, the same argument that took `p` off the
     /// footer.
     ThemePick,
+    /// The same picker for the OTHER slot (T-485): the theme for a light
+    /// terminal while this one is dark, and the reverse. Both slots are
+    /// reachable without changing the terminal, which a board that follows
+    /// the OS appearance needs and a board that does not still wants.
+    ThemeOther,
+    /// Follow the OS's light/dark appearance while the board is open
+    /// (T-485): a switch on the same list, off by default.
+    FollowOs,
     // ---- columns (T-117) ----
     /// Open the column settings dialog on the cursor's column: Enter on a
     /// column header, or the menu's row.
@@ -859,7 +867,11 @@ impl SettingsSection {
 
     pub fn for_verb(verb: Verb) -> Self {
         match verb {
-            Verb::ThemePick | Verb::Notifications | Verb::StatusLine => Self::Appearance,
+            Verb::ThemePick
+            | Verb::ThemeOther
+            | Verb::FollowOs
+            | Verb::Notifications
+            | Verb::StatusLine => Self::Appearance,
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
@@ -958,6 +970,16 @@ pub struct Ctx {
     pub theme_slot_word: &'static str,
     /// `MESIMON_THEME` is pinning the live theme; a pick still saves.
     pub theme_pinned: bool,
+    /// The OTHER slot's pick and its ground word (T-485): the theme this
+    /// board would wear on the ground it is not on.
+    pub theme_other_name: &'static str,
+    pub theme_other_blurb: &'static str,
+    pub theme_other_slot_word: &'static str,
+    /// The board follows the OS's light/dark appearance (T-485).
+    pub follow_os: bool,
+    /// It is on, but the OS gave no answer when asked — the board keeps its
+    /// launch ground and the row says so.
+    pub follow_os_barred: bool,
     /// The ticket page's preview zone holds more rows than it can show, so
     /// there is somewhere to page to. Measured by the last draw (the zone's
     /// height is a fact of the frame, not of the board), which is also what
@@ -3950,7 +3972,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::SettingsAppearance,
         label: |_| "Appearance & notifications".into(),
-        detail: |_| "theme, notifications, status line".into(),
+        detail: |_| "themes, OS appearance, notifications, status line".into(),
         avail: always,
         key: "",
     },
@@ -3976,6 +3998,45 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 "pinned by MESIMON_THEME ∙ a pick here still saves for the next launch".into()
             } else {
                 format!("{} ∙ for a {} terminal", c.theme_blurb, c.theme_slot_word)
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    // The other slot (T-485): the row names the ground it is for, so the
+    // two theme rows read `Theme: graphite` / `Light theme: chalk` on a
+    // dark terminal and swap their words on a light one.
+    MenuItem {
+        verb: Verb::ThemeOther,
+        label: |c| {
+            let slot = if c.theme_other_slot_word == "light" { "Light" } else { "Dark" };
+            format!("{slot} theme: {}", c.theme_other_name)
+        },
+        detail: |c| format!("{} ∙ for a {} terminal", c.theme_other_blurb, c.theme_other_slot_word),
+        avail: always,
+        key: "",
+    },
+    // Follow the OS appearance (T-485). Off by default: the OS is asked,
+    // never the terminal, so this is the consent that the terminal follows
+    // the OS too. The barred word comes first, the keep-awake row's rule.
+    MenuItem {
+        verb: Verb::FollowOs,
+        label: |c| {
+            if c.follow_os {
+                "Follow the OS appearance: on".into()
+            } else {
+                "Follow the OS appearance: off".into()
+            }
+        },
+        detail: |c| {
+            if c.theme_pinned {
+                "pinned by MESIMON_THEME ∙ nothing follows while the pin holds".into()
+            } else if c.follow_os && c.follow_os_barred {
+                "this OS did not say light or dark ∙ the launch theme stays".into()
+            } else if c.follow_os {
+                "switches with the OS's light/dark ∙ the terminal is never asked".into()
+            } else {
+                "set at launch ∙ on: switches as the OS does, if the terminal does too".into()
             }
         },
         avail: always,
@@ -4602,7 +4663,13 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
         SettingsSection::Root => {
             &[Verb::SettingsAppearance, Verb::SettingsBehaviour, Verb::SettingsAgents]
         }
-        SettingsSection::Appearance => &[Verb::ThemePick, Verb::Notifications, Verb::StatusLine],
+        SettingsSection::Appearance => &[
+            Verb::ThemePick,
+            Verb::ThemeOther,
+            Verb::FollowOs,
+            Verb::Notifications,
+            Verb::StatusLine,
+        ],
         SettingsSection::Behaviour => &[
             Verb::MergeTrain,
             Verb::MergeTrainNotice,
@@ -4644,6 +4711,14 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
                 PrefKey::Dark
             }
         }
+        Verb::ThemeOther => {
+            if c.theme_other_slot_word == "light" {
+                PrefKey::Light
+            } else {
+                PrefKey::Dark
+            }
+        }
+        Verb::FollowOs => PrefKey::FollowOs,
         Verb::SnoozeQuiet => PrefKey::SnoozeNeedsYou,
         Verb::WeekStart => PrefKey::WeekStart,
         Verb::MergeTrain => PrefKey::MergeTrain,
@@ -8222,7 +8297,13 @@ mod tests {
         for (section, expected) in [
             (
                 SettingsSection::Appearance,
-                vec![Verb::ThemePick, Verb::Notifications, Verb::StatusLine],
+                vec![
+                    Verb::ThemePick,
+                    Verb::ThemeOther,
+                    Verb::FollowOs,
+                    Verb::Notifications,
+                    Verb::StatusLine,
+                ],
             ),
             (
                 SettingsSection::Behaviour,
@@ -8402,6 +8483,9 @@ mod tests {
             theme_name: "graphite",
             theme_blurb: "dark, the default",
             theme_slot_word: "dark",
+            theme_other_name: "chalk",
+            theme_other_blurb: "light, the default",
+            theme_other_slot_word: "light",
             default_column: "TODO".into(),
             team_signed_in: true,
             team_shared: true,
@@ -8840,9 +8924,12 @@ mod tests {
     /// row names none — so board scope cycles exactly the preferences.
     #[test]
     fn every_preference_row_has_a_pref_key() {
-        let c = Ctx { theme_slot_word: "light", ..Default::default() };
+        let c =
+            Ctx { theme_slot_word: "light", theme_other_slot_word: "dark", ..Default::default() };
         let prefs = [
             Verb::ThemePick,
+            Verb::ThemeOther,
+            Verb::FollowOs,
             Verb::StatusLine,
             Verb::KeepAwake,
             Verb::SnoozeQuiet,
@@ -8859,6 +8946,8 @@ mod tests {
         }
         assert_eq!(pref_key(Verb::ThemePick, &c), Some(PrefKey::Light));
         assert_eq!(pref_key(Verb::ThemePick, &Ctx::default()), Some(PrefKey::Dark));
+        assert_eq!(pref_key(Verb::ThemeOther, &c), Some(PrefKey::Dark), "the other slot");
+        assert_eq!(pref_key(Verb::FollowOs, &c), Some(PrefKey::FollowOs));
         assert_eq!(pref_key(Verb::Notifications, &c), None, "a door");
         assert_eq!(pref_key(Verb::McpTools, &c), None, "board state");
     }
