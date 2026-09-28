@@ -6,6 +6,36 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.29 — 2026-09-28
+
+### Added
+
+- **The board can follow the OS light/dark appearance.** Turn it on in
+  Settings › Appearance › `Follow the OS appearance` (off by default, per
+  machine or per board). mesimon asks the OS, not the terminal, so no reply
+  can be typed into the board. `mesimon doctor` says what the OS would pick.
+- **One theme picker sets the dark theme, the light theme, or both.** It
+  opens on the state the board is in; Tab moves to the other state, then to
+  both, and Enter saves for the state shown.
+- **Markdown tables are laid out in columns** in descriptions, notes,
+  replies and the release notes, with the header in bold and each cell's
+  markdown rendered. A table too wide for the page wraps its widest
+  columns; a very narrow page shows each row as `header: value` lines.
+- **More markdown renders:** task lists show `[ ]` and `[✓]`, quotes can
+  hold lists, code and nested quotes, `***text***` is bold italic, and two
+  trailing spaces, a trailing `\` or `<br>` end a line. A note last edited
+  by a person keeps its line breaks.
+
+### Fixed
+
+- **A command the agent runs in the background keeps the card working.**
+  Previously a subagent finishing could drop the card to idle while the
+  command was still running.
+- **nvim's snacks picker no longer receives stray text inside a mesimon
+  pane under iTerm2.** Shift+Enter still reaches Claude Code and Codex.
+- **The status line of a terminal opened with `!` from the board no longer
+  shows an empty ticket segment.**
+
 ## v0.1.0-alpha.28 — 2026-09-28
 
 ### Added
