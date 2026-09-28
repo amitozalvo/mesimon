@@ -25,8 +25,9 @@
 //!
 //! Deliberately markdown-LITE, and parsed in one pass with no dependency:
 //! this is a preview of one message in a ~15-row zone, not a document
-//! viewer. What an agent reply actually uses is here; reference links,
-//! footnotes, HTML and nested block quoting are not.
+//! viewer. What an agent reply or a ticket's notes actually use is here —
+//! tables, task lists, quotes holding blocks, hard breaks; reference links,
+//! footnotes, setext headings, indented code and HTML (bar `<br>`) are not.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -48,18 +49,50 @@ pub(crate) enum Surface {
     Elevated,
 }
 
+/// What one newline inside a paragraph means. CommonMark's answer is a
+/// space, and it is the right one for text wrapped by hand at a fixed width
+/// — an agent's reply, the changelog. A person typing a note into a field
+/// that wraps for them presses Enter to end a line, and reads it back the
+/// way a GitHub comment does: as a break.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Newline {
+    Space,
+    Break,
+}
+
+impl Newline {
+    /// A note's: `Break` when a person wrote it last — here (`local`), on a
+    /// paired phone (`device:`) or as a teammate (`member:`) — and `Space`
+    /// for an agent's or anything unknown, which is what it always was.
+    pub(crate) fn of_note(meta: &mesimon_core::board::NoteMeta) -> Self {
+        let by = meta.edited_by.as_str();
+        if by == "local" || by.starts_with("device:") || by.starts_with("member:") {
+            Newline::Break
+        } else {
+            Newline::Space
+        }
+    }
+}
+
 /// The ramp and the code paint for a surface.
-struct Paint<'a> {
-    ink: &'a Ramp,
+struct Paint {
+    ink: Ramp,
     code_bg: Option<ratatui::style::Color>,
 }
 
-impl<'a> Paint<'a> {
-    fn of(theme: &'a Theme, surface: Surface) -> Self {
+impl Paint {
+    fn of(theme: &Theme, surface: Surface) -> Self {
         match (surface, theme.selected_bg) {
-            (Surface::Elevated, Some(_)) => Paint { ink: &theme.sel, code_bg: theme.bg },
-            _ => Paint { ink: &theme.rest, code_bg: theme.code_bg() },
+            (Surface::Elevated, Some(_)) => Paint { ink: theme.sel, code_bg: theme.bg },
+            _ => Paint { ink: theme.rest, code_bg: theme.code_bg() },
         }
+    }
+    /// Inside a quote: the whole ramp one step down, so quoted text is a
+    /// value step under its surroundings and a quote in a quote another —
+    /// while its own emphasis still steps up from there.
+    fn quoted(&self) -> Self {
+        let r = self.ink;
+        Paint { ink: Ramp { base: r.dim1, dim1: r.dim2, dim2: r.dim3, dim3: r.dim3 }, ..*self }
     }
     fn dim2(&self) -> Style {
         Style::default().fg(self.ink.dim2)
@@ -71,74 +104,33 @@ impl<'a> Paint<'a> {
 
 /// Render `src` into at most `max_lines` lines of at most `width` cells, on
 /// the page ground. A cut ends in the `~` marker — 07 §4.1's vocabulary,
-/// same as `truncate`.
+/// same as `truncate`. The tests' form: every caller names its surface and
+/// its newlines (`render_on`, `render_all`).
+#[cfg(test)]
 pub(crate) fn render(
     src: &str,
     width: usize,
     max_lines: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    render_on(src, width, max_lines, theme, Surface::Ground)
+    render_on(src, width, max_lines, theme, Surface::Ground, Newline::Space)
 }
 
-/// `render`, on a chosen surface.
+/// `render`, on a chosen surface, reading newlines as `newline` says.
 pub(crate) fn render_on(
     src: &str,
     width: usize,
     max_lines: usize,
     theme: &Theme,
     surface: Surface,
+    newline: Newline,
 ) -> Vec<Line<'static>> {
     if width == 0 || max_lines == 0 {
         return Vec::new();
     }
     let paint = Paint::of(theme, surface);
     let mut out = Out { lines: Vec::new(), max: max_lines, width, theme, paint, cut: false };
-    let tier = theme.glyph_tier();
-    let mut bs = blocks(src);
-    while matches!(bs.last(), Some(Block::Blank)) {
-        bs.pop();
-    }
-    for b in bs {
-        if out.full() {
-            out.cut = true;
-            break;
-        }
-        match b {
-            Block::Blank => out.blank(),
-            Block::Head { level, runs } => {
-                // A heading earns its air: the row above it is what makes it
-                // read as a heading at all, since it cannot have a rule.
-                out.blank();
-                out.flow(&runs, Vec::new(), 0, Role::Head(level));
-            }
-            Block::Para { runs, indent } => {
-                out.flow(&runs, vec![Span::raw(" ".repeat(indent))], indent, Role::Body);
-            }
-            Block::Quote { runs } => {
-                // 06 §5.1's own prescription for quoted text: a `›` prefix
-                // plus a value step. (The peek's `> user's words` fallback
-                // arrives here, which is exactly what it should look like.)
-                let mark = if tier == Tier::Ascii { "> " } else { "› " };
-                let lead = vec![Span::styled(mark, out.paint.dim3())];
-                out.flow(&runs, lead, 2, Role::Quote);
-            }
-            Block::Item { marker, indent, runs } => {
-                let marker = marker.unwrap_or_else(|| {
-                    if tier == Tier::Ascii { "-" } else { "\u{2022}" }.to_string()
-                });
-                let hang = indent + marker.width() + 1;
-                let lead = vec![
-                    Span::raw(" ".repeat(indent)),
-                    Span::styled(format!("{marker} "), out.paint.dim2()),
-                ];
-                out.flow(&runs, lead, hang, Role::Body);
-            }
-            Block::Code { rows } => out.slab(&rows),
-            Block::Table { head, align, rows } => out.table(&head, &align, &rows),
-            Block::Raw { text } => out.raw(&text),
-        }
-    }
+    out.blocks(blocks(src, newline));
     out.finish()
 }
 
@@ -146,8 +138,13 @@ pub(crate) fn render_on(
 /// says where the cut is (`mark_cut`). The ticket page's preview scrolls
 /// through this; `render` stays the one-shot form for a zone that only ever
 /// shows the top.
-pub(crate) fn render_all(src: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    render(src, width, usize::MAX, theme)
+pub(crate) fn render_all(
+    src: &str,
+    width: usize,
+    theme: &Theme,
+    newline: Newline,
+) -> Vec<Line<'static>> {
+    render_on(src, width, usize::MAX, theme, Surface::Ground, newline)
 }
 
 /// End `lines` in the `~` cut marker — the same mark `render` leaves when it
@@ -193,7 +190,6 @@ struct Run {
 enum Role {
     Body,
     Head(u8),
-    Quote,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -205,16 +201,19 @@ enum Block {
     },
     Para {
         runs: Vec<Run>,
-        indent: usize,
     },
+    /// Everything a `>` holds — paragraphs, a list, a fence, another quote
+    /// — parsed as a document of its own and drawn behind the mark.
     Quote {
-        runs: Vec<Run>,
+        blocks: Vec<Block>,
     },
     /// `marker: None` is a bullet — which glyph that is belongs to the
-    /// tier, not to the parse.
+    /// tier, not to the parse. `task` is a GFM task item's box: ticked or
+    /// not.
     Item {
         marker: Option<String>,
         indent: usize,
+        task: Option<bool>,
         runs: Vec<Run>,
     },
     /// A fenced block. The info string is dropped: naming the language costs
@@ -246,15 +245,17 @@ enum Align {
     Right,
 }
 
-/// What is still being accumulated when the next line arrives.
+/// What is still being accumulated when the next line arrives. A quote
+/// keeps its lines as written (one `>` off, trailing spaces kept — they may
+/// be a hard break) for the parse it gets of its own.
 enum Pending {
     None,
     Para(Vec<String>),
     Quote(Vec<String>),
-    Item { marker: Option<String>, indent: usize, lines: Vec<String> },
+    Item { marker: Option<String>, indent: usize, task: Option<bool>, lines: Vec<String> },
 }
 
-fn blocks(src: &str) -> Vec<Block> {
+fn blocks(src: &str, newline: Newline) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     let mut pending = Pending::None;
     let mut fence: Option<(char, usize, Vec<String>)> = None;
@@ -278,7 +279,7 @@ fn blocks(src: &str) -> Vec<Block> {
             continue;
         }
         if let Some((ch, len)) = fence_open(raw) {
-            flush(&mut pending, &mut out);
+            flush(&mut pending, &mut out, newline);
             fence = Some((ch, len, Vec::new()));
             continue;
         }
@@ -287,23 +288,23 @@ fn blocks(src: &str) -> Vec<Block> {
         let indent = trimmed.len() - body.len();
 
         if body.is_empty() {
-            flush(&mut pending, &mut out);
+            flush(&mut pending, &mut out, newline);
             out.push(Block::Blank);
             continue;
         }
         // A thematic break is a blank row: rules are drawn structure (L1).
         if is_break(body) {
-            flush(&mut pending, &mut out);
+            flush(&mut pending, &mut out, newline);
             out.push(Block::Blank);
             continue;
         }
         if let Some((level, text)) = heading(body) {
-            flush(&mut pending, &mut out);
+            flush(&mut pending, &mut out, newline);
             out.push(Block::Head { level, runs: inline(text) });
             continue;
         }
         if let Some(align) = table_head(body, lines.get(at).copied()) {
-            flush(&mut pending, &mut out);
+            flush(&mut pending, &mut out, newline);
             at += 1; // the delimiter row
             let n = align.len();
             let row = |line: &str| -> Vec<Vec<Run>> {
@@ -325,53 +326,129 @@ fn blocks(src: &str) -> Vec<Block> {
             continue;
         }
         if body.starts_with('|') {
-            flush(&mut pending, &mut out);
+            flush(&mut pending, &mut out, newline);
             out.push(Block::Raw { text: body.to_string() });
             continue;
         }
         if let Some((marker, text)) = list_marker(body) {
-            flush(&mut pending, &mut out);
+            flush(&mut pending, &mut out, newline);
             // Two source spaces per level, capped: a deep tree would spend
             // the whole column on indent.
             let depth = (indent / 2).min(3);
-            pending = Pending::Item { marker, indent: depth * 2, lines: vec![text.to_string()] };
+            let (task, text) = task_box(text);
+            pending = Pending::Item {
+                marker,
+                indent: depth * 2,
+                task,
+                lines: vec![line_text(raw, text)],
+            };
             continue;
         }
-        if let Some(text) = quote_line(body) {
+        if let Some(text) = quote_line(raw.trim_start()) {
             match &mut pending {
                 Pending::Quote(lines) => lines.push(text.to_string()),
                 _ => {
-                    flush(&mut pending, &mut out);
+                    flush(&mut pending, &mut out, newline);
                     pending = Pending::Quote(vec![text.to_string()]);
                 }
             }
             continue;
         }
         // Plain text: markdown's lazy continuation — it belongs to whatever
-        // block is open (a list item's second line, a quote's), else it
-        // starts a paragraph.
+        // paragraph is open (a list item's second line, a quote's), else it
+        // starts one. A quote whose last line was blank has no paragraph
+        // open, so the text starts a paragraph after it.
         match &mut pending {
-            Pending::Para(lines) | Pending::Quote(lines) => lines.push(body.to_string()),
-            Pending::Item { lines, .. } => lines.push(body.to_string()),
-            Pending::None => pending = Pending::Para(vec![body.to_string()]),
+            Pending::Quote(lines) if lines.last().is_some_and(|l| !l.trim().is_empty()) => {
+                lines.push(raw.trim_start().to_string())
+            }
+            Pending::Para(lines) | Pending::Item { lines, .. } => lines.push(line_text(raw, body)),
+            _ => {
+                flush(&mut pending, &mut out, newline);
+                pending = Pending::Para(vec![line_text(raw, body)]);
+            }
         }
     }
     if let Some((_, _, rows)) = fence.take() {
         out.push(Block::Code { rows }); // unterminated fence: show it anyway
     }
-    flush(&mut pending, &mut out);
+    flush(&mut pending, &mut out, newline);
     out
 }
 
-fn flush(pending: &mut Pending, out: &mut Vec<Block>) {
+fn flush(pending: &mut Pending, out: &mut Vec<Block>, newline: Newline) {
     match std::mem::replace(pending, Pending::None) {
         Pending::None => {}
-        Pending::Para(lines) => out.push(Block::Para { runs: inline(&lines.join(" ")), indent: 0 }),
-        Pending::Quote(lines) => out.push(Block::Quote { runs: inline(&lines.join(" ")) }),
-        Pending::Item { marker, indent, lines } => {
-            out.push(Block::Item { marker, indent, runs: inline(&lines.join(" ")) })
+        Pending::Para(lines) => out.push(Block::Para { runs: inline(&joined(&lines, newline)) }),
+        Pending::Quote(mut lines) => {
+            // A GitHub alert (`> [!NOTE]`) names itself on its own first
+            // line: the name in weight, on a line of its own. No colour —
+            // the accent is needs-you's, and a warning in a note is not.
+            if let Some(kind) = lines.first().and_then(|l| alert(l)) {
+                lines[0] = format!("**{kind}**\\");
+            }
+            out.push(Block::Quote { blocks: blocks(&lines.join("\n"), newline) })
+        }
+        Pending::Item { marker, indent, task, lines } => {
+            let mut runs = inline(&joined(&lines, newline));
+            if task == Some(true) {
+                // A ticked item is read last: the de-emphasis token, like
+                // struck text, so what is left to do is what stands out.
+                for r in &mut runs {
+                    r.emph.dead = true;
+                }
+            }
+            out.push(Block::Item { marker, indent, task, runs })
         }
     }
+}
+
+/// A paragraph's source lines as one string for `inline`: joined by a space
+/// or, where `newline` says so, by a break — and a line that ends in its own
+/// hard break (`line_text`) is never joined by a second one.
+fn joined(lines: &[String], newline: Newline) -> String {
+    let mut s = String::new();
+    for l in lines {
+        if !s.is_empty() && !s.ends_with('\n') {
+            s.push(if newline == Newline::Break { '\n' } else { ' ' });
+        }
+        s.push_str(l);
+    }
+    s
+}
+
+/// One line of a paragraph's text, with CommonMark's hard break — two
+/// trailing spaces, or a trailing backslash (dropped) — spelt `\n`, which
+/// is what `words` breaks a line on. `body` is the line trimmed; `raw` still
+/// has the spaces.
+fn line_text(raw: &str, body: &str) -> String {
+    if let Some(rest) = body.strip_suffix('\\') {
+        if !rest.ends_with('\\') {
+            return format!("{rest}\n");
+        }
+    }
+    if raw.ends_with("  ") {
+        return format!("{body}\n");
+    }
+    body.to_string()
+}
+
+/// `[ ] rest` / `[x] rest` at the head of a list item → (ticked?, rest).
+fn task_box(text: &str) -> (Option<bool>, &str) {
+    for (mark, done) in [("[ ] ", false), ("[x] ", true), ("[X] ", true)] {
+        if let Some(rest) = text.strip_prefix(mark) {
+            return (Some(done), rest);
+        }
+    }
+    (None, text)
+}
+
+/// A quote's first line naming a GitHub alert → the alert's name.
+fn alert(line: &str) -> Option<&'static str> {
+    let kind = line.trim().strip_prefix("[!")?.strip_suffix(']')?;
+    ["Note", "Tip", "Important", "Warning", "Caution"]
+        .into_iter()
+        .find(|k| k.eq_ignore_ascii_case(kind))
 }
 
 fn fence_open(line: &str) -> Option<(char, usize)> {
@@ -521,12 +598,18 @@ fn closes(chars: &[char], i: usize, len: usize) -> bool {
     ok
 }
 
+/// How many `ch` run from `i`.
+fn run_len(chars: &[char], i: usize) -> usize {
+    chars[i..].iter().take_while(|x| **x == chars[i]).count()
+}
+
 /// Does a valid closer for this delimiter exist ahead? An opener with none is
-/// literal text (`5 * 3` must not eat the rest of the line).
+/// literal text (`5 * 3` must not eat the rest of the line). A longer run
+/// closes a shorter opener: `***` ends `*` and `**` both.
 fn has_closer(chars: &[char], from: usize, ch: char, len: usize) -> bool {
     let mut i = from;
     while i < chars.len() {
-        if chars[i] == ch && delim_len(chars, i) == len && closes(chars, i, len) {
+        if chars[i] == ch && run_len(chars, i) >= len && closes(chars, i, len) {
             return true;
         }
         i += 1;
@@ -580,6 +663,15 @@ fn inline(s: &str) -> Vec<Run> {
                 }
             }
         }
+        // `<br>` is the one tag worth reading: GFM's way to break a line
+        // inside a table cell, spelt the way `words` breaks one.
+        if c == '<' {
+            if let Some(n) = br_tag(&chars, i) {
+                cur.push('\n');
+                i += n;
+                continue;
+            }
+        }
         if c == '[' || (c == '!' && chars.get(i + 1) == Some(&'[')) {
             if let Some((runs, next)) = link(&chars, i, emph) {
                 push_run(&mut out, &mut cur, emph);
@@ -591,12 +683,17 @@ fn inline(s: &str) -> Vec<Run> {
         if matches!(c, '*' | '_' | '~') {
             let len = delim_len(&chars, i);
             if len > 0 {
-                if open.last() == Some(&(c, len)) && closes(&chars, i, len) {
-                    push_run(&mut out, &mut cur, emph);
-                    open.pop();
-                    *flag(&mut emph, c, len) = false;
-                    i += len;
-                    continue;
+                // The innermost open delimiter closes first, on a run at
+                // least its length: `***both***` opens `**` then `*`, and
+                // its closing `***` ends `*` here and `**` on the next pass.
+                if let Some(&(oc, olen)) = open.last() {
+                    if oc == c && run_len(&chars, i) >= olen && closes(&chars, i, olen) {
+                        push_run(&mut out, &mut cur, emph);
+                        open.pop();
+                        *flag(&mut emph, c, olen) = false;
+                        i += olen;
+                        continue;
+                    }
                 }
                 if !flag_set(emph, c, len)
                     && opens(&chars, i, len)
@@ -615,6 +712,12 @@ fn inline(s: &str) -> Vec<Run> {
     }
     push_run(&mut out, &mut cur, emph);
     out
+}
+
+/// `<br>`, `<br/>` or `<br />`, any case, at `i` → its length.
+fn br_tag(chars: &[char], i: usize) -> Option<usize> {
+    let ahead: String = chars[i..].iter().take(6).collect::<String>().to_ascii_lowercase();
+    ["<br>", "<br/>", "<br />"].into_iter().find(|t| ahead.starts_with(t)).map(str::len)
 }
 
 fn find_ticks(chars: &[char], from: usize, len: usize) -> Option<usize> {
@@ -674,7 +777,6 @@ fn style_of(e: Emph, role: Role, paint: &Paint) -> Style {
         // Two heading levels, both by value; the top two also take weight.
         Role::Head(1..=2) => (t.base, true),
         Role::Head(_) => (t.base, false),
-        Role::Quote => (t.dim2, e.strong),
         Role::Body if e.strong => (t.base, true),
         // No slant available (SGR 3 is banned), so emphasis is one step up
         // the ramp — the same move de-emphasis makes, in the other direction.
@@ -696,10 +798,26 @@ fn style_of(e: Emph, role: Role, paint: &Paint) -> Style {
 }
 
 /// One display word: the parts are the styled runs it is made of, kept
-/// together so `**bold**text` breaks as one word and not as two.
+/// together so `**bold**text` breaks as one word and not as two. `brk` is
+/// no word at all but a hard break: the line ends there.
 struct Word {
     parts: Vec<(String, Emph)>,
     width: usize,
+    brk: bool,
+}
+
+impl Word {
+    fn brk() -> Self {
+        Word { parts: Vec::new(), width: 0, brk: true }
+    }
+}
+
+/// The width `ws` wants on one line — its widest, between hard breaks.
+fn natural(ws: &[Word]) -> usize {
+    ws.split(|w| w.brk)
+        .map(|seg| seg.iter().map(|w| w.width).sum::<usize>() + seg.len().saturating_sub(1))
+        .max()
+        .unwrap_or(0)
 }
 
 fn words(runs: &[Run], paint: &Paint) -> Vec<Word> {
@@ -723,6 +841,8 @@ fn words(runs: &[Run], paint: &Paint) -> Vec<Word> {
             let (chunk, tail) = rest.split_at(cut);
             rest = tail;
             if ws {
+                // A `\n` that survived the parse is a hard break.
+                out.extend(chunk.matches('\n').map(|_| Word::brk()));
                 open = false;
                 continue;
             }
@@ -733,7 +853,11 @@ fn words(runs: &[Run], paint: &Paint) -> Vec<Word> {
                     continue;
                 }
             }
-            out.push(Word { width: chunk.width(), parts: vec![(chunk.to_string(), r.emph)] });
+            out.push(Word {
+                width: chunk.width(),
+                parts: vec![(chunk.to_string(), r.emph)],
+                brk: false,
+            });
             open = true;
         }
         // A run that ended mid-word keeps the next run attached.
@@ -769,6 +893,13 @@ fn wrap(
     // boundary between two different runs.
     let mut prev: Option<Emph> = None;
     for word in ws {
+        if word.brk {
+            out.push(std::mem::replace(&mut cur, indent_spans(hang)));
+            first = false;
+            w = hang;
+            prev = None;
+            continue;
+        }
         let sep = usize::from(w > if first { start } else { hang });
         if w + sep + word.width > width {
             // Flush unless the line is still empty — an over-wide word on a
@@ -864,7 +995,7 @@ struct Out<'a> {
     max: usize,
     width: usize,
     theme: &'a Theme,
-    paint: Paint<'a>,
+    paint: Paint,
     cut: bool,
 }
 
@@ -892,6 +1023,85 @@ impl Out<'_> {
             return;
         }
         self.lines.push(Line::default());
+    }
+
+    /// A document's blocks, in order, until the rows run out.
+    fn blocks(&mut self, mut bs: Vec<Block>) {
+        while matches!(bs.last(), Some(Block::Blank)) {
+            bs.pop();
+        }
+        let tier = self.theme.glyph_tier();
+        for b in bs {
+            if self.full() {
+                self.cut = true;
+                return;
+            }
+            match b {
+                Block::Blank => self.blank(),
+                Block::Head { level, runs } => {
+                    // A heading earns its air: the row above it is what makes
+                    // it read as a heading at all, since it cannot have a rule.
+                    self.blank();
+                    self.flow(&runs, Vec::new(), 0, Role::Head(level));
+                }
+                Block::Para { runs } => self.flow(&runs, Vec::new(), 0, Role::Body),
+                Block::Quote { blocks } => self.quote(blocks),
+                Block::Item { marker, indent, task, runs } => {
+                    let bullet = if tier == Tier::Ascii { "-" } else { "\u{2022}" };
+                    // A task's box stands in for the bullet, or follows the
+                    // number; ticked, it wears the board's own check.
+                    let tick = if tier == Tier::Ascii { "[x]" } else { "[\u{2713}]" };
+                    let mark = match (marker, task) {
+                        (None, None) => bullet.to_string(),
+                        (None, Some(done)) => (if done { tick } else { "[ ]" }).to_string(),
+                        (Some(m), None) => m,
+                        (Some(m), Some(done)) => format!("{m} {}", if done { tick } else { "[ ]" }),
+                    };
+                    let hang = indent + mark.width() + 1;
+                    let lead = vec![
+                        Span::raw(" ".repeat(indent)),
+                        Span::styled(format!("{mark} "), self.paint.dim2()),
+                    ];
+                    self.flow(&runs, lead, hang, Role::Body);
+                }
+                Block::Code { rows } => self.slab(&rows),
+                Block::Table { head, align, rows } => self.table(&head, &align, &rows),
+                Block::Raw { text } => self.raw(&text),
+            }
+        }
+    }
+
+    /// A quote: whatever it holds, drawn a value step down (`Paint::quoted`)
+    /// behind 06 §5.1's own prescription for quoted text, the `›` prefix —
+    /// on every row, a blank one included, so the quote reads as one piece.
+    /// (The peek's `> user's words` fallback arrives here, which is exactly
+    /// what it should look like.)
+    fn quote(&mut self, blocks: Vec<Block>) {
+        let mark = if self.theme.glyph_tier() == Tier::Ascii { ">" } else { "\u{203A}" };
+        if self.width < 3 {
+            return self.blocks(blocks);
+        }
+        let mut inner = Out {
+            lines: Vec::new(),
+            max: self.max.saturating_sub(self.lines.len()),
+            width: self.width - 2,
+            theme: self.theme,
+            paint: self.paint.quoted(),
+            cut: false,
+        };
+        inner.blocks(blocks);
+        while inner.lines.last().is_some_and(is_blank) {
+            inner.lines.pop();
+        }
+        for line in inner.lines {
+            let lead = if is_blank(&line) { mark.to_string() } else { format!("{mark} ") };
+            let mut spans = vec![Span::styled(lead, self.paint.dim3())];
+            spans.extend(line.spans);
+            if !self.line(spans) {
+                return;
+            }
+        }
+        self.cut |= inner.cut;
     }
 
     /// One block, word-wrapped to the column (`wrap`).
@@ -939,15 +1149,13 @@ impl Out<'_> {
     /// that, the table is read out a row at a time (`records`).
     fn table(&mut self, head: &[Vec<Run>], align: &[Align], rows: &[Vec<Vec<Run>>]) {
         let all = || std::iter::once(head).chain(rows.iter().map(Vec::as_slice));
-        let mut natural = vec![0usize; align.len()];
+        let mut want = vec![0usize; align.len()];
         for row in all() {
             for (c, cell) in row.iter().enumerate() {
-                let ws = words(cell, &self.paint);
-                let w = ws.iter().map(|w| w.width).sum::<usize>() + ws.len().saturating_sub(1);
-                natural[c] = natural[c].max(w);
+                want[c] = want[c].max(natural(&words(cell, &self.paint)));
             }
         }
-        let Some((widths, gutter)) = columns(&natural, self.width) else {
+        let Some((widths, gutter)) = columns(&want, self.width) else {
             return self.records(head, rows);
         };
         let laid: Vec<Vec<Vec<Vec<Span<'static>>>>> = all()
@@ -1346,6 +1554,137 @@ mod tests {
         assert_eq!(style_for(&out, "docs/06.md").fg, Some(t.rest.dim3));
     }
 
+    /// `***x***` opens `**` then `*`, and its closing run ends both — the
+    /// closer used to match only a run of exactly the open length, leaked
+    /// `**` and left every later emphasis on the line inverted.
+    #[test]
+    fn triple_emphasis_closes_both() {
+        let t = dark();
+        let out = render("a ***b*** c **d** e", 40, 2, &t);
+        assert_eq!(plain(&out), vec!["a b c d e"]);
+        assert!(style_for(&out, "b").add_modifier.contains(Modifier::BOLD));
+        assert!(style_for(&out, "d").add_modifier.contains(Modifier::BOLD));
+        assert_eq!(style_for(&out, "c").fg, Some(t.rest.dim1), "nothing leaks past it");
+        // A longer run still closes a shorter opener, and a lone star stays.
+        assert_eq!(plain(&render("*x** and **y*", 40, 2, &t)), vec!["x* and *y"]);
+    }
+
+    /// CommonMark's hard breaks — two trailing spaces, a trailing backslash
+    /// (which is markup, so it goes) — and `<br>`, all end the line there.
+    #[test]
+    fn a_hard_break_ends_the_line() {
+        let t = dark();
+        let out = render("one  \ntwo\\\nthree four\n\na<br>b<BR />c", 40, 8, &t);
+        assert_eq!(plain(&out), vec!["one", "two", "three four", "", "a", "b", "c"]);
+        // Inside a list item the broken line hangs under the text.
+        assert_eq!(plain(&render("- one  \n  two", 40, 4, &t)), vec!["\u{2022} one", "  two"]);
+        // Emphasis spans a break.
+        let out = render("**bold  \nstill**", 40, 4, &t);
+        assert!(style_for(&out, "still").add_modifier.contains(Modifier::BOLD));
+    }
+
+    /// A person's newline is a line break; an agent's is a space, as
+    /// CommonMark has it, because an agent wraps by hand.
+    #[test]
+    fn a_persons_newlines_are_breaks() {
+        let t = dark();
+        let src = "repro:\nopen the board\npress X\n\n- item\n  more";
+        let keep = render_on(src, 40, 8, &t, Surface::Ground, Newline::Break);
+        assert_eq!(
+            plain(&keep),
+            vec!["repro:", "open the board", "press X", "", "\u{2022} item", "  more"]
+        );
+        let join = render_on(src, 40, 8, &t, Surface::Ground, Newline::Space);
+        assert_eq!(plain(&join), vec!["repro: open the board press X", "", "\u{2022} item more"]);
+
+        let meta = |by: &str| mesimon_core::board::NoteMeta {
+            id: ulid::Ulid::nil(),
+            name: String::new(),
+            rev: 1,
+            created_at: String::new(),
+            created_by: String::new(),
+            edited_at: String::new(),
+            edited_by: by.into(),
+        };
+        for by in ["local", "device:phone", "member:dana"] {
+            assert_eq!(Newline::of_note(&meta(by)), Newline::Break, "{by}");
+        }
+        for by in ["agent:0000", "automation:rule", ""] {
+            assert_eq!(Newline::of_note(&meta(by)), Newline::Space, "{by}");
+        }
+    }
+
+    /// A task item's box stands in for the bullet (or follows the number),
+    /// ticked with the board's own check, and a ticked item is read last.
+    #[test]
+    fn a_task_list_wears_boxes() {
+        let t = dark();
+        let src = "- [ ] write it\n- [x] test it\n* [X] ship it\n1. [ ] numbered";
+        let out = render(src, 40, 6, &t);
+        assert_eq!(
+            plain(&out),
+            vec!["[ ] write it", "[\u{2713}] test it", "[\u{2713}] ship it", "1. [ ] numbered"]
+        );
+        assert_eq!(style_for(&out, "write it").fg, Some(t.rest.dim1), "what is left stands out");
+        assert_eq!(style_for(&out, "test it").fg, Some(t.rest.dim3), "what is done is read last");
+        let ascii = Theme::new(crate::theme::Flavor::Graphite, Profile::Mono);
+        assert_eq!(plain(&render("- [x] done", 20, 2, &ascii)), vec!["[x] done"]);
+        // Not a task: no space after the box, or a box mid-line.
+        assert_eq!(plain(&render("- [x]", 20, 2, &t)), vec!["\u{2022} [x]"]);
+    }
+
+    /// A quote holds blocks — paragraphs, a list, another quote — each
+    /// drawn a value step down behind the mark, which runs down blank rows
+    /// too; lazy continuation joins its paragraph, but not across a blank.
+    #[test]
+    fn a_quote_holds_blocks() {
+        let t = dark();
+        let out = render("> para one\n>\n> - a\n> - b\n> > inner", 40, 8, &t);
+        assert_eq!(
+            plain(&out),
+            vec![
+                "\u{203A} para one",
+                "\u{203A}",
+                "\u{203A} \u{2022} a",
+                "\u{203A} \u{2022} b",
+                "\u{203A} \u{203A} inner"
+            ]
+        );
+        assert_eq!(style_for(&out, "para one").fg, Some(t.rest.dim2), "one step down");
+        assert_eq!(style_for(&out, "inner").fg, Some(t.rest.dim3), "and another");
+        assert_eq!(plain(&render("> quoted\nlazy", 40, 4, &t)), vec!["\u{203A} quoted lazy"]);
+        assert_eq!(
+            plain(&render("> quoted\n>\nafter", 40, 4, &t)),
+            vec!["\u{203A} quoted", "after"]
+        );
+        // Emphasis inside a quote still steps up from the quote's value.
+        let out = render("> a **b** c", 40, 2, &t);
+        assert_eq!(style_for(&out, "b").fg, Some(t.rest.dim1));
+    }
+
+    /// A GitHub alert names itself in weight, on its own line — no colour.
+    #[test]
+    fn a_github_alert_names_itself() {
+        let t = dark();
+        let out = render("> [!WARNING]\n> Careful here.", 40, 4, &t);
+        assert_eq!(plain(&out), vec!["\u{203A} Warning", "\u{203A} Careful here."]);
+        assert!(style_for(&out, "Warning").add_modifier.contains(Modifier::BOLD));
+        // An unknown kind is just text.
+        assert_eq!(plain(&render("> [!FOO] x", 40, 2, &t)), vec!["\u{203A} [!FOO] x"]);
+    }
+
+    /// `<br>` in a cell is GFM's multi-line cell: the column is as wide as
+    /// its widest line, and the table takes air between its rows.
+    #[test]
+    fn a_br_breaks_a_table_cell() {
+        let t = dark();
+        let src = "| a | b |\n|---|---|\n| one<br>two | x |\n| y | z |";
+        assert_eq!(
+            plain(&render(src, 40, 8, &t)),
+            vec!["a     b", "", "one   x", "two", "", "y     z"]
+        );
+    }
+
     /// Overflow ends in the `~` marker (07 §4.1's vocabulary), and nothing
     /// ever escapes the column it was given.
     #[test]
@@ -1372,7 +1711,10 @@ mod tests {
                        ```sh\ncargo test --workspace\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n\
                        | file | what | why it changed, at length |\n|:--|:-:|--:|\n| `a.rs` | \
                        **parse** | a delimiter row makes a table now |\n\n\
-                       > quoted\n\n---\n\ntail_with_snake_case and 5 * 3";
+                       > quoted\n\n---\n\ntail_with_snake_case and 5 * 3\n\n\
+                       - [ ] open task\n- [x] **done** task\n\n> [!WARNING]\n> a *quoted* list:\n\
+                       > - one\n> > nested `code`\n\nhard  \nbreak and ***both*** and a<br>b\n\n\
+                       | cell | other |\n|---|---|\n| one<br>two | x |";
         for profile in
             [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono]
         {

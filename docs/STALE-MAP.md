@@ -14928,3 +14928,43 @@ only blank frames are the attach and the detach, which the stub take has too. No
 cleanup fix. The key is in no file of the repository (all 547 scanned, with its last 20
 characters too). All five tapes then ran in stub mode and passed; their GIFs were put back from
 git.
+
+## The markdown survey's five, built (T-487, 2026-09-28)
+
+The survey that closed the tables block named what `rich.rs` still drew wrong; the author said
+build them here or file them, whichever costs less and breaks less. All five share the parse and
+the wrap, so they were built here.
+
+- **`***x***` closes both.** The closer matched only a run of exactly the open length, so the
+  closing `***` of `***both***` could end neither `*` nor `**`: it leaked `**` and inverted every
+  later emphasis on the line. The innermost open delimiter now closes on any run at least its
+  length (`run_len`), and `has_closer` agrees.
+- **A hard break is `\n` in the text, and `words` breaks the line on it** (`Word::brk`). Two
+  trailing spaces or a trailing backslash (dropped) mark one (`line_text`), and so does `<br>`
+  in any case and spelling (`br_tag`) — which is GFM's multi-line table cell; a cell's width is
+  its widest line (`natural`), and a cell that breaks makes the table airy. Riding the text
+  rather than splitting the block lets emphasis span a break. A backslash that ends a
+  paragraph is dropped, where CommonMark keeps it.
+- **A person's newline is a break** (`Newline::of_note`). The editor soft-wraps, so an Enter
+  there ends a line, the way a GitHub comment reads it; `repro:` / `open the board` / `press X`
+  had come out as one line. `edited_by` decides — `local`, `device:`, `member:` break; an
+  agent's note, a reply and the changelog join as CommonMark says, because those are wrapped
+  by hand and `wrapped_source_lines_rejoin` is right about them. The zone's cache key needs
+  nothing new: a note's `(id, rev)` already fixes its last writer.
+- **Task items wear boxes.** `[ ]` and `[✓]` (the board's own thin check, `[x]` at the ASCII
+  tier) stand in for the bullet or follow the number, both three cells so the text lines up.
+  A ticked item's text drops to `dim3`, so what is left to do is what stands out. No ballot-box
+  glyph: `☑` carries the Emoji property, which the width law refuses.
+- **A quote is a document.** Its lines (one `>` off, trailing spaces kept) are parsed by
+  `blocks` again and drawn by `Out::quote` at two cells narrower behind `›` — on blank rows too,
+  so a multi-paragraph quote reads as one — with `Paint::quoted` shifting the whole ramp one
+  step down. That retires `Role::Quote`: a nested quote is a second step, and emphasis inside a
+  quote still steps up from the quote's value instead of flattening to it. Lazy continuation
+  still joins a quote's paragraph, but not after a blank `>`. A GitHub alert's `[!NOTE]`
+  (`Tip`, `Important`, `Warning`, `Caution`) becomes its name in weight on its own line; no
+  colour, since a warning in a note is not needs-you.
+
+`render` is `#[cfg(test)]` now: every caller names a surface and a `Newline`. No golden moved;
+the kitchen-sink sweep gained every new construct. Still not built, and not worth it until one
+shows up: setext headings, 4-space indented code, `<url>` autolinks, other HTML, footnotes,
+reference links.

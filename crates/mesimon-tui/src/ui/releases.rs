@@ -135,7 +135,12 @@ fn document(r: &ReleasesState, width: usize, theme: &Theme) -> Document {
         doc.bands.push(band.clone());
         doc.lines.push(band);
         doc.lines.push(Line::default());
-        for row in crate::rich::render_all(&rel.body, measure.saturating_sub(INDENT), theme) {
+        for row in crate::rich::render_all(
+            &rel.body,
+            measure.saturating_sub(INDENT),
+            theme,
+            crate::rich::Newline::Space,
+        ) {
             let mut spans = vec![Span::raw(margin.clone())];
             spans.extend(row.spans);
             doc.lines.push(Line::from(spans));

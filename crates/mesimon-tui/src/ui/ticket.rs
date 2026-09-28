@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use std::rc::Rc;
 
 use super::RichCache;
+use crate::rich::Newline;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
@@ -528,8 +529,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let body_rows = (area.height as usize).saturating_sub(7 + wt_row as usize);
     let desc: Vec<Line<'static>> = ticket
         .description()
-        .and_then(|m| app.note_text(m))
-        .map(|text| {
+        .and_then(|m| Some((m, app.note_text(m)?)))
+        .map(|(meta, text)| {
             let cap = DESC_MAX_ROWS.min(body_rows / 3).max(1);
             let surface = if theme.selected_bg.is_some() {
                 crate::rich::Surface::Elevated
@@ -537,7 +538,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 crate::rich::Surface::Ground
             };
             let width = (area.width as usize).saturating_sub(4);
-            crate::rich::render_on(text, width, cap, theme, surface)
+            crate::rich::render_on(text, width, cap, theme, surface, Newline::of_note(meta))
         })
         .unwrap_or_default();
     // The description's rows plus its bottom pad; the blank over it is the
@@ -865,7 +866,7 @@ fn draw_preview(
                 let budget = (area.height as usize).saturating_sub(lines.len());
                 let width = (area.width as usize).saturating_sub(4);
                 let key = note_key(meta);
-                let rows = rendered(app, key, width, text);
+                let rows = rendered(app, key, width, text, Newline::of_note(meta));
                 let shown = window(app, Some(key), &rows, budget, width, false);
                 for row in shown {
                     let mut spans = vec![Span::raw("   ")];
@@ -893,8 +894,10 @@ fn draw_preview(
             // reply must not open the next one halfway down.
             let key = session.map(|s| doc_key(s, Some(text)));
             let rows = match key {
-                Some(key) => rendered(app, key, width, text),
-                None => std::rc::Rc::new(crate::rich::render_all(text, width, theme)),
+                Some(key) => rendered(app, key, width, text, Newline::Space),
+                None => {
+                    std::rc::Rc::new(crate::rich::render_all(text, width, theme, Newline::Space))
+                }
             };
             let shown = window(app, key, &rows, budget, width, false);
             for row in shown {
@@ -1299,7 +1302,15 @@ fn note_key(meta: &NoteMeta) -> u64 {
 /// kept on `App::rich_cache`: `rich::render_all` parses and wraps the whole
 /// reply, and the draw runs at 60 fps through a glide only to keep a
 /// window of it. Keyed the way the page scroll is (`doc_key` / `note_key`).
-fn rendered(app: &App, key: u64, width: usize, text: &str) -> Rc<Vec<Line<'static>>> {
+/// `newline` is not in the cache key: it follows from the document (a
+/// reply's is `Space`, a note's is its author's), and the key names that.
+fn rendered(
+    app: &App,
+    key: u64,
+    width: usize,
+    text: &str,
+    newline: Newline,
+) -> Rc<Vec<Line<'static>>> {
     let flavor = app.theme.flavor;
     let mut slot = app.rich_cache.borrow_mut();
     if let Some(c) = slot.as_ref() {
@@ -1307,7 +1318,7 @@ fn rendered(app: &App, key: u64, width: usize, text: &str) -> Rc<Vec<Line<'stati
             return Rc::clone(&c.rows);
         }
     }
-    let rows = Rc::new(crate::rich::render_all(text, width, &app.theme));
+    let rows = Rc::new(crate::rich::render_all(text, width, &app.theme, newline));
     *slot = Some(RichCache { key, width, flavor, rows: Rc::clone(&rows) });
     rows
 }
