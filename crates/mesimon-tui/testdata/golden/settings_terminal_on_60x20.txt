@@ -1,6 +1,5 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TODO                               2   2   2   0
   ╭─ TERMINAL ───────────────────────────────────────────╮
   │   Tab title: mesimon ∙ project name                  │
   │     enter cycles: off, project name, mesimon ∙ proj~ │
@@ -14,7 +13,8 @@
   │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
   │   Tab subtitle: off                                  │
   │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
+  │   Tab icon: off                                      │
+  │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
   ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
  SETTINGS                                            ? keys

@@ -249,7 +249,7 @@ pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
 /// dependency out of the graph for one escape sequence. The workspace pins a
 /// single major of everything and CI fails on a duplicate, so a crate is never
 /// free here.
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

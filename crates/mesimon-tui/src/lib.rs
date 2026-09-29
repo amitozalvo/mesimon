@@ -328,6 +328,12 @@ fn event_loop(
             let drawn = terminal.draw(|f| ui::draw(f, app));
             execute!(out, EndSynchronizedUpdate)?;
             drawn?;
+            // The shin PNGs, on the first frame the icon row wants them:
+            // a write under the state dir, so it happens here and not in
+            // `App`. A failure leaves the row inert rather than the loop.
+            if app.prefs.tab_icon && app.icons.is_none() {
+                app.icons = title::shin_icons(&app.repo_root).ok();
+            }
             tab.sync(&mut out, &app.tab_frame(false))?;
         }
 

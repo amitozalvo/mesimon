@@ -2,7 +2,6 @@
 
     TODO                               2   2   2   0
 
-    Decay treatments                 >1y   I   R   D
   ╭─ TERMINAL ───────────────────────────────────────────╮
   │   Tab title: off                                     │
   │     the tab keeps its own title ∙ enter names it af~ │
@@ -12,8 +11,9 @@
   │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
   │   Tab subtitle: off                                  │
   │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
+  │   Tab icon: off                                      │
+  │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
   ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

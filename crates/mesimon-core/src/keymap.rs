@@ -549,13 +549,14 @@ pub enum Verb {
     /// written by the TUI alone: what the tab reads (off, the board's
     /// name, `mesimon ∙ <board>`), whether it counts needs-you, whether it
     /// follows the open session, the progress ring, iTerm2's needs-you
-    /// colour and iTerm2's subtitle.
+    /// colour, iTerm2's subtitle and iTerm2's icon.
     TabTitle,
     TabTitleNeedsYou,
     TabTitleFocus,
     TabProgress,
     TabColor,
     TabSubtitle,
+    TabIcon,
     /// The notifications row for iTerm2's dock bounce (T-492).
     NotifyDockBounce,
     /// The Settings door to the Terminal rows.
@@ -894,7 +895,8 @@ impl SettingsSection {
             | Verb::TabTitleFocus
             | Verb::TabProgress
             | Verb::TabColor
-            | Verb::TabSubtitle => Self::Terminal,
+            | Verb::TabSubtitle
+            | Verb::TabIcon => Self::Terminal,
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
@@ -1267,9 +1269,13 @@ pub struct Ctx {
     /// iTerm2's needs-you colour (`TabColor::name`, empty in a bare `Ctx`).
     pub tab_color_word: &'static str,
     pub tab_subtitle: bool,
-    /// The board runs in iTerm2, directly (no outer tmux): the three rows
-    /// that only iTerm2 answers say so when it is not.
+    pub tab_icon: bool,
+    /// The board runs in iTerm2, directly (no outer tmux): the rows that
+    /// only iTerm2 answers say so when it is not.
     pub iterm2: bool,
+    /// And that iTerm2 is 3.7 or later, which the session-status rows (the
+    /// dot, the subtitle) and the icon need — 3.6 ignores both escapes.
+    pub iterm2_status: bool,
     /// iTerm2 bounces its dock icon when an agent needs you (T-492).
     pub notify_dock_bounce: bool,
     /// Hold this machine awake while an agent is mid-turn (T-288) — the
@@ -4046,7 +4052,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::SettingsTerminal,
         label: |_| "Terminal".into(),
-        detail: |_| "the tab's title, progress ring, colour and subtitle".into(),
+        detail: |_| "the tab's title, progress ring, colour, subtitle and icon".into(),
         avail: always,
         key: "",
     },
@@ -4233,9 +4239,11 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         verb: Verb::TabColor,
         label: |c| format!("Tab colour when needs you: {}", or(c.tab_color_word, "off")),
         detail: |c| {
-            if c.iterm2 {
+            if c.iterm2 && c.iterm2_status {
                 "the theme's attention colour ∙ enter cycles: off, the tab's dot, the whole tab"
                     .into()
+            } else if c.iterm2 {
+                "the whole tab works here ∙ the dot needs the iTerm2 3.7 beta".into()
             } else {
                 "iTerm2 only ∙ this terminal is not iTerm2, so the row is inert".into()
             }
@@ -4253,8 +4261,32 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             }
         },
         detail: |c| {
-            if c.iterm2 {
+            if c.iterm2 && c.iterm2_status {
                 "under the title: how many need you, how many are working".into()
+            } else if c.iterm2 {
+                "needs the iTerm2 3.7 beta ∙ this iTerm2 is older, so the row is inert".into()
+            } else {
+                "iTerm2 only ∙ this terminal is not iTerm2, so the row is inert".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::TabIcon,
+        label: |c| {
+            if c.tab_icon {
+                "Tab icon: the shin".into()
+            } else {
+                "Tab icon: off".into()
+            }
+        },
+        detail: |c| {
+            if c.iterm2 && c.iterm2_status {
+                "resting, or the needs-you pose while any ticket does ∙ iTerm2's own is back on quit"
+                    .into()
+            } else if c.iterm2 {
+                "needs the iTerm2 3.7 beta ∙ this iTerm2 is older, so the row is inert".into()
             } else {
                 "iTerm2 only ∙ this terminal is not iTerm2, so the row is inert".into()
             }
@@ -4839,6 +4871,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::TabProgress,
             Verb::TabColor,
             Verb::TabSubtitle,
+            Verb::TabIcon,
         ],
         SettingsSection::Behaviour => &[
             Verb::MergeTrain,
@@ -4893,6 +4926,7 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::TabProgress => PrefKey::TabProgress,
         Verb::TabColor => PrefKey::TabColor,
         Verb::TabSubtitle => PrefKey::TabSubtitle,
+        Verb::TabIcon => PrefKey::TabIcon,
         Verb::NotifyDockBounce => PrefKey::NotifyDockBounce,
         Verb::KeepAwake => PrefKey::KeepAwake,
         Verb::NotifyToggle => PrefKey::Notify,
@@ -8476,7 +8510,13 @@ mod tests {
             ),
             (
                 SettingsSection::Terminal,
-                vec![Verb::TabTitle, Verb::TabProgress, Verb::TabColor, Verb::TabSubtitle],
+                vec![
+                    Verb::TabTitle,
+                    Verb::TabProgress,
+                    Verb::TabColor,
+                    Verb::TabSubtitle,
+                    Verb::TabIcon,
+                ],
             ),
             (
                 SettingsSection::Behaviour,
@@ -9105,6 +9145,7 @@ mod tests {
             Verb::TabProgress,
             Verb::TabColor,
             Verb::TabSubtitle,
+            Verb::TabIcon,
             Verb::KeepAwake,
             Verb::SnoozeQuiet,
             Verb::WeekStart,

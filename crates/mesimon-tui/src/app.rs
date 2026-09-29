@@ -1701,6 +1701,9 @@ pub struct App {
     /// iTerm2-only rows — resolved in `lib.rs::run`, never here, so no
     /// test app reads a developer's terminal. `Other` in every test app.
     pub terminal: crate::title::Terminal,
+    /// The two shin PNGs for the tab icon (T-492), written by `lib.rs`'s
+    /// loop on the first frame the row wants them — never here.
+    pub icons: Option<crate::title::Icons>,
     /// A ticket may grow its own shell session (T-300) — `lib.rs::run` sets
     /// it from `MESIMON_TICKET_SHELLS`, never `App::new`, the rule
     /// `editor_word` and `opener` follow, so no test and no golden reads a
@@ -1866,6 +1869,7 @@ impl App {
             recent_tickets: Vec::new(),
             rich_keys: false,
             terminal: crate::title::Terminal::Other,
+            icons: None,
             ticket_shells: false,
             appearance: None,
             appearance_probe: None,
@@ -2338,7 +2342,9 @@ impl App {
         use crate::title::{Mark, Progress, Terminal};
         let needs_you = self.board.needs_you_count();
         let working = self.board.sessions.iter().filter(|s| crate::glyphs::is_working(s)).count();
-        let iterm2 = self.terminal == Terminal::ITerm2;
+        let iterm2 = matches!(self.terminal, Terminal::ITerm2 { .. });
+        // 3.7's escapes: the dot, the subtitle, the icon.
+        let status = self.terminal == Terminal::ITerm2 { status: true };
         let attn = self.theme.flavor.palette().truecolor.attn;
         let title = if focus { self.focus_tab_title() } else { self.tab_title() };
         let progress = self.prefs.tab_progress.then_some(if needs_you > 0 {
@@ -2351,6 +2357,7 @@ impl App {
         let mark = match self.prefs.tab_color {
             _ if !iterm2 => None,
             crate::prefs::TabColor::Off => None,
+            crate::prefs::TabColor::Dot if !status => None,
             crate::prefs::TabColor::Dot => {
                 Some(if needs_you > 0 { Mark::Dot(attn) } else { Mark::Off })
             }
@@ -2359,8 +2366,12 @@ impl App {
             }
         };
         let subtitle =
-            (iterm2 && self.prefs.tab_subtitle).then(|| crate::title::subtitle(needs_you, working));
-        crate::title::Frame { title, progress, mark, subtitle }
+            (status && self.prefs.tab_subtitle).then(|| crate::title::subtitle(needs_you, working));
+        let icon = (status && self.prefs.tab_icon)
+            .then_some(self.icons.as_ref())
+            .flatten()
+            .map(|i| if needs_you > 0 { i.needs_you.clone() } else { i.resting.clone() });
+        crate::title::Frame { title, progress, mark, subtitle, icon }
     }
 
     /// The `Fetch origin` row's detail (T-124): what is out of sync, in
@@ -4422,7 +4433,9 @@ impl App {
             tab_progress: self.prefs.tab_progress,
             tab_color_word: self.prefs.tab_color.name(),
             tab_subtitle: self.prefs.tab_subtitle,
-            iterm2: self.terminal == crate::title::Terminal::ITerm2,
+            tab_icon: self.prefs.tab_icon,
+            iterm2: matches!(self.terminal, crate::title::Terminal::ITerm2 { .. }),
+            iterm2_status: self.terminal == crate::title::Terminal::ITerm2 { status: true },
             notify_dock_bounce: self.prefs.notify_dock_bounce,
             keep_awake: self.prefs.keep_awake,
             header_awake: self.header_focus && self.header_awake,
@@ -5580,6 +5593,15 @@ impl App {
                     "the tab's subtitle is off"
                 };
                 self.set_pref(word, |p| p.tab_subtitle = on);
+            }
+            Verb::TabIcon => {
+                let on = !self.prefs.tab_icon;
+                let word = if on {
+                    "the tab's icon is the shin"
+                } else {
+                    "the tab's icon is iTerm2's own"
+                };
+                self.set_pref(word, |p| p.tab_icon = on);
             }
             Verb::NotifyDockBounce => {
                 let on = !self.prefs.notify_dock_bounce;
@@ -19476,10 +19498,20 @@ mod tests {
         assert_eq!(f.progress, Some(Progress::Working));
         assert_eq!(f.mark, None, "not iTerm2");
         assert_eq!(f.subtitle, None);
-        app.terminal = Terminal::ITerm2;
+        app.terminal = Terminal::ITerm2 { status: false };
         let f = app.tab_frame(false);
-        assert_eq!(f.mark, Some(Mark::Off), "iTerm2, nothing needs you");
+        assert_eq!(f.mark, None, "3.6: the dot's escape does not exist there");
+        assert_eq!(f.subtitle, None);
+        app.terminal = Terminal::ITerm2 { status: true };
+        let f = app.tab_frame(false);
+        assert_eq!(f.mark, Some(Mark::Off), "iTerm2 3.7, nothing needs you");
         assert_eq!(f.subtitle.as_deref(), Some("1 working"));
+        assert_eq!(f.icon, None, "the row is off");
+        app.seed_pref(|p| p.tab_icon = true);
+        assert_eq!(app.tab_frame(false).icon, None, "on, but the files are not written yet");
+        app.icons =
+            Some(crate::title::Icons { resting: "/s/r.png".into(), needs_you: "/s/n.png".into() });
+        assert_eq!(app.tab_frame(false).icon.as_deref(), Some(std::path::Path::new("/s/r.png")));
         app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTitle) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.prefs.tab_title, TabTitle::Off, "the ring closes");

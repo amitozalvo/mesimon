@@ -15008,9 +15008,9 @@ pane key rides it), and no attempt to keep tmux from taking the first XDA reply 
 every attach). A pane that sets `allow-passthrough` for itself still can; only the probe that
 did so is now routed around.
 
-## The terminal's tab reads the board, and five more terminal integrations (T-492, 2026-09-29, "rename terminal tab — maybe more terminal integrations, investigate and propose; opt in, configurable"; then "do all. also allow user to configure how tab name will work")
+## The terminal's tab reads the board, and six more terminal integrations (T-492, 2026-09-29, "rename terminal tab — maybe more terminal integrations, investigate and propose; opt in, configurable"; then "do all. also allow user to configure how tab name will work")
 
-**Built: `Settings › Terminal`**, a fourth section, six rows, every one a machine-only
+**Built: `Settings › Terminal`**, a fourth section, seven rows, every one a machine-only
 `prefs.json` key off by default (which terminal a board runs in is not a fact about a repo —
 the status line's rule), written by `tui/src/title.rs` under the draw's console lock (T-291's
 rule: never inside a frame or a banner), each field only on a change (a tick costs the tty no
@@ -15035,7 +15035,20 @@ the rest), and every field given back to the terminal before a `^Z`, a `U` reloa
   the flavor's truecolor `attn` — the board's one-saturated-colour rule, on the tab strip. Each
   kind is reset on its own road (`indicator=` empty; `6;1;bg;*;default`).
 - **Tab subtitle** (iTerm2's `OSC 21337 status=`): `2 need you ∙ 3 working`, cleared when
-  neither. The user pointed at it: iTerm2 3.5+ has a session subtitle and an escape for it.
+  neither. The user pointed at it.
+- **Tab icon** (iTerm2's `OSC 1337;SetProfileProperty=Icon=Mg==;Custom Icon Path=<base64
+  JSON>`): the shin, resting or in its needs-you pose — the two PNGs `mascot::icon` already
+  keeps under `<state>/notifications` for banners, written lazily by the loop on the first frame
+  the row wants them. The escape changes this SESSION's copy of the profile and never the saved
+  one (README promise 2 holds; the Python API's own docs say the same of the session route).
+  Off, and at quit, the icon mode goes back to `1` (built-in for the current app, iTerm2's
+  default) — the profile's own choice cannot be read back, so a profile set to none or to a
+  custom icon of its own gets the default until the tab closes; the row says so.
+- **The dot, the subtitle and the icon are iTerm2 3.7's** (`OSC 21337` and `SetProfileProperty`
+  are both new in the 3.7 beta; the stable 3.6.11 ignores them — "subtitle doesn't work btw" was
+  this). `TERM_PROGRAM_VERSION` says which iTerm2 it is (`title::classify`, `major.minor` ≥ 3.7);
+  below it the three rows say "needs the iTerm2 3.7 beta" and write nothing, the whole-tab colour
+  (`OSC 6`, old) still works, and doctor names the version.
 - **Dock bounce** (`OSC 1337;RequestAttention=once`) is a NOTIFICATION and lives in that list
   under its switch, board-overridable like the rest of its group; the notifier thread writes it
   on a needs-you post through the same console lock (`Say` takes a second argument). Silent
@@ -15051,12 +15064,11 @@ nothing there — every other terminal ignores `1337`/`21337`, but an outer tmux
 it and its inherited bundle id is stale (`notify.rs`'s veto, kept). `mesimon doctor --verbose`
 has a `terminal` line.
 
-**Two things iTerm2 shows that are its own, not ours** (the user asked): the `(mesimon)` suffix
+**One thing iTerm2 shows that is its own, not ours** (the user asked): the `(mesimon)` suffix
 after the title is the profile's Title setting `Name (Job)` — Settings › Profiles › General ›
-Title, pick `Name`; and the tab ICON is that profile's Icon setting (built-in for the current
-app, or a custom file) — no escape sets one, and mesimon changes no configuration (README
-promise 2), so the doctor line names the setting and stops. `SetProfileProperty` could set a
-custom icon path at runtime and was refused for that reason.
+Title, pick `Name`. The tab icon was first refused on the same ground (the profile's Icon
+setting) and then built on the user's ask, once the session-only nature of `SetProfileProperty`
+was confirmed.
 
 **Why the private server's `set-titles` stays off.** tmux forwards a pane's `OSC 0` only under
 `set-titles on`; off, Claude Code's `✳ …` stops at `#{pane_title}` (already read for the

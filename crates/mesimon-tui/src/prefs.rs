@@ -219,6 +219,11 @@ pub(crate) struct Prefs {
     /// iTerm2's tab subtitle (`OSC 21337 status=`) counts what needs you
     /// and what is working. Off by default; inert elsewhere.
     pub tab_subtitle: bool,
+    /// iTerm2's tab icon is the shin — resting, or the needs-you pose
+    /// while any ticket does — through `SetProfileProperty`, which
+    /// changes this session's copy of the profile and never the saved
+    /// one. Off by default; inert elsewhere.
+    pub tab_icon: bool,
     /// Hold this machine awake while an agent is mid-turn (T-288). OFF by
     /// default and deliberately, for `notify`'s reason one level up: changing
     /// what a machine does about power is a thing the user asks for, never a
@@ -290,6 +295,7 @@ impl Default for Prefs {
             tab_progress: false,
             tab_color: TabColor::Off,
             tab_subtitle: false,
+            tab_icon: false,
             keep_awake: false,
             notify: false,
             notify_done: true,
@@ -318,6 +324,7 @@ const TAB_TITLE_FOCUS_KEY: &str = PrefKey::TabTitleFocus.name();
 const TAB_PROGRESS_KEY: &str = PrefKey::TabProgress.name();
 const TAB_COLOR_KEY: &str = PrefKey::TabColor.name();
 const TAB_SUBTITLE_KEY: &str = PrefKey::TabSubtitle.name();
+const TAB_ICON_KEY: &str = PrefKey::TabIcon.name();
 const NOTIFY_DOCK_BOUNCE_KEY: &str = PrefKey::NotifyDockBounce.name();
 const KEEP_AWAKE_KEY: &str = PrefKey::KeepAwake.name();
 const NOTIFY_KEY: &str = PrefKey::Notify.name();
@@ -439,6 +446,7 @@ impl Prefs {
             PrefKey::TabProgress => onoff(self.tab_progress),
             PrefKey::TabColor => self.tab_color.key(),
             PrefKey::TabSubtitle => onoff(self.tab_subtitle),
+            PrefKey::TabIcon => onoff(self.tab_icon),
             PrefKey::KeepAwake => onoff(self.keep_awake),
             PrefKey::Notify => onoff(self.notify),
             PrefKey::NotifyDone => onoff(self.notify_done),
@@ -491,6 +499,7 @@ impl Prefs {
         doc.insert(TAB_TITLE_FOCUS_KEY.into(), Value::from(self.tab_title_focus));
         doc.insert(TAB_PROGRESS_KEY.into(), Value::from(self.tab_progress));
         doc.insert(TAB_SUBTITLE_KEY.into(), Value::from(self.tab_subtitle));
+        doc.insert(TAB_ICON_KEY.into(), Value::from(self.tab_icon));
         doc.insert(NOTIFY_DOCK_BOUNCE_KEY.into(), Value::from(self.notify_dock_bounce));
         doc.insert(KEEP_AWAKE_KEY.into(), Value::from(self.keep_awake));
         doc.insert(NOTIFY_KEY.into(), Value::from(self.notify));
@@ -590,6 +599,7 @@ impl BoardPrefs {
             | PrefKey::TabProgress
             | PrefKey::TabColor
             | PrefKey::TabSubtitle
+            | PrefKey::TabIcon
             | PrefKey::Peek => false,
             _ => self.bool(key).is_some(),
         }
@@ -753,6 +763,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let tab_title_focus = flag(TAB_TITLE_FOCUS_KEY, true);
     let tab_progress = flag(TAB_PROGRESS_KEY, false);
     let tab_subtitle = flag(TAB_SUBTITLE_KEY, false);
+    let tab_icon = flag(TAB_ICON_KEY, false);
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(false);
@@ -787,6 +798,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         tab_progress,
         tab_color,
         tab_subtitle,
+        tab_icon,
         keep_awake,
         notify,
         notify_done,
@@ -908,13 +920,22 @@ pub fn tab_title_doctor_line() -> String {
     parts.push(format!("progress ring {}", onoff(p.tab_progress)));
     parts.push(format!("needs-you colour {}", p.tab_color.key()));
     parts.push(format!("subtitle {}", onoff(p.tab_subtitle)));
+    parts.push(format!("icon {}", onoff(p.tab_icon)));
     match crate::title::terminal() {
-        crate::title::Terminal::ITerm2 => parts
-            .push("iTerm2 ∙ a (job) suffix and the icon are Settings › Profiles › General".into()),
+        crate::title::Terminal::ITerm2 { status: true } => {
+            parts.push("iTerm2 3.7 ∙ every row answers".into())
+        }
+        crate::title::Terminal::ITerm2 { status: false } => parts.push(format!(
+            "iTerm2 {} ∙ the dot, the subtitle and the icon need the 3.7 beta",
+            crate::title::iterm2_version_word()
+        )),
         crate::title::Terminal::OuterTmux => {
             parts.push("inside your own tmux ∙ only the title reaches the tab".into())
         }
         crate::title::Terminal::Other => {}
+    }
+    if matches!(crate::title::terminal(), crate::title::Terminal::ITerm2 { .. }) {
+        parts.push("a (job) suffix is Settings › Profiles › General › Title".into());
     }
     parts.push("Settings › Terminal".into());
     parts.join(" ∙ ")
@@ -1178,7 +1199,7 @@ mod tests {
         let mut l = load(&p);
         assert_eq!(l.prefs.tab_title, TabTitle::Off, "absent is off");
         assert!(l.prefs.tab_title_needs_you && l.prefs.tab_title_focus);
-        assert!(!l.prefs.tab_progress && !l.prefs.tab_subtitle);
+        assert!(!l.prefs.tab_progress && !l.prefs.tab_subtitle && !l.prefs.tab_icon);
         assert_eq!(l.prefs.tab_color, TabColor::Off);
         assert!(!l.prefs.notify_dock_bounce);
         l.prefs.tab_title = TabTitle::Mesimon;

@@ -16,7 +16,7 @@
                            │   Agents                                                       │
                            │     provider, brief and tools                                  │
                            │   Terminal                                                     │
-                           │     the tab's title, progress ring, colour and subtitle        │
+                           │     the tab's title, progress ring, colour, subtitle and icon  │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
 
 
