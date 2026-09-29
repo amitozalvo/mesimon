@@ -15135,3 +15135,58 @@ the one place that sees every byte.
 **Still true:** a board with an agent working, or any cell changing (a relative age ticking over,
 a marquee pass), is output, and iTerm2 spins for it — that is the indicator doing its job. Users
 who never want it: iTerm2 Settings › Appearance › Tabs › "Show activity indicator".
+
+## Mesophon, redesigned: Now first, the shin, and a board that outlives the terminal sleeping (T-497, 2026-09-29, "it's currently not user friendly at all, and very very ugly … when the mesimon terminal is not reachable, still allow to create new tickets … kinda like one checkmark sent message on whatsapp")
+
+**Proposed, then decided.** The proposal is an interactive design canvas (the owner's private
+artifact, linked from the ticket's note): Now / Board / Sent on the phone, a desktop sidebar,
+list and kanban, and offline ticket creation with messenger ticks — a clock while this browser
+holds it, one tick at the relay, two on the board, teal once it is picked up. The owner's
+answers: the phone **remembers the last board**; **no auto-run from the phone**, the option is
+gone ("we should remove autorun altogether, for now ignore the option"); teal means **either**
+opened at the desk or an agent started; **no build step**. Four phases: the new face (this
+block), tickets from the browser, the relay mailbox behind the one tick, then install/QR/
+projection extras.
+
+**Built: phase 1, the new face, with no protocol change.** The view is rewritten on vendored
+Preact 10.29.8 + htm 3.1.1 (`vendor/`) in `shell.js`, `lists.js`, `detail.js` and `dialogs.js`,
+over a `store.js` that is `app.js`'s old logic moved into one object. `connection.js`,
+`sessions.js` and their receipts semantics are unchanged. Colours are the TUI's Graphite and
+Chalk tokens with amber only for needs-you; type is IBM Plex Sans, Sans Hebrew and Mono,
+self-hosted; the shin is drawn from `assets/mascot/shin.txt` and sleeps when the terminal is out
+of reach. **Now** groups agents by the host's own state word (needs you / working / idle) and a
+needs-you card answers a permission or a single-choice question in place, through the same
+`permission`/`dialog` ops bound to that ticket's session entry. **Board** is one column at a time
+on a phone, stacked on a tablet, a kanban on a desktop with the ticket in a side panel. The
+header's pill and the sheet's three hops say which one is out of reach — this browser
+(`navigator.onLine`), the relay, or the terminal: `Connection.relayReached` is whether the last
+attempt got past the relay's authentication, so a closed attempt that did is the terminal (or
+its grant), not the relay.
+
+**Superseded: T-317's "no offline content cache".** The browser now keeps the last board each
+grant saw in IndexedDB beside the identity (`board:<id>`): keys, titles, columns and agent
+states, with `promptable` forced false — never output, queued or prompt text, tool input or
+dialogs (`BoardState::snapshot`, tested). A cold start while the terminal is away shows it,
+marked "as of" and not live; the first live snapshot replaces it; authenticated revocation,
+an unverified handshake and Forget this browser delete it. Written only when its signature
+changes, not on every two-second snapshot. `docs/REMOTE-CONTROL.md` says so.
+
+**Refuted: Signals.** `@preact/signals` imports bare specifiers, which need an import map, which
+is an inline script the relay's CSP (`script-src 'self'`) refuses. Hooks plus a versioned store
+do the same job. The same CSP (`style-src 'self'`) is why no component writes a style attribute.
+
+**Trap, measured:** Preact runs `useEffect` after paint. With IndexedDB warm, boot finished and
+emitted before the root's subscription existed, and the page froze at "Starting…" with Connect
+disabled — intermittently, only after a reload. The root subscribes in `useLayoutEffect` and
+re-renders if `store.version` moved in between.
+
+**Kept for the relay's acceptance test:** the page title and the "Remote Control" heading,
+"Pairing code", "Device name (optional)", "Connect", `#connection`, `#preview`, `#tickets`,
+`#queued-row`, `#send`, the "Prompt" label, "Queue prompt" / "Take back" / "Send now". The
+delivery switch is now a Queue/Steer radio pair; `browser.test.js` checks the Queue radio.
+
+Verified: 14 browser state tests and the packaging test (which now follows CSS `url()` and the
+vendored imports), the UX suite in Chromium and WebKit at desktop, tablet and phone, and all
+nine relay acceptance tests including both real-browser flows (HTTPS and local HTTP), with a
+clean fixture audit. Screenshots of a realistic board were inspected in both themes, at 200%
+text and at a keyboard-sized phone viewport. Physical-phone acceptance is still outstanding.

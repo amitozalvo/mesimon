@@ -1,4 +1,11 @@
 // The bounded host projection and local list preferences, one instance per board.
+const phase = (ticket) =>
+  ticket.agent?.state === "needs attention"
+    ? "needs"
+    : ["starting", "working"].includes(ticket.agent?.state)
+      ? "working"
+      : "idle";
+
 export class BoardState {
   constructor(selected) {
     this.selected = selected;
@@ -9,12 +16,17 @@ export class BoardState {
     this.search = "";
     this.column = "";
     this.scroll = { agents: 0, board: 0 };
+    this.receivedAt = undefined;
+    // True while the view comes from this browser's memory, not the host.
+    this.cached = false;
   }
-  update(reply) {
+  update(reply, { cached = false, at = Date.now() } = {}) {
     Object.assign(this, {
       title: reply.title,
       tickets: reply.tickets,
       columns: reply.columns,
+      cached,
+      receivedAt: at,
     });
     if (!this.columns.includes(this.column))
       this.column = this.columns[0] || "";
@@ -50,5 +62,30 @@ export class BoardState {
           Number(a.agent.state === "needs attention"),
       );
     return visible;
+  }
+  // Now's three groups, by the host's own state word and nothing else.
+  sections() {
+    const groups = { needs: [], working: [], idle: [] };
+    for (const ticket of this.visible()) groups[phase(ticket)].push(ticket);
+    return groups;
+  }
+  // What this browser may remember: no queued text, tool input or dialogs.
+  snapshot() {
+    return {
+      title: this.title,
+      columns: this.columns,
+      tickets: this.tickets.map(({ id, key, title, column, agent }) => ({
+        id,
+        key,
+        title,
+        column,
+        agent: agent && {
+          session: agent.session,
+          provider: agent.provider,
+          state: agent.state,
+          promptable: false,
+        },
+      })),
+    };
   }
 }

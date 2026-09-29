@@ -50,6 +50,7 @@ export class Connection {
   tick() {
     if ([...this.pending.values()].some((p) => Date.now() - p.at > 10000)) {
       this.online = false;
+      this.relayReached = true;
       this.onLost();
       this.onState(
         "offline",
@@ -60,6 +61,9 @@ export class Connection {
   }
   async connect(entry, code, attempt = 0) {
     this.stop();
+    // Whether this attempt got past the relay's authentication: a closed
+    // attempt that did is the host (or its grant) out of reach, not the relay.
+    this.reached = false;
     const gen = this.generation;
     this.entry = entry;
     this.onState(
@@ -87,6 +91,7 @@ export class Connection {
           if (gen !== this.generation) return;
           const wire = JSON.parse(event.data);
           if (wire.kind === "authenticated") {
+            this.reached = true;
             if (wire.credential) {
               this.identity.credential = wire.credential;
               await this.save();
@@ -159,6 +164,7 @@ export class Connection {
       ++this.generation;
       clearTimeout(this.deadline);
       this.online = false;
+      this.relayReached = this.reached;
       this.pending.clear();
       this.onLost();
       this.onState(

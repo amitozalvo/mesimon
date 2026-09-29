@@ -174,3 +174,39 @@ test("dialog and approval receipts preserve drafts and never imply execution", (
   assert.match(entry.delivery, /unknown/);
   assert.equal(entry.draft, "later follow-up");
 });
+
+test("Now groups agents by the host's own state word", () => {
+  const board = new BoardState();
+  const rows = [ticket("one", "a"), ticket("two", "b"), ticket("three", "c"), ticket("four")];
+  rows[1].agent.state = "needs attention";
+  rows[2].agent.state = "idle";
+  board.update({ title: "Board", columns: ["TODO"], tickets: rows });
+  const { needs, working, idle } = board.sections();
+  assert.deepEqual(needs.map((t) => t.id), ["two"]);
+  assert.deepEqual(working.map((t) => t.id), ["one"]);
+  assert.deepEqual(idle.map((t) => t.id), ["three"]);
+  board.search = "three";
+  assert.deepEqual(board.sections().idle.map((t) => t.id), ["three"]);
+  assert.equal(board.sections().working.length, 0);
+});
+
+test("a remembered board keeps no prompt text, tool input or dialog", () => {
+  const board = new BoardState();
+  const row = ticket("one", "session");
+  row.queued = "private follow-up words";
+  row.agent.promptable = true;
+  row.agent.permission = { request: "r", tool: "Bash", input: { command: "secret" }, expires_at: 1 };
+  row.agent.dialog = { request: "d", kind: "plan", markdown: "private plan" };
+  board.update({ title: "Board", columns: ["TODO"], tickets: [row] });
+  const text = JSON.stringify(board.snapshot());
+  for (const secret of ["private follow-up", "secret", "private plan"])
+    assert(!text.includes(secret), `${secret} leaked into the remembered board`);
+  const restored = new BoardState();
+  restored.update(board.snapshot(), { cached: true, at: 42 });
+  assert.equal(restored.cached, true);
+  assert.equal(restored.receivedAt, 42);
+  assert.equal(restored.tickets[0].agent.promptable, false);
+  assert.equal(restored.tickets[0].agent.session, "session");
+  restored.update({ title: "Board", columns: ["TODO"], tickets: [row] });
+  assert.equal(restored.cached, false);
+});

@@ -406,6 +406,11 @@ and `MESIMON_COLOR` force flavor and profile.
 sound, the ticket-shell seam — is set in `lib.rs::run`, never `App::new`**, so no test or golden
 sees a developer's `$EDITOR`, opens a browser, or makes a noise.
 
+**Mesophon (`web/mesophon`) has no build step.** The relay serves it as it is, under a CSP with
+no inline style or script: styling is classes in `style.css`, and Preact/htm are vendored plain
+modules with no bare imports (`vendor/README.md`). Its view subscribes to `store.js` in a layout
+effect, never after paint, or a fast boot's emit is lost and the page freezes at "Starting…".
+
 ## Traps that were measured
 
 Each of these cost a debugging session. They are facts about other people's software, so they

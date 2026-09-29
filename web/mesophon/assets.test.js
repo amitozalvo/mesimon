@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 
 const source = path.dirname(fileURLToPath(import.meta.url));
 const stage = path.resolve(source, "../../ci/stage-mesophon.sh");
-test("the deployable browser package contains every imported module and no test harness", async () => {
+test("the deployable browser package contains every referenced file and no test harness", async () => {
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "mesophon-assets-"));
   try {
     const fixture = path.join(scratch, "source");
@@ -18,6 +18,8 @@ test("the deployable browser package contains every imported module and no test 
       if (/\.(html|css|js)$/.test(name))
         await fs.copyFile(path.join(source, name), path.join(fixture, name));
     }
+    for (const dir of ["vendor", "fonts"])
+      await fs.cp(path.join(source, dir), path.join(fixture, dir), { recursive: true });
     // Packaging does not depend on crypto execution. The browser and relay
     // suites separately exercise the real Wasm build and encrypted transport.
     await fs.mkdir(path.join(fixture, "pkg"));
@@ -33,19 +35,36 @@ test("the deployable browser package contains every imported module and no test 
     await fs.writeFile(path.join(fixture, "package.json"), "{}");
     execFileSync("sh", [stage, output, fixture]);
     const visited = new Set();
+    // Follow HTML src/href, JavaScript imports and CSS url() references.
     async function follow(name) {
       if (visited.has(name)) return;
       visited.add(name);
       const content = await fs.readFile(path.join(output, name), "utf8");
       const references = name.endsWith(".html")
         ? [...content.matchAll(/(?:src|href)="\.\/([^"]+)"/g)]
-        : [...content.matchAll(/(?:from\s+|import\s*)["']\.\/([^"']+)["']/g)];
+        : name.endsWith(".css")
+          ? [...content.matchAll(/url\((?!data:)([^)"']+)\)/g)]
+          : name.endsWith(".js")
+            ? [...content.matchAll(/(?:from\s*|import\s*)["']\.\/([^"']+)["']/g)]
+            : [];
       for (const [, reference] of references)
         await follow(path.join(path.dirname(name), reference));
     }
     await follow("index.html");
-    assert(visited.has("connection.js"));
-    assert(visited.has("view.js"));
+    for (const name of [
+      "connection.js",
+      "store.js",
+      "shell.js",
+      "vendor/preact.module.js",
+      "vendor/hooks.module.js",
+      "vendor/htm.module.js",
+      "fonts/plex-sans-latin.woff2",
+      "fonts/plex-sans-hebrew-400.woff2",
+      "fonts/plex-mono-500-latin.woff2",
+    ])
+      assert(visited.has(name), `${name} is not reachable from index.html`);
+    for (const licence of ["vendor/LICENSE-preact", "vendor/LICENSE-htm", "fonts/OFL.txt"])
+      await fs.access(path.join(output, licence));
     assert.equal(
       await fs.readFile(path.join(output, "pkg/mesimon_web_bg.wasm"), "utf8"),
       "wasm fixture",

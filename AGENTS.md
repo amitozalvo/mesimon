@@ -58,6 +58,9 @@ Preserve these boundaries:
   one as a sibling checkout; `crates/mesimon-team`, `crates/mesimon-web` and `web/mesophon` are
   its Apache clients. Do not bring relay code into this repository. `mt/` is gitignored research
   scratch, not project content.
+- `web/mesophon` has no build step: the relay serves it as it is under a CSP with no inline
+  style or script, so styling stays in `style.css` and Preact/htm stay vendored plain modules
+  with no bare imports (`web/mesophon/vendor/README.md`).
 
 The README promises are hard constraints: Mesimon writes only to its documented allowlist,
 `doctor` diagnoses without applying configuration changes, and Mesimon never rewrites or adds

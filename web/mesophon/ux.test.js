@@ -10,7 +10,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const server = http.createServer(async (req, res) => {
   try {
     const name = req.url === "/" ? "index.html" : req.url.slice(1);
-    if (!/^[a-z.-]+\.(html|css|js)$/.test(name)) {
+    if (!/^(?:vendor\/|fonts\/)?[a-z0-9.-]+\.(html|css|js|woff2)$/.test(name)) {
       res.writeHead(404).end();
       return;
     }
@@ -20,7 +20,9 @@ const server = http.createServer(async (req, res) => {
         ? "text/javascript"
         : name.endsWith("css")
           ? "text/css"
-          : "text/html",
+          : name.endsWith("woff2")
+            ? "font/woff2"
+            : "text/html",
     );
     res.end(await fs.readFile(path.join(root, name)));
   } catch {
@@ -219,6 +221,12 @@ try {
           await overview();
           await page.locator(`.ticket[data-id="ticket-${id}"]`).click();
         };
+        const mode = (name) =>
+          page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+        const delivery = (value) =>
+          page.locator(`input[name="prompt-mode"][value="${value}"]`).check();
+        const attention = (name) =>
+          page.locator("#attention").getByRole("button", { name, exact: true });
         try {
           await page.goto(origin);
           await until(page, () => !document.querySelector("#pair").disabled);
@@ -382,9 +390,10 @@ try {
           );
           // Main's queued follow-ups keep their session binding in the split UI.
           await select(1);
-          assert.equal(
-            await page.locator("#prompt-mode").inputValue(),
-            "queue",
+          assert(
+            await page
+              .locator('input[name="prompt-mode"][value="queue"]')
+              .isChecked(),
           );
           await page.locator("#prompt").fill("queued follow-up");
           await page.evaluate(() => {
@@ -444,7 +453,7 @@ try {
             await page.locator("#returned-text").textContent(),
             "newer draft",
           );
-          await page.locator("#prompt-mode").selectOption("steer");
+          await delivery("steer");
           await page.evaluate(() => {
             fixture.disposition = "submitted";
           });
@@ -458,7 +467,7 @@ try {
             await page.evaluate(() => fixture.prompts.at(-1).queued),
             false,
           );
-          await page.locator("#prompt-mode").selectOption("queue");
+          await delivery("queue");
           await page.locator("#prompt").fill("explicit send now");
           await page.evaluate(() => {
             fixture.disposition = "queued";
@@ -487,9 +496,9 @@ try {
           await page.locator("#search").fill("nothing-matches");
           assert.equal(await page.locator(".ticket").count(), 0);
           await page.locator("#search").fill("Agent task 3");
-          await page.locator("#board-mode").click();
+          await mode("board");
           if (size === "phone")
-            await page.locator("#column").selectOption("TODO");
+            await page.locator('[data-column="TODO"]').click();
           await select(3);
           assert.match(
             await page.locator("#agent-state").textContent(),
@@ -498,7 +507,7 @@ try {
           assert(await page.locator("#send").isDisabled());
           await overview();
           await page.locator("#search").fill("");
-          await page.locator("#agents-mode").click();
+          await mode("agents");
           await overview();
           const lowerRow = page.locator('.ticket[data-id="ticket-20"]');
           await lowerRow.scrollIntoViewIfNeeded();
@@ -552,9 +561,11 @@ try {
                 return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
               };
               return [
-                ["--text", "--bg"],
-                ["--muted", "--surface"],
-                ["--on-accent", "--accent"],
+                ["--ink", "--bg"],
+                ["--ink3", "--s1"],
+                ["--ink2", "--s2"],
+                ["--pri-ink", "--pri"],
+                ["--attn-ink", "--attn"],
               ].map(([a, b]) => {
                 const x = luminance(a),
                   y = luminance(b);
@@ -648,7 +659,7 @@ try {
           if (size === "phone" && !(await page.locator("#back").isVisible())) await page.locator("#tickets button").first().click();
           await until(page, () => document.querySelector("#attention").textContent.includes("Approve once"));
           assert.equal(await page.locator("#attention script").count(), 0);
-          await page.getByRole("button", { name: "Approve once", exact: true }).click();
+          await attention("Approve once").click();
           assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
             { op: "permission", request: "permission-1", decision: "allow", ticket: "m2", session: "m2-session" });
           await page.evaluate(() => {
@@ -657,12 +668,12 @@ try {
               multiSelect: false, options: [{ label: "Blue", description: "First color" }, { label: "Green", description: "Second color" }] }] };
             fixture.update();
           });
-          await page.getByRole("button", { name: "Green", exact: true }).click();
+          await attention("Green").click();
           assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).response), { answer: "choice", index: 1 });
           await page.locator("#attention input").fill("Purple");
           await page.evaluate(() => fixture.update());
           assert.equal(await page.locator("#attention input").inputValue(), "Purple");
-          await page.getByRole("button", { name: "Send answer", exact: true }).click();
+          await attention("Send answer").click();
           assert.equal(await page.locator("#attention input").inputValue(), "Purple");
           assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).response), { answer: "text", text: "Purple" });
           await page.evaluate(() => {
@@ -672,7 +683,7 @@ try {
           await until(page, () => document.querySelector("#attention").textContent.includes("Review plan"));
           assert.equal(await page.locator("#attention img").count(), 0);
           await page.locator("#attention").screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-plan.png`) });
-          await page.getByRole("button", { name: "Reject plan", exact: true }).click();
+          await attention("Reject plan").click();
           assert.equal(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).request), "plan-1");
           // Connected phone browsers still receive an in-page alert when the
           // platform cannot construct a system Notification.

@@ -107,7 +107,7 @@ for (const [name, engine] of [
             .textContent.includes("preview-canary"),
         );
         assert.equal(await page.locator("#preview script").count(), 0);
-        assert.equal(await page.locator("#prompt-mode").inputValue(), "queue");
+        assert(await page.getByRole("radio", { name: "Queue", exact: true }).isChecked());
         const prompt = `browser-canary-${name}-${label}`;
         await page.getByLabel("Prompt", { exact: true }).fill(prompt);
         await page

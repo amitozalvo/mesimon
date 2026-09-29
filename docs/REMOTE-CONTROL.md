@@ -21,6 +21,17 @@ another computer needs a reachable HTTPS relay with a browser-trusted certificat
 `localhost` always means the device running the browser. The relay's deployment
 guide ships with the relay.
 
+## Finding your way
+
+**Now** puts what needs you first: a permission request or a single-choice
+question can be answered right on its card, and anything else opens the ticket.
+Below it are the agents that are working, then the idle ones. **Board** shows every
+ticket by column: one column at a time on a phone, all of them side by side on a
+wide screen. The status pill says whether the board is live. When it is not, the
+page says which hop is out of reach (this browser, the relay, or your terminal),
+keeps showing the board as it last saw it, marked as not live, and disables
+answers and prompts until the terminal is back.
+
 ## Sending a prompt
 
 A prompt targets the session shown when you send it. **Submitted** means delivery
@@ -62,7 +73,7 @@ Older M1 hosts remain usable through capability negotiation.
 
 Select a paired device in the Remote Control dialog and press Enter twice to revoke it.
 Disabling Remote Control removes every grant for this board; re-enabling requires new
-pairing. **Forget this device** removes the browser’s local identity and remembered
+pairing. **Forget this browser** removes the browser’s local identity and remembered
 boards; revoke on the host to remove the corresponding grants too.
 
 ## What is stored where
@@ -70,7 +81,9 @@ boards; revoke on the host to remove the corresponding grants too.
 The daemon stores `mesophon.json` (mode 0600) in its existing per-board state
 directory, containing only the opaque board identity and device grants. Pairing
 secrets and delivery receipts live in memory. The browser stores device keys,
-credentials, and remembered grants in IndexedDB; ticket content, output, and unsent
-text remain in memory. The relay routes encrypted content and stores only routing
+credentials, remembered grants and the last board each grant saw in IndexedDB. The
+remembered board holds ticket keys, titles, columns and agent states; never output,
+prompt or queued text, tool input or dialog content. Revocation and **Forget this
+browser** delete it. Output and unsent text remain in memory. The relay routes encrypted content and stores only routing
 metadata for Mesophon. Browser assets are served by the relay, so the relay’s web
 deployment is part of the browser client’s trust boundary.
