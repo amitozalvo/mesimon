@@ -1525,9 +1525,12 @@ mod tests {
     }
 
     /// `tab`: the TAB's needs-you icon (T-492). At the sixteen pixels a
-    /// tab gives an icon the "!" is a fraction of a pixel, so that icon is
-    /// the pose as a dark silhouette on the attention-colour tile — the
-    /// board's one saturated colour, readable from across the tab strip.
+    /// tab gives an icon the "!" is a fraction of a pixel, so that icon
+    /// wears an attention-colour badge in its top-right corner — the
+    /// board's one saturated colour, a quarter of the tile, readable from
+    /// across the tab strip — and the shin keeps its own inks (a dark
+    /// silhouette on the amber tile read as a black blob, dogfood
+    /// 2026-09-29).
     fn icon_png_on(needs_you: bool, tab: bool) -> Vec<u8> {
         const SIZE: u32 = 256;
         const SCALE: i32 = 10;
@@ -1546,12 +1549,11 @@ mod tests {
             Color::Rgb(r, g, b) => [r, g, b],
             other => panic!("truecolor ink {other:?}"),
         };
-        let mut ground = rgb(theme.bg.expect("graphite paints its ground"));
-        let mut silhouette = None;
-        if tab {
-            ground = rgb(theme.attn);
-            silhouette = Some(rgb(theme.attn_ink));
-        }
+        let ground = rgb(theme.bg.expect("graphite paints its ground"));
+        let badge = tab.then(|| rgb(theme.attn));
+        // The badge: a disc in the top-right corner, its centre inside the
+        // tile's rounded corner so it never spills past the tile's edge.
+        let (bx, by, br) = (SIZE as f32 - 62.0, 62.0, 46.0f32);
         let (ox, oy) =
             ((SIZE as i32 - pic.w as i32 * SCALE) / 2, (SIZE as i32 - pic.h as i32 * SCALE) / 2);
         // The tile's rounded corners, antialiased; everything inside it is
@@ -1575,7 +1577,29 @@ mod tests {
         let img = image::RgbaImage::from_fn(SIZE, SIZE, |x, y| {
             let (sx, sy) = ((x as i32 - ox).div_euclid(SCALE), (y as i32 - oy).div_euclid(SCALE));
             let role = pic.at(sx as i16, sy as i16);
-            let [r, g, b] = role.map_or(ground, |r| silhouette.unwrap_or_else(|| rgb(r.ink(&ink))));
+            let mut px = role.map_or(ground, |r| rgb(r.ink(&ink)));
+            if let Some(amber) = badge {
+                // Antialiased on the same 4x4 grid as the corners.
+                let mut hits = 0;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let (fx, fy) = (
+                            x as f32 + (sx as f32 + 0.5) / 4.0,
+                            y as f32 + (sy as f32 + 0.5) / 4.0,
+                        );
+                        if (fx - bx).powi(2) + (fy - by).powi(2) <= br * br {
+                            hits += 1;
+                        }
+                    }
+                }
+                if hits > 0 {
+                    let k = hits as f32 / 16.0;
+                    for (c, a) in px.iter_mut().zip(amber) {
+                        *c = (*c as f32 * (1.0 - k) + a as f32 * k).round() as u8;
+                    }
+                }
+            }
+            let [r, g, b] = px;
             image::Rgba([r, g, b, coverage(x, y)])
         });
         let mut out = std::io::Cursor::new(Vec::new());

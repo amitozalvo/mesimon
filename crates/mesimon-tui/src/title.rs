@@ -28,7 +28,7 @@
 //!   how many are working;
 //! - **iTerm2's icon** (`OSC 1337;SetProfileProperty=Icon=…;Custom Icon
 //!   Path=…`): the shin, resting (the notifier's own PNG) or, while any
-//!   ticket needs you, as a dark silhouette on the attention-colour tile —
+//!   ticket needs you, wearing an attention-colour badge in its corner —
 //!   a tab gives an icon sixteen pixels, and the pose's "!" is a fraction
 //!   of one there, so the needs-you icon says it with the board's one
 //!   saturated colour instead. iTerm2 re-reads a changed path (its cache

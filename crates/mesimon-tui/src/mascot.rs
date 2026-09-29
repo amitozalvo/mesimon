@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 
 const RESTING: &[u8] = include_bytes!("../../../assets/mascot/resting.png");
 const NEEDS_YOU: &[u8] = include_bytes!("../../../assets/mascot/needs-you.png");
-/// The tab's needs-you icon (T-492): the pose as a dark silhouette on the
-/// attention-colour tile, because a tab's sixteen pixels lose the "!".
+/// The tab's needs-you icon (T-492): the pose with an attention-colour
+/// badge in the corner, because a tab's sixteen pixels lose the "!".
 const TAB_NEEDS_YOU: &[u8] = include_bytes!("../../../assets/mascot/tab-needs-you.png");
 
 /// A 256px PNG representation in an ICNS container. This is the app's

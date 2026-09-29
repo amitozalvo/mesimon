@@ -15041,10 +15041,11 @@ the rest), and every field given back to the terminal before a `^Z`, a `U` reloa
 - **Tab icon** (iTerm2's `OSC 1337;SetProfileProperty=Icon=Mg==;Custom Icon Path=<base64
   JSON>`): the shin, resting or in its needs-you pose — the two PNGs `mascot::icon` already
   keeps under `<state>/notifications` for banners — except that the needs-you TAB icon is a third
-  asset, `tab-needs-you.png`: the pose as a dark silhouette on the attention-colour tile. Live on
-  3.7.2 the pose switch was invisible: a tab gives an icon sixteen pixels and the "!" is a
+  asset, `tab-needs-you.png`: the pose with an attention-colour badge in the tile's corner. Live
+  on 3.7.2 the pose switch was invisible: a tab gives an icon sixteen pixels and the "!" is a
   fraction of one there, so the needs-you icon says it with the board's one saturated colour
-  instead (iTerm2 does re-read a changed path — `iTermCacheableImage` keys on it and
+  instead (first as a dark silhouette on an amber tile — "the mascot looks black now" — then as
+  the shin in its own inks with the badge) (iTerm2 does re-read a changed path — `iTermCacheableImage` keys on it and
   `setSessionSpecificProfileValues` reloads the tab graphic — so the switch itself was never the
   problem). Written lazily by the loop on the first frame the row wants them. The escape changes this SESSION's copy of the profile and never the saved
   one (README promise 2 holds; the Python API's own docs say the same of the session route).
