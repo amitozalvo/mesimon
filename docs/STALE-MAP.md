@@ -15745,6 +15745,8 @@ Six changes to the sharing dialog (`App::sharing_rows`), all in the TUI; no wire
 **Signed in, `YOU` is one row.** `Signed in as <name> on <relay>` stands alone: the relay and
 name fields and `Sign in again` show only while signed out. A new relay was a new identity
 anyway; the cost is that a rename is now a sign-out and a sign-in, which mints a new key.
+Remote Control's own dialog has no `YOU` section at all (author, mid-ticket): the identity
+belongs to the sharing dialog it opens from.
 
 **Signing out asks first.** Enter on the identity row arms it (`Sign out?`), a second Enter
 sends `TeamSignOut`, and any motion disarms, as `Stop sharing` and `Leave this board` do.

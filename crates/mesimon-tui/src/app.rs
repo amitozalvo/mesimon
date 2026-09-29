@@ -7081,15 +7081,22 @@ impl App {
     /// that says who and signs out — then this board (Remote Control, and
     /// the publish row while it is only here, or the invites, the members
     /// and the way to stop or leave), then the other boards this device
-    /// belongs to, behind the way onto one more.
+    /// belongs to, behind the way onto one more. Remote Control's own
+    /// dialog is this board's rows alone: who you are is the parent's.
     pub fn sharing_rows(&self) -> Vec<SharingRow> {
         let signed = self.team.device.as_ref().is_some_and(|d| d.registered);
-        let mut rows = vec![SharingRow::Heading("YOU")];
         if !signed {
-            rows.extend([SharingRow::Relay, SharingRow::Name, SharingRow::SignIn]);
-            return rows;
+            return vec![
+                SharingRow::Heading("YOU"),
+                SharingRow::Relay,
+                SharingRow::Name,
+                SharingRow::SignIn,
+            ];
         }
-        rows.push(SharingRow::SignOut);
+        let mut rows = Vec::new();
+        if !self.mesophon_dialog {
+            rows.extend([SharingRow::Heading("YOU"), SharingRow::SignOut]);
+        }
         rows.push(SharingRow::Heading("THIS BOARD"));
         if self.mesophon_dialog {
             rows.push(SharingRow::ControlStatus);
@@ -14179,6 +14186,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.mesophon_dialog);
         assert!(!app.sharing_rows().contains(&SharingRow::RemoteControl));
+        assert_eq!(app.sharing_rows()[0], SharingRow::Heading("THIS BOARD"), "no YOU in here");
         let idx = app.sharing_rows().iter().position(|r| *r == SharingRow::ControlEnable).unwrap();
         app.mode = Mode::Sharing { idx, editing: None, armed: false };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
