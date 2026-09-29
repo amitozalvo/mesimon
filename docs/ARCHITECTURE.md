@@ -417,7 +417,8 @@ needs-you (`Theme::attn`; `test_attn_provenance*` enforces it), nothing else eve
 place per hint.** Every floating surface (menu, theme picker, archived, external drawer, `?`,
 tag picker, the composer dialog) draws through `tui/src/ui/dialog.rs::frame` — `╭─ TITLE ─╮ …
 ╰─ its keys ─╯` in `dim3`, ascii `+-|` — which records the rectangle on `App::frames`;
-`test_no_drawn_structure` admits a box glyph ONLY on a recorded perimeter (plus `▀`), so L1's
+`test_no_drawn_structure` admits a box glyph ONLY on a recorded perimeter (plus `▉`, `▎` and the
+recorded pictures: the shin, the pairing QR), so L1's
 "no drawn structure" has exactly one allowlisted role and the board, cards and pages stay
 painted. A dialog's keys are its scope's LEFT footer cluster (`keymap::footer_split`) set into
 its bottom edge; the footer under it shows only the mode chip and the right cluster. The header

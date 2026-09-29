@@ -27,6 +27,7 @@ mod opener;
 mod osc;
 mod peek;
 mod prefs;
+mod qr;
 mod quiet;
 mod release;
 mod rich;

@@ -51,6 +51,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         created_from: None,
         entered_at: None,
         previous_column: None,
+        picked: None,
         woke_at: None,
         manual_merge: false,
         execution_policy: Default::default(),
@@ -6738,8 +6739,12 @@ fn test_no_drawn_structure() {
     // draw recorded: a box glyph is legal on a frame's perimeter and nowhere
     // else (T-158, the one allowlisted role), and the perimeter is a fact of
     // the frame the draw itself reported — the test transcribes nothing.
-    type DrawnFrame =
-        (ratatui::buffer::Buffer, Vec<ratatui::layout::Rect>, Option<crate::creature::Drawn>);
+    type DrawnFrame = (
+        ratatui::buffer::Buffer,
+        Vec<ratatui::layout::Rect>,
+        Option<crate::creature::Drawn>,
+        Option<ratatui::layout::Rect>,
+    );
     let swept: std::cell::RefCell<Vec<DrawnFrame>> = std::cell::RefCell::new(Vec::new());
     let sweep = |app: &App| -> Vec<String> {
         let buf = cells(app, 120, 30);
@@ -6747,6 +6752,7 @@ fn test_no_drawn_structure() {
             buf.clone(),
             app.frames.borrow().clone(),
             app.mascot.borrow().clone(),
+            *app.qr.borrow(),
         ));
         lines_of(&buf)
     };
@@ -6784,6 +6790,20 @@ fn test_no_drawn_structure() {
             ratatui::crossterm::event::KeyModifiers::NONE,
         )
         .unwrap();
+    // The Remote Control dialog with a live pairing code: its QR is the
+    // one picture a dialog draws (T-497).
+    let mut pairing = app_graphite(fixture(false));
+    pairing.mesophon_available = true;
+    pairing.mesophon_dialog = true;
+    pairing.control = mesimon_core::mesophon::Info {
+        enabled: true,
+        connected: true,
+        origin: "https://remote.mesimon.dev".into(),
+        code: Some("7K2M-QX4P-0B9D-RT6W-HN3C-5VJE-8FGA-1YSZ".into()),
+        error: None,
+        devices: Vec::new(),
+    };
+    pairing.mode = Mode::Sharing { idx: 0, editing: None, armed: false };
     let screens: Vec<Vec<String>> = vec![
         {
             let lines = sweep(&app);
@@ -6791,6 +6811,11 @@ fn test_no_drawn_structure() {
                 lines.iter().any(|l| l.contains(DONE_UNREAD)),
                 "the unread done mark must be ON SCREEN, or this law does not bite"
             );
+            lines
+        },
+        {
+            let lines = sweep(&pairing);
+            assert!(pairing.qr.borrow().is_some(), "the QR must be ON SCREEN");
             lines
         },
         sweep(&arch),
@@ -7033,7 +7058,7 @@ fn test_no_drawn_structure() {
         })
     };
     let mut framed = 0usize;
-    for (buf, frames, mascot) in swept.borrow().iter() {
+    for (buf, frames, mascot, qr) in swept.borrow().iter() {
         framed += frames.len();
         let area = buf.area();
         for y in 0..area.height {
@@ -7044,13 +7069,16 @@ fn test_no_drawn_structure() {
                         continue;
                     }
                     // The tag bar admits `▉` for its narrow gaps. `▎` belongs
-                    // to description bars; frames and the mascot keep their
-                    // own position-scoped exceptions.
+                    // to description bars; frames, the mascot and the pairing
+                    // QR keep their own position-scoped exceptions.
                     assert!(
                         ch == '▉'
                             || ch == '▎'
                             || on_perimeter(frames, x, y)
-                            || mascot.as_ref().is_some_and(|d| d.glyph(x, y) == Some(ch)),
+                            || mascot.as_ref().is_some_and(|d| d.glyph(x, y) == Some(ch))
+                            || qr.is_some_and(|r| {
+                                ch == '▀' && r.contains(ratatui::layout::Position { x, y })
+                            }),
                         "drawn-structure codepoint {ch:?} at {x},{y} off any dialog frame"
                     );
                 }
@@ -8171,7 +8199,8 @@ fn golden_mesophon_pair_and_revoke() {
         enabled: true,
         connected: true,
         origin: "https://relay.example:8444".into(),
-        code: Some("msmn1-example-pairing-code".into()),
+        // A real code's shape: 32 Crockford symbols in dashed fours.
+        code: Some("7K2M-QX4P-0B9D-RT6W-HN3C-5VJE-8FGA-1YSZ".into()),
         error: None,
         devices: vec![mesimon_core::mesophon::Device {
             grant: "phone".into(),
@@ -8183,10 +8212,16 @@ fn golden_mesophon_pair_and_revoke() {
     assert!(!rows.contains(&SharingRow::Join));
     let idx = rows.iter().position(|r| matches!(r, SharingRow::Code(_))).unwrap();
     app.mode = Mode::Sharing { idx, editing: None, armed: false };
+    // The code beside the rows as a QR (T-497), where the screen is wide.
     golden("mesophon_pair_120x30", &render(&app, 120, 30));
+    assert!(app.qr.borrow().is_some(), "the QR stood beside the rows");
+    // Narrow but tall, it stands under them; small, it is left out.
+    golden("mesophon_pair_80x40", &render(&app, 80, 40));
+    assert!(app.qr.borrow().is_some(), "the QR stood under the rows");
     let idx = rows.iter().position(|r| matches!(r, SharingRow::ControlDevice(_))).unwrap();
     app.mode = Mode::Sharing { idx, editing: None, armed: true };
     golden("mesophon_revoke_80x24", &render(&app, 80, 24));
+    assert!(app.qr.borrow().is_none(), "no room: the code row alone");
 }
 
 #[test]

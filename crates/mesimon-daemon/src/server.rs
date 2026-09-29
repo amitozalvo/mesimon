@@ -15,8 +15,9 @@ use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::attention::{self, Change, EndKind, Machine, Signal, StartSource};
 use mesimon_core::board::{
     agent_state_word, foreground_of, sanitize_tag, AgentProvider, AgentTools, Archived, Board,
-    Confidence, ExitReason, Provenance, Reason, SessionKind, SessionRecord, SessionState,
-    StopReason, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
+    Confidence, ExitReason, PickedUp, Provenance, Reason, SessionKind, SessionRecord, SessionState,
+    StopReason, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy, PICKED_AT_DESK,
+    PICKED_BY_AGENT,
 };
 use mesimon_core::command::{
     AgentAutomoveView, AgentBoardView, AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow,
@@ -1966,6 +1967,7 @@ impl Daemon {
             }
             Command::SeenTicket { id } => self.seen_ticket(id),
             Command::LowerHand { id } => self.lower_hand(id),
+            Command::OpenedTicket { id } => self.opened_ticket(id),
             Command::SetManualMerge { id, on } => self.set_manual_merge(id, on),
             Command::CrownTicket { id } => self.crown_ticket(id),
             Command::Uncrown => self.uncrown(),
@@ -6157,6 +6159,7 @@ impl Daemon {
             created_from: None,
             entered_at: Some(now_iso()),
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: source.execution_policy,
@@ -6291,6 +6294,7 @@ impl Daemon {
             created_from: from,
             entered_at: Some(now.clone()),
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -8622,6 +8626,31 @@ impl Daemon {
         }
     }
 
+    /// The person opened a ticket's page (T-497): a phone's ticket nobody had
+    /// picked up is picked up at the desk. A no-op — no write, no broadcast —
+    /// on any other ticket, as `seen_ticket` is.
+    fn opened_ticket(&mut self, id: ulid::Ulid) -> Response {
+        match self.board.ticket(id) {
+            Some(t) if !t.awaits_pickup() => Response::Ok,
+            _ => self.with_ticket(id, |t| {
+                t.picked = Some(PickedUp { at: now_iso(), by: PICKED_AT_DESK.into() })
+            }),
+        }
+    }
+
+    /// An agent started on a phone's ticket (T-497): picked up, if nobody
+    /// had. Saves the ticket and says whether it changed; the caller
+    /// broadcasts.
+    fn picked_by_agent(&mut self, ticket: ulid::Ulid) -> bool {
+        let Some(t) = self.board.ticket_mut(ticket).filter(|t| t.awaits_pickup()) else {
+            return false;
+        };
+        t.picked = Some(PickedUp { at: now_iso(), by: PICKED_BY_AGENT.into() });
+        let t = t.clone();
+        let _ = store::save_ticket(&self.paths, &t);
+        true
+    }
+
     /// The person is done with a raised hand (T-107): the mark comes off.
     /// A no-op — no write, no broadcast — on a ticket holding none, so the
     /// TUI can send it on every departure from a ticket page.
@@ -9375,6 +9404,9 @@ impl Daemon {
         self.machines.insert(id, Machine::new(rec.state.clone(), now_ms()));
         self.board.sessions.push(rec);
         self.stamp_tier(id);
+        if kind.is_agent() {
+            self.picked_by_agent(ticket);
+        }
         self.lock_worktree(ticket, id);
         self.persist_and_notify();
         Response::Spawned { id, fresh: false }
@@ -10475,6 +10507,12 @@ impl Daemon {
         self.recovery.remove(&id); // reset provider cursors for the new launch
         self.machines.insert(id, Machine::new(SessionState::Spawning, now));
         self.stamp_tier(id);
+        let agent_on = self.board.sessions.iter().find(|s| s.id == id && s.kind.is_agent());
+        if let Some(ticket) = agent_on.map(|s| s.ticket) {
+            if self.picked_by_agent(ticket) {
+                self.broadcast();
+            }
+        }
         Response::Spawned { id, fresh: fresh.is_some() || startup_retry }
     }
 

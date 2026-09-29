@@ -7,24 +7,36 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const root = path.dirname(fileURLToPath(import.meta.url));
+// No network at all while set: every request's connection is dropped, as a
+// phone with no signal sees it, service worker's requests included.
+let networkDown = false;
+const types = {
+  html: "text/html",
+  css: "text/css",
+  js: "text/javascript",
+  woff2: "font/woff2",
+  webmanifest: "application/manifest+json",
+  png: "image/png",
+  wasm: "application/wasm",
+};
 const server = http.createServer(async (req, res) => {
+  if (networkDown) {
+    req.socket.destroy();
+    return;
+  }
   try {
-    const name = req.url === "/" ? "index.html" : req.url.slice(1);
-    if (!/^(?:vendor\/|fonts\/)?[a-z0-9.-]+\.(html|css|js|woff2)$/.test(name)) {
+    const name = new URL(req.url, "http://fixture").pathname.slice(1) || "index.html";
+    const match = /^(?:vendor\/|fonts\/|icons\/|pkg\/)?[a-z0-9._-]+\.(html|css|js|woff2|webmanifest|png|wasm)$/.exec(name);
+    if (!match) {
       res.writeHead(404).end();
       return;
     }
-    res.setHeader(
-      "Content-Type",
-      name.endsWith("js")
-        ? "text/javascript"
-        : name.endsWith("css")
-          ? "text/css"
-          : name.endsWith("woff2")
-            ? "font/woff2"
-            : "text/html",
-    );
-    res.end(await fs.readFile(path.join(root, name)));
+    res.setHeader("Content-Type", types[match[1]]);
+    // The fixture's crypto stands in for the generated Wasm glue, served as
+    // the relay would serve the real one, so a service worker can keep it.
+    if (name === "pkg/mesimon_web.js") res.end(fakeCrypto);
+    else if (name === "pkg/mesimon_web_bg.wasm") res.end("wasm fixture");
+    else res.end(await fs.readFile(path.join(root, name)));
   } catch {
     res.writeHead(404).end();
   }
@@ -284,8 +296,23 @@ function fixture() {
   }
   window.WebSocket = Socket;
 }
-async function until(page, fn, arg) {
-  await page.waitForFunction(fn, arg);
+// Poll until the page says yes. `page.evaluate` awaits a promise the
+// predicate returns; `waitForFunction` does not (a pending Promise is
+// truthy), which made every "until it is on disk" wait a no-op (T-497). A
+// poll that throws, or that a reload cut short, is a no for now.
+async function until(page, fn, arg, timeout = 30000) {
+  const deadline = Date.now() + timeout;
+  let last;
+  for (;;) {
+    try {
+      if (await page.evaluate(fn, arg)) return;
+    } catch (error) {
+      last = error;
+    }
+    if (Date.now() > deadline)
+      throw new Error(`timed out waiting for ${String(fn).slice(0, 160)}${last ? `: ${last.message}` : ""}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 // Tickets from this browser (T-497): the sheet and Sent over a host that
@@ -293,7 +320,7 @@ async function until(page, fn, arg) {
 // reload with tickets on their way; unsend and edit; a forged receipt; a
 // refused deposit; an older host's create op; revocation.
 async function ticketFlow(browser, engineName, size, viewport) {
-  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce" });
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
   await context.addInitScript(fixture);
   await context.route("**/pkg/mesimon_web.js", (route) =>
     route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
@@ -380,6 +407,17 @@ async function ticketFlow(browser, engineName, size, viewport) {
     await count("landed", 1);
     assert.match(await status("landed").first().textContent(), /Landed as T-200 in TODO/);
     assert.equal(await page.locator(".sent-feed b").count(), 0);
+    // Picked up at the desk (T-497): the host's board says so, and the
+    // ticks turn teal, with when and how.
+    assert.equal(await page.locator(".sent-item[data-picked]").count(), 0);
+    await page.evaluate(() => {
+      fixture.tickets.find((t) => t.id === "mailed-1").picked = { by: "desk", at: Date.now() };
+      fixture.update();
+    });
+    await page.locator('.sent-item[data-picked="desk"]').waitFor();
+    assert.match(await page.locator('.sent-item[data-picked="desk"]').textContent(), /Opened at your desk · \d/);
+    assert.equal(await page.locator('.sent-item[data-picked="desk"] .sent-tick .tick-picked').count(), 1);
+    await shot("sent-picked");
     await status("landed").first().getByRole("button", { name: /Open/ }).click();
     await until(page, () => document.querySelector("#selection").textContent.startsWith("T-200 ·"));
     await overview();
@@ -463,6 +501,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
     await count("relay", 2);
     assert.match(await page.locator(".sent-feed").textContent(), /Phone ticket <b>stays text<\/b>/);
     assert.doesNotMatch(await page.locator(".sent-feed").textContent(), /Line one/, "a landed ticket's words are not kept");
+    await page.locator('.sent-item[data-picked="desk"]').waitFor();
 
     // The terminal back: it files what waited, and the ticks turn to two.
     await page.evaluate(() => {
@@ -623,6 +662,119 @@ async function ticketFlow(browser, engineName, size, viewport) {
   }
 }
 
+// A pairing QR (T-497): the code arrives in the link's fragment, fills the
+// field, leaves the address bar, and still waits for Connect.
+async function pairLinkFlow(browser, engineName) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const code = "7K2M-QX4P-0B9D-RT6W-HN3C-5VJE-8FGA-1YSZ";
+  try {
+    await page.goto(`${origin}/#pair=${code}`);
+    await until(page, (code) => document.querySelector("#code").value === code, code);
+    assert.equal(await page.evaluate(() => location.hash), "", "the code leaves the address bar");
+    assert.match(await page.locator("#connection").textContent(), /filled in from your terminal’s QR code/);
+    assert.equal(await page.evaluate(() => fixture.sockets.some((s) => s.channel)), false, "nothing pairs by itself");
+    assert.equal(await page.evaluate(() => document.activeElement.id), "pair", "Connect is one tap away");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    // Scanned again with a board open: back to pairing, the board one tap away.
+    await page.evaluate((code) => {
+      location.hash = `pair=${code}`;
+    }, code);
+    await until(page, () => !document.querySelector("#onboarding").hidden);
+    assert.equal(await page.locator("#code").inputValue(), code);
+    assert(await page.locator("#cancel-pair").isVisible());
+    await page.locator("#cancel-pair").click();
+    await until(page, () => !document.querySelector("#shell").hidden && document.querySelector("#onboarding").hidden);
+    assert.deepEqual(errors, []);
+    console.log(`${engineName}: pairing from a QR link passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-pair-link-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
+// Home screen and no signal (T-497): the service worker keeps the page, so a
+// load with no network opens the kept copy. It shows the remembered board,
+// takes a ticket with a clock, opens no socket, and becomes the relay's own
+// page when the network is back, where the ticket goes out.
+async function keptFlow(browser, engineName) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", reducedMotion: "reduce" });
+  await context.addInitScript(fixture);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const sheet = page.locator("#new-ticket-sheet");
+  try {
+    await page.goto(origin);
+    const manifest = await page.evaluate(async () => (await fetch(document.querySelector('link[rel="manifest"]').href)).json());
+    assert.equal(manifest.display, "standalone");
+    assert.deepEqual(manifest.icons.map((i) => i.purpose), ["any", "any", "maskable"]);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await until(page, async () =>
+      !!navigator.serviceWorker.controller && (await caches.keys()).some((name) => name.startsWith("mesophon-page-")),
+    );
+    // The board is remembered on disk before the network goes.
+    await until(
+      page,
+      () =>
+        new Promise((resolve) => {
+          const open = indexedDB.open("mesophon", 1);
+          open.onsuccess = () => {
+            const get = open.result.transaction("device").objectStore("device").get("board:board-a");
+            get.onsuccess = () => resolve(!!get.result?.snapshot);
+          };
+        }),
+    );
+    networkDown = true;
+    await page.evaluate(() => localStorage.setItem("fixture-relay-down", "1"));
+    await page.reload();
+    await until(page, () => document.documentElement.dataset.page === "kept");
+    // The ticket that was open, from memory; back on the list, the rest.
+    await until(page, () => document.querySelector("#selection").textContent.startsWith("T-0 ·"));
+    if (await page.locator("#back").isVisible()) await page.locator("#back").click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    assert.match(await page.locator("#work-list").textContent(), /As of/);
+    assert.equal(await page.locator("#shell").getAttribute("data-link"), "relay");
+    assert.equal(await page.evaluate(() => fixture.sockets.length), 0, "the kept page opens no socket");
+    await page.locator("#new-ticket-fab").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.match(await sheet.locator(".compose-dest").textContent(), /stays in this browser/);
+    await page.locator("#new-title").fill("Written on the kept page");
+    await page.locator("#send-ticket").click();
+    await sheet.waitFor({ state: "hidden" });
+    await page.locator('button[data-mode="sent"]').locator("visible=true").click();
+    await page.locator('.sent-item[data-status="local"]').waitFor();
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-kept-page.png`) });
+    await page.evaluate(() => localStorage.removeItem("fixture-relay-down"));
+    // The page asks past the worker every few seconds, and reloads itself.
+    const reloaded = page.waitForEvent("load", { timeout: 20000 });
+    networkDown = false;
+    await reloaded;
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.page), undefined);
+    await until(page, () => document.querySelector("#selection").textContent.startsWith("T-0 ·"));
+    if (await page.locator("#back").isVisible()) await page.locator("#back").click();
+    await page.locator('button[data-mode="sent"]').locator("visible=true").click();
+    await page.locator('.sent-item[data-status="landed"]').filter({ hasText: "Written on the kept page" }).waitFor();
+    assert.deepEqual(errors, []);
+    console.log(`${engineName}: the kept page opens with no network and hands its ticket over passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-kept-failure.png`) });
+    throw error;
+  } finally {
+    networkDown = false;
+    await context.close();
+  }
+}
+
 try {
   for (const [engineName, engine] of [
     ["chromium", chromium],
@@ -641,6 +793,8 @@ try {
           viewport,
           colorScheme: "dark",
           reducedMotion: "reduce",
+          // `route` does not see a service worker's requests.
+          serviceWorkers: "block",
         });
         await context.addInitScript(fixture);
         await context.route("**/pkg/mesimon_web.js", (route) =>
@@ -676,7 +830,22 @@ try {
             .getByRole("button", { name: "Connect", exact: true })
             .click();
           await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+          // The projection's newer facts (T-497): how long an agent has been
+          // at it, the step it is on or its last reply line, and tags.
+          await page.evaluate(() => {
+            fixture.tickets[0].tags = [{ group: 1, name: "BUG", tint: 0 }];
+            Object.assign(fixture.tickets[0].agent, { since: Date.now() - 5 * 60000, doing: "Bash(cargo test -p mesimon-daemon)" });
+            Object.assign(fixture.tickets[4].agent, { since: Date.now() - 2 * 3600000, said: "Fixed, and three tests pass." });
+            fixture.update();
+          });
+          await until(page, () =>
+            document.querySelector('.ticket[data-id="ticket-0"] .headline-step')?.textContent.includes("cargo test"),
+          );
+          assert.match(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), / · 5m · /);
+          assert.equal(await page.locator('.ticket[data-id="ticket-4"] .headline').textContent(), "Fixed, and three tests pass.");
+          assert.match(await page.locator('.ticket[data-id="ticket-4"] .ticket-meta').textContent(), / · 2h · /);
           await select(0);
+          assert.match(await page.locator("#detail .chips").textContent(), /BUG/);
           await until(page, () =>
             document.querySelector("#preview").textContent.includes("line 49"),
           );
@@ -1197,6 +1366,8 @@ try {
         }
         await ticketFlow(browser, engineName, size, viewport);
       }
+      await pairLinkFlow(browser, engineName);
+      await keptFlow(browser, engineName);
     } finally {
       await browser.close();
     }

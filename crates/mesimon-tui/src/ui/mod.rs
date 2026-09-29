@@ -55,6 +55,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // This frame's dialog frames, recorded as they are drawn (`dialog::frame`).
     app.frames.borrow_mut().clear();
     *app.mascot.borrow_mut() = None;
+    *app.qr.borrow_mut() = None;
     // And this frame's `Ctx` (`App::frame_ctx`): built on first read.
     app.ctx_dirty();
 

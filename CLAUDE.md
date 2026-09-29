@@ -406,8 +406,9 @@ conversation inside a living pane, and neither may relabel a real death.
 **One hard visual rule: exactly one saturated colour on the board**, reserved for needs-you
 (`Theme::attn`; `test_attn_provenance*` enforces it), nothing else ever. Rendering goldens live
 in `mesimon-tui/testdata/golden/`. The L1 laws ban SGR 2/3/5/9, reserve SGR 4, and admit a box
-glyph only on a recorded frame perimeter plus two named codepoints (`▀`, `▎`). `MESIMON_THEME`
-and `MESIMON_COLOR` force flavor and profile.
+glyph only on a recorded frame perimeter, inside a recorded picture (`App::mascot`, the pairing
+QR's `App::qr`), plus two named codepoints (`▉`, `▎`). `MESIMON_THEME` and `MESIMON_COLOR` force
+flavor and profile.
 
 **Anything resolved from the user's environment — the editor, the opener, the notifier, the
 sound, the ticket-shell seam — is set in `lib.rs::run`, never `App::new`**, so no test or golden

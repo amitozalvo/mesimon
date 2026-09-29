@@ -176,6 +176,7 @@ impl PreparedImport {
                 woke_at: None,
                 manual_merge: false,
                 previous_column: None,
+                picked: None,
                 execution_policy: ExecutionPolicy::OwnerOnly,
                 tier: None,
                 workspace: Some(WorkspaceStrategy::Worktree),

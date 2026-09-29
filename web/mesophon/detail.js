@@ -5,6 +5,7 @@ import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { Attention } from "./dialogs.js";
+import { Headline, Tags, stateAge } from "./lists.js";
 
 const receiptTick = (status) =>
   status === "awaiting_delivery"
@@ -122,6 +123,7 @@ export function Detail({ store, bp }) {
   const live = store.live;
   const agent = ticket?.agent;
   const light = agent?.state === "needs attention" ? "attn" : ["starting", "working"].includes(agent?.state) ? "calm" : "dim";
+  const since = store.board && stateAge(store.board, agent);
   return html`<article id="detail" aria-labelledby="selection">
     <header class="detail-head">
       <button id="back" type="button" class="icon-btn" aria-label="Back" onClick=${() => store.back()}><${Icon} name="back" size=${22} /></button>
@@ -133,17 +135,21 @@ export function Detail({ store, bp }) {
         <div class="chips">
           ${ticket && html`<span class="chip">${ticket.column}</span>`}
           ${agent && html`<span class="chip">${agent.provider}</span>`}
+          ${ticket && html`<${Tags} ticket=${ticket} />`}
         </div>
       </div>
     </header>
     <div class="detail-scroll">
       <div class=${`agent-card${agent ? "" : " agent-none"}`} hidden=${!ticket}>
         <${Shin} scale=${3} light=${light} mood=${agent ? "awake" : "asleep"} />
-        <p id="agent-state">${agent
-          ? `${agent.provider} · ${agent.state} · ${ticket.column}`
-          : ticket
-            ? "No live agent. Start an agent from the host to send input."
-            : "Choose an agent, or open Board to see all tickets."}</p>
+        <div class="agent-words">
+          <p id="agent-state">${agent
+            ? `${agent.provider} · ${agent.state}${since ? ` · ${since}` : ""} · ${ticket.column}`
+            : ticket
+              ? "No live agent. Start an agent from the host to send input."
+              : "Choose an agent, or open Board to see all tickets."}</p>
+          <${Headline} agent=${agent} />
+        </div>
         ${agent?.state === "needs attention" && html`<span class="mark mark-attn pulse" aria-hidden="true"></span>`}
         ${["starting", "working"].includes(agent?.state) && html`<${Icon} name="spinner" size=${18} width=${2.4} cls="spin" />`}
       </div>

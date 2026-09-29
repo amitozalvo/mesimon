@@ -9,7 +9,11 @@ use mesimon_team::{
     invite::InviteCode,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::mpsc::SyncSender};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashSet},
+    sync::mpsc::SyncSender,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Grant {
@@ -40,6 +44,9 @@ struct Filed {
 }
 /// How many filed envelopes `Stored::filed` remembers.
 const FILED_KEEP: usize = 256;
+/// Past this many bytes a board goes to the browser without its agents'
+/// words, well inside the 48 KiB an answer may carry.
+const BOARD_WORDS_BUDGET: usize = 40 * 1024;
 struct Peer {
     grant: BoardId,
     device: DeviceId,
@@ -115,6 +122,17 @@ pub(super) struct Control {
     error: Option<String>,
     retry: Instant,
     dirty: bool,
+    /// Each transcript's words as a phone sees them, keyed by path (T-497).
+    words: RefCell<HashMap<String, Words>>,
+}
+/// An agent's step and latest reply line, read from its transcript, and the
+/// file's length and mtime when read: a browser asks for the board every two
+/// seconds, and a transcript is re-read only when it changed.
+struct Words {
+    len: u64,
+    mtime_ms: u64,
+    doing: Option<String>,
+    said: Option<String>,
 }
 impl Control {
     pub(super) fn new(tx: Sender<Msg>) -> Self {
@@ -143,6 +161,7 @@ impl Control {
             error: None,
             retry: Instant::now(),
             dirty: false,
+            words: RefCell::new(HashMap::new()),
         }
     }
     fn send(&mut self, wire: Wire) {
@@ -1259,7 +1278,7 @@ impl Daemon {
             .map(|t| api::TagOption { group: t.group, name: t.name.clone(), tint: t.tint() })
             .collect();
         allowed_tags.sort_by_key(|t| t.group);
-        Reply::Board {
+        let mut reply = Reply::Board {
             title: self
                 .paths
                 .repo_root
@@ -1284,49 +1303,104 @@ impl Daemon {
                     key: t.short_key.clone(),
                     title: t.title.clone(),
                     column: t.column.clone(),
-                    agent: self.board.live_agent(t.id).map(|s| api::Agent {
-                        dialog: self
-                            .control
-                            .dialogs
-                            .get(&s.id)
-                            .filter(|_| {
-                                matches!(
-                                    s.state,
-                                    SessionState::RequiresAction {
-                                        reason: mesimon_core::board::Reason::Question
-                                            | mesimon_core::board::Reason::Plan
-                                    }
-                                )
-                            })
-                            .cloned(),
-                        permission: self
-                            .control
-                            .permissions
-                            .get(&s.id)
-                            .filter(|p| Instant::now() < p.deadline)
-                            .map(|p| p.projection.clone()),
-                        session: s.id.to_string(),
-                        provider: if s.kind == SessionKind::Codex { "codex" } else { "claude" }
-                            .into(),
-                        state: match s.state {
-                            SessionState::Spawning => "starting",
-                            SessionState::Running => "working",
-                            SessionState::RequiresAction { .. } => "needs attention",
-                            SessionState::Idle { .. } => "idle",
-                            SessionState::Sleeping => "sleeping",
-                            SessionState::Exited { .. } => "exited",
-                            SessionState::Failed { .. } => "failed",
-                            SessionState::Throttled => "rate limited",
-                            SessionState::Unknown { .. } => "unknown",
-                        }
-                        .into(),
-                        promptable: self
-                            .control_target(&t.id.to_string(), &s.id.to_string())
-                            .is_some(),
+                    tags: projected_tags(&self.board, t),
+                    picked: projected_pickup(t),
+                    agent: self.board.live_agent(t.id).map(|s| {
+                        let (doing, said) = self.control_words(s);
+                        self.control_agent(t, s, doing, said)
                     }),
                 })
                 .collect(),
+        };
+        // A transcript no live agent reads any more leaves the cache.
+        let live: HashSet<&str> = self.board.sessions.iter().filter_map(preview_path).collect();
+        self.control.words.borrow_mut().retain(|path, _| live.contains(path.as_str()));
+        // The board must fit one answer (`Control::answer`'s cap): the
+        // agents' words are what a crowded board goes without first.
+        if serde_json::to_vec(&reply).is_ok_and(|v| v.len() > BOARD_WORDS_BUDGET) {
+            if let Reply::Board { tickets, .. } = &mut reply {
+                for agent in tickets.iter_mut().filter_map(|t| t.agent.as_mut()) {
+                    (agent.doing, agent.said) = (None, None);
+                }
+            }
         }
+        reply
+    }
+
+    /// One agent as a phone sees it: its state word and since when, its
+    /// step and latest reply line, and a dialog or permission waiting on it.
+    fn control_agent(
+        &self,
+        t: &Ticket,
+        s: &SessionRecord,
+        doing: Option<String>,
+        said: Option<String>,
+    ) -> api::Agent {
+        api::Agent {
+            since: s.state_changed_at,
+            doing,
+            said,
+            dialog: self
+                .control
+                .dialogs
+                .get(&s.id)
+                .filter(|_| {
+                    matches!(
+                        s.state,
+                        SessionState::RequiresAction {
+                            reason: mesimon_core::board::Reason::Question
+                                | mesimon_core::board::Reason::Plan
+                        }
+                    )
+                })
+                .cloned(),
+            permission: self
+                .control
+                .permissions
+                .get(&s.id)
+                .filter(|p| Instant::now() < p.deadline)
+                .map(|p| p.projection.clone()),
+            session: s.id.to_string(),
+            provider: if s.kind == SessionKind::Codex { "codex" } else { "claude" }.into(),
+            state: match s.state {
+                SessionState::Spawning => "starting",
+                SessionState::Running => "working",
+                SessionState::RequiresAction { .. } => "needs attention",
+                SessionState::Idle { .. } => "idle",
+                SessionState::Sleeping => "sleeping",
+                SessionState::Exited { .. } => "exited",
+                SessionState::Failed { .. } => "failed",
+                SessionState::Throttled => "rate limited",
+                SessionState::Unknown { .. } => "unknown",
+            }
+            .into(),
+            promptable: self.control_target(&t.id.to_string(), &s.id.to_string()).is_some(),
+        }
+    }
+
+    /// A live agent's step (while it works) and its latest reply's first
+    /// line, from the transcript the TUI's card reads (T-497). Re-read only
+    /// when the file's length or mtime moved.
+    fn control_words(&self, s: &SessionRecord) -> (Option<String>, Option<String>) {
+        let Some(path) = preview_path(s) else { return (None, None) };
+        let Ok(meta) = std::fs::metadata(path) else { return (None, None) };
+        let mtime_ms = meta.modified().ok().and_then(mesimon_core::clock::epoch_ms).unwrap_or(0);
+        let mut words = self.control.words.borrow_mut();
+        let fresh = words.get(path).is_some_and(|w| w.len == meta.len() && w.mtime_ms == mtime_ms);
+        if !fresh {
+            let preview = crate::agents::read_preview(s.kind, std::path::Path::new(path));
+            let doing = preview.as_ref().and_then(|p| match p.activity.as_ref()? {
+                crate::agents::AgentActivity::Tool(step) => api::step_line(step),
+                crate::agents::AgentActivity::Thinking => Some("thinking".into()),
+            });
+            let said = preview.and_then(|p| api::reply_line(p.text.as_deref()?));
+            words.insert(path.to_string(), Words { len: meta.len(), mtime_ms, doing, said });
+        }
+        let w = &words[path];
+        // A step is only news while the turn runs; a finished turn's
+        // transcript still ends in the last tool it ran.
+        let working = matches!(s.state, SessionState::Running);
+        (w.doing.clone().filter(|_| working), w.said.clone())
     }
     fn control_target(&self, ticket: &str, session: &str) -> Option<uuid::Uuid> {
         let ticket = ulid::Ulid::from_string(ticket).ok()?;
@@ -1640,6 +1714,28 @@ fn permission_peer_closed(stream: &UnixStream) -> bool {
 /// it: the phone offers only the vocabulary its snapshot carried, so a name
 /// the board lacks means that view is stale, and a phone never adds a tag.
 /// One tag per group is `mint_full`'s rule and is judged there.
+/// A ticket's tags as a phone draws them, each with the TUI's tint.
+fn projected_tags(board: &Board, t: &Ticket) -> Vec<api::TagOption> {
+    t.tags
+        .iter()
+        .map(|g| api::TagOption { group: g.group, name: g.name.clone(), tint: board.tint_of(g) })
+        .collect()
+}
+
+/// A phone's ticket once it was picked up (T-497), on the browser's clock
+/// unit; nothing for a ticket no phone filed.
+fn projected_pickup(t: &Ticket) -> Option<api::Picked> {
+    let p = t.picked.as_ref().filter(|_| t.from_phone())?;
+    let at = mesimon_core::board::stamp_secs(&p.at)? * 1000;
+    Some(api::Picked { by: p.by.clone(), at })
+}
+
+/// Where a session's words are read: Codex's normalized artifact, else the
+/// native transcript — the TUI's `peek::preview_path`, the same order.
+fn preview_path(s: &SessionRecord) -> Option<&str> {
+    s.agent_preview_path.as_deref().or(s.transcript_path.as_deref())
+}
+
 fn filed_tags(
     board: &mesimon_core::board::Board,
     picks: &[api::TagPick],
@@ -1863,6 +1959,53 @@ mod tests {
             Some(DialogStep::Reject)
         );
         assert_eq!(dialog_step(&dialog, &api::DialogAnswer::Reject, "❯ composer", false), None);
+    }
+
+    /// A phone sees a ticket's tags in the TUI's tints, and a pickup only on
+    /// a ticket a phone filed, in milliseconds.
+    #[test]
+    fn a_projected_ticket_carries_its_tags_and_a_phone_s_pickup() {
+        let mut board = Board::with_default_columns();
+        board.tags.push(mesimon_core::board::Tag { name: "BUG".into(), group: 1, color: Some(4) });
+        let mut t = Ticket {
+            id: ulid::Ulid(1),
+            short_key: "T-1".into(),
+            title: "from the phone".into(),
+            column: "TODO".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
+            entered_at: None,
+            woke_at: None,
+            manual_merge: false,
+            execution_policy: Default::default(),
+            tier: None,
+            envelope: None,
+            workspace: None,
+            import_origin: None,
+            raised: None,
+            previous_column: None,
+            picked: None,
+            tags: vec![mesimon_core::board::TagRef { name: "BUG".into(), group: 1 }],
+            notes: Vec::new(),
+            archived: None,
+        };
+        assert_eq!(
+            projected_tags(&board, &t),
+            vec![api::TagOption { group: 1, name: "BUG".into(), tint: 4 }]
+        );
+        t.picked = Some(mesimon_core::board::PickedUp {
+            at: "@1790000000".into(),
+            by: mesimon_core::board::PICKED_AT_DESK.into(),
+        });
+        t.created_by = "local".into();
+        assert_eq!(projected_pickup(&t), None, "a person's own ticket is nobody's news");
+        t.created_by = "device:ab12".into();
+        assert_eq!(
+            projected_pickup(&t),
+            Some(api::Picked { by: "desk".into(), at: 1_790_000_000_000 })
+        );
     }
 
     #[test]

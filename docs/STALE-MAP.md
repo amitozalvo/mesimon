@@ -15462,3 +15462,81 @@ reads it as root. *GCP images hand out a sudo user, not root, and a passphrase-p
 key fails silently under `BatchMode`* (the server accepts the key, the client cannot sign): root
 got gcloud's passphrase-less key through `gcloud compute ssh`, and an `~/.ssh/config` alias
 carries it, with `SetEnv LC_ALL=C.UTF-8` so the Mac's locale stops reaching a box without it.
+
+## Mesophon phase 4: the home screen, scan-to-pair, a fuller board and teal ticks (T-497, 2026-09-29, "phase 4")
+
+**Built: the board says more.** A projected ticket carries its `tags` (with the TUI's tint) and
+`picked`; an agent carries `since` (its record's `state_changed_at`), and, while live, `doing`
+(the step a `Running` turn is on) and `said` (its latest reply's first line). The daemon reads
+both from the transcript through `agents::read_preview`, as the TUI's card does, and caches them
+per path by length and mtime (`Control::words`, pruned to live sessions), because a browser asks
+for the board every two seconds. `mesophon::reply_line`/`step_line` drop markdown markers, run
+`scrub_text` (the text leaves for another process) and cap at 200 bytes. A board past 40 KiB goes
+without the agents' words, well inside the 48 KiB an answer may carry. Now shows the age and the
+line; cards and the ticket show tags; a tag's name finds its ticket. The remembered board keeps
+tags and `since` and never `doing` or `said`: decided rule 1 (never output or tool input).
+
+**Built: teal ticks.** `Ticket.picked` is a `[picked]` table (`at`, and `by` as the words `desk` or
+`agent`, never an enum: the ticket rides the TUI's snapshot, and an unknown variant would fail an
+older client's whole board). It is set once, only on a phone's ticket (`created_by` is a
+`device:`), by the first of two roads: the new wire command `OpenedTicket` (read by nobody,
+mutating, unlogged; never an agent's; a team viewer's own), which the TUI sends from a tick
+watcher (`poll_pickup`) so that every road onto the page counts, and `picked_by_agent` at both
+launch sites (`spawn_session`, and resume and wake), agent kinds only. `SeenTicket` was not
+reused: a cursor resting on a card is not the ticket read. The TUI ignores the answer, so a
+daemon too old to know the command costs nothing. The browser marks a landed Sent item once
+(`Sent.pickedUp`), keeps it across a reload, and says "Opened at your desk · 21:05" or "An agent
+started on it". No schema bump; the reasoning is on `TICKET_SCHEMA`.
+
+**Built: scan-to-pair.** While a pairing code is live, the Remote Control dialog draws it as a QR
+of `mesophon::pair_link` (`<origin>/#pair=<code>`: the fragment never reaches the relay).
+`qrcodegen` 1.8 (Nayuki's, MIT, no dependencies) encodes it, version 4 for the hosted origin;
+`qr.rs` paints two modules a cell, `▀` in the upper module's ink over the lower's, with a
+two-module quiet zone. `Theme::qr_inks` picks dark modules on light paper whatever the ground,
+from tokens the theme has (ground and base ink; black and white below 256 colours; nothing in
+mono), at least 7:1 on every flavor. The row dialog takes an optional picture: beside the rows
+from about 109 columns, under them from about 38 rows, else left out, and the code row says it
+all. The L1 law gains the QR's recorded rect (`App::qr`) beside the shin's. The rendered cells,
+turned back into pixels, decode to the link with jsQR on Graphite, Chalk, Solarized and Blue. The
+page fills the code in from `#pair=`, drops the fragment from the address, focuses Connect, and
+never pairs by itself: a link can come from anyone, and the tap is the consent.
+
+**Built: the home screen.** `manifest.webmanifest` (standalone; icons `any` and `maskable`), the
+icons as goldens of the shin engine (`tile_png`: rounded 192 and 512, a full-bleed 512 with the
+shin inside the maskable safe circle, a full-bleed 180 apple-touch icon), and `sw.js`. Settings
+offers the browser's own install prompt where it has one and the Share sheet's words on iPhone
+and iPad. The relay needed no change: `ServeDir` with `mime_guess` serves the new files, and the
+CSP's `default-src 'self'` covers the manifest and icons while `worker-src` falls back to
+`script-src 'self'`. `ci/stage-mesophon.sh`, the one file list every image build goes through,
+stages the manifest and icons; `assets.test.js` requires `sw.js`'s `PAGE` to be exactly what
+`index.html` reaches, plus the Wasm the glue loads by URL.
+
+**Decided: network first, and a kept page talks to nothing.** Phase 3's compatibility argument is
+"the page is served by its relay, so it is never older than the relay". A cache-first app shell
+would break that the day the relay updates; so every load asks the network, and the kept copy
+opens only when no answer comes in six seconds. That copy is marked (`data-page="kept"` on
+`<html>`), takes every file from the same copy (per client, so it is never half one build), opens
+no socket, seals new tickets with a clock, and asks the network past the worker every five seconds
+(`cache: "no-store"`); when the relay answers, it reloads itself into the relay's page, never while
+the new-ticket sheet is open. The copy is renewed after an online load when `/`'s Last-Modified
+(the relay's staging time) or ETag differs from the kept one, else hourly, and a new copy replaces
+the old only once every file answered.
+
+**Trap, measured: Playwright's `waitForFunction` does not await an async predicate.** A pending
+Promise is truthy, so it resolves at once: phase 3's "reload once it is on disk" wait never
+waited. `ux.test.js`'s `until` now polls with `page.evaluate`, which does await. Contexts that
+`route` the fake crypto block service workers, since `route` does not see a worker's requests;
+the fixture server serves that crypto itself for the kept-page flow, and can drop every
+connection to stand for no signal.
+
+**Not verified on a device:** that an iPhone's Home Screen app keeps its own storage, apart from
+Safari's (the page says to pair from the app on the strength of it); the status bar in standalone
+mode; and a camera scanning the terminal's QR. Physical-phone acceptance is still outstanding. The
+hosted relay serves phase 3's page until the next `ship.sh`.
+
+Verified: core, daemon and TUI units, the new `pickup_e2e` (a phone's ticket picked up by its page
+and by an agent, once, across a restart), the full nextest (1852), clippy; the browser's 19 state
+and packaging tests and the UX suite in Chromium and WebKit at desktop, tablet and phone, now with
+the projection, teal ticks, the pairing link and the kept page (service worker included, in both
+engines); and all eleven relay acceptance tests against this checkout, both real-browser flows
+included, with a clean fixture audit.

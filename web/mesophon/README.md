@@ -26,7 +26,14 @@ in `mesimon-relay`.
   (pairing, sidebar, Now, Board and Sent, the ticket, permission/question/plan
   cards, the New ticket sheet and Sent's bar). Host text is always a text node.
 - `shin.js`, `icons.js`: the mascot from `assets/mascot/shin.txt` and inline icons.
-- `app.js`: boot and window-level events.
+- `app.js`: boot and window-level events, the service worker's registration and
+  the browser's install prompt.
+- `sw.js`: the service worker. It keeps a whole copy of the page's files and
+  opens it only when a page load gets no answer in six seconds. Online, every
+  load is the relay's own page. Its `PAGE` list is exactly what `index.html`
+  reaches, as `assets.test.js` checks.
+- `manifest.webmanifest`, `icons/`: the home-screen app. The icons are goldens
+  of the shin engine (`MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`).
 
 `npm ci && npm test` runs state regressions and Chromium/WebKit UX tests using
 controlled M1/M2 replies. The latter start a loopback HTTP fixture and write ignored
@@ -51,7 +58,12 @@ PostgreSQL wrapper also accepts `--postgres-bin /path/to/bin` before `--` for a
 private native cluster.
 
 The UI does not infer activity timestamps or permission details. Now groups
-agents by the host's own state word: needs you, working, idle. A needs-you card
+agents by the host's own state word: needs you, working, idle. Each agent
+carries `since` (when it entered that state, the host's clock), and while live
+`doing` (the step a working turn is on) and `said` (its latest reply's first
+line), read by the host from the transcript as the TUI's card reads it. The
+remembered board keeps `since` and each ticket's `tags`, never `doing` or
+`said`. A needs-you card
 answers a permission or a single-choice question in place; anything else opens
 the ticket. Output shows the last received time of a periodic, bounded 50-line
 window. Scrolling up freezes that window locally; Jump to latest resumes
@@ -105,3 +117,23 @@ this browser, which `Browser.receipt` opens with the pinned host key; a
 receipt that does not open is ignored, whoever sent it. `sync` asks what
 became of the envelopes at the relay after a reload or a reconnect. A host that
 advertises `mailbox` takes every ticket this way, live or not.
+
+A landed ticket turns teal once the host's board says it was picked up
+(`picked`: `by` is `desk` when its page was opened in the TUI, `agent` when an
+agent started on it, `at` in milliseconds). The Sent list keeps it across a
+reload.
+
+A pairing QR in the TUI's Remote Control dialog opens `/#pair=<code>`. The
+fragment never reaches the relay. The page fills the code in, drops the
+fragment from the address, and waits for Connect.
+
+A page the service worker served from its kept copy has `data-page="kept"` on
+`<html>`. It opens no socket (the relay may have moved on since the copy was
+made), shows the remembered board and Sent, seals new tickets with a clock, and
+asks the network every five seconds, past the worker (`cache: "no-store"`),
+whether the relay is back. When it is, the page reloads itself into the relay's
+own page, unless the new-ticket sheet is open.
+
+`until` in `ux.test.js` polls with `page.evaluate`, which awaits a predicate's
+promise. Playwright's `waitForFunction` does not: a pending Promise is truthy,
+so an async predicate passes at once.

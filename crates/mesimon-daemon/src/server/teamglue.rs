@@ -1226,6 +1226,7 @@ impl Daemon {
                 created_from: None,
                 entered_at: Some(now.clone()),
                 previous_column: None,
+                picked: None,
                 woke_at: None,
                 manual_merge: false,
                 // Never the local composer's automation: a teammate's ticket
@@ -1387,7 +1388,10 @@ fn viewer_edit(command: &Command) -> bool {
     }
     if matches!(
         command,
-        Command::SetTag { .. } | Command::SeenTicket { .. } | Command::LowerHand { .. }
+        Command::SetTag { .. }
+            | Command::SeenTicket { .. }
+            | Command::LowerHand { .. }
+            | Command::OpenedTicket { .. }
     ) {
         return false;
     }
@@ -1467,6 +1471,7 @@ mod tests {
             Command::ReadNote { ticket: id, note: id },
             Command::SetTag { id, group: 1, name: Some("FEATURE".into()) },
             Command::SeenTicket { id },
+            Command::OpenedTicket { id },
             Command::TeamRefresh,
             Command::LeaveBoard,
             Command::SetStatusLine { top: true },

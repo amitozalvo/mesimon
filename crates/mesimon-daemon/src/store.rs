@@ -73,7 +73,9 @@ pub const COLUMNS_SCHEMA: u32 = 6;
 /// T-497 added `envelope` with no bump: a build that drops it on its next
 /// save loses only the memory that files a mailed envelope once, and the
 /// relay delivers again only an envelope it never saw answered. No content,
-/// no restriction: the reverse of the reason to bump.
+/// no restriction: the reverse of the reason to bump. Its phase 4 added
+/// `[picked]` on the same reasoning: dropped, a phone's ticket is picked up
+/// again the next time its page opens, a later time on the phone's ticks.
 pub const TICKET_SCHEMA: u32 = 7;
 /// `tiers.toml`, the machine's agent tiers (T-443) — one file under the
 /// state root that every board's daemon reads and writes. Its own counter,
@@ -1580,6 +1582,11 @@ by = "local"
                 by: "agent:00000000-0000-0000-0000-000000000000".into(),
                 reason: "which auth provider?".into(),
             }),
+            // A phone's ticket, picked up at the desk (T-497): another table.
+            picked: Some(mesimon_core::board::PickedUp {
+                at: "@1788046600".into(),
+                by: mesimon_core::board::PICKED_AT_DESK.into(),
+            }),
             // A worktree strategy is a scalar and sits before it; a tag is a
             // table and sits after. Both present, so the order is real.
             workspace: Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout),
@@ -1590,15 +1597,18 @@ by = "local"
         let f = TicketFile { schema_version: TICKET_SCHEMA, ticket: t.clone() };
         let s = toml::to_string_pretty(&f).expect("a scalar after a table would error here");
         assert!(s.find("[raised]").unwrap() < s.find("[[tags]]").unwrap(), "{s}");
+        assert!(s.find("[picked]").unwrap() < s.find("[[tags]]").unwrap(), "{s}");
         let back: TicketFile = toml::from_str(&s).unwrap();
         assert_eq!(back.ticket.previous_column, t.previous_column);
         assert_eq!(back.ticket.raised, t.raised);
+        assert_eq!(back.ticket.picked, t.picked);
         assert!(back.ticket.hand_raised());
         // No hand, no key — an older build's file and this one agree.
         let mut plain = f;
         plain.ticket.raised = None;
+        plain.ticket.picked = None;
         let s = toml::to_string_pretty(&plain).unwrap();
-        assert!(!s.contains("raised"), "{s}");
+        assert!(!s.contains("raised") && !s.contains("picked"), "{s}");
     }
 
     /// `[[notes]]` is another array of tables: after `[[tags]]`, before
@@ -1616,6 +1626,7 @@ by = "local"
             created_from: None,
             entered_at: None,
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -1670,6 +1681,7 @@ by = "local"
             created_from: None,
             entered_at: None,
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -1718,6 +1730,7 @@ by = "local"
             created_from: None,
             entered_at: None,
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -1804,6 +1817,7 @@ by = "local"
                 created_from: None,
                 entered_at: None,
                 previous_column: None,
+                picked: None,
                 woke_at: None,
                 manual_merge: false,
                 execution_policy: Default::default(),
@@ -2224,6 +2238,7 @@ by = "local"
             created_from: None,
             entered_at: None,
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -2258,6 +2273,7 @@ by = "local"
             created_from: None,
             entered_at: None,
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),

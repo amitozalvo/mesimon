@@ -1,10 +1,11 @@
 // Tickets this browser sent, per board: what was asked and what became of
 // it. Through the relay's mailbox (T-497) a ticket is `local` (a clock:
 // sealed in this browser), then `relay` (one tick: kept for the host), then
-// `landed` (two ticks: the host's own receipt). A live host without the
-// mailbox answers the create op instead, `sending` until it does. Kept
-// beside the remembered board; a landed ticket keeps its title and key,
-// never its description.
+// `landed` (two ticks: the host's own receipt), and a landed one is
+// `picked` up once it was opened at the desk or an agent started on it
+// (teal ticks). A live host without the mailbox answers the create op
+// instead, `sending` until it does. Kept beside the remembered board; a
+// landed ticket keeps its title and key, never its description.
 export const KEEP = 50;
 const statuses = ["sending", "local", "relay", "landed", "unknown", "rejected", "withdrawn"];
 // Waiting for the host: shown on Now and as ghosts on the board.
@@ -42,6 +43,7 @@ export class Sent {
       key: "",
       ticket: "",
       message: "",
+      picked: undefined,
     };
     this.items.push(item);
     return item;
@@ -84,6 +86,14 @@ export class Sent {
       item.status = "unknown";
     }
   }
+  // Picked up at the desk, as the host's board says: once, and only a
+  // ticket that landed. Returns whether it changed.
+  pickedUp(item, picked) {
+    const known = picked && typeof picked.by === "string" && Number.isFinite(picked.at);
+    if (item.status !== "landed" || item.picked || !known) return false;
+    item.picked = { by: picked.by, at: picked.at };
+    return true;
+  }
   // Sent over the live channel, not yet answered: a reconnect asks.
   unresolved(board) {
     return this.items.filter((i) => i.board === board && i.status === "sending" && i.command !== undefined);
@@ -110,7 +120,7 @@ export class Sent {
     const kept = mine.filter((i) => settled.includes(i.status)).slice(-KEEP);
     return mine
       .filter((i) => !settled.includes(i.status) || kept.includes(i))
-      .map(({ id, title, description, column, tags, at, status, envelope, command, incarnation, key, ticket, message }) => ({
+      .map(({ id, title, description, column, tags, at, status, envelope, command, incarnation, key, ticket, message, picked }) => ({
         id,
         title,
         description: settled.includes(status) ? "" : description,
@@ -124,6 +134,7 @@ export class Sent {
         key,
         ticket,
         message,
+        picked,
       }));
   }
   // Put back what the last page kept, beside anything sent since it loaded.
@@ -152,6 +163,10 @@ export class Sent {
         key: typeof s.key === "string" ? s.key : "",
         ticket: typeof s.ticket === "string" ? s.ticket : "",
         message: typeof s.message === "string" ? s.message : "",
+        picked:
+          status === "landed" && typeof s.picked?.by === "string" && Number.isFinite(s.picked?.at)
+            ? { by: s.picked.by, at: s.picked.at }
+            : undefined,
       });
     }
   }

@@ -15,6 +15,17 @@ export const DESCRIPTION_MAX_BYTES = 32 * 1024;
 // The longest envelope the relay keeps (control::MAIL_BYTES).
 const MAIL_BYTES = 128 * 1024;
 const sentContext = (item) => `sent:${item.id}`;
+// How often a page opened from the kept copy asks whether the relay is back.
+const PROBE_MS = 5000;
+// Opened from the home screen, not a browser tab.
+const standalone = () =>
+  matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+// iPhone and iPad Safari add to the home screen from the Share sheet only.
+const appleTouch = () =>
+  /iP(hone|ad|od)/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+// A pairing code from a link: the characters a code is spelled with, bounded.
+const linkCode = (text) => (text || "").trim().slice(0, 80).replace(/[^0-9A-Za-z -]/g, "");
 const emptyDraft = (board) => ({
   open: false,
   board,
@@ -54,6 +65,12 @@ export class Store {
     this.composer = emptyDraft(undefined);
     this.toast = undefined;
     this.depositing = new Set(); // ids handed to the mailbox socket, unanswered
+    // True when this page came from the service worker's kept copy (T-497):
+    // no socket opens, and the relay's own page replaces it when it can.
+    this.kept = false;
+    // Home screen (T-497): the browser's own install prompt when it offers
+    // one, and whether this page already runs from the home screen.
+    this.install = { prompt: undefined, standalone: standalone(), apple: appleTouch() };
   }
   subscribe(fn) {
     this.listeners.add(fn);
@@ -77,6 +94,8 @@ export class Store {
   }
   // What the header's status pill says.
   get link() {
+    // The kept copy loads when the relay's page did not come in time.
+    if (this.kept) return this.online ? "relay" : "nonet";
     if (this.live) return "live";
     if (!this.online) return "nonet";
     if (this.down) return this.connection?.relayReached ? "asleep" : "relay";
@@ -381,6 +400,22 @@ export class Store {
     if (item.status === "landed") this.refresh();
     this.emit();
   }
+  // A ticket this browser filed was picked up at the desk (T-497): opened
+  // there, or an agent started on it. Its ticks turn teal, once.
+  notePickups(tickets) {
+    const board = this.active?.pin.board;
+    let last;
+    for (const item of this.sent.forBoard(board)) {
+      const picked = item.ticket && tickets.find((t) => t.id === item.ticket)?.picked;
+      if (picked && this.sent.pickedUp(item, picked)) last = item;
+    }
+    if (!last) return;
+    this.persistSent(board);
+    this.say(
+      last.picked.by === "agent" ? `An agent started on ${last.key}` : `${last.key} was opened at your desk`,
+      "picked",
+    );
+  }
   // ---- the mailbox (T-497): tickets for a host that may be away -----------
   // Sealed here and now, so it can wait in this browser, then at the relay,
   // for as long as the host is away. Only the host can open it.
@@ -403,7 +438,13 @@ export class Store {
     if (draft.replaces) this.sent.remove(draft.replaces);
     Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined });
     this.persistSent(board);
-    if (!this.deposit(item)) this.say("Saved in this browser. It goes out when you’re back online.", "clock");
+    if (!this.deposit(item))
+      this.say(
+        this.link === "nonet"
+          ? "Saved in this browser. It goes out when you’re back online."
+          : "Saved in this browser. It goes out when the relay answers.",
+        "clock",
+      );
     else if (this.live) this.say("Sending to your board…", "clock");
     this.emit();
   }
@@ -579,9 +620,29 @@ export class Store {
   returnToBoard() {
     if (this.returnBoard) this.openBoard(this.returnBoard);
   }
+  // A pairing QR opened this page (T-497): the code is filled in and the
+  // link forgotten, and pairing still waits for Connect. A link can come
+  // from anyone; the person's tap is what pairs.
+  pairFromLink(text) {
+    const code = linkCode(text);
+    history.replaceState(history.state, "", location.pathname + location.search);
+    if (!code) return;
+    this.pairCode = code;
+    this.showPairing();
+    this.status = this.kept
+      ? "Code filled in. Pairing needs a connection: Connect when you’re back online."
+      : "Code filled in from your terminal’s QR code. Connect to pair.";
+    this.focus = "pair";
+    this.emit();
+  }
   pair() {
     const code = this.pairCode.trim();
     if (!code || !this.connection) return;
+    if (this.kept) {
+      this.status = "Pairing needs a connection. Try again when you’re back online.";
+      this.emit();
+      return;
+    }
     this.identity.name = this.deviceName.trim() || "My browser";
     this.active = this.board = this.entry = undefined;
     this.live = false;
@@ -618,6 +679,7 @@ export class Store {
     if (!this.board) this.restoreBoard(chosen);
     this.restoreSent(chosen.pin.board);
     this.sync();
+    if (this.kept) return;
     this.connection.connect(chosen);
     this.mailbox?.want(true);
     if (this.mailbox?.ready) this.mailReady();
@@ -734,6 +796,7 @@ export class Store {
         this.boards.set(this.active.pin.board, this.board);
       }
       this.board.update(reply);
+      this.notePickups(reply.tickets);
       if (this.active.title !== reply.title || this.active.selected !== this.board.selected) {
         this.active.title = reply.title;
         this.active.selected = this.board.selected;
@@ -871,6 +934,23 @@ export class Store {
     }
     this.emit();
   }
+  // The browser offered to install the page, or installed it.
+  installable(prompt, installed = false) {
+    this.install.prompt = prompt;
+    if (installed) this.install.standalone = true;
+    this.emit();
+  }
+  async installApp() {
+    const prompt = this.install.prompt;
+    if (!prompt) return;
+    this.install.prompt = undefined;
+    this.emit();
+    try {
+      await prompt.prompt();
+    } catch {
+      /* The browser declined to show it; nothing to undo. */
+    }
+  }
   async enableAlerts() {
     if (typeof Notification === "undefined") {
       this.alertStatus = "Updates appear here while connected. System notifications are unavailable in this browser.";
@@ -912,6 +992,22 @@ export class Store {
     if (online) this.mailbox?.poke();
     this.emit();
   }
+  // A page from the kept copy asks the network (past the service worker)
+  // whether the relay's page can be had, and becomes it when it can: never
+  // while a ticket is being written, whose words live only in this page.
+  watchForRelay() {
+    const probe = async () => {
+      if (this.composer.open) return;
+      try {
+        const response = await fetch("./manifest.webmanifest", { cache: "no-store" });
+        if (response.ok && !this.composer.open) location.reload();
+      } catch {
+        /* Still out of reach. */
+      }
+    };
+    setInterval(probe, PROBE_MS);
+    addEventListener("online", probe);
+  }
   async boot(storage, identity) {
     this.storage = storage;
     this.identity = identity;
@@ -937,7 +1033,16 @@ export class Store {
       onReady: (chosen) => this.onReady(chosen),
     });
     this.pairReady = true;
+    if (this.kept) {
+      this.status = "Opened without the relay: the board as this browser remembers it. It reconnects by itself.";
+      this.watchForRelay();
+    }
     const link = new URLSearchParams(location.hash.slice(1));
+    if (link.has("pair")) {
+      const remembered = identity.boards.find((b) => b.pin.board === identity.lastBoard && !b.revoked);
+      if (remembered) this.returnBoard = remembered;
+      return this.pairFromLink(link.get("pair"));
+    }
     const linked = identity.boards.find((b) => b.pin.board === link.get("board") && !b.revoked);
     if (linked && link.get("ticket")) linked.selected = link.get("ticket");
     const remembered =

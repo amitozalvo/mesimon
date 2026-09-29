@@ -912,6 +912,9 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // anybody looked; more simply, being answered is not something the
         // asker gets to declare.
         | Command::LowerHand { .. }
+        // Picked up at the desk is a person opening the page (T-497): an
+        // agent's own start already says it started.
+        | Command::OpenedTicket { .. }
         // Whether a branch lands on its own is the person's call, never the
         // agent's whose branch it is.
         | Command::SetManualMerge { .. }
@@ -1786,6 +1789,7 @@ mod tests {
             Command::UnarchiveTicket { id: t },
             Command::SnoozeTicket { id: t, until: 1, needs_you: true },
             Command::SeenTicket { id: t },
+            Command::OpenedTicket { id: t },
             Command::SetManualMerge { id: t, on: true },
             // The crown is the person's to give (T-411).
             Command::CrownTicket { id: t },

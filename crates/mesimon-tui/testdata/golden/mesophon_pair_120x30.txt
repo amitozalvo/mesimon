@@ -2,28 +2,28 @@
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
-    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-
-    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
-                           ╭─ REMOTE CONTROL ───────────────────────────────────────────────╮
-                           │ YOU                                                            │
-                           │   Relay: relay.example                                         │
-                           │   Display name: Amit                                           │
-                           │   Signed in as Amit on relay.example                           │
-                           │ THIS BOARD                                                     │
-                           │   Browser access: connected                                    │
-                           │   Browser: https://relay.example:8444                          │
-                           │   Pair a browser                                               │
-                           │   Pairing code: msmn1-example-pairing-code                     │
-                           │   My phone                                                     │
-                           │   Disable Remote Control                                       │
-                           │                                                                │
-                           │     one use ∙ expires in ten minutes ∙ enter copies it         │
-                           ╰─────────────────────────── jk select ∙ enter copy ∙ esc close ─╯
-
-
-
-
+    Dec╭─ REMOTE CONTROL ──────────────────────────────────────────────────────────────────────────────────────╮
+       │ YOU                                                                                                   │
+    Key│   Relay: relay.example                                              ▀▀▀▀▀   ▀▀   ▀▀▀▀    ▀    ▀▀▀▀▀   │
+       │   Display name: Amit                                                       ▀▀ ▀▀▀ ▀▀▀    ▀▀           │
+       │   Signed in as Amit on relay.example                                 ▀▀▀    ▀▀▀ ▀▀   ▀ ▀▀  ▀   ▀▀▀    │
+       │ THIS BOARD                                                         ▀▀▀▀▀▀▀   ▀▀▀▀▀▀ ▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀  │
+       │   Browser access: connected                                        ▀▀▀▀▀ ▀▀▀▀ ▀ ▀ ▀▀▀ ▀▀    ▀   ▀▀ ▀  │
+       │   Browser: https://relay.example:8444                              ▀▀  ▀▀▀  ▀ ▀ ▀▀  ▀ ▀ ▀ ▀ ▀ ▀▀   ▀  │
+       │   Pair a browser                                                    ▀ ▀▀▀▀▀▀   ▀▀▀▀ ▀   ▀        ▀    │
+       │   Pairing code: 7K2M-QX4P-0B9D-RT6W-HN3C-5VJE-8FGA-1YSZ            ▀▀    ▀  ▀  ▀▀▀  ▀ ▀▀▀ ▀  ▀ ▀▀  ▀  │
+       │   My phone                                                          ▀▀▀▀ ▀▀▀▀  ▀▀   ▀▀ ▀ ▀    ▀  ▀▀   │
+       │   Disable Remote Control                                           ▀▀▀ ▀ ▀▀ ▀   ▀▀  ▀▀▀  ▀▀▀▀      ▀  │
+       │                                                                       ▀ ▀▀ ▀ ▀▀▀▀   ▀▀▀▀▀ ▀ ▀ ▀  ▀▀   │
+       │     one use ∙ expires in ten minutes ∙ enter copies it             ▀▀ ▀▀▀▀ ▀  ▀   ▀▀ ▀▀▀▀▀ ▀▀▀ ▀▀  ▀  │
+       │                                                                    ▀ ▀   ▀▀▀▀  ▀▀   ▀▀▀▀  ▀ ▀▀▀   ▀▀  │
+       │                                                                     ▀▀▀▀▀     ▀  ▀▀▀▀ ▀▀ ▀   ▀     ▀  │
+       │                                                                            ▀▀▀  ▀ ▀▀       ▀▀▀    ▀   │
+       │                                                                      ▀▀▀     ▀▀▀▀  ▀   ▀     ▀ ▀▀▀ ▀  │
+       │                                                                    ▀▀▀▀▀▀▀ ▀  ▀▀▀▀      ▀▀▀▀ ▀▀   ▀▀  │
+       │                                                                                                       │
+       │                                                                      scan with your phone's camera    │
+       ╰────────────────────────────────────────────────────────────────── jk select ∙ enter copy ∙ esc close ─╯
 
 
 

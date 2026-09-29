@@ -9,6 +9,7 @@
 //! that would do nothing. Framed (`dialog`): its name in the top edge, its
 //! keys in the bottom one.
 
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -18,6 +19,7 @@ use unicode_width::UnicodeWidthStr;
 use mesimon_core::keymap::{self, MenuItem, Scope};
 
 use crate::app::{App, ColumnSubject, Mode, SharingRow, TierField};
+use crate::qr::Qr;
 use crate::text::truncate;
 
 use super::dialog::{self, ListRow};
@@ -133,8 +135,33 @@ pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
         _ => "",
     };
     let field = editing.as_ref().map(|b| (lead, b));
-    draw_rows(f, app, *idx, &title, &words, &headings, field);
+    // The pairing code as a QR a phone's camera opens (T-497), while a code
+    // is live and the theme draws pictures. The code row still says it all.
+    let qr = app
+        .control
+        .code
+        .as_deref()
+        .filter(|_| app.mesophon_dialog && !app.control.origin.is_empty())
+        .and_then(|code| Qr::encode(&mesimon_core::mesophon::pair_link(&app.control.origin, code)))
+        .zip(app.theme.qr_inks());
+    let paint = |f: &mut Frame, at: Rect| {
+        let Some((qr, (dark, light))) = &qr else { return };
+        let (w, h) = qr.cells();
+        qr.paint(f.buffer_mut(), (at.x, at.y), *dark, *light);
+        *app.qr.borrow_mut() = Some(Rect { width: w, height: h, ..at });
+        let caption = Line::from(Span::styled(QR_CAPTION, app.theme.dim3()));
+        let below = Rect { y: at.y + h, height: 1, ..at };
+        f.render_widget(Paragraph::new(caption).alignment(Alignment::Center), below);
+    };
+    let picture = qr.as_ref().map(|(qr, _)| {
+        let (w, h) = qr.cells();
+        Picture { w, h: h + 1, paint: &paint }
+    });
+    draw_rows_with(f, app, *idx, &title, &words, &headings, field, picture);
 }
+
+/// Under the pairing QR: what to do with it.
+const QR_CAPTION: &str = "scan with your phone's camera";
 
 /// The agent tiers list (T-443): a row per tier in the dialog's scope and
 /// one that makes a new one, dense like the sharing list because the last
@@ -194,13 +221,69 @@ fn draw_rows(
     headings: &[bool],
     field: Option<(&str, &crate::text::EditBuffer)>,
 ) {
+    draw_rows_with(f, app, idx, name, items, headings, field, None);
+}
+
+/// A picture a row dialog draws with its rows (the pairing QR, T-497): `w`
+/// by `h` cells, painted by `paint` into the rect it is given.
+struct Picture<'a> {
+    w: u16,
+    h: u16,
+    paint: &'a dyn Fn(&mut Frame, Rect),
+}
+
+/// Where a picture goes: beside the rows where the screen is wide enough,
+/// else under them where it is tall enough.
+#[derive(Clone, Copy)]
+enum Place {
+    Beside,
+    Below,
+}
+
+/// Cells between the rows and a picture beside them.
+const PICTURE_GAP: u16 = 2;
+
+/// Where `picture` fits beside or under `rows` inner rows on `screen`, if
+/// anywhere: the room is what `dialog::centred` can give, the screen less
+/// its margins and the frame.
+fn place(screen: Rect, rows: u16, picture: &Picture) -> Option<Place> {
+    let (room_w, room_h) = (screen.width.saturating_sub(6), screen.height.saturating_sub(4));
+    if dialog::MAX_W + PICTURE_GAP + picture.w <= room_w && rows.max(picture.h) <= room_h {
+        Some(Place::Beside)
+    } else if picture.w <= dialog::MAX_W.min(room_w) && rows + 1 + picture.h <= room_h {
+        Some(Place::Below)
+    } else {
+        None
+    }
+}
+
+/// `draw_rows`, with a picture beside or under the rows when one fits. One
+/// that does not is left out: the rows still say everything it does.
+#[allow(clippy::too_many_arguments)]
+fn draw_rows_with(
+    f: &mut Frame,
+    app: &App,
+    idx: usize,
+    name: &str,
+    items: &[(String, String)],
+    headings: &[bool],
+    field: Option<(&str, &crate::text::EditBuffer)>,
+    picture: Option<Picture>,
+) {
     let theme = &app.theme;
     if items.is_empty() {
         return;
     }
     let idx = idx.min(items.len() - 1);
-    let area = dialog::centred(f.area(), items.len() as u16 + 2, dialog::MAX_W);
-    let inner_w = area.width.saturating_sub(2) as usize;
+    let rows_h = items.len() as u16 + 2;
+    let placed = picture.and_then(|p| Some((place(f.area(), rows_h, &p)?, p)));
+    let (inner_h, inner_max) = match &placed {
+        Some((Place::Beside, p)) => (rows_h.max(p.h), dialog::MAX_W + PICTURE_GAP + p.w),
+        Some((Place::Below, p)) => (rows_h + 1 + p.h, dialog::MAX_W),
+        None => (rows_h, dialog::MAX_W),
+    };
+    let area = dialog::centred(f.area(), inner_h, inner_max);
+    let frame_w = area.width.saturating_sub(2) as usize;
     let inner = dialog::frame(
         f,
         app,
@@ -211,9 +294,17 @@ fn draw_rows(
             title: dialog::title(&theme.rest, name),
             // The scope as it stands: a naming dialog's edge reads the text
             // field's `enter save ∙ esc cancel`.
-            tail: dialog::keys(app, app.scope(), &theme.rest, inner_w.saturating_sub(4)),
+            tail: dialog::keys(app, app.scope(), &theme.rest, frame_w.saturating_sub(4)),
         },
     );
+    let rows_area = match &placed {
+        Some((Place::Beside, p)) => {
+            Rect { width: inner.width.saturating_sub(PICTURE_GAP + p.w), ..inner }
+        }
+        Some((Place::Below, _)) => Rect { height: rows_h.min(inner.height), ..inner },
+        None => inner,
+    };
+    let inner_w = rows_area.width as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut cursor_at: Option<(u16, u16)> = None;
     for (i, item) in items.iter().enumerate() {
@@ -255,9 +346,26 @@ fn draw_rows(
     // same clock `dialog::list` runs.
     let body = dialog::reveal(app, &items[idx].1, inner_w.saturating_sub(6));
     lines.push(Line::from(Span::styled(format!("     {body}"), theme.dim3())));
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines), rows_area);
     if let Some((x, y)) = cursor_at {
-        f.set_cursor_position((x.min(inner.x + inner.width.saturating_sub(1)), y));
+        f.set_cursor_position((x.min(rows_area.x + rows_area.width.saturating_sub(1)), y));
+    }
+    if let Some((place, p)) = placed {
+        let at = match place {
+            Place::Beside => Rect {
+                x: inner.x + inner.width.saturating_sub(p.w),
+                y: inner.y + inner.height.saturating_sub(p.h) / 2,
+                width: p.w,
+                height: p.h,
+            },
+            Place::Below => Rect {
+                x: inner.x + inner.width.saturating_sub(p.w) / 2,
+                y: inner.y + rows_h + 1,
+                width: p.w,
+                height: p.h,
+            },
+        };
+        (p.paint)(f, at.intersection(inner));
     }
 }
 

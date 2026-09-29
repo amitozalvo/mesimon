@@ -1532,8 +1532,15 @@ mod tests {
     /// silhouette on the amber tile read as a black blob, dogfood
     /// 2026-09-29).
     fn icon_png_on(needs_you: bool, tab: bool) -> Vec<u8> {
-        const SIZE: u32 = 256;
-        const SCALE: i32 = 10;
+        tile_png(256, 10, Some(54.0), needs_you, tab)
+    }
+
+    /// The shin on the graphite tile, `size` image pixels a side and `scale`
+    /// to a shin pixel. `radius` rounds the tile's corners; `None` is a full
+    /// bleed square, for a platform that cuts its own shape (T-497: a
+    /// maskable icon, and the apple touch icon, whose transparency iOS
+    /// paints black).
+    fn tile_png(size: u32, scale: i32, radius: Option<f32>, needs_you: bool, tab: bool) -> Vec<u8> {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
         let ink = theme.creature_ink(false).expect("truecolor draws");
         let anim = if needs_you { Anim::NeedsYou } else { Anim::Seat };
@@ -1553,20 +1560,20 @@ mod tests {
         let badge = tab.then(|| rgb(theme.attn));
         // The badge: a disc in the top-right corner, its centre inside the
         // tile's rounded corner so it never spills past the tile's edge.
-        let (bx, by, br) = (SIZE as f32 - 62.0, 62.0, 46.0f32);
+        let (bx, by, br) = (size as f32 - 62.0, 62.0, 46.0f32);
         let (ox, oy) =
-            ((SIZE as i32 - pic.w as i32 * SCALE) / 2, (SIZE as i32 - pic.h as i32 * SCALE) / 2);
+            ((size as i32 - pic.w as i32 * scale) / 2, (size as i32 - pic.h as i32 * scale) / 2);
         // The tile's rounded corners, antialiased; everything inside it is
         // square pixels on whole image pixels, so it needs none.
-        let radius = 54.0f32;
         let coverage = |x: u32, y: u32| {
+            let Some(radius) = radius else { return 255 };
             let mut hits = 0;
             for sy in 0..4 {
                 for sx in 0..4 {
                     let (px, py) =
                         (x as f32 + (sx as f32 + 0.5) / 4.0, y as f32 + (sy as f32 + 0.5) / 4.0);
-                    let cx = px.clamp(radius, SIZE as f32 - radius);
-                    let cy = py.clamp(radius, SIZE as f32 - radius);
+                    let cx = px.clamp(radius, size as f32 - radius);
+                    let cy = py.clamp(radius, size as f32 - radius);
                     if (px - cx).powi(2) + (py - cy).powi(2) <= radius * radius {
                         hits += 1;
                     }
@@ -1574,8 +1581,8 @@ mod tests {
             }
             (hits * 255 / 16) as u8
         };
-        let img = image::RgbaImage::from_fn(SIZE, SIZE, |x, y| {
-            let (sx, sy) = ((x as i32 - ox).div_euclid(SCALE), (y as i32 - oy).div_euclid(SCALE));
+        let img = image::RgbaImage::from_fn(size, size, |x, y| {
+            let (sx, sy) = ((x as i32 - ox).div_euclid(scale), (y as i32 - oy).div_euclid(scale));
             let role = pic.at(sx as i16, sy as i16);
             let mut px = role.map_or(ground, |r| rgb(r.ink(&ink)));
             if let Some(amber) = badge {
@@ -1605,6 +1612,29 @@ mod tests {
         let mut out = std::io::Cursor::new(Vec::new());
         img.write_to(&mut out, image::ImageFormat::Png).expect("encode");
         out.into_inner()
+    }
+
+    fn web_icon(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/mesophon/icons").join(name)
+    }
+
+    /// Remote Control's home-screen icons (T-497): the resting shin on the
+    /// graphite tile, at the notification icon's proportions. The maskable
+    /// one bleeds to the edge and keeps the shin inside the central circle
+    /// a platform may cut to (radius 40% of the side).
+    #[test]
+    fn creature_the_home_screen_icons_are_the_shin_s_own_pixels() {
+        let pic = compose(Size::Medium, frame_at(Anim::Seat, 0), 0);
+        let half_diagonal = |scale: i32| {
+            (((pic.w as i32 * scale) as f32 / 2.0).powi(2)
+                + ((pic.h as i32 * scale) as f32 / 2.0).powi(2))
+            .sqrt()
+        };
+        assert!(half_diagonal(15) <= 512.0 * 0.4, "the maskable shin leaves the safe zone");
+        golden(&web_icon("icon-192.png"), &tile_png(192, 7, Some(40.5), false, false));
+        golden(&web_icon("icon-512.png"), &tile_png(512, 20, Some(108.0), false, false));
+        golden(&web_icon("maskable-512.png"), &tile_png(512, 15, None, false, false));
+        golden(&web_icon("apple-touch-icon.png"), &tile_png(180, 7, None, false, false));
     }
 
     #[test]

@@ -116,6 +116,7 @@ mod tests {
             envelope: None,
             raised: None,
             previous_column: None,
+            picked: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             notes: vec![NoteMeta {

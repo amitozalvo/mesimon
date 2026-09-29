@@ -5,8 +5,11 @@ output, send a prompt, answer supported Claude dialogs, and file new tickets**. 
 on desktop and phone.
 Debug builds include Remote Control automatically. In release builds, set
 `MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Sharing → Remote Control**, sign in to
-your relay, and enable this board. Choose **Pair a browser**, open the displayed
-browser address, and enter its single-use code within ten minutes.
+your relay, and enable this board. Choose **Pair a browser** and scan the QR code the
+dialog shows with your phone’s camera: the page opens with the single-use code filled
+in, and **Connect** pairs. Or open the displayed browser address and type the code. The
+code works once, within ten minutes. The QR appears when the terminal has room for it
+(beside the dialog from about 110 columns, under it from about 40 rows).
 
 ## Before you pair
 
@@ -22,11 +25,26 @@ another computer needs a reachable HTTPS relay with a browser-trusted certificat
 `localhost` always means the device running the browser. The relay's deployment
 guide ships with the relay.
 
+## On your home screen
+
+The page installs like an app: **Add to Home Screen** in Settings where the browser
+offers it (Chrome on Android, Edge), or in Safari the Share sheet’s **Add to Home
+Screen**. On iPhone and iPad the Home Screen app keeps its own pairing, separate from
+Safari’s, so pair it from the Home Screen app itself.
+
+Once the page has loaded while online, it opens with no signal too: the board as it was
+last seen, your Sent list, and new tickets, which wait in the browser with a clock. It
+opens no connection while it is offline. When the relay is reachable again, the page
+reloads itself (unless the new-ticket sheet is open), and the tickets that waited go out.
+While the relay answers, the page is always the relay’s current one.
+
 ## Finding your way
 
 **Now** puts what needs you first: a permission request or a single-choice
 question can be answered right on its card, and anything else opens the ticket.
-Below it are the agents that are working, then the idle ones. **Board** shows every
+Below it are the agents that are working, then the idle ones. Each row shows how long
+the agent has been in its state and, while live, the step it is on (a tool call, in
+mono) or the first line of its latest reply. Cards and the ticket show the ticket’s tags. **Board** shows every
 ticket by column: one column at a time on a phone, all of them side by side on a
 wide screen. The status pill says whether the board is live. When it is not, the
 page says which hop is out of reach (this browser, the relay, or your terminal),
@@ -50,6 +68,9 @@ A ticket goes out whether or not your terminal is reachable, and its ticks say w
   then sent again as you change it).
 - **Two ticks** and the new key: on your board, with **Open** to go to it. Only your
   terminal can seal this answer, so the relay cannot claim a ticket landed.
+- **Teal ticks**: picked up. You opened the ticket at your terminal, or an agent started
+  on it; Sent says which and when. The browser learns it the next time it is live with
+  your terminal.
 
 Now lists the tickets on their way under **Waiting to land**, and Board shows them as
 dashed cards in their columns. A ticket from the browser lands quietly: no agent starts
@@ -108,15 +129,19 @@ boards; revoke on the host to remove the corresponding grants too.
 The daemon stores `mesophon.json` (mode 0600) in its existing per-board state
 directory, containing the opaque board identity, the device grants and the ids of the
 tickets it filed most recently from the relay, with their keys. A ticket filed from the
-relay also records that id in its own `ticket.toml`. Pairing
+relay also records that id in its own `ticket.toml`, and, once it is picked up, when and
+how (`[picked]`: opened at the desk or an agent started). Pairing
 secrets and delivery receipts live in memory. The browser stores device keys,
 credentials, remembered grants and, per grant, the last board it saw and the tickets
 it sent, in IndexedDB. The remembered board holds ticket keys, titles, columns (with
-their descriptions), the board’s tag names and agent states; never output, prompt or
-queued text, tool input or dialog content. The Sent list keeps every ticket still on
-its way (sealed, while it is only in this browser) and up to 50 settled ones: title,
-column, tags, key and status, and the details only of a ticket that has not landed.
-Revocation and **Forget this browser** delete both. Output and unsent prompts remain in memory. The relay routes encrypted content and stores routing metadata for
+their descriptions), tags, the board’s tag names, agent states and when each agent
+entered its state; never output, an agent’s step or reply line, prompt or queued text,
+tool input or dialog content. The Sent list keeps every ticket still on its way (sealed,
+while it is only in this browser) and up to 50 settled ones: title, column, tags, key,
+status and when it was picked up, and the details only of a ticket that has not landed.
+Revocation and **Forget this browser** delete both. The page’s service worker keeps a
+copy of the page’s own files (HTML, scripts, styles, fonts, icons and the Wasm module)
+in the browser’s Cache Storage, and nothing of the board. Output and unsent prompts remain in memory. The relay routes encrypted content and stores routing metadata for
 Mesophon, plus the tickets that wait for an away terminal and the terminal’s answers:
 sealed, with the board, device and ticket ids, deleted after 30 days. Browser assets are served by the relay, so the relay’s web
 deployment is part of the browser client’s trust boundary.

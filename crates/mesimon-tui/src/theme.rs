@@ -1170,6 +1170,28 @@ impl Theme {
         Some(ink)
     }
 
+    /// The pairing QR's inks (T-497), dark modules then light, from tokens
+    /// this theme already has. A camera reads a code dark on light whatever
+    /// the ground, so a dark theme paints it on its own ink: the ground for
+    /// the modules and the base ink for the paper, the pair every word on the
+    /// board already stands on. Never `Reset`, for the half block's sake, as
+    /// `creature_ink`. Mono draws no picture: `None`.
+    pub(crate) fn qr_inks(&self) -> Option<(Color, Color)> {
+        let light = self.flavor.ground() == Ground::Light;
+        let r = &self.rest;
+        match self.profile {
+            Profile::Mono => None,
+            Profile::TrueColor => {
+                let bg = self.bg.unwrap_or(hex(self.flavor.palette().truecolor.bg));
+                Some(if light { (r.base, bg) } else { (bg, r.base) })
+            }
+            Profile::Ansi256 if light => Some((r.base, self.bg.unwrap_or(Color::Indexed(15)))),
+            Profile::Ansi256 => Some((self.bg.unwrap_or(I0), r.base)),
+            Profile::Ansi16 => Some((I0, Color::Indexed(15))),
+            Profile::Ansi8 => Some((I0, I7)),
+        }
+    }
+
     /// The MOVE ghost's blink (author 2026-08-30, "I press `<`, I expect the
     /// ticket to blink in place"): the grabbed card's title fg square-waves
     /// down the sel ramp — `sel.base` 400 ms, `sel.dim3` 400 ms — until it is
@@ -1763,6 +1785,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The pairing QR (T-497) reads dark on light on every theme that draws
+    /// pictures: neither ink is `Reset`, the dark one really is the darker,
+    /// and on truecolor the two stand at least 7:1 apart.
+    #[test]
+    fn the_pairing_qr_reads_dark_on_light_on_every_theme() {
+        for flavor in Flavor::ALL {
+            for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8] {
+                let (dark, light) = Theme::new(flavor, profile).qr_inks().expect("a picture");
+                assert!(dark != Color::Reset && light != Color::Reset, "{flavor:?} {profile:?}");
+            }
+            let (dark, light) = Theme::new(flavor, Profile::TrueColor).qr_inks().unwrap();
+            let (dark, light) = (rgb(dark), rgb(light));
+            assert!(lab(dark).0 < lab(light).0, "{flavor:?}: modules lighter than the paper");
+            let ratio = contrast(dark, light);
+            assert!(ratio >= 7.0, "{flavor:?}: only {ratio:.1}:1");
+        }
+        assert!(Theme::new(Flavor::Graphite, Profile::Mono).qr_inks().is_none());
     }
 
     /// The tint index is stored in `columns.toml` by `mesimon-core`, which

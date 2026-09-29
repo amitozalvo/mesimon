@@ -158,6 +158,23 @@ pub struct Ticket {
     pub title: String,
     pub column: String,
     pub agent: Option<Agent>,
+    /// The tags the ticket wears, each with the TUI's tint (T-497).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<TagOption>,
+    /// A ticket a paired browser filed, once it was picked up at the desk
+    /// (T-497): the browser that filed it turns its ticks teal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picked: Option<Picked>,
+}
+
+/// How a phone's ticket was picked up, and when: `by` is `desk` (its page was
+/// opened in the TUI) or `agent` (an agent started on it). A word, never an
+/// enum, so a newer host's word does not fail an older browser's board.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Picked {
+    pub by: String,
+    /// Milliseconds since the epoch, the host's clock.
+    pub at: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -170,6 +187,45 @@ pub struct Agent {
     pub provider: String,
     pub state: String,
     pub promptable: bool,
+    /// When the agent entered `state`: milliseconds since the epoch, the
+    /// host's clock (T-497).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
+    /// The step a working turn is on, one line: a tool call, or `thinking`.
+    /// Read from the transcript, as the TUI's card reads it. Live only: a
+    /// browser never keeps it with the remembered board.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doing: Option<String>,
+    /// The first line of the agent's latest reply. Live only, like `doing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said: Option<String>,
+}
+
+/// The page a pairing QR opens (T-497): the relay's browser origin with the
+/// code in the fragment, which a browser never sends to the relay. The page
+/// fills the code in and waits for Connect.
+pub fn pair_link(origin: &str, code: &str) -> String {
+    format!("{}/#pair={code}", origin.trim_end_matches('/'))
+}
+
+/// The longest line of an agent's words a phone is sent (T-497): one row.
+pub const LINE_MAX_BYTES: usize = 200;
+
+/// A reply's first line for a phone (T-497): the first line that says
+/// something, without its heading, quote or bullet marker or its emphasis,
+/// scrubbed where it leaves for another process and capped.
+pub fn reply_line(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = line.trim_start_matches(['#', '>']).trim_start();
+    // A bullet needs its space: `*emphasis*` is not one.
+    let line = ["- ", "* ", "+ "].iter().find_map(|b| line.strip_prefix(b)).unwrap_or(line);
+    step_line(&line.replace("**", "").replace('`', ""))
+}
+
+/// A step's words on one row (T-497): scrubbed and capped, as `reply_line`.
+pub fn step_line(step: &str) -> Option<String> {
+    let flat = crate::text::scrub_text(&step.replace(['\n', '\t'], " "));
+    crate::text::nonblank(crate::text::cap_bytes(&flat, LINE_MAX_BYTES))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -349,6 +405,92 @@ mod tests {
             created,
             serde_json::json!({"result":"created","ticket":"01J","key":"T-7","column":"TODO"})
         );
+    }
+
+    /// The projection's newer facts are absent unless there is something to
+    /// say, so an older browser reads the same bytes as before; and a reply
+    /// without them, from an older host, still parses.
+    #[test]
+    fn a_ticket_carries_tags_pickup_and_the_agent_s_step_only_when_known() {
+        let bare = Ticket {
+            queued: None,
+            id: "01J".into(),
+            key: "T-1".into(),
+            title: "t".into(),
+            column: "TODO".into(),
+            agent: Some(Agent {
+                permission: None,
+                dialog: None,
+                session: "s".into(),
+                provider: "claude".into(),
+                state: "working".into(),
+                promptable: true,
+                since: None,
+                doing: None,
+                said: None,
+            }),
+            tags: vec![],
+            picked: None,
+        };
+        let json = serde_json::to_value(&bare).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"queued":null,"id":"01J","key":"T-1","title":"t","column":"TODO",
+                "agent":{"permission":null,"dialog":null,"session":"s","provider":"claude",
+                "state":"working","promptable":true}})
+        );
+        let full = Ticket {
+            tags: vec![TagOption { group: 1, name: "BUG".into(), tint: 3 }],
+            picked: Some(Picked { by: "desk".into(), at: 1_790_000_000_000 }),
+            agent: bare.agent.clone().map(|a| Agent {
+                since: Some(1_790_000_000_000),
+                doing: Some("Bash(cargo test)".into()),
+                said: Some("Fixed.".into()),
+                ..a
+            }),
+            ..bare
+        };
+        let back: Ticket = serde_json::from_value(serde_json::to_value(&full).unwrap()).unwrap();
+        assert_eq!(back.tags, full.tags);
+        assert_eq!(back.picked, full.picked);
+        let agent = back.agent.unwrap();
+        assert_eq!(
+            (agent.since, agent.doing.as_deref(), agent.said.as_deref()),
+            (Some(1_790_000_000_000), Some("Bash(cargo test)"), Some("Fixed."))
+        );
+    }
+
+    /// A phone gets one plain row of a reply: markers, emphasis and hazards
+    /// go, a long line is cut on a character, and silence stays silence.
+    #[test]
+    fn a_reply_reaches_a_phone_as_its_first_plain_line() {
+        assert_eq!(
+            reply_line("\n\n## Fixed, and three tests pass.\nmore").as_deref(),
+            Some("Fixed, and three tests pass.")
+        );
+        assert_eq!(
+            reply_line("- **Updated** `CHANGELOG.md`").as_deref(),
+            Some("Updated CHANGELOG.md")
+        );
+        assert_eq!(reply_line("*emphasis* stays").as_deref(), Some("*emphasis* stays"));
+        assert_eq!(reply_line("> quoted").as_deref(), Some("quoted"));
+        assert_eq!(reply_line("a\u{202e}b\x07c").as_deref(), Some("abc"));
+        assert_eq!(reply_line("  \n \n"), None);
+        assert_eq!(reply_line("##"), None);
+        let long = "é".repeat(150);
+        let cut = reply_line(&long).unwrap();
+        assert!(cut.len() <= LINE_MAX_BYTES && cut.chars().all(|c| c == 'é'));
+        assert_eq!(step_line("Bash(cargo\ntest)").as_deref(), Some("Bash(cargo test)"));
+    }
+
+    /// The QR's page keeps the code off the wire: it rides the fragment.
+    #[test]
+    fn the_pairing_link_puts_the_code_in_the_fragment() {
+        let code = "7K2M-QX4P-0B9D-RT6W-HN3C-5VJE-8FGA-1YSZ";
+        for origin in ["https://remote.mesimon.dev", "https://remote.mesimon.dev/"] {
+            assert_eq!(pair_link(origin, code), format!("https://remote.mesimon.dev/#pair={code}"));
+        }
+        assert_eq!(pair_link("http://localhost:8444", "C"), "http://localhost:8444/#pair=C");
     }
 
     #[test]

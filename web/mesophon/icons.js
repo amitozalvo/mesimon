@@ -11,6 +11,7 @@ const paths = {
   circleCheck: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20m-3-10 2 2 4-4",
   cloud: "M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z",
   down: "M12 5v14m7-7-7 7-7-7",
+  download: "M12 15V3m9 12v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4m4-5 5 5 5-5",
   file: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7ZM14 2v4a2 2 0 0 0 2 2h4M16 13H8m8 4H8m2-8H8",
   hourglass:
     "M5 22h14M5 2h14m-2 20v-4.17a2 2 0 0 0-.59-1.42L12 12l-4.41 4.41A2 2 0 0 0 7 17.83V22M7 2v4.17a2 2 0 0 0 .59 1.42L12 12l4.41-4.41A2 2 0 0 0 17 6.17V2",
@@ -41,10 +42,11 @@ export function Icon({ name, size = 20, width = 2, cls = "" }) {
 }
 
 // Delivery ticks, one shape language for every receipt: a clock while this
-// browser holds it, one tick when the next hop holds it, two when it arrived.
+// browser holds it, one tick when the next hop holds it, two when it arrived,
+// and two in teal once it was picked up at the desk (T-497).
 export function Tick({ state }) {
   if (state === "clock")
     return html`<svg class="tick" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="5.6" /><path d="M7 4.2V7l1.9 1.3" /></svg>`;
-  if (state !== "one" && state !== "two") return null;
-  return html`<svg class="tick" width="18" height="12" viewBox="0 0 18 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 6.4 4.9 9.8 11.4 2.2" />${state === "two" && html`<path d="M6.9 8.4 8.3 9.8 14.8 2.2" />`}</svg>`;
+  if (!["one", "two", "picked"].includes(state)) return null;
+  return html`<svg class=${state === "picked" ? "tick tick-picked" : "tick"} width="18" height="12" viewBox="0 0 18 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 6.4 4.9 9.8 11.4 2.2" />${state !== "one" && html`<path d="M6.9 8.4 8.3 9.8 14.8 2.2" />`}</svg>`;
 }

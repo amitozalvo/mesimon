@@ -1538,6 +1538,9 @@ pub struct App {
     /// scan THAT card once more before it goes: a reply that landed under
     /// the cursor between two clock beats was seen, not missed.
     spoke_subject: Option<ulid::Ulid>,
+    /// The ticket whose page was open last tick (T-497): arriving on a
+    /// phone's ticket nobody has picked up tells the daemon, once.
+    pickup_page: Option<ulid::Ulid>,
     /// Note bodies the ticket page has asked for, by note id. Bodies never
     /// ride the snapshot; `poll_notes` fetches the ones on screen, once per
     /// `(id, rev)`, and a save seeds it from our own text.
@@ -1575,6 +1578,9 @@ pub struct App {
     /// Where the shin stood in the last frame and what it drew there, for
     /// the scoped block-glyph law (T-451).
     pub mascot: std::cell::RefCell<Option<crate::creature::Drawn>>,
+    /// Where the pairing QR stood in the last frame (T-497): its half blocks
+    /// are legal inside this rect and nowhere else.
+    pub qr: std::cell::RefCell<Option<ratatui::layout::Rect>>,
     /// The shin's own clock: what it is acting out (a hash of the subject
     /// and the animation) and since when. Draw-side, like `spin_epoch`, so
     /// the first frame of anything is frame 0 and the goldens stay stable.
@@ -1843,6 +1849,7 @@ impl App {
             spoke: std::collections::HashMap::new(),
             spoke_polled: None,
             spoke_subject: None,
+            pickup_page: None,
             notes: std::collections::HashMap::new(),
             preview: Pager::default(),
             rich_cache: std::cell::RefCell::new(None),
@@ -1851,6 +1858,7 @@ impl App {
             frame_ctx: std::cell::RefCell::new(None),
             columns_sorted,
             mascot: std::cell::RefCell::new(None),
+            qr: std::cell::RefCell::new(None),
             creature_clock: Cell::new(None),
             spin_epoch: Cell::new(None),
             diff: None,
@@ -2700,6 +2708,7 @@ impl App {
         if wire {
             dirty |= self.poll_shell_tail();
             dirty |= self.poll_notes();
+            self.poll_pickup();
         }
         // The spoke marks: a redraw, never a snapshot — nothing on the wire
         // knows what an agent said, only its transcript does.
@@ -3018,6 +3027,26 @@ impl App {
             changed |= self.ack_spoke(t);
         }
         changed
+    }
+
+    /// A phone's ticket, opened here (T-497): the page arriving on a ticket
+    /// a paired browser filed, and nobody has picked up, tells the daemon so
+    /// the browser's ticks turn teal. Watched on the tick rather than a key,
+    /// because every road onto the page counts — Enter, Space, the archive,
+    /// the way back from a pane. The answer is not the person's business: a
+    /// daemon too old to know the command refuses it, and the page is open
+    /// either way.
+    fn poll_pickup(&mut self) {
+        let page = self.ticket_page();
+        if page == self.pickup_page {
+            return;
+        }
+        self.pickup_page = page;
+        let Some(id) = page.filter(|id| self.board.ticket(*id).is_some_and(|t| t.awaits_pickup()))
+        else {
+            return;
+        };
+        let _ = self.req(Command::OpenedTicket { id });
     }
 
     /// The note bodies the ticket page is showing — the description and the
@@ -7504,7 +7533,8 @@ impl App {
             }
             SharingRow::InviteViewer => self.send(Command::MintInvite { role: "viewer".into() }),
             SharingRow::Code(code) => {
-                self.status = crate::clipboard::copy_status("invite code", &code);
+                let what = if self.mesophon_dialog { "pairing code" } else { "invite code" };
+                self.status = crate::clipboard::copy_status(what, &code);
                 Ok(())
             }
             SharingRow::Member(device) if armed => {
@@ -10937,6 +10967,7 @@ pub(crate) mod test_support {
             created_from: None,
             entered_at: None,
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -11787,6 +11818,7 @@ mod tests {
             created_from: None,
             entered_at: None,
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -13082,6 +13114,37 @@ mod tests {
         app.board.tickets[0].notes[0].rev = 2;
         assert!(app.poll_notes());
         assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 2);
+    }
+
+    /// A phone's ticket, opened here (T-497): arriving on its page tells the
+    /// daemon once per arrival; staying on it, a person's own ticket and one
+    /// already picked up ask nothing.
+    #[test]
+    fn opening_a_phone_s_ticket_tells_the_daemon_once() {
+        let (mut app, sent) = app_with_note();
+        let opened = |sent: &std::rc::Rc<std::cell::RefCell<Vec<String>>>| {
+            sent.borrow().iter().filter(|c| c.contains("OpenedTicket")).count()
+        };
+        let page = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        app.screen = page.clone();
+        app.poll_pickup();
+        assert_eq!(opened(&sent), 0, "a person's own ticket is nobody's news");
+        app.screen = Screen::Board;
+        app.poll_pickup();
+        app.board.tickets[0].created_by = "device:ab12".into();
+        app.screen = page.clone();
+        app.poll_pickup();
+        app.poll_pickup();
+        assert_eq!(opened(&sent), 1, "once per arrival: {:?}", sent.borrow());
+        app.board.tickets[0].picked = Some(mesimon_core::board::PickedUp {
+            at: "@1".into(),
+            by: mesimon_core::board::PICKED_AT_DESK.into(),
+        });
+        app.screen = Screen::Board;
+        app.poll_pickup();
+        app.screen = page;
+        app.poll_pickup();
+        assert_eq!(opened(&sent), 1, "picked up already");
     }
 
     // ---- the spoke mark (T-173) -------------------------------------------

@@ -56,7 +56,7 @@ export class BoardState {
             ? ["starting", "working"].includes(t.agent?.state)
             : t.agent?.state === "needs attention")) &&
         (!query ||
-          [t.key, t.title, t.column, t.agent?.provider, t.agent?.state]
+          [t.key, t.title, t.column, t.agent?.provider, t.agent?.state, ...(t.tags || []).map((g) => g.name)]
             .join(" ")
             .toLocaleLowerCase()
             .includes(query)),
@@ -80,7 +80,9 @@ export class BoardState {
   landing() {
     return this.columns.includes(this.defaultColumn) ? this.defaultColumn : this.columns[0] || "";
   }
-  // What this browser may remember: no queued text, tool input or dialogs.
+  // What this browser may remember: keys, titles, columns, tags and agent
+  // states. No queued text, tool input, dialogs, or the agent's step and
+  // reply line (T-497): those are output, shown live and never kept.
   snapshot() {
     return {
       title: this.title,
@@ -88,15 +90,17 @@ export class BoardState {
       default_column: this.defaultColumn,
       column_descriptions: this.columnDescriptions,
       allowed_tags: this.allowedTags.map(({ group, name, tint }) => ({ group, name, tint })),
-      tickets: this.tickets.map(({ id, key, title, column, agent }) => ({
+      tickets: this.tickets.map(({ id, key, title, column, agent, tags }) => ({
         id,
         key,
         title,
         column,
+        tags: (tags || []).map(({ group, name, tint }) => ({ group, name, tint })),
         agent: agent && {
           session: agent.session,
           provider: agent.provider,
           state: agent.state,
+          since: agent.since,
           promptable: false,
         },
       })),

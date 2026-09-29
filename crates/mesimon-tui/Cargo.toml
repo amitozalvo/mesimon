@@ -34,6 +34,9 @@ semver = "1.0.28"
 # The release checker verifies the published .sha256 before it replaces the
 # binary at our own path. Same major as the daemon's, per the dup-dep gate.
 sha2 = "0.10"
+# T-497: the Remote Control dialog's scan-to-pair QR. Nayuki's reference
+# encoder, MIT, no dependencies of its own.
+qrcodegen = "1.8"
 
 [lints]
 workspace = true

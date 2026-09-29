@@ -438,6 +438,15 @@ pub enum Command {
     LowerHand {
         id: ulid::Ulid,
     },
+    /// The person opened a ticket's page (T-497). A ticket a paired browser
+    /// filed and nobody has picked up yet is picked up at the desk
+    /// (`Ticket::picked`), and the browser that filed it turns its ticks
+    /// teal. A no-op on any other ticket.
+    ///
+    /// Not `SeenTicket`: a cursor resting on a card is not the ticket read.
+    OpenedTicket {
+        id: ulid::Ulid,
+    },
     /// Take a ticket off the merge train, or put it back (T-227, the `t`
     /// key): `on` sets `Ticket::manual_merge`, and the train then neither
     /// merges the branch nor asks its agent to rebase — `m` by hand still
@@ -1122,7 +1131,9 @@ impl Command {
             | SetTicketTier { id, .. } => m(Mutate, true, Some(*id)),
             // A cursor landing is not news for the feed, and neither is
             // walking off the page a raised hand was read on.
-            SeenTicket { id } | LowerHand { id } => m(Mutate, false, Some(*id)),
+            SeenTicket { id } | LowerHand { id } | OpenedTicket { id } => {
+                m(Mutate, false, Some(*id))
+            }
             // Chrome over the panes, not the board's history: the feed says
             // what the board did, and where the status line sits is neither.
             SetStatusLine { .. } => m(Mutate, false, None),

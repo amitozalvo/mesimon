@@ -8,6 +8,34 @@ import { answerable, requestSummary } from "./dialogs.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 export const lastSeen = (board) => (board?.receivedAt ? clock(board.receivedAt) : "");
+// How long an agent has been in its state (T-497), by the host's clock, in
+// the board's short words. A remembered board says none: it is not now.
+export function stateAge(board, agent) {
+  if (board.cached || !Number.isFinite(agent?.since)) return "";
+  const seconds = Math.max(0, (Date.now() - agent.since) / 1000);
+  return seconds < 60
+    ? "<1m"
+    : seconds < 3600
+      ? `${Math.floor(seconds / 60)}m`
+      : seconds < 86400
+        ? `${Math.floor(seconds / 3600)}h`
+        : `${Math.floor(seconds / 86400)}d`;
+}
+
+// The ticket's tags, in the TUI's tints (T-497).
+export function Tags({ ticket }) {
+  const tags = ticket.tags || [];
+  if (!tags.length) return null;
+  return html`<span class="tags">${tags.map((t) => html`<span class=${`tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}><span class="tag-dot" aria-hidden="true"></span>${t.name}</span>`)}</span>`;
+}
+
+// What the agent is on (a tool step, mono) or last said, one line (T-497).
+// Live only: a remembered board never has it.
+export function Headline({ agent }) {
+  if (agent?.doing) return html`<span class="headline headline-step">› ${agent.doing}</span>`;
+  if (agent?.said) return html`<span class="headline" dir="auto">${agent.said}</span>`;
+  return null;
+}
 
 // A ticket this browser sent carries a small phone mark on the board.
 function FromHere({ store, ticket }) {
@@ -27,12 +55,14 @@ function StateMark({ ticket }) {
 function Row({ store, ticket, board, live }) {
   const pressed = ticket.id === board.selected;
   const agent = ticket.agent;
+  const since = stateAge(board, agent);
   return html`<button type="button" class="ticket row" data-id=${ticket.id} aria-pressed=${String(pressed)}
     onClick=${() => store.select(ticket.id)}>
     <${StateMark} ticket=${ticket} />
     <span class="row-text">
       <span class="ticket-title" dir="auto">${ticket.title}</span>
-      <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span>${agent ? ` · ${agent.provider} · ${agent.state}` : " · No agent"} · ${ticket.column}<${FromHere} store=${store} ticket=${ticket} /></span>
+      <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span>${agent ? ` · ${agent.provider} · ${agent.state}` : " · No agent"}${since && html` · <span class="age">${since}</span>`} · ${ticket.column}<${FromHere} store=${store} ticket=${ticket} /></span>
+      <${Headline} agent=${agent} />
     </span>
     <${Icon} name="chevronRight" size=${16} cls="row-go" />
   </button>`;
@@ -157,11 +187,13 @@ function Card({ store, ticket, board }) {
   const pressed = ticket.id === board.selected;
   const agent = ticket.agent;
   const needs = agent?.state === "needs attention";
+  const since = stateAge(board, agent);
   return html`<button type="button" class=${`ticket card${needs ? " card-attn" : ""}`} data-id=${ticket.id}
     aria-pressed=${String(pressed)} onClick=${() => store.select(ticket.id)}>
     <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span>
     <span class="ticket-title" dir="auto">${ticket.title}</span>
-    ${agent && html`<span class=${`card-agent${needs ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${agent.state}</span></span>`}
+    <${Tags} ticket=${ticket} />
+    ${agent && html`<span class=${`card-agent${needs ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${agent.state}${since && ` · ${since}`}</span></span>`}
   </button>`;
 }
 
@@ -209,6 +241,10 @@ const dayOf = (at) => {
 };
 
 const tickOf = { sending: "clock", local: "clock", relay: "one", landed: "two" };
+// Picked up at the desk (T-497): the two ticks turn teal.
+const tickFor = (item) => (item.status === "landed" && item.picked ? "picked" : tickOf[item.status]);
+const pickedLine = (item) =>
+  `${item.picked.by === "agent" ? "An agent started on it" : "Opened at your desk"} · ${clock(item.picked.at)}`;
 const saidOf = {
   sending: "Sending",
   local: "In this browser",
@@ -224,10 +260,11 @@ function SentItem({ store, board, item }) {
   if (item.status === "withdrawn")
     return html`<p class="sent-gone" data-id=${item.id}>You unsent “<span dir="auto">${item.title}</span>”</p>`;
   const onBoard = !!item.ticket && board.tickets.some((t) => t.id === item.ticket);
-  const tick = tickOf[item.status];
+  const tick = tickFor(item);
   // Still on its way: it can be edited or taken back until the host has it.
   const waiting = item.status === "local" || item.status === "relay";
-  return html`<article class="sent-item" data-status=${item.status} data-id=${item.id} aria-label=${`${item.title}, ${said}`}>
+  return html`<article class="sent-item" data-status=${item.status} data-picked=${item.picked?.by} data-id=${item.id}
+    aria-label=${`${item.title}, ${item.picked ? "picked up" : said}`}>
     <div class="sent-bubble">
       <p class="sent-title" dir="auto">${item.title}</p>
       ${item.description && html`<p class="sent-desc" dir="auto">${item.description}</p>`}
@@ -235,7 +272,7 @@ function SentItem({ store, board, item }) {
         <span>→ ${item.column}</span>
         ${item.tags.map((t) => html`<span class=${`sent-tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}><span class="tag-dot" aria-hidden="true"></span>${t.name}</span>`)}
         <span>${clock(item.at)}</span>
-        ${tick && html`<span class="sent-tick"><${Tick} state=${tick} /><span class="sr-only">${said}</span></span>`}
+        ${tick && html`<span class="sent-tick"><${Tick} state=${tick} /><span class="sr-only">${item.picked ? "Picked up" : said}</span></span>`}
       </p>
     </div>
     ${waiting && html`<div class="sent-waiting" role="group" aria-label=${said}>
@@ -254,6 +291,7 @@ function SentItem({ store, board, item }) {
       ? html`<button type="button" class="sent-sys" onClick=${() => store.openSent(item.id)}>
           <${Tick} state="two" /><span>Landed as ${item.key} in ${item.column}</span><span class="sent-open">Open</span></button>`
       : html`<p class="sent-sys"><${Tick} state="two" /><span>Landed as ${item.key} in ${item.column}</span></p>`)}
+    ${item.picked && html`<p class="sent-sys sent-picked"><${Tick} state="picked" /><span>${pickedLine(item)}</span></p>`}
     ${(item.status === "unknown" || item.status === "rejected") && html`<div class="sent-problem" role="group" aria-label=${said}>
       <p>${item.status === "unknown"
         ? "Delivery unknown. The terminal may have created it: check the board before you send it again."
@@ -277,7 +315,7 @@ export function SentList({ store, board }) {
     </div>`;
   let day;
   return html`<div class="sent-feed">
-    <p class="sent-legend"><span><${Tick} state="clock" />In this browser</span><span><${Tick} state="one" />At the relay</span><span><${Tick} state="two" />On your board</span></p>
+    <p class="sent-legend"><span><${Tick} state="clock" />In this browser</span><span><${Tick} state="one" />At the relay</span><span><${Tick} state="two" />On your board</span><span><${Tick} state="picked" />Picked up</span></p>
     ${items.map((item) => {
       const label = dayOf(item.at);
       const heading = label !== day && html`<h3 class="sent-day" key=${`day-${label}`}>${label}</h3>`;

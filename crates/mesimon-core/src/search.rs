@@ -235,6 +235,7 @@ mod tests {
             envelope: None,
             raised: None,
             previous_column: None,
+            picked: None,
             tags: Vec::new(),
             notes: Vec::new(),
             archived: None,

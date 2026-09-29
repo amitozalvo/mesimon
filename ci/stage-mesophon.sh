@@ -10,7 +10,8 @@ if [ ! -f "$mesophon_source/pkg/mesimon_web_bg.wasm" ]; then
 fi
 # Requiring a fresh directory prevents stale modules surviving a new package.
 mkdir "$mesophon_destination"
-cp "$mesophon_source/index.html" "$mesophon_source/style.css" "$mesophon_destination/"
+cp "$mesophon_source/index.html" "$mesophon_source/style.css" \
+    "$mesophon_source/manifest.webmanifest" "$mesophon_destination/"
 for mesophon_module in "$mesophon_source"/*.js; do
     case "$mesophon_module" in *.test.js) continue ;; esac
     cp "$mesophon_module" "$mesophon_destination/"
@@ -19,3 +20,5 @@ cp -R "$mesophon_source/pkg" "$mesophon_destination/pkg"
 # Vendored Preact and htm, and the self-hosted fonts, each with its licence.
 cp -R "$mesophon_source/vendor" "$mesophon_destination/vendor"
 cp -R "$mesophon_source/fonts" "$mesophon_destination/fonts"
+# The home-screen icons (T-497), goldens of the shin engine.
+cp -R "$mesophon_source/icons" "$mesophon_destination/icons"

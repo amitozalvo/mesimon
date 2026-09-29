@@ -75,8 +75,9 @@ function Pairing({ store, hidden }) {
       <ol class="steps">
         <li><span class="step">1</span><span>On your Mac, press <kbd>Esc</kbd>, then <strong>Sharing › Remote Control</strong>.</span></li>
         <li><span class="step">2</span><span>Choose <strong>Pair a browser</strong>.</span></li>
-        <li><span class="step">3</span><span>Type the code it shows. It works once, for ten minutes.</span></li>
+        <li><span class="step">3</span><span>Scan its QR code with this phone’s camera, or type the code. It works once, for ten minutes.</span></li>
       </ol>
+      ${store.install.apple && !store.install.standalone && html`<p class="onboarding-tip" id="install-tip"><${Icon} name="smartphone" size=${14} /><span>On iPhone or iPad, add this page to your Home Screen first (Share, then Add to Home Screen), then pair from there: the Home Screen app keeps its own pairing.</span></p>`}
       <form id="pair-form" onSubmit=${(e) => { e.preventDefault(); store.pair(); }}>
         <label class="field">Pairing code<textarea id="code" rows="2" maxlength="80" autocomplete="off"
           autocapitalize="characters" spellcheck="false" required placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
@@ -145,6 +146,18 @@ function Hop({ icon, name, state, ok }) {
     <span class=${`hop-dot${ok ? " ok" : ""}`} aria-hidden="true"></span></li>`;
 }
 
+// Home screen (T-497): the browser's own install prompt where it has one,
+// the Share sheet's words on iPhone and iPad, nothing once installed.
+function Install({ store }) {
+  const { prompt, standalone, apple } = store.install;
+  if (standalone) return null;
+  if (prompt)
+    return html`<button id="install" type="button" class="btn btn-quiet" onClick=${() => store.installApp()}><${Icon} name="download" size=${16} /><span>Add to Home Screen</span></button>`;
+  if (apple)
+    return html`<p id="install-note" class="side-note"><${Icon} name="download" size=${13} /><span>To open it like an app: Share, then Add to Home Screen. The Home Screen app keeps its own pairing.</span></p>`;
+  return null;
+}
+
 function Sidebar({ store, bp }) {
   const open = store.sheetOpen && bp !== "desktop";
   const link = store.link;
@@ -193,6 +206,7 @@ function Sidebar({ store, bp }) {
           <option value="graphite">Graphite</option>
           <option value="chalk">Chalk</option>
         </select></label>
+        <${Install} store=${store} />
         <button id="alerts" type="button" class="btn btn-quiet" onClick=${() => store.enableAlerts()}><${Icon} name="bell" size=${16} /><span>Enable connected-browser alerts</span></button>
         <p id="alert-status" class="side-note">${store.alertStatus}</p>
         <button id="forget" type="button" class="btn btn-quiet btn-danger" onClick=${() => store.forget()}><${Icon} name="leave" size=${16} /><span>Forget this browser</span></button>
@@ -291,7 +305,7 @@ export function App({ store }) {
         ? document.getElementById("selection")
         : want === "row"
           ? document.querySelector('#tickets .ticket[aria-pressed="true"]')
-          : document.getElementById(want === "prompt" ? "prompt" : "code");
+          : document.getElementById(want === "prompt" ? "prompt" : want === "pair" ? "pair" : "code");
     if (target?.getClientRects().length) target.focus({ preventScroll: true });
   });
   return html`

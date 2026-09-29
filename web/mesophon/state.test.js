@@ -315,3 +315,54 @@ test("a mailed ticket goes clock, one tick, two ticks, and keeps its seal only w
     [["Away", "landed"], ["Back", "withdrawn"], ["Lost", "unknown"], ["Sealed copy lost", "unknown"]],
   );
 });
+
+test("a landed ticket is picked up once, keeps it across a reload, and nothing else is", async () => {
+  const { Sent } = await import("./sent.js");
+  const sent = new Sent();
+  const item = sent.add("board", { title: "From the phone", column: "TODO" }, 1, { id: "env-1" });
+  const desk = { by: "desk", at: 1_790_000_000_000 };
+  assert.equal(sent.pickedUp(item, desk), false, "not on the board yet");
+  sent.deposited(item);
+  sent.reply(item, { result: "created", ticket: "t-1", key: "T-1", column: "TODO" });
+  assert.equal(sent.pickedUp(item, { by: "desk" }), false, "no time, no pickup");
+  assert.equal(sent.pickedUp(item, desk), true);
+  assert.equal(sent.pickedUp(item, { by: "agent", at: 2 }), false, "once: the first road wins");
+  assert.deepEqual(item.picked, desk);
+  const again = new Sent();
+  again.restore("board", JSON.parse(JSON.stringify(sent.stored("board"))));
+  assert.deepEqual(again.get("env-1").picked, desk);
+  // A stored pickup on a ticket that never landed is not believed.
+  const forged = new Sent();
+  forged.restore("board", [{ id: "x", title: "t", status: "relay", picked: desk }]);
+  assert.equal(forged.get("x").picked, undefined);
+});
+
+test("a remembered board keeps tags and since, never the agent's step or reply", () => {
+  const board = new BoardState();
+  board.update({
+    title: "Board",
+    columns: ["TODO"],
+    tickets: [
+      {
+        id: "one",
+        key: "T-1",
+        title: "Ticket",
+        column: "TODO",
+        tags: [{ group: 1, name: "BUG", tint: 3, extra: "dropped" }],
+        picked: { by: "desk", at: 5 },
+        agent: { session: "s", provider: "claude", state: "working", promptable: true,
+          since: 1_790_000_000_000, doing: "Bash(cat secrets)", said: "I read it." },
+      },
+    ],
+  });
+  const kept = JSON.parse(JSON.stringify(board.snapshot())).tickets[0];
+  assert.deepEqual(kept.tags, [{ group: 1, name: "BUG", tint: 3 }]);
+  assert.equal(kept.agent.since, 1_790_000_000_000);
+  assert.equal(kept.agent.doing, undefined);
+  assert.equal(kept.agent.said, undefined);
+  assert.equal(JSON.stringify(kept).includes("secrets"), false);
+  const restored = new BoardState();
+  restored.update(JSON.parse(JSON.stringify(board.snapshot())), { cached: true });
+  restored.search = "bug";
+  assert.equal(restored.visible().length, 1, "a tag's name finds its ticket, remembered too");
+});

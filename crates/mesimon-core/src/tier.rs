@@ -430,6 +430,7 @@ mod tests {
             created_from: None,
             entered_at: None,
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),

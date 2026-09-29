@@ -1061,6 +1061,13 @@ pub struct Ticket {
     /// leave it intact. Optional for old tickets; a table after all scalars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_column: Option<ColumnStay>,
+    /// A ticket a paired browser filed, picked up at the desk (T-497): the
+    /// first time its page was opened here, or an agent first started on it.
+    /// The browser that filed it turns its ticks teal. Only a phone's ticket
+    /// ([`Ticket::from_phone`]) gets one, once, and a copy does not carry it.
+    /// A TOML table, with the tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picked: Option<PickedUp>,
     /// Tags, at most one per group (a group is an axis: kind, environment…).
     /// Must stay after every scalar — this serializes as `[[tags]]`, an array
     /// of tables, and a scalar after a table errors. Tables may follow tables,
@@ -1079,6 +1086,23 @@ pub struct Ticket {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<Archived>,
 }
+
+/// The `[picked]` table on a phone's ticket (T-497): when it was picked up,
+/// and how.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PickedUp {
+    /// Same clock as `created_at` (`@<unix secs>`).
+    pub at: String,
+    /// [`PICKED_AT_DESK`] or [`PICKED_BY_AGENT`]. A word, never an enum: the
+    /// ticket rides the TUI's snapshot, and a variant an older client does
+    /// not know would fail the whole board.
+    pub by: String,
+}
+
+/// Its page was opened in the TUI.
+pub const PICKED_AT_DESK: &str = "desk";
+/// An agent started on it.
+pub const PICKED_BY_AGENT: &str = "agent";
 
 /// A completed stay, frozen at departure rather than counting up in the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1476,6 +1500,17 @@ impl Ticket {
     /// other ticket-level way to wear needs-you.
     pub fn hand_raised(&self) -> bool {
         self.raised.is_some()
+    }
+
+    /// Filed by a paired browser (T-497): its author is a device.
+    pub fn from_phone(&self) -> bool {
+        self.created_by.starts_with("device:")
+    }
+
+    /// A phone's ticket nobody has picked up yet: opening its page, or an
+    /// agent starting on it, is news for the browser that filed it.
+    pub fn awaits_pickup(&self) -> bool {
+        self.from_phone() && self.picked.is_none()
     }
 
     /// This ticket's tag on axis `group`, if it wears one. At most one per
@@ -2695,6 +2730,7 @@ mod tests {
             created_from: None,
             entered_at: None,
             previous_column: None,
+            picked: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
