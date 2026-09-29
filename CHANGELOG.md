@@ -6,6 +6,46 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.31 — 2026-09-29
+
+### Added
+
+- **Remote Control (Mesophon) can file a ticket from a paired browser.**
+  `New ticket` takes a title, optional details, a column and the board's own
+  tags. A filed ticket starts nothing by itself. Each ticket shows a clock
+  while it is sealed in the browser, one tick once the relay holds it, and
+  two ticks with its key once your terminal has filed it.
+- **A ticket filed while your terminal is away waits at the relay** and is
+  filed once, when the terminal is back. Until then the browser can unsend
+  or edit it. The ticks turn teal when you open the ticket in mesimon or an
+  agent starts on it.
+- **A paired browser can start an agent on a ticket that has none**, with
+  `Start agent` on the ticket page or a Board card. It starts what
+  `Shift+Enter` starts, with the ticket's title and description as the
+  first prompt. It is refused when the ticket already has an agent, a
+  start is already on its way, or the ticket came from an import or a
+  teammate.
+- **Remote Control's dialog shows the pairing code as a QR code**, and
+  scanning it fills the code in on the phone. The page can be added to the
+  home screen and opens from a kept copy, with the remembered board, when
+  the network is out.
+- **Mesophon's Board shows each ticket's tags and each agent's current step
+  and latest reply line.**
+
+### Changed
+
+- **Mesophon's output pane is drawn at the terminal pane's width**, and
+  tags use the same coloured chips as the TUI. The sidebar folds to a rail
+  on wide screens.
+- **Remote Control's hosted address is `remote.mesimon.dev`** and the
+  install line is `https://mesimon.dev/install.sh`.
+- **The column auto-run setting is removed.**
+
+### Fixed
+
+- **An idle board no longer writes to the terminal**, so a background
+  iTerm2 tab stops showing activity.
+
 ## v0.1.0-alpha.30 — 2026-09-29
 
 ### Added
