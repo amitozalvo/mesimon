@@ -98,6 +98,13 @@ pub(crate) struct Prefs {
     /// default bottom. Off by default; the TUI pushes it to the daemon, which
     /// owns the server and never reads this file.
     pub status_top: bool,
+    /// The terminal's own tab or window title says which board this is
+    /// and how many tickets need you, and names the ticket whose pane is
+    /// on screen during a focus (T-492). Off by default: a title is the
+    /// terminal's, and renaming somebody's tab is a thing they ask for.
+    /// Per machine, like the status line — the title belongs to the
+    /// terminal the board runs in, not to a repo.
+    pub tab_title: bool,
     /// Hold this machine awake while an agent is mid-turn (T-288). OFF by
     /// default and deliberately, for `notify`'s reason one level up: changing
     /// what a machine does about power is a thing the user asks for, never a
@@ -159,6 +166,7 @@ impl Default for Prefs {
             merge_train: false,
             merge_train_notice: true,
             status_top: false,
+            tab_title: false,
             keep_awake: false,
             notify: false,
             notify_done: true,
@@ -180,6 +188,7 @@ const WEEK_START_KEY: &str = PrefKey::WeekStart.name();
 const MERGE_TRAIN_KEY: &str = PrefKey::MergeTrain.name();
 const MERGE_TRAIN_NOTICE_KEY: &str = PrefKey::MergeTrainNotice.name();
 const STATUS_TOP_KEY: &str = PrefKey::StatusTop.name();
+const TAB_TITLE_KEY: &str = PrefKey::TabTitle.name();
 const KEEP_AWAKE_KEY: &str = PrefKey::KeepAwake.name();
 const NOTIFY_KEY: &str = PrefKey::Notify.name();
 const NOTIFY_DONE_KEY: &str = PrefKey::NotifyDone.name();
@@ -293,6 +302,7 @@ impl Prefs {
                     "bottom"
                 }
             }
+            PrefKey::TabTitle => onoff(self.tab_title),
             PrefKey::KeepAwake => onoff(self.keep_awake),
             PrefKey::Notify => onoff(self.notify),
             PrefKey::NotifyDone => onoff(self.notify_done),
@@ -324,6 +334,7 @@ impl Prefs {
         doc.insert(MERGE_TRAIN_KEY.into(), Value::from(self.merge_train));
         doc.insert(MERGE_TRAIN_NOTICE_KEY.into(), Value::from(self.merge_train_notice));
         doc.insert(STATUS_TOP_KEY.into(), Value::from(self.status_top));
+        doc.insert(TAB_TITLE_KEY.into(), Value::from(self.tab_title));
         doc.insert(KEEP_AWAKE_KEY.into(), Value::from(self.keep_awake));
         doc.insert(NOTIFY_KEY.into(), Value::from(self.notify));
         doc.insert(NOTIFY_DONE_KEY.into(), Value::from(self.notify_done));
@@ -414,7 +425,7 @@ impl BoardPrefs {
             PrefKey::Dark => self.flavor(Ground::Dark).is_some(),
             PrefKey::Light => self.flavor(Ground::Light).is_some(),
             PrefKey::NotifySoundNeedsYou | PrefKey::NotifySoundDone => self.sound(key).is_some(),
-            PrefKey::WeekStart | PrefKey::StatusTop | PrefKey::Peek => false,
+            PrefKey::WeekStart | PrefKey::StatusTop | PrefKey::TabTitle | PrefKey::Peek => false,
             _ => self.bool(key).is_some(),
         }
     }
@@ -561,6 +572,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let merge_train_notice =
         doc.get(MERGE_TRAIN_NOTICE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let status_top = doc.get(STATUS_TOP_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let tab_title = doc.get(TAB_TITLE_KEY).and_then(Value::as_bool).unwrap_or(false);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
@@ -588,6 +600,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         merge_train,
         merge_train_notice,
         status_top,
+        tab_title,
         keep_awake,
         notify,
         notify_done,
@@ -680,6 +693,16 @@ pub fn status_line_doctor_line() -> String {
         "top of the pane (Settings moves it back to the bottom)".into()
     } else {
         "bottom of the pane, tmux's default (Settings moves it to the top)".into()
+    }
+}
+
+/// `mesimon doctor`'s `tab title` line (T-492): whether the board names
+/// the terminal's tab, and what the tab would read.
+pub fn tab_title_doctor_line() -> String {
+    if load_home().prefs.tab_title {
+        "on ∙ the tab reads the board, how many need you, and the ticket in focus".into()
+    } else {
+        "off ∙ the tab keeps its own title (Settings › Appearance turns it on)".into()
     }
 }
 
@@ -929,6 +952,27 @@ mod tests {
         assert_eq!(v["dark"], "amber");
     }
 
+    /// The terminal's tab title (T-492): absent is off — a file written
+    /// before the preference existed must not start renaming tabs — and a
+    /// pick survives a save of something else.
+    #[test]
+    fn the_tab_title_defaults_to_off_and_round_trips() {
+        let p = scratch("tabtitle");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(!l.prefs.tab_title, "absent is off");
+        l.prefs.tab_title = true;
+        save(&p, &l.prefs).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.tab_title);
+        l.prefs.set(Ground::Dark, Flavor::Amber);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["tab_title"], true);
+        assert_eq!(v["dark"], "amber");
+    }
+
     /// The week-start preference: absent is Monday, a pick round-trips as
     /// its lower-case name, a day this build does not know falls to Monday
     /// and survives a save of something else.
@@ -1102,13 +1146,14 @@ mod tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(
             &p,
-            r#"{"schema_version":1,"status_line_top":true,"week_start":"sunday","peek":"all"}"#,
+            r#"{"schema_version":1,"status_line_top":true,"tab_title":true,"week_start":"sunday","peek":"all"}"#,
         )
         .unwrap();
         let mut l = load_board(&p);
         assert!(l.prefs.overridden().is_empty());
         let r = Prefs::default().overlay(&l.prefs);
         assert!(!r.status_top);
+        assert!(!r.tab_title);
         assert_eq!(r.week_start, Weekday::Monday);
         assert_eq!(r.peek, PeekLevel::Off);
         l.prefs.set_bool(PrefKey::Notify, true);

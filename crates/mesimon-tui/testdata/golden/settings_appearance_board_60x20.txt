@@ -2,7 +2,6 @@
 
     TODO                               2   2   2   0
 
-    Decay treatments                 >1y   I   R   D
   ╭─ APPEARANCE & NOTIFICATIONS ∙ THIS BOARD ────────────╮
   │   Theme: graphite                                    │
   │     inherited ∙ dark, the default ∙ for a dark term~ │
@@ -12,8 +11,9 @@
   │     the board says nothing outside its own window ∙~ │
   │   Status line at the bottom                          │
   │     (machine) ∙ tmux's bar over an agent's pane ∙ e~ │
+  │   Terminal tab title: off                            │
+  │     (machine) ∙ the tab keeps its own title ∙ enter~ │
   ╰──── jk select ∙ enter choose ∙ b machine ∙ esc back ─╯
-
 
 
 

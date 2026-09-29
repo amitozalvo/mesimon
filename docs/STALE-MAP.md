@@ -15007,3 +15007,66 @@ Not built: nothing on the snacks side (its `on` gate is theirs), no `TMUX` scrub
 pane key rides it), and no attempt to keep tmux from taking the first XDA reply (it asks on
 every attach). A pane that sets `allow-passthrough` for itself still can; only the probe that
 did so is now routed around.
+
+## The terminal's tab reads the board (T-492, 2026-09-29, "rename terminal tab — maybe more terminal integrations, investigate and propose; opt in, configurable")
+
+**Built:** `Settings › Appearance › Terminal tab title` (`prefs.json` `tab_title`, off by
+default, machine-only like the status line — which terminal a board runs in is not a fact
+about a repo). On, the tab reads `mesimon ∙ <board>`, `2 need you ∙ <board>` while any ticket
+needs you, and through a focus handover the ticket whose pane took the terminal (`T-12 fix
+the parser`, clipped at 48 chars on a word); the checkout's `!` shell and the GATE ceremony
+keep the board's words. `tui/src/title.rs`; the loop writes it under the draw's console lock
+(T-291's rule — never inside a frame or a banner), only on a change (a tick costs the tty no
+bytes), and every word crosses `scrub_text` (a BEL in a ticket title would close the OSC and
+type the rest). `mesimon doctor` has a `tab title` line.
+
+**The terminal's own title comes back through the xterm title stack**, not a read. `CSI 21 t`
+(report the title) is refused by iTerm2, kitty and ghostty for the reason `OSC 52` reads are,
+and a reply would land on stdin as keystrokes — the trap `osc.rs` exists for. `CSI 22;0 t`
+before the first write and `CSI 23;0 t` at the end restore it exactly on iTerm2, ghostty,
+kitty, WezTerm, foot, xterm and Terminal.app (terminfo.dev's matrix, 2026); a terminal without
+the stack keeps the board's last words, which are still true. Popped before a `^Z` (the shell's
+prompt owns the title while stopped; the next frame pushes again), before a `U` reload (the
+new process pushes its own, so the stack never grows) and at exit. A crash leaves it up.
+
+**Why TUI-only, and why the private server's `set-titles` stays off.** tmux forwards a pane's
+`OSC 0` to the outer terminal only under `set-titles on`, through `set-titles-string`; off,
+Claude Code's `✳ …` stops at `#{pane_title}` (which `pane_title()` already reads for the
+startup-modal detector). So the words the board writes before the attach stay up for the whole
+focus and nothing daemon-side changes. A pushed `set-titles-string` naming the ticket was the
+rival: it would need a per-session user option at spawn and a live `set-option` on every
+server, to show the same words the board already knows. Not built.
+
+**Surveyed and not built — the proposal, each opt-in and its own row if it ships** (the
+ticket note holds the same list with the sequences):
+
+- **OSC 9;4 progress in the tab** (ConEmu; iTerm2 3.6.6+, ghostty 1.2+, WezTerm, Windows
+  Terminal, kitty 0.46). Indeterminate (`9;4;3`) while any agent is mid-turn, error state
+  (`9;4;2`) while any needs you, clear otherwise: the tab's own ring says "busy" or "blocked"
+  from across the tab strip. Cheapest next step — one more `Tab::sync` output and the same
+  scrub-free path (no user text rides it). iTerm2 needs `TERM_FEATURES` to carry `P` to be
+  sure; unsupported terminals ignore it, ghostty's parser turns a malformed one into a
+  notification, so the form must be exact.
+- **iTerm2 tab colour** (`OSC 6;1;bg;r/g/b;brightness;N`): the tab turns `Theme::attn` while
+  the attention set is non-empty — the board's one-saturated-colour rule extended to the tab
+  strip. iTerm2 only; `OSC 6;1;bg;*;default` resets. Detect by `__CFBundleIdentifier` as
+  `notify.rs` does; never inside an outer tmux.
+- **iTerm2 attention** (`OSC 1337;RequestAttention=once`): a dock bounce on the needs-you
+  edge, a fourth rung for the banner ladder where terminal-notifier is absent. **Badge**
+  (`SetBadgeFormat`) and **SetUserVar** (`user.mesimon_needs_you`, for a status-bar
+  component) are the same family; a badge over the board duplicates the header, so only the
+  user var is worth a row.
+- **kitty OSC 99** notifications: click-to-focus banners on kitty without a helper program —
+  a rung beside OSC 9 in `notify.rs`, chosen by `TERM_PROGRAM`/`KITTY_WINDOW_ID`.
+- **OSC 7 cwd** (`file://host/path`) on a focus: a Cmd+T in iTerm2/ghostty/kitty opens the
+  new tab in the ticket's worktree. Sent with the title, cleared (the repo root) on return.
+- **OSC 8 hyperlinks** in the note preview and the diff (paths, URLs, ticket keys) — already
+  banked under T-487's survey; a rendering change, not a tab one.
+- **`DECSET 2026` synchronized output** around each frame (crossterm's
+  `BeginSynchronizedUpdate`): fewer half-drawn frames on iTerm2/kitty/ghostty. Internal, no
+  row, no user text; worth measuring on the peek row's repaints.
+
+Refused: `CSI 21 t` (a read; see above), XTWINOPS raise/de-iconify (`allowWindowOps` is off
+nearly everywhere and a window that jumps forward is the tmux veto's failure by another
+road), and any title format string in `prefs.json` — three shapes cover every state the board
+has, and a format the user edits is a format that can spell an escape.

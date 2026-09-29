@@ -32,6 +32,7 @@ mod rich;
 mod tags;
 mod text;
 mod theme;
+mod title;
 mod ui;
 mod update;
 
@@ -103,6 +104,8 @@ pub use prefs::peek_doctor_line as peek_status;
 /// What `mesimon doctor` says about how a snoozed ticket comes back (T-74).
 pub use prefs::snooze_doctor_line as snooze_status;
 pub use prefs::status_line_doctor_line as status_line_status;
+/// What `mesimon doctor` says about the terminal's tab title (T-492).
+pub use prefs::tab_title_doctor_line as tab_title_status;
 pub use prefs::train_doctor_line as train_status;
 /// What `mesimon doctor` says about release checks — whether they are on, and
 /// when they last answered. Exported because the checker lives here, beside
@@ -305,10 +308,16 @@ fn event_loop(
     // Cloned out of `App` here: the guard has to outlive the borrow the draw
     // takes.
     let console = app.notifier.as_ref().map(crate::notifier::Notifier::console);
+    // The terminal's own tab (T-492): named after the board while the
+    // preference is on, under the same lock as the draw, so the escape
+    // never lands inside a frame or a banner. `finish` before every exit
+    // and every suspend gives the terminal its own title back.
+    let mut tab = title::Tab::default();
     loop {
         {
             let _held = console.as_deref().map(crate::notify::Console::drawing);
             terminal.draw(|f| ui::draw(f, app))?;
+            tab.sync(&mut std::io::stdout(), app.tab_title().as_deref())?;
         }
 
         app.tick()?;
@@ -316,6 +325,7 @@ fn event_loop(
         // U on a ready update: fall out to `run`, which execs the new
         // binary once the terminal is restored.
         if app.pending_reexec {
+            tab.finish(&mut std::io::stdout())?;
             return Ok(());
         }
 
@@ -331,6 +341,9 @@ fn event_loop(
         // every session run through all of it untouched.
         if std::mem::take(&mut app.pending_suspend) {
             app.saw_board(false);
+            // The shell's prompt is about to own the title: pop ours, and
+            // the next frame's `sync` pushes it again on the way back.
+            tab.finish(&mut std::io::stdout())?;
             restore_terminal()?;
             // SAFETY: raising a signal at a point of our choosing, with the
             // terminal already restored, is the whole contract of ^Z.
@@ -349,6 +362,10 @@ fn event_loop(
             // however long the user stays in that pane (T-291). Said before
             // the restore, so nothing writes an escape into the gap.
             app.saw_board(false);
+            // The pane's own title never reaches the tab — the private
+            // server keeps `set-titles` off — so the tab reads the ticket
+            // for as long as the user is in there (T-492).
+            tab.sync(&mut std::io::stdout(), app.focus_tab_title().as_deref())?;
             restore_terminal()?;
             blank_primary_screen()?;
             let ho = handover::run(&argv, cwd.as_deref());
@@ -388,6 +405,7 @@ fn event_loop(
         }
 
         if app.quit {
+            tab.finish(&mut std::io::stdout())?;
             return Ok(());
         }
     }

@@ -2286,6 +2286,38 @@ impl App {
         rec.kind.is_agent().then_some(rec.ticket)
     }
 
+    /// What the terminal's tab reads while the board is on screen (T-492):
+    /// the board, and how many tickets need you when any do. `None` while
+    /// the preference is off, so the loop writes nothing.
+    pub(crate) fn tab_title(&self) -> Option<String> {
+        self.prefs
+            .tab_title
+            .then(|| crate::title::board(&self.board_name(), self.board.needs_you_count()))
+    }
+
+    /// What the tab reads through the handover about to start (T-492):
+    /// the ticket whose pane takes the terminal, or the board itself for a
+    /// pane that is nobody's ticket (the GATE ceremony, the checkout's
+    /// shell). Only a session or the `!` terminal names one: the `^g`
+    /// editor is not a handover the loop asks about.
+    pub(crate) fn focus_tab_title(&self) -> Option<String> {
+        if !self.prefs.tab_title {
+            return None;
+        }
+        let ticket = match self.focused_session_hint {
+            Some(FocusTarget::Session(sid, _)) => {
+                self.board.sessions.iter().find(|s| s.id == sid).map(|s| s.ticket)
+            }
+            Some(FocusTarget::Terminal) => self.terminal_ticket(),
+            None => None,
+        };
+        let ticket = ticket.and_then(|id| self.board.ticket(id));
+        Some(match ticket {
+            Some(t) => crate::title::focus(&t.short_key, &t.title),
+            None => crate::title::board(&self.board_name(), self.board.needs_you_count()),
+        })
+    }
+
     /// The `Fetch origin` row's detail (T-124): what is out of sync, in
     /// words, and how old the answer is. The header says `↑2 ↓1`; this is
     /// the sentence behind it.
@@ -4338,6 +4370,7 @@ impl App {
                 .unwrap_or(""),
             snooze_needs_you: self.prefs.snooze_needs_you,
             status_top: self.prefs.status_top,
+            tab_title: self.prefs.tab_title,
             keep_awake: self.prefs.keep_awake,
             header_awake: self.header_focus && self.header_awake,
             // False where no keeper was ever built (every test app), which
@@ -5435,6 +5468,18 @@ impl App {
                     if top { "status line at the top" } else { "status line at the bottom" };
                 self.set_pref(word, |p| p.status_top = top);
                 self.push_status_line();
+            }
+            // T-492. No push either: the BOARD writes the title, on its
+            // own stdout, and `lib.rs`'s loop reads the preference each
+            // frame — off pops the terminal's own title back at once.
+            Verb::TabTitle => {
+                let on = !self.prefs.tab_title;
+                let word = if on {
+                    "the terminal's tab reads the board"
+                } else {
+                    "the terminal's tab keeps its own title"
+                };
+                self.set_pref(word, |p| p.tab_title = on);
             }
             // T-288. No push of any kind: the BOARD holds the machine
             // awake, so the daemon is never told — the next tick's `drive`
@@ -19277,6 +19322,36 @@ mod tests {
 
     /// A key the machine keeps is inert in board scope: the status says so
     /// and neither file moves.
+    /// The tab title row (T-492): Enter flips the preference and saves it;
+    /// the words follow the board, and a focus names the ticket.
+    #[test]
+    fn the_tab_title_row_flips_the_preference_and_the_words_follow() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let (machine, _) = pref_scratch("tabtitle");
+        app.prefs_path = Some(machine.clone());
+        assert_eq!(app.tab_title(), None, "off by default: nothing is written");
+        assert_eq!(app.focus_tab_title(), None);
+        app.settings_section = keymap::SettingsSection::Appearance;
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTitle) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.prefs.tab_title);
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&machine).unwrap()).unwrap();
+        assert_eq!(v["tab_title"], true);
+        let board = app.board_name();
+        assert_eq!(app.tab_title().unwrap(), format!("mesimon ∙ {board}"));
+        // Nothing focused: the handover's title is the board's own.
+        assert_eq!(app.focus_tab_title(), app.tab_title());
+        let sid = app.board.sessions[0].id;
+        let t = app.board.ticket(app.board.sessions[0].ticket).unwrap();
+        let (key, title) = (t.short_key.clone(), t.title.clone());
+        app.focused_session_hint = Some(FocusTarget::Session(sid, FocusOrigin::Board));
+        assert_eq!(app.focus_tab_title().unwrap(), format!("{key} {title}"));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.prefs.tab_title);
+        assert_eq!(app.tab_title(), None);
+    }
+
     #[test]
     fn a_machine_only_row_is_inert_in_board_scope() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);

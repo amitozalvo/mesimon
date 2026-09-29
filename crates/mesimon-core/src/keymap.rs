@@ -545,6 +545,10 @@ pub enum Verb {
     /// remembered in `prefs.json`, pushed to the daemon, which owns the
     /// server.
     StatusLine,
+    /// The Settings row that lets the board name the terminal's own tab
+    /// (T-492): the board and how many need you, the ticket in focus;
+    /// remembered in `prefs.json`, per machine, written by the TUI alone.
+    TabTitle,
     /// `t` — take the ticket off the merge train, or put it back (T-227).
     /// Flips `Ticket::manual_merge` through `Command::SetManualMerge`.
     ManualMerge,
@@ -867,9 +871,11 @@ impl SettingsSection {
 
     pub fn for_verb(verb: Verb) -> Self {
         match verb {
-            Verb::ThemePick | Verb::FollowOs | Verb::Notifications | Verb::StatusLine => {
-                Self::Appearance
-            }
+            Verb::ThemePick
+            | Verb::FollowOs
+            | Verb::Notifications
+            | Verb::StatusLine
+            | Verb::TabTitle => Self::Appearance,
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
@@ -1232,6 +1238,9 @@ pub struct Ctx {
     /// The tmux status line sits at the top of a pane (the preference; the
     /// Settings row flips it).
     pub status_top: bool,
+    /// The board names the terminal's tab (T-492) — the preference; the
+    /// Settings row flips it.
+    pub tab_title: bool,
     /// Hold this machine awake while an agent is mid-turn (T-288) — the
     /// preference; the Settings row flips it.
     pub keep_awake: bool,
@@ -4120,6 +4129,30 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The terminal's own tab (T-492). Off by default: the title is the
+    // terminal's, and a board that renames it uninvited is a board that
+    // wrote where it was not asked to. Per machine, the status line's
+    // reason: which terminal the board runs in is not a fact about a repo.
+    MenuItem {
+        verb: Verb::TabTitle,
+        label: |c| {
+            if c.tab_title {
+                "Terminal tab title: on".into()
+            } else {
+                "Terminal tab title: off".into()
+            }
+        },
+        detail: |c| {
+            if c.tab_title {
+                "the tab reads the board, how many need you, the ticket in focus ∙ enter stops"
+                    .into()
+            } else {
+                "the tab keeps its own title ∙ enter names it after the board".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // How a snoozed ticket comes back.
     MenuItem {
         verb: Verb::SnoozeQuiet,
@@ -4663,9 +4696,13 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
         SettingsSection::Root => {
             &[Verb::SettingsAppearance, Verb::SettingsBehaviour, Verb::SettingsAgents]
         }
-        SettingsSection::Appearance => {
-            &[Verb::ThemePick, Verb::FollowOs, Verb::Notifications, Verb::StatusLine]
-        }
+        SettingsSection::Appearance => &[
+            Verb::ThemePick,
+            Verb::FollowOs,
+            Verb::Notifications,
+            Verb::StatusLine,
+            Verb::TabTitle,
+        ],
         SettingsSection::Behaviour => &[
             Verb::MergeTrain,
             Verb::MergeTrainNotice,
@@ -4713,6 +4750,7 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::MergeTrain => PrefKey::MergeTrain,
         Verb::MergeTrainNotice => PrefKey::MergeTrainNotice,
         Verb::StatusLine => PrefKey::StatusTop,
+        Verb::TabTitle => PrefKey::TabTitle,
         Verb::KeepAwake => PrefKey::KeepAwake,
         Verb::NotifyToggle => PrefKey::Notify,
         Verb::NotifyDone => PrefKey::NotifyDone,
@@ -8286,7 +8324,13 @@ mod tests {
         for (section, expected) in [
             (
                 SettingsSection::Appearance,
-                vec![Verb::ThemePick, Verb::FollowOs, Verb::Notifications, Verb::StatusLine],
+                vec![
+                    Verb::ThemePick,
+                    Verb::FollowOs,
+                    Verb::Notifications,
+                    Verb::StatusLine,
+                    Verb::TabTitle,
+                ],
             ),
             (
                 SettingsSection::Behaviour,
@@ -8909,6 +8953,7 @@ mod tests {
             Verb::ThemePick,
             Verb::FollowOs,
             Verb::StatusLine,
+            Verb::TabTitle,
             Verb::KeepAwake,
             Verb::SnoozeQuiet,
             Verb::WeekStart,

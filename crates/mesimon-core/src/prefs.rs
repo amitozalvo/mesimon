@@ -19,6 +19,10 @@ pub enum PrefKey {
     MergeTrain,
     MergeTrainNotice,
     StatusTop,
+    /// The terminal's own tab or window title names the board and what
+    /// needs you (T-492): off by default, per machine — a title is the
+    /// terminal's, not a board's.
+    TabTitle,
     KeepAwake,
     Notify,
     NotifyDone,
@@ -32,7 +36,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 17] = [
+    pub const ALL: [PrefKey; 18] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::FollowOs,
@@ -41,6 +45,7 @@ impl PrefKey {
         PrefKey::MergeTrain,
         PrefKey::MergeTrainNotice,
         PrefKey::StatusTop,
+        PrefKey::TabTitle,
         PrefKey::KeepAwake,
         PrefKey::Notify,
         PrefKey::NotifyDone,
@@ -63,6 +68,7 @@ impl PrefKey {
             PrefKey::MergeTrain => "merge_train",
             PrefKey::MergeTrainNotice => "merge_train_notice",
             PrefKey::StatusTop => "status_line_top",
+            PrefKey::TabTitle => "tab_title",
             PrefKey::KeepAwake => "keep_awake",
             PrefKey::Notify => "notify",
             PrefKey::NotifyDone => "notify_done",
@@ -75,13 +81,14 @@ impl PrefKey {
         }
     }
 
-    /// May one board set this on its own? Three stay the machine's: where
-    /// the tmux status line sits is about the terminal, which day a week
-    /// starts on is about the person, and neither changes with the repo;
-    /// the reply row's rung (T-365) is about how the person reads a board,
-    /// and no Settings row exists to set it per board — `p` and `P` set it.
+    /// May one board set this on its own? Four stay the machine's: where
+    /// the tmux status line sits and whether the terminal's tab is titled
+    /// are about the terminal, which day a week starts on is about the
+    /// person, and none of them changes with the repo; the reply row's
+    /// rung (T-365) is about how the person reads a board, and no Settings
+    /// row exists to set it per board — `p` and `P` set it.
     pub fn board_overridable(self) -> bool {
-        !matches!(self, PrefKey::StatusTop | PrefKey::WeekStart | PrefKey::Peek)
+        !matches!(self, PrefKey::StatusTop | PrefKey::TabTitle | PrefKey::WeekStart | PrefKey::Peek)
     }
 
     /// The words a status line calls it.
@@ -95,6 +102,7 @@ impl PrefKey {
             PrefKey::MergeTrain => "auto merge",
             PrefKey::MergeTrainNotice => "auto merge notice",
             PrefKey::StatusTop => "status line",
+            PrefKey::TabTitle => "terminal tab title",
             PrefKey::KeepAwake => "keep awake",
             PrefKey::Notify => "notifications",
             PrefKey::NotifyDone => "notify when a turn lands",
@@ -126,13 +134,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_names_are_unique_and_three_are_machine_only() {
+    fn key_names_are_unique_and_four_are_machine_only() {
         let mut names: Vec<_> = PrefKey::ALL.iter().map(|k| k.name()).collect();
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), PrefKey::ALL.len());
         let machine_only: Vec<_> =
             PrefKey::ALL.iter().filter(|k| !k.board_overridable()).copied().collect();
-        assert_eq!(machine_only, [PrefKey::WeekStart, PrefKey::StatusTop, PrefKey::Peek]);
+        assert_eq!(
+            machine_only,
+            [PrefKey::WeekStart, PrefKey::StatusTop, PrefKey::TabTitle, PrefKey::Peek]
+        );
     }
 }
