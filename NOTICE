@@ -4,10 +4,16 @@ Copyright 2026 Amit Ozalvo
 This product includes software developed as part of the mesimon project
 (https://github.com/amitozalvo/mesimon).
 
-Third-party components distributed with the mesimon binaries retain their own
-licences. One of them is not permissive-only:
+Third-party components distributed with the mesimon binaries and the Remote
+Control browser client retain their own licences. Two of them are not
+permissive-only:
 
   nucleo-matcher (https://github.com/helix-editor/nucleo) — MPL-2.0.
   Used unmodified for the board's fuzzy search. Its source is published on
   crates.io (https://crates.io/crates/nucleo-matcher); MPL-2.0 applies to that
   crate's own files and to no part of mesimon.
+
+  IBM Plex Sans, Sans Hebrew and Mono (https://github.com/IBM/plex) — SIL Open
+  Font License 1.1, with the licence beside the files in web/mesophon/fonts.
+  Unmodified subsets as Google Fonts serves them; the OFL applies to those font
+  files and to no part of mesimon.
