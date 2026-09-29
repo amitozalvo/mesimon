@@ -16,3 +16,6 @@ for mesophon_module in "$mesophon_source"/*.js; do
     cp "$mesophon_module" "$mesophon_destination/"
 done
 cp -R "$mesophon_source/pkg" "$mesophon_destination/pkg"
+# Vendored Preact and htm, and the self-hosted fonts, each with its licence.
+cp -R "$mesophon_source/vendor" "$mesophon_destination/vendor"
+cp -R "$mesophon_source/fonts" "$mesophon_destination/fonts"
