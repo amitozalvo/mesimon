@@ -15670,3 +15670,10 @@ confusion T-503 files against the Settings row. Nothing had signed in to the old
 switch cost one DNS row, a reissued certificate, the test string and the runbook; a month later it
 would have cost every signed-in Mac a re-sign-in, since the device file stores the address.
 T-504 (prefill the sign-in, blocked on the registration decision) should read `relay.mesimon.dev`.
+
+**Closed out the same night.** The author signed in without a pin, ran `mesimon mesophon setup
+--check` and paired, all against the renamed address. Backups round-trip: the box encrypts to an
+`age` recipient whose private half lives only on the author's Mac, and a dump fetched back
+decrypted there and listed every table. What remains is policy, not plumbing: where copies go
+off the box (an rclone remote is one line in `backup.env`), who may register, and whether this
+is a preview or the paid service. The address stays unlisted until those are decided.
