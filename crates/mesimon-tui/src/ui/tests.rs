@@ -763,6 +763,7 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
         (SettingsSection::Appearance, "appearance"),
         (SettingsSection::Behaviour, "behaviour"),
         (SettingsSection::Agents, "agents"),
+        (SettingsSection::Terminal, "terminal"),
     ] {
         let mut app = app_graphite(fixture_archived());
         app.settings_section = section;
@@ -775,6 +776,28 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
             }
             golden(&format!("settings_{name}_{w}x{h}"), &rows);
         }
+    }
+}
+
+/// The Terminal list (T-492) with the title on, so its two gated rows
+/// draw too, and every row still fits a 60x20 terminal.
+#[test]
+fn golden_settings_terminal_on_fits_short_and_wide_terminals() {
+    let mut app = app_graphite(fixture_archived());
+    app.seed_pref(|p| {
+        p.tab_title = crate::prefs::TabTitle::Mesimon;
+        p.tab_progress = true;
+    });
+    app.settings_section = mesimon_core::keymap::SettingsSection::Terminal;
+    app.mode = Mode::Settings { idx: 0 };
+    for (w, h) in [(60, 20), (120, 30)] {
+        let rows = render(&app, w, h);
+        let items = mesimon_core::keymap::settings_items(&app.ctx());
+        assert_eq!(items.len(), 7);
+        for item in items {
+            assert!(rows.iter().any(|r| r.contains(&(item.label)(&app.ctx()))), "{rows:?}");
+        }
+        golden(&format!("settings_terminal_on_{w}x{h}"), &rows);
     }
 }
 

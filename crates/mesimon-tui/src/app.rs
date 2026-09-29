@@ -1697,6 +1697,12 @@ pub struct App {
     /// is what keeps the composer from hinting a key that would land as a
     /// plain Enter.
     pub rich_keys: bool,
+    /// Which terminal the board's stdout reaches (T-492), for the three
+    /// iTerm2-only rows — resolved in `lib.rs::run`, never here, so no
+    /// test app reads a developer's terminal. `Other` in every test app.
+    pub terminal: crate::title::Terminal,
+    /// This machine's name, for the tab's working directory (`OSC 7`).
+    pub host: String,
     /// A ticket may grow its own shell session (T-300) — `lib.rs::run` sets
     /// it from `MESIMON_TICKET_SHELLS`, never `App::new`, the rule
     /// `editor_word` and `opener` follow, so no test and no golden reads a
@@ -1861,6 +1867,8 @@ impl App {
             prompt_history: Vec::new(),
             recent_tickets: Vec::new(),
             rich_keys: false,
+            terminal: crate::title::Terminal::Other,
+            host: String::new(),
             ticket_shells: false,
             appearance: None,
             appearance_probe: None,
@@ -2288,34 +2296,84 @@ impl App {
 
     /// What the terminal's tab reads while the board is on screen (T-492):
     /// the board, and how many tickets need you when any do. `None` while
-    /// the preference is off, so the loop writes nothing.
+    /// the row is off, so the loop writes nothing.
     pub(crate) fn tab_title(&self) -> Option<String> {
-        self.prefs
-            .tab_title
-            .then(|| crate::title::board(&self.board_name(), self.board.needs_you_count()))
+        self.prefs.tab_title.is_on().then(|| {
+            crate::title::board(
+                &self.board_name(),
+                self.prefs.tab_title == crate::prefs::TabTitle::Mesimon,
+                self.prefs.tab_title_needs_you.then(|| self.board.needs_you_count()),
+            )
+        })
     }
 
-    /// What the tab reads through the handover about to start (T-492):
-    /// the ticket whose pane takes the terminal, or the board itself for a
-    /// pane that is nobody's ticket (the GATE ceremony, the checkout's
-    /// shell). Only a session or the `!` terminal names one: the `^g`
-    /// editor is not a handover the loop asks about.
-    pub(crate) fn focus_tab_title(&self) -> Option<String> {
-        if !self.prefs.tab_title {
-            return None;
-        }
-        let ticket = match self.focused_session_hint {
+    /// The ticket the handover about to start puts on the terminal: a
+    /// session's, or the `!` terminal's. `None` for a pane that is nobody's
+    /// ticket (the GATE ceremony, the checkout's shell) and for the `^g`
+    /// editor, which is not a handover the loop asks about.
+    fn focus_ticket(&self) -> Option<ulid::Ulid> {
+        match self.focused_session_hint {
             Some(FocusTarget::Session(sid, _)) => {
                 self.board.sessions.iter().find(|s| s.id == sid).map(|s| s.ticket)
             }
             Some(FocusTarget::Terminal) => self.terminal_ticket(),
             None => None,
+        }
+    }
+
+    /// What the tab reads through the handover about to start (T-492):
+    /// the ticket whose pane takes the terminal, when the row says to
+    /// follow, else the board's own words.
+    pub(crate) fn focus_tab_title(&self) -> Option<String> {
+        let ticket = self.prefs.tab_title_focus.then(|| self.focus_ticket()).flatten();
+        match ticket.and_then(|id| self.board.ticket(id)) {
+            Some(t) if self.prefs.tab_title.is_on() => {
+                Some(crate::title::focus(&t.short_key, &t.title))
+            }
+            _ => self.tab_title(),
+        }
+    }
+
+    /// Everything the terminal's tab is asked for this frame (T-492), each
+    /// field `None` while its row is off. The iTerm2-only fields are `None`
+    /// on every other terminal, so nothing is written there at all.
+    pub(crate) fn tab_frame(&self, focus: bool) -> crate::title::Frame {
+        use crate::title::{Mark, Progress, Terminal};
+        let needs_you = self.board.needs_you_count();
+        let working = self.board.sessions.iter().filter(|s| crate::glyphs::is_working(s)).count();
+        let iterm2 = self.terminal == Terminal::ITerm2;
+        let attn = self.theme.flavor.palette().truecolor.attn;
+        let title = if focus { self.focus_tab_title() } else { self.tab_title() };
+        let progress = self.prefs.tab_progress.then_some(if needs_you > 0 {
+            Progress::Blocked
+        } else if working > 0 {
+            Progress::Working
+        } else {
+            Progress::None
+        });
+        let mark = match self.prefs.tab_color {
+            _ if !iterm2 => None,
+            crate::prefs::TabColor::Off => None,
+            crate::prefs::TabColor::Dot => {
+                Some(if needs_you > 0 { Mark::Dot(attn) } else { Mark::Off })
+            }
+            crate::prefs::TabColor::Tab => {
+                Some(if needs_you > 0 { Mark::Tab(attn) } else { Mark::Off })
+            }
         };
-        let ticket = ticket.and_then(|id| self.board.ticket(id));
-        Some(match ticket {
-            Some(t) => crate::title::focus(&t.short_key, &t.title),
-            None => crate::title::board(&self.board_name(), self.board.needs_you_count()),
-        })
+        let subtitle =
+            (iterm2 && self.prefs.tab_subtitle).then(|| crate::title::subtitle(needs_you, working));
+        let cwd = self.prefs.tab_cwd.then(|| {
+            let dir = if focus {
+                self.focus_ticket()
+                    .map(|t| self.link_dir(t))
+                    .unwrap_or_else(|| self.repo_root.clone())
+            } else {
+                self.repo_root.clone()
+            };
+            crate::title::cwd_url(&self.host, &dir)
+        });
+        crate::title::Frame { title, progress, mark, subtitle, cwd }
     }
 
     /// The `Fetch origin` row's detail (T-124): what is out of sync, in
@@ -4370,7 +4428,16 @@ impl App {
                 .unwrap_or(""),
             snooze_needs_you: self.prefs.snooze_needs_you,
             status_top: self.prefs.status_top,
-            tab_title: self.prefs.tab_title,
+            tab_title_word: self.prefs.tab_title.name(),
+            tab_title: self.prefs.tab_title.is_on(),
+            tab_title_needs_you: self.prefs.tab_title_needs_you,
+            tab_title_focus: self.prefs.tab_title_focus,
+            tab_progress: self.prefs.tab_progress,
+            tab_color_word: self.prefs.tab_color.name(),
+            tab_subtitle: self.prefs.tab_subtitle,
+            tab_cwd: self.prefs.tab_cwd,
+            iterm2: self.terminal == crate::title::Terminal::ITerm2,
+            notify_dock_bounce: self.prefs.notify_dock_bounce,
             keep_awake: self.prefs.keep_awake,
             header_awake: self.header_focus && self.header_awake,
             // False where no keeper was ever built (every test app), which
@@ -4820,10 +4887,14 @@ impl App {
                     "the machine's settings ∙ b sets one for this board".into()
                 };
             }
-            Verb::SettingsAppearance | Verb::SettingsBehaviour | Verb::SettingsAgents => {
+            Verb::SettingsAppearance
+            | Verb::SettingsBehaviour
+            | Verb::SettingsAgents
+            | Verb::SettingsTerminal => {
                 self.settings_section = match verb {
                     Verb::SettingsAppearance => keymap::SettingsSection::Appearance,
                     Verb::SettingsBehaviour => keymap::SettingsSection::Behaviour,
+                    Verb::SettingsTerminal => keymap::SettingsSection::Terminal,
                     _ => keymap::SettingsSection::Agents,
                 };
                 self.mode = Mode::Settings { idx: 0 };
@@ -5469,17 +5540,78 @@ impl App {
                 self.set_pref(word, |p| p.status_top = top);
                 self.push_status_line();
             }
-            // T-492. No push either: the BOARD writes the title, on its
-            // own stdout, and `lib.rs`'s loop reads the preference each
-            // frame — off pops the terminal's own title back at once.
+            // T-492. No push either: the BOARD writes to its own stdout,
+            // and `lib.rs`'s loop reads every one of these each frame — off
+            // gives the terminal its own state back at once.
             Verb::TabTitle => {
-                let on = !self.prefs.tab_title;
-                let word = if on {
-                    "the terminal's tab reads the board"
-                } else {
-                    "the terminal's tab keeps its own title"
+                let t = self.prefs.tab_title.next();
+                let word = match t {
+                    crate::prefs::TabTitle::Off => "the terminal's tab keeps its own title".into(),
+                    t => format!("the terminal's tab reads {}", t.name()),
                 };
-                self.set_pref(word, |p| p.tab_title = on);
+                self.set_pref(&word, |p| p.tab_title = t);
+            }
+            Verb::TabTitleNeedsYou => {
+                let on = !self.prefs.tab_title_needs_you;
+                let word = if on {
+                    "the tab title counts what needs you"
+                } else {
+                    "the tab title names the board only"
+                };
+                self.set_pref(word, |p| p.tab_title_needs_you = on);
+            }
+            Verb::TabTitleFocus => {
+                let on = !self.prefs.tab_title_focus;
+                let word = if on {
+                    "the tab title follows the open session"
+                } else {
+                    "the tab title stays the board's through a focus"
+                };
+                self.set_pref(word, |p| p.tab_title_focus = on);
+            }
+            Verb::TabProgress => {
+                let on = !self.prefs.tab_progress;
+                let word = if on {
+                    "the tab's progress ring follows the agents"
+                } else {
+                    "the tab's progress ring is off"
+                };
+                self.set_pref(word, |p| p.tab_progress = on);
+            }
+            Verb::TabColor => {
+                let c = self.prefs.tab_color.next();
+                let word = match c {
+                    crate::prefs::TabColor::Off => "the tab keeps its own colour".into(),
+                    c => format!("{} turns the attention colour when an agent needs you", c.name()),
+                };
+                self.set_pref(&word, |p| p.tab_color = c);
+            }
+            Verb::TabSubtitle => {
+                let on = !self.prefs.tab_subtitle;
+                let word = if on {
+                    "the tab's subtitle counts what needs you and what is working"
+                } else {
+                    "the tab's subtitle is off"
+                };
+                self.set_pref(word, |p| p.tab_subtitle = on);
+            }
+            Verb::TabCwd => {
+                let on = !self.prefs.tab_cwd;
+                let word = if on {
+                    "a new tab opens in the ticket's worktree"
+                } else {
+                    "the tab's working directory is its own"
+                };
+                self.set_pref(word, |p| p.tab_cwd = on);
+            }
+            Verb::NotifyDockBounce => {
+                let on = !self.prefs.notify_dock_bounce;
+                let word = if on {
+                    "the dock bounces once when an agent needs you"
+                } else {
+                    "the dock stays still"
+                };
+                self.set_pref(word, |p| p.notify_dock_bounce = on);
             }
             // T-288. No push of any kind: the BOARD holds the machine
             // awake, so the daemon is never told — the next tick's `drive`
@@ -18944,7 +19076,7 @@ mod tests {
         assert_eq!(keymap::notify_items(&app.ctx()).len(), 1, "off, the list is its switch");
         enter(&mut app);
         assert!(app.prefs.notify, "the first row is the switch");
-        assert_eq!(keymap::notify_items(&app.ctx()).len(), 7);
+        assert_eq!(keymap::notify_items(&app.ctx()).len(), 8);
         app.on_key(KeyCode::Esc, KeyModifiers::NONE).expect("esc");
         assert_eq!(
             app.mode,
@@ -19322,23 +19454,29 @@ mod tests {
 
     /// A key the machine keeps is inert in board scope: the status says so
     /// and neither file moves.
-    /// The tab title row (T-492): Enter flips the preference and saves it;
-    /// the words follow the board, and a focus names the ticket.
+    /// The Terminal rows (T-492): Enter cycles the title's shape and saves
+    /// it; the words follow the board and the switches; a focus names the
+    /// ticket while the follow row is on; the frame is empty while every
+    /// row is off, and the iTerm2-only fields stay empty off iTerm2.
     #[test]
-    fn the_tab_title_row_flips_the_preference_and_the_words_follow() {
+    fn the_terminal_rows_shape_the_tab_and_a_focus_names_the_ticket() {
+        use crate::prefs::{TabColor, TabTitle};
+        use crate::title::{Frame, Mark, Progress, Terminal};
         let (mut app, _, _) = app_with_claude(SessionState::Running, false);
         let (machine, _) = pref_scratch("tabtitle");
         app.prefs_path = Some(machine.clone());
-        assert_eq!(app.tab_title(), None, "off by default: nothing is written");
-        assert_eq!(app.focus_tab_title(), None);
-        app.settings_section = keymap::SettingsSection::Appearance;
+        assert_eq!(app.tab_frame(false), Frame::default(), "everything off: nothing is written");
+        app.settings_section = keymap::SettingsSection::Terminal;
         app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTitle) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(app.prefs.tab_title);
+        assert_eq!(app.prefs.tab_title, TabTitle::Project);
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&machine).unwrap()).unwrap();
-        assert_eq!(v["tab_title"], true);
+        assert_eq!(v["tab_title"], "project");
         let board = app.board_name();
+        assert_eq!(app.tab_title().unwrap(), board);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.prefs.tab_title, TabTitle::Mesimon);
         assert_eq!(app.tab_title().unwrap(), format!("mesimon ∙ {board}"));
         // Nothing focused: the handover's title is the board's own.
         assert_eq!(app.focus_tab_title(), app.tab_title());
@@ -19347,8 +19485,27 @@ mod tests {
         let (key, title) = (t.short_key.clone(), t.title.clone());
         app.focused_session_hint = Some(FocusTarget::Session(sid, FocusOrigin::Board));
         assert_eq!(app.focus_tab_title().unwrap(), format!("{key} {title}"));
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTitleFocus) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(!app.prefs.tab_title);
+        assert!(!app.prefs.tab_title_focus);
+        assert_eq!(app.focus_tab_title(), app.tab_title(), "not following: the board's words");
+        // The ring follows the agents; the iTerm2 fields need iTerm2.
+        app.seed_pref(|p| {
+            p.tab_progress = true;
+            p.tab_color = TabColor::Dot;
+            p.tab_subtitle = true;
+        });
+        let f = app.tab_frame(false);
+        assert_eq!(f.progress, Some(Progress::Working));
+        assert_eq!(f.mark, None, "not iTerm2");
+        assert_eq!(f.subtitle, None);
+        app.terminal = Terminal::ITerm2;
+        let f = app.tab_frame(false);
+        assert_eq!(f.mark, Some(Mark::Off), "iTerm2, nothing needs you");
+        assert_eq!(f.subtitle.as_deref(), Some("1 working"));
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTitle) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.prefs.tab_title, TabTitle::Off, "the ring closes");
         assert_eq!(app.tab_title(), None);
     }
 

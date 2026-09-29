@@ -77,6 +77,8 @@ pub struct NotifyPrefs {
     pub words: bool,
     pub sound_needs_you: Sound,
     pub sound_done: Sound,
+    /// iTerm2 bounces its dock icon once on a needs-you post (T-492).
+    pub dock_bounce: bool,
 }
 
 impl From<&crate::prefs::Prefs> for NotifyPrefs {
@@ -89,6 +91,7 @@ impl From<&crate::prefs::Prefs> for NotifyPrefs {
             words: p.notify_words,
             sound_needs_you: p.notify_sound_needs_you,
             sound_done: p.notify_sound_done,
+            dock_bounce: p.notify_dock_bounce && crate::title::iterm2_direct(),
         }
     }
 }
@@ -293,11 +296,12 @@ fn title_of(repo_root: &Path) -> String {
 /// How a post reaches a person. A closure rather than a `Channels` field so a
 /// test can drive the whole worker without a program on the machine ever
 /// being run — the same seam `App::notify` being `None` used to be.
-type Say = Box<dyn FnMut(&Post) + Send>;
+/// The second argument: bounce the dock for this post (iTerm2, T-492).
+type Say = Box<dyn FnMut(&Post, bool) + Send>;
 
 fn say_through(ch: Channels, console: Arc<Console>, shared: Arc<Shared>) -> Say {
-    Box::new(move |p| {
-        if let Err(e) = crate::notify::post(&ch, p, &console) {
+    Box::new(move |p, bounce| {
+        if let Err(e) = crate::notify::post(&ch, p, &console, bounce) {
             // The status line belongs to the main loop; leave it there for
             // the next tick to take, and never stop the board over a banner.
             *shared.trouble.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -351,7 +355,7 @@ impl Worker {
     fn run(mut self, ctrl: &Receiver<Ctrl>) {
         loop {
             match ctrl.recv_timeout(BEAT) {
-                Ok(Ctrl::Preview(s)) => (self.say)(&Post::sound_only(s)),
+                Ok(Ctrl::Preview(s)) => (self.say)(&Post::sound_only(s), false),
                 Err(RecvTimeoutError::Timeout) => {}
                 // The board is gone, and so is the thread. This is the off
                 // switch D15 asked for: the process dying is what stops it.
@@ -428,7 +432,7 @@ impl Worker {
         if post.is_silent() {
             return;
         }
-        (self.say)(&post);
+        (self.say)(&post, prefs.dock_bounce);
     }
 
     /// Is the person still inside the pane they attached to? (T-299)
@@ -617,7 +621,7 @@ mod tests {
             shared.clone(),
             Box::new({
                 let said = said.clone();
-                move |p: &Post| said.lock().expect("said").push(p.clone())
+                move |p: &Post, _| said.lock().expect("said").push(p.clone())
             }),
         );
         let quiet: Arc<Mutex<Option<u64>>> = Default::default();
@@ -699,6 +703,7 @@ mod tests {
             words: true,
             sound_needs_you: Sound::Glass,
             sound_done: Sound::Tink,
+            dock_bounce: false,
         }
     }
 
@@ -1010,7 +1015,7 @@ mod tests {
             shared,
             Box::new({
                 let said = said.clone();
-                move |p: &Post| said.lock().expect("said").push(p.clone())
+                move |p: &Post, _| said.lock().expect("said").push(p.clone())
             }),
         );
         let (tx, rx) = channel();

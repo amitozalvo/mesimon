@@ -271,6 +271,12 @@ pub enum Banner {
     Off,
     /// OSC 9 to our own stdout — the terminal draws it, or nobody does.
     Osc,
+    /// kitty's own notification (OSC 99), which a click brings the window
+    /// forward for — no helper program needed. Chosen over the two
+    /// programs that cannot click, below terminal-notifier, and only
+    /// where the board runs in kitty directly (`KITTY_WINDOW_ID`, and no
+    /// outer tmux, which swallows it).
+    Kitty,
     /// `MESIMON_NOTIFY=<program>`, called `<program> <title> <body>`. It is
     /// NOT handed the click's bundle id: a fourth argv word would silently
     /// change what `$3` means to a program written against T-282's shape,
@@ -301,7 +307,7 @@ impl Banner {
         // reveal's command is made on the spot.
         let reveal = click.and_then(Click::command);
         match self {
-            Banner::Off | Banner::Osc => None,
+            Banner::Off | Banner::Osc | Banner::Kitty => None,
             Banner::Custom(prog) => v(&[prog, title, body]),
             Banner::TerminalNotifier => {
                 let mut argv: Vec<&str> = vec!["terminal-notifier", "-title", title];
@@ -373,6 +379,7 @@ impl Banner {
         match self {
             Banner::Off => "off".into(),
             Banner::Osc => "OSC 9 (your terminal draws it)".into(),
+            Banner::Kitty => "kitty (OSC 99, a click raises the window)".into(),
             Banner::Custom(p) => format!("{p} ($MESIMON_NOTIFY)"),
             Banner::TerminalNotifier => "terminal-notifier".into(),
             Banner::Osascript => "osascript".into(),
@@ -465,7 +472,14 @@ pub struct Channels {
 /// in beside the board's own name, the other per-board constant.
 pub fn find() -> Channels {
     Channels {
-        banner: find_banner(std::env::var("MESIMON_NOTIFY").ok().as_deref(), which_on_path),
+        banner: find_banner(
+            std::env::var("MESIMON_NOTIFY").ok().as_deref(),
+            which_on_path,
+            in_kitty(
+                std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
+                std::env::var("TERM_PROGRAM").ok().as_deref(),
+            ),
+        ),
         player: find_player(std::env::var("MESIMON_SOUND").ok().as_deref(), which_on_path),
         group: None,
         icon_dir: None,
@@ -702,15 +716,19 @@ fn own_tty() -> Option<String> {
     s.to_str().ok().map(str::to_string)
 }
 
-fn find_banner(env: Option<&str>, which: impl Fn(&str) -> Option<PathBuf>) -> Banner {
+fn find_banner(env: Option<&str>, which: impl Fn(&str) -> Option<PathBuf>, kitty: bool) -> Banner {
     match env.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) if v.eq_ignore_ascii_case("off") => return Banner::Off,
         Some(v) if v.eq_ignore_ascii_case("osc") => return Banner::Osc,
+        Some(v) if v.eq_ignore_ascii_case("kitty") => return Banner::Kitty,
         Some(v) => return Banner::Custom(v.to_string()),
         None => {}
     }
     if which("terminal-notifier").is_some() {
         return Banner::TerminalNotifier;
+    }
+    if kitty {
+        return Banner::Kitty;
     }
     if cfg!(target_os = "macos") {
         return Banner::Osascript;
@@ -719,6 +737,14 @@ fn find_banner(env: Option<&str>, which: impl Fn(&str) -> Option<PathBuf>) -> Ba
         return Banner::NotifySend;
     }
     Banner::Osc
+}
+
+/// The board runs in kitty, directly: kitty stamps every pane with its
+/// window id, and an outer tmux — which would swallow OSC 99 — rewrites
+/// `TERM_PROGRAM` to `tmux`, the same negative `find_activate` trusts.
+fn in_kitty(window_id: Option<&str>, term_program: Option<&str>) -> bool {
+    window_id.is_some_and(|v| !v.is_empty())
+        && !term_program.is_some_and(|v| v.eq_ignore_ascii_case("tmux"))
 }
 
 fn find_player(env: Option<&str>, which: impl Fn(&str) -> Option<PathBuf>) -> Player {
@@ -810,14 +836,15 @@ impl Console {
 /// the board says `opening …` and never `opened`. A rung that writes an
 /// escape and finds the terminal handed over says nothing and reports no
 /// error: not raising a banner is not a failure to report.
-pub fn post(ch: &Channels, p: &Post, console: &Console) -> std::io::Result<()> {
-    post_with(ch, p, console, |argv| launch(argv, None))
+pub fn post(ch: &Channels, p: &Post, console: &Console, bounce: bool) -> std::io::Result<()> {
+    post_with(ch, p, console, bounce, |argv| launch(argv, None))
 }
 
 fn post_with(
     ch: &Channels,
     p: &Post,
     console: &Console,
+    bounce: bool,
     launch: impl Fn(&[String]) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let mut icon_error = None;
@@ -855,8 +882,18 @@ fn post_with(
             None if ch.banner == Banner::Osc => {
                 console.write_if_held(|| write_osc9(&f.title, &f.folded))?
             }
+            None if ch.banner == Banner::Kitty => {
+                console.write_if_held(|| write_osc99(&f.title, &f.folded))?
+            }
             None => {}
         }
+    }
+    // iTerm2's dock bounce (T-492): once, on a post that carries an
+    // attention event. The same lock and the same silence off screen as
+    // the escape rungs; every other terminal ignores the sequence, and
+    // `bounce` is already false anywhere but iTerm2 direct.
+    if bounce && p.needs_you {
+        console.write_if_held(write_bounce)?;
     }
     if !p.sound.is_off() {
         match ch.player.argv(p.sound) {
@@ -923,6 +960,26 @@ fn write_osc9(title: &str, body: &str) -> std::io::Result<()> {
     } else {
         write!(out, "\x1b]9;{title} ∙ {body}\x07")?;
     }
+    out.flush()
+}
+
+/// kitty's OSC 99, the simplest documented form: empty metadata, and the
+/// payload is the title. ST-terminated, as kitty's own examples are; the
+/// click action defaults to focusing the window.
+fn write_osc99(title: &str, body: &str) -> std::io::Result<()> {
+    let mut out = std::io::stdout();
+    if title.is_empty() {
+        write!(out, "\x1b]99;;{body}\x1b\\")?;
+    } else {
+        write!(out, "\x1b]99;;{title} ∙ {body}\x1b\\")?;
+    }
+    out.flush()
+}
+
+/// iTerm2's `RequestAttention=once`: one dock bounce, nothing to cancel.
+fn write_bounce() -> std::io::Result<()> {
+    let mut out = std::io::stdout();
+    write!(out, "\x1b]1337;RequestAttention=once\x07")?;
     out.flush()
 }
 
@@ -1013,8 +1070,15 @@ pub fn doctor_line() -> String {
     // spawns a program with null stdio and speaks through a handover. Said
     // apart from the in-pane PREFERENCE above, which is a choice; this is a
     // property of the rung that answered.
-    if ch.banner == Banner::Osc {
+    if matches!(ch.banner, Banner::Osc | Banner::Kitty) {
         parts.push("this rung cannot reach you mid-handover — a helper program can".into());
+    }
+    if p.notify_dock_bounce {
+        parts.push(if crate::title::iterm2_direct() {
+            "the dock bounces once when an agent needs you".into()
+        } else {
+            "dock bounce on, but this is not iTerm2 — nothing bounces".into()
+        });
     }
     if let Some(c) = click {
         parts.push(c);
@@ -1057,7 +1121,7 @@ mod tests {
             icon_dir: Some(dir.clone()),
             notifier_app: None,
         };
-        post(&ch, &Post::sound_only(Sound::Off), &Console::default()).unwrap();
+        post(&ch, &Post::sound_only(Sound::Off), &Console::default(), false).unwrap();
         ch.banner = Banner::Off;
         let p = Post {
             needs_you: true,
@@ -1066,7 +1130,7 @@ mod tests {
             body: "needs you".into(),
             sound: Sound::Off,
         };
-        post(&ch, &p, &Console::default()).unwrap();
+        post(&ch, &p, &Console::default(), false).unwrap();
         assert!(!dir.exists());
     }
 
@@ -1093,7 +1157,7 @@ mod tests {
             sound: Sound::Off,
         };
         let calls = std::cell::RefCell::new(Vec::new());
-        let error = post_with(&ch, &p, &Console::default(), |argv| {
+        let error = post_with(&ch, &p, &Console::default(), false, |argv| {
             calls.borrow_mut().push(argv.to_vec());
             Ok(())
         })
@@ -1141,12 +1205,29 @@ mod tests {
 
     #[test]
     fn the_env_wins_on_both_ladders() {
-        assert_eq!(find_banner(Some(" off "), all), Banner::Off);
-        assert_eq!(find_banner(Some("OSC"), all), Banner::Osc);
-        assert_eq!(find_banner(Some("my-notifier"), all), Banner::Custom("my-notifier".into()));
-        assert_eq!(find_banner(Some("   "), none), find_banner(None, none));
+        assert_eq!(find_banner(Some(" off "), all, false), Banner::Off);
+        assert_eq!(find_banner(Some("OSC"), all, false), Banner::Osc);
+        assert_eq!(
+            find_banner(Some("my-notifier"), all, false),
+            Banner::Custom("my-notifier".into())
+        );
+        assert_eq!(find_banner(Some("   "), none, false), find_banner(None, none, false));
         assert_eq!(find_player(Some("off"), all), Player::Off);
         assert_eq!(find_player(Some(" aplay "), all), Player::Custom("aplay".into()));
+    }
+
+    /// kitty's rung (T-492): below terminal-notifier, above the two
+    /// programs that cannot click, and only where the board runs in kitty
+    /// directly — an outer tmux's `TERM_PROGRAM` is the veto.
+    #[test]
+    fn kitty_sits_below_terminal_notifier_and_never_behind_an_outer_tmux() {
+        assert_eq!(find_banner(None, none, true), Banner::Kitty);
+        assert_eq!(find_banner(None, all, true), Banner::TerminalNotifier);
+        assert_eq!(find_banner(Some("kitty"), all, false), Banner::Kitty);
+        assert!(in_kitty(Some("1"), None));
+        assert!(!in_kitty(Some("1"), Some("tmux")));
+        assert!(!in_kitty(None, None));
+        assert!(!in_kitty(Some(""), None));
     }
 
     #[test]
@@ -1154,20 +1235,20 @@ mod tests {
         // Nothing on PATH: the banner falls to the terminal's own escape and
         // the sound to the bell — neither can fail to resolve.
         if cfg!(target_os = "macos") {
-            assert_eq!(find_banner(None, none), Banner::Osascript);
+            assert_eq!(find_banner(None, none, false), Banner::Osascript);
             assert_eq!(find_player(None, none), Player::Afplay);
         } else {
-            assert_eq!(find_banner(None, none), Banner::Osc);
+            assert_eq!(find_banner(None, none, false), Banner::Osc);
             assert_eq!(find_player(None, none), Player::Bell);
-            assert_eq!(find_banner(None, all), Banner::TerminalNotifier);
+            assert_eq!(find_banner(None, all, false), Banner::TerminalNotifier);
             assert_eq!(find_player(None, all), Player::Paplay);
             let send =
                 |n: &str| (n == "notify-send").then(|| PathBuf::from("/usr/bin/notify-send"));
-            assert_eq!(find_banner(None, send), Banner::NotifySend);
+            assert_eq!(find_banner(None, send, false), Banner::NotifySend);
         }
         // terminal-notifier outranks the platform's own on every platform.
         let tn = |n: &str| (n == "terminal-notifier").then(|| PathBuf::from("/usr/bin/x"));
-        assert_eq!(find_banner(None, tn), Banner::TerminalNotifier);
+        assert_eq!(find_banner(None, tn, false), Banner::TerminalNotifier);
     }
 
     #[test]
@@ -1620,8 +1701,8 @@ mod tests {
             sound: Sound::Glass,
         };
         let console = Console::default();
-        assert!(post(&ch, &p, &console).is_ok());
-        assert!(post(&ch, &Post::sound_only(Sound::Off), &console).is_ok());
+        assert!(post(&ch, &p, &console, false).is_ok());
+        assert!(post(&ch, &Post::sound_only(Sound::Off), &console, false).is_ok());
     }
 
     /// T-291's honest limit, as a rule rather than a sentence: an escape rung

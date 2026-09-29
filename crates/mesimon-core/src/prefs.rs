@@ -19,10 +19,27 @@ pub enum PrefKey {
     MergeTrain,
     MergeTrainNotice,
     StatusTop,
-    /// The terminal's own tab or window title names the board and what
-    /// needs you (T-492): off by default, per machine — a title is the
-    /// terminal's, not a board's.
+    /// The terminal's own tab or window title names the board (T-492): a
+    /// named value — `off`, `project` (the board's name alone) or
+    /// `mesimon` (`mesimon ∙ <board>`). Off by default, per machine — a
+    /// title is the terminal's, not a board's. The keys after it are the
+    /// rest of the terminal integrations, each its own row.
     TabTitle,
+    /// The tab title counts the tickets that need you.
+    TabTitleNeedsYou,
+    /// The tab title names the ticket whose pane is on screen.
+    TabTitleFocus,
+    /// A progress ring in the tab (OSC 9;4): spinning while an agent
+    /// works, red while one needs you.
+    TabProgress,
+    /// iTerm2 marks the tab in the attention colour while any ticket
+    /// needs you: `off`, `dot` (the tab's indicator) or `tab` (its chrome).
+    TabColor,
+    /// iTerm2's tab subtitle counts what needs you and what is working.
+    TabSubtitle,
+    /// The tab's working directory (OSC 7): the ticket's worktree while
+    /// its pane is on screen, so a new tab opens there.
+    TabCwd,
     KeepAwake,
     Notify,
     NotifyDone,
@@ -31,12 +48,15 @@ pub enum PrefKey {
     NotifyWords,
     NotifySoundNeedsYou,
     NotifySoundDone,
+    /// iTerm2 bounces its dock icon once when an agent needs you (T-492).
+    /// A notification, so it sits in that list and under that switch.
+    NotifyDockBounce,
     /// The board's reply row (T-365): which rung `p`/`P` left it on.
     Peek,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 18] = [
+    pub const ALL: [PrefKey; 25] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::FollowOs,
@@ -46,6 +66,12 @@ impl PrefKey {
         PrefKey::MergeTrainNotice,
         PrefKey::StatusTop,
         PrefKey::TabTitle,
+        PrefKey::TabTitleNeedsYou,
+        PrefKey::TabTitleFocus,
+        PrefKey::TabProgress,
+        PrefKey::TabColor,
+        PrefKey::TabSubtitle,
+        PrefKey::TabCwd,
         PrefKey::KeepAwake,
         PrefKey::Notify,
         PrefKey::NotifyDone,
@@ -54,6 +80,7 @@ impl PrefKey {
         PrefKey::NotifyWords,
         PrefKey::NotifySoundNeedsYou,
         PrefKey::NotifySoundDone,
+        PrefKey::NotifyDockBounce,
         PrefKey::Peek,
     ];
 
@@ -69,6 +96,12 @@ impl PrefKey {
             PrefKey::MergeTrainNotice => "merge_train_notice",
             PrefKey::StatusTop => "status_line_top",
             PrefKey::TabTitle => "tab_title",
+            PrefKey::TabTitleNeedsYou => "tab_title_needs_you",
+            PrefKey::TabTitleFocus => "tab_title_focus",
+            PrefKey::TabProgress => "tab_progress",
+            PrefKey::TabColor => "tab_color",
+            PrefKey::TabSubtitle => "tab_subtitle",
+            PrefKey::TabCwd => "tab_cwd",
             PrefKey::KeepAwake => "keep_awake",
             PrefKey::Notify => "notify",
             PrefKey::NotifyDone => "notify_done",
@@ -77,18 +110,32 @@ impl PrefKey {
             PrefKey::NotifyWords => "notify_words",
             PrefKey::NotifySoundNeedsYou => "notify_sound_needs_you",
             PrefKey::NotifySoundDone => "notify_sound_done",
+            PrefKey::NotifyDockBounce => "notify_dock_bounce",
             PrefKey::Peek => "peek",
         }
     }
 
-    /// May one board set this on its own? Four stay the machine's: where
-    /// the tmux status line sits and whether the terminal's tab is titled
-    /// are about the terminal, which day a week starts on is about the
-    /// person, and none of them changes with the repo; the reply row's
-    /// rung (T-365) is about how the person reads a board, and no Settings
-    /// row exists to set it per board — `p` and `P` set it.
+    /// May one board set this on its own? The machine keeps: where the
+    /// tmux status line sits and the seven terminal integrations (T-492),
+    /// which are about the terminal the board runs in and not about a
+    /// repo; which day a week starts on, which is about the person; and
+    /// the reply row's rung (T-365), which is about how the person reads a
+    /// board and has no Settings row to set it per board — `p` and `P` set
+    /// it. The dock bounce is a notification and follows its group.
     pub fn board_overridable(self) -> bool {
-        !matches!(self, PrefKey::StatusTop | PrefKey::TabTitle | PrefKey::WeekStart | PrefKey::Peek)
+        !matches!(
+            self,
+            PrefKey::StatusTop
+                | PrefKey::TabTitle
+                | PrefKey::TabTitleNeedsYou
+                | PrefKey::TabTitleFocus
+                | PrefKey::TabProgress
+                | PrefKey::TabColor
+                | PrefKey::TabSubtitle
+                | PrefKey::TabCwd
+                | PrefKey::WeekStart
+                | PrefKey::Peek
+        )
     }
 
     /// The words a status line calls it.
@@ -103,6 +150,12 @@ impl PrefKey {
             PrefKey::MergeTrainNotice => "auto merge notice",
             PrefKey::StatusTop => "status line",
             PrefKey::TabTitle => "terminal tab title",
+            PrefKey::TabTitleNeedsYou => "tab title counts needs-you",
+            PrefKey::TabTitleFocus => "tab title follows the open session",
+            PrefKey::TabProgress => "tab progress ring",
+            PrefKey::TabColor => "tab colour when needs you",
+            PrefKey::TabSubtitle => "tab subtitle",
+            PrefKey::TabCwd => "tab working directory",
             PrefKey::KeepAwake => "keep awake",
             PrefKey::Notify => "notifications",
             PrefKey::NotifyDone => "notify when a turn lands",
@@ -111,6 +164,7 @@ impl PrefKey {
             PrefKey::NotifyWords => "notify with the agent's words",
             PrefKey::NotifySoundNeedsYou => "needs-you sound",
             PrefKey::NotifySoundDone => "done sound",
+            PrefKey::NotifyDockBounce => "dock bounce",
             PrefKey::Peek => "replies",
         }
     }
@@ -121,6 +175,8 @@ impl PrefKey {
             self,
             PrefKey::Dark
                 | PrefKey::Light
+                | PrefKey::TabTitle
+                | PrefKey::TabColor
                 | PrefKey::WeekStart
                 | PrefKey::NotifySoundNeedsYou
                 | PrefKey::NotifySoundDone
@@ -134,7 +190,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_names_are_unique_and_four_are_machine_only() {
+    fn key_names_are_unique_and_the_terminal_keys_are_machine_only() {
         let mut names: Vec<_> = PrefKey::ALL.iter().map(|k| k.name()).collect();
         names.sort_unstable();
         names.dedup();
@@ -143,7 +199,18 @@ mod tests {
             PrefKey::ALL.iter().filter(|k| !k.board_overridable()).copied().collect();
         assert_eq!(
             machine_only,
-            [PrefKey::WeekStart, PrefKey::StatusTop, PrefKey::TabTitle, PrefKey::Peek]
+            [
+                PrefKey::WeekStart,
+                PrefKey::StatusTop,
+                PrefKey::TabTitle,
+                PrefKey::TabTitleNeedsYou,
+                PrefKey::TabTitleFocus,
+                PrefKey::TabProgress,
+                PrefKey::TabColor,
+                PrefKey::TabSubtitle,
+                PrefKey::TabCwd,
+                PrefKey::Peek
+            ]
         );
     }
 }

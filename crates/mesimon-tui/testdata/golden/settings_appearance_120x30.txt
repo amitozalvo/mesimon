@@ -7,6 +7,7 @@
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
 
 
+
                            ╭─ APPEARANCE & NOTIFICATIONS ───────────────────────────────────╮
                            │   Theme: graphite                                              │
                            │     dark, the default ∙ for a dark terminal                    │
@@ -16,9 +17,8 @@
                            │     the board says nothing outside its own window ∙ enter ope~ │
                            │   Status line at the bottom                                    │
                            │     tmux's bar over an agent's pane ∙ enter moves it up        │
-                           │   Terminal tab title: off                                      │
-                           │     the tab keeps its own title ∙ enter names it after the bo~ │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
+
 
 
 

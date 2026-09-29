@@ -8,7 +8,6 @@
 
 
 
-
                            ╭─ SETTINGS ─────────────────────────────────────────────────────╮
                            │   Appearance & notifications                                   │
                            │     themes, OS appearance, notifications, status line          │
@@ -16,8 +15,9 @@
                            │     auto merge, keep awake, snooze, week start, default column │
                            │   Agents                                                       │
                            │     provider, brief and tools                                  │
+                           │   Terminal                                                     │
+                           │     the tab's title, progress ring, colour and directory       │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

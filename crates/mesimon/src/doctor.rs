@@ -252,8 +252,8 @@ fn environment(repo: &std::path::Path, verbose: bool) -> Section {
     records.push(rec(Level::Note, "merge train", mesimon_tui::train_status()));
     // Where the private tmux server's status line sits over a pane (T-264).
     records.push(rec(Level::Note, "status line", mesimon_tui::status_line_status()));
-    // Whether the board names the terminal's own tab (T-492).
-    records.push(rec(Level::Note, "tab title", mesimon_tui::tab_title_status()));
+    // What the board does to the terminal's own tab (T-492).
+    records.push(rec(Level::Note, "terminal", mesimon_tui::terminal_status()));
     // What the board says outside its own window (T-282): whether it is on,
     // and which rung of each ladder would answer if it were.
     records.push(rec(Level::Note, "notifications", mesimon_tui::notify_status()));

@@ -66,6 +66,105 @@ impl PeekLevel {
     }
 }
 
+/// What the terminal's tab reads (T-492): nothing of ours, the board's
+/// name alone, or `mesimon ∙ <board>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabTitle {
+    #[default]
+    Off,
+    /// `<board>`.
+    Project,
+    /// `mesimon ∙ <board>`.
+    Mesimon,
+}
+
+impl TabTitle {
+    /// The word in the file, and the word `doctor` says.
+    pub const fn key(self) -> &'static str {
+        match self {
+            TabTitle::Off => "off",
+            TabTitle::Project => "project",
+            TabTitle::Mesimon => "mesimon",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(TabTitle::Off),
+            "project" => Some(TabTitle::Project),
+            "mesimon" => Some(TabTitle::Mesimon),
+            _ => None,
+        }
+    }
+
+    /// The row's word for it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            TabTitle::Off => "off",
+            TabTitle::Project => "project name",
+            TabTitle::Mesimon => "mesimon ∙ project name",
+        }
+    }
+
+    /// The ring Enter cycles: off → project → mesimon → off.
+    pub const fn next(self) -> Self {
+        match self {
+            TabTitle::Off => TabTitle::Project,
+            TabTitle::Project => TabTitle::Mesimon,
+            TabTitle::Mesimon => TabTitle::Off,
+        }
+    }
+
+    pub const fn is_on(self) -> bool {
+        !matches!(self, TabTitle::Off)
+    }
+}
+
+/// How iTerm2 marks the tab while any ticket needs you (T-492): not at
+/// all, its indicator dot, or the whole tab's chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabColor {
+    #[default]
+    Off,
+    Dot,
+    Tab,
+}
+
+impl TabColor {
+    pub const fn key(self) -> &'static str {
+        match self {
+            TabColor::Off => "off",
+            TabColor::Dot => "dot",
+            TabColor::Tab => "tab",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(TabColor::Off),
+            "dot" => Some(TabColor::Dot),
+            "tab" => Some(TabColor::Tab),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            TabColor::Off => "off",
+            TabColor::Dot => "the tab's dot",
+            TabColor::Tab => "the whole tab",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            TabColor::Off => TabColor::Dot,
+            TabColor::Dot => TabColor::Tab,
+            TabColor::Tab => TabColor::Off,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Prefs {
     pub dark: Flavor,
@@ -99,12 +198,31 @@ pub(crate) struct Prefs {
     /// owns the server and never reads this file.
     pub status_top: bool,
     /// The terminal's own tab or window title says which board this is
-    /// and how many tickets need you, and names the ticket whose pane is
-    /// on screen during a focus (T-492). Off by default: a title is the
-    /// terminal's, and renaming somebody's tab is a thing they ask for.
-    /// Per machine, like the status line — the title belongs to the
-    /// terminal the board runs in, not to a repo.
-    pub tab_title: bool,
+    /// (T-492): off, the board's name, or `mesimon ∙ <board>`. Off by
+    /// default: a title is the terminal's, and renaming somebody's tab is a
+    /// thing they ask for. Per machine, like the status line — the title
+    /// belongs to the terminal the board runs in, not to a repo. The two
+    /// after it shape the words and are read only while it is on.
+    pub tab_title: TabTitle,
+    /// `2 need you ∙ <board>` while any ticket does. On by default.
+    pub tab_title_needs_you: bool,
+    /// The ticket whose pane is on screen, through a focus. On by default.
+    pub tab_title_focus: bool,
+    /// A progress ring in the tab (OSC 9;4): spinning while an agent is
+    /// mid-turn, red while one needs you. Off by default, the title's rule.
+    pub tab_progress: bool,
+    /// iTerm2 marks the tab in the theme's attention colour while any
+    /// ticket needs you: its indicator dot (`OSC 21337`) or the whole
+    /// tab's chrome (`OSC 6`). Off by default; inert on every other
+    /// terminal.
+    pub tab_color: TabColor,
+    /// iTerm2's tab subtitle (`OSC 21337 status=`) counts what needs you
+    /// and what is working. Off by default; inert elsewhere.
+    pub tab_subtitle: bool,
+    /// The tab's working directory (OSC 7) follows a focus into the
+    /// ticket's worktree, so a new tab opens beside the agent. Off by
+    /// default.
+    pub tab_cwd: bool,
     /// Hold this machine awake while an agent is mid-turn (T-288). OFF by
     /// default and deliberately, for `notify`'s reason one level up: changing
     /// what a machine does about power is a thing the user asks for, never a
@@ -145,6 +263,10 @@ pub(crate) struct Prefs {
     /// of each ring, so either can be silenced on its own.
     pub notify_sound_needs_you: Sound,
     pub notify_sound_done: Sound,
+    /// iTerm2 bounces its dock icon once when an agent needs you (T-492).
+    /// Off by default, under the notifications switch like the rest of
+    /// its group; inert on every other terminal and inside an outer tmux.
+    pub notify_dock_bounce: bool,
     /// The rung `p`/`P` left the board's reply row on (T-365), so the next
     /// board opens the way this one was left. Off by default — absent is
     /// how every board opened before the key existed — and the setter's
@@ -166,7 +288,13 @@ impl Default for Prefs {
             merge_train: false,
             merge_train_notice: true,
             status_top: false,
-            tab_title: false,
+            tab_title: TabTitle::Off,
+            tab_title_needs_you: true,
+            tab_title_focus: true,
+            tab_progress: false,
+            tab_color: TabColor::Off,
+            tab_subtitle: false,
+            tab_cwd: false,
             keep_awake: false,
             notify: false,
             notify_done: true,
@@ -175,6 +303,7 @@ impl Default for Prefs {
             notify_words: true,
             notify_sound_needs_you: Sound::Glass,
             notify_sound_done: Sound::Tink,
+            notify_dock_bounce: false,
             peek: PeekLevel::Off,
             doc: Map::new(),
         }
@@ -189,6 +318,13 @@ const MERGE_TRAIN_KEY: &str = PrefKey::MergeTrain.name();
 const MERGE_TRAIN_NOTICE_KEY: &str = PrefKey::MergeTrainNotice.name();
 const STATUS_TOP_KEY: &str = PrefKey::StatusTop.name();
 const TAB_TITLE_KEY: &str = PrefKey::TabTitle.name();
+const TAB_TITLE_NEEDS_YOU_KEY: &str = PrefKey::TabTitleNeedsYou.name();
+const TAB_TITLE_FOCUS_KEY: &str = PrefKey::TabTitleFocus.name();
+const TAB_PROGRESS_KEY: &str = PrefKey::TabProgress.name();
+const TAB_COLOR_KEY: &str = PrefKey::TabColor.name();
+const TAB_SUBTITLE_KEY: &str = PrefKey::TabSubtitle.name();
+const TAB_CWD_KEY: &str = PrefKey::TabCwd.name();
+const NOTIFY_DOCK_BOUNCE_KEY: &str = PrefKey::NotifyDockBounce.name();
 const KEEP_AWAKE_KEY: &str = PrefKey::KeepAwake.name();
 const NOTIFY_KEY: &str = PrefKey::Notify.name();
 const NOTIFY_DONE_KEY: &str = PrefKey::NotifyDone.name();
@@ -268,6 +404,7 @@ impl Prefs {
             (PrefKey::NotifyFocused, &mut p.notify_focused),
             (PrefKey::NotifyInPane, &mut p.notify_in_pane),
             (PrefKey::NotifyWords, &mut p.notify_words),
+            (PrefKey::NotifyDockBounce, &mut p.notify_dock_bounce),
         ] {
             if let Some(v) = board.bool(key) {
                 *slot = v;
@@ -302,7 +439,13 @@ impl Prefs {
                     "bottom"
                 }
             }
-            PrefKey::TabTitle => onoff(self.tab_title),
+            PrefKey::TabTitle => self.tab_title.key(),
+            PrefKey::TabTitleNeedsYou => onoff(self.tab_title_needs_you),
+            PrefKey::TabTitleFocus => onoff(self.tab_title_focus),
+            PrefKey::TabProgress => onoff(self.tab_progress),
+            PrefKey::TabColor => self.tab_color.key(),
+            PrefKey::TabSubtitle => onoff(self.tab_subtitle),
+            PrefKey::TabCwd => onoff(self.tab_cwd),
             PrefKey::KeepAwake => onoff(self.keep_awake),
             PrefKey::Notify => onoff(self.notify),
             PrefKey::NotifyDone => onoff(self.notify_done),
@@ -311,6 +454,7 @@ impl Prefs {
             PrefKey::NotifyWords => onoff(self.notify_words),
             PrefKey::NotifySoundNeedsYou => self.notify_sound_needs_you.name(),
             PrefKey::NotifySoundDone => self.notify_sound_done.name(),
+            PrefKey::NotifyDockBounce => onoff(self.notify_dock_bounce),
             PrefKey::Peek => self.peek.key(),
         }
     }
@@ -334,7 +478,28 @@ impl Prefs {
         doc.insert(MERGE_TRAIN_KEY.into(), Value::from(self.merge_train));
         doc.insert(MERGE_TRAIN_NOTICE_KEY.into(), Value::from(self.merge_train_notice));
         doc.insert(STATUS_TOP_KEY.into(), Value::from(self.status_top));
-        doc.insert(TAB_TITLE_KEY.into(), Value::from(self.tab_title));
+        // A word this build does not know is a newer build's pick, kept
+        // the way a foreign theme name is.
+        let foreign_title = doc
+            .get(TAB_TITLE_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| TabTitle::from_key(v).is_none());
+        if !foreign_title {
+            doc.insert(TAB_TITLE_KEY.into(), Value::from(self.tab_title.key()));
+        }
+        let foreign_color = doc
+            .get(TAB_COLOR_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| TabColor::from_key(v).is_none());
+        if !foreign_color {
+            doc.insert(TAB_COLOR_KEY.into(), Value::from(self.tab_color.key()));
+        }
+        doc.insert(TAB_TITLE_NEEDS_YOU_KEY.into(), Value::from(self.tab_title_needs_you));
+        doc.insert(TAB_TITLE_FOCUS_KEY.into(), Value::from(self.tab_title_focus));
+        doc.insert(TAB_PROGRESS_KEY.into(), Value::from(self.tab_progress));
+        doc.insert(TAB_SUBTITLE_KEY.into(), Value::from(self.tab_subtitle));
+        doc.insert(TAB_CWD_KEY.into(), Value::from(self.tab_cwd));
+        doc.insert(NOTIFY_DOCK_BOUNCE_KEY.into(), Value::from(self.notify_dock_bounce));
         doc.insert(KEEP_AWAKE_KEY.into(), Value::from(self.keep_awake));
         doc.insert(NOTIFY_KEY.into(), Value::from(self.notify));
         doc.insert(NOTIFY_DONE_KEY.into(), Value::from(self.notify_done));
@@ -425,7 +590,16 @@ impl BoardPrefs {
             PrefKey::Dark => self.flavor(Ground::Dark).is_some(),
             PrefKey::Light => self.flavor(Ground::Light).is_some(),
             PrefKey::NotifySoundNeedsYou | PrefKey::NotifySoundDone => self.sound(key).is_some(),
-            PrefKey::WeekStart | PrefKey::StatusTop | PrefKey::TabTitle | PrefKey::Peek => false,
+            PrefKey::WeekStart
+            | PrefKey::StatusTop
+            | PrefKey::TabTitle
+            | PrefKey::TabTitleNeedsYou
+            | PrefKey::TabTitleFocus
+            | PrefKey::TabProgress
+            | PrefKey::TabColor
+            | PrefKey::TabSubtitle
+            | PrefKey::TabCwd
+            | PrefKey::Peek => false,
             _ => self.bool(key).is_some(),
         }
     }
@@ -572,7 +746,24 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let merge_train_notice =
         doc.get(MERGE_TRAIN_NOTICE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let status_top = doc.get(STATUS_TOP_KEY).and_then(Value::as_bool).unwrap_or(false);
-    let tab_title = doc.get(TAB_TITLE_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let tab_title = doc
+        .get(TAB_TITLE_KEY)
+        .and_then(Value::as_str)
+        .and_then(TabTitle::from_key)
+        .unwrap_or_default();
+    let tab_color = doc
+        .get(TAB_COLOR_KEY)
+        .and_then(Value::as_str)
+        .and_then(TabColor::from_key)
+        .unwrap_or_default();
+    let flag =
+        |key: &str, fallback: bool| doc.get(key).and_then(Value::as_bool).unwrap_or(fallback);
+    let tab_title_needs_you = flag(TAB_TITLE_NEEDS_YOU_KEY, true);
+    let tab_title_focus = flag(TAB_TITLE_FOCUS_KEY, true);
+    let tab_progress = flag(TAB_PROGRESS_KEY, false);
+    let tab_subtitle = flag(TAB_SUBTITLE_KEY, false);
+    let tab_cwd = flag(TAB_CWD_KEY, false);
+    let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
@@ -601,6 +792,12 @@ pub(crate) fn load(path: &Path) -> Loaded {
         merge_train_notice,
         status_top,
         tab_title,
+        tab_title_needs_you,
+        tab_title_focus,
+        tab_progress,
+        tab_color,
+        tab_subtitle,
+        tab_cwd,
         keep_awake,
         notify,
         notify_done,
@@ -609,6 +806,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         notify_words,
         notify_sound_needs_you,
         notify_sound_done,
+        notify_dock_bounce,
         peek,
         doc,
     };
@@ -696,14 +894,42 @@ pub fn status_line_doctor_line() -> String {
     }
 }
 
-/// `mesimon doctor`'s `tab title` line (T-492): whether the board names
-/// the terminal's tab, and what the tab would read.
+/// `mesimon doctor`'s `terminal` line (T-492): what the board does to the
+/// terminal's own tab — the title's shape and the integrations beside it
+/// — and, on iTerm2, the one thing a user cannot tell from the tab: the
+/// `(job)` suffix is the profile's own Title setting, not ours, and the
+/// tab's icon is that profile's too (no escape sets one).
 pub fn tab_title_doctor_line() -> String {
-    if load_home().prefs.tab_title {
-        "on ∙ the tab reads the board, how many need you, and the ticket in focus".into()
-    } else {
-        "off ∙ the tab keeps its own title (Settings › Appearance turns it on)".into()
+    let p = load_home().prefs;
+    let mut parts: Vec<String> = Vec::new();
+    match p.tab_title {
+        TabTitle::Off => parts.push("tab title off ∙ the tab keeps its own".into()),
+        t => {
+            let mut words = vec![t.name()];
+            if p.tab_title_needs_you {
+                words.push("how many need you");
+            }
+            if p.tab_title_focus {
+                words.push("the ticket in focus");
+            }
+            parts.push(format!("tab title: {}", words.join(", ")));
+        }
     }
+    let onoff = |b: bool| if b { "on" } else { "off" };
+    parts.push(format!("progress ring {}", onoff(p.tab_progress)));
+    parts.push(format!("needs-you colour {}", p.tab_color.key()));
+    parts.push(format!("subtitle {}", onoff(p.tab_subtitle)));
+    parts.push(format!("working directory {}", onoff(p.tab_cwd)));
+    match crate::title::terminal() {
+        crate::title::Terminal::ITerm2 => parts
+            .push("iTerm2 ∙ a (job) suffix and the icon are Settings › Profiles › General".into()),
+        crate::title::Terminal::OuterTmux => {
+            parts.push("inside your own tmux ∙ only the title reaches the tab".into())
+        }
+        crate::title::Terminal::Other => {}
+    }
+    parts.push("Settings › Terminal".into());
+    parts.join(" ∙ ")
 }
 
 /// `mesimon doctor`'s `replies` line (T-365): the rung the board's reply
@@ -952,25 +1178,46 @@ mod tests {
         assert_eq!(v["dark"], "amber");
     }
 
-    /// The terminal's tab title (T-492): absent is off — a file written
-    /// before the preference existed must not start renaming tabs — and a
-    /// pick survives a save of something else.
+    /// The terminal integrations (T-492): absent is off — a file written
+    /// before the preferences existed must not start renaming tabs — the
+    /// two shaping switches are on, a pick survives a save of something
+    /// else, and a word this build does not know is kept.
     #[test]
-    fn the_tab_title_defaults_to_off_and_round_trips() {
+    fn the_terminal_integrations_default_off_and_round_trip() {
         let p = scratch("tabtitle");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
         let mut l = load(&p);
-        assert!(!l.prefs.tab_title, "absent is off");
-        l.prefs.tab_title = true;
+        assert_eq!(l.prefs.tab_title, TabTitle::Off, "absent is off");
+        assert!(l.prefs.tab_title_needs_you && l.prefs.tab_title_focus);
+        assert!(!l.prefs.tab_progress && !l.prefs.tab_subtitle && !l.prefs.tab_cwd);
+        assert_eq!(l.prefs.tab_color, TabColor::Off);
+        assert!(!l.prefs.notify_dock_bounce);
+        l.prefs.tab_title = TabTitle::Mesimon;
+        l.prefs.tab_title_focus = false;
+        l.prefs.tab_progress = true;
+        l.prefs.tab_color = TabColor::Dot;
         save(&p, &l.prefs).unwrap();
         let mut l = load(&p);
-        assert!(l.prefs.tab_title);
+        assert_eq!(l.prefs.tab_title, TabTitle::Mesimon);
+        assert_eq!(l.prefs.tab_color, TabColor::Dot);
+        assert!(!l.prefs.tab_title_focus && l.prefs.tab_progress);
         l.prefs.set(Ground::Dark, Flavor::Amber);
         save(&p, &l.prefs).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-        assert_eq!(v["tab_title"], true);
+        assert_eq!(v["tab_title"], "mesimon");
+        assert_eq!(v["tab_color"], "dot");
+        assert_eq!(v["tab_progress"], true);
         assert_eq!(v["dark"], "amber");
+        std::fs::write(&p, r#"{"schema_version":1,"tab_title":"badge","tab_color":"glow"}"#)
+            .unwrap();
+        let l = load(&p);
+        assert_eq!(l.prefs.tab_title, TabTitle::Off, "a foreign word reads as off");
+        assert_eq!(l.prefs.tab_color, TabColor::Off);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["tab_title"], "badge", "and is not written over");
+        assert_eq!(v["tab_color"], "glow");
     }
 
     /// The week-start preference: absent is Monday, a pick round-trips as
@@ -1146,14 +1393,15 @@ mod tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(
             &p,
-            r#"{"schema_version":1,"status_line_top":true,"tab_title":true,"week_start":"sunday","peek":"all"}"#,
+            r#"{"schema_version":1,"status_line_top":true,"tab_title":"mesimon","tab_progress":true,"week_start":"sunday","peek":"all"}"#,
         )
         .unwrap();
         let mut l = load_board(&p);
         assert!(l.prefs.overridden().is_empty());
         let r = Prefs::default().overlay(&l.prefs);
         assert!(!r.status_top);
-        assert!(!r.tab_title);
+        assert_eq!(r.tab_title, TabTitle::Off);
+        assert!(!r.tab_progress);
         assert_eq!(r.week_start, Weekday::Monday);
         assert_eq!(r.peek, PeekLevel::Off);
         l.prefs.set_bool(PrefKey::Notify, true);

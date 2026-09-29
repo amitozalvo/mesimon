@@ -1,0 +1,20 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+  ╭─ TERMINAL ───────────────────────────────────────────╮
+  │   Tab title: mesimon ∙ project name                  │
+  │     enter cycles: off, project name, mesimon ∙ proj~ │
+  │   Tab title counts needs-you: on                     │
+  │     2 need you ∙ project, while any ticket does      │
+  │   Tab title follows the open session: on             │
+  │     the ticket's key and title while you are in its~ │
+  │   Tab progress ring: on                              │
+  │     spins while an agent works, red while one needs~ │
+  │   Tab colour when needs you: off                     │
+  │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
+  │   Tab subtitle: off                                  │
+  │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
+  │   Tab working directory: off                         │
+  │     a new tab opens in the ticket's worktree while ~ │
+  ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
+
+ SETTINGS                                            ? keys

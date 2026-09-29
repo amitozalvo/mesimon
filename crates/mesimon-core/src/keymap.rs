@@ -545,10 +545,22 @@ pub enum Verb {
     /// remembered in `prefs.json`, pushed to the daemon, which owns the
     /// server.
     StatusLine,
-    /// The Settings row that lets the board name the terminal's own tab
-    /// (T-492): the board and how many need you, the ticket in focus;
-    /// remembered in `prefs.json`, per machine, written by the TUI alone.
+    /// The Terminal rows (T-492), each a `prefs.json` key, per machine,
+    /// written by the TUI alone: what the tab reads (off, the board's
+    /// name, `mesimon ∙ <board>`), whether it counts needs-you, whether it
+    /// follows the open session, the progress ring, iTerm2's needs-you
+    /// colour, iTerm2's subtitle, and the working directory.
     TabTitle,
+    TabTitleNeedsYou,
+    TabTitleFocus,
+    TabProgress,
+    TabColor,
+    TabSubtitle,
+    TabCwd,
+    /// The notifications row for iTerm2's dock bounce (T-492).
+    NotifyDockBounce,
+    /// The Settings door to the Terminal rows.
+    SettingsTerminal,
     /// `t` — take the ticket off the merge train, or put it back (T-227).
     /// Flips `Ticket::manual_merge` through `Command::SetManualMerge`.
     ManualMerge,
@@ -848,6 +860,8 @@ pub enum SettingsSection {
     Appearance,
     Behaviour,
     Agents,
+    /// What the board does to the terminal's own tab (T-492).
+    Terminal,
 }
 
 impl SettingsSection {
@@ -857,6 +871,7 @@ impl SettingsSection {
             Self::Appearance => "APPEARANCE & NOTIFICATIONS",
             Self::Behaviour => "BEHAVIOUR",
             Self::Agents => "AGENTS",
+            Self::Terminal => "TERMINAL",
         }
     }
 
@@ -866,16 +881,22 @@ impl SettingsSection {
             Self::Appearance => Verb::SettingsAppearance,
             Self::Behaviour => Verb::SettingsBehaviour,
             Self::Agents => Verb::SettingsAgents,
+            Self::Terminal => Verb::SettingsTerminal,
         }
     }
 
     pub fn for_verb(verb: Verb) -> Self {
         match verb {
-            Verb::ThemePick
-            | Verb::FollowOs
-            | Verb::Notifications
-            | Verb::StatusLine
-            | Verb::TabTitle => Self::Appearance,
+            Verb::ThemePick | Verb::FollowOs | Verb::Notifications | Verb::StatusLine => {
+                Self::Appearance
+            }
+            Verb::TabTitle
+            | Verb::TabTitleNeedsYou
+            | Verb::TabTitleFocus
+            | Verb::TabProgress
+            | Verb::TabColor
+            | Verb::TabSubtitle
+            | Verb::TabCwd => Self::Terminal,
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
@@ -1238,9 +1259,22 @@ pub struct Ctx {
     /// The tmux status line sits at the top of a pane (the preference; the
     /// Settings row flips it).
     pub status_top: bool,
-    /// The board names the terminal's tab (T-492) — the preference; the
-    /// Settings row flips it.
+    /// The Terminal rows' words (T-492): what the tab reads (`TabTitle::name`,
+    /// empty in a bare `Ctx`), whether that is on at all, and the switches.
+    pub tab_title_word: &'static str,
     pub tab_title: bool,
+    pub tab_title_needs_you: bool,
+    pub tab_title_focus: bool,
+    pub tab_progress: bool,
+    /// iTerm2's needs-you colour (`TabColor::name`, empty in a bare `Ctx`).
+    pub tab_color_word: &'static str,
+    pub tab_subtitle: bool,
+    pub tab_cwd: bool,
+    /// The board runs in iTerm2, directly (no outer tmux): the three rows
+    /// that only iTerm2 answers say so when it is not.
+    pub iterm2: bool,
+    /// iTerm2 bounces its dock icon when an agent needs you (T-492).
+    pub notify_dock_bounce: bool,
     /// Hold this machine awake while an agent is mid-turn (T-288) — the
     /// preference; the Settings row flips it.
     pub keep_awake: bool,
@@ -4013,6 +4047,13 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::SettingsTerminal,
+        label: |_| "Terminal".into(),
+        detail: |_| "the tab's title, progress ring, colour and directory".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::ThemePick,
         label: |c| format!("Theme: {}", c.theme_name),
         detail: |c| {
@@ -4129,27 +4170,111 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
-    // The terminal's own tab (T-492). Off by default: the title is the
-    // terminal's, and a board that renames it uninvited is a board that
-    // wrote where it was not asked to. Per machine, the status line's
+    // The terminal's own tab (T-492). Everything off by default: the tab
+    // is the terminal's, and a board that renames it uninvited is a board
+    // that wrote where it was not asked to. Per machine, the status line's
     // reason: which terminal the board runs in is not a fact about a repo.
+    // The two shaping rows are gated on the title, the notifications
+    // list's rule, so the list never offers settings for a thing that is
+    // off.
     MenuItem {
         verb: Verb::TabTitle,
-        label: |c| {
-            if c.tab_title {
-                "Terminal tab title: on".into()
-            } else {
-                "Terminal tab title: off".into()
-            }
-        },
+        label: |c| format!("Tab title: {}", or(c.tab_title_word, "off")),
         detail: |c| {
             if c.tab_title {
-                "the tab reads the board, how many need you, the ticket in focus ∙ enter stops"
-                    .into()
+                "enter cycles: off, project name, mesimon ∙ project name".into()
             } else {
                 "the tab keeps its own title ∙ enter names it after the board".into()
             }
         },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::TabTitleNeedsYou,
+        label: |c| {
+            if c.tab_title_needs_you {
+                "Tab title counts needs-you: on".into()
+            } else {
+                "Tab title counts needs-you: off".into()
+            }
+        },
+        detail: |_| "2 need you ∙ project, while any ticket does".into(),
+        avail: |c| c.tab_title,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::TabTitleFocus,
+        label: |c| {
+            if c.tab_title_focus {
+                "Tab title follows the open session: on".into()
+            } else {
+                "Tab title follows the open session: off".into()
+            }
+        },
+        detail: |_| "the ticket's key and title while you are in its pane or shell".into(),
+        avail: |c| c.tab_title,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::TabProgress,
+        label: |c| {
+            if c.tab_progress {
+                "Tab progress ring: on".into()
+            } else {
+                "Tab progress ring: off".into()
+            }
+        },
+        detail: |_| {
+            "spins while an agent works, red while one needs you ∙ iTerm2, ghostty, kitty, WezTerm"
+                .into()
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::TabColor,
+        label: |c| format!("Tab colour when needs you: {}", or(c.tab_color_word, "off")),
+        detail: |c| {
+            if c.iterm2 {
+                "the theme's attention colour ∙ enter cycles: off, the tab's dot, the whole tab"
+                    .into()
+            } else {
+                "iTerm2 only ∙ this terminal is not iTerm2, so the row is inert".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::TabSubtitle,
+        label: |c| {
+            if c.tab_subtitle {
+                "Tab subtitle: on".into()
+            } else {
+                "Tab subtitle: off".into()
+            }
+        },
+        detail: |c| {
+            if c.iterm2 {
+                "under the title: how many need you, how many are working".into()
+            } else {
+                "iTerm2 only ∙ this terminal is not iTerm2, so the row is inert".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::TabCwd,
+        label: |c| {
+            if c.tab_cwd {
+                "Tab working directory: on".into()
+            } else {
+                "Tab working directory: off".into()
+            }
+        },
+        detail: |_| "a new tab opens in the ticket's worktree while you are in its pane".into(),
         avail: always,
         key: "",
     },
@@ -4590,6 +4715,27 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
         avail: |c| c.notify,
         key: "",
     },
+    // iTerm2's dock bounce (T-492): a rung that needs no program, and the
+    // one every other terminal ignores. Under the switch like the rest.
+    MenuItem {
+        verb: Verb::NotifyDockBounce,
+        label: |c| {
+            if c.notify_dock_bounce {
+                "Dock bounce when an agent needs you: on".into()
+            } else {
+                "Dock bounce when an agent needs you: off".into()
+            }
+        },
+        detail: |c| {
+            if c.iterm2 {
+                "iTerm2 bounces its dock icon once ∙ silent while it is in front".into()
+            } else {
+                "iTerm2 only ∙ this terminal is not iTerm2, so the row is inert".into()
+            }
+        },
+        avail: |c| c.notify,
+        key: "",
+    },
 ];
 
 /// `3 agents`, `1 agent` — a count and its noun. Every suggestion carries a
@@ -4693,15 +4839,23 @@ pub fn is_suggested(verb: Verb, ctx: &Ctx) -> bool {
 /// filter is the menu's so a conditional preference costs nothing later.
 pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     let verbs: &[Verb] = match ctx.settings_section {
-        SettingsSection::Root => {
-            &[Verb::SettingsAppearance, Verb::SettingsBehaviour, Verb::SettingsAgents]
+        SettingsSection::Root => &[
+            Verb::SettingsAppearance,
+            Verb::SettingsBehaviour,
+            Verb::SettingsAgents,
+            Verb::SettingsTerminal,
+        ],
+        SettingsSection::Appearance => {
+            &[Verb::ThemePick, Verb::FollowOs, Verb::Notifications, Verb::StatusLine]
         }
-        SettingsSection::Appearance => &[
-            Verb::ThemePick,
-            Verb::FollowOs,
-            Verb::Notifications,
-            Verb::StatusLine,
+        SettingsSection::Terminal => &[
             Verb::TabTitle,
+            Verb::TabTitleNeedsYou,
+            Verb::TabTitleFocus,
+            Verb::TabProgress,
+            Verb::TabColor,
+            Verb::TabSubtitle,
+            Verb::TabCwd,
         ],
         SettingsSection::Behaviour => &[
             Verb::MergeTrain,
@@ -4751,6 +4905,13 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::MergeTrainNotice => PrefKey::MergeTrainNotice,
         Verb::StatusLine => PrefKey::StatusTop,
         Verb::TabTitle => PrefKey::TabTitle,
+        Verb::TabTitleNeedsYou => PrefKey::TabTitleNeedsYou,
+        Verb::TabTitleFocus => PrefKey::TabTitleFocus,
+        Verb::TabProgress => PrefKey::TabProgress,
+        Verb::TabColor => PrefKey::TabColor,
+        Verb::TabSubtitle => PrefKey::TabSubtitle,
+        Verb::TabCwd => PrefKey::TabCwd,
+        Verb::NotifyDockBounce => PrefKey::NotifyDockBounce,
         Verb::KeepAwake => PrefKey::KeepAwake,
         Verb::NotifyToggle => PrefKey::Notify,
         Verb::NotifyDone => PrefKey::NotifyDone,
@@ -8319,17 +8480,26 @@ mod tests {
         let prefs: Vec<Verb> = settings_items(&ctx).iter().map(|m| m.verb).collect();
         assert_eq!(
             prefs,
-            [Verb::SettingsAppearance, Verb::SettingsBehaviour, Verb::SettingsAgents]
+            [
+                Verb::SettingsAppearance,
+                Verb::SettingsBehaviour,
+                Verb::SettingsAgents,
+                Verb::SettingsTerminal
+            ]
         );
         for (section, expected) in [
             (
                 SettingsSection::Appearance,
+                vec![Verb::ThemePick, Verb::FollowOs, Verb::Notifications, Verb::StatusLine],
+            ),
+            (
+                SettingsSection::Terminal,
                 vec![
-                    Verb::ThemePick,
-                    Verb::FollowOs,
-                    Verb::Notifications,
-                    Verb::StatusLine,
                     Verb::TabTitle,
+                    Verb::TabProgress,
+                    Verb::TabColor,
+                    Verb::TabSubtitle,
+                    Verb::TabCwd,
                 ],
             ),
             (
@@ -8954,6 +9124,12 @@ mod tests {
             Verb::FollowOs,
             Verb::StatusLine,
             Verb::TabTitle,
+            Verb::TabTitleNeedsYou,
+            Verb::TabTitleFocus,
+            Verb::TabProgress,
+            Verb::TabColor,
+            Verb::TabSubtitle,
+            Verb::TabCwd,
             Verb::KeepAwake,
             Verb::SnoozeQuiet,
             Verb::WeekStart,

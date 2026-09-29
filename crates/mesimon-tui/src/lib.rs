@@ -47,7 +47,8 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, EndSynchronizedUpdate,
+    EnterAlternateScreen, LeaveAlternateScreen,
 };
 
 use app::App;
@@ -104,8 +105,8 @@ pub use prefs::peek_doctor_line as peek_status;
 /// What `mesimon doctor` says about how a snoozed ticket comes back (T-74).
 pub use prefs::snooze_doctor_line as snooze_status;
 pub use prefs::status_line_doctor_line as status_line_status;
-/// What `mesimon doctor` says about the terminal's tab title (T-492).
-pub use prefs::tab_title_doctor_line as tab_title_status;
+/// What `mesimon doctor` says about the terminal's own tab (T-492).
+pub use prefs::tab_title_doctor_line as terminal_status;
 pub use prefs::train_doctor_line as train_status;
 /// What `mesimon doctor` says about release checks — whether they are on, and
 /// when they last answered. Exported because the checker lives here, beside
@@ -201,6 +202,11 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // asking before raw mode is on gets a false negative. This is the single
     // gate on every `Key::ShiftEnter` binding.
     app.rich_keys = kitty_keyboard_supported();
+    // Which terminal the tab belongs to, and this machine's name (T-492) —
+    // set here and never in `App::new`, so no test app reads a developer's
+    // terminal or hostname.
+    app.terminal = title::terminal();
+    app.host = title::hostname();
     // The word the note editor's `^g` hint wears — set here and never in
     // `App::new`, so no test app ever reads the developer's `$EDITOR`.
     app.editor_word = external::word();
@@ -308,16 +314,23 @@ fn event_loop(
     // Cloned out of `App` here: the guard has to outlive the borrow the draw
     // takes.
     let console = app.notifier.as_ref().map(crate::notifier::Notifier::console);
-    // The terminal's own tab (T-492): named after the board while the
-    // preference is on, under the same lock as the draw, so the escape
-    // never lands inside a frame or a banner. `finish` before every exit
-    // and every suspend gives the terminal its own title back.
+    // The terminal's own tab (T-492): named and marked after the board
+    // while its rows are on, under the same lock as the draw, so no escape
+    // lands inside a frame or a banner. `finish` before every exit and
+    // every suspend gives the terminal its own state back.
     let mut tab = title::Tab::default();
     loop {
         {
             let _held = console.as_deref().map(crate::notify::Console::drawing);
-            terminal.draw(|f| ui::draw(f, app))?;
-            tab.sync(&mut std::io::stdout(), app.tab_title().as_deref())?;
+            // DECSET 2026: the frame lands in one piece on a terminal that
+            // honours it (iTerm2, kitty, ghostty, WezTerm, foot, tmux ≥3.4)
+            // and is two ignored sequences on one that does not.
+            let mut out = std::io::stdout();
+            execute!(out, BeginSynchronizedUpdate)?;
+            let drawn = terminal.draw(|f| ui::draw(f, app));
+            execute!(out, EndSynchronizedUpdate)?;
+            drawn?;
+            tab.sync(&mut out, &app.tab_frame(false))?;
         }
 
         app.tick()?;
@@ -365,7 +378,7 @@ fn event_loop(
             // The pane's own title never reaches the tab — the private
             // server keeps `set-titles` off — so the tab reads the ticket
             // for as long as the user is in there (T-492).
-            tab.sync(&mut std::io::stdout(), app.focus_tab_title().as_deref())?;
+            tab.sync(&mut std::io::stdout(), &app.tab_frame(true))?;
             restore_terminal()?;
             blank_primary_screen()?;
             let ho = handover::run(&argv, cwd.as_deref());
