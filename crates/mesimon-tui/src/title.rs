@@ -25,10 +25,7 @@
 //!   attention colour — the board's one-saturated-colour rule, on the tab
 //!   strip;
 //! - **iTerm2's subtitle** (`OSC 21337 status=`): how many need you and
-//!   how many are working;
-//! - **the working directory** (`OSC 7`): the ticket's worktree while its
-//!   pane is on screen, so a new tab opens beside the agent; the repo root
-//!   on the board.
+//!   how many are working.
 //!
 //! Three rules. **The pane's title never reaches the tab**: the private
 //! tmux server keeps `set-titles` off, so an agent's own `OSC 0` (Claude
@@ -138,41 +135,6 @@ pub(crate) fn subtitle(needs_you: usize, working: usize) -> String {
     parts.join(" ∙ ")
 }
 
-/// `file://<host><path>` for `OSC 7`, the path percent-encoded byte by
-/// byte except the unreserved set and `/`. The host is this machine's, so
-/// a terminal that checks (ghostty does) takes the directory as local.
-pub(crate) fn cwd_url(host: &str, path: &std::path::Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-    let mut url = String::from("file://");
-    url.extend(host.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.')));
-    for &b in path.as_os_str().as_bytes() {
-        match b {
-            b'/' | b'-' | b'_' | b'.' | b'~' => url.push(b as char),
-            _ if b.is_ascii_alphanumeric() => url.push(b as char),
-            _ => url.push_str(&format!("%{b:02X}")),
-        }
-    }
-    url
-}
-
-/// This machine's name, for `OSC 7`.
-pub(crate) fn hostname() -> String {
-    let mut buf = [0u8; 256];
-    // SAFETY: a fixed buffer of its own stated length; gethostname writes
-    // at most that many bytes and NUL-terminates when it fits.
-    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-    if rc != 0 {
-        return "localhost".into();
-    }
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    let name = String::from_utf8_lossy(&buf[..end]).into_owned();
-    if name.is_empty() {
-        "localhost".into()
-    } else {
-        name
-    }
-}
-
 /// The progress ring's state, precedence downward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum Progress {
@@ -206,8 +168,6 @@ pub(crate) struct Frame {
     pub mark: Option<Mark>,
     /// `Some("")` clears the subtitle.
     pub subtitle: Option<String>,
-    /// The `file://` URL.
-    pub cwd: Option<String>,
 }
 
 /// What the tab has been told, so a frame that changes nothing writes
@@ -274,11 +234,6 @@ impl Tab {
             let words = want.subtitle.as_deref().unwrap_or("");
             write!(out, "\x1b]21337;status={words}\x07")?;
         }
-        if want.cwd != self.last.cwd {
-            if let Some(url) = &want.cwd {
-                write!(out, "\x1b]7;{url}\x07")?;
-            }
-        }
         out.flush()?;
         self.last = want.clone();
         Ok(())
@@ -341,13 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn the_cwd_url_encodes_the_path_and_keeps_the_host_plain() {
-        let url = cwd_url("mac.local", std::path::Path::new("/Users/me/code/a b/ünï"));
-        assert_eq!(url, "file://mac.local/Users/me/code/a%20b/%C3%BCn%C3%AF");
-        assert_eq!(cwd_url("h\x07x", std::path::Path::new("/")), "file://hx/");
-    }
-
-    #[test]
     fn iterm2_is_named_directly_and_never_through_an_outer_tmux() {
         assert_eq!(classify(None, Some("com.googlecode.iterm2")), Terminal::ITerm2);
         assert_eq!(classify(Some("iTerm.app"), None), Terminal::ITerm2);
@@ -381,7 +329,7 @@ mod tests {
         assert!(out.starts_with(b"\x1b[22;0t"), "back on: pushed again, so the stack balances");
     }
 
-    /// The ring, the mark, the subtitle and the directory each write on a
+    /// The ring, the mark and the subtitle each write on a
     /// change only, and `finish` gives every one of them back.
     #[test]
     fn every_other_field_writes_on_change_and_is_given_back_by_finish() {
@@ -392,14 +340,12 @@ mod tests {
             progress: Some(Progress::Working),
             mark: Some(Mark::Dot(0xF0A93A)),
             subtitle: Some("3 working".into()),
-            cwd: Some("file://h/repo".into()),
         };
         tab.sync(&mut out, &f).unwrap();
         let s = String::from_utf8(out.clone()).unwrap();
         assert!(s.contains("\x1b]9;4;3\x07"), "{s:?}");
         assert!(s.contains("\x1b]21337;indicator=#f0a93a\x07"), "{s:?}");
         assert!(s.contains("\x1b]21337;status=3 working\x07"), "{s:?}");
-        assert!(s.contains("\x1b]7;file://h/repo\x07"), "{s:?}");
         assert!(!s.contains("\x1b[22;0t"), "no title, no push");
         out.clear();
         tab.sync(&mut out, &f).unwrap();

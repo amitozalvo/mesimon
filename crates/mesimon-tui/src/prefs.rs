@@ -219,10 +219,6 @@ pub(crate) struct Prefs {
     /// iTerm2's tab subtitle (`OSC 21337 status=`) counts what needs you
     /// and what is working. Off by default; inert elsewhere.
     pub tab_subtitle: bool,
-    /// The tab's working directory (OSC 7) follows a focus into the
-    /// ticket's worktree, so a new tab opens beside the agent. Off by
-    /// default.
-    pub tab_cwd: bool,
     /// Hold this machine awake while an agent is mid-turn (T-288). OFF by
     /// default and deliberately, for `notify`'s reason one level up: changing
     /// what a machine does about power is a thing the user asks for, never a
@@ -294,7 +290,6 @@ impl Default for Prefs {
             tab_progress: false,
             tab_color: TabColor::Off,
             tab_subtitle: false,
-            tab_cwd: false,
             keep_awake: false,
             notify: false,
             notify_done: true,
@@ -323,7 +318,6 @@ const TAB_TITLE_FOCUS_KEY: &str = PrefKey::TabTitleFocus.name();
 const TAB_PROGRESS_KEY: &str = PrefKey::TabProgress.name();
 const TAB_COLOR_KEY: &str = PrefKey::TabColor.name();
 const TAB_SUBTITLE_KEY: &str = PrefKey::TabSubtitle.name();
-const TAB_CWD_KEY: &str = PrefKey::TabCwd.name();
 const NOTIFY_DOCK_BOUNCE_KEY: &str = PrefKey::NotifyDockBounce.name();
 const KEEP_AWAKE_KEY: &str = PrefKey::KeepAwake.name();
 const NOTIFY_KEY: &str = PrefKey::Notify.name();
@@ -445,7 +439,6 @@ impl Prefs {
             PrefKey::TabProgress => onoff(self.tab_progress),
             PrefKey::TabColor => self.tab_color.key(),
             PrefKey::TabSubtitle => onoff(self.tab_subtitle),
-            PrefKey::TabCwd => onoff(self.tab_cwd),
             PrefKey::KeepAwake => onoff(self.keep_awake),
             PrefKey::Notify => onoff(self.notify),
             PrefKey::NotifyDone => onoff(self.notify_done),
@@ -498,7 +491,6 @@ impl Prefs {
         doc.insert(TAB_TITLE_FOCUS_KEY.into(), Value::from(self.tab_title_focus));
         doc.insert(TAB_PROGRESS_KEY.into(), Value::from(self.tab_progress));
         doc.insert(TAB_SUBTITLE_KEY.into(), Value::from(self.tab_subtitle));
-        doc.insert(TAB_CWD_KEY.into(), Value::from(self.tab_cwd));
         doc.insert(NOTIFY_DOCK_BOUNCE_KEY.into(), Value::from(self.notify_dock_bounce));
         doc.insert(KEEP_AWAKE_KEY.into(), Value::from(self.keep_awake));
         doc.insert(NOTIFY_KEY.into(), Value::from(self.notify));
@@ -598,7 +590,6 @@ impl BoardPrefs {
             | PrefKey::TabProgress
             | PrefKey::TabColor
             | PrefKey::TabSubtitle
-            | PrefKey::TabCwd
             | PrefKey::Peek => false,
             _ => self.bool(key).is_some(),
         }
@@ -762,7 +753,6 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let tab_title_focus = flag(TAB_TITLE_FOCUS_KEY, true);
     let tab_progress = flag(TAB_PROGRESS_KEY, false);
     let tab_subtitle = flag(TAB_SUBTITLE_KEY, false);
-    let tab_cwd = flag(TAB_CWD_KEY, false);
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(false);
@@ -797,7 +787,6 @@ pub(crate) fn load(path: &Path) -> Loaded {
         tab_progress,
         tab_color,
         tab_subtitle,
-        tab_cwd,
         keep_awake,
         notify,
         notify_done,
@@ -919,7 +908,6 @@ pub fn tab_title_doctor_line() -> String {
     parts.push(format!("progress ring {}", onoff(p.tab_progress)));
     parts.push(format!("needs-you colour {}", p.tab_color.key()));
     parts.push(format!("subtitle {}", onoff(p.tab_subtitle)));
-    parts.push(format!("working directory {}", onoff(p.tab_cwd)));
     match crate::title::terminal() {
         crate::title::Terminal::ITerm2 => parts
             .push("iTerm2 ∙ a (job) suffix and the icon are Settings › Profiles › General".into()),
@@ -1190,7 +1178,7 @@ mod tests {
         let mut l = load(&p);
         assert_eq!(l.prefs.tab_title, TabTitle::Off, "absent is off");
         assert!(l.prefs.tab_title_needs_you && l.prefs.tab_title_focus);
-        assert!(!l.prefs.tab_progress && !l.prefs.tab_subtitle && !l.prefs.tab_cwd);
+        assert!(!l.prefs.tab_progress && !l.prefs.tab_subtitle);
         assert_eq!(l.prefs.tab_color, TabColor::Off);
         assert!(!l.prefs.notify_dock_bounce);
         l.prefs.tab_title = TabTitle::Mesimon;

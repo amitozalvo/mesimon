@@ -202,11 +202,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // asking before raw mode is on gets a false negative. This is the single
     // gate on every `Key::ShiftEnter` binding.
     app.rich_keys = kitty_keyboard_supported();
-    // Which terminal the tab belongs to, and this machine's name (T-492) —
-    // set here and never in `App::new`, so no test app reads a developer's
-    // terminal or hostname.
+    // Which terminal the tab belongs to (T-492) — set here and never in
+    // `App::new`, so no test app reads a developer's terminal.
     app.terminal = title::terminal();
-    app.host = title::hostname();
     // The word the note editor's `^g` hint wears — set here and never in
     // `App::new`, so no test app ever reads the developer's `$EDITOR`.
     app.editor_word = external::word();

@@ -1701,8 +1701,6 @@ pub struct App {
     /// iTerm2-only rows — resolved in `lib.rs::run`, never here, so no
     /// test app reads a developer's terminal. `Other` in every test app.
     pub terminal: crate::title::Terminal,
-    /// This machine's name, for the tab's working directory (`OSC 7`).
-    pub host: String,
     /// A ticket may grow its own shell session (T-300) — `lib.rs::run` sets
     /// it from `MESIMON_TICKET_SHELLS`, never `App::new`, the rule
     /// `editor_word` and `opener` follow, so no test and no golden reads a
@@ -1868,7 +1866,6 @@ impl App {
             recent_tickets: Vec::new(),
             rich_keys: false,
             terminal: crate::title::Terminal::Other,
-            host: String::new(),
             ticket_shells: false,
             appearance: None,
             appearance_probe: None,
@@ -2363,17 +2360,7 @@ impl App {
         };
         let subtitle =
             (iterm2 && self.prefs.tab_subtitle).then(|| crate::title::subtitle(needs_you, working));
-        let cwd = self.prefs.tab_cwd.then(|| {
-            let dir = if focus {
-                self.focus_ticket()
-                    .map(|t| self.link_dir(t))
-                    .unwrap_or_else(|| self.repo_root.clone())
-            } else {
-                self.repo_root.clone()
-            };
-            crate::title::cwd_url(&self.host, &dir)
-        });
-        crate::title::Frame { title, progress, mark, subtitle, cwd }
+        crate::title::Frame { title, progress, mark, subtitle }
     }
 
     /// The `Fetch origin` row's detail (T-124): what is out of sync, in
@@ -4435,7 +4422,6 @@ impl App {
             tab_progress: self.prefs.tab_progress,
             tab_color_word: self.prefs.tab_color.name(),
             tab_subtitle: self.prefs.tab_subtitle,
-            tab_cwd: self.prefs.tab_cwd,
             iterm2: self.terminal == crate::title::Terminal::ITerm2,
             notify_dock_bounce: self.prefs.notify_dock_bounce,
             keep_awake: self.prefs.keep_awake,
@@ -5594,15 +5580,6 @@ impl App {
                     "the tab's subtitle is off"
                 };
                 self.set_pref(word, |p| p.tab_subtitle = on);
-            }
-            Verb::TabCwd => {
-                let on = !self.prefs.tab_cwd;
-                let word = if on {
-                    "a new tab opens in the ticket's worktree"
-                } else {
-                    "the tab's working directory is its own"
-                };
-                self.set_pref(word, |p| p.tab_cwd = on);
             }
             Verb::NotifyDockBounce => {
                 let on = !self.prefs.notify_dock_bounce;

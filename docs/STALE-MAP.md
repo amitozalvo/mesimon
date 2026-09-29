@@ -15008,9 +15008,9 @@ pane key rides it), and no attempt to keep tmux from taking the first XDA reply 
 every attach). A pane that sets `allow-passthrough` for itself still can; only the probe that
 did so is now routed around.
 
-## The terminal's tab reads the board, and six more terminal integrations (T-492, 2026-09-29, "rename terminal tab — maybe more terminal integrations, investigate and propose; opt in, configurable"; then "do all. also allow user to configure how tab name will work")
+## The terminal's tab reads the board, and five more terminal integrations (T-492, 2026-09-29, "rename terminal tab — maybe more terminal integrations, investigate and propose; opt in, configurable"; then "do all. also allow user to configure how tab name will work")
 
-**Built: `Settings › Terminal`**, a fourth section, seven rows, every one a machine-only
+**Built: `Settings › Terminal`**, a fourth section, six rows, every one a machine-only
 `prefs.json` key off by default (which terminal a board runs in is not a fact about a repo —
 the status line's rule), written by `tui/src/title.rs` under the draw's console lock (T-291's
 rule: never inside a frame or a banner), each field only on a change (a tick costs the tty no
@@ -15036,9 +15036,6 @@ the rest), and every field given back to the terminal before a `^Z`, a `U` reloa
   kind is reset on its own road (`indicator=` empty; `6;1;bg;*;default`).
 - **Tab subtitle** (iTerm2's `OSC 21337 status=`): `2 need you ∙ 3 working`, cleared when
   neither. The user pointed at it: iTerm2 3.5+ has a session subtitle and an escape for it.
-- **Working directory** (`OSC 7 file://<host><path>`): the ticket's worktree (`link_dir`) while
-  its pane or shell is on screen, the repo root on the board, so Cmd+T opens beside the agent.
-  Host from `gethostname` — ghostty checks it is local.
 - **Dock bounce** (`OSC 1337;RequestAttention=once`) is a NOTIFICATION and lives in that list
   under its switch, board-overridable like the rest of its group; the notifier thread writes it
   on a needs-you post through the same console lock (`Say` takes a second argument). Silent
@@ -15067,6 +15064,11 @@ startup-modal detector), so the words written before the attach stay up for the 
 nothing daemon-side changes. A pushed `set-titles-string` naming the ticket was the rival: a
 per-session option at spawn and a live `set-option` on every server, to show words the board
 already knows.
+
+**Built and cut the same day: the working directory** (`OSC 7 file://<host><path>`, the ticket's
+worktree through a focus so Cmd+T opened beside the agent). The user: "not needed, we already
+have `!` to open a shell" — the ticket page's terminal (T-366) is the road to a shell in the
+worktree, and a second one through the terminal's own new-tab was a road nobody asked for.
 
 **Not built, and why:** `OSC 8` hyperlinks in the note preview and the diff — ratatui 0.30's
 `Cell` has no hyperlink attribute, so a link needs a custom backend or a smuggled modifier bit,

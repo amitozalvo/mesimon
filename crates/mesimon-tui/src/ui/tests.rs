@@ -793,7 +793,7 @@ fn golden_settings_terminal_on_fits_short_and_wide_terminals() {
     for (w, h) in [(60, 20), (120, 30)] {
         let rows = render(&app, w, h);
         let items = mesimon_core::keymap::settings_items(&app.ctx());
-        assert_eq!(items.len(), 7);
+        assert_eq!(items.len(), 6);
         for item in items {
             assert!(rows.iter().any(|r| r.contains(&(item.label)(&app.ctx()))), "{rows:?}");
         }

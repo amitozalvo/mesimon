@@ -549,14 +549,13 @@ pub enum Verb {
     /// written by the TUI alone: what the tab reads (off, the board's
     /// name, `mesimon ∙ <board>`), whether it counts needs-you, whether it
     /// follows the open session, the progress ring, iTerm2's needs-you
-    /// colour, iTerm2's subtitle, and the working directory.
+    /// colour and iTerm2's subtitle.
     TabTitle,
     TabTitleNeedsYou,
     TabTitleFocus,
     TabProgress,
     TabColor,
     TabSubtitle,
-    TabCwd,
     /// The notifications row for iTerm2's dock bounce (T-492).
     NotifyDockBounce,
     /// The Settings door to the Terminal rows.
@@ -895,8 +894,7 @@ impl SettingsSection {
             | Verb::TabTitleFocus
             | Verb::TabProgress
             | Verb::TabColor
-            | Verb::TabSubtitle
-            | Verb::TabCwd => Self::Terminal,
+            | Verb::TabSubtitle => Self::Terminal,
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
@@ -1269,7 +1267,6 @@ pub struct Ctx {
     /// iTerm2's needs-you colour (`TabColor::name`, empty in a bare `Ctx`).
     pub tab_color_word: &'static str,
     pub tab_subtitle: bool,
-    pub tab_cwd: bool,
     /// The board runs in iTerm2, directly (no outer tmux): the three rows
     /// that only iTerm2 answers say so when it is not.
     pub iterm2: bool,
@@ -4049,7 +4046,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::SettingsTerminal,
         label: |_| "Terminal".into(),
-        detail: |_| "the tab's title, progress ring, colour and directory".into(),
+        detail: |_| "the tab's title, progress ring, colour and subtitle".into(),
         avail: always,
         key: "",
     },
@@ -4262,19 +4259,6 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 "iTerm2 only ∙ this terminal is not iTerm2, so the row is inert".into()
             }
         },
-        avail: always,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::TabCwd,
-        label: |c| {
-            if c.tab_cwd {
-                "Tab working directory: on".into()
-            } else {
-                "Tab working directory: off".into()
-            }
-        },
-        detail: |_| "a new tab opens in the ticket's worktree while you are in its pane".into(),
         avail: always,
         key: "",
     },
@@ -4855,7 +4839,6 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::TabProgress,
             Verb::TabColor,
             Verb::TabSubtitle,
-            Verb::TabCwd,
         ],
         SettingsSection::Behaviour => &[
             Verb::MergeTrain,
@@ -4910,7 +4893,6 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::TabProgress => PrefKey::TabProgress,
         Verb::TabColor => PrefKey::TabColor,
         Verb::TabSubtitle => PrefKey::TabSubtitle,
-        Verb::TabCwd => PrefKey::TabCwd,
         Verb::NotifyDockBounce => PrefKey::NotifyDockBounce,
         Verb::KeepAwake => PrefKey::KeepAwake,
         Verb::NotifyToggle => PrefKey::Notify,
@@ -8494,13 +8476,7 @@ mod tests {
             ),
             (
                 SettingsSection::Terminal,
-                vec![
-                    Verb::TabTitle,
-                    Verb::TabProgress,
-                    Verb::TabColor,
-                    Verb::TabSubtitle,
-                    Verb::TabCwd,
-                ],
+                vec![Verb::TabTitle, Verb::TabProgress, Verb::TabColor, Verb::TabSubtitle],
             ),
             (
                 SettingsSection::Behaviour,
@@ -9129,7 +9105,6 @@ mod tests {
             Verb::TabProgress,
             Verb::TabColor,
             Verb::TabSubtitle,
-            Verb::TabCwd,
             Verb::KeepAwake,
             Verb::SnoozeQuiet,
             Verb::WeekStart,

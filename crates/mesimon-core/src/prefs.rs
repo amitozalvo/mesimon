@@ -37,9 +37,6 @@ pub enum PrefKey {
     TabColor,
     /// iTerm2's tab subtitle counts what needs you and what is working.
     TabSubtitle,
-    /// The tab's working directory (OSC 7): the ticket's worktree while
-    /// its pane is on screen, so a new tab opens there.
-    TabCwd,
     KeepAwake,
     Notify,
     NotifyDone,
@@ -56,7 +53,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 25] = [
+    pub const ALL: [PrefKey; 24] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::FollowOs,
@@ -71,7 +68,6 @@ impl PrefKey {
         PrefKey::TabProgress,
         PrefKey::TabColor,
         PrefKey::TabSubtitle,
-        PrefKey::TabCwd,
         PrefKey::KeepAwake,
         PrefKey::Notify,
         PrefKey::NotifyDone,
@@ -101,7 +97,6 @@ impl PrefKey {
             PrefKey::TabProgress => "tab_progress",
             PrefKey::TabColor => "tab_color",
             PrefKey::TabSubtitle => "tab_subtitle",
-            PrefKey::TabCwd => "tab_cwd",
             PrefKey::KeepAwake => "keep_awake",
             PrefKey::Notify => "notify",
             PrefKey::NotifyDone => "notify_done",
@@ -116,7 +111,7 @@ impl PrefKey {
     }
 
     /// May one board set this on its own? The machine keeps: where the
-    /// tmux status line sits and the seven terminal integrations (T-492),
+    /// tmux status line sits and the six terminal integrations (T-492),
     /// which are about the terminal the board runs in and not about a
     /// repo; which day a week starts on, which is about the person; and
     /// the reply row's rung (T-365), which is about how the person reads a
@@ -132,7 +127,6 @@ impl PrefKey {
                 | PrefKey::TabProgress
                 | PrefKey::TabColor
                 | PrefKey::TabSubtitle
-                | PrefKey::TabCwd
                 | PrefKey::WeekStart
                 | PrefKey::Peek
         )
@@ -155,7 +149,6 @@ impl PrefKey {
             PrefKey::TabProgress => "tab progress ring",
             PrefKey::TabColor => "tab colour when needs you",
             PrefKey::TabSubtitle => "tab subtitle",
-            PrefKey::TabCwd => "tab working directory",
             PrefKey::KeepAwake => "keep awake",
             PrefKey::Notify => "notifications",
             PrefKey::NotifyDone => "notify when a turn lands",
@@ -208,7 +201,6 @@ mod tests {
                 PrefKey::TabProgress,
                 PrefKey::TabColor,
                 PrefKey::TabSubtitle,
-                PrefKey::TabCwd,
                 PrefKey::Peek
             ]
         );

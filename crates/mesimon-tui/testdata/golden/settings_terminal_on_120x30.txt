@@ -5,6 +5,7 @@
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
 
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
+
                            ╭─ TERMINAL ─────────────────────────────────────────────────────╮
                            │   Tab title: mesimon ∙ project name                            │
                            │     enter cycles: off, project name, mesimon ∙ project name    │
@@ -18,9 +19,8 @@
                            │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
                            │   Tab subtitle: off                                            │
                            │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
-                           │   Tab working directory: off                                   │
-                           │     a new tab opens in the ticket's worktree while you are in~ │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
+
 
 
 
