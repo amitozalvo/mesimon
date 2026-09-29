@@ -6,6 +6,43 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.30 — 2026-09-29
+
+### Added
+
+- **A new Settings › Terminal section lets the terminal tab show the
+  board's state.** Every row is off by default and set per machine.
+  mesimon puts the terminal's own title and tab settings back when you quit,
+  suspend with `Ctrl+Z` or reload with `U`.
+  - `Tab title`: the project name, or `mesimon ∙ <project name>`. Two
+    follow-up rows add a needs-you count (`2 need you ∙ <board>`) and show
+    the open ticket's key and title while you are in its session.
+  - `Tab progress ring`: spins while an agent works and turns red while
+    one needs you, in terminals that support OSC 9;4.
+  - `Tab colour when needs you` (iTerm2): colours the whole tab, or only
+    the tab's dot, in the theme's attention colour.
+  - `Tab subtitle` (iTerm2): counts the tickets that need you and the
+    agents that are working.
+  - `Tab icon` (iTerm2): shows the mesimon mascot, with an amber badge
+    while any ticket needs you. Only the running session's copy of the
+    profile changes; the saved iTerm2 profile does not.
+- **The tab dot, subtitle and icon need the iTerm2 3.7 beta.** On older
+  iTerm2 versions those rows say so and do nothing; the whole-tab colour
+  works on iTerm2 3.6. The iTerm2 rows do nothing in other terminals or
+  inside another tmux.
+- **Notifications › Dock bounce when an agent needs you** (iTerm2) bounces
+  the Dock icon once. Off by default; a board can override it.
+- **On kitty, notifications use kitty's own notification escape** when
+  `terminal-notifier` is not installed, and clicking one brings the kitty
+  window forward. Not inside another tmux.
+- **`mesimon doctor --verbose` has a `terminal` line** naming the
+  terminal, its version and the tab settings in effect.
+
+### Changed
+
+- **Each board frame is drawn as one synchronized update**, so terminals
+  that support it no longer show a half-drawn frame.
+
 ## v0.1.0-alpha.29 — 2026-09-28
 
 ### Added
