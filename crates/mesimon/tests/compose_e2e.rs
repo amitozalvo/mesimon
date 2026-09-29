@@ -67,10 +67,7 @@ fn the_composer_mints_a_ticket_whole_or_not_at_all() {
         "the brief\n\nwith a second line",
         vec![tag(1, "BUG"), tag(2, "STAGING")],
     )) {
-        Response::Created { id, started } => {
-            assert!(!started, "TODO does not auto-run");
-            id
-        }
+        Response::Created { id } => id,
         other => panic!("mint: {other:?}"),
     };
     let board = board_of(c.request(Command::Snapshot));

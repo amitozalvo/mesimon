@@ -486,7 +486,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let used: usize = head.iter().chain(right.iter()).map(|s| s.content.width()).sum();
     let mut fill = (area.width as usize).saturating_sub(used + 1);
     // The column's one optional mark (T-117): it does something to a ticket
-    // — a move on an edge, a claude on creation, the train. After the count,
+    // — a move on an edge, the train. After the count,
     // in the quiet register, and the first thing to go when the row is tight.
     let automated =
         header_edit.is_none() && app.board.column(name).is_some_and(|c| c.settings.automated());

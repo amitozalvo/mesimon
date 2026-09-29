@@ -4233,7 +4233,6 @@ impl App {
                 mesimon_core::board::AgentTools::Read => "read only",
                 mesimon_core::board::AgentTools::Off => "off",
             },
-            col_auto_run: cs.auto_run,
             col_on_working: cs.on_working.clone().unwrap_or_default(),
             col_on_done: cs.on_done.clone().unwrap_or_default(),
             col_requires_merge: cs.requires_merge,
@@ -6046,7 +6045,6 @@ impl App {
             Verb::ColumnCodexSandbox => self.set_column(|s| s.codex_sandbox = s.codex_sandbox.next())?,
             Verb::ColumnCodexApproval => self.set_column(|s| s.codex_approval = s.codex_approval.next())?,
             Verb::ColumnTools => self.set_column(|s| s.agent_tools = s.agent_tools.next())?,
-            Verb::ColumnAutoRun => self.set_column(|s| s.auto_run = !s.auto_run)?,
             Verb::ColumnOnWorking => {
                 let next = self.next_column_target(|s| s.on_working.clone());
                 self.set_column(|s| s.on_working = next)?;
@@ -10057,18 +10055,9 @@ impl App {
             let _ = self.req(Command::DiscardAttachmentUploads { uploads });
         }
         match response {
-            Response::Created { id, started } => {
+            Response::Created { id } => {
                 self.refresh()?;
                 self.select_ticket(id);
-                // The column started a claude on it already (T-117): the
-                // composer must not start a second, nor offer to.
-                if started {
-                    self.status = format!(
-                        "{} started ∙ the column starts one on creation",
-                        keymap::AGENT_WORD
-                    );
-                    return Ok(());
-                }
                 if start.is_some() {
                     self.start_composed(id, plan);
                     return Ok(());
@@ -10995,7 +10984,7 @@ pub(crate) mod test_support {
                     }
                     let id = ticket.id;
                     self.board.tickets.push(ticket);
-                    return Ok(Response::Created { id, started: false });
+                    return Ok(Response::Created { id });
                 }
                 Command::DuplicateTicket { id } => {
                     let Some(mut ticket) = self.board.ticket(id).cloned() else {
@@ -11006,13 +10995,13 @@ pub(crate) mod test_support {
                     ticket.order.push('V');
                     let id = ticket.id;
                     self.board.tickets.push(ticket);
-                    return Ok(Response::Created { id, started: false });
+                    return Ok(Response::Created { id });
                 }
                 Command::CreateTicket { column, title, workspace, .. } => {
                     let ticket = fake_ticket(column, title, workspace);
                     let id = ticket.id;
                     self.board.tickets.push(ticket);
-                    return Ok(Response::Created { id, started: false });
+                    return Ok(Response::Created { id });
                 }
                 Command::GateStatus => {
                     return Ok(Response::Gate { passed: true, attach_argv: None });

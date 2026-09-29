@@ -488,7 +488,6 @@ pub enum Verb {
     ColumnCodexSandbox,
     ColumnCodexApproval,
     ColumnTools,
-    ColumnAutoRun,
     ColumnOnWorking,
     ColumnOnDone,
     ColumnRequiresMerge,
@@ -1383,7 +1382,6 @@ pub struct Ctx {
     /// snapshot. Empty when unknown.
     pub col_inherit_mode: String,
     pub col_tools_word: &'static str,
-    pub col_auto_run: bool,
     pub col_on_working: String,
     pub col_on_done: String,
     pub col_requires_merge: bool,
@@ -4996,14 +4994,6 @@ fn yes_no(b: bool) -> &'static str {
     }
 }
 
-fn on_off(b: bool) -> &'static str {
-    if b {
-        "on"
-    } else {
-        "off"
-    }
-}
-
 /// The column settings dialog's rows (T-117): one column's every setting,
 /// every automation the daemon runs on a ticket there among them — this
 /// list is what "no magic" means. `MenuItem`s, so `ui/menu.rs` draws them
@@ -5127,13 +5117,6 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
-        verb: Verb::ColumnAutoRun,
-        label: |c| format!("Start agent on creation: {}", on_off(c.col_auto_run)),
-        detail: |_| "a ticket you create here gets an agent on its brief, submitted".into(),
-        avail: |c| !c.col_new,
-        key: "",
-    },
-    MenuItem {
         verb: Verb::ColumnOnWorking,
         label: |c| {
             if c.col_on_working.is_empty() {
@@ -5214,7 +5197,6 @@ pub fn column_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
                     | Verb::ColumnCodexSandbox
                     | Verb::ColumnCodexApproval
                     | Verb::ColumnTools
-                    | Verb::ColumnAutoRun
                     | Verb::ColumnOnWorking
                     | Verb::ColumnOnDone
             );
@@ -8077,13 +8059,7 @@ mod tests {
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(
             column_items(&agents).iter().map(|m| m.verb).collect::<Vec<_>>(),
-            [
-                Verb::ColumnClaudeMode,
-                Verb::ColumnTools,
-                Verb::ColumnAutoRun,
-                Verb::ColumnOnWorking,
-                Verb::ColumnOnDone
-            ]
+            [Verb::ColumnClaudeMode, Verb::ColumnTools, Verb::ColumnOnWorking, Verb::ColumnOnDone]
         );
     }
 

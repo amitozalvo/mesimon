@@ -1430,7 +1430,7 @@ fn golden_board_header_rename_120() {
 #[test]
 fn golden_board_header_automated_120() {
     let mut board = fixture(false);
-    board.columns[0].settings.auto_run = true;
+    board.columns[0].settings.on_working = Some("in progress".into());
     board.columns[1].settings.on_done = Some("review".into());
     let app = app_graphite(board);
     let lines = render(&app, 120, 30);

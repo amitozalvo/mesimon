@@ -21,7 +21,7 @@ fn create(c: &mut TestClient, title: &str) -> ulid::Ulid {
 
 fn duplicate(c: &mut TestClient, id: ulid::Ulid) -> ulid::Ulid {
     match c.request(Command::DuplicateTicket { id }) {
-        Response::Created { id, started: false } => id,
+        Response::Created { id } => id,
         other => panic!("{other:?}"),
     }
 }
@@ -59,12 +59,6 @@ fn duplicate_copies_content_below_source_without_starting_an_agent() {
     assert!(matches!(
         c.send(Principal::Agent { session }, Command::DuplicateTicket { id: source }),
         Response::Err { .. }
-    ));
-    let mut settings = c.board().column("TODO").unwrap().settings.clone();
-    settings.auto_run = true;
-    assert!(matches!(
-        c.request(Command::SetColumnSettings { name: "TODO".into(), settings }),
-        Response::Ok
     ));
     let before = c.board();
     let original = before.ticket(source).unwrap();
@@ -120,7 +114,7 @@ fn duplicate_copies_content_below_source_without_starting_an_agent() {
             .unwrap(),
         "# Description\n\nExact **markdown**.\n"
     );
-    // A bare last card copies too, still bypassing the column's auto-run.
+    // A bare last card copies too, and starts nothing either.
     let last = duplicate(&mut c, following);
     let board = c.board();
     assert_eq!(board.column_tickets("TODO").last().unwrap().id, last);

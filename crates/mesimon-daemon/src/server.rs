@@ -3407,9 +3407,9 @@ impl Daemon {
             match owed.parked.take() {
                 Some(Parked { text, brief }) => {
                     // A brief is the ticket's description as it stands NOW
-                    // (T-117): a ticket described after its spawn — the
-                    // composer's order, an auto-run's — still gets it. No
-                    // description means the title alone, the plain Enter.
+                    // (T-117): a ticket described after its spawn still gets
+                    // it. No description means the title alone, the plain
+                    // Enter.
                     // The words a Shift+Enter carried into an empty seat
                     // (T-294) ride UNDER the brief, in the order they were
                     // written: the ticket says what the work is, the user
@@ -5942,18 +5942,15 @@ impl Daemon {
         tier: Option<String>,
     ) -> Response {
         match self.mint_full(by, Mint { tier, ..Mint::bare(column, title, workspace) }) {
-            Ok(id) => {
-                let started = self.auto_run(id);
-                Response::Created { id, started }
-            }
+            Ok(id) => Response::Created { id },
             Err(message) => Response::Err { message },
         }
     }
 
     /// The composer's mint (T-243): tags, description and pictures ride the
     /// one command, so a refusal — a full group, a note past its limit, a
-    /// barred store — leaves no half-made ticket, and the column's auto-run
-    /// spawns onto a card that already carries its brief. Tag names are
+    /// barred store — leaves no half-made ticket, and a Shift+Enter spawns
+    /// onto a card that already carries its brief. Tag names are
     /// registered on the fly, the way `set_tag` does for the picker: using a
     /// name is what puts it in the vocabulary, and a name is registered
     /// whether or not the mint then goes through — the picker's own
@@ -6006,8 +6003,7 @@ impl Daemon {
         match self.mint_full(&Principal::Local, mint) {
             Ok(id) => {
                 self.uploads.committed(&uploads);
-                let started = self.auto_run(id);
-                Response::Created { id, started }
+                Response::Created { id }
             }
             Err(message) => {
                 Response::Err { message: format!("could not create ticket: {message}") }
@@ -6106,7 +6102,7 @@ impl Daemon {
     }
 
     /// Copy content only. Publish after all note bodies and metadata are saved;
-    /// duplication never provisions a workspace or invokes column auto-run.
+    /// duplication never provisions a workspace or starts an agent.
     fn duplicate_ticket(&mut self, by: &Principal, id: ulid::Ulid) -> Response {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
@@ -6185,59 +6181,7 @@ impl Daemon {
         let id = ticket.id;
         self.board.tickets.push(ticket);
         self.broadcast();
-        Response::Created { id, started: false }
-    }
-
-    /// "Start claude on creation" (T-117): the composer's Shift+Enter, fired
-    /// by the daemon for a column that asked for it. Reached from
-    /// `create_ticket` ONLY — a person at the composer: never a move into the
-    /// column, never an agent's `create_ticket` (`agent_create_ticket` mints
-    /// on its own road), never a snooze wake, an unarchive or a grace
-    /// restore. Exactly `spawn_session(.., Claude, submit_prompt: true)`, so
-    /// it parks on worktree provisioning and replays through
-    /// `on_provisioned` like any spawn, and the brief pastes under the title
-    /// once the composer's note lands. Says what it did in the feed with the
-    /// automation as actor; a refusal is a feed line, never an error to the
-    /// composer, whose ticket exists either way. Returns whether a claude was
-    /// started (or parked to start).
-    ///
-    /// No `asked_by_hand` is needed: a fresh ticket has no last move, so the
-    /// `on_working` edge that follows is an ordinary automove.
-    fn auto_run(&mut self, id: ulid::Ulid) -> bool {
-        let wants = self
-            .board
-            .ticket(id)
-            .filter(|t| t.effective_execution_policy().allows_automation())
-            .and_then(|t| self.board.column(&t.column))
-            .is_some_and(|c| c.settings.auto_run);
-        if !wants {
-            return false;
-        }
-        match self.spawn_session(
-            id,
-            self.tier_book().start_provider(id).session_kind(),
-            true,
-            None,
-            None,
-            false,
-        ) {
-            Response::Spawned { .. } | Response::Provisioning => {
-                self.feed.board("automation", "auto_run_started", Some(id));
-                true
-            }
-            Response::Err { message } => {
-                let why = if message.contains("PTY") || message.contains("memory") {
-                    "resources"
-                } else if message.contains("already has an agent") {
-                    "seat_taken"
-                } else {
-                    "spawn"
-                };
-                self.feed.board("automation", &format!("auto_run_refused:{why}"), Some(id));
-                false
-            }
-            _ => false,
-        }
+        Response::Created { id }
     }
 
     /// Append a new ticket to `column` (caller validated the column).
@@ -6259,7 +6203,7 @@ impl Daemon {
     /// the wearer rule — one tag per group — is judged here, where the
     /// ticket is, instead of mirrored by a client whose picks are on no
     /// ticket yet. Persists and notifies; the caller adds its own feed
-    /// line, auto-run or upload commit.
+    /// line or upload commit.
     fn mint_full(&mut self, by: &Principal, mint: Mint) -> Result<ulid::Ulid, String> {
         let Mint { column, title, workspace, from, tags, note, tier } = mint;
         // A barred columns.toml means next_key cannot be persisted, so a new
@@ -9394,10 +9338,9 @@ impl Daemon {
                     // CLAUDE.md asked; a prompt cannot be skipped. The plain
                     // Enter road stays title-only — the user is about to edit
                     // the box, and a 32 KiB description is not editable there.
-                    // Parked EMPTY and read at paste time (T-117): the
-                    // composer writes the description a beat after
-                    // `Created`, and a column's auto-run spawns inside it,
-                    // so what was on disk at spawn is not yet the brief.
+                    // Parked EMPTY and read at paste time (T-117): a
+                    // description written between the spawn and
+                    // `SessionStart` is the brief too.
                     if submit_prompt {
                         // `prompt` is the ask a Shift+Enter carried into an
                         // empty seat (T-294) — parked BESIDE the brief, not

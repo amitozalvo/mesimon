@@ -28,9 +28,6 @@ fn owner_only_import_is_inert_and_copies_keep_the_restriction() {
         },
         origin: origin.clone(),
     };
-    let mut loaded = store::load(&paths).unwrap();
-    loaded.board.columns.iter_mut().find(|c| c.name == "TODO").unwrap().settings.auto_run = true;
-    store::save_columns(&paths, &loaded.board).unwrap();
 
     let daemon = fixture.daemon(&repo);
     let mut c = TestClient::connect(&paths.orch_sock());
@@ -57,7 +54,7 @@ fn owner_only_import_is_inert_and_copies_keep_the_restriction() {
         assert!(matches!(c.request(Command::SetManualMerge { id, on }), Response::Ok));
     }
     let copy = match c.request(Command::DuplicateTicket { id }) {
-        Response::Created { id, started: false } => id,
+        Response::Created { id } => id,
         response => panic!("{response:?}"),
     };
     let board = c.board();

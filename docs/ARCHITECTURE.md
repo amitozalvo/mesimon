@@ -575,14 +575,12 @@ the enum cannot spell `bypassPermissions`; `--permission-mode` is in `resume_arg
 a wake re-applies the column), `agent_tools` is a four-rung tier — `off < read < annotate < full`,
 `mcp::tier_needed_by` — advertised at spawn as `--tools <word>` on the shim's argv (it lists
 `tools_for(tier)`) and enforced in `handle_agent` at EVERY call against the ticket's column as it
-stands then, ANDed with `Board.mcp_tools`; `agent_allowed_columns` is empty below `full`. `auto_run`
-("start claude on creation") fires from `Daemon::create_ticket` ONLY — a person at the composer —
-as `spawn_session(.., Claude, submit_prompt: true)`, feed `auto_run_started` /
-`auto_run_refused:<why>` with actor `automation`, `Response::Created { started }` so the composer
-starts no second; never on a move, an agent's `create_ticket`, a wake, an unarchive. For that the
-brief is read at PASTE time (`settle_owed` reads `description_body` when `Parked.brief`),
-so a description written after the spawn still travels, and the composer's workspace rides
-`CreateTicket { workspace }`. `DeleteColumn` refuses live tickets (`move its N tickets first`) and
+stands then, ANDed with `Board.mcp_tools`; `agent_allowed_columns` is empty below `full`. A column
+never starts an agent: `auto_run` ("start claude on creation", T-117) was removed by T-499, so a
+mint's receipt is `Response::Created { id }` and starting stays an explicit act — the composer's
+Shift+Enter, the crown's `start_agent`. A composed spawn's brief is read at PASTE time
+(`settle_owed` reads `description_body` when `Parked.brief`), so a description written after the
+spawn still travels, and the composer's workspace rides `CreateTicket { workspace }`. `DeleteColumn` refuses live tickets (`move its N tickets first`) and
 the last column; `SortColumn` is one-shot and `SortBy` is its five orders — newest arrival,
 oldest, key, needs-you first, and **`Tag` (T-283), which is the PICKER's row order**: a group's
 row is its registry entries as the flat `Board.tags` holds them, `MoveTag` is the only thing that
@@ -602,7 +600,7 @@ first (`ColumnSubject::New`); the menu has `Column settings` and `Add a column` 
 under the cursor wears the cursor bar; a column that does something wears ` →` after its count
 (`glyphs::auto_mark`, dropped first when tight); a pinned column is a spine unless the cursor is in
 it (`layout::board_geometry`'s `pinned`). Goldens `board_header_*`, `board_pinned_120x30`,
-`column_settings_*`, `column_add_120x30`, `help_header_120x30`. E2e `column_e2e`, `auto_run_e2e`,
+`column_settings_*`, `column_add_120x30`, `help_header_120x30`. E2e `column_e2e`,
 `claude_mode_e2e`, `agent_tools_e2e`. (STALE-MAP "Columns own their automations".)
 
 **And one step above a column header is the BOARD's own top row (T-305, 2026-09-07).** `k` there

@@ -91,14 +91,14 @@ pub enum Command {
     CreateTicket {
         column: String,
         title: String,
-        /// The composer's workspace choice, riding the mint (T-117) so the
-        /// column's auto-run can spawn before a later `SetWorkspace` would
-        /// hit the lock. Absent means the column's own default.
+        /// The composer's workspace choice, riding the mint (T-117) so a
+        /// Shift+Enter's spawn, sent right after it, never races a later
+        /// `SetWorkspace` into the lock. Absent means the column's own default.
         #[serde(default)]
         workspace: Option<WorkspaceStrategy>,
         /// The composer's tier pick (T-443, `^n` in the field), a tier id
-        /// riding the mint for the `workspace` reason: a column's auto-run
-        /// may start the agent before a later `SetTicketTier` could land.
+        /// riding the mint for the `workspace` reason: a Shift+Enter starts
+        /// the agent before a later `SetTicketTier` could land.
         /// Absent means the default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier: Option<String>,
@@ -352,8 +352,8 @@ pub enum Command {
     },
     /// The composer's mint (T-243): title, workspace, tags, description and
     /// its pictures in one command, so the ticket exists with all of it or
-    /// not at all, and a column's auto-run spawns onto a card that already
-    /// carries its brief. `CreateTicket` is the thin form for a title alone.
+    /// not at all, and a Shift+Enter spawns onto a card that already carries
+    /// its brief. `CreateTicket` is the thin form for a title alone.
     CreateTicketWithNote {
         column: String,
         title: String,
@@ -1296,13 +1296,11 @@ pub enum Response {
         detached: bool,
     },
     Ok,
-    /// CreateTicket's receipt: the minted id, so the client can select it,
-    /// and whether the column's `auto_run` started a claude on it (T-117) —
-    /// so the composer does not start a second.
+    /// CreateTicket's receipt: the minted id, so the client can select it.
+    /// A mint never starts an agent (T-499 removed the column's `auto_run`);
+    /// an older daemon's `started` is ignored on the way in.
     Created {
         id: ulid::Ulid,
-        #[serde(default)]
-        started: bool,
     },
     /// Durable import acceptance. Exact retries retain the original identity,
     /// including after the ticket was deleted; `created` is false on replay.

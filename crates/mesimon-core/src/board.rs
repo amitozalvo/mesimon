@@ -875,12 +875,6 @@ pub struct ColumnSettings {
     pub codex_approval: CodexApproval,
     #[serde(default, skip_serializing_if = "AgentTools::is_full")]
     pub agent_tools: AgentTools,
-    /// A ticket a PERSON creates here gets claude started on its title, the
-    /// brief pasted and submitted — the composer's Shift+Enter, fired by the
-    /// daemon. Creation only: never a move, an agent's `create_ticket`, a
-    /// wake, an unarchive or an undo.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub auto_run: bool,
     /// The column a ticket moves to when its claude starts working
     /// (`Running` at Medium or better). `None` = stay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -911,10 +905,7 @@ impl ColumnSettings {
     /// Whether any automation would act on a ticket here — the header's one
     /// optional mark.
     pub fn automated(&self) -> bool {
-        self.auto_run
-            || self.on_working.is_some()
-            || self.on_done.is_some()
-            || self.train != TrainReach::Off
+        self.on_working.is_some() || self.on_done.is_some() || self.train != TrainReach::Off
     }
 
     /// The non-default settings in words, for `doctor` and the dialog.
@@ -940,9 +931,6 @@ impl ColumnSettings {
         }
         if self.agent_tools != AgentTools::Full {
             out.push(format!("agent tools: {}", self.agent_tools.word()));
-        }
-        if self.auto_run {
-            out.push("starts agent on creation".into());
         }
         if let Some(c) = &self.on_working {
             out.push(format!("working → {c}"));
@@ -3400,8 +3388,11 @@ mod tests {
         assert!(b.set_column_settings("TODO", s).unwrap_err().contains("itself"));
         let s = ColumnSettings { on_done: Some("NOPE".into()), ..Default::default() };
         assert!(b.set_column_settings("TODO", s).unwrap_err().contains("no such column"));
-        let s =
-            ColumnSettings { on_done: Some("DONE".into()), auto_run: true, ..Default::default() };
+        let s = ColumnSettings {
+            on_done: Some("DONE".into()),
+            agent_tools: AgentTools::Read,
+            ..Default::default()
+        };
         b.set_column_settings("TODO", s.clone()).unwrap();
         assert_eq!(b.column("TODO").unwrap().settings, s);
         assert!(b.set_column_settings("NOPE", ColumnSettings::default()).is_err());

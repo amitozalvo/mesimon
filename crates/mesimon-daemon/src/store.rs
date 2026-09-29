@@ -49,6 +49,9 @@ pub(crate) mod imports;
 /// tier — the tags reason once more: a v5 build would read the file, ignore
 /// the registry and drop it on its next write, and a board whose default
 /// was a Codex tier would start Claude.
+/// T-499 removed v4's `auto_run` with no bump: a file that still carries it
+/// loads, the key is ignored and gone on the next write, and forgetting it
+/// only narrows what a spawn gets — the reverse of the reason to bump.
 pub const COLUMNS_SCHEMA: u32 = 6;
 /// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
 /// build would read the ticket, ignore the array, and on its next
@@ -2046,7 +2049,6 @@ order = "a0"
                     codex_sandbox: mesimon_core::board::CodexSandbox::Inherit,
                     codex_approval: mesimon_core::board::CodexApproval::Inherit,
                     agent_tools: mesimon_core::board::AgentTools::Read,
-                    auto_run: true,
                     on_working: Some("QA".into()),
                     on_done: None,
                     requires_merge: true,
@@ -2131,6 +2133,28 @@ order = "a0"
         assert!(matches!(verdict(1, COLUMNS_SCHEMA), Verdict::Load));
         assert!(matches!(verdict(3, COLUMNS_SCHEMA), Verdict::Load));
         assert!(matches!(verdict(COLUMNS_SCHEMA, 3), Verdict::Newer(6)));
+    }
+
+    /// T-499 removed the column's `auto_run`. A file that still says it
+    /// loads — the flattened settings deny no unknown key — keeps the
+    /// column's other settings, and the next write drops it.
+    #[test]
+    fn a_removed_auto_run_key_loads_and_is_dropped_on_write() {
+        let legacy = r#"
+schema_version = 6
+next_key = 4
+
+[[columns]]
+name = "TODO"
+order = "a0"
+auto_run = true
+on_done = "DONE"
+"#;
+        let cf: ColumnsFile = toml::from_str(legacy).unwrap();
+        assert_eq!(cf.columns[0].settings.on_done.as_deref(), Some("DONE"));
+        let text = toml::to_string_pretty(&cf).unwrap();
+        assert!(!text.contains("auto_run"), "{text}");
+        assert!(text.contains("on_done = \"DONE\""), "{text}");
     }
 
     /// Today's ticket.toml carries no stamp; it must read as schema 1 (16 §6.2

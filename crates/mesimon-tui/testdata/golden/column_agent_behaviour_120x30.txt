@@ -8,10 +8,10 @@
 
 
 
+
                            ╭─ AGENT BEHAVIOUR ∙ IN PROGRESS ────────────────────────────────╮
                            │   Mode: inherit (auto)                                         │
                            │   Agent tools: full                                            │
-                           │   Start agent on creation: off                                 │
                            │   When agent starts working: stay                              │
                            │   When agent ends a turn: stay                                 │
                            │                                                                │

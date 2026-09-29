@@ -15190,3 +15190,34 @@ vendored imports), the UX suite in Chromium and WebKit at desktop, tablet and ph
 nine relay acceptance tests including both real-browser flows (HTTPS and local HTTP), with a
 clean fixture audit. Screenshots of a realistic board were inspected in both themes, at 200%
 text and at a keyboard-sized phone viewport. Physical-phone acceptance is still outstanding.
+
+## A column no longer starts an agent: `auto_run` removed (T-499, 2026-09-29, "Remove the column auto-run setting")
+
+**Decided by the owner in T-497** ("removing the column auto-run setting from mesimon itself"):
+starting an agent stays an explicit act. The setting (T-117, "Start agent on creation" in a
+column's Agent behaviour dialog) fired the composer's Shift+Enter from the daemon for a ticket a
+person created in that column.
+
+**Removed:** `ColumnSettings.auto_run` and its part in `automated()` and `summary`;
+`Daemon::auto_run` with its feed events `auto_run_started` / `auto_run_refused:<why>`; the
+`started` flag on `Response::Created` and the composer's branch that read it; `Verb::ColumnAutoRun`,
+`Ctx::col_auto_run` and the dialog row; `auto_run_e2e`. The Agent behaviour dialog is one row
+shorter (goldens `column_agent_behaviour_120x30`, `column_codex_agent_120x30` and `_60x20`).
+
+**Compatibility, no bump.** The flattened settings deny no unknown key, so a `columns.toml` that
+still says `auto_run = true` loads with its other settings and loses the key on the next write
+(`a_removed_auto_run_key_loads_and_is_dropped_on_write`). Forgetting the key narrows what a spawn
+gets, the reverse of the `COLUMNS_SCHEMA` doctrine's reason to bump; the constant's comment says
+so. On the wire, this TUI ignores an older daemon's `started`, and an older TUI defaults the
+missing field to false.
+
+**Stays:** Shift+Enter in the composer and on the board, the crown's `start_agent`, and Remote
+Control's Start agent button (its own ticket). `ExecutionPolicy::allows_automation` stays too:
+the merge train and `authorize_execution` still read it.
+
+**Coverage given up:** `auto_run_e2e` was the one e2e in which a description written *after* a
+composed spawn reached the pane (the brief is read at paste time). `brief_e2e` still covers the
+composed spawn with its brief on the card.
+
+**Owed:** a CHANGELOG line at the next release, since this shipped as a user-visible column
+setting.
