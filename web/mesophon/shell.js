@@ -1,10 +1,11 @@
 // The page: pairing, or the board shell (sidebar, list, detail). Layout is
 // CSS; the breakpoint only chooses which list shape to draw.
 import { html, useEffect, useLayoutEffect, useRef, useState } from "./html.js";
-import { Icon } from "./icons.js";
+import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
-import { NowList, BoardList, ColumnTabs, lastSeen } from "./lists.js";
+import { NowList, BoardList, SentList, ColumnTabs, lastSeen } from "./lists.js";
 import { Detail } from "./detail.js";
+import { NewTicket, QuickNew } from "./compose.js";
 
 // Subscribe during the commit, not after paint: a fast boot can emit before
 // a deferred effect runs, and that change would never reach the page.
@@ -104,6 +105,7 @@ function Pairing({ store, hidden }) {
 function ModeButtons({ store, board, ids = false }) {
   const mode = board?.mode || "agents";
   const needs = board ? board.tickets.filter((t) => t.agent?.state === "needs attention").length : 0;
+  const unsettled = store.sent.unsettled(store.active?.pin.board);
   return html`
     <button id=${ids ? "agents-mode" : undefined} type="button" class="mode" data-mode="agents"
       aria-pressed=${String(mode === "agents")} onClick=${() => store.setMode("agents")}>
@@ -114,7 +116,27 @@ function ModeButtons({ store, board, ids = false }) {
       aria-pressed=${String(mode === "board")} onClick=${() => store.setMode("board")}>
       <${Icon} name="kanban" size=${22} width=${1.8} /><span>Board</span>
       ${board && html`<span class="count">${board.tickets.length}</span>`}
+    </button>
+    <button id=${ids ? "sent-mode" : undefined} type="button" class="mode" data-mode="sent"
+      aria-pressed=${String(mode === "sent")} onClick=${() => store.setMode("sent")}>
+      <${Icon} name="send" size=${22} width=${1.8} /><span>Sent</span>
+      ${unsettled > 0 && html`<span class="badge badge-quiet" aria-label=${`${unsettled} not landed yet`}>${unsettled}</span>`}
     </button>`;
+}
+
+// On a phone's Board the ticket starts in the column on screen; elsewhere in
+// the draft's own column, or the board's default.
+function NewTicketButton({ store, board, id, cls, column }) {
+  return html`<button id=${id} type="button" class=${cls} disabled=${!board}
+    onClick=${() => store.openComposer(column)}>
+    <${Icon} name="plus" size=${18} width=${2.4} /><span>New ticket</span></button>`;
+}
+
+// One line at a time, above the tab bar: what just happened to a ticket.
+function Toast({ store }) {
+  const toast = store.toast;
+  return html`<div id="toast" class="toast" role="status" aria-live="polite">${toast &&
+    html`<p class="toast-body" key=${toast.id}>${toast.tick && html`<${Tick} state=${toast.tick} />`}<span>${toast.text}</span></p>`}</div>`;
 }
 
 function Hop({ icon, name, state, ok }) {
@@ -181,41 +203,55 @@ function Sidebar({ store, bp }) {
 function WorkList({ store, bp }) {
   const board = store.board;
   const mode = board?.mode || "agents";
+  const sent = mode === "sent" ? store.sent.forBoard(store.active?.pin.board) : [];
   const list = useRef();
   // A list hidden behind the phone's detail view forgets its scroll offset;
-  // put back the reader's place whenever the list shows again.
+  // put back the reader's place whenever the list shows again. Sent reads
+  // like a conversation: it opens at the newest, by the bar.
   useLayoutEffect(() => {
     const node = list.current;
-    if (node && board && node.getClientRects().length) node.scrollTop = board.scroll[mode];
-  }, [board, mode, store.detailOpen, bp]);
-  const count = board
-    ? mode === "agents"
-      ? `${board.visible().length} agent${board.visible().length === 1 ? "" : "s"}`
-      : `${board.visible().length} ticket${board.visible().length === 1 ? "" : "s"}`
-    : "";
+    if (!node || !board || !node.getClientRects().length) return;
+    node.scrollTop = mode === "sent" ? node.scrollHeight : board.scroll[mode];
+  }, [board, mode, store.detailOpen, bp, sent.length]);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const count = !board
+    ? ""
+    : mode === "agents"
+      ? plural(board.visible().length, "agent")
+      : mode === "board"
+        ? plural(board.visible().length, "ticket")
+        : `${sent.length} sent`;
   const loading = store.screen === "shell" && store.active && !board;
   return html`<section id="work-list" aria-label="Work list">
     <div class="list-tools">
       <div class="list-heading">
-        <h2 id="list-title">${mode === "agents" ? "Now" : "Board"}</h2>
+        <h2 id="list-title">${{ agents: "Now", board: "Board", sent: "Sent" }[mode]}</h2>
         <span id="count">${count}</span>
         ${board?.cached && html`<span class="chip chip-quiet">As of ${lastSeen(board)}</span>`}
+        ${bp !== "phone" && html`<${NewTicketButton} store=${store} board=${board} id="new-ticket" cls="btn btn-pri new-ticket" />`}
       </div>
-      <label class="search"><${Icon} name="search" size=${16} /><span class="sr-only">Find a ticket</span>
-        <input id="search" type="search" placeholder="Find a ticket…" value=${board?.search || ""}
-          onInput=${(e) => store.setSearch(e.currentTarget.value)} /></label>
+      ${mode === "sent"
+        ? html`<p class="list-sub">Tickets from this browser to your board.</p>`
+        : html`<label class="search"><${Icon} name="search" size=${16} /><span class="sr-only">Find a ticket</span>
+            <input id="search" type="search" placeholder="Find a ticket…" value=${board?.search || ""}
+              onInput=${(e) => store.setSearch(e.currentTarget.value)} /></label>`}
       ${mode === "board" && bp === "phone" && board && html`<${ColumnTabs} store=${store} board=${board} />`}
     </div>
-    <nav id="tickets" aria-label="Tickets" ref=${list}
+    <nav id="tickets" aria-label=${mode === "sent" ? "Sent tickets" : "Tickets"} ref=${list}
       onScroll=${(e) => {
         if (board && e.currentTarget.getClientRects().length) board.scroll[mode] = e.currentTarget.scrollTop;
       }}>
       ${board
         ? mode === "agents"
           ? html`<${NowList} store=${store} board=${board} live=${store.live} />`
-          : html`<${BoardList} store=${store} board=${board} bp=${bp} />`
+          : mode === "board"
+            ? html`<${BoardList} store=${store} board=${board} bp=${bp} />`
+            : html`<${SentList} store=${store} board=${board} />`
         : loading && html`<div class="loading"><${Shin} size="medium" scale=${4} mood="awake" light="dim" /><p>Reaching your board…</p></div>`}
     </nav>
+    ${board && mode === "sent" && html`<${QuickNew} store=${store} />`}
+    ${board && mode !== "sent" && bp === "phone" && html`<${NewTicketButton} store=${store} board=${board}
+      id="new-ticket-fab" cls="fab" column=${mode === "board" ? board.column : undefined} />`}
     <nav id="modes" aria-label="View"><${ModeButtons} store=${store} board=${board} ids=${true} /></nav>
   </section>`;
 }
@@ -260,5 +296,7 @@ export function App({ store }) {
   });
   return html`
     <${Pairing} store=${store} hidden=${store.screen !== "pair"} />
-    <${Shell} store=${store} bp=${bp} hidden=${store.screen === "pair"} />`;
+    <${Shell} store=${store} bp=${bp} hidden=${store.screen === "pair"} />
+    <${NewTicket} store=${store} />
+    <${Toast} store=${store} />`;
 }

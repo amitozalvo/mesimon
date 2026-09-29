@@ -466,7 +466,12 @@ impl Daemon {
             reply: Reply::Ready {
                 incarnation: self.control.incarnation.to_hex(),
                 next,
-                features: vec!["permission".into(), "dialog".into(), "awareness".into()],
+                features: vec![
+                    "permission".into(),
+                    "dialog".into(),
+                    "awareness".into(),
+                    "create".into(),
+                ],
             },
         })
         .unwrap_or_default();
@@ -630,6 +635,9 @@ impl Daemon {
                 .and_then(|r| r.get(&command))
                 .cloned()
                 .unwrap_or(Reply::Delivery { status: "unknown".into() }),
+            api::Request::Create { title, description, column, tags } => {
+                self.control_create(&by, title, description, column, &tags)
+            }
         };
         self.control.remember(grant, command.id, reply.clone());
         self.control.answer(peer, command.id, reply);
@@ -1046,7 +1054,74 @@ impl Daemon {
         Reply::Delivery { status: if sent { "decision_sent" } else { "unknown" }.into() }
     }
 
+    /// A ticket filed from the owner's phone (T-497): the composer's mint,
+    /// landing quietly. A paired device starts nothing, so nothing here
+    /// spawns, provisions or prompts.
+    fn control_create(
+        &mut self,
+        by: &Principal,
+        title: String,
+        description: String,
+        column: Option<String>,
+        tags: &[api::TagPick],
+    ) -> Reply {
+        let reject = |message: String| Reply::Rejected { message };
+        let Some(column) = column.or_else(|| self.board.landing_column()) else {
+            return reject("the board has no columns".into());
+        };
+        if self.board.column(&column).is_none() {
+            return reject(format!("no such column: {column}"));
+        }
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::FileTicket, &Resource::Column { name: column.clone() })
+        {
+            return reject(format!("denied: {reason}"));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(message);
+        }
+        let tags = match filed_tags(&self.board, tags) {
+            Ok(tags) => tags,
+            Err(message) => return reject(message),
+        };
+        // Refused whole past the limit, never cut; then scrubbed here, at
+        // the boundary, because the browser's textarea is not one.
+        if let Some(message) = mesimon_core::board::note_size_error(&description) {
+            return reject(message);
+        }
+        let note = mesimon_core::board::sanitize_note(&description);
+        let mint = Mint {
+            column,
+            title,
+            workspace: None,
+            from: None,
+            tags,
+            note: Some((note, Vec::new())),
+            tier: None,
+        };
+        match self.mint_full(by, mint) {
+            Ok(id) => {
+                self.feed.board(by.actor(), "mesophon_create_ticket", Some(id));
+                let (key, column) = self
+                    .board
+                    .ticket(id)
+                    .map(|t| (t.short_key.clone(), t.column.clone()))
+                    .unwrap_or_default();
+                Reply::Created { ticket: id.to_string(), key, column }
+            }
+            Err(message) => reject(message),
+        }
+    }
+
     fn control_board(&self) -> Reply {
+        let columns = self.board.sorted_columns();
+        let mut allowed_tags: Vec<_> = self
+            .board
+            .tags
+            .iter()
+            .map(|t| api::TagOption { group: t.group, name: t.name.clone(), tint: t.tint() })
+            .collect();
+        allowed_tags.sort_by_key(|t| t.group);
         Reply::Board {
             title: self
                 .paths
@@ -1054,12 +1129,18 @@ impl Daemon {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            columns: self.board.columns.iter().map(|c| c.name.clone()).collect(),
-            tickets: self
-                .board
-                .tickets
+            columns: columns.iter().map(|c| c.name.clone()).collect(),
+            default_column: self.board.landing_column(),
+            column_descriptions: columns
                 .iter()
-                .filter(|t| !t.is_archived())
+                .filter_map(|c| Some((c.name.clone(), c.settings.description.clone()?)))
+                .collect(),
+            allowed_tags,
+            // Board order, as the TUI draws it: a reorder moves a column's
+            // `order`, not its place in the list.
+            tickets: columns
+                .iter()
+                .flat_map(|c| self.board.column_tickets(&c.name))
                 .map(|t| api::Ticket {
                     id: t.id.to_string(),
                     queued: self.queued.iter().find(|q| q.ticket == t.id).map(|q| q.text.clone()),
@@ -1418,6 +1499,26 @@ fn permission_peer_closed(stream: &UnixStream) -> bool {
         )
 }
 
+/// The tags a filed ticket wears, each spelled exactly as the registry has
+/// it: the phone offers only the vocabulary its snapshot carried, so a name
+/// the board lacks means that view is stale, and a phone never adds a tag.
+/// One tag per group is `mint_full`'s rule and is judged there.
+fn filed_tags(
+    board: &mesimon_core::board::Board,
+    picks: &[api::TagPick],
+) -> Result<Vec<TagRef>, String> {
+    let mut refs: Vec<TagRef> = Vec::new();
+    for pick in picks {
+        if board.tag_def(pick.group, &pick.name).is_none() {
+            return Err(format!("tag {} is no longer on this board", pick.name));
+        }
+        if !refs.iter().any(|r| r.group == pick.group && r.name == pick.name) {
+            refs.push(TagRef { group: pick.group, name: pick.name.clone() });
+        }
+    }
+    Ok(refs)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum DialogStep {
     Up,
@@ -1625,6 +1726,24 @@ mod tests {
             Some(DialogStep::Reject)
         );
         assert_eq!(dialog_step(&dialog, &api::DialogAnswer::Reject, "❯ composer", false), None);
+    }
+
+    #[test]
+    fn a_filed_ticket_wears_only_tags_the_board_has() {
+        let mut board = mesimon_core::board::Board::with_default_columns();
+        board.register_tag(1, "BUG").unwrap();
+        board.register_tag(2, "QUESTION").unwrap();
+        let pick = |group, name: &str| api::TagPick { group, name: name.into() };
+        let worn = filed_tags(&board, &[pick(1, "BUG"), pick(1, "BUG"), pick(2, "QUESTION")])
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.group, t.name))
+            .collect::<Vec<_>>();
+        assert_eq!(worn, vec![(1, "BUG".to_string()), (2, "QUESTION".to_string())]);
+        for stale in [pick(1, "bug"), pick(2, "BUG"), pick(1, "NEW")] {
+            assert!(filed_tags(&board, &[stale]).is_err());
+        }
+        assert!(board.tag_def(1, "NEW").is_none(), "a phone never registers a tag");
     }
 
     #[test]

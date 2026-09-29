@@ -205,14 +205,22 @@ impl Daemon {
     /// already stood every such key down, so this is the gate a second
     /// client meets, not a person.
     pub(super) fn team_read_only(&self, command: &Command) -> Option<String> {
-        let state = self.team.state.as_ref()?;
-        if state.role() != Role::Viewer || !viewer_edit(command) {
+        if !viewer_edit(command) {
             return None;
         }
-        Some(format!(
-            "you view this board and cannot edit it ∙ ask {} for a contributor invite",
-            state.owner_name
-        ))
+        self.team_viewer_refusal()
+    }
+
+    /// The refusal a viewer's copy gives any edit, whichever road asked:
+    /// the socket's commands above, and a ticket filed from a paired phone.
+    pub(super) fn team_viewer_refusal(&self) -> Option<String> {
+        let state = self.team.state.as_ref()?;
+        (state.role() == Role::Viewer).then(|| {
+            format!(
+                "you view this board and cannot edit it ∙ ask {} for a contributor invite",
+                state.owner_name
+            )
+        })
     }
 
     fn board_title(&self) -> String {

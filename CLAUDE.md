@@ -410,6 +410,8 @@ sees a developer's `$EDITOR`, opens a browser, or makes a noise.
 no inline style or script: styling is classes in `style.css`, and Preact/htm are vendored plain
 modules with no bare imports (`vendor/README.md`). Its view subscribes to `store.js` in a layout
 effect, never after paint, or a fast boot's emit is lost and the page freezes at "Starting…".
+A paired phone's one board write is `Action::FileTicket` into a column: never widen `Paired` to
+`Mutate`, which also reaches `PromptColumn`, and a paired device starts nothing.
 
 ## Traps that were measured
 

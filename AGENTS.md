@@ -61,6 +61,8 @@ Preserve these boundaries:
 - `web/mesophon` has no build step: the relay serves it as it is under a CSP with no inline
   style or script, so styling stays in `style.css` and Preact/htm stay vendored plain modules
   with no bare imports (`web/mesophon/vendor/README.md`).
+- A paired phone's one board write is `Action::FileTicket` into a column: never widen `Paired`
+  to `Mutate`, which also reaches `PromptColumn`, and a paired device starts nothing.
 
 The README promises are hard constraints: Mesimon writes only to its documented allowlist,
 `doctor` diagnoses without applying configuration changes, and Mesimon never rewrites or adds

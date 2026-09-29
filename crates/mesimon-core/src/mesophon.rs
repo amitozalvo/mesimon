@@ -1,5 +1,6 @@
 //! The bounded owner-control surface. No paths, native argv, or local envelopes.
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// An explicit one-shot human answer, never a policy or input rewrite.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +92,36 @@ pub enum Request {
     Status {
         command: u64,
     },
+    /// File a ticket (T-497). It lands quietly: no agent starts, whatever
+    /// the column says. The description becomes `notes[0]`; a tag must be
+    /// one the board already has.
+    Create {
+        title: String,
+        #[serde(default)]
+        description: String,
+        /// `None` lands it in the board's default column.
+        #[serde(default)]
+        column: Option<String>,
+        #[serde(default)]
+        tags: Vec<TagPick>,
+    },
+}
+
+/// A tag a new ticket wears, spelled as the board's vocabulary spells it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TagPick {
+    pub group: u8,
+    pub name: String,
+}
+
+/// One tag of the board's vocabulary, as the New ticket sheet offers it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagOption {
+    pub group: u8,
+    pub name: String,
+    /// Index into the tag tint ramp (`board::TAG_TINTS`), the TUI's colour.
+    pub tint: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -137,6 +168,15 @@ pub enum Reply {
         title: String,
         columns: Vec<String>,
         tickets: Vec<Ticket>,
+        /// Where a ticket lands when it names no column (T-279).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default_column: Option<String>,
+        /// What each column is for, in the owner's words (T-467).
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        column_descriptions: BTreeMap<String, String>,
+        /// The board's tag vocabulary: every tag a new ticket may wear.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allowed_tags: Vec<TagOption>,
     },
     Preview {
         lines: Vec<String>,
@@ -149,6 +189,12 @@ pub enum Reply {
     },
     TakenBack {
         text: String,
+    },
+    /// A filed ticket is on the board: its id, its key and where it landed.
+    Created {
+        ticket: String,
+        key: String,
+        column: String,
     },
     Awareness {
         ticket: String,
@@ -223,6 +269,69 @@ mod tests {
         assert_eq!(Phase::of(&S::Running), Phase::Running);
         assert_eq!(Phase::of(&S::Spawning), Phase::Starting);
         assert_eq!(Phase::of(&S::Sleeping), Phase::Stale);
+    }
+
+    /// A filed ticket names only a title; everything else takes the board's
+    /// default, and a field the host does not know is refused, not dropped.
+    #[test]
+    fn a_filed_ticket_needs_a_title_and_defaults_the_rest() {
+        let Request::Create { title, description, column, tags } =
+            serde_json::from_str(r#"{"op":"create","title":"Fix it"}"#).unwrap()
+        else {
+            panic!("create")
+        };
+        assert_eq!(
+            (title.as_str(), description.as_str(), column, tags),
+            ("Fix it", "", None, vec![])
+        );
+        let full = r#"{"op":"create","title":"t","description":"d","column":"TODO","tags":[{"group":1,"name":"BUG"}]}"#;
+        let Request::Create { column, tags, .. } = serde_json::from_str(full).unwrap() else {
+            panic!("create")
+        };
+        assert_eq!(column.as_deref(), Some("TODO"));
+        assert_eq!(tags, vec![TagPick { group: 1, name: "BUG".into() }]);
+        for bad in [
+            r#"{"op":"create"}"#,
+            r#"{"op":"create","title":"t","autorun":true}"#,
+            r#"{"op":"create","title":"t","tags":[{"group":1,"name":"BUG","tint":3}]}"#,
+        ] {
+            assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// The sheet's facts ride the board reply beside what an older browser
+    /// already reads, and a board without them still parses.
+    #[test]
+    fn the_board_reply_carries_the_sheet_facts_only_when_there_are_any() {
+        let bare = Reply::Board {
+            title: "b".into(),
+            columns: vec!["TODO".into()],
+            tickets: vec![],
+            default_column: None,
+            column_descriptions: BTreeMap::new(),
+            allowed_tags: vec![],
+        };
+        let json = serde_json::to_value(&bare).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"result":"board","title":"b","columns":["TODO"],"tickets":[]})
+        );
+        let Reply::Board { default_column, allowed_tags, .. } =
+            serde_json::from_value(json).unwrap()
+        else {
+            panic!("board")
+        };
+        assert!(default_column.is_none() && allowed_tags.is_empty());
+        let created = serde_json::to_value(Reply::Created {
+            ticket: "01J".into(),
+            key: "T-7".into(),
+            column: "TODO".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            created,
+            serde_json::json!({"result":"created","ticket":"01J","key":"T-7","column":"TODO"})
+        );
     }
 
     #[test]

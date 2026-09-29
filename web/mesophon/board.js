@@ -15,16 +15,23 @@ export class BoardState {
     this.filter = "all";
     this.search = "";
     this.column = "";
-    this.scroll = { agents: 0, board: 0 };
+    this.scroll = { agents: 0, board: 0, sent: 0 };
     this.receivedAt = undefined;
     // True while the view comes from this browser's memory, not the host.
     this.cached = false;
+    // What the New ticket sheet offers; absent from an older host's reply.
+    this.defaultColumn = "";
+    this.columnDescriptions = {};
+    this.allowedTags = [];
   }
   update(reply, { cached = false, at = Date.now() } = {}) {
     Object.assign(this, {
       title: reply.title,
       tickets: reply.tickets,
       columns: reply.columns,
+      defaultColumn: reply.default_column || "",
+      columnDescriptions: reply.column_descriptions || {},
+      allowedTags: Array.isArray(reply.allowed_tags) ? reply.allowed_tags : [],
       cached,
       receivedAt: at,
     });
@@ -69,11 +76,18 @@ export class BoardState {
     for (const ticket of this.visible()) groups[phase(ticket)].push(ticket);
     return groups;
   }
+  // The column a new ticket starts in: the host's default, else the first.
+  landing() {
+    return this.columns.includes(this.defaultColumn) ? this.defaultColumn : this.columns[0] || "";
+  }
   // What this browser may remember: no queued text, tool input or dialogs.
   snapshot() {
     return {
       title: this.title,
       columns: this.columns,
+      default_column: this.defaultColumn,
+      column_descriptions: this.columnDescriptions,
+      allowed_tags: this.allowedTags.map(({ group, name, tint }) => ({ group, name, tint })),
       tickets: this.tickets.map(({ id, key, title, column, agent }) => ({
         id,
         key,

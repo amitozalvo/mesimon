@@ -11,14 +11,17 @@ in `mesimon-relay`.
 
 - `connection.js`: authentication, request correlation, deadlines and reconnect.
 - `identity.js`: atomic IndexedDB device identity, remembered board selection,
-  and the last board each grant saw (titles, columns and agent states only).
+  and per grant the last board it saw (titles, columns, tags and agent states
+  only) and the tickets this browser sent it.
 - `board.js`: bounded board projection, Now's groups, filters and list position.
 - `sessions.js`: drafts, delivery receipts and reading position keyed by board,
   ticket and session. Drafts exist only in this tab and are lost on reload.
+- `sent.js`: the Sent list, per board: a filed ticket's status (sending,
+  landed, unknown, rejected), its key once landed, and what survives a reload.
 - `store.js`: application state and every action on it; the view renders from it.
-- `shell.js`, `lists.js`, `detail.js`, `dialogs.js`: the view (pairing, sidebar,
-  Now and Board, the ticket, permission/question/plan cards). Host text is
-  always a text node.
+- `shell.js`, `lists.js`, `detail.js`, `dialogs.js`, `compose.js`: the view
+  (pairing, sidebar, Now, Board and Sent, the ticket, permission/question/plan
+  cards, the New ticket sheet and Sent's bar). Host text is always a text node.
 - `shin.js`, `icons.js`: the mascot from `assets/mascot/shin.txt` and inline icons.
 - `app.js`: boot and window-level events.
 
@@ -78,3 +81,12 @@ alerts are suppressed while any paired browser foregrounds the ticket; presence
 expires after 15 seconds without renewal. In-page alerts work without system
 notification support; each links to its originating ticket. Browser notification permission is
 requested only by the alerts button. Closed-browser Web Push is not implemented.
+
+Tickets from the browser use the `create` op, advertised as the `create`
+feature so a browser never sends it to an older host. The daemon files the
+ticket through its one writer as `Action::FileTicket`, into a column the board
+has and with tags it already has, and never starts an agent on it. The answer
+is a `created` receipt with the new key; a lost answer is recovered with
+`status` on reconnect, never by sending the ticket again. The snapshot carries
+what the sheet offers: `default_column`, `column_descriptions` and
+`allowed_tags` (name, group and the TUI's tint index).

@@ -1,6 +1,9 @@
 // Device keys and paired boards share one atomic IndexedDB record. Beside it,
-// the last board each grant saw: titles, columns and agent states, never
-// output, prompts or tool input. Revoke and forget drop it.
+// per grant: the last board it saw (titles, columns, tags and agent states,
+// never output, prompts or tool input) and the tickets this browser sent it.
+// Revoke and forget drop both.
+const remembered = ["board:", "sent:"];
+
 export async function openIdentity() {
   const db = await new Promise((resolve, reject) => {
     const req = indexedDB.open("mesophon", 1);
@@ -21,14 +24,20 @@ export async function openIdentity() {
     readBoard: (board) => run("readonly", (s) => s.get(`board:${board}`)),
     saveBoard: (board, value) =>
       run("readwrite", (s) => s.put(value, `board:${board}`)),
-    // One board, or every remembered board when none is named.
+    readSent: (board) => run("readonly", (s) => s.get(`sent:${board}`)),
+    saveSent: (board, value) =>
+      run("readwrite", (s) => s.put(value, `sent:${board}`)),
+    // One board's memory, or every board's when none is named.
     dropBoards: (board) =>
-      run("readwrite", (s) =>
-        s.delete(
-          board
-            ? IDBKeyRange.only(`board:${board}`)
-            : IDBKeyRange.bound("board:", "board:￿"),
-        ),
-      ),
+      run("readwrite", (s) => {
+        let last;
+        for (const prefix of remembered)
+          last = s.delete(
+            board
+              ? IDBKeyRange.only(`${prefix}${board}`)
+              : IDBKeyRange.bound(prefix, `${prefix}￿`),
+          );
+        return last;
+      }),
   };
 }

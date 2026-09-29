@@ -44,12 +44,15 @@ export class Browser {
 function fixture() {
   const state = (window.fixture = {
     next: 1,
-    features: ["permission", "dialog", "awareness"],
+    features: ["permission", "dialog", "awareness", "create"],
     incarnation: "incarnation-a",
     prompts: [],
     requests: [],
+    creates: [],
     answers: {},
     disposition: "submitted",
+    createDisposition: "created",
+    refuse: false,
     sockets: [],
     lines: Array.from(
       { length: 50 },
@@ -82,6 +85,13 @@ function fixture() {
         title: "Mesimon",
         columns: ["TODO", "IN PROGRESS", "DONE"],
         tickets: this.tickets,
+        default_column: "TODO",
+        column_descriptions: { TODO: "for work that can and should be done soon" },
+        allowed_tags: [
+          { group: 1, name: "BUG", tint: 0 },
+          { group: 1, name: "FEATURE", tint: 6 },
+          { group: 2, name: "QUESTION", tint: 9 },
+        ],
       };
     },
     reply(reply, id = 0) {
@@ -110,6 +120,9 @@ function fixture() {
       queueMicrotask(() => {
         if (wire.kind === "auth")
           this.message({ kind: "authenticated", credential: "fixture" });
+        // The relay's generic answer while the host is away.
+        else if (wire.kind === "connect" && state.refuse)
+          this.message({ kind: "error", code: "unavailable" });
         else if (["pair", "connect"].includes(wire.kind))
           this.message({ kind: "welcome", welcome: { board: "board-a" } });
         else {
@@ -162,6 +175,23 @@ function fixture() {
               else answer({ result: "taken_back", text });
             }
           }
+          if (request.op === "create") {
+            state.creates.push(request);
+            const created = () => {
+              const n = state.creates.length;
+              const ticket = { id: `new-${n}`, key: `T-${99 + n}`, title: request.title,
+                column: request.column || "TODO", agent: null };
+              state.tickets.push(ticket);
+              return { result: "created", ticket: ticket.id, key: ticket.key, column: ticket.column };
+            };
+            if (state.createDisposition === "rejected")
+              answer({ result: "rejected", message: "no such column: GONE" });
+            else if (state.createDisposition === "disconnect") {
+              // The host filed it; only the answer is lost with the socket.
+              state.answers[id] = created();
+              this.close();
+            } else if (state.createDisposition !== "hold") answer(created());
+          }
           if (request.op === "status")
             answer(
               state.receipt
@@ -182,8 +212,234 @@ function fixture() {
   }
   window.WebSocket = Socket;
 }
-async function until(page, fn) {
-  await page.waitForFunction(fn);
+async function until(page, fn, arg) {
+  await page.waitForFunction(fn, arg);
+}
+
+// Tickets from this browser: the sheet, Sent's ticks and bar, receipts after
+// a lost answer, a refusal, an away or older host, reload and revocation.
+async function ticketFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce" });
+  await context.addInitScript(fixture);
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const sheet = page.locator("#new-ticket-sheet");
+  const mode = (name) => page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+  const openSheet = () => page.locator(size === "phone" ? "#new-ticket-fab" : "#new-ticket").click();
+  const connected = () =>
+    until(page, () => document.querySelector("#connection").textContent === "Connected");
+  const shot = (name) =>
+    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+  const theme = (name) =>
+    page.evaluate((name) => {
+      const control = document.querySelector("#theme");
+      control.value = name;
+      control.dispatchEvent(new Event("change"));
+    }, name);
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+
+    // The sheet: a live destination, a title first, one tag per group.
+    await openSheet();
+    await sheet.waitFor({ state: "visible" });
+    assert.equal(await page.evaluate(() => document.activeElement.id), "new-title");
+    assert.match(await sheet.locator(".compose-dest").textContent(), /lands right away/);
+    assert(await page.locator("#send-ticket").isDisabled());
+    await page.locator("#new-title").fill("Phone ticket <b>stays text</b>");
+    await page.locator("#new-description").fill("Line one\nLine two");
+    await sheet.getByRole("radio", { name: "IN PROGRESS", exact: true }).check();
+    assert(!(await sheet.locator(".field-note").isVisible().catch(() => false)));
+    await sheet.getByRole("radio", { name: "TODO", exact: true }).check();
+    assert.match(await sheet.locator(".field-note").textContent(), /done soon/);
+    for (const name of ["BUG", "FEATURE", "QUESTION"])
+      await sheet.getByRole("button", { name, exact: true }).click();
+    assert.deepEqual(
+      await sheet.locator(".tag-chip[aria-pressed=true]").allTextContents(),
+      ["FEATURE", "QUESTION"],
+    );
+    if (size === "phone") {
+      const short = await sheet.evaluate((node) =>
+        [...node.querySelectorAll("button, input, textarea")]
+          .filter((n) => n.getClientRects().length && n.type !== "radio" && n.getBoundingClientRect().height < 44)
+          .map((n) => n.id || n.textContent),
+      );
+      assert.deepEqual(short, []);
+    }
+    for (const name of ["graphite", "chalk"]) {
+      await theme(name);
+      await shot(`sheet-${name}`);
+    }
+    await theme("graphite");
+    await page.locator("#send-ticket").click();
+    await sheet.waitFor({ state: "hidden" });
+    await until(page, () => document.querySelector("#toast").textContent.includes("Landed as T-100 in TODO"));
+    assert.deepEqual(await page.evaluate(() => fixture.creates.at(-1)), {
+      op: "create",
+      title: "Phone ticket <b>stays text</b>",
+      description: "Line one\nLine two",
+      column: "TODO",
+      tags: [
+        { group: 1, name: "FEATURE" },
+        { group: 2, name: "QUESTION" },
+      ],
+    });
+
+    // Sent: two ticks and the key, a way to the ticket, the mark on its card.
+    await mode("sent");
+    const landed = page.locator('.sent-item[data-status="landed"]');
+    await landed.first().waitFor();
+    assert.match(await landed.first().textContent(), /Landed as T-100 in TODO/);
+    assert.equal(await page.locator(".sent-feed b").count(), 0);
+    assert.match(await page.locator(".sent-feed").textContent(), /Line one/, "the description stays until reload");
+    await landed.first().getByRole("button", { name: /Open/ }).click();
+    await until(page, () => document.querySelector("#selection").textContent.startsWith("T-100 ·"));
+    if (size === "phone") await page.locator("#back").click();
+    await mode("board");
+    if (size === "phone") await page.locator('[data-column="TODO"]').click();
+    await page.locator('.ticket[data-id="new-1"] .from-here').waitFor();
+    if (size !== "phone") {
+      await page.locator('.add-to-column[data-column="DONE"]').click();
+      await sheet.waitFor({ state: "visible" });
+      assert(await sheet.locator('input[name="new-column"][value="DONE"]').isChecked());
+      await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
+      await sheet.waitFor({ state: "hidden" });
+    }
+
+    // The bar: a title and Enter, in the column the last one used.
+    await mode("sent");
+    await page.locator("#quick-column").selectOption("IN PROGRESS");
+    await page.locator("#quick-title").fill("Quick one");
+    await page.locator("#quick-title").press("Enter");
+    await until(page, () => document.querySelectorAll('.sent-item[data-status="landed"]').length === 2);
+    assert.equal(await page.evaluate(() => fixture.creates.at(-1).column), "IN PROGRESS");
+    assert.equal(await page.locator("#quick-title").inputValue(), "");
+
+    // Refused: the words come back to the sheet, and the resend replaces it.
+    await page.evaluate(() => {
+      fixture.createDisposition = "rejected";
+    });
+    await page.locator("#quick-title").fill("Refused one");
+    await page.locator("#quick-send").click();
+    const refused = page.locator('.sent-item[data-status="rejected"]');
+    await refused.waitFor();
+    assert.match(await refused.textContent(), /Not created: no such column: GONE/);
+    await page.evaluate(() => {
+      fixture.createDisposition = "created";
+    });
+    await refused.getByRole("button", { name: "Edit and send again" }).click();
+    await sheet.waitFor({ state: "visible" });
+    assert.equal(await sheet.locator("#new-ticket-heading").textContent(), "Edit ticket");
+    assert.equal(await page.locator("#new-title").inputValue(), "Refused one");
+    await page.locator("#send-ticket").click();
+    await until(page, () => document.querySelectorAll('.sent-item[data-status="landed"]').length === 3);
+    assert.equal(await refused.count(), 0);
+
+    // A lost answer: the reconnect asks for the receipt and never re-sends.
+    await page.evaluate(() => {
+      fixture.createDisposition = "disconnect";
+    });
+    await page.locator("#quick-title").fill("Answer lost");
+    await page.locator("#quick-send").click();
+    await connected();
+    await until(page, () => document.querySelectorAll('.sent-item[data-status="landed"]').length === 4);
+    assert.equal(await page.evaluate(() => fixture.creates.filter((c) => c.title === "Answer lost").length), 1);
+    assert(await page.evaluate(() => fixture.requests.some((r) => r.op === "status")));
+    await page.evaluate(() => {
+      fixture.createDisposition = "created";
+    });
+    for (const name of ["graphite", "chalk"]) {
+      await theme(name);
+      await shot(`sent-${name}`);
+    }
+    await theme("graphite");
+
+    // Away: the words can be written, not sent, until the terminal is back.
+    await page.evaluate(() => {
+      fixture.refuse = true;
+      fixture.sockets.at(-1).close();
+    });
+    await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
+    await page.locator("#quick-more").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.match(await sheet.locator(".compose-dest").textContent(), /out of reach/);
+    await page.locator("#new-title").fill("Written while away");
+    assert(await page.locator("#send-ticket").isDisabled());
+    await page.evaluate(() => {
+      fixture.refuse = false;
+    });
+    await until(page, () => !document.querySelector("#send-ticket").disabled);
+    await page.locator("#send-ticket").click();
+    await until(page, () => document.querySelectorAll('.sent-item[data-status="landed"]').length === 5);
+
+    // An older host has no create op: the sheet says so and sends nothing.
+    await page.evaluate(() => {
+      fixture.features = ["permission", "dialog", "awareness"];
+      fixture.sockets.at(-1).close();
+    });
+    await connected();
+    await page.locator("#quick-more").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.match(await sheet.locator(".compose-dest").textContent(), /too old/);
+    await page.locator("#new-title").fill("Nowhere to go");
+    assert(await page.locator("#send-ticket").isDisabled());
+    await page.keyboard.press("Escape");
+    await sheet.waitFor({ state: "hidden" });
+    await page.evaluate(() => {
+      fixture.features = ["permission", "dialog", "awareness", "create"];
+    });
+
+    if (size === "phone") {
+      // A keyboard-sized viewport keeps the sheet's Send reachable.
+      await page.setViewportSize({ width: 390, height: 500 });
+      await page.locator("#quick-more").click();
+      await sheet.waitFor({ state: "visible" });
+      const send = await sheet.locator(".compose-send-top").boundingBox();
+      assert(send.y >= 0 && send.y + send.height <= 500);
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      await page.keyboard.press("Escape");
+      await sheet.waitFor({ state: "hidden" });
+      await page.setViewportSize(viewport);
+    }
+
+    // A reload keeps Sent, without the descriptions of landed tickets.
+    await page.reload();
+    await connected();
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+    await mode("sent");
+    await until(page, () => document.querySelectorAll('.sent-item[data-status="landed"]').length === 5);
+    assert.doesNotMatch(await page.locator(".sent-feed").textContent(), /Line one/);
+    assert.match(await page.locator(".sent-feed").textContent(), /Phone ticket <b>stays text<\/b>/);
+
+    // Revocation forgets what this browser sent.
+    await page.evaluate(() => fixture.reply({ result: "revoked" }));
+    await until(page, () => document.querySelector("#connection").textContent.includes("Access revoked"));
+    const stored = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const open = indexedDB.open("mesophon", 1);
+          open.onsuccess = () => {
+            const get = open.result.transaction("device").objectStore("device").get("sent:board-a");
+            get.onsuccess = () => resolve(get.result ?? null);
+          };
+        }),
+    );
+    assert.equal(stored, null);
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: new ticket sheet, Sent ticks, receipts, refusal, away and older hosts, reload and revocation passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-tickets-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
 }
 try {
   for (const [engineName, engine] of [
@@ -757,6 +1013,7 @@ try {
         } finally {
           await context.close();
         }
+        await ticketFlow(browser, engineName, size, viewport);
       }
     } finally {
       await browser.close();

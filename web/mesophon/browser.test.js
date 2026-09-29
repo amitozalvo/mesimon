@@ -157,6 +157,25 @@ for (const [name, engine] of [
           await page.getByLabel("Prompt", { exact: true }).inputValue(),
           "",
         );
+        // A ticket from this browser lands on the board, and starts nothing.
+        const title = `browser-ticket-canary-${name}-${label}`;
+        if (label === "phone") {
+          await page.locator("#back").click();
+          await page.locator("#new-ticket-fab").click();
+        } else await page.locator("#new-ticket").click();
+        await page.getByLabel("Title", { exact: true }).fill(title);
+        await page.locator("#new-description").fill(`brief-canary for ${title}`);
+        await page
+          .getByRole("button", { name: "Send ticket", exact: true })
+          .click();
+        await page.waitForFunction(() =>
+          document.querySelector("#toast").textContent.includes("Landed as"),
+        );
+        const { board } = await command({ cmd: "snapshot" });
+        const filed = board.tickets.find((t) => t.title === title);
+        assert(filed, "the filed ticket is on the board");
+        assert.match(filed.created_by, /^device:/);
+        assert(!board.sessions.some((s) => s.ticket === filed.id), "no agent started");
         const info = (
           await command({ cmd: "mesophon", action: { action: "status" } })
         ).info;
@@ -181,7 +200,7 @@ for (const [name, engine] of [
         assert.equal(await page.locator("#tickets").textContent(), "");
         assert.deepEqual(errors, []);
         console.log(
-          `${name} ${label}: pair, encrypted preview, prompt, remembered reconnect, revoke passed`,
+          `${name} ${label}: pair, encrypted preview, prompt, remembered reconnect, filed ticket, revoke passed`,
         );
       } catch (error) {
         console.error(

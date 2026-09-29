@@ -55,6 +55,8 @@ test("the deployable browser package contains every referenced file and no test 
       "connection.js",
       "store.js",
       "shell.js",
+      "compose.js",
+      "sent.js",
       "vendor/preact.module.js",
       "vendor/hooks.module.js",
       "vendor/htm.module.js",

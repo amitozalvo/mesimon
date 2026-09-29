@@ -210,3 +210,68 @@ test("a remembered board keeps no prompt text, tool input or dialog", () => {
   restored.update({ title: "Board", columns: ["TODO"], tickets: [row] });
   assert.equal(restored.cached, false);
 });
+
+test("Sent keeps an answer's key and forgets a landed description across a reload", async () => {
+  const { Sent, KEEP } = await import("./sent.js");
+  const sent = new Sent();
+  const tag = { group: 1, name: "BUG", tint: 0 };
+  const item = sent.add("board-a", { title: "Fix it", description: "private brief", column: "TODO", tags: [tag] }, 1);
+  assert.equal(item.status, "sending");
+  assert.deepEqual(sent.unresolved("board-a"), [], "nothing is asked about before it is sent");
+  sent.sent(item, 9, "incarnation");
+  assert.deepEqual(sent.unresolved("board-a"), [item]);
+  assert.equal(sent.unsettled("board-a"), 1);
+  sent.reply(item, { result: "created", ticket: "t-1", key: "T-7", column: "BACKLOG" });
+  assert.equal(item.status, "landed");
+  assert.equal(item.column, "BACKLOG", "where the host put it");
+  assert.equal(item.description, "private brief", "the page still shows it");
+  sent.reply(item, { result: "rejected", message: "late" });
+  assert.equal(item.status, "landed", "a late answer never unlands a ticket");
+  const refused = sent.add("board-a", { title: "Refused", description: "keep me", column: "GONE" }, 2);
+  sent.sent(refused, 10, "incarnation");
+  sent.reply(refused, { result: "rejected", message: "no such column: GONE" });
+  const unknown = sent.add("board-a", { title: "Lost", description: "keep me too", column: "TODO" }, 3);
+  sent.sent(unknown, 11, "incarnation");
+  sent.reply(unknown, { result: "delivery", status: "unknown" });
+  assert.equal(sent.unsettled("board-a"), 2);
+  const stored = JSON.parse(JSON.stringify(sent.stored("board-a")));
+  assert(!JSON.stringify(stored).includes("private brief"), "a landed description is not stored");
+  assert.equal(stored.find((s) => s.title === "Refused").description, "keep me");
+  const reloaded = new Sent();
+  reloaded.restore("board-a", [...stored, null, { id: 4, title: "bad" }, { id: "x", title: "t", status: "weird" }]);
+  assert.deepEqual(reloaded.forBoard("board-a").map((i) => i.title), ["Fix it", "Refused", "Lost"]);
+  assert.equal(reloaded.get(item.id).key, "T-7");
+  assert.deepEqual(reloaded.get(item.id).tags, [tag]);
+  reloaded.restore("board-a", stored);
+  assert.equal(reloaded.forBoard("board-a").length, 3, "restoring twice adds nothing");
+  reloaded.purge("board-a");
+  assert.equal(reloaded.forBoard("board-a").length, 0);
+  const many = new Sent();
+  for (let i = 0; i < KEEP + 5; i++) many.sent(many.add("b", { title: `t${i}`, column: "TODO" }, i), i + 1, "inc");
+  for (const i of many.items) many.reply(i, { result: "created", ticket: i.title, key: i.title, column: "TODO" });
+  const kept = many.stored("b");
+  assert.equal(kept.length, KEEP);
+  assert.equal(kept[0].title, "t5", "the oldest landed tickets go first");
+});
+
+test("the remembered board keeps the New ticket sheet's facts", () => {
+  const board = new BoardState();
+  board.update({
+    title: "Board",
+    columns: ["BACKLOG", "TODO"],
+    tickets: [],
+    default_column: "TODO",
+    column_descriptions: { TODO: "soon" },
+    allowed_tags: [{ group: 1, name: "BUG", tint: 0, extra: "dropped" }],
+  });
+  assert.equal(board.landing(), "TODO");
+  const restored = new BoardState();
+  restored.update(JSON.parse(JSON.stringify(board.snapshot())), { cached: true });
+  assert.equal(restored.landing(), "TODO");
+  assert.deepEqual(restored.columnDescriptions, { TODO: "soon" });
+  assert.deepEqual(restored.allowedTags, [{ group: 1, name: "BUG", tint: 0 }]);
+  const older = new BoardState();
+  older.update({ title: "Old host", columns: ["TODO", "DONE"], tickets: [] });
+  assert.equal(older.landing(), "TODO", "an older host's board lands in its first column");
+  assert.deepEqual(older.allowedTags, []);
+});

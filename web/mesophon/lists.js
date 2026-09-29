@@ -1,14 +1,20 @@
-// The work list: Now (agents grouped by the host's state word) and Board
-// (every ticket, by column). Rows are buttons; the pressed one is selected.
+// The work list: Now (agents grouped by the host's state word), Board
+// (every ticket, by column) and Sent (the tickets this browser filed). Rows
+// are buttons; the pressed one is selected.
 import { html } from "./html.js";
-import { Icon } from "./icons.js";
+import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { answerable, requestSummary } from "./dialogs.js";
 
-export const lastSeen = (board) =>
-  board?.receivedAt
-    ? new Date(board.receivedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : "";
+const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+export const lastSeen = (board) => (board?.receivedAt ? clock(board.receivedAt) : "");
+
+// A ticket this browser sent carries a small phone mark on the board.
+function FromHere({ store, ticket }) {
+  return store.sentHere().has(ticket.id)
+    ? html`<span class="from-here" title="Sent from this browser"><${Icon} name="smartphone" size=${13} /><span class="sr-only">Sent from this browser</span></span>`
+    : null;
+}
 
 function StateMark({ ticket }) {
   const state = ticket.agent?.state;
@@ -26,7 +32,7 @@ function Row({ store, ticket, board, live }) {
     <${StateMark} ticket=${ticket} />
     <span class="row-text">
       <span class="ticket-title" dir="auto">${ticket.title}</span>
-      <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span>${agent ? ` · ${agent.provider} · ${agent.state}` : " · No agent"} · ${ticket.column}</span>
+      <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span>${agent ? ` · ${agent.provider} · ${agent.state}` : " · No agent"} · ${ticket.column}<${FromHere} store=${store} ticket=${ticket} /></span>
     </span>
     <${Icon} name="chevronRight" size=${16} cls="row-go" />
   </button>`;
@@ -101,7 +107,7 @@ function Asleep({ store }) {
       </div>
     </div>
     <p class="hero-body">${link === "asleep"
-      ? "Your Mac may be asleep, or mesimon isn’t running. This is the board as it was then. Answering and prompting need your terminal back."
+      ? "Your Mac may be asleep, or mesimon isn’t running. This is the board as it was then. Answering, prompting and sending tickets need your terminal back."
       : "This browser can’t reach the relay right now. This is the board as it was when it last could."}</p>
   </section>`;
 }
@@ -134,7 +140,7 @@ function Card({ store, ticket, board }) {
   const needs = agent?.state === "needs attention";
   return html`<button type="button" class=${`ticket card${needs ? " card-attn" : ""}`} data-id=${ticket.id}
     aria-pressed=${String(pressed)} onClick=${() => store.select(ticket.id)}>
-    <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span></span>
+    <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span>
     <span class="ticket-title" dir="auto">${ticket.title}</span>
     ${agent && html`<span class=${`card-agent${needs ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${agent.state}</span></span>`}
   </button>`;
@@ -148,13 +154,83 @@ export function BoardList({ store, board, bp }) {
   if (!board.tickets.length) return html`<p class="empty">This board has no tickets yet.</p>`;
   return html`<div class=${bp === "desktop" ? "kanban" : bp === "phone" ? "stack single" : "stack"}>${columns.map((column) => {
     const group = tickets.filter((t) => t.column === column);
+    const about = board.columnDescriptions[column];
     return html`<section class="column" key=${column} aria-label=${column}>
       <h3 class="column-label"><span>${column}</span><span class="group-count">${group.length}</span></h3>
+      ${about && html`<p class="column-about" dir="auto">${about}</p>`}
       <div class="cards">${group.length
         ? group.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} />`)
         : html`<p class="empty column-empty">No tickets in this column.</p>`}</div>
+      ${bp !== "phone" && html`<button type="button" class="add-to-column" data-column=${column}
+        onClick=${() => store.openComposer(column)}><${Icon} name="plus" size=${16} /><span>Add to ${column}</span></button>`}
     </section>`;
   })}</div>`;
+}
+
+const dayOf = (at) => {
+  const day = new Date(at);
+  day.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((today - day) / 86400000);
+  return days === 0
+    ? "Today"
+    : days === 1
+      ? "Yesterday"
+      : day.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+};
+
+function SentItem({ store, board, item }) {
+  const onBoard = !!item.ticket && board.tickets.some((t) => t.id === item.ticket);
+  const tick = item.status === "sending" ? "clock" : item.status === "landed" ? "two" : null;
+  const said = { sending: "Sending", landed: "On your board", unknown: "Delivery unknown", rejected: "Not created" }[item.status];
+  return html`<article class="sent-item" data-status=${item.status} data-id=${item.id} aria-label=${`${item.title}, ${said}`}>
+    <div class="sent-bubble">
+      <p class="sent-title" dir="auto">${item.title}</p>
+      ${item.description && html`<p class="sent-desc" dir="auto">${item.description}</p>`}
+      <p class="sent-meta">
+        <span>→ ${item.column}</span>
+        ${item.tags.map((t) => html`<span class=${`sent-tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}><span class="tag-dot" aria-hidden="true"></span>${t.name}</span>`)}
+        <span>${clock(item.at)}</span>
+        ${tick && html`<span class="sent-tick"><${Tick} state=${tick} /><span class="sr-only">${said}</span></span>`}
+      </p>
+    </div>
+    ${item.status === "landed" &&
+    (onBoard
+      ? html`<button type="button" class="sent-sys" onClick=${() => store.openSent(item.id)}>
+          <${Tick} state="two" /><span>Landed as ${item.key} in ${item.column}</span><span class="sent-open">Open</span></button>`
+      : html`<p class="sent-sys"><${Tick} state="two" /><span>Landed as ${item.key} in ${item.column}</span></p>`)}
+    ${(item.status === "unknown" || item.status === "rejected") && html`<div class="sent-problem" role="group" aria-label=${said}>
+      <p>${item.status === "unknown"
+        ? "Delivery unknown. The terminal may have created it: check the board before you send it again."
+        : `Not created: ${item.message || "the terminal refused it."}`}</p>
+      <div class="sent-actions">
+        <button type="button" class="btn btn-quiet" onClick=${() => store.discardSent(item.id)}>Discard</button>
+        <button type="button" class="btn" onClick=${() => store.editSent(item.id)}>Edit and send again</button>
+      </div>
+    </div>`}
+  </article>`;
+}
+
+// Oldest first, the newest by the bar, the way a conversation reads.
+export function SentList({ store, board }) {
+  const items = store.sent.forBoard(store.active?.pin.board);
+  if (!items.length)
+    return html`<div class="sent-empty">
+      <${Shin} size="medium" scale=${4} />
+      <h3>Nothing sent yet</h3>
+      <p>Tickets you write here land on your board, quietly: no agent starts until you start one at your terminal.</p>
+    </div>`;
+  let day;
+  return html`<div class="sent-feed">
+    <p class="sent-legend"><span><${Tick} state="clock" />Sending</span><span><${Tick} state="two" />On your board</span></p>
+    ${items.map((item) => {
+      const label = dayOf(item.at);
+      const heading = label !== day && html`<h3 class="sent-day" key=${`day-${label}`}>${label}</h3>`;
+      day = label;
+      return [heading, html`<${SentItem} key=${item.id} store=${store} board=${board} item=${item} />`];
+    })}
+  </div>`;
 }
 
 export function ColumnTabs({ store, board }) {

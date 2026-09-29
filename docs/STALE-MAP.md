@@ -15221,3 +15221,54 @@ composed spawn with its brief on the card.
 
 **Owed:** a CHANGELOG line at the next release, since this shipped as a user-visible column
 setting.
+
+## Mesophon phase 2: tickets from the browser while the terminal is live (T-497, 2026-09-29, "phase 2")
+
+**Built.** A paired browser files a ticket. The wire gains `Request::Create` (title, description,
+column, tags) and `Reply::Created` (id, key, column), advertised as the `create` feature so a new
+browser never sends it to an older host, which would close the peer on an unknown op. The
+snapshot gains `default_column`, `column_descriptions` and `allowed_tags` (name, group, tint
+index). The daemon's `control_create` mints through `mint_full` as `Principal::Paired`
+(`created_by: device:<hex>`, feed `mesophon_create_ticket`). The column must exist. Tags must
+match the registry exactly (`filed_tags`; a phone never registers one). The description is
+refused past 32 KiB, never cut, then scrubbed. A viewer's copy refuses (`team_viewer_refusal`,
+factored out of `team_read_only`). Nothing spawns: a paired device starts nothing. The browser
+has the New ticket sheet (a `<dialog>` opened with `showModal`: inert page behind, focus kept
+inside, Escape closes), a Sent tab (clock, then two ticks and "Landed as T-N in COLUMN" with
+Open), Sent's one-line bar, a floating New ticket button on phones and "Add to COLUMN" on wide
+boards, a phone mark on cards this browser filed, column descriptions on the board, and a toast
+everywhere but Sent, whose feed already says it.
+
+**Decided: a new `Action::FileTicket`, not `Mutate` on a column.** `PromptColumn` authorizes as
+`Mutate` on `Resource::Column`, so widening `Paired` to column `Mutate` would have told the
+chokepoint a phone may prompt a whole column. `FileTicket` allows `Local` and `Paired`, into a
+column, and nothing else; the rule is a line in CLAUDE.md and AGENTS.md.
+
+**Receipts, never replays.** A create rides its command id, and `remember` keeps the `Created`
+reply per grant, so a lost answer is recovered with `status` on reconnect. It is recovered after
+a page reload too, because the Sent list keeps the command id and incarnation. The ticket is
+never sent twice. A restarted host holds no receipt, so the item reads "delivery unknown" and
+keeps its words for Edit and send again. There is no envelope id on the ticket yet; that is
+phase 3's exactly-once inbox.
+
+**Stored at rest, widened and documented.** `sent:<grant>` sits beside `board:<grant>`. It keeps
+every unsettled item whole, since its details are needed to send it again, and the newest 50
+landed ones without their details. Revoke, an unverified handshake and Forget this browser
+delete both (`dropBoards`). The remembered board also keeps the default column, the column
+descriptions and the tag names, which phase 3's offline sheet needs.
+
+**Fixed on the way.** The projection listed columns in storage order and tickets in list order.
+A column reorder changes only `order`, so a phone showed the columns out of order. It now uses
+`sorted_columns()` and `column_tickets()`: board order, as the TUI draws it.
+
+**Traps.** `dialog::backdrop` does not inherit custom properties in older engines, so its colour
+is a literal per theme. A column chip is an invisible radio over the chip text, so a test must
+`check()` the radio by role; a click on the text is intercepted.
+
+Verified: core and daemon unit tests, 15 browser state tests, packaging, and the UX suite in
+Chromium and WebKit at desktop, tablet and phone. That suite has a new ticket flow: sheet, Sent
+ticks, bar, refusal and resend, a lost answer recovered by `status`, an away and an older host,
+reload and revocation. All ten relay acceptance tests pass: the new native test (quiet, brief,
+tag, author, receipt after reconnect, three refusals, no plaintext in the relay's tables) and
+both real-browser flows, which now file a ticket through the page. The fixture audit was clean.
+Screenshots were inspected in both themes. Next: phase 3, the one tick.

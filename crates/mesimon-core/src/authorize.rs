@@ -14,6 +14,11 @@ pub enum Action {
     PromptExisting,
     /// Answer one pending native permission; no policy or lifecycle authority.
     ApproveExisting,
+    /// Append one new ticket to a column: a title, a description and tags
+    /// the board already has (T-497). Starts, moves and edits nothing, so
+    /// the owner's paired phone may file a ticket without gaining `Mutate`
+    /// on a column, which would also reach `PromptColumn`.
+    FileTicket,
 }
 
 /// What it is being attempted on.
@@ -63,6 +68,8 @@ impl Decision {
 /// carries a ticket id, so the daemon can only ever pass the agent's own.
 /// `ImportContent` is a separate local-owner-only action, scoped to a destination
 /// column; ordinary write access does not grant authority to materialize imports.
+/// `FileTicket` is the one board write a `Paired` phone makes: the owner at
+/// the keyboard or on their paired device, into a column, and nothing else.
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
     if matches!(action, Action::PromptExisting | Action::ApproveExisting) {
@@ -79,11 +86,21 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             _ => deny("content import requires a local owner and a destination column"),
         };
     }
+    if *action == Action::FileTicket {
+        return match (principal, resource) {
+            (Principal::Local | Principal::Paired { .. }, Resource::Column { .. }) => {
+                Decision::Allow
+            }
+            _ => deny("filing a ticket requires an authenticated owner and a destination column"),
+        };
+    }
     match principal {
         Principal::Local | Principal::Automation { .. } => Decision::Allow,
         Principal::Paired { .. } => match action {
             Action::Read => Decision::Allow,
-            _ => deny("paired devices only read, prompt, and answer existing permissions"),
+            _ => deny(
+                "paired devices only read, prompt, answer existing permissions and file tickets",
+            ),
         },
         Principal::Agent { .. } => match (action, resource) {
             (_, Resource::Session { .. }) => {
@@ -94,9 +111,13 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             }
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
-            (Action::ImportContent | Action::PromptExisting | Action::ApproveExisting, _) => {
-                deny("an agent cannot import external content")
-            }
+            (
+                Action::ImportContent
+                | Action::PromptExisting
+                | Action::ApproveExisting
+                | Action::FileTicket,
+                _,
+            ) => deny("an agent cannot import external content"),
         },
         // A teammate on a shared board (T-215): tickets and notes per the
         // role the relay enforced, never a session, never the board's own
@@ -109,9 +130,13 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             }
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
-            (Action::ImportContent | Action::PromptExisting | Action::ApproveExisting, _) => {
-                deny("a teammate cannot import external content")
-            }
+            (
+                Action::ImportContent
+                | Action::PromptExisting
+                | Action::ApproveExisting
+                | Action::FileTicket,
+                _,
+            ) => deny("a teammate cannot import external content"),
         },
     }
 }
@@ -176,6 +201,28 @@ mod tests {
         assert!(
             authorize_execution(&paired, crate::board::ExecutionPolicy::LocalAutomation).denied()
         );
+    }
+
+    /// The phone files a ticket into a column (T-497) and gains nothing a
+    /// column `Mutate` would carry: no move, no column prompt, no edit.
+    #[test]
+    fn filing_a_ticket_is_the_owners_and_only_into_a_column() {
+        let paired = Principal::Paired { device: "device".into(), grant: "grant".into() };
+        let column = Resource::Column { name: "TODO".into() };
+        for owner in [&Principal::Local, &paired] {
+            assert_eq!(authorize(owner, &Action::FileTicket, &column), Decision::Allow);
+            for elsewhere in [
+                Resource::Board,
+                Resource::Ticket { id: ulid::Ulid::nil() },
+                Resource::Session { id: uuid::Uuid::nil() },
+            ] {
+                assert!(authorize(owner, &Action::FileTicket, &elsewhere).denied());
+            }
+        }
+        for by in [agent(), remote(), automation()] {
+            assert!(authorize(&by, &Action::FileTicket, &column).denied());
+        }
+        assert!(authorize(&paired, &Action::Mutate, &column).denied());
     }
 
     /// The teammate floor (T-215): like an agent on sessions and the board's

@@ -4,10 +4,24 @@
 import { Connection } from "./connection.js";
 import { BoardState } from "./board.js";
 import { Sessions } from "./sessions.js";
+import { Sent } from "./sent.js";
 import { showAlert, clearAlerts } from "./awareness.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
 const receiptOps = ["prompt", "send_now", "take_back", "permission", "dialog", "status"];
+// A filed ticket's description is its first note: the host's note limit.
+export const DESCRIPTION_MAX_BYTES = 32 * 1024;
+const sentContext = (item) => `sent:${item.id}`;
+const emptyDraft = (board) => ({
+  open: false,
+  board,
+  title: "",
+  description: "",
+  column: "",
+  tags: [],
+  error: "",
+  replaces: undefined,
+});
 
 export class Store {
   constructor(Browser) {
@@ -32,6 +46,10 @@ export class Store {
     this.focus = null;
     this.outputKey = undefined;
     this.remembered = new Map(); // board id -> signature of the stored snapshot
+    this.sent = new Sent();
+    this.sentLoaded = new Set(); // boards whose stored Sent list is read
+    this.composer = emptyDraft(undefined);
+    this.toast = undefined;
   }
   subscribe(fn) {
     this.listeners.add(fn);
@@ -100,7 +118,31 @@ export class Store {
   }
   forgetRemembered(board) {
     this.remembered.delete(board);
+    this.sent.purge(board);
+    this.sentLoaded.delete(board);
     return this.storage?.dropBoards(board).catch(() => {});
+  }
+  async restoreSent(board) {
+    if (!board || this.sentLoaded.has(board)) return;
+    this.sentLoaded.add(board);
+    let saved;
+    try {
+      saved = await this.storage.readSent(board);
+    } catch {
+      return;
+    }
+    // A revoke or forget while the read was out wins over what it found.
+    if (!this.sentLoaded.has(board)) return;
+    this.sent.restore(board, saved?.items);
+    if (this.active?.pin.board === board && this.connection?.online) this.receipts();
+    this.emit();
+  }
+  persistSent(board = this.active?.pin.board) {
+    if (!board || !this.storage) return;
+    this.storage.saveSent(board, { items: this.sent.stored(board) }).catch(() => {
+      this.status = "Could not save the Sent list. It may be lost on reload.";
+      this.emit();
+    });
   }
 
   // ---- navigation --------------------------------------------------------
@@ -208,6 +250,15 @@ export class Store {
         c.request({ op: "status", command: receipt.id }, session.key);
       }
     }
+    // A ticket sent before a drop or a reload: ask what became of it, once.
+    // A restarted host kept no receipt, so its answer is unknown.
+    if (!c?.online) return;
+    for (const item of this.sent.unresolved(this.active?.pin.board)) {
+      if (item.incarnation !== c.incarnation)
+        this.onSentReply(item.id, { result: "delivery", status: "unknown" });
+      else if (![...c.pending.values()].some((p) => p.context === sentContext(item)))
+        c.request({ op: "status", command: item.command }, sentContext(item));
+    }
   }
   // Permission and dialog answers, bound to the exact ticket, session and request.
   sendInteraction(body, target) {
@@ -218,6 +269,153 @@ export class Store {
     if (id === undefined) return;
     this.sessions.sent(target, id, c.incarnation, body.op, "");
     this.sync();
+  }
+
+  // ---- new tickets -------------------------------------------------------
+  // Whether a ticket can go out now: a live host that knows the create op.
+  get canFile() {
+    return this.live && !!this.connection?.features?.includes("create");
+  }
+  // The one draft, for the board on screen; another board starts afresh.
+  draft() {
+    const board = this.active?.pin.board;
+    if (this.composer.board !== board) this.composer = emptyDraft(board);
+    const draft = this.composer;
+    if (this.board && !this.board.columns.includes(draft.column)) draft.column = this.board.landing();
+    if (this.board)
+      draft.tags = draft.tags.filter((t) =>
+        this.board.allowedTags.some((a) => a.group === t.group && a.name === t.name),
+      );
+    return draft;
+  }
+  openComposer(column) {
+    if (!this.board) return;
+    const draft = this.draft();
+    if (column && this.board.columns.includes(column)) draft.column = column;
+    draft.error = "";
+    draft.open = true;
+    this.sheetOpen = false;
+    this.emit();
+  }
+  closeComposer() {
+    if (!this.composer.open) return;
+    this.composer.open = false;
+    this.emit();
+  }
+  setComposer(field, value) {
+    this.draft()[field] = value;
+    this.composer.error = "";
+    this.emit();
+  }
+  // One tag per group, as on the board: picking another replaces it.
+  toggleTag(tag) {
+    const draft = this.draft();
+    const worn = draft.tags.some((t) => t.group === tag.group && t.name === tag.name);
+    draft.tags = draft.tags.filter((t) => t.group !== tag.group);
+    if (!worn) draft.tags.push(tag);
+    this.emit();
+  }
+  sendTicket() {
+    const draft = this.draft();
+    const board = this.active?.pin.board;
+    const title = draft.title.trim();
+    if (!title || !board) return;
+    if (!this.canFile) {
+      draft.error = this.live
+        ? "This terminal’s mesimon is too old to take tickets from here. Update it, then send again."
+        : "Your terminal is out of reach. Send it when the terminal is back.";
+      this.emit();
+      return;
+    }
+    if (new TextEncoder().encode(draft.description).length > DESCRIPTION_MAX_BYTES) {
+      draft.error = "Details must fit in 32 KiB.";
+      this.emit();
+      return;
+    }
+    const ticket = { title, description: draft.description, column: draft.column, tags: draft.tags.slice() };
+    const item = this.sent.add(board, ticket);
+    const c = this.connection;
+    const id = c.request(
+      { op: "create", ...ticket, tags: ticket.tags.map(({ group, name }) => ({ group, name })) },
+      sentContext(item),
+    );
+    if (id === undefined) {
+      // Nothing left this browser: the draft stays, nothing is listed.
+      this.sent.remove(item.id);
+      draft.error = "Not sent: the connection dropped. Send it again when the terminal is back.";
+      this.emit();
+      return;
+    }
+    this.sent.sent(item, id, c.incarnation);
+    if (draft.replaces) this.sent.remove(draft.replaces);
+    // The column stays for the next one; a run of tickets often shares it.
+    Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined });
+    this.persistSent(board);
+    this.say("Sending to your board…", "clock");
+    this.emit();
+  }
+  onSentReply(id, reply) {
+    const item = this.sent.get(id);
+    if (!item) return;
+    const before = item.status;
+    this.sent.reply(item, reply);
+    if (item.status !== before) {
+      this.persistSent(item.board);
+      if (item.status === "landed") this.say(`Landed as ${item.key} in ${item.column}`, "two");
+      else if (item.status === "rejected") this.say(`Not created: ${item.message || "the terminal refused it"}`);
+      else this.say("Delivery unknown. Check the board before sending it again.");
+    }
+    if (item.status === "landed") this.refresh();
+    this.emit();
+  }
+  // Unknown or refused: back to the sheet, and the old entry goes once the
+  // new one is sent.
+  editSent(id) {
+    const item = this.sent.get(id);
+    if (!item || item.status === "landed" || item.status === "sending") return;
+    const draft = this.draft();
+    Object.assign(draft, {
+      title: item.title,
+      description: item.description,
+      column: item.column,
+      tags: item.tags.slice(),
+      error: "",
+      replaces: item.id,
+    });
+    this.openComposer(this.board?.columns.includes(item.column) ? item.column : undefined);
+  }
+  discardSent(id) {
+    const item = this.sent.get(id);
+    if (!item || item.status === "sending") return;
+    this.sent.remove(id);
+    this.persistSent(item.board);
+    this.emit();
+  }
+  openSent(id) {
+    const item = this.sent.get(id);
+    if (item?.ticket && this.board?.tickets.some((t) => t.id === item.ticket)) this.select(item.ticket);
+  }
+  // The tickets this browser filed, by id; one set per render.
+  sentHere() {
+    if (this.hereAt !== this.version) {
+      this.hereAt = this.version;
+      const board = this.active?.pin.board;
+      this.here = new Set(this.sent.forBoard(board).filter((i) => i.ticket).map((i) => i.ticket));
+    }
+    return this.here;
+  }
+  // A toast says what became of a ticket; Sent shows it in the feed itself.
+  // The caller emits.
+  say(text, tick) {
+    if (this.board?.mode === "sent") return;
+    clearTimeout(this.toastTimer);
+    const toast = (this.toast = { id: (this.toast?.id || 0) + 1, text, tick });
+    this.toastTimer = setTimeout(() => {
+      if (this.toast === toast) {
+        this.toast = undefined;
+        this.emit();
+      }
+    }, 2800);
   }
 
   // ---- pairing and boards ------------------------------------------------
@@ -257,6 +455,7 @@ export class Store {
     this.entry = undefined;
     this.outputKey = undefined;
     this.sheetOpen = false;
+    this.composer.open = false;
     clearAlerts();
     this.identity.lastBoard = chosen.pin.board;
     this.persist();
@@ -270,6 +469,7 @@ export class Store {
     this.screen = "shell";
     this.detail(!!chosen.selected);
     if (!this.board) this.restoreBoard(chosen);
+    this.restoreSent(chosen.pin.board);
     this.sync();
     this.connection.connect(chosen);
   }
@@ -279,6 +479,9 @@ export class Store {
     this.sessions.targets.clear();
     this.boards.clear();
     this.remembered.clear();
+    this.sent = new Sent();
+    this.sentLoaded.clear();
+    this.composer = emptyDraft(undefined);
     this.active = this.board = this.entry = this.returnBoard = undefined;
     clearAlerts();
     const crypto = new this.Browser();
@@ -307,6 +510,7 @@ export class Store {
         this.sessions.purge(this.active.pin.board);
         this.boards.delete(this.active.pin.board);
         this.forgetRemembered(this.active.pin.board);
+        if (this.composer.board === this.active.pin.board) this.composer = emptyDraft(undefined);
         if (state === "revoked") {
           this.active.revoked = true;
           revocationSaved = this.save();
@@ -336,6 +540,7 @@ export class Store {
     this.pairReady = true;
     this.screen = "shell";
     if (!this.board) this.restoreBoard(chosen);
+    this.restoreSent(chosen.pin.board);
     this.sync();
     this.refresh();
     this.receipts();
@@ -347,6 +552,10 @@ export class Store {
   }
   onReply(reply, original, id) {
     if (original?.body.op === "foreground") return;
+    if (typeof original?.context === "string" && original.context.startsWith("sent:")) {
+      this.onSentReply(original.context.slice("sent:".length), reply);
+      return;
+    }
     if (reply.result === "awareness") {
       const originBoard = this.active?.pin.board;
       showAlert(reply, this.visibleTicket(), (ticket) => this.navigateTicket(originBoard, ticket));

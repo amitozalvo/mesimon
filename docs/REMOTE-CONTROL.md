@@ -1,7 +1,8 @@
 # Remote Control (browser preview)
 
 Remote Control (Mesophon) lets your own browser **view tickets, preview an agent’s
-output, send a prompt, and answer supported Claude dialogs**. It works on desktop and phone.
+output, send a prompt, answer supported Claude dialogs, and file new tickets**. It works
+on desktop and phone.
 Debug builds include Remote Control automatically. In release builds, set
 `MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Sharing → Remote Control**, sign in to
 your relay, and enable this board. Choose **Pair a browser**, open the displayed
@@ -11,8 +12,8 @@ browser address, and enter its single-use code within ten minutes.
 
 Each board requires explicit enablement and pairing, including private boards.
 Enabling Remote Control does not share a board with teammates. The host must stay awake
-and its board daemon must be running. This preview does not yet provide board
-editing, agent start/stop, interactive terminals, or starting stopped daemons.
+and its board daemon must be running. This preview does not yet provide editing
+existing tickets, agent start/stop, interactive terminals, or starting stopped daemons.
 For a browser on this Mac, set the relay’s `WEB_ORIGIN=http://localhost:8444`
 and publish port 8444 on loopback only. Run `mesimon mesophon setup` to check the
 connection and open the browser; there is no certificate or Keychain setup.
@@ -31,6 +32,23 @@ wide screen. The status pill says whether the board is live. When it is not, the
 page says which hop is out of reach (this browser, the relay, or your terminal),
 keeps showing the board as it last saw it, marked as not live, and disables
 answers and prompts until the terminal is back.
+
+## Filing a ticket
+
+**New ticket** (the floating button on a phone, the header button on a wider screen, or
+**Add to** at the foot of a board column) opens a sheet with a title, optional details
+(Markdown, up to 32 KiB, saved as the ticket’s description), a column and the board’s
+own tags, one per group. **Sent** lists the tickets this browser filed: a clock while
+the answer is out, two ticks and the new key once the ticket is on the board, and
+**Open** to go to it. Sent’s bar files a ticket from a title alone.
+
+A ticket from the browser lands quietly: no agent starts on it. It is filed as
+yours, into a column the board already has, and can only wear tags the board already
+has. Sending needs the terminal live; while it is away the
+sheet keeps what you wrote and **Send** waits. If the answer is lost on the way, the
+browser asks for it when it reconnects and never files the ticket twice; after a
+host restart it says **delivery unknown**, so check the board before sending again.
+Hosts from before this version do not take tickets, and the sheet says so.
 
 ## Sending a prompt
 
@@ -81,9 +99,11 @@ boards; revoke on the host to remove the corresponding grants too.
 The daemon stores `mesophon.json` (mode 0600) in its existing per-board state
 directory, containing only the opaque board identity and device grants. Pairing
 secrets and delivery receipts live in memory. The browser stores device keys,
-credentials, remembered grants and the last board each grant saw in IndexedDB. The
-remembered board holds ticket keys, titles, columns and agent states; never output,
-prompt or queued text, tool input or dialog content. Revocation and **Forget this
-browser** delete it. Output and unsent text remain in memory. The relay routes encrypted content and stores only routing
+credentials, remembered grants and, per grant, the last board it saw and the tickets
+it sent, in IndexedDB. The remembered board holds ticket keys, titles, columns (with
+their descriptions), the board’s tag names and agent states; never output, prompt or
+queued text, tool input or dialog content. The Sent list keeps up to 50 filed tickets:
+title, column, tags, key and status, and the details only of a ticket that did not
+land. Revocation and **Forget this browser** delete both. Output and unsent text remain in memory. The relay routes encrypted content and stores only routing
 metadata for Mesophon. Browser assets are served by the relay, so the relay’s web
 deployment is part of the browser client’s trust boundary.
