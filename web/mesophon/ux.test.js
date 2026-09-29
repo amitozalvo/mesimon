@@ -70,6 +70,11 @@ function fixture() {
     answers: {},
     disposition: "submitted",
     createDisposition: "created",
+    // A start (T-498): answered `starting` and the agent put on the ticket,
+    // `rejected`, or held unanswered; `run` makes its receipt `started`.
+    starts: [],
+    startCommands: [],
+    startDisposition: "starting",
     refuse: false,
     sockets: [],
     // The relay's mailbox, kept across reloads the way a relay would be.
@@ -145,6 +150,19 @@ function fixture() {
     },
     reply(reply, id = 0) {
       this.channel().message({ kind: "packet", id, reply });
+    },
+    // The host puts the agent on the ticket, then it takes its first prompt.
+    begin(ticketId, command) {
+      const ticket = this.tickets.find((t) => t.id === ticketId);
+      ticket.agent = { session: `started-${command}`, provider: "claude", state: "starting", promptable: true };
+      this.answers[command] = { result: "delivery", status: "starting" };
+      this.update();
+    },
+    run(ticketId) {
+      const ticket = this.tickets.find((t) => t.id === ticketId);
+      ticket.agent.state = "working";
+      this.answers[Number(ticket.agent.session.slice("started-".length))] = { result: "delivery", status: "started" };
+      this.update();
     },
     update() {
       this.reply(this.snapshot());
@@ -277,6 +295,16 @@ function fixture() {
               state.answers[id] = created();
               this.close();
             } else if (state.createDisposition !== "hold") answer(created());
+          }
+          if (request.op === "start") {
+            state.starts.push(request);
+            state.startCommands.push(id);
+            if (state.startDisposition === "rejected")
+              answer({ result: "rejected", message: "this ticket already has an agent" });
+            else if (state.startDisposition !== "hold") {
+              answer({ result: "delivery", status: "starting" });
+              state.begin(request.ticket, id);
+            }
           }
           if (request.op === "status")
             answer(
@@ -658,6 +686,176 @@ async function ticketFlow(browser, engineName, size, viewport) {
     console.log(`${engineName} ${size}: sheet, mailbox live and away, unsend, edit, forged receipt, reload, offline clock, refusal, older host, revocation passed`);
   } catch (error) {
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-tickets-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
+// Starting an agent from here (T-498): a start on a Board card and on the
+// ticket page, only where no agent is; a clock while the host starts one and
+// two ticks once it runs; a refusal; a lost answer asked after, never sent
+// again; the terminal away; an older host, which offers none.
+async function startFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => {
+    window.fixture.features.push("start");
+    window.fixture.tickets[5].agent = null;
+  });
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const mode = (name) => page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+  const overview = async () => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+  };
+  const open = async (id) => {
+    await overview();
+    await page.locator(`.ticket[data-id="${id}"]`).click();
+  };
+  const connected = () =>
+    until(page, () => document.querySelector("#connection").textContent === "Connected");
+  const toast = (text) => until(page, (text) => document.querySelector("#toast").textContent.includes(text), text);
+  const receiptIs = (status) =>
+    until(page, (status) => document.querySelector("#detail .start-receipt")?.dataset.status === status, status);
+  const shot = (name) =>
+    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+  const cardStart = (id) => page.locator(`.card-shell [data-start="${id}"]`);
+  const pageStart = page.locator("#detail .start-agent");
+  const receipt = page.locator("#detail .start-receipt");
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await mode("board");
+    if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
+
+    // Only a card without an agent offers a start.
+    await cardStart("ticket-3").waitFor();
+    assert.deepEqual(
+      await page.locator(".card-shell [data-start]").evaluateAll((n) => n.map((b) => b.dataset.start).sort()),
+      ["ticket-3", "ticket-5"],
+    );
+    assert.equal(await cardStart("ticket-3").getAttribute("aria-label"), "Start agent on T-3");
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    for (const theme of ["graphite", "chalk"]) {
+      await page.evaluate((name) => {
+        const control = document.querySelector("#theme");
+        control.value = name;
+        control.dispatchEvent(new Event("change"));
+      }, theme);
+      await shot(`start-board-${theme}`);
+    }
+
+    // A clock while the host starts it, and the request names the ticket
+    // and nothing else: the provider and the prompt are the host's.
+    await page.evaluate(() => {
+      fixture.startDisposition = "hold";
+    });
+    await cardStart("ticket-3").click();
+    await page.locator('.card-foot .start-receipt[data-status="sending"]').waitFor();
+    await toast("Starting an agent on T-3");
+    assert.equal(await page.locator("#toast .tick circle").count(), 1, "a clock");
+    assert.deepEqual(await page.evaluate(() => fixture.starts), [{ op: "start", ticket: "ticket-3" }]);
+    const command = await page.evaluate(() => fixture.startCommands.at(-1));
+    await page.evaluate((id) => {
+      fixture.answers[id] = { result: "delivery", status: "provisioning" };
+      fixture.reply(fixture.answers[id], id);
+    }, command);
+    await page.locator('.card-foot .start-receipt[data-status="provisioning"]').waitFor();
+    assert.match(await page.locator(".card-foot .start-receipt").textContent(), /worktree/);
+    assert.equal(await page.locator(".card-foot .start-receipt .tick circle").count(), 1);
+    // The agent comes up: the card shows it and offers no start.
+    await page.evaluate((id) => fixture.begin("ticket-3", id), command);
+    await until(
+      page,
+      () =>
+        !document.querySelector('[data-start="ticket-3"]') &&
+        document.querySelector('.ticket[data-id="ticket-3"] .card-agent')?.textContent.includes("claude · starting"),
+    );
+    // It took its first prompt: two ticks, found by the receipt's poll.
+    await page.evaluate(() => fixture.run("ticket-3"));
+    await toast("An agent is working on T-3");
+    assert.equal(await page.locator("#toast .tick path").count(), 2, "two ticks");
+    await open("ticket-3");
+    await receiptIs("started");
+    assert.match(await receipt.textContent(), /Started from this browser · \d/);
+    assert.equal(await receipt.locator(".tick path").count(), 2);
+    assert.equal(await pageStart.count(), 0, "a ticket with an agent offers no start");
+    await shot("start-started");
+
+    // Refused by the host: why, and the button stays to try again.
+    await open("ticket-5");
+    await pageStart.waitFor();
+    assert.equal(await page.locator("#agent-state").textContent(), "No agent on this ticket.");
+    await shot("start-ticket");
+    await page.evaluate(() => {
+      fixture.startDisposition = "rejected";
+    });
+    await pageStart.click();
+    await receiptIs("rejected");
+    assert.match(await receipt.textContent(), /Not started: this ticket already has an agent/);
+    await toast("Not started: this ticket already has an agent");
+    assert(await pageStart.isEnabled(), "a refusal leaves the button to try again");
+
+    // A lost answer is asked after with `status`, never sent again.
+    await page.evaluate(() => {
+      fixture.startDisposition = "hold";
+    });
+    await pageStart.click();
+    await receiptIs("sending");
+    assert(await pageStart.isDisabled(), "one start at a time");
+    await page.evaluate(() => {
+      fixture.begin("ticket-5", fixture.startCommands.at(-1));
+      fixture.channel().close();
+    });
+    await connected();
+    await receiptIs("starting");
+    await page.evaluate(() => fixture.run("ticket-5"));
+    await receiptIs("started");
+    assert.equal(
+      await page.evaluate(() => fixture.starts.filter((r) => r.ticket === "ticket-5").length),
+      2,
+      "the refused start and this one, never a resend",
+    );
+
+    // The terminal away: the button stays where it is, disabled, and says why.
+    await page.evaluate(() => {
+      fixture.tickets[7].agent = null;
+      fixture.update();
+    });
+    await open("ticket-7");
+    await pageStart.waitFor();
+    await page.evaluate(() => {
+      fixture.refuse = true;
+      fixture.channel().close();
+    });
+    await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
+    assert(await pageStart.isDisabled());
+    assert.match(await page.locator("#agent-state").textContent(), /needs your terminal back/);
+    await shot("start-away");
+    await overview();
+    assert(await cardStart("ticket-7").isDisabled());
+
+    // An older host, live again, offers no start anywhere.
+    await page.evaluate(() => {
+      fixture.refuse = false;
+      fixture.features = fixture.features.filter((f) => f !== "start");
+    });
+    await connected();
+    assert.equal(await page.locator("[data-start]").count(), 0, "an older host offers no start");
+    await open("ticket-7");
+    assert.match(await page.locator("#agent-state").textContent(), /Start one at your terminal/);
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: start from a card and the ticket, clock, ticks, refusal, lost answer, away, older host passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-start-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -1134,10 +1332,11 @@ try {
           if (size === "phone")
             await page.locator('[data-column="TODO"]').click();
           await select(3);
-          assert.match(
+          assert.equal(
             await page.locator("#agent-state").textContent(),
-            /No live agent/,
+            "No agent on this ticket. Start one at your terminal.",
           );
+          assert.equal(await page.locator("[data-start]").count(), 0, "a host without `start`");
           assert(await page.locator("#send").isDisabled());
           await overview();
           await page.locator("#search").fill("");
@@ -1408,6 +1607,7 @@ try {
           await context.close();
         }
         await ticketFlow(browser, engineName, size, viewport);
+        await startFlow(browser, engineName, size, viewport);
       }
       await pairLinkFlow(browser, engineName);
       await keptFlow(browser, engineName);

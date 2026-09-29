@@ -19,6 +19,10 @@ pub enum Action {
     /// the owner's paired phone may file a ticket without gaining `Mutate`
     /// on a column, which would also reach `PromptColumn`.
     FileTicket,
+    /// Start an agent in one ticket's empty seat (T-498): the owner's paired
+    /// phone gains the start without `Mutate` on the ticket, which would also
+    /// move, rename and merge it. The crown's `start_agent` stays a `Mutate`.
+    StartAgent,
 }
 
 /// What it is being attempted on.
@@ -70,6 +74,8 @@ impl Decision {
 /// column; ordinary write access does not grant authority to materialize imports.
 /// `FileTicket` is the one board write a `Paired` phone makes: the owner at
 /// the keyboard or on their paired device, into a column, and nothing else.
+/// `StartAgent` is its one start, on a ticket; `authorize_execution` is the
+/// floor under it.
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
     if matches!(action, Action::PromptExisting | Action::ApproveExisting) {
@@ -94,12 +100,21 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             _ => deny("filing a ticket requires an authenticated owner and a destination column"),
         };
     }
+    if *action == Action::StartAgent {
+        return match (principal, resource) {
+            (Principal::Local | Principal::Paired { .. }, Resource::Ticket { .. }) => {
+                Decision::Allow
+            }
+            _ => deny("starting an agent requires an authenticated owner and a ticket"),
+        };
+    }
     match principal {
         Principal::Local | Principal::Automation { .. } => Decision::Allow,
         Principal::Paired { .. } => match action {
             Action::Read => Decision::Allow,
             _ => deny(
-                "paired devices only read, prompt, answer existing permissions and file tickets",
+                "paired devices only read, prompt, answer existing permissions, file tickets \
+                 and start agents",
             ),
         },
         Principal::Agent { .. } => match (action, resource) {
@@ -115,7 +130,8 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 Action::ImportContent
                 | Action::PromptExisting
                 | Action::ApproveExisting
-                | Action::FileTicket,
+                | Action::FileTicket
+                | Action::StartAgent,
                 _,
             ) => deny("an agent cannot import external content"),
         },
@@ -134,7 +150,8 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 Action::ImportContent
                 | Action::PromptExisting
                 | Action::ApproveExisting
-                | Action::FileTicket,
+                | Action::FileTicket
+                | Action::StartAgent,
                 _,
             ) => deny("a teammate cannot import external content"),
         },
@@ -144,13 +161,18 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
 /// Additional execution floor for a ticket with durable intake restrictions.
 /// Ordinary resource authorization must also pass. Remote principals are never
 /// converted to Local by an adapter; Local retains the existing same-UID boundary.
+/// The owner's paired phone (T-498) passes where automation does: a ticket
+/// whose words came from outside (an import, a teammate) waits for the
+/// keyboard, whoever asks.
 pub fn authorize_execution(
     principal: &Principal,
     policy: crate::board::ExecutionPolicy,
 ) -> Decision {
     match principal {
         Principal::Local => Decision::Allow,
-        Principal::Automation { .. } if policy.allows_automation() => Decision::Allow,
+        Principal::Automation { .. } | Principal::Paired { .. } if policy.allows_automation() => {
+            Decision::Allow
+        }
         Principal::Automation { .. }
         | Principal::Agent { .. }
         | Principal::Remote { .. }
@@ -198,9 +220,33 @@ mod tests {
             assert!(authorize(&paired, &Action::ImportContent, &resource).denied());
         }
         assert!(authorize(&paired, &Action::PromptExisting, &Resource::Board).denied());
-        assert!(
-            authorize_execution(&paired, crate::board::ExecutionPolicy::LocalAutomation).denied()
-        );
+        assert!(authorize_execution(&paired, crate::board::ExecutionPolicy::OwnerOnly).denied());
+    }
+
+    /// The phone starts an agent on one ticket (T-498) and gains nothing a
+    /// ticket `Mutate` would carry: no move, no rename, no merge. A ticket
+    /// whose words came from outside still starts only at the keyboard.
+    #[test]
+    fn starting_an_agent_is_the_owners_and_only_on_a_ticket() {
+        use crate::board::ExecutionPolicy::{LocalAutomation, OwnerOnly};
+        let paired = Principal::Paired { device: "device".into(), grant: "grant".into() };
+        let ticket = Resource::Ticket { id: ulid::Ulid::nil() };
+        for owner in [&Principal::Local, &paired] {
+            assert_eq!(authorize(owner, &Action::StartAgent, &ticket), Decision::Allow);
+            for elsewhere in [
+                Resource::Board,
+                Resource::Column { name: "TODO".into() },
+                Resource::Session { id: uuid::Uuid::nil() },
+            ] {
+                assert!(authorize(owner, &Action::StartAgent, &elsewhere).denied());
+            }
+        }
+        for by in [agent(), remote(), automation()] {
+            assert!(authorize(&by, &Action::StartAgent, &ticket).denied());
+        }
+        assert!(authorize(&paired, &Action::Mutate, &ticket).denied());
+        assert_eq!(authorize_execution(&paired, LocalAutomation), Decision::Allow);
+        assert!(authorize_execution(&paired, OwnerOnly).denied());
     }
 
     /// The phone files a ticket into a column (T-497) and gains nothing a

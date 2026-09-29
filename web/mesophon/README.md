@@ -16,6 +16,8 @@ in `mesimon-relay`.
 - `board.js`: bounded board projection, Now's groups, filters and list position.
 - `sessions.js`: drafts, delivery receipts and reading position keyed by board,
   ticket and session. Drafts exist only in this tab and are lost on reload.
+- `starts.js`: the agents this tab started, per board and ticket: a clock while
+  the host starts one, two ticks once its session runs, or why not.
 - `sent.js`: the Sent list, per board: a filed ticket's status (a clock while
   sealed in this browser, one tick at the relay, two once landed; unsent,
   unknown or refused), its key once landed, and what survives a reload.
@@ -120,6 +122,17 @@ this browser, which `Browser.receipt` opens with the pinned host key; a
 receipt that does not open is ignored, whoever sent it. `sync` asks what
 became of the envelopes at the relay after a reload or a reconnect. A host that
 advertises `mailbox` takes every ticket this way, live or not.
+
+Start agent uses the `start` op (T-498), advertised as the `start` feature and
+remembered on the board's entry like `mailbox`, so the button stays in place,
+disabled, while the terminal is away, and an older host offers none. It names
+the ticket and nothing else: the host picks the provider from the board's tiers
+and submits the ticket's title and description, as the board's Shift+Enter
+does, through `Action::StartAgent`. The answer is `provisioning` or `starting`,
+and the host moves the same receipt to `started` once the session has taken
+its first prompt; `starts.js` keeps it per ticket in this tab and asks `status`
+on every tick until it settles. A lost answer is recovered that way, never by
+starting again.
 
 A landed ticket turns teal once the host's board says it was picked up
 (`picked`: `by` is `desk` when its page was opened in the TUI, `agent` when an

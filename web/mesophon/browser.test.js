@@ -176,22 +176,60 @@ for (const [name, engine] of [
         assert(filed, "the filed ticket is on the board");
         assert.match(filed.created_by, /^device:/);
         assert(!board.sessions.some((s) => s.ticket === filed.id), "no agent started");
+        // The page asks the fixture to act for the host, and waits for it.
+        const dir = process.env.MESOPHON_TEST_DIR;
+        const ask = async (asked, answered, words = "") => {
+          await fs.writeFile(path.join(dir, asked), words);
+          for (let i = 0; i < 600; i++) {
+            try {
+              await fs.rm(path.join(dir, answered));
+              return;
+            } catch {
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+          }
+          throw new Error(`the fixture never wrote ${answered}`);
+        };
+        // Started from here (T-498): from its card on a desktop, from its
+        // page on a phone. A clock until the session takes its first prompt,
+        // the ticket's own words, then two ticks, and its output on the page.
+        await page.locator(`button[data-mode="board"]`).locator("visible=true").click();
+        if (label === "phone") {
+          await page.locator(`.ticket[data-id="${filed.id}"]`).click();
+          await page.locator("#detail .start-agent").click();
+        } else await page.locator(`.card-shell [data-start="${filed.id}"]`).click();
+        await page.waitForFunction(() =>
+          document.querySelector("#toast").textContent.includes("Starting an agent on"),
+        );
+        let started;
+        for (let i = 0; i < 100 && !started; i++) {
+          const { board } = await command({ cmd: "snapshot" });
+          started = board.sessions.find((s) => s.ticket === filed.id);
+          if (!started) await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        assert.equal(started?.kind, "claude", "the board's provider started on it");
+        await ask("agent-run", "agent-ran", started.id);
+        if (label !== "phone") await page.locator(`.ticket[data-id="${filed.id}"]`).click();
+        await page.waitForFunction(
+          () => document.querySelector("#detail .start-receipt")?.dataset.status === "started",
+          null,
+          { timeout: 30000 },
+        );
+        await page.waitForFunction(
+          () => document.querySelector("#preview").textContent.includes("preview-canary"),
+          null,
+          { timeout: 30000 },
+        );
+        const brief = await fs.readFile(path.join(dir, "received"), "utf8");
+        assert.equal(brief.split(`brief-canary for ${title}`).length - 1, 1, "its brief, once");
+        const after = (await command({ cmd: "snapshot" })).board;
+        assert.equal(after.sessions.filter((s) => s.ticket === filed.id).length, 1, "one agent");
+        // Back to Now, as the page was, with the ticket's panel closed.
+        await page.locator(label === "phone" ? "#back" : "#close-detail").click();
+        await page.locator(`button[data-mode="agents"]`).locator("visible=true").click();
         if ((name === "chromium" && label === "desktop") || (name === "webkit" && label === "phone")) {
           // The terminal away (T-497): a ticket waits at the relay, sealed,
           // with one tick, and lands once, when the terminal is back.
-          const dir = process.env.MESOPHON_TEST_DIR;
-          const ask = async (asked, answered) => {
-            await fs.writeFile(path.join(dir, asked), "");
-            for (let i = 0; i < 600; i++) {
-              try {
-                await fs.rm(path.join(dir, answered));
-                return;
-              } catch {
-                await new Promise((resolve) => setTimeout(resolve, 100));
-              }
-            }
-            throw new Error(`the fixture never wrote ${answered}`);
-          };
           await ask("host-stop", "host-stopped");
           await page.waitForFunction(() => document.querySelector("#shell").dataset.link === "asleep");
           const away = `browser-away-canary-${name}-${label}`;
@@ -237,7 +275,7 @@ for (const [name, engine] of [
         assert.equal(await page.locator("#tickets").textContent(), "");
         assert.deepEqual(errors, []);
         console.log(
-          `${name} ${label}: pair, encrypted preview, prompt, remembered reconnect, filed ticket, away ticket, revoke passed`,
+          `${name} ${label}: pair, encrypted preview, prompt, remembered reconnect, filed ticket, started agent, away ticket, revoke passed`,
         );
       } catch (error) {
         console.error(

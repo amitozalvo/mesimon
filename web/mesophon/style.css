@@ -1393,6 +1393,69 @@ select {
   color: var(--ink2);
   font-size: 0.78125rem;
 }
+/* Starting an agent from here (T-498): on a card without one, the agent's
+   row holds a start, laid over the card's foot as a button of its own. */
+.card-shell {
+  display: grid;
+}
+.card-shell > * {
+  grid-area: 1 / 1;
+}
+.card-shell .ticket.card {
+  padding-bottom: 54px;
+}
+.card-shell:hover .ticket.card:not([aria-pressed="true"]) {
+  background: var(--s2);
+}
+.card-foot {
+  align-self: end;
+  justify-self: start;
+  padding: 0 0 10px 10px;
+}
+.card-start {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line2);
+  color: var(--ink2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+/* A 44px target on a 34px pill. */
+.card-start::before {
+  content: "";
+  position: absolute;
+  inset: -5px -4px;
+}
+.card-start:hover:not(:disabled) {
+  background: var(--s3);
+  color: var(--ink);
+}
+.card-start:disabled {
+  opacity: 0.45;
+}
+.start-receipt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink2);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.card-foot .start-receipt {
+  min-height: 34px;
+  padding: 0 4px;
+}
+.start-agent {
+  flex-shrink: 0;
+}
+
 /* ---- detail ------------------------------------------------------------------ */
 .detail-head {
   display: flex;

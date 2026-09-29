@@ -105,6 +105,14 @@ pub enum Request {
         #[serde(default)]
         tags: Vec<TagPick>,
     },
+    /// Start an agent on a ticket that has none (T-498): the provider the
+    /// board's tiers give that ticket, with its title and description as
+    /// the first prompt, as the board's Shift+Enter starts one. Answered
+    /// `starting` (or `provisioning` while a worktree is cut), and the
+    /// receipt turns `started` once the session runs.
+    Start {
+        ticket: String,
+    },
 }
 
 /// A ticket a paired browser sealed for the host's mailbox (T-497): the
@@ -495,6 +503,26 @@ mod tests {
             assert_eq!(pair_link(origin, code), format!("https://remote.mesimon.dev/#pair={code}"));
         }
         assert_eq!(pair_link("http://localhost:8444", "C"), "http://localhost:8444/#pair=C");
+    }
+
+    /// A start names a ticket and nothing else: the provider, the prompt and
+    /// the mode are the host's, so a field that tries to pick one is refused.
+    #[test]
+    fn a_start_names_only_its_ticket() {
+        let Request::Start { ticket } =
+            serde_json::from_str(r#"{"op":"start","ticket":"01J"}"#).unwrap()
+        else {
+            panic!("start")
+        };
+        assert_eq!(ticket, "01J");
+        for bad in [
+            r#"{"op":"start"}"#,
+            r#"{"op":"start","ticket":"01J","provider":"codex"}"#,
+            r#"{"op":"start","ticket":"01J","prompt":"rm -rf"}"#,
+            r#"{"op":"start","ticket":"01J","plan":true}"#,
+        ] {
+            assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

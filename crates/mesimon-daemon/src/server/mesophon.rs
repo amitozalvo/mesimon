@@ -86,6 +86,16 @@ impl Invite {
             && hex::decode::<32>(proof).is_some_and(|p| self.code.verifies_proof(public, &p))
     }
 }
+/// A start a paired phone asked for (T-498), followed until its session
+/// runs: `control_follow_starts` turns the command's receipt from
+/// `provisioning` or `starting` into `started`, or a refusal.
+struct StartWait {
+    grant: BoardId,
+    device: DeviceId,
+    command: u64,
+    /// The record the spawn made; `None` while the worktree is being cut.
+    session: Option<uuid::Uuid>,
+}
 #[derive(Clone)]
 struct Pending {
     grant: BoardId,
@@ -109,6 +119,8 @@ pub(super) struct Control {
     high: HashMap<BoardId, u64>,
     receipts: HashMap<BoardId, BTreeMap<u64, Reply>>,
     pending: HashMap<uuid::Uuid, Pending>,
+    /// Starts on their way, by ticket (T-498).
+    starts: HashMap<ulid::Ulid, StartWait>,
     permissions: HashMap<uuid::Uuid, PermissionWait>,
     phases: HashMap<ulid::Ulid, api::Phase>,
     suppress_awareness: bool,
@@ -149,6 +161,7 @@ impl Control {
             high: HashMap::new(),
             receipts: HashMap::new(),
             pending: HashMap::new(),
+            starts: HashMap::new(),
             permissions: HashMap::new(),
             phases: HashMap::new(),
             suppress_awareness: false,
@@ -186,10 +199,15 @@ impl Control {
         }
     }
     fn remember(&mut self, grant: BoardId, id: u64, reply: Reply) {
+        // A start on its way keeps its receipt (T-498): it is the oldest
+        // id, and a browser asking every two seconds passes 128 in a minute.
+        let held: Vec<u64> =
+            self.starts.values().filter(|w| w.grant == grant).map(|w| w.command).collect();
         let receipts = self.receipts.entry(grant).or_default();
         receipts.insert(id, reply);
         while receipts.len() > 128 {
-            receipts.pop_first();
+            let Some(oldest) = receipts.keys().copied().find(|k| !held.contains(k)) else { break };
+            receipts.remove(&oldest);
         }
     }
 }
@@ -297,6 +315,7 @@ impl Daemon {
                 self.control.barred = false;
                 self.control.high.clear();
                 self.control.receipts.clear();
+                self.control.starts.clear();
                 self.control.error = None;
                 self.control.origin.clear();
                 self.control.invite = None;
@@ -371,6 +390,7 @@ impl Daemon {
         for id in pending {
             self.control_delivery_allowed(id);
         }
+        self.control_follow_starts();
         let identity = self
             .team
             .device
@@ -518,6 +538,7 @@ impl Daemon {
                     "dialog",
                     "awareness",
                     "create",
+                    "start",
                     // Tickets for an away host wait at the relay (T-497).
                     if self.control.mail { "mailbox" } else { "" },
                 ]
@@ -690,6 +711,9 @@ impl Daemon {
                 .unwrap_or(Reply::Delivery { status: "unknown".into() }),
             api::Request::Create { title, description, column, tags } => {
                 self.control_create(&by, title, description, column, &tags, None)
+            }
+            api::Request::Start { ticket } => {
+                self.control_start_agent(&by, (grant, device, command.id), &ticket)
             }
         };
         self.control.remember(grant, command.id, reply.clone());
@@ -1165,6 +1189,105 @@ impl Daemon {
                 Reply::Created { ticket: id.to_string(), key, column }
             }
             Err(message) => reject(message),
+        }
+    }
+
+    /// An agent started from the owner's phone (T-498): the board's
+    /// Shift+Enter on a ticket whose seat is empty — the provider its tiers
+    /// give it, its title and description as the first prompt — as the
+    /// paired device. Refused while the seat is taken, parked or starting;
+    /// answered `starting`, or `provisioning` while a worktree is cut, and
+    /// `control_follow_starts` turns the receipt `started` once it runs.
+    fn control_start_agent(
+        &mut self,
+        by: &Principal,
+        (grant, device, command): (BoardId, DeviceId, u64),
+        ticket: &str,
+    ) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = ulid::Ulid::from_string(ticket)
+            .ok()
+            .filter(|id| self.board.ticket(*id).is_some_and(|t| !t.is_archived()))
+        else {
+            return reject("ticket unavailable");
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::StartAgent, &Resource::Ticket { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        let policy = self.board.ticket(id).map(|t| t.effective_execution_policy());
+        if policy.is_some_and(|p| mesimon_core::authorize::authorize_execution(by, p).denied()) {
+            return reject(
+                "this ticket came from outside the board: start its agent at your terminal",
+            );
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        if let Some(message) = seat_refusal(&self.board, id) {
+            return reject(message);
+        }
+        if self.control.starts.contains_key(&id)
+            || self.pending_spawns.iter().any(|s| s.ticket == id && s.kind.is_agent())
+            || self.pending_resumes.iter().any(|r| r.ticket == id)
+        {
+            return reject("an agent is already starting on this ticket");
+        }
+        // A start queued at the terminal behind a busy checkout is this
+        // same start, already asked for; a second would lose its words.
+        if self.queued.iter().any(|q| q.ticket == id) {
+            return reject("a prompt is queued for this ticket at your terminal");
+        }
+        if self.worktrees_barred && self.ticket_wants_worktree(id) {
+            return reject(&self.barred_message("worktrees"));
+        }
+        let kind = self.tier_book().start_provider(id).session_kind();
+        let (status, session) = match self.spawn_session(id, kind, true, None, None, false) {
+            Response::Spawned { id, .. } => ("starting", Some(id)),
+            Response::Provisioning => ("provisioning", None),
+            Response::Err { message } => return reject(&message),
+            other => return reject(&format!("unexpected spawn answer: {other:?}")),
+        };
+        self.feed.board(by.actor(), "mesophon_start_agent", Some(id));
+        self.control.starts.insert(id, StartWait { grant, device, command, session });
+        Reply::Delivery { status: status.into() }
+    }
+
+    /// Follow each phone's start to its end (T-498): a receipt turns
+    /// `started` once the session left `Spawning` and took its first prompt,
+    /// and a refusal if it died first or its worktree could not be cut.
+    /// The browser reads it with `status`, as it reads a prompt's.
+    fn control_follow_starts(&mut self) {
+        let tickets: Vec<_> = self.control.starts.keys().copied().collect();
+        for ticket in tickets {
+            let Some(wait) = self.control.starts.get(&ticket) else { continue };
+            let (grant, device, command) = (wait.grant, wait.device, wait.command);
+            if !self.control_granted(grant, device) {
+                self.control.starts.remove(&ticket);
+                continue;
+            }
+            let session = wait.session.or_else(|| self.board.live_agent(ticket).map(|s| s.id));
+            let provisioning =
+                self.pending_spawns.iter().any(|s| s.ticket == ticket && s.kind.is_agent());
+            let cut_failed = self.worktrees.get(&ticket).and_then(|b| match &b.status {
+                BindingStatus::Error { message, .. } => Some(message.clone()),
+                _ => None,
+            });
+            let delivery = |status: &str| Reply::Delivery { status: status.into() };
+            let (reply, done) = match start_progress(&self.board, session, provisioning, cut_failed)
+            {
+                Progress::Provisioning => (delivery("provisioning"), false),
+                Progress::Starting => (delivery("starting"), false),
+                Progress::Started => (delivery("started"), true),
+                Progress::Failed(message) => (Reply::Rejected { message }, true),
+            };
+            self.control.remember(grant, command, reply);
+            if done {
+                self.control.starts.remove(&ticket);
+            } else if let Some(wait) = self.control.starts.get_mut(&ticket) {
+                wait.session = session;
+            }
         }
     }
 
@@ -1653,6 +1776,9 @@ impl Daemon {
         }
     }
     fn control_revoke(&mut self, grant: BoardId) {
+        // The agent started stays: it is the owner's, like one started at
+        // the desk. Only the receipt goes.
+        self.control.starts.retain(|_, w| w.grant != grant);
         let peers: Vec<_> = self
             .control
             .peers
@@ -1710,6 +1836,65 @@ fn permission_peer_closed(stream: &UnixStream) -> bool {
             std::io::Error::last_os_error().kind(),
             std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
         )
+}
+
+/// Why a phone may not start an agent on this ticket (T-498): one agent per
+/// ticket, a parked one included, read as `spawn_session` reads it, in words
+/// for someone away from the terminal.
+fn seat_refusal(board: &Board, ticket: ulid::Ulid) -> Option<&'static str> {
+    let held = board.live_agent(ticket)?;
+    Some(if held.codex_stopping {
+        "this ticket's agent is still stopping: try again in a moment"
+    } else if matches!(held.state, SessionState::Sleeping) {
+        "this ticket's agent is asleep: wake it at your terminal"
+    } else {
+        "this ticket already has an agent"
+    })
+}
+
+/// Where a phone's start is (T-498).
+#[derive(Debug, PartialEq, Eq)]
+enum Progress {
+    /// The ticket's worktree is being cut; the spawn waits for it.
+    Provisioning,
+    /// The session is up or coming up, and its first prompt is owed.
+    Starting,
+    /// It left `Spawning` and took its first prompt: it runs.
+    Started,
+    Failed(String),
+}
+
+/// What became of a start, read from the record its spawn made (`session`)
+/// or, with none yet, from the provision it waits on. `pending_submit` is
+/// the owed first prompt on both providers: it clears on the prompt's ack,
+/// and also when the Enter is given up, which leaves the agent up with its
+/// title in the box — started, as a plain start at the desk leaves it.
+fn start_progress(
+    board: &Board,
+    session: Option<uuid::Uuid>,
+    provisioning: bool,
+    cut_failed: Option<String>,
+) -> Progress {
+    let Some(id) = session else {
+        return match (provisioning, cut_failed) {
+            (true, _) => Progress::Provisioning,
+            (false, Some(why)) => {
+                Progress::Failed(format!("the worktree could not be made: {why}"))
+            }
+            (false, None) => Progress::Failed("the agent did not start".into()),
+        };
+    };
+    let Some(rec) = board.sessions.iter().find(|s| s.id == id) else {
+        return Progress::Failed("the agent did not start".into());
+    };
+    match &rec.state {
+        SessionState::Spawning => Progress::Starting,
+        SessionState::Failed { .. } | SessionState::Exited { .. } => {
+            Progress::Failed("the agent exited before it started".into())
+        }
+        _ if rec.pending_submit => Progress::Starting,
+        _ => Progress::Started,
+    }
 }
 
 /// The tags a filed ticket wears, each spelled exactly as the registry has
@@ -2008,6 +2193,96 @@ mod tests {
             projected_pickup(&t),
             Some(api::Picked { by: "desk".into(), at: 1_790_000_000_000 })
         );
+    }
+
+    fn agent(ticket: ulid::Ulid, kind: SessionKind, state: SessionState) -> SessionRecord {
+        SessionRecord::new(uuid::Uuid::new_v4(), kind, ticket, Vec::new(), "/".into(), state)
+    }
+
+    /// One agent per ticket (T-498): a phone's start finds the seat taken
+    /// by a live, a parked or a stopping agent, and free once it exited. A
+    /// shell holds no agent seat.
+    #[test]
+    fn a_phone_start_needs_the_ticket_s_agent_seat_empty() {
+        use mesimon_core::board::ExitReason;
+        let mut board = Board::with_default_columns();
+        let ticket = ulid::Ulid(7);
+        assert_eq!(seat_refusal(&board, ticket), None);
+        board.sessions.push(agent(ticket, SessionKind::Claude, SessionState::Running));
+        assert_eq!(seat_refusal(&board, ticket), Some("this ticket already has an agent"));
+        assert_eq!(seat_refusal(&board, ulid::Ulid(8)), None, "another ticket's seat");
+        board.sessions[0].state = SessionState::Sleeping;
+        assert!(seat_refusal(&board, ticket).is_some_and(|m| m.contains("asleep")));
+        board.sessions[0].state = SessionState::Exited { reason: ExitReason::UserQuit };
+        assert_eq!(seat_refusal(&board, ticket), None);
+        board.sessions[0].kind = SessionKind::Codex;
+        board.sessions[0].codex_stopping = true;
+        assert!(seat_refusal(&board, ticket).is_some_and(|m| m.contains("stopping")));
+        board.sessions[0] = agent(ticket, SessionKind::Bash, SessionState::Running);
+        assert_eq!(seat_refusal(&board, ticket), None);
+    }
+
+    /// A phone's receipt (T-498) is a clock while the worktree is cut and
+    /// while the session comes up with its first prompt owed, two ticks
+    /// once it took that prompt, and a refusal when it never got there.
+    #[test]
+    fn a_phone_start_reads_started_once_the_session_took_its_first_prompt() {
+        use mesimon_core::board::{ExitReason, Reason, StopReason};
+        let mut board = Board::with_default_columns();
+        assert_eq!(start_progress(&board, None, true, None), Progress::Provisioning);
+        assert_eq!(
+            start_progress(&board, None, false, Some("disk full".into())),
+            Progress::Failed("the worktree could not be made: disk full".into())
+        );
+        assert_eq!(
+            start_progress(&board, None, false, None),
+            Progress::Failed("the agent did not start".into())
+        );
+        let mut rec = agent(ulid::Ulid(7), SessionKind::Claude, SessionState::Spawning);
+        rec.pending_submit = true;
+        let id = rec.id;
+        assert!(matches!(start_progress(&board, Some(id), false, None), Progress::Failed(_)));
+        board.sessions.push(rec);
+        assert_eq!(start_progress(&board, Some(id), false, None), Progress::Starting);
+        board.sessions[0].state = SessionState::Idle { stop_reason: StopReason::Unknown };
+        assert_eq!(start_progress(&board, Some(id), false, None), Progress::Starting, "owed");
+        board.sessions[0].pending_submit = false;
+        for state in [
+            SessionState::Running,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::RequiresAction { reason: Reason::Permission },
+        ] {
+            board.sessions[0].state = state;
+            assert_eq!(start_progress(&board, Some(id), false, None), Progress::Started);
+        }
+        board.sessions[0].pending_submit = true;
+        board.sessions[0].state = SessionState::Exited { reason: ExitReason::UserQuit };
+        assert_eq!(
+            start_progress(&board, Some(id), false, None),
+            Progress::Failed("the agent exited before it started".into())
+        );
+    }
+
+    /// A start still on its way keeps its receipt past the cap of 128 that
+    /// every snapshot and preview counts toward, and loses it once settled.
+    #[test]
+    fn a_start_on_its_way_keeps_its_receipt_past_the_cap() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut control = Control::new(tx);
+        let grant = BoardId::random();
+        let device = mesimon_team::crypto::DeviceKeys::generate().id();
+        control
+            .starts
+            .insert(ulid::Ulid(1), StartWait { grant, device, command: 5, session: None });
+        control.remember(grant, 5, Reply::Delivery { status: "starting".into() });
+        for id in 6..400 {
+            control.remember(grant, id, Reply::Changed);
+        }
+        assert_eq!(control.receipts[&grant].len(), 128);
+        assert!(control.receipts[&grant].contains_key(&5));
+        control.starts.clear();
+        control.remember(grant, 400, Reply::Changed);
+        assert!(!control.receipts[&grant].contains_key(&5));
     }
 
     #[test]

@@ -5,7 +5,7 @@ import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { Attention } from "./dialogs.js";
-import { Headline, Tags, stateAge } from "./lists.js";
+import { Headline, StartButton, StartReceipt, Tags, stateAge } from "./lists.js";
 
 const receiptTick = (status) =>
   status === "awaiting_delivery"
@@ -138,6 +138,13 @@ function Composer({ store, ticket, entry, live }) {
   </footer>`;
 }
 
+// What the ticket page says when no agent is on it (T-498).
+function noAgent(store) {
+  if (!store.startsAgents || (store.live && !store.canStart))
+    return "No agent on this ticket. Start one at your terminal.";
+  return store.live ? "No agent on this ticket." : "No agent on this ticket. Starting one needs your terminal back.";
+}
+
 export function Detail({ store, bp }) {
   const ticket = store.board?.current;
   const entry = store.entry;
@@ -145,6 +152,7 @@ export function Detail({ store, bp }) {
   const agent = ticket?.agent;
   const light = agent?.state === "needs attention" ? "attn" : ["starting", "working"].includes(agent?.state) ? "calm" : "dim";
   const since = store.board && stateAge(store.board, agent);
+  const start = store.startOf(ticket);
   return html`<article id="detail" aria-labelledby="selection">
     <header class="detail-head">
       <button id="back" type="button" class="icon-btn" aria-label="Back" onClick=${() => store.back()}><${Icon} name="back" size=${22} /></button>
@@ -167,10 +175,12 @@ export function Detail({ store, bp }) {
           <p id="agent-state">${agent
             ? `${agent.provider} · ${agent.state}${since ? ` · ${since}` : ""} · ${ticket.column}`
             : ticket
-              ? "No live agent. Start an agent from the host to send input."
+              ? noAgent(store)
               : "Choose an agent, or open Board to see all tickets."}</p>
           <${Headline} agent=${agent} />
+          <${StartReceipt} item=${start} agent=${agent} />
         </div>
+        ${ticket && !agent && store.startsAgents && html`<${StartButton} store=${store} ticket=${ticket} />`}
         ${agent?.state === "needs attention" && html`<span class="mark mark-attn pulse" aria-hidden="true"></span>`}
         ${["starting", "working"].includes(agent?.state) && html`<${Icon} name="spinner" size=${18} width=${2.4} cls="spin" />`}
       </div>

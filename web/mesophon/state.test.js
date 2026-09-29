@@ -366,3 +366,34 @@ test("a remembered board keeps tags and since, never the agent's step or reply",
   restored.search = "bug";
   assert.equal(restored.visible().length, 1, "a tag's name finds its ticket, remembered too");
 });
+test("a start goes clock to two ticks, settles once, and never crosses boards", async () => {
+  const { Starts, startWaiting } = await import("./starts.js");
+  const starts = new Starts();
+  const item = starts.sent("board-a", "one", 7, "incarnation", "T-1");
+  assert.equal(item.status, "sending");
+  assert.equal(starts.get("board-b", "one"), undefined);
+  starts.reply(item, { result: "delivery", status: "provisioning" });
+  assert.equal(item.status, "provisioning");
+  starts.reply(item, { result: "delivery", status: "starting" });
+  assert(startWaiting(item));
+  assert.deepEqual(starts.unresolved("board-a"), [item]);
+  starts.reply(item, { result: "delivery", status: "started" });
+  assert.equal(item.status, "started");
+  assert.deepEqual(starts.unresolved("board-a"), []);
+  // A late or lost answer cannot take two ticks back.
+  starts.reply(item, { result: "delivery", status: "unknown" });
+  assert.equal(item.status, "started");
+  // A word the page does not know, from a newer host, is unknown, not two.
+  const other = starts.sent("board-a", "two", 8, "incarnation");
+  starts.reply(other, { result: "delivery", status: "submitted" });
+  assert.equal(other.status, "unknown");
+  const refused = starts.sent("board-a", "three", 9, "incarnation");
+  starts.reply(refused, { result: "rejected", message: "this ticket already has an agent" });
+  assert.deepEqual([refused.status, refused.message], ["rejected", "this ticket already has an agent"]);
+  // A new press replaces what the last one came to.
+  assert.equal(starts.sent("board-a", "three", 10, "incarnation").status, "sending");
+  starts.sent("board-b", "one", 1, "incarnation");
+  starts.purge("board-a");
+  assert.equal(starts.get("board-a", "one"), undefined);
+  assert.equal(starts.get("board-b", "one").command, 1);
+});

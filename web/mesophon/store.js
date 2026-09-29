@@ -6,6 +6,7 @@ import { BoardState } from "./board.js";
 import { Sessions } from "./sessions.js";
 import { Sent } from "./sent.js";
 import { Mailbox } from "./mailbox.js";
+import { Starts, startWaiting } from "./starts.js";
 import { showAlert, clearAlerts } from "./awareness.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
@@ -15,6 +16,7 @@ export const DESCRIPTION_MAX_BYTES = 32 * 1024;
 // The longest envelope the relay keeps (control::MAIL_BYTES).
 const MAIL_BYTES = 128 * 1024;
 const sentContext = (item) => `sent:${item.id}`;
+const startContext = (ticket) => `start:${ticket}`;
 // How often a page opened from the kept copy asks whether the relay is back.
 const PROBE_MS = 5000;
 // Opened from the home screen, not a browser tab.
@@ -65,6 +67,7 @@ export class Store {
     this.sent = new Sent();
     this.sentLoaded = new Set(); // boards whose stored Sent list is read
     this.composer = emptyDraft(undefined);
+    this.starts = new Starts(); // agents this tab started (T-498)
     this.toast = undefined;
     this.depositing = new Set(); // ids handed to the mailbox socket, unanswered
     // True when this page came from the service worker's kept copy (T-497):
@@ -284,6 +287,14 @@ export class Store {
       else if (![...c.pending.values()].some((p) => p.context === sentContext(item)))
         c.request({ op: "status", command: item.command }, sentContext(item));
     }
+    // A start is followed until its session runs: the host's receipt moves
+    // on its own, so it is asked after on every tick until it settles.
+    for (const item of this.starts.unresolved(this.active?.pin.board)) {
+      if (item.incarnation !== c.incarnation)
+        this.onStartReply(item.ticket, { result: "delivery", status: "unknown" });
+      else if (![...c.pending.values()].some((p) => p.context === startContext(item.ticket)))
+        c.request({ op: "status", command: item.command }, startContext(item.ticket));
+    }
   }
   // Permission and dialog answers, bound to the exact ticket, session and request.
   sendInteraction(body, target) {
@@ -294,6 +305,50 @@ export class Store {
     if (id === undefined) return;
     this.sessions.sent(target, id, c.incarnation, body.op, "");
     this.sync();
+  }
+
+  // ---- starting an agent (T-498) --------------------------------------------
+  // Whether this board's host starts agents from here, as it said when last
+  // live: the button stays in place, disabled, while the terminal is away.
+  get startsAgents() {
+    return !!this.active?.starts;
+  }
+  get canStart() {
+    return this.live && !!this.connection?.features?.includes("start");
+  }
+  startOf(ticket) {
+    return ticket && this.active ? this.starts.get(this.active.pin.board, ticket.id) : undefined;
+  }
+  // The ticket's title and description go in as its first prompt, the way
+  // the board's Shift+Enter starts one; the host picks the provider.
+  startAgent(id) {
+    const board = this.active?.pin.board;
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    if (!board || !ticket || ticket.agent || !this.canStart || startWaiting(this.startOf(ticket))) return;
+    const c = this.connection;
+    const command = c.request({ op: "start", ticket: id }, startContext(id));
+    if (command === undefined) {
+      this.say("Not started: the connection dropped. Try again when your terminal is back.");
+      this.emit();
+      return;
+    }
+    this.starts.sent(board, id, command, c.incarnation, ticket.key);
+    this.say(`Starting an agent on ${ticket.key}…`, "clock");
+    this.emit();
+  }
+  onStartReply(id, reply) {
+    const item = this.starts.get(this.active?.pin.board, id);
+    if (!item) return;
+    const before = item.status;
+    this.starts.reply(item, reply);
+    if (item.status !== before) {
+      if (item.status === "started") this.say(`An agent is working on ${item.key}`, "two");
+      else if (item.status === "rejected") this.say(`Not started: ${item.message || "the terminal refused it"}`);
+      else if (item.status === "unknown") this.say("Start unknown. Check the board before you start it again.");
+      // The board shows the new agent; its output follows.
+      this.refresh();
+    }
+    this.emit();
   }
 
   // ---- new tickets -------------------------------------------------------
@@ -694,6 +749,7 @@ export class Store {
     this.remembered.clear();
     this.sent = new Sent();
     this.sentLoaded.clear();
+    this.starts = new Starts();
     this.composer = emptyDraft(undefined);
     this.active = this.board = this.entry = this.returnBoard = undefined;
     clearAlerts();
@@ -725,6 +781,7 @@ export class Store {
     if (state === "revoked" || state === "unverified") {
       if (this.active) {
         this.sessions.purge(this.active.pin.board);
+        this.starts.purge(this.active.pin.board);
         this.boards.delete(this.active.pin.board);
         this.forgetRemembered(this.active.pin.board);
         if (this.composer.board === this.active.pin.board) this.composer = emptyDraft(undefined);
@@ -755,8 +812,10 @@ export class Store {
     this.returnBoard = undefined;
     // What the host said about itself, kept for when it is away (T-497).
     const collects = !!this.connection.features?.includes("mailbox");
-    if (!!chosen.collects !== collects) {
+    const starts = !!this.connection.features?.includes("start");
+    if (!!chosen.collects !== collects || !!chosen.starts !== starts) {
       chosen.collects = collects;
+      chosen.starts = starts;
       this.persist();
     }
     this.board = this.boards.get(chosen.pin.board);
@@ -780,6 +839,10 @@ export class Store {
     if (original?.body.op === "foreground") return;
     if (typeof original?.context === "string" && original.context.startsWith("sent:")) {
       this.onSentReply(original.context.slice("sent:".length), reply);
+      return;
+    }
+    if (typeof original?.context === "string" && original.context.startsWith("start:")) {
+      this.onStartReply(original.context.slice("start:".length), reply);
       return;
     }
     if (reply.result === "awareness") {

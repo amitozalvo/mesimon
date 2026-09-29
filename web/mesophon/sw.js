@@ -28,6 +28,7 @@ const PAGE = [
   "./sessions.js",
   "./shell.js",
   "./shin.js",
+  "./starts.js",
   "./store.js",
   "./vendor/preact.module.js",
   "./vendor/hooks.module.js",

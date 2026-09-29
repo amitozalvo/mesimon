@@ -5,6 +5,7 @@ import { html } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { answerable, requestSummary } from "./dialogs.js";
+import { startWaiting } from "./starts.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 export const lastSeen = (board) => (board?.receivedAt ? clock(board.receivedAt) : "");
@@ -36,6 +37,34 @@ export function Headline({ agent }) {
   if (agent?.doing) return html`<span class="headline headline-step">› ${agent.doing}</span>`;
   if (agent?.said) return html`<span class="headline" dir="auto">${agent.said}</span>`;
   return null;
+}
+
+// Starting an agent from here (T-498): a clock while the host starts it,
+// two ticks once its session runs.
+const startTick = { sending: "clock", provisioning: "clock", starting: "clock", started: "two" };
+const startWords = (item) =>
+  ({
+    sending: "Asking your terminal…",
+    provisioning: "Setting up the ticket’s worktree…",
+    starting: "Starting the agent…",
+    started: `Started from this browser · ${clock(item.at)}`,
+    rejected: `Not started: ${item.message || "the terminal refused it."}`,
+    unknown: "Start unknown. Check the board before you start it again.",
+  })[item.status];
+
+// A start's receipt. Two ticks are news only while its agent is there.
+export function StartReceipt({ item, agent }) {
+  if (!item || (item.status === "started" && !agent)) return null;
+  const tick = startTick[item.status];
+  return html`<p class="start-receipt" role="status" data-status=${item.status}>${tick && html`<${Tick} state=${tick} />`}<span>${startWords(item)}</span></p>`;
+}
+
+// Enabled while the terminal is live and nothing is starting here already.
+export function StartButton({ store, ticket, compact = false }) {
+  const waiting = startWaiting(store.startOf(ticket));
+  return html`<button type="button" class=${compact ? "card-start" : "btn start-agent"} data-start=${ticket.id}
+    aria-label=${`Start agent on ${ticket.key}`} disabled=${!store.canStart || waiting}
+    onClick=${() => store.startAgent(ticket.id)}><${Icon} name="play" size=${compact ? 13 : 16} /><span>Start agent</span></button>`;
 }
 
 // A ticket this browser sent carries a small phone mark on the board.
@@ -189,13 +218,23 @@ function Card({ store, ticket, board }) {
   const agent = ticket.agent;
   const needs = agent?.state === "needs attention";
   const since = stateAge(board, agent);
-  return html`<button type="button" class=${`ticket card${needs ? " card-attn" : ""}`} data-id=${ticket.id}
+  const card = html`<button type="button" class=${`ticket card${needs ? " card-attn" : ""}`} data-id=${ticket.id}
     aria-pressed=${String(pressed)} onClick=${() => store.select(ticket.id)}>
     <span class="ticket-title" dir="auto">${ticket.title}</span>
     <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span>
     <${Tags} ticket=${ticket} />
     ${agent && html`<span class=${`card-agent${needs ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${agent.state}${since && ` · ${since}`}</span></span>`}
   </button>`;
+  if (agent || !store.startsAgents) return card;
+  // No agent (T-498): the agent's row holds a start, or the start on its
+  // way, laid over the card's foot as a button of its own.
+  const start = store.startOf(ticket);
+  return html`<div class="card-shell">
+    ${card}
+    ${startWaiting(start)
+      ? html`<div class="card-foot"><${StartReceipt} item=${start} /></div>`
+      : html`<div class="card-foot"><${StartButton} store=${store} ticket=${ticket} compact=${true} /></div>`}
+  </div>`;
 }
 
 // Phone: one column at a time. Tablet: columns stacked. Desktop: side by side.

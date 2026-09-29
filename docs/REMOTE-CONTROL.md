@@ -1,8 +1,8 @@
 # Remote Control (browser preview)
 
 Remote Control (Mesophon) lets your own browser **view tickets, preview an agent’s
-output, send a prompt, answer supported Claude dialogs, and file new tickets**. It works
-on desktop and phone.
+output, send a prompt, answer supported Claude dialogs, file new tickets, and start an
+agent on a ticket**. It works on desktop and phone.
 Debug builds include Remote Control automatically. In release builds, set
 `MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Sharing → Remote Control**, sign in to
 your relay, and enable this board. Choose **Pair a browser** and scan the QR code the
@@ -16,7 +16,8 @@ code works once, within ten minutes. The QR appears when the terminal has room f
 Each board requires explicit enablement and pairing, including private boards.
 Enabling Remote Control does not share a board with teammates. The host must stay awake
 and its board daemon must be running. This preview does not yet provide editing
-existing tickets, agent start/stop, interactive terminals, or starting stopped daemons.
+existing tickets, stopping or waking agents, interactive terminals, or starting stopped
+daemons.
 For a browser on this Mac, set the relay’s `WEB_ORIGIN=http://localhost:8444`
 and publish port 8444 on loopback only. Run `mesimon mesophon setup` to check the
 connection and open the browser; there is no certificate or Keychain setup.
@@ -79,6 +80,24 @@ a ticket you delete is not brought back by a late copy. Written against a column
 tag the board has since lost, it lands in the default column, without that tag. A
 terminal that has never been live with this version keeps no tickets for later, and
 the sheet says so.
+
+## Starting an agent
+
+A ticket with no agent offers **Start agent**, on its page and on its card on the Board.
+It starts what **Shift+Enter** starts at your terminal: the agent the board’s tiers give
+that ticket, with the ticket’s title and description as its first prompt, in the
+ticket’s workspace. The button needs your terminal live, and is disabled while it is
+out of reach. Its receipt uses the same ticks: a clock while your terminal starts it
+(and cuts the ticket’s worktree, when it has one), then two ticks once the agent has
+taken its first prompt. If the answer is lost, the browser asks what became of it and
+never starts it again.
+
+Your terminal refuses a start, and the page says why, when the ticket already has an
+agent (a sleeping one included, which you wake at your terminal), when one is already
+starting or a prompt for it is queued at your terminal, and when the ticket came from
+outside the board (an import, or a teammate on a shared board): those start only at your
+terminal. An agent you start from the browser is yours like any other, and revoking the
+browser leaves it running. A terminal older than this version offers no button.
 
 ## Sending a prompt
 

@@ -15587,3 +15587,76 @@ now asserting the screen's `--cols` from the host, the rule row, no wrap switch,
 heading, the tinted chip, the column hover, the closed hops and the rail across a reload.
 Screenshots at every size were read by eye. Not verified: the hosted relay, which needs its
 `ship.sh`; the relay's acceptance tests, which live in `mesimon-relay`.
+
+## Remote Control starts an agent (T-498, 2026-09-29, "Start an agent from Remote Control")
+
+**Asked in T-497** ("we need start agent button but it's for later ticket"): a paired browser
+starts an agent on a ticket that has none, from the ticket page's "No agent on this ticket"
+card and from a Board card.
+
+**Decided by the owner: no per-board opt-in.** The ticket asked whether remote start should be
+off by default since it runs a process on the host. The answer was no: pairing is the consent,
+a paired browser can already prompt any live agent (which runs tools on the host under the same
+permission mode), so a start adds reach and not a new power, and revoking the browser removes
+it.
+
+**Built.** The wire gains `Request::Start { ticket }` and the `start` feature. It names the
+ticket and nothing else (`deny_unknown_fields`, tested with a provider, a prompt and a plan
+flag): the host starts what Shift+Enter starts, the provider `tier::Book::start_provider` gives
+the ticket, with `submit_prompt` on, so the title and description are the first prompt (promise
+3's text now names this road). `control_start_agent` refuses a missing or archived ticket, a
+seat taken by a live, parked or stopping agent (`seat_refusal`, in words for someone away from
+the terminal), a start already on its way (`Control.starts`, a pending spawn or resume), a
+prompt queued at the terminal for the ticket, a viewer's copy and a barred worktrees file; a
+content-only board refuses in `spawn_session`. It answers `starting`, or `provisioning` while a
+worktree is cut, feeds `mesophon_start_agent`, and `control_follow_starts` (on the tick) moves
+the same receipt to `started` once the record left `Spawning` with no first prompt owed
+(`pending_submit`, which both providers clear on the prompt's ack), or to a refusal when it
+exited first or the worktree could not be cut (`start_progress`, unit-tested). The browser asks
+`status` on every tick until the receipt settles, as for a prompt; a lost answer is never sent
+again.
+
+**Trap, found in review: the receipts cap.** `Control::remember` keeps 128 receipts per grant
+and every command counts, snapshots and previews included, so a browser passes 128 in about a
+minute. A start still on its way is always the oldest id, and `pop_first` would have evicted it
+on every tick after that, turning a slow start "unknown". `remember` now skips the command ids
+of starts still in `Control.starts` (tested past the cap). A queued prompt's receipt has the
+same exposure and was left as it was.
+
+**Decided: a new `Action::StartAgent`, not `Mutate` on a ticket.** A ticket `Mutate` would also
+authorize moving, renaming and merging it. `StartAgent` allows `Local` and `Paired`, on a
+`Resource::Ticket`, and nothing else; the crown's `start_agent` stays a `Mutate` by an `Agent`.
+`authorize_execution` now passes `Paired` where it passes automation: a ticket whose words came
+from outside (an import, a teammate's ticket: `OwnerOnly`) starts only at the keyboard. Nothing
+else sends a `Paired` principal through that floor, so the widening reaches this road only.
+
+**Decided: revoking the browser stops the receipt, not the agent.** The agent is the owner's,
+like one started at the desk. The relay test sends a start after the revoke and sees nothing
+start.
+
+**The page.** `starts.js` keeps a start per board and ticket in this tab only, as a prompt's
+receipt: `sending`, `provisioning`, `starting` (a clock), `started` (two ticks), `rejected` or
+`unknown`; a settled one never moves back, and an unknown host word reads unknown, never two
+ticks. The host's `start` feature is remembered on the board's identity entry beside `mailbox`,
+so the button stays in place, disabled, while the terminal is away, and a host without it shows
+the old words and no button. A Board card is a button, so a card without an agent becomes a
+`card-shell` grid with the start laid over its foot as a sibling button, not a nested one; while
+the start is on its way that row is the receipt. The ticket page's card holds the button and the
+receipt; two ticks show only while the agent is there. Toasts say "Starting an agent on T-N…"
+and "An agent is working on T-N".
+
+Verified: core and daemon units (the wire shape, `StartAgent` and the execution floor, the seat
+rule, the receipt's progress and its place under the cap), the full nextest (1857) and clippy; 20 browser state and packaging
+tests; the UX suite in Chromium and WebKit at desktop, tablet and phone, with a new start flow
+(card and page, clock, provisioning, two ticks by the status poll, a refusal, a lost answer asked
+after and never resent, the terminal away, an older host). In the private relay repository, on
+branch `msmn/T-498-start-an-agent-from-remote`: a new native test (the board's provider on an
+empty seat, the brief reaching the stub once, `starting` until the hooks say it took it, then
+`started`; a retried id answers from its receipt; refusals for a seated, a re-pressed and an
+archived ticket; nothing starts after a revoke, and the started agent stays), and both
+real-browser flows now start an agent on the ticket they filed and see its output and two ticks.
+All twelve relay acceptance tests pass against this checkout. The relay branch must land after
+this one: it names `Request::Start`. It also carries the fix for T-506's `cols` on `PaneTail` and
+`Preview`, which had left the relay's acceptance tests uncompilable against the core's main.
+
+**Owed:** a CHANGELOG line at the next release. Physical-phone acceptance is still outstanding.
