@@ -15685,3 +15685,13 @@ disk, with the address unlisted and handed out by hand; the gate or billing come
 launch. So the user docs keep not naming the address, T-504 (prefill the sign-in) stays blocked
 until that launch, and T-503 (the Settings row's name) is free to go. Testers on a release build
 need `MESIMON_MESOPHON=1` for Remote Control, which the tester steps on the ticket say.
+
+**Backup copies leave the box, into a bucket the box cannot read back.** `gs://mesimon-relay-backups`
+in the same project (uniform access, public access prevented, a 90-day delete rule). The VM runs
+as a dedicated service account holding `roles/storage.objectCreator` on that bucket and nothing
+else, so a compromised box can add a dump and can neither list, read, delete nor overwrite one;
+attaching the account took one stop and start of the VM, since a running instance cannot change
+its service account. Measured on the way: rclone lists a bucket before every upload, which a
+write-only role forbids, and its `no_check_bucket = true` (plus `--no-check-dest` on the copy) is
+what makes a write-only remote work. The dumps are `age`-encrypted to a key only the author's Mac
+holds, so the bucket's contents are opaque to GCP too.
