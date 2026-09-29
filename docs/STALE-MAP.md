@@ -15677,3 +15677,11 @@ T-504 (prefill the sign-in, blocked on the registration decision) should read `r
 decrypted there and listed every table. What remains is policy, not plumbing: where copies go
 off the box (an rclone remote is one line in `backup.env`), who may register, and whether this
 is a preview or the paid service. The address stays unlisted until those are decided.
+
+**Decided (author, late that night): a private preview now, paid later.** A few invited people
+test the hosted relay first; the author expects no viral uptake. Registration stays open for the
+preview, bounded by the relay's own caps (6 MiB frames, 256 browser connections) and a 20 GB
+disk, with the address unlisted and handed out by hand; the gate or billing comes with the paid
+launch. So the user docs keep not naming the address, T-504 (prefill the sign-in) stays blocked
+until that launch, and T-503 (the Settings row's name) is free to go. Testers on a release build
+need `MESIMON_MESOPHON=1` for Remote Control, which the tester steps on the ticket say.
