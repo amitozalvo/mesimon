@@ -1419,6 +1419,17 @@ select {
 .card-attn {
   box-shadow: inset 0 0 0 1px var(--attn-line);
 }
+/* A card's line (T-510): the tags at the left, the key at the right, as
+   the ticket page's line. */
+.card-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card-line .ticket-meta {
+  margin-left: auto;
+  flex-wrap: nowrap;
+}
 .card-agent {
   display: flex;
   align-items: center;
