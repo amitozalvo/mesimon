@@ -180,6 +180,7 @@ impl PreparedImport {
                 tier: None,
                 workspace: Some(WorkspaceStrategy::Worktree),
                 import_origin: Some(origin),
+                envelope: None,
                 raised: None,
                 tags: Vec::new(),
                 notes,

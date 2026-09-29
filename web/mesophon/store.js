@@ -5,12 +5,15 @@ import { Connection } from "./connection.js";
 import { BoardState } from "./board.js";
 import { Sessions } from "./sessions.js";
 import { Sent } from "./sent.js";
+import { Mailbox } from "./mailbox.js";
 import { showAlert, clearAlerts } from "./awareness.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
 const receiptOps = ["prompt", "send_now", "take_back", "permission", "dialog", "status"];
 // A filed ticket's description is its first note: the host's note limit.
 export const DESCRIPTION_MAX_BYTES = 32 * 1024;
+// The longest envelope the relay keeps (control::MAIL_BYTES).
+const MAIL_BYTES = 128 * 1024;
 const sentContext = (item) => `sent:${item.id}`;
 const emptyDraft = (board) => ({
   open: false,
@@ -50,6 +53,7 @@ export class Store {
     this.sentLoaded = new Set(); // boards whose stored Sent list is read
     this.composer = emptyDraft(undefined);
     this.toast = undefined;
+    this.depositing = new Set(); // ids handed to the mailbox socket, unanswered
   }
   subscribe(fn) {
     this.listeners.add(fn);
@@ -272,9 +276,17 @@ export class Store {
   }
 
   // ---- new tickets -------------------------------------------------------
-  // Whether a ticket can go out now: a live host that knows the create op.
+  // Whether a live host takes the create op now (phase 2's road).
   get canFile() {
     return this.live && !!this.connection?.features?.includes("create");
+  }
+  // Whether this board's host collects mail (T-497), as it said when last
+  // live: then a ticket can be written and sealed at any time.
+  get collects() {
+    return !!this.active?.collects;
+  }
+  get canSend() {
+    return this.collects || this.canFile;
   }
   // The one draft, for the board on screen; another board starts afresh.
   draft() {
@@ -320,10 +332,10 @@ export class Store {
     const board = this.active?.pin.board;
     const title = draft.title.trim();
     if (!title || !board) return;
-    if (!this.canFile) {
+    if (!this.canSend) {
       draft.error = this.live
         ? "This terminal’s mesimon is too old to take tickets from here. Update it, then send again."
-        : "Your terminal is out of reach. Send it when the terminal is back.";
+        : "Your terminal is out of reach, and its mesimon does not keep tickets while it is away.";
       this.emit();
       return;
     }
@@ -333,6 +345,7 @@ export class Store {
       return;
     }
     const ticket = { title, description: draft.description, column: draft.column, tags: draft.tags.slice() };
+    if (this.collects) return this.sealTicket(board, draft, ticket);
     const item = this.sent.add(board, ticket);
     const c = this.connection;
     const id = c.request(
@@ -368,25 +381,159 @@ export class Store {
     if (item.status === "landed") this.refresh();
     this.emit();
   }
-  // Unknown or refused: back to the sheet, and the old entry goes once the
-  // new one is sent.
-  editSent(id) {
+  // ---- the mailbox (T-497): tickets for a host that may be away -----------
+  // Sealed here and now, so it can wait in this browser, then at the relay,
+  // for as long as the host is away. Only the host can open it.
+  sealTicket(board, draft, ticket) {
+    let envelope;
+    try {
+      const body = { ...ticket, tags: ticket.tags.map(({ group, name }) => ({ group, name })), written_at: Date.now() };
+      envelope = JSON.parse(this.crypto.mail(JSON.stringify(this.active.pin), JSON.stringify(body)));
+    } catch {
+      draft.error = "Could not seal the ticket in this browser.";
+      this.emit();
+      return;
+    }
+    if (JSON.stringify(envelope).length > MAIL_BYTES) {
+      draft.error = "Too long to wait at the relay. Shorten the details, or send it while your terminal is live.";
+      this.emit();
+      return;
+    }
+    const item = this.sent.add(board, ticket, Date.now(), envelope);
+    if (draft.replaces) this.sent.remove(draft.replaces);
+    Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined });
+    this.persistSent(board);
+    if (!this.deposit(item)) this.say("Saved in this browser. It goes out when you’re back online.", "clock");
+    else if (this.live) this.say("Sending to your board…", "clock");
+    this.emit();
+  }
+  // Hand a sealed ticket to the relay, once per socket.
+  deposit(item) {
+    if (item.status !== "local" || !item.envelope || this.depositing.has(item.id)) return false;
+    if (!this.mailbox?.send({ kind: "deposit", board: this.active.pin.board, envelope: item.envelope })) return false;
+    this.depositing.add(item.id);
+    return true;
+  }
+  // The mailbox socket is up: ask what became of what is at the relay, and
+  // hand over what waited in this browser.
+  mailReady() {
+    this.depositing.clear();
+    const board = this.active?.pin.board;
+    if (!board || !this.sent) return;
+    const asked = this.sent.forBoard(board).filter((i) => i.status === "relay").map((i) => i.id).slice(-128);
+    this.mailbox.send({ kind: "sync", board, ids: asked });
+    for (const item of this.sent.waiting(board)) this.deposit(item);
+    this.emit();
+  }
+  onMail(wire) {
+    const item = wire.id && this.sent.get(wire.id);
+    if (wire.kind === "deposited" && item) {
+      this.depositing.delete(item.id);
+      const before = item.status;
+      this.sent.deposited(item);
+      if (before !== item.status) {
+        this.persistSent(item.board);
+        if (!this.live) this.say("Sent. It waits at the relay, sealed.", "one");
+      }
+    } else if (wire.kind === "refused" && item) {
+      this.depositing.delete(item.id);
+      // Transient: it stays in this browser and goes again with the socket.
+      if (wire.code === "unavailable") return;
+      const why = {
+        denied: "this browser may no longer leave tickets for this board. Pair it again.",
+        capacity: "too many tickets are waiting at the relay.",
+        too_large: "it is too long to wait at the relay. Send it while your terminal is live.",
+      }[wire.code] || "the relay did not keep it.";
+      this.sent.reply(item, { result: "rejected", message: why });
+      this.persistSent(item.board);
+      this.say(`Not sent: ${why}`);
+    } else if (wire.kind === "withdrawn" && item) {
+      const editing = item.editing;
+      item.editing = false;
+      if (wire.removed) {
+        this.sent.withdrawn(item);
+        this.persistSent(item.board);
+        if (editing) this.editWords(item, editing);
+        else this.say("Unsent. The relay deleted it.");
+      } else this.say("Too late to take back: your terminal has it.");
+    } else if (wire.kind === "mailbox" && wire.board === this.active?.pin.board) {
+      for (const state of wire.items || []) {
+        const mine = this.sent.get(state.id);
+        if (!mine) continue;
+        if (state.stage === "answered" && state.receipt) this.onReceipt(mine, state.receipt);
+        else if (state.stage === "gone") {
+          this.sent.gone(mine);
+          this.persistSent(mine.board);
+        }
+      }
+    } else if (wire.kind === "receipt" && wire.board === this.active?.pin.board) {
+      const mine = wire.receipt?.id && this.sent.get(wire.receipt.id);
+      if (mine) this.onReceipt(mine, wire.receipt);
+    }
+    this.emit();
+  }
+  // Only the host's own seal counts: a receipt that does not open under the
+  // pinned host key is not an answer, whoever sent it.
+  onReceipt(item, receipt) {
+    let body;
+    try {
+      body = JSON.parse(this.crypto.receipt(JSON.stringify(this.active.pin), JSON.stringify(receipt)));
+    } catch {
+      return;
+    }
+    this.onSentReply(item.id, body);
+  }
+  // Take a ticket back before the host has it: in this browser at once, at
+  // the relay on its word.
+  unsendSent(id) {
     const item = this.sent.get(id);
-    if (!item || item.status === "landed" || item.status === "sending") return;
+    if (!item) return;
+    if (item.status === "local") {
+      this.sent.withdrawn(item);
+      this.persistSent(item.board);
+      this.say("Unsent. It never left this browser.");
+      this.emit();
+    } else if (item.status === "relay") {
+      if (!this.mailbox?.send({ kind: "withdraw", board: this.active.pin.board, id }))
+        this.say("Unsending needs the relay. Try again when you’re back online.");
+      this.emit();
+    }
+  }
+  editWords(item, words = item) {
     const draft = this.draft();
     Object.assign(draft, {
-      title: item.title,
-      description: item.description,
-      column: item.column,
-      tags: item.tags.slice(),
+      title: words.title,
+      description: words.description,
+      column: words.column,
+      tags: words.tags.slice(),
       error: "",
       replaces: item.id,
     });
-    this.openComposer(this.board?.columns.includes(item.column) ? item.column : undefined);
+    this.openComposer(this.board?.columns.includes(words.column) ? words.column : undefined);
+  }
+  // Unknown or refused: back to the sheet, and the old entry goes once the
+  // new one is sent. Still waiting: taken back first, then edited.
+  editSent(id) {
+    const item = this.sent.get(id);
+    if (!item || ["landed", "sending", "withdrawn"].includes(item.status)) return;
+    if (item.status === "local") {
+      const words = { title: item.title, description: item.description, column: item.column, tags: item.tags };
+      this.sent.withdrawn(item);
+      this.persistSent(item.board);
+      return this.editWords(item, words);
+    }
+    if (item.status === "relay") {
+      const words = { title: item.title, description: item.description, column: item.column, tags: item.tags };
+      if (this.mailbox?.send({ kind: "withdraw", board: this.active.pin.board, id })) item.editing = words;
+      else this.say("Editing needs the relay. Try again when you’re back online.");
+      this.emit();
+      return;
+    }
+    this.editWords(item);
   }
   discardSent(id) {
     const item = this.sent.get(id);
-    if (!item || item.status === "sending") return;
+    if (!item || ["sending", "local", "relay"].includes(item.status)) return;
     this.sent.remove(id);
     this.persistSent(item.board);
     this.emit();
@@ -472,6 +619,8 @@ export class Store {
     this.restoreSent(chosen.pin.board);
     this.sync();
     this.connection.connect(chosen);
+    this.mailbox?.want(true);
+    if (this.mailbox?.ready) this.mailReady();
   }
   async forget() {
     this.connection.stop();
@@ -484,10 +633,14 @@ export class Store {
     this.composer = emptyDraft(undefined);
     this.active = this.board = this.entry = this.returnBoard = undefined;
     clearAlerts();
+    this.mailbox?.want(false);
     const crypto = new this.Browser();
     this.identity = { seed: crypto.seed(), boards: [] };
     crypto.free();
     this.connection.identity = this.identity;
+    this.crypto?.free?.();
+    this.crypto = new this.Browser(this.identity.seed);
+    if (this.mailbox) Object.assign(this.mailbox, { crypto: this.crypto, identity: this.identity });
     try {
       await Promise.all([this.save(), this.storage.dropBoards()]);
       this.status = "Browser forgotten. Pair again to connect.";
@@ -517,6 +670,7 @@ export class Store {
         }
       }
       this.board = this.entry = undefined;
+      this.mailbox?.want(false);
       clearAlerts();
       this.showPairing();
     }
@@ -535,6 +689,12 @@ export class Store {
   onReady(chosen) {
     this.active = chosen;
     this.returnBoard = undefined;
+    // What the host said about itself, kept for when it is away (T-497).
+    const collects = !!this.connection.features?.includes("mailbox");
+    if (!!chosen.collects !== collects) {
+      chosen.collects = collects;
+      this.persist();
+    }
     this.board = this.boards.get(chosen.pin.board);
     this.pairCode = "";
     this.pairReady = true;
@@ -544,6 +704,8 @@ export class Store {
     this.sync();
     this.refresh();
     this.receipts();
+    this.mailbox?.want(true);
+    if (this.mailbox?.ready) this.mailReady();
   }
   onLost() {
     this.live = false;
@@ -747,11 +909,24 @@ export class Store {
   }
   setOnline(online) {
     this.online = online;
+    if (online) this.mailbox?.poke();
     this.emit();
   }
   async boot(storage, identity) {
     this.storage = storage;
     this.identity = identity;
+    // Keys for sealing tickets and opening receipts, and the mailbox socket.
+    this.crypto = new this.Browser(identity.seed);
+    this.mailbox = new Mailbox({
+      crypto: this.crypto,
+      identity,
+      onReady: () => this.mailReady(),
+      onFrame: (wire) => this.onMail(wire),
+      onDown: () => {
+        this.depositing.clear();
+        this.emit();
+      },
+    });
     this.connection = new Connection({
       Browser: this.Browser,
       identity,

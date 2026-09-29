@@ -16,8 +16,11 @@ in `mesimon-relay`.
 - `board.js`: bounded board projection, Now's groups, filters and list position.
 - `sessions.js`: drafts, delivery receipts and reading position keyed by board,
   ticket and session. Drafts exist only in this tab and are lost on reload.
-- `sent.js`: the Sent list, per board: a filed ticket's status (sending,
-  landed, unknown, rejected), its key once landed, and what survives a reload.
+- `sent.js`: the Sent list, per board: a filed ticket's status (a clock while
+  sealed in this browser, one tick at the relay, two once landed; unsent,
+  unknown or refused), its key once landed, and what survives a reload.
+- `mailbox.js`: the browser's own relay socket for the mailbox, apart from the
+  host channel, open whether or not the host is reachable.
 - `store.js`: application state and every action on it; the view renders from it.
 - `shell.js`, `lists.js`, `detail.js`, `dialogs.js`, `compose.js`: the view
   (pairing, sidebar, Now, Board and Sent, the ticket, permission/question/plan
@@ -90,3 +93,15 @@ is a `created` receipt with the new key; a lost answer is recovered with
 `status` on reconnect, never by sending the ticket again. The snapshot carries
 what the sheet offers: `default_column`, `column_descriptions` and
 `allowed_tags` (name, group and the TUI's tint index).
+
+While the host is away, tickets go through the relay's mailbox. The Wasm seals
+each one for the pinned host (`Browser.mail`: a fresh key wrapped to the host
+and the body under it), the page keeps the envelope in IndexedDB until the
+relay has it, and the mailbox socket deposits it (`deposit` → `deposited`, the
+one tick). Unsend and Edit use `withdraw`, which the relay grants only before
+the host has been handed the envelope. The host collects its mail once it is
+back, files each envelope at most once, and answers with a receipt sealed to
+this browser, which `Browser.receipt` opens with the pinned host key; a
+receipt that does not open is ignored, whoever sent it. `sync` asks what
+became of the envelopes at the relay after a reload or a reconnect. A host that
+advertises `mailbox` takes every ticket this way, live or not.

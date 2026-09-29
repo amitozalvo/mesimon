@@ -12,7 +12,9 @@ use std::{
 use tungstenite::Message;
 
 pub enum Event {
-    Online(String),
+    /// The browser origin, and whether this relay keeps mail for the host
+    /// while it is away (T-497).
+    Online(String, bool),
     Offline,
     Frame(Wire),
 }
@@ -37,6 +39,12 @@ fn run(device: DeviceFile, rx: Receiver<Wire>, report: &impl Fn(Event) -> bool) 
             Response::ControlInfo { version: 1, origin: Some(origin) } => origin,
             _ => return Err(()),
         };
+    // An older relay answers `InvalidRequest`: it keeps no mail, and this
+    // host never sends it a frame it cannot read.
+    let mail = matches!(
+        client.call(device.credential.as_ref(), Request::ControlMail),
+        Ok(Response::ControlMail { version: 1 })
+    );
     let mut ws = client.control_socket(&origin).map_err(|_| ())?;
     let auth = Auth { credential: device.credential, register: None };
     ws.send(Message::Text(serde_json::to_string(&auth).map_err(|_| ())?.into())).map_err(|_| ())?;
@@ -45,7 +53,7 @@ fn run(device: DeviceFile, rx: Receiver<Wire>, report: &impl Fn(Event) -> bool) 
         return Err(());
     }
     ws.get_mut().set_read_timeout(Some(Duration::from_millis(100))).map_err(|_| ())?;
-    if !report(Event::Online(origin)) {
+    if !report(Event::Online(origin, mail)) {
         return Err(());
     }
     loop {

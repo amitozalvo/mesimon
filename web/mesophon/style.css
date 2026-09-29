@@ -2073,6 +2073,46 @@ button.sent-sys:hover {
   font-weight: 600;
 }
 
+/* on its way (T-497): in this browser, or at the relay */
+.sent-waiting {
+  max-width: min(88%, 460px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 8px;
+  color: var(--ink3);
+  font-size: 0.8125rem;
+}
+.sent-waiting .btn {
+  min-height: 44px;
+  padding: 0 12px;
+  color: var(--ink);
+  font-size: 0.8125rem;
+}
+.sent-gone {
+  align-self: center;
+  padding: 6px 12px;
+  color: var(--ink3);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+.ticket.card.ghost {
+  padding: 10.5px 12.5px;
+  border: 1.5px dashed var(--line2);
+  background: transparent;
+}
+.ticket.card.ghost:hover {
+  background: var(--s1);
+}
+.ticket.card.ghost .ticket-meta {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.waiting-row .tick {
+  color: var(--ink2);
+}
+
 /* Sent's own bar: a column, a title, more, send */
 .quick-new {
   flex-shrink: 0;

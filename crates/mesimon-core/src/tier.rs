@@ -435,6 +435,7 @@ mod tests {
             execution_policy: Default::default(),
             tier: tier.map(str::to_string),
             import_origin: None,
+            envelope: None,
             raised: None,
             workspace: None,
             tags: Vec::new(),

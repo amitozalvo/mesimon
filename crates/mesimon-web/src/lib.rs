@@ -1,6 +1,6 @@
 //! Small browser facade over the same Rust crypto the host uses.
 use mesimon_team::{
-    control::{Auth, Channel, Registration, Welcome, Wire},
+    control::{self, Auth, Channel, Envelope, Registration, Welcome, Wire},
     crypto::{DeviceKeys, ObjectId},
     hex,
     invite::InviteCode,
@@ -99,6 +99,24 @@ impl Browser {
         let record =
             self.channel.as_mut().ok_or_else(error)?.seal(&self.keys, body).map_err(|_| error())?;
         serde_json::to_string(&Wire::Packet { peer: String::new(), record }).map_err(|_| error())
+    }
+    /// Seal a ticket for the host's mailbox (T-497): a fresh key wrapped to
+    /// the host this browser pinned at pairing, and the body under it.
+    pub fn mail(&self, pin: String, body: String) -> Result<String, JsValue> {
+        let w: Welcome = serde_json::from_str(&pin).map_err(|_| error())?;
+        let body = serde_json::from_str(&body).map_err(|_| error())?;
+        let envelope =
+            control::seal_mail(w.board, w.grant, &self.keys, &w.host, body).map_err(|_| error())?;
+        serde_json::to_string(&envelope).map_err(|_| error())
+    }
+    /// Open the host's receipt for one of this browser's envelopes. The pin
+    /// is what makes it the host's word rather than the relay's.
+    pub fn receipt(&self, pin: String, receipt: String) -> Result<String, JsValue> {
+        let w: Welcome = serde_json::from_str(&pin).map_err(|_| error())?;
+        let receipt: Envelope = serde_json::from_str(&receipt).map_err(|_| error())?;
+        let body = control::open_receipt(w.board, w.grant, &receipt, &self.keys, &w.host)
+            .map_err(|_| error())?;
+        serde_json::to_string(&body).map_err(|_| error())
     }
     pub fn open(&mut self, packet: String) -> Result<String, JsValue> {
         let Wire::Packet { record, .. } = serde_json::from_str(&packet).map_err(|_| error())?

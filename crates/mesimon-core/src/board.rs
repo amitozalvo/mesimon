@@ -1025,6 +1025,13 @@ pub struct Ticket {
     /// scalar, with the scalars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
+    /// The Mesophon envelope this ticket was filed from (T-497): a paired
+    /// browser's mailbox id, 32 hex characters, so an envelope the relay
+    /// hands over twice files one ticket. Written by the mint, in the same
+    /// file as the ticket; never edited, and a copy does not carry it. A
+    /// scalar, with the scalars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope: Option<String>,
     /// Per-ticket workspace strategy (M4 layering: the ticket field is the truth;
     /// a column's `workspace` setting only defaults a NEW ticket, stamped here at
     /// mint — T-117). `None` = inherit the board default. Must stay after the
@@ -2693,6 +2700,7 @@ mod tests {
             execution_policy: Default::default(),
             tier: None,
             import_origin: None,
+            envelope: None,
             raised: None,
             workspace: None,
             tags: Vec::new(),

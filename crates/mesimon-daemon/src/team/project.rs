@@ -113,6 +113,7 @@ mod tests {
             execution_policy: Default::default(),
             tier: None,
             import_origin: None,
+            envelope: None,
             raised: None,
             previous_column: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),

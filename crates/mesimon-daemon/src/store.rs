@@ -70,6 +70,10 @@ pub const COLUMNS_SCHEMA: u32 = 6;
 /// reader must not discard its correlation or weaken a partially imported ticket.
 /// v7 (T-443) adds the ticket's agent tier — the v5-provider reason: a v6
 /// build would drop a Codex tier pick and start Claude on the ticket.
+/// T-497 added `envelope` with no bump: a build that drops it on its next
+/// save loses only the memory that files a mailed envelope once, and the
+/// relay delivers again only an envelope it never saw answered. No content,
+/// no restriction: the reverse of the reason to bump.
 pub const TICKET_SCHEMA: u32 = 7;
 /// `tiers.toml`, the machine's agent tiers (T-443) — one file under the
 /// state root that every board's daemon reads and writes. Its own counter,
@@ -924,6 +928,27 @@ mod tests {
         )
     }
 
+    /// A mailed ticket's envelope (T-497) is a scalar among the scalars: it
+    /// writes, reads back, and a file without it reads as none.
+    #[test]
+    fn a_mailed_tickets_envelope_roundtrips_and_is_optional() {
+        let envelope = "0123456789abcdef0123456789abcdef";
+        let body = format!(
+            "schema_version = 7\n{}envelope = \"{envelope}\"\n",
+            ticket_body("T-1", "TODO")
+        );
+        let parsed: TicketFile = toml::from_str(&body).unwrap();
+        assert_eq!(parsed.ticket.envelope.as_deref(), Some(envelope));
+        let mut tagged = parsed;
+        tagged.ticket.tags.push(mesimon_core::board::TagRef { name: "BUG".into(), group: 1 });
+        let encoded = toml::to_string_pretty(&tagged).unwrap();
+        let back: TicketFile = toml::from_str(&encoded).unwrap();
+        assert_eq!(back.ticket.envelope.as_deref(), Some(envelope));
+        let old: TicketFile = toml::from_str(&ticket_body("T-1", "TODO")).unwrap();
+        assert!(old.ticket.envelope.is_none());
+        assert!(!toml::to_string_pretty(&old).unwrap().contains("envelope"));
+    }
+
     #[test]
     fn execution_policy_roundtrips_and_old_readers_refuse_its_schema() {
         use mesimon_core::board::ExecutionPolicy;
@@ -1549,6 +1574,7 @@ by = "local"
             execution_policy: Default::default(),
             tier: None,
             import_origin: None,
+            envelope: None,
             raised: Some(mesimon_core::board::Raised {
                 at: "@1788046500".into(),
                 by: "agent:00000000-0000-0000-0000-000000000000".into(),
@@ -1595,6 +1621,7 @@ by = "local"
             execution_policy: Default::default(),
             tier: None,
             import_origin: None,
+            envelope: None,
             raised: None,
             workspace: None,
             tags: Vec::new(),
@@ -1648,6 +1675,7 @@ by = "local"
             execution_policy: Default::default(),
             tier: None,
             import_origin: None,
+            envelope: None,
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
@@ -1695,6 +1723,7 @@ by = "local"
             execution_policy: Default::default(),
             tier: None,
             import_origin: None,
+            envelope: None,
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
@@ -1780,6 +1809,7 @@ by = "local"
                 execution_policy: Default::default(),
                 tier: None,
                 import_origin: None,
+                envelope: None,
                 raised: None,
                 workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                 tags: Vec::new(),
@@ -2199,6 +2229,7 @@ by = "local"
             execution_policy: Default::default(),
             tier: None,
             import_origin: None,
+            envelope: None,
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
@@ -2232,6 +2263,7 @@ by = "local"
             execution_policy: Default::default(),
             tier: None,
             import_origin: None,
+            envelope: None,
             raised: None,
             workspace: None,
             tags: Vec::new(),

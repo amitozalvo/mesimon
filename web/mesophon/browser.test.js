@@ -176,6 +176,43 @@ for (const [name, engine] of [
         assert(filed, "the filed ticket is on the board");
         assert.match(filed.created_by, /^device:/);
         assert(!board.sessions.some((s) => s.ticket === filed.id), "no agent started");
+        if ((name === "chromium" && label === "desktop") || (name === "webkit" && label === "phone")) {
+          // The terminal away (T-497): a ticket waits at the relay, sealed,
+          // with one tick, and lands once, when the terminal is back.
+          const dir = process.env.MESOPHON_TEST_DIR;
+          const ask = async (asked, answered) => {
+            await fs.writeFile(path.join(dir, asked), "");
+            for (let i = 0; i < 600; i++) {
+              try {
+                await fs.rm(path.join(dir, answered));
+                return;
+              } catch {
+                await new Promise((resolve) => setTimeout(resolve, 100));
+              }
+            }
+            throw new Error(`the fixture never wrote ${answered}`);
+          };
+          await ask("host-stop", "host-stopped");
+          await page.waitForFunction(() => document.querySelector("#shell").dataset.link === "asleep");
+          const away = `browser-away-canary-${name}-${label}`;
+          await page.locator(label === "phone" ? "#new-ticket-fab" : "#new-ticket").click();
+          assert.match(await page.locator(".compose-dest").textContent(), /waits at the relay/);
+          await page.getByLabel("Title", { exact: true }).fill(away);
+          await page.getByRole("button", { name: "Send ticket", exact: true }).click();
+          await page.locator(".waiting-row").filter({ hasText: away }).waitFor();
+          await page.waitForFunction(() =>
+            document.querySelector("#toast").textContent.includes("waits at the relay"),
+          );
+          await ask("host-start", "host-started");
+          await page.locator(".waiting-row").filter({ hasText: away }).waitFor({ state: "detached", timeout: 30000 });
+          const back = (await command({ cmd: "snapshot" })).board;
+          const landed = back.tickets.filter((t) => t.title === away);
+          assert.equal(landed.length, 1, "filed once");
+          assert.match(landed[0].envelope, /^[0-9a-f]{32}$/);
+          await page.waitForFunction(() => document.querySelector("#shell").dataset.link === "live", null, {
+            timeout: 30000,
+          });
+        }
         const info = (
           await command({ cmd: "mesophon", action: { action: "status" } })
         ).info;
@@ -200,7 +237,7 @@ for (const [name, engine] of [
         assert.equal(await page.locator("#tickets").textContent(), "");
         assert.deepEqual(errors, []);
         console.log(
-          `${name} ${label}: pair, encrypted preview, prompt, remembered reconnect, filed ticket, revoke passed`,
+          `${name} ${label}: pair, encrypted preview, prompt, remembered reconnect, filed ticket, away ticket, revoke passed`,
         );
       } catch (error) {
         console.error(

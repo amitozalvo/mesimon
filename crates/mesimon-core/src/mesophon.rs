@@ -107,6 +107,23 @@ pub enum Request {
     },
 }
 
+/// A ticket a paired browser sealed for the host's mailbox (T-497): the
+/// create op's fields and when it was written. Unknown fields are ignored,
+/// not refused: a host may be older than the page that wrote the ticket.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MailTicket {
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub column: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<TagPick>,
+    /// When it was written, in the browser's clock; shown, never trusted.
+    #[serde(default)]
+    pub written_at: u64,
+}
+
 /// A tag a new ticket wears, spelled as the board's vocabulary spells it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

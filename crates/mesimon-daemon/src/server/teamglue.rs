@@ -1233,6 +1233,7 @@ impl Daemon {
                 execution_policy: ExecutionPolicy::OwnerOnly,
                 tier: None,
                 import_origin: None,
+                envelope: None,
                 raised: None,
                 workspace: None,
                 tags: Vec::new(),
@@ -1420,6 +1421,7 @@ fn other_word(r: &Wire) -> &'static str {
         Wire::Records { .. } => "records",
         Wire::Error { .. } => "error",
         Wire::ControlInfo { .. } => "control_info",
+        Wire::ControlMail { .. } => "control_mail",
     }
 }
 

@@ -112,11 +112,30 @@ function Asleep({ store }) {
   </section>`;
 }
 
+// Tickets written here that have not landed yet (T-497): what waits in this
+// browser or at the relay. A row opens Sent.
+function Waiting({ store }) {
+  const waiting = store.sent.waiting(store.active?.pin.board);
+  if (!waiting.length) return null;
+  return html`<${Group} label="Waiting to land" count=${waiting.length}>
+    <div class="rows">${waiting.map((item) => html`<button type="button" key=${item.id} class="ticket row waiting-row"
+      data-id=${item.id} onClick=${() => store.setMode("sent")}>
+      <${Tick} state=${tickOf[item.status]} />
+      <span class="row-text">
+        <span class="ticket-title" dir="auto">${item.title}</span>
+        <span class="ticket-meta">→ ${item.column} · ${clock(item.at)} · ${item.status === "relay" ? "at the relay" : "in this browser"}</span>
+      </span>
+      <${Icon} name="chevronRight" size=${16} cls="row-go" />
+    </button>`)}</div>
+  </${Group}>`;
+}
+
 export function NowList({ store, board, live }) {
   const { needs, working, idle } = board.sections();
   const empty = !needs.length && !working.length && !idle.length;
   return html`
     <${Asleep} store=${store} />
+    <${Waiting} store=${store} />
     ${needs.length > 0 && html`<${Group} label="Needs you" count=${needs.length} attn=${true}>
       <div class="needs">${needs.map((t) => html`<${NeedCard} key=${t.id} store=${store} ticket=${t} board=${board} live=${live} />`)}</div>
     </${Group}>`}
@@ -151,16 +170,25 @@ export function BoardList({ store, board, bp }) {
   const tickets = board.visible();
   const columns = bp === "phone" ? board.columns.filter((c) => c === board.column) : board.columns;
   if (!tickets.length && board.search) return html`<p class="empty">No tickets match your search.</p>`;
-  if (!board.tickets.length) return html`<p class="empty">This board has no tickets yet.</p>`;
+  if (!board.tickets.length && !store.sent.waiting(store.active?.pin.board).length)
+    return html`<p class="empty">This board has no tickets yet.</p>`;
   return html`<div class=${bp === "desktop" ? "kanban" : bp === "phone" ? "stack single" : "stack"}>${columns.map((column) => {
     const group = tickets.filter((t) => t.column === column);
+    const ghosts = store.sent.waiting(store.active?.pin.board).filter((i) => i.column === column);
     const about = board.columnDescriptions[column];
     return html`<section class="column" key=${column} aria-label=${column}>
       <h3 class="column-label"><span>${column}</span><span class="group-count">${group.length}</span></h3>
       ${about && html`<p class="column-about" dir="auto">${about}</p>`}
-      <div class="cards">${group.length
-        ? group.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} />`)
-        : html`<p class="empty column-empty">No tickets in this column.</p>`}</div>
+      <div class="cards">
+        ${ghosts.map((item) => html`<button type="button" key=${item.id} class="ticket card ghost" data-id=${item.id}
+          onClick=${() => store.setMode("sent")}>
+          <span class="ticket-meta"><span>New</span><${Tick} state=${tickOf[item.status]} /><span>${item.status === "relay" ? "At the relay" : "In this browser"} · ${clock(item.at)}</span></span>
+          <span class="ticket-title" dir="auto">${item.title}</span>
+        </button>`)}
+        ${group.length
+          ? group.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} />`)
+          : !ghosts.length && html`<p class="empty column-empty">No tickets in this column.</p>`}
+      </div>
       ${bp !== "phone" && html`<button type="button" class="add-to-column" data-column=${column}
         onClick=${() => store.openComposer(column)}><${Icon} name="plus" size=${16} /><span>Add to ${column}</span></button>`}
     </section>`;
@@ -180,10 +208,25 @@ const dayOf = (at) => {
       : day.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
 };
 
+const tickOf = { sending: "clock", local: "clock", relay: "one", landed: "two" };
+const saidOf = {
+  sending: "Sending",
+  local: "In this browser",
+  relay: "At the relay",
+  landed: "On your board",
+  unknown: "Delivery unknown",
+  rejected: "Not created",
+  withdrawn: "Unsent",
+};
+
 function SentItem({ store, board, item }) {
+  const said = saidOf[item.status];
+  if (item.status === "withdrawn")
+    return html`<p class="sent-gone" data-id=${item.id}>You unsent “<span dir="auto">${item.title}</span>”</p>`;
   const onBoard = !!item.ticket && board.tickets.some((t) => t.id === item.ticket);
-  const tick = item.status === "sending" ? "clock" : item.status === "landed" ? "two" : null;
-  const said = { sending: "Sending", landed: "On your board", unknown: "Delivery unknown", rejected: "Not created" }[item.status];
+  const tick = tickOf[item.status];
+  // Still on its way: it can be edited or taken back until the host has it.
+  const waiting = item.status === "local" || item.status === "relay";
   return html`<article class="sent-item" data-status=${item.status} data-id=${item.id} aria-label=${`${item.title}, ${said}`}>
     <div class="sent-bubble">
       <p class="sent-title" dir="auto">${item.title}</p>
@@ -195,6 +238,17 @@ function SentItem({ store, board, item }) {
         ${tick && html`<span class="sent-tick"><${Tick} state=${tick} /><span class="sr-only">${said}</span></span>`}
       </p>
     </div>
+    ${waiting && html`<div class="sent-waiting" role="group" aria-label=${said}>
+      <p>${item.status === "local"
+        ? store.link === "nonet"
+          ? "In this browser. It goes out when you’re back online."
+          : "In this browser. It goes out when the relay answers."
+        : "Sealed at the relay. It lands when your terminal is back."}</p>
+      <div class="sent-actions">
+        <button type="button" class="btn btn-quiet" onClick=${() => store.unsendSent(item.id)}>Unsend</button>
+        <button type="button" class="btn btn-quiet" onClick=${() => store.editSent(item.id)}>Edit</button>
+      </div>
+    </div>`}
     ${item.status === "landed" &&
     (onBoard
       ? html`<button type="button" class="sent-sys" onClick=${() => store.openSent(item.id)}>
@@ -223,7 +277,7 @@ export function SentList({ store, board }) {
     </div>`;
   let day;
   return html`<div class="sent-feed">
-    <p class="sent-legend"><span><${Tick} state="clock" />Sending</span><span><${Tick} state="two" />On your board</span></p>
+    <p class="sent-legend"><span><${Tick} state="clock" />In this browser</span><span><${Tick} state="one" />At the relay</span><span><${Tick} state="two" />On your board</span></p>
     ${items.map((item) => {
       const label = dayOf(item.at);
       const heading = label !== day && html`<h3 class="sent-day" key=${`day-${label}`}>${label}</h3>`;

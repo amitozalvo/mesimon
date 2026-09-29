@@ -56,6 +56,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         execution_policy: Default::default(),
         tier: None,
         import_origin: None,
+        envelope: None,
         raised: None,
         workspace: None,
         tags: Vec::new(),

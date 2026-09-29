@@ -194,6 +194,10 @@ pub enum Request {
         public: DevicePublic,
     },
     ControlInfo,
+    /// Whether the relay keeps Mesophon mail for an away host (T-497). A
+    /// relay from before answers `InvalidRequest` and the host collects
+    /// nothing; `ControlInfo` stays as it was, so older hosts are untouched.
+    ControlMail,
     Whoami,
     Boards,
     CreateBoard,
@@ -265,6 +269,7 @@ impl Request {
         match self {
             Request::Register { .. }
             | Request::ControlInfo
+            | Request::ControlMail
             | Request::Whoami
             | Request::Boards
             | Request::CreateBoard
@@ -285,6 +290,7 @@ impl Request {
         match self {
             Request::Register { .. } => "register",
             Request::ControlInfo => "control_info",
+            Request::ControlMail => "control_mail",
             Request::Whoami => "whoami",
             Request::Boards => "boards",
             Request::CreateBoard => "create_board",
@@ -316,6 +322,7 @@ impl fmt::Debug for Request {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Response {
     ControlInfo { version: u32, origin: Option<String> },
+    ControlMail { version: u32 },
     Registered { device: DeviceId, credential: Credential },
     Device { device: DeviceId, display_name: String },
     Boards { boards: Vec<BoardSummary> },

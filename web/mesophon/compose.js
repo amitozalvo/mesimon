@@ -4,12 +4,30 @@ import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon } from "./icons.js";
 import { DESCRIPTION_MAX_BYTES } from "./store.js";
 
-// Where the ticket is going, and whether it can get there now.
+// Where the ticket is going, and how it gets there from here (T-497): live,
+// through the relay's mailbox while the terminal is away, or kept in this
+// browser until there is a connection.
 function destination(store) {
-  if (store.canFile) return { link: "live", text: "Your terminal is live, so it lands right away." };
+  if (store.live && store.canSend)
+    return { link: "live", icon: "terminal", text: "Your terminal is live, so it lands right away.",
+      note: "It lands on your board in a moment." };
+  if (store.collects && (store.link === "nonet" || store.link === "relay"))
+    return { link: "held", icon: "wifiOff",
+      text: store.link === "nonet"
+        ? "No connection. It stays in this browser and goes out when you’re back online."
+        : "The relay is out of reach. It stays in this browser and goes out when the relay is back.",
+      note: "Saved in this browser. It goes out by itself." };
+  if (store.collects)
+    return { link: "away", icon: "moon",
+      text: "Your terminal is out of reach. It waits at the relay, sealed, and lands when the terminal is back.",
+      note: "You can edit or unsend it until it lands." };
   if (store.live)
-    return { link: "old", text: "This terminal’s mesimon is too old to take tickets from here. Update it on your Mac." };
-  return { link: "away", text: "Your terminal is out of reach. Keep writing, and send it when the terminal is back." };
+    return { link: "old", icon: "shield",
+      text: "This terminal’s mesimon is too old to take tickets from here. Update it on your Mac.",
+      note: "Sending needs a newer mesimon." };
+  return { link: "old", icon: "moon",
+    text: "Your terminal is out of reach, and when it was last live its mesimon kept no tickets for later. Update it, then open this page while it’s live.",
+    note: "Sending needs your terminal." };
 }
 
 function Tags({ store, draft, board }) {
@@ -44,7 +62,7 @@ export function NewTicket({ store }) {
   });
   if (!board) return html`<dialog id="new-ticket-sheet" class="compose" ref=${ref}></dialog>`;
   const dest = destination(store);
-  const ready = store.canFile && !!draft.title.trim();
+  const ready = store.canSend && !!draft.title.trim();
   const about = board.columnDescriptions[draft.column];
   const oversize = new TextEncoder().encode(draft.description).length > DESCRIPTION_MAX_BYTES;
   return html`<dialog id="new-ticket-sheet" class="compose" ref=${ref} aria-labelledby="new-ticket-heading"
@@ -67,7 +85,7 @@ export function NewTicket({ store }) {
       </header>
       <div class="compose-body">
         <p class="compose-dest" data-link=${dest.link}>
-          <${Icon} name=${dest.link === "live" ? "terminal" : dest.link === "old" ? "shield" : "moon"} size=${16} />
+          <${Icon} name=${dest.icon} size=${16} />
           <span><strong>To ${board.title || "your board"}.</strong> ${dest.text}</span>
         </p>
         <label class="field">Title<input id="new-title" type="text" dir="auto" maxlength="500" autocomplete="off"
@@ -98,7 +116,7 @@ export function NewTicket({ store }) {
         ${draft.error && html`<p class="compose-error" role="alert">${draft.error}</p>`}
         <button id="send-ticket" type="submit" class="btn btn-pri compose-send" disabled=${!ready}>
           <${Icon} name="send" size=${18} /><span>Send ticket</span></button>
-        <p class="compose-note">${store.canFile ? "It lands on your board in a moment." : "Sending needs your terminal."}</p>
+        <p class="compose-note">${dest.note}</p>
       </footer>
     </form>
   </dialog>`;
@@ -111,7 +129,7 @@ export function QuickNew({ store }) {
   if (!board) return null;
   const draft = store.draft();
   const extras = !!draft.description.trim() || draft.tags.length > 0;
-  const ready = store.canFile && !!draft.title.trim();
+  const ready = store.canSend && !!draft.title.trim();
   return html`<form id="quick-new" class="quick-new" onSubmit=${(e) => {
     e.preventDefault();
     store.sendTicket();

@@ -63,6 +63,9 @@ Preserve these boundaries:
   with no bare imports (`web/mesophon/vendor/README.md`).
 - A paired phone's one board write is `Action::FileTicket` into a column: never widen `Paired`
   to `Mutate`, which also reaches `PromptColumn`, and a paired device starts nothing.
+- Every side of the Mesophon control socket drops a peer on a frame it cannot parse, so mail
+  frames go only where asked for: a host sends `Collect` after `ControlMail` answered, and the
+  relay sends `Mail` only to a host that sent `Collect`.
 
 The README promises are hard constraints: Mesimon writes only to its documented allowlist,
 `doctor` diagnoses without applying configuration changes, and Mesimon never rewrites or adds

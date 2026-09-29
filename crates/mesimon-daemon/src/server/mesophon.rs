@@ -3,7 +3,7 @@ use super::*;
 use crate::team::control_io::{self, Event as NetEvent};
 use mesimon_core::mesophon::{self as api, Answer, Info, LocalAction, Reply};
 use mesimon_team::{
-    control::{Channel, Wire},
+    control::{self, Channel, Wire},
     crypto::{BoardId, DeviceId, DevicePublic, ObjectId},
     hex,
     invite::InviteCode,
@@ -24,7 +24,22 @@ struct Stored {
     board: BoardId,
     host: DeviceId,
     grants: Vec<Grant>,
+    /// The envelopes filed most recently, newest last (T-497). The ticket's
+    /// own `envelope` makes a second delivery file nothing; this answers one
+    /// whose ticket has since been deleted, so a replayed envelope cannot
+    /// bring it back. An older build drops it on its next save, harmlessly.
+    #[serde(default)]
+    filed: Vec<Filed>,
 }
+#[derive(Clone, Serialize, Deserialize)]
+struct Filed {
+    envelope: ObjectId,
+    ticket: String,
+    key: String,
+    column: String,
+}
+/// How many filed envelopes `Stored::filed` remembers.
+const FILED_KEEP: usize = 256;
 struct Peer {
     grant: BoardId,
     device: DeviceId,
@@ -95,6 +110,8 @@ pub(super) struct Control {
     incarnation: ObjectId,
     origin: String,
     online: bool,
+    /// This relay keeps mail for the host while it is away (T-497).
+    mail: bool,
     error: Option<String>,
     retry: Instant,
     dirty: bool,
@@ -122,6 +139,7 @@ impl Control {
             incarnation: ObjectId::random(),
             origin: String::new(),
             online: false,
+            mail: false,
             error: None,
             retry: Instant::now(),
             dirty: false,
@@ -239,6 +257,7 @@ impl Daemon {
                         board: BoardId::random(),
                         host: keys.id(),
                         grants: Vec::new(),
+                        filed: Vec::new(),
                     };
                     if self.control_save(&s).is_err() {
                         return fail("could not save Mesophon state");
@@ -264,6 +283,7 @@ impl Daemon {
                 self.control.invite = None;
                 self.control.jobs = None;
                 self.control.online = false;
+                self.control.mail = false;
                 self.control.generation += 1;
             }
             LocalAction::Pair => {
@@ -397,19 +417,27 @@ impl Daemon {
         }
         let announce = matches!(
             &event,
-            NetEvent::Online(_)
+            NetEvent::Online(..)
                 | NetEvent::Offline
                 | NetEvent::Frame(Wire::Peer { .. } | Wire::Gone { .. })
         );
         match event {
-            NetEvent::Online(origin) => {
+            NetEvent::Online(origin, mail) => {
                 self.control.origin = origin;
                 self.control.online = true;
+                self.control.mail = mail;
                 self.control.error = None;
                 self.control_publish();
+                // After the publish, which is what makes this the host.
+                if let Some(board) = self.control.stored.as_ref().map(|s| s.board).filter(|_| mail)
+                {
+                    self.control.send(Wire::Collect { board });
+                }
             }
+            NetEvent::Frame(Wire::Mail { items }) => self.control_mail(items),
             NetEvent::Offline => {
                 self.control.online = false;
+                self.control.mail = false;
                 self.control.jobs = None;
                 self.control.peers.clear();
                 self.control.error = Some("relay unavailable or does not support Mesophon".into());
@@ -466,12 +494,18 @@ impl Daemon {
             reply: Reply::Ready {
                 incarnation: self.control.incarnation.to_hex(),
                 next,
-                features: vec![
-                    "permission".into(),
-                    "dialog".into(),
-                    "awareness".into(),
-                    "create".into(),
-                ],
+                features: [
+                    "permission",
+                    "dialog",
+                    "awareness",
+                    "create",
+                    // Tickets for an away host wait at the relay (T-497).
+                    if self.control.mail { "mailbox" } else { "" },
+                ]
+                .into_iter()
+                .filter(|f| !f.is_empty())
+                .map(String::from)
+                .collect(),
             },
         })
         .unwrap_or_default();
@@ -636,7 +670,7 @@ impl Daemon {
                 .cloned()
                 .unwrap_or(Reply::Delivery { status: "unknown".into() }),
             api::Request::Create { title, description, column, tags } => {
-                self.control_create(&by, title, description, column, &tags)
+                self.control_create(&by, title, description, column, &tags, None)
             }
         };
         self.control.remember(grant, command.id, reply.clone());
@@ -1064,6 +1098,7 @@ impl Daemon {
         description: String,
         column: Option<String>,
         tags: &[api::TagPick],
+        envelope: Option<ObjectId>,
     ) -> Reply {
         let reject = |message: String| Reply::Rejected { message };
         let Some(column) = column.or_else(|| self.board.landing_column()) else {
@@ -1098,6 +1133,7 @@ impl Daemon {
             tags,
             note: Some((note, Vec::new())),
             tier: None,
+            envelope: envelope.map(ObjectId::to_hex),
         };
         match self.mint_full(by, mint) {
             Ok(id) => {
@@ -1111,6 +1147,107 @@ impl Daemon {
             }
             Err(message) => reject(message),
         }
+    }
+
+    /// A batch from the relay's mailbox (T-497): every envelope answered,
+    /// then the next batch asked for, until the relay sends an empty one.
+    fn control_mail(&mut self, items: Vec<control::MailItem>) {
+        let Some(board) = self.control.stored.as_ref().map(|s| s.board) else { return };
+        let more = !items.is_empty();
+        for item in items {
+            let answer = self.control_file_mail(board, item);
+            self.control.send(answer);
+        }
+        if more {
+            self.control.send(Wire::Collect { board });
+        }
+    }
+
+    /// One envelope: opened with the grant it claims, filed at most once, and
+    /// answered by a receipt only that grant's browser can open. A sender
+    /// with no grant, or a letter that does not open, is dropped unanswered.
+    fn control_file_mail(&mut self, board: BoardId, item: control::MailItem) -> Wire {
+        let control::MailItem { device, envelope } = item;
+        let id = envelope.id;
+        let discard = Wire::Discard { device, id };
+        let Some(grant) = self
+            .control
+            .stored
+            .as_ref()
+            .and_then(|s| s.grants.iter().find(|g| g.device == device))
+            .cloned()
+        else {
+            return discard;
+        };
+        if !self.control_granted(grant.id, device) {
+            return discard;
+        }
+        let Some(body) = self.control.keys.as_ref().and_then(|keys| {
+            control::open_mail(board, grant.id, &envelope, keys, &grant.public).ok()
+        }) else {
+            return discard;
+        };
+        let reply = self.control_filed(&grant, id, body);
+        let receipt = serde_json::to_value(&reply).ok().and_then(|body| {
+            let keys = self.control.keys.as_ref()?;
+            control::seal_receipt(board, grant.id, id, keys, &grant.public, body).ok()
+        });
+        match receipt {
+            Some(receipt) => Wire::Collected { device, receipt: Box::new(receipt) },
+            None => discard,
+        }
+    }
+
+    /// File one opened envelope, or give the answer it already had. Written
+    /// while its browser was away, it lands where it can: a column the board
+    /// has since lost becomes the default one, and a tag it lost is dropped.
+    fn control_filed(&mut self, grant: &Grant, id: ObjectId, body: serde_json::Value) -> Reply {
+        let hex = id.to_hex();
+        if let Some(t) = self.board.tickets.iter().find(|t| t.envelope.as_deref() == Some(&hex)) {
+            return Reply::Created {
+                ticket: t.id.to_string(),
+                key: t.short_key.clone(),
+                column: t.column.clone(),
+            };
+        }
+        if let Some(f) =
+            self.control.stored.as_ref().and_then(|s| s.filed.iter().find(|f| f.envelope == id))
+        {
+            return Reply::Created {
+                ticket: f.ticket.clone(),
+                key: f.key.clone(),
+                column: f.column.clone(),
+            };
+        }
+        let Ok(ticket) = serde_json::from_value::<api::MailTicket>(body) else {
+            return Reply::Rejected { message: "the ticket did not read".into() };
+        };
+        let column = ticket.column.filter(|c| self.board.column(c).is_some());
+        let tags: Vec<_> = ticket
+            .tags
+            .into_iter()
+            .filter(|t| self.board.tag_def(t.group, &t.name).is_some())
+            .collect();
+        let by = Principal::Paired { device: grant.device.to_hex(), grant: grant.id.to_hex() };
+        let reply =
+            self.control_create(&by, ticket.title, ticket.description, column, &tags, Some(id));
+        if let Reply::Created { ticket, key, column } = &reply {
+            if let Some(mut s) = self.control.stored.clone() {
+                s.filed.push(Filed {
+                    envelope: id,
+                    ticket: ticket.clone(),
+                    key: key.clone(),
+                    column: column.clone(),
+                });
+                let excess = s.filed.len().saturating_sub(FILED_KEEP);
+                s.filed.drain(..excess);
+                // The ticket itself already holds the envelope: a failed
+                // save here costs only the replay guard, never a duplicate.
+                let _ = self.control_save(&s);
+                self.control.stored = Some(s);
+            }
+        }
+        reply
     }
 
     fn control_board(&self) -> Reply {

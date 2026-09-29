@@ -38,17 +38,26 @@ answers and prompts until the terminal is back.
 **New ticket** (the floating button on a phone, the header button on a wider screen, or
 **Add to** at the foot of a board column) opens a sheet with a title, optional details
 (Markdown, up to 32 KiB, saved as the ticket’s description), a column and the board’s
-own tags, one per group. **Sent** lists the tickets this browser filed: a clock while
-the answer is out, two ticks and the new key once the ticket is on the board, and
-**Open** to go to it. Sent’s bar files a ticket from a title alone.
+own tags, one per group. **Sent** lists the tickets this browser filed, and its bar
+files a ticket from a title alone.
 
-A ticket from the browser lands quietly: no agent starts on it. It is filed as
-yours, into a column the board already has, and can only wear tags the board already
-has. Sending needs the terminal live; while it is away the
-sheet keeps what you wrote and **Send** waits. If the answer is lost on the way, the
-browser asks for it when it reconnects and never files the ticket twice; after a
-host restart it says **delivery unknown**, so check the board before sending again.
-Hosts from before this version do not take tickets, and the sheet says so.
+A ticket goes out whether or not your terminal is reachable, and its ticks say where it is:
+
+- **A clock**: sealed and saved in this browser, because this browser or the relay is
+  out of reach. It goes out by itself when they are back, reloads included.
+- **One tick**: sealed at the relay, waiting for your terminal. Until the terminal
+  collects it you can **Unsend** it (the relay deletes it) or **Edit** it (taken back,
+  then sent again as you change it).
+- **Two ticks** and the new key: on your board, with **Open** to go to it. Only your
+  terminal can seal this answer, so the relay cannot claim a ticket landed.
+
+Now lists the tickets on their way under **Waiting to land**, and Board shows them as
+dashed cards in their columns. A ticket from the browser lands quietly: no agent starts
+on it. It is filed as yours and lands exactly once, however often it is delivered, and
+a ticket you delete is not brought back by a late copy. Written against a column or a
+tag the board has since lost, it lands in the default column, without that tag. A
+terminal that has never been live with this version keeps no tickets for later, and
+the sheet says so.
 
 ## Sending a prompt
 
@@ -97,13 +106,17 @@ boards; revoke on the host to remove the corresponding grants too.
 ## What is stored where
 
 The daemon stores `mesophon.json` (mode 0600) in its existing per-board state
-directory, containing only the opaque board identity and device grants. Pairing
+directory, containing the opaque board identity, the device grants and the ids of the
+tickets it filed most recently from the relay, with their keys. A ticket filed from the
+relay also records that id in its own `ticket.toml`. Pairing
 secrets and delivery receipts live in memory. The browser stores device keys,
 credentials, remembered grants and, per grant, the last board it saw and the tickets
 it sent, in IndexedDB. The remembered board holds ticket keys, titles, columns (with
 their descriptions), the board’s tag names and agent states; never output, prompt or
-queued text, tool input or dialog content. The Sent list keeps up to 50 filed tickets:
-title, column, tags, key and status, and the details only of a ticket that did not
-land. Revocation and **Forget this browser** delete both. Output and unsent text remain in memory. The relay routes encrypted content and stores only routing
-metadata for Mesophon. Browser assets are served by the relay, so the relay’s web
+queued text, tool input or dialog content. The Sent list keeps every ticket still on
+its way (sealed, while it is only in this browser) and up to 50 settled ones: title,
+column, tags, key and status, and the details only of a ticket that has not landed.
+Revocation and **Forget this browser** delete both. Output and unsent prompts remain in memory. The relay routes encrypted content and stores routing metadata for
+Mesophon, plus the tickets that wait for an away terminal and the terminal’s answers:
+sealed, with the board, device and ticket ids, deleted after 30 days. Browser assets are served by the relay, so the relay’s web
 deployment is part of the browser client’s trust boundary.

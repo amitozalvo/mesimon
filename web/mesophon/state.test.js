@@ -275,3 +275,43 @@ test("the remembered board keeps the New ticket sheet's facts", () => {
   assert.equal(older.landing(), "TODO", "an older host's board lands in its first column");
   assert.deepEqual(older.allowedTags, []);
 });
+
+test("a mailed ticket goes clock, one tick, two ticks, and keeps its seal only while local", async () => {
+  const { Sent } = await import("./sent.js");
+  const sent = new Sent();
+  const envelope = { id: "envelope-1", wrapped: {}, record: {} };
+  const item = sent.add("board", { title: "Away", description: "words", column: "TODO" }, 1, envelope);
+  assert.equal(item.id, "envelope-1", "the relay's id is the item's");
+  assert.equal(item.status, "local");
+  assert.deepEqual(sent.waiting("board"), [item]);
+  let stored = sent.stored("board");
+  assert.deepEqual(stored[0].envelope, envelope, "a reload can still send it");
+  sent.deposited(item);
+  assert.equal(item.status, "relay");
+  assert.equal(item.envelope, undefined);
+  stored = sent.stored("board");
+  assert.equal(stored[0].envelope, undefined);
+  assert.equal(stored[0].description, "words", "kept for Edit while it waits");
+  sent.reply(item, { result: "created", ticket: "t", key: "T-9", column: "TODO" });
+  assert.equal(item.status, "landed");
+  assert.deepEqual(sent.waiting("board"), []);
+
+  const back = sent.add("board", { title: "Back", description: "gone words", column: "TODO" }, 2, { id: "envelope-2" });
+  sent.withdrawn(back);
+  assert.equal(back.status, "withdrawn");
+  assert.equal(back.description, "");
+  assert.equal(sent.unsettled("board"), 0, "unsent is settled");
+  const lost = sent.add("board", { title: "Lost", column: "TODO" }, 3, { id: "envelope-3" });
+  sent.deposited(lost);
+  sent.gone(lost);
+  assert.equal(lost.status, "unknown");
+  const reloaded = new Sent();
+  reloaded.restore("board", [
+    ...JSON.parse(JSON.stringify(sent.stored("board"))),
+    { id: "envelope-4", title: "Sealed copy lost", status: "local", at: 4 },
+  ]);
+  assert.deepEqual(
+    reloaded.forBoard("board").map((i) => [i.title, i.status]),
+    [["Away", "landed"], ["Back", "withdrawn"], ["Lost", "unknown"], ["Sealed copy lost", "unknown"]],
+  );
+});

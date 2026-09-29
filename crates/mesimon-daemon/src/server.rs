@@ -58,6 +58,8 @@ pub(crate) struct Mint {
     pub note: Option<(String, Images)>,
     /// The composer's tier pick (T-443), a tier id; `None` is the default.
     pub tier: Option<String>,
+    /// The Mesophon envelope a paired browser filed this from (T-497).
+    pub envelope: Option<String>,
 }
 
 /// The composer's draft as `CreateTicketWithNote` carries it: what
@@ -76,7 +78,16 @@ impl Mint {
     /// A title alone in a column: the thin `CreateTicket` and the adoption
     /// of an external session.
     fn bare(column: String, title: String, workspace: Option<WorkspaceStrategy>) -> Self {
-        Mint { column, title, workspace, from: None, tags: Vec::new(), note: None, tier: None }
+        Mint {
+            column,
+            title,
+            workspace,
+            from: None,
+            tags: Vec::new(),
+            note: None,
+            tier: None,
+            envelope: None,
+        }
     }
 }
 
@@ -4534,6 +4545,7 @@ impl Daemon {
             tags,
             note: description.map(|text| (text, Vec::new())),
             tier: None,
+            envelope: None,
         };
         let id = match self.mint_full(by, mint) {
             Ok(id) => id,
@@ -5999,6 +6011,7 @@ impl Daemon {
             tags: refs,
             note: Some((text, images)),
             tier,
+            envelope: None,
         };
         match self.mint_full(&Principal::Local, mint) {
             Ok(id) => {
@@ -6149,6 +6162,7 @@ impl Daemon {
             execution_policy: source.execution_policy,
             tier: source.tier,
             import_origin: source.import_origin,
+            envelope: None,
             raised: None,
             workspace: source.workspace,
             tags: source.tags,
@@ -6205,7 +6219,7 @@ impl Daemon {
     /// ticket yet. Persists and notifies; the caller adds its own feed
     /// line or upload commit.
     fn mint_full(&mut self, by: &Principal, mint: Mint) -> Result<ulid::Ulid, String> {
-        let Mint { column, title, workspace, from, tags, note, tier } = mint;
+        let Mint { column, title, workspace, from, tags, note, tier, envelope } = mint;
         // A barred columns.toml means next_key cannot be persisted, so a new
         // ticket's short_key would regress on the next start and save_ticket
         // would write over an existing ticket directory.
@@ -6282,6 +6296,7 @@ impl Daemon {
             execution_policy: Default::default(),
             tier,
             import_origin: None,
+            envelope,
             raised: None,
             workspace,
             tags: Vec::new(),

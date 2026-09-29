@@ -232,6 +232,7 @@ mod tests {
             tier: None,
             workspace: None,
             import_origin: None,
+            envelope: None,
             raised: None,
             previous_column: None,
             tags: Vec::new(),
