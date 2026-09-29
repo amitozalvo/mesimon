@@ -27,6 +27,7 @@ mod opener;
 mod osc;
 mod peek;
 mod prefs;
+mod quiet;
 mod release;
 mod rich;
 mod tags;
@@ -47,8 +48,7 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, EndSynchronizedUpdate,
-    EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 
 use app::App;
@@ -303,10 +303,7 @@ fn reexec(repo_root: &Path) -> Result<()> {
     Err(anyhow::anyhow!("exec of the new binary failed: {err}"))
 }
 
-fn event_loop(
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
-    app: &mut App,
-) -> Result<()> {
+fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
     // The notification thread writes an escape to this same stdout on its
     // two escape rungs, so the draw and the write take one lock (T-291).
     // Cloned out of `App` here: the guard has to outlive the borrow the draw
@@ -320,14 +317,11 @@ fn event_loop(
     loop {
         {
             let _held = console.as_deref().map(crate::notify::Console::drawing);
-            // DECSET 2026: the frame lands in one piece on a terminal that
-            // honours it (iTerm2, kitty, ghostty, WezTerm, foot, tmux ≥3.4)
-            // and is two ignored sequences on one that does not.
+            // Every tick renders, and only a frame that changed writes — an
+            // idle board sends the tty nothing, so a background iTerm2 tab
+            // does not spin its activity indicator (T-496).
+            quiet::draw(terminal, |f| ui::draw(f, app))?;
             let mut out = std::io::stdout();
-            execute!(out, BeginSynchronizedUpdate)?;
-            let drawn = terminal.draw(|f| ui::draw(f, app));
-            execute!(out, EndSynchronizedUpdate)?;
-            drawn?;
             // The shin PNGs, on the first frame the icon row wants them:
             // a write under the state dir, so it happens here and not in
             // `App`. A failure leaves the row inert rather than the loop.
@@ -428,7 +422,7 @@ fn event_loop(
     }
 }
 
-type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
+type Term = ratatui::Terminal<quiet::Quiet<std::io::Stdout>>;
 
 fn init_terminal() -> Result<Term> {
     enable_raw_mode()?;
@@ -463,8 +457,7 @@ fn init_terminal() -> Result<Term> {
             )
         )?;
     }
-    let backend = ratatui::backend::CrosstermBackend::new(stdout);
-    let mut t = ratatui::Terminal::new(backend)?;
+    let mut t = ratatui::Terminal::new(quiet::Quiet::new(stdout))?;
     t.clear()?;
     Ok(t)
 }

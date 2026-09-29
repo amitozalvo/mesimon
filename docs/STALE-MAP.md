@@ -15105,3 +15105,33 @@ and the L1 laws would have to learn it; stays banked under T-487's survey. A tit
 string in `prefs.json`: three shapes cover every state the board has, and a format the user
 edits is a format that can spell an escape. XTWINOPS raise/de-iconify: `allowWindowOps` is off
 nearly everywhere and a window that jumps forward is the tmux veto's failure by another road.
+
+## An idle board writes nothing, so a background iTerm2 tab stops spinning (T-496, 2026-09-29, "while not inside mesimon terminal tab, the terminal tab shows a loading ring even if no ticket is running")
+
+**The spinner was iTerm2's, not ours.** The progress ring (`OSC 9;4`, T-492) was correctly off —
+the board in the screenshot had 89 sleeping sessions and none working. What spun was iTerm2's
+tab activity indicator: `PTYSession.isProcessing` is "any byte executed in the last
+`idleTimeSeconds`" (2 s, an advanced setting), and `PTYTab.isProcessing` shows it only while the
+tab is NOT the front one — which is the ticket's "while not inside". The board drew every 100 ms
+tick, and an unchanged frame still wrote ~41 bytes: crossterm's backend ends every `draw` with
+an SGR reset even on an empty diff, ratatui hides (or shows and moves) the cursor after every
+frame, and T-492 wrapped each frame in `DECSET 2026`. ~400 B/s of nothing, forever.
+
+**Built: `tui/src/quiet.rs`**, a `Backend` around crossterm's that holds the tab's own rule (a
+tick costs the tty no bytes) for the frame too: an empty diff writes nothing, a cursor
+hide/show/move that repeats the last one writes nothing (a drawn cell or a clear forgets the
+position, so the next frame re-places it), and the synchronized update opens on a frame's first
+real write and closes at `quiet::draw`'s end. A clear outside a frame (^L, `init_terminal`) opens
+none — one left open across a handover would freeze the pane the terminal is handed to. Measured
+on a real pty (tmux `pipe-pane`): an idle board wrote 0 bytes over 12 s after its first paint.
+
+**Rejected: gating the draw on `dirty`.** The board's time-driven content (the spinner, the
+marquee, relative ages) is not all tracked by `tick`'s dirty flag; rendering every tick and
+writing only the difference keeps the frame rate honest without a second source of truth.
+**Rejected: comparing buffers in the loop.** ratatui's `Frame::cursor_position` is `pub(crate)`,
+so a loop-side compare cannot see a cursor-only change (a step in a text field); the backend is
+the one place that sees every byte.
+
+**Still true:** a board with an agent working, or any cell changing (a relative age ticking over,
+a marquee pass), is output, and iTerm2 spins for it — that is the indicator doing its job. Users
+who never want it: iTerm2 Settings › Appearance › Tabs › "Show activity indicator".
