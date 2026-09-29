@@ -742,6 +742,46 @@ select {
   text-transform: uppercase;
   color: var(--ink3);
 }
+/* The board picker (T-510): the sub line is a button, and the menu opens
+   in flow under the brand, so no box clips it. */
+.side-pick {
+  max-width: 100%;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: -2px 0 0 -4px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+.side-pick:hover,
+.side-pick[aria-expanded="true"] {
+  background: var(--s1);
+  color: var(--ink2);
+}
+.side-pick-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.board-menu {
+  display: grid;
+  gap: 2px;
+  margin: -12px 0 -6px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--s1);
+  animation: drop 0.2s ease-out;
+}
+.board-menu .side-board[aria-current="true"] {
+  background: var(--s2);
+}
+.side-board-add {
+  color: var(--ink3);
+}
 .side-close,
 .side-toggle {
   display: none;
@@ -802,13 +842,6 @@ select {
 }
 .side-section > .label {
   padding: 0 6px;
-}
-.side-boards {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 2px;
 }
 .side-board {
   width: 100%;
@@ -1393,53 +1426,8 @@ select {
   color: var(--ink2);
   font-size: 0.78125rem;
 }
-/* Starting an agent from here (T-498): on a card without one, the agent's
-   row holds a start, laid over the card's foot as a button of its own. */
-.card-shell {
-  display: grid;
-}
-.card-shell > * {
-  grid-area: 1 / 1;
-}
-.card-shell .ticket.card {
-  padding-bottom: 54px;
-}
-.card-shell:hover .ticket.card:not([aria-pressed="true"]) {
-  background: var(--s2);
-}
-.card-foot {
-  align-self: end;
-  justify-self: start;
-  padding: 0 0 10px 10px;
-}
-.card-start {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 12px 0 10px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  box-shadow: inset 0 0 0 1px var(--line2);
-  color: var(--ink2);
-  font-size: 0.8125rem;
-  font-weight: 500;
-}
-/* A 44px target on a 34px pill. */
-.card-start::before {
-  content: "";
-  position: absolute;
-  inset: -5px -4px;
-}
-.card-start:hover:not(:disabled) {
-  background: var(--s3);
-  color: var(--ink);
-}
-.card-start:disabled {
-  opacity: 0.45;
-}
+/* Starting an agent from here (T-498, T-510): the ticket page's line
+   holds the start, and the receipt follows it. */
 .start-receipt {
   display: flex;
   align-items: center;
@@ -1448,19 +1436,25 @@ select {
   font-size: 0.8125rem;
   overflow-wrap: anywhere;
 }
-.card-foot .start-receipt {
-  min-height: 34px;
-  padding: 0 4px;
+.start-receipt:empty {
+  display: none;
 }
 .start-agent {
   flex-shrink: 0;
+}
+.start-title {
+  color: var(--ink2);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 /* ---- detail ------------------------------------------------------------------ */
 .detail-head {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 12px;
   padding: 20px 24px 10px;
 }
 #back,
@@ -1498,7 +1492,20 @@ select {
 .chips {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+}
+/* The ticket's line (T-510): tags and column at the left, the key at the
+   right, as the TUI's page has it. */
+.ticket-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.detail-shin {
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 .chips:empty {
   display: none;
@@ -1512,21 +1519,19 @@ select {
   gap: 14px;
   padding: 0 24px 16px;
 }
-.agent-card {
+.agent-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
+  justify-content: space-between;
+  gap: 10px 14px;
   padding: 12px 16px;
   border-radius: 18px;
   background: var(--s1);
 }
-.agent-words {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
 #agent-state {
+  flex: 1;
+  min-width: 160px;
   color: var(--ink2);
   font-size: 0.875rem;
   overflow-wrap: anywhere;
@@ -1860,7 +1865,6 @@ select {
   color: var(--ink4);
 }
 #delivery {
-  min-height: 1.5em;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1909,6 +1913,17 @@ select {
 .add-to-column:hover {
   background: var(--s1);
   color: var(--ink2);
+}
+/* Shown on the column's hover (T-510), or where nothing hovers. */
+@media (hover: hover) {
+  .add-to-column {
+    opacity: 0;
+    transition: opacity 0.15s ease-out;
+  }
+  .column:hover .add-to-column,
+  .column:focus-within .add-to-column {
+    opacity: 1;
+  }
 }
 .from-here {
   display: inline-flex;
@@ -2436,6 +2451,7 @@ button.sent-sys:hover {
     padding: 0;
   }
   #shell[data-side="rail"] .side-brand-text,
+  #shell[data-side="rail"] .board-menu,
   #shell[data-side="rail"] .side-section,
   #shell[data-side="rail"] .mode > span:not(.badge) {
     display: none;
@@ -2477,6 +2493,15 @@ button.sent-sys:hover {
   }
   #shell[data-mode="board"][data-detail="false"] #detail {
     display: none;
+  }
+  .detail-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    border: 0;
+    background: var(--scrim);
+    animation: fade 0.25s ease-out;
+    cursor: default;
   }
   #shell[data-mode="board"] #close-detail {
     display: inline-flex;
@@ -2567,9 +2592,12 @@ button.sent-sys:hover {
   #sidebar.open .side-close {
     display: inline-flex;
   }
-  #sidebar.open .side-board[aria-current="true"],
+  #sidebar.open .board-menu,
   #sidebar.open .hop-icon {
     background: var(--s2);
+  }
+  #sidebar.open .board-menu .side-board[aria-current="true"] {
+    background: var(--s3);
   }
   .side-nav {
     display: none;

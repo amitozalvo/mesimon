@@ -15,7 +15,7 @@ export function stateAge(board, agent) {
   if (board.cached || !Number.isFinite(agent?.since)) return "";
   const seconds = Math.max(0, (Date.now() - agent.since) / 1000);
   return seconds < 60
-    ? "<1m"
+    ? "now"
     : seconds < 3600
       ? `${Math.floor(seconds / 60)}m`
       : seconds < 86400
@@ -60,11 +60,14 @@ export function StartReceipt({ item, agent }) {
 }
 
 // Enabled while the terminal is live and nothing is starting here already.
-export function StartButton({ store, ticket, compact = false }) {
+// On a parked agent it is the wake (T-510). The ticket page alone holds
+// it: a Board card opens the ticket, and the words are asked for there.
+export function StartButton({ store, ticket }) {
   const waiting = startWaiting(store.startOf(ticket));
-  return html`<button type="button" class=${compact ? "card-start" : "btn start-agent"} data-start=${ticket.id}
-    aria-label=${`Start agent on ${ticket.key}`} disabled=${!store.canStart || waiting}
-    onClick=${() => store.startAgent(ticket.id)}><${Icon} name="play" size=${compact ? 13 : 16} /><span>Start agent</span></button>`;
+  const asleep = ticket.agent?.state === "sleeping";
+  return html`<button type="button" class="btn start-agent" data-start=${ticket.id}
+    aria-label=${`${asleep ? "Wake" : "Start"} agent on ${ticket.key}`} disabled=${!store.canStart || waiting}
+    onClick=${() => store.openStart(ticket.id)}><${Icon} name="play" size=${16} /><span>${asleep ? "Wake agent" : "Start agent"}</span></button>`;
 }
 
 // A ticket this browser sent carries a small phone mark on the board.
@@ -218,23 +221,13 @@ function Card({ store, ticket, board }) {
   const agent = ticket.agent;
   const needs = agent?.state === "needs attention";
   const since = stateAge(board, agent);
-  const card = html`<button type="button" class=${`ticket card${needs ? " card-attn" : ""}`} data-id=${ticket.id}
+  return html`<button type="button" class=${`ticket card${needs ? " card-attn" : ""}`} data-id=${ticket.id}
     aria-pressed=${String(pressed)} onClick=${() => store.select(ticket.id)}>
     <span class="ticket-title" dir="auto">${ticket.title}</span>
     <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span>
     <${Tags} ticket=${ticket} />
     ${agent && html`<span class=${`card-agent${needs ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${agent.state}${since && ` · ${since}`}</span></span>`}
   </button>`;
-  if (agent || !store.startsAgents) return card;
-  // No agent (T-498): the agent's row holds a start, or the start on its
-  // way, laid over the card's foot as a button of its own.
-  const start = store.startOf(ticket);
-  return html`<div class="card-shell">
-    ${card}
-    ${startWaiting(start)
-      ? html`<div class="card-foot"><${StartReceipt} item=${start} /></div>`
-      : html`<div class="card-foot"><${StartButton} store=${store} ticket=${ticket} compact=${true} /></div>`}
-  </div>`;
 }
 
 // Phone: one column at a time. Tablet: columns stacked. Desktop: side by side.

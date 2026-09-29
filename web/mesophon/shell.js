@@ -5,7 +5,7 @@ import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { NowList, BoardList, SentList, ColumnTabs, lastSeen } from "./lists.js";
 import { Detail } from "./detail.js";
-import { NewTicket, QuickNew } from "./compose.js";
+import { NewTicket, QuickNew, StartSheet } from "./compose.js";
 
 // Subscribe during the commit, not after paint: a fast boot can emit before
 // a deferred effect runs, and that change would never reach the page.
@@ -183,32 +183,46 @@ function About({ store }) {
   </details>`;
 }
 
+// The board's name under the brand is the picker (T-510): a press lists
+// every paired board and the way to pair one more.
+function BoardPicker({ store }) {
+  const open = store.boardMenuOpen;
+  return html`<button id="board-picker" type="button" class="side-sub side-pick" aria-haspopup="menu"
+    aria-expanded=${String(open)} aria-controls="board-list" onClick=${() => store.openBoardMenu(!open)}>
+    <span class="side-pick-name">${store.board?.title || store.active?.title || "Paired board"}</span>
+    <${Icon} name="chevronDown" size=${12} width=${2.4} /></button>`;
+}
+
+function BoardMenu({ store }) {
+  const boards = store.identity?.boards || [];
+  const link = store.link;
+  return html`<div id="board-list" class="board-menu" role="menu" aria-label="Paired boards">
+    ${boards.map((b) => html`<button type="button" role="menuitem" class="side-board" key=${b.pin.board}
+      aria-current=${String(b === store.active)} onClick=${() => store.switchBoard(b.pin.board)}>
+      <span class=${`hop-dot${b === store.active && store.live ? " ok" : ""}`} aria-hidden="true"></span>
+      <span class="side-board-name">${b.title || "Paired board"}</span>
+      <span class="side-board-state">${b.revoked ? "Access removed" : b === store.active ? linkLabel[link] : ""}</span>
+    </button>`)}
+    <button id="add-board" type="button" role="menuitem" class="side-board side-board-add" onClick=${() => store.showPairing()}>
+      <${Icon} name="plus" size=${16} /><span class="side-board-name">Pair a board</span></button>
+  </div>`;
+}
+
 function Sidebar({ store, bp }) {
   const open = store.sheetOpen && bp !== "desktop";
-  const link = store.link;
-  const boards = store.identity?.boards || [];
   return html`
     ${open && html`<button type="button" class="scrim" aria-label="Close boards and settings" onClick=${() => store.openSheet(false)}></button>`}
     <aside id="sidebar" class=${open ? "open" : ""} aria-label="Boards and settings">
       <div class="side-brand">
         <${Shin} scale=${3} light=${lightOf(store)} />
-        <span class="side-brand-text"><span class="side-title">${store.board?.title || store.active?.title || "mesimon"}</span><span class="side-sub">Remote Control</span></span>
+        <span class="side-brand-text"><span class="side-title">mesimon</span><${BoardPicker} store=${store} /></span>
         <button id="side-toggle" type="button" class="icon-btn side-toggle" aria-expanded=${String(!store.rail)}
           aria-label=${store.rail ? "Expand the sidebar" : "Collapse the sidebar"} title=${store.rail ? "Expand" : "Collapse"}
           onClick=${() => store.setRail(!store.rail)}><${Icon} name="panelLeft" size=${18} /></button>
         <button type="button" class="icon-btn side-close" aria-label="Close" onClick=${() => store.openSheet(false)}><${Icon} name="x" size=${20} /></button>
       </div>
+      ${store.boardMenuOpen && html`<${BoardMenu} store=${store} />`}
       <nav class="side-nav" aria-label="View"><${ModeButtons} store=${store} board=${store.board} /></nav>
-      <section class="side-section" aria-label="Paired boards">
-        <h2 class="label">Paired boards</h2>
-        <ul class="side-boards">${boards.map((b) => html`<li key=${b.pin.board}>
-          <button type="button" class="side-board" aria-current=${String(b === store.active)} onClick=${() => store.switchBoard(b.pin.board)}>
-            <span class=${`hop-dot${b === store.active && store.live ? " ok" : ""}`} aria-hidden="true"></span>
-            <span class="side-board-name">${b.title || "Paired board"}</span>
-            <span class="side-board-state">${b.revoked ? "Access removed" : b === store.active ? linkLabel[link] : ""}</span>
-          </button></li>`)}</ul>
-        <button id="add-board" type="button" class="btn btn-quiet" onClick=${() => store.showPairing()}><${Icon} name="plus" size=${16} /><span>Pair another board</span></button>
-      </section>
       <section class="side-section settings" aria-label="Settings">
         <h2 class="label">Settings</h2>
         <label class="field">Appearance<select id="theme" value=${store.theme} onChange=${(e) => store.setTheme(e.currentTarget.value)}>
@@ -300,6 +314,7 @@ function Shell({ store, bp, hidden }) {
       ${store.status !== "Connected" && html`<${LinkIcon} link=${store.link} />`}<span>${store.status}</span></p>`}
     <div class="workspace">
       <${WorkList} store=${store} bp=${bp} />
+      ${bp === "desktop" && mode === "board" && store.detailOpen && html`<button type="button" class="detail-scrim" aria-label="Close the ticket" onClick=${() => store.back()}></button>`}
       <${Detail} store=${store} bp=${bp} />
     </div>
   </div>`;
@@ -324,5 +339,6 @@ export function App({ store }) {
     <${Pairing} store=${store} hidden=${store.screen !== "pair"} />
     <${Shell} store=${store} bp=${bp} hidden=${store.screen === "pair"} />
     <${NewTicket} store=${store} />
+    <${StartSheet} store=${store} />
     <${Toast} store=${store} />`;
 }

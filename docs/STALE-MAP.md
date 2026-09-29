@@ -15695,3 +15695,45 @@ its service account. Measured on the way: rclone lists a bucket before every upl
 write-only role forbids, and its `no_check_bucket = true` (plus `--no-check-dest` on the copy) is
 what makes a write-only remote work. The dumps are `age`-encrypted to a key only the author's Mac
 holds, so the bucket's contents are opaque to GCP too.
+
+## Mesophon: the start asks for its words, and the page loses its duplicates (T-510, 2026-09-30, "remote UI fixes")
+
+Nine fixes to Remote Control's page from a dogfood pass, and one wire change.
+
+**A start is the desk's Shift+Enter, words first.** The Start button opens a sheet for the first
+prompt (`StartSheet` in `compose.js`, `store.startAsk`), and `Request::Start` gained
+`prompt: Option<String>` (`#[serde(default)]`, so T-498's page still parses; the page sends the
+field only when there are words, so an older host still takes a blank start). Blank is what the
+desk's blank Enter is: on an empty seat the provider the tiers give the ticket starts on its
+title and description; on a **sleeping** agent the start is a wake — with words through
+`prompt_sleeping`, without through `resume_session_in`, since a wake with no words is
+`WakeSession` and never a paste of nothing (`prompt_session` refuses a blank on a parked seat for
+that reason). `seat_refusal` no longer refuses a parked agent; the button reads "Wake agent"
+there, the composer treats a parked agent as no agent (no pane to type at), and the Output
+section hides with it. **The button lives on the ticket page alone** (author, mid-ticket): the
+Board card's `card-shell` and its overlaid start are gone, so a card is one button again.
+
+**The ticket page's head.** The shin moved up beside the title and the agent card under it is
+gone: it repeated the column and the provider from the chips and the agent's last words from the
+Output below. The state and age survive as the shin's `sr-only` label (`#agent-word`). Under the
+title one line holds the tags and the column chip at the left and the key at the right, as the
+TUI's ident line does; the key left the `h2`, so the tests read `.selection-key`. The provider
+chip is gone. Over an empty or a parked seat a one-line `agent-line` carries the words and the
+Start; the receipt follows it, and a seated agent needs no line. `.chips` centres its items,
+which was the misalignment in the ticket's first picture.
+
+**Smaller.** `+ Add to <column>` shows on the column's hover or focus alone, and always where
+nothing hovers (`@media (hover: hover)`). `#delivery` is hidden when it has nothing to say
+instead of holding a line open under the composer. A desktop's Board opens the ticket over a
+`detail-scrim` that closes it on a press. The sidebar's "Remote Control" sub line is the board
+picker (`#board-picker`): the brand reads `mesimon` over the board's name, a press opens an
+in-flow menu (`#board-list`) of every paired board and "Pair a board" (`#add-board`, kept), a
+press elsewhere or Escape closes it, and the "Paired boards" section is gone. A state age under a
+minute reads `now`, not `<1m`.
+
+Verified: core and daemon units (the wire shape with and without `prompt`, the seat rule with a
+parked agent allowed), clippy on both crates, and the UX suite in Chromium and WebKit at desktop,
+tablet and phone with the start flow rewritten (no card start, the sheet blank and with words, a
+wake on a parked agent with the request carrying `prompt`, the overlay's backdrop, the board
+picker). `browser.test.js` (the relay's acceptance) goes through the sheet now; the relay
+repository must land after this one if it names `Request::Start` with fields.

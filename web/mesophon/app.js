@@ -38,10 +38,18 @@ addEventListener("hashchange", () => {
 });
 addEventListener("popstate", (event) => store.popstate(event.state));
 addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && store.sheetOpen) {
+  if (event.key !== "Escape") return;
+  if (store.boardMenuOpen) {
+    store.openBoardMenu(false);
+    document.getElementById("board-picker")?.focus();
+  } else if (store.sheetOpen) {
     store.openSheet(false);
     document.getElementById("board-menu")?.focus();
   }
+});
+// The board picker (T-510) closes on a press anywhere else.
+addEventListener("pointerdown", (event) => {
+  if (store.boardMenuOpen && !event.target.closest?.("#board-picker, #board-list")) store.openBoardMenu(false);
 });
 for (const event of ["focus", "blur"]) addEventListener(event, () => store.foreground());
 addEventListener("online", () => store.setOnline(true));

@@ -449,7 +449,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator('.sent-item[data-picked="desk"] .sent-tick .tick-picked').count(), 1);
     await shot("sent-picked");
     await status("landed").first().getByRole("button", { name: /Open/ }).click();
-    await until(page, () => document.querySelector("#selection").textContent.endsWith(" T-200"));
+    await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-200");
     await overview();
     await mode("board");
     if (size === "phone") await page.locator('[data-column="TODO"]').click();
@@ -692,16 +692,18 @@ async function ticketFlow(browser, engineName, size, viewport) {
   }
 }
 
-// Starting an agent from here (T-498): a start on a Board card and on the
-// ticket page, only where no agent is; a clock while the host starts one and
-// two ticks once it runs; a refusal; a lost answer asked after, never sent
-// again; the terminal away; an older host, which offers none.
+// Starting an agent from here (T-498, T-510): from the ticket page alone,
+// through a sheet that asks for the first prompt; a clock while the host
+// starts one and two ticks once it runs; a parked agent woken with words; a
+// refusal; a lost answer asked after, never sent again; the terminal away;
+// an older host, which offers none. Then the board picker under the brand.
 async function startFlow(browser, engineName, size, viewport) {
   const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
   await context.addInitScript(fixture);
   await context.addInitScript(() => {
     window.fixture.features.push("start");
     window.fixture.tickets[5].agent = null;
+    window.fixture.tickets[9].agent.state = "sleeping";
   });
   await context.route("**/pkg/mesimon_web.js", (route) =>
     route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
@@ -713,8 +715,15 @@ async function startFlow(browser, engineName, size, viewport) {
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
   };
+  // A desktop's Board opens the ticket over a backdrop (T-510): the next
+  // card is behind it until the backdrop closes the ticket.
+  const closeOverlay = async () => {
+    if (size === "desktop" && (await page.locator(".detail-scrim").count()))
+      await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
+  };
   const open = async (id) => {
     await overview();
+    await closeOverlay();
     await page.locator(`.ticket[data-id="${id}"]`).click();
   };
   const connected = () =>
@@ -724,9 +733,17 @@ async function startFlow(browser, engineName, size, viewport) {
     until(page, (status) => document.querySelector("#detail .start-receipt")?.dataset.status === status, status);
   const shot = (name) =>
     page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
-  const cardStart = (id) => page.locator(`.card-shell [data-start="${id}"]`);
   const pageStart = page.locator("#detail .start-agent");
+  const sheet = page.locator("#start-sheet");
   const receipt = page.locator("#detail .start-receipt");
+  // The page's start opens the sheet; the words, if any, and Start.
+  const start = async (text = "") => {
+    await pageStart.click();
+    await sheet.waitFor({ state: "visible" });
+    if (text) await page.locator("#start-prompt").fill(text);
+    await page.locator("#start-send").click();
+    await sheet.waitFor({ state: "hidden" });
+  };
   try {
     await page.goto(origin);
     await until(page, () => !document.querySelector("#pair").disabled);
@@ -736,69 +753,111 @@ async function startFlow(browser, engineName, size, viewport) {
     await mode("board");
     if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
 
-    // Only a card without an agent offers a start.
-    await cardStart("ticket-3").waitFor();
-    assert.deepEqual(
-      await page.locator(".card-shell [data-start]").evaluateAll((n) => n.map((b) => b.dataset.start).sort()),
-      ["ticket-3", "ticket-5"],
-    );
-    assert.equal(await cardStart("ticket-3").getAttribute("aria-label"), "Start agent on T-3");
+    // No card offers a start (T-510): the ticket page does, over an empty
+    // seat or a parked agent.
+    await page.locator('.ticket[data-id="ticket-3"]').waitFor();
+    assert.equal(await page.locator("[data-start]").count(), 0, "a Board card holds no start");
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.locator('.ticket[data-id="ticket-3"]').click();
+    await pageStart.waitFor();
+    assert.equal(await pageStart.getAttribute("aria-label"), "Start agent on T-3");
+    assert.equal(await page.locator("#agent-state").textContent(), "No agent on this ticket.");
+    if (size === "desktop") {
+      // Opened from the Board, the ticket sits on a backdrop that closes it.
+      await page.locator(".detail-scrim").waitFor();
+      await shot("start-overlay");
+      await closeOverlay();
+      await until(page, () => document.querySelector("#shell").dataset.detail === "false");
+      await page.locator('.ticket[data-id="ticket-3"]').click();
+      await pageStart.waitFor();
+    }
     for (const theme of ["graphite", "chalk"]) {
       await page.evaluate((name) => {
         const control = document.querySelector("#theme");
         control.value = name;
         control.dispatchEvent(new Event("change"));
       }, theme);
-      await shot(`start-board-${theme}`);
+      await shot(`start-ticket-${theme}`);
     }
 
-    // A clock while the host starts it, and the request names the ticket
-    // and nothing else: the provider and the prompt are the host's.
+    // The sheet asks for the first prompt. Blank, the request names the
+    // ticket and nothing else: the words and the provider are the host's.
     await page.evaluate(() => {
       fixture.startDisposition = "hold";
     });
-    await cardStart("ticket-3").click();
-    await page.locator('.card-foot .start-receipt[data-status="sending"]').waitFor();
+    await pageStart.click();
+    await sheet.waitFor({ state: "visible" });
+    assert.match(await page.locator("#start-heading").textContent(), /^Start agent · T-3$/);
+    assert.equal(await page.evaluate(() => document.activeElement.id), "start-prompt");
+    await shot("start-sheet");
+    await page.locator("#start-send").click();
+    await sheet.waitFor({ state: "hidden" });
+    await receiptIs("sending");
     await toast("Starting an agent on T-3");
     assert.equal(await page.locator("#toast .tick circle").count(), 1, "a clock");
     assert.deepEqual(await page.evaluate(() => fixture.starts), [{ op: "start", ticket: "ticket-3" }]);
+    assert(await pageStart.isDisabled(), "one start at a time");
     const command = await page.evaluate(() => fixture.startCommands.at(-1));
     await page.evaluate((id) => {
       fixture.answers[id] = { result: "delivery", status: "provisioning" };
       fixture.reply(fixture.answers[id], id);
     }, command);
-    await page.locator('.card-foot .start-receipt[data-status="provisioning"]').waitFor();
-    assert.match(await page.locator(".card-foot .start-receipt").textContent(), /worktree/);
-    assert.equal(await page.locator(".card-foot .start-receipt .tick circle").count(), 1);
-    // The agent comes up: the card shows it and offers no start.
+    await receiptIs("provisioning");
+    assert.match(await receipt.textContent(), /worktree/);
+    assert.equal(await receipt.locator(".tick circle").count(), 1);
+    // The agent comes up: the page shows it and offers no start.
     await page.evaluate((id) => fixture.begin("ticket-3", id), command);
     await until(
       page,
       () =>
-        !document.querySelector('[data-start="ticket-3"]') &&
-        document.querySelector('.ticket[data-id="ticket-3"] .card-agent')?.textContent.includes("claude · starting"),
+        !document.querySelector("#detail .start-agent") &&
+        document.querySelector("#agent-word")?.textContent.includes("claude · starting"),
     );
     // It took its first prompt: two ticks, found by the receipt's poll.
     await page.evaluate(() => fixture.run("ticket-3"));
     await toast("An agent is working on T-3");
     assert.equal(await page.locator("#toast .tick path").count(), 2, "two ticks");
-    await open("ticket-3");
     await receiptIs("started");
     assert.match(await receipt.textContent(), /Started from this browser · \d/);
     assert.equal(await receipt.locator(".tick path").count(), 2);
     assert.equal(await pageStart.count(), 0, "a ticket with an agent offers no start");
     await shot("start-started");
 
+    // A parked agent (T-510): the page offers a wake, the composer nothing,
+    // and the words go with the request.
+    await open("ticket-9");
+    await pageStart.waitFor();
+    assert.equal(await pageStart.getAttribute("aria-label"), "Wake agent on T-9");
+    assert.equal(await page.locator("#agent-state").textContent(), "codex is asleep on this ticket.");
+    assert(await page.locator("#send").isDisabled(), "a parked agent has no pane to message");
+    await page.evaluate(() => {
+      fixture.startDisposition = "starting";
+    });
+    await pageStart.click();
+    await sheet.waitFor({ state: "visible" });
+    assert.match(await page.locator("#start-heading").textContent(), /^Wake agent · T-9$/);
+    await page.locator("#start-prompt").fill("Rebase first, then run the tests.");
+    assert.equal(await page.locator("#start-send").textContent(), "Wake with these words");
+    await shot("wake-sheet");
+    await page.locator("#start-send").click();
+    await sheet.waitFor({ state: "hidden" });
+    await toast("Waking the agent on T-9");
+    assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), {
+      op: "start",
+      ticket: "ticket-9",
+      prompt: "Rebase first, then run the tests.",
+    });
+    await page.evaluate(() => fixture.run("ticket-9"));
+    await receiptIs("started");
+
     // Refused by the host: why, and the button stays to try again.
     await open("ticket-5");
     await pageStart.waitFor();
     assert.equal(await page.locator("#agent-state").textContent(), "No agent on this ticket.");
-    await shot("start-ticket");
     await page.evaluate(() => {
       fixture.startDisposition = "rejected";
     });
-    await pageStart.click();
+    await start();
     await receiptIs("rejected");
     assert.match(await receipt.textContent(), /Not started: this ticket already has an agent/);
     await toast("Not started: this ticket already has an agent");
@@ -808,7 +867,7 @@ async function startFlow(browser, engineName, size, viewport) {
     await page.evaluate(() => {
       fixture.startDisposition = "hold";
     });
-    await pageStart.click();
+    await start();
     await receiptIs("sending");
     assert(await pageStart.isDisabled(), "one start at a time");
     await page.evaluate(() => {
@@ -840,8 +899,6 @@ async function startFlow(browser, engineName, size, viewport) {
     assert(await pageStart.isDisabled());
     assert.match(await page.locator("#agent-state").textContent(), /needs your terminal back/);
     await shot("start-away");
-    await overview();
-    assert(await cardStart("ticket-7").isDisabled());
 
     // An older host, live again, offers no start anywhere.
     await page.evaluate(() => {
@@ -852,8 +909,25 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator("[data-start]").count(), 0, "an older host offers no start");
     await open("ticket-7");
     assert.match(await page.locator("#agent-state").textContent(), /Start one at your terminal/);
+
+    // The board picker (T-510): the board's name under the brand lists every
+    // paired board and the way to pair one more; Escape closes it.
+    await overview();
+    if (size !== "desktop") await page.locator("#board-menu").click();
+    await page.locator("#board-picker").click();
+    await page.locator("#board-list").waitFor();
+    assert.equal(
+      await page.locator('#board-list .side-board[aria-current="true"] .side-board-name').textContent(),
+      "Mesimon",
+    );
+    assert(await page.locator("#add-board").isVisible());
+    assert.equal(await page.locator("#sidebar .side-title").textContent(), "mesimon");
+    await shot("board-picker");
+    await page.keyboard.press("Escape");
+    await page.locator("#board-list").waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#sidebar .side-pick-name").textContent(), "Mesimon");
     assert.deepEqual(errors, []);
-    console.log(`${engineName} ${size}: start from a card and the ticket, clock, ticks, refusal, lost answer, away, older host passed`);
+    console.log(`${engineName} ${size}: start from the ticket's sheet, clock, ticks, wake with words, refusal, lost answer, away, older host, board picker passed`);
   } catch (error) {
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-start-failure.png`) });
     throw error;
@@ -939,7 +1013,7 @@ async function keptFlow(browser, engineName) {
     await page.reload();
     await until(page, () => document.documentElement.dataset.page === "kept");
     // The ticket that was open, from memory; back on the list, the rest.
-    await until(page, () => document.querySelector("#selection").textContent.endsWith(" T-0"));
+    await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-0");
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
     await page.locator('.ticket[data-id="ticket-0"]').waitFor();
     assert.match(await page.locator("#work-list").textContent(), /As of/);
@@ -960,7 +1034,7 @@ async function keptFlow(browser, engineName) {
     networkDown = false;
     await reloaded;
     assert.equal(await page.evaluate(() => document.documentElement.dataset.page), undefined);
-    await until(page, () => document.querySelector("#selection").textContent.endsWith(" T-0"));
+    await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-0");
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
     await page.locator('button[data-mode="sent"]').locator("visible=true").click();
     await page.locator('.sent-item[data-status="landed"]').filter({ hasText: "Written on the kept page" }).waitFor();
@@ -1046,9 +1120,13 @@ try {
           assert.match(await page.locator('.ticket[data-id="ticket-4"] .ticket-meta').textContent(), / · 2h · /);
           await select(0);
           assert.match(await page.locator("#detail .chips").textContent(), /BUG/);
-          // The heading is the title, then its key (T-506); a tag wears its
-          // tint as its ground, the TUI's chip.
-          assert.match(await page.locator("#selection").textContent(), /^\S.* T-0$/);
+          // The heading is the title alone; the key sits at the right of the
+          // tags' line (T-510), and a tag wears its tint as its ground, the
+          // TUI's chip. No provider chip: the shin and the output say so.
+          assert.equal(await page.locator("#detail .selection-key").textContent(), "T-0");
+          assert(!(await page.locator("#selection").textContent()).endsWith("T-0"), "the key left the heading");
+          assert.deepEqual(await page.locator("#detail .chips .chip").allTextContents(), ["IN PROGRESS"]);
+          assert.equal(await page.locator("#detail .agent-line").count(), 0, "a seated agent needs no line");
           const [tagGround, tint] = await page.locator("#detail .chips .tag.tint-0").evaluate((n) => {
             const hex = getComputedStyle(document.documentElement).getPropertyValue("--tag-0").trim().slice(1);
             const [r, g, b] = hex.match(/../g).map((c) => parseInt(c, 16));
@@ -1482,9 +1560,7 @@ try {
           }
           await page.reload();
           await until(page, () =>
-            document
-              .querySelector("#selection")
-              .textContent.endsWith(" T-2"),
+            document.querySelector("#detail .selection-key")?.textContent === "T-2",
           );
           assert(await page.locator("#onboarding").isHidden());
           assert.equal(

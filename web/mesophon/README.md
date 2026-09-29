@@ -125,14 +125,17 @@ advertises `mailbox` takes every ticket this way, live or not.
 
 Start agent uses the `start` op (T-498), advertised as the `start` feature and
 remembered on the board's entry like `mailbox`, so the button stays in place,
-disabled, while the terminal is away, and an older host offers none. It names
-the ticket and nothing else: the host picks the provider from the board's tiers
-and submits the ticket's title and description, as the board's Shift+Enter
-does, through `Action::StartAgent`. The answer is `provisioning` or `starting`,
-and the host moves the same receipt to `started` once the session has taken
-its first prompt; `starts.js` keeps it per ticket in this tab and asks `status`
-on every tick until it settles. A lost answer is recovered that way, never by
-starting again.
+disabled, while the terminal is away, and an older host offers none. The
+button is on the ticket page alone, over an empty seat or a parked agent, and
+it opens a sheet for the first prompt, as the board's Shift+Enter opens its
+field (T-510). The request names the ticket and, when there were words, a
+`prompt`; the host picks the provider from the board's tiers and, with no
+words, submits the ticket's title and description on an empty seat or wakes
+the parked agent with nothing to say, through `Action::StartAgent`. The
+answer is `provisioning` or `starting`, and the host moves the same receipt to
+`started` once the session has taken its first prompt; `starts.js` keeps it
+per ticket in this tab and asks `status` on every tick until it settles. A
+lost answer is recovered that way, never by starting again.
 
 A landed ticket turns teal once the host's board says it was picked up
 (`picked`: `by` is `desk` when its page was opened in the TUI, `agent` when an

@@ -5,7 +5,7 @@ import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { Attention } from "./dialogs.js";
-import { Headline, StartButton, StartReceipt, Tags, stateAge } from "./lists.js";
+import { StartButton, StartReceipt, Tags, stateAge } from "./lists.js";
 
 const receiptTick = (status) =>
   status === "awaiting_delivery"
@@ -64,7 +64,7 @@ function Output({ store, ticket, entry, live }) {
   // back where the pane had it. Where the pane is wider than the panel can
   // show legibly, the lines reflow at the panel's width and the rules stay
   // one row each (`.screen-lines`).
-  return html`<section class="output" aria-label="Output" hidden=${!ticket?.agent}>
+  return html`<section class="output" aria-label="Output" hidden=${!ticket?.agent || ticket.agent.state === "sleeping"}>
     <div class="output-head">
       <h3 class="label">Output</h3>
       <p id="freshness">${live ? html`<span class="dot" aria-hidden="true"></span>` : null}${received}${live ? "" : " · Stale / offline"}</p>
@@ -79,7 +79,8 @@ function Output({ store, ticket, entry, live }) {
 }
 
 function Composer({ store, ticket, entry, live }) {
-  const agent = ticket?.agent;
+  // A parked agent has no pane to type at: the sheet's wake is its road.
+  const agent = ticket?.agent?.state === "sleeping" ? undefined : ticket?.agent;
   const acting = entry?.receipt?.waiting && entry.receipt.status !== "queued";
   const queueOff = !live || !agent?.promptable || ticket?.queued == null || !!acting;
   const mode = entry?.mode || "queue";
@@ -133,16 +134,18 @@ function Composer({ store, ticket, entry, live }) {
             aria-label=${mode === "steer" ? "Send prompt" : "Queue prompt"}><${Icon} name="up" size=${20} width=${2.2} /></button>
         </div>
       </div>
-      <p id="delivery" role="status">${tick && html`<${Tick} state=${tick} />`}<span>${entry?.delivery || ""}</span></p>
+      <p id="delivery" role="status" hidden=${!tick && !entry?.delivery}>${tick && html`<${Tick} state=${tick} />`}<span>${entry?.delivery || ""}</span></p>
     </form>
   </footer>`;
 }
 
-// What the ticket page says when no agent is on it (T-498).
-function noAgent(store) {
+// What the ticket page says over an empty or a parked seat (T-498, T-510).
+function seatWords(store, agent) {
+  const what = agent ? `${agent.provider} is asleep on this ticket.` : "No agent on this ticket.";
+  const it = agent ? "it" : "one";
   if (!store.startsAgents || (store.live && !store.canStart))
-    return "No agent on this ticket. Start one at your terminal.";
-  return store.live ? "No agent on this ticket." : "No agent on this ticket. Starting one needs your terminal back.";
+    return `${what} ${agent ? "Wake" : "Start"} ${it} at your terminal.`;
+  return store.live ? what : `${what} ${agent ? "Waking" : "Starting"} ${it} needs your terminal back.`;
 }
 
 export function Detail({ store, bp }) {
@@ -150,40 +153,36 @@ export function Detail({ store, bp }) {
   const entry = store.entry;
   const live = store.live;
   const agent = ticket?.agent;
+  const asleep = agent?.state === "sleeping";
   const light = agent?.state === "needs attention" ? "attn" : ["starting", "working"].includes(agent?.state) ? "calm" : "dim";
   const since = store.board && stateAge(store.board, agent);
   const start = store.startOf(ticket);
+  // The seat a start reaches (T-510): empty, or a parked agent it wakes.
+  const seatOpen = !!ticket && (!agent || asleep);
+  // The head (T-510): the shin, the title, then one line with the tags and
+  // the column at its left and the key at its right, as the TUI's page.
   return html`<article id="detail" aria-labelledby="selection">
     <header class="detail-head">
       <button id="back" type="button" class="icon-btn" aria-label="Back" onClick=${() => store.back()}><${Icon} name="back" size=${22} /></button>
       <button id="close-detail" type="button" class="icon-btn" aria-label="Close" onClick=${() => store.back()}><${Icon} name="x" size=${20} /></button>
+      <div class="detail-shin" hidden=${!ticket}>
+        <${Shin} scale=${3} light=${light} mood=${agent && !asleep ? "awake" : "asleep"} />
+        ${agent && html`<span id="agent-word" class="sr-only">${agent.provider} · ${agent.state}${since ? ` · ${since}` : ""}</span>`}
+      </div>
       <div class="detail-title">
-        <h2 id="selection" tabindex="-1" dir="auto">${ticket
-          ? html`<span class="selection-title">${ticket.title}</span>${" "}<span class="selection-key">${ticket.key}</span>`
-          : "Select a ticket"}</h2>
-        <div class="chips">
-          ${ticket && html`<span class="chip">${ticket.column}</span>`}
-          ${agent && html`<span class="chip">${agent.provider}</span>`}
-          ${ticket && html`<${Tags} ticket=${ticket} />`}
-        </div>
+        <h2 id="selection" tabindex="-1" dir="auto">${ticket ? ticket.title : "Select a ticket"}</h2>
+        ${ticket && html`<div class="ticket-line">
+          <div class="chips"><${Tags} ticket=${ticket} /><span class="chip">${ticket.column}</span></div>
+          <span class="selection-key">${ticket.key}</span>
+        </div>`}
       </div>
     </header>
     <div class="detail-scroll">
-      <div class=${`agent-card${agent ? "" : " agent-none"}`} hidden=${!ticket}>
-        <${Shin} scale=${3} light=${light} mood=${agent ? "awake" : "asleep"} />
-        <div class="agent-words">
-          <p id="agent-state">${agent
-            ? `${agent.provider} · ${agent.state}${since ? ` · ${since}` : ""} · ${ticket.column}`
-            : ticket
-              ? noAgent(store)
-              : "Choose an agent, or open Board to see all tickets."}</p>
-          <${Headline} agent=${agent} />
-          <${StartReceipt} item=${start} agent=${agent} />
-        </div>
-        ${ticket && !agent && store.startsAgents && html`<${StartButton} store=${store} ticket=${ticket} />`}
-        ${agent?.state === "needs attention" && html`<span class="mark mark-attn pulse" aria-hidden="true"></span>`}
-        ${["starting", "working"].includes(agent?.state) && html`<${Icon} name="spinner" size=${18} width=${2.4} cls="spin" />`}
-      </div>
+      ${seatOpen && html`<div class="agent-line" role="group" aria-label="Agent">
+        <p id="agent-state">${seatWords(store, agent)}</p>
+        ${store.startsAgents && html`<${StartButton} store=${store} ticket=${ticket} />`}
+      </div>`}
+      ${ticket && html`<${StartReceipt} item=${start} agent=${agent} />`}
       <${Attention} store=${store} ticket=${ticket} entry=${entry} live=${live} />
       <${Output} store=${store} ticket=${ticket} entry=${entry} live=${live} />
       ${!ticket && html`<div class="detail-empty"><${Shin} size="medium" scale=${4} /><p>Pick a ticket to read its agent’s output and send it a prompt.</p></div>`}

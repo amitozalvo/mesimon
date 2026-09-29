@@ -2,7 +2,7 @@
 // draft in the store. A ticket lands quietly: nothing here starts an agent.
 import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon } from "./icons.js";
-import { DESCRIPTION_MAX_BYTES } from "./store.js";
+import { DESCRIPTION_MAX_BYTES, PROMPT_MAX_BYTES } from "./store.js";
 
 // Where the ticket is going, and how it gets there from here (T-497): live,
 // through the relay's mailbox while the terminal is away, or kept in this
@@ -148,4 +148,62 @@ export function QuickNew({ store }) {
       <${Icon} name="up" size=${20} width=${2.2} /></button>
     ${draft.error && !draft.open && html`<p class="quick-error" role="alert">${draft.error}</p>`}
   </form>`;
+}
+
+// The first turn's words (T-510): the desk's Shift+Enter field as a sheet.
+// Blank, an empty seat starts on the ticket's title and description and a
+// parked agent wakes with nothing to say; the host picks the provider.
+export function StartSheet({ store }) {
+  const ref = useRef();
+  const ask = store.startAsk;
+  const ticket = ask && store.board?.tickets.find((t) => t.id === ask.ticket);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (ask && ticket && !dialog.open) dialog.showModal();
+    if ((!ask || !ticket) && dialog.open) dialog.close();
+  });
+  if (!ask || !ticket) return html`<dialog id="start-sheet" class="compose" ref=${ref}></dialog>`;
+  const asleep = ticket.agent?.state === "sleeping";
+  const words = !!ask.text.trim();
+  return html`<dialog id="start-sheet" class="compose" ref=${ref} aria-labelledby="start-heading"
+      onCancel=${(e) => {
+        e.preventDefault();
+        store.closeStart();
+      }}
+      onClose=${() => store.closeStart()}
+      onClick=${(e) => {
+        if (e.target === e.currentTarget) store.closeStart();
+      }}>
+    <form class="compose-form" onSubmit=${(e) => {
+      e.preventDefault();
+      store.confirmStart();
+    }}>
+      <header class="compose-head">
+        <button type="button" class="btn btn-quiet" onClick=${() => store.closeStart()}>Cancel</button>
+        <h2 id="start-heading">${asleep ? "Wake agent" : "Start agent"} · ${ticket.key}</h2>
+        <span></span>
+      </header>
+      <div class="compose-body">
+        <p class="start-title" dir="auto">${ticket.title}</p>
+        <label class="field"><span>First prompt <span class="muted">(optional)</span></span><textarea id="start-prompt"
+          rows="4" dir="auto" maxlength=${PROMPT_MAX_BYTES} autofocus
+          placeholder=${asleep ? "What to say when it wakes." : "What to do first. Empty sends the title and details."}
+          value=${ask.text} onInput=${(e) => store.setStartText(e.currentTarget.value)}
+          onKeyDown=${(e) => {
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+              e.preventDefault();
+              e.currentTarget.form.requestSubmit();
+            }
+          }}></textarea></label>
+        <p class="field-note">${asleep
+          ? "Empty wakes it and says nothing, as the board’s wake does."
+          : "Empty starts it on the ticket’s title and details, as the board’s Shift+Enter does. Your terminal picks the provider."}</p>
+      </div>
+      <footer class="compose-foot">
+        <button id="start-send" type="submit" class="btn btn-pri compose-send">
+          <${Icon} name="play" size=${18} /><span>${asleep ? (words ? "Wake with these words" : "Wake agent") : words ? "Start with these words" : "Start on the title"}</span></button>
+      </footer>
+    </form>
+  </dialog>`;
 }

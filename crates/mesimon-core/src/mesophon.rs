@@ -105,13 +105,17 @@ pub enum Request {
         #[serde(default)]
         tags: Vec<TagPick>,
     },
-    /// Start an agent on a ticket that has none (T-498): the provider the
-    /// board's tiers give that ticket, with its title and description as
-    /// the first prompt, as the board's Shift+Enter starts one. Answered
-    /// `starting` (or `provisioning` while a worktree is cut), and the
-    /// receipt turns `started` once the session runs.
+    /// Start an agent on a ticket that has none, or wake the one asleep
+    /// on it (T-498, T-510): the board's Shift+Enter from a phone. The
+    /// provider is the one the board's tiers give the ticket; `prompt` is
+    /// the first turn's words, and blank it is the ticket's title and
+    /// description on an empty seat, or a plain wake on a sleeping one.
+    /// Answered `starting` (or `provisioning` while a worktree is cut),
+    /// and the receipt turns `started` once the session runs.
     Start {
         ticket: String,
+        #[serde(default)]
+        prompt: Option<String>,
     },
 }
 
@@ -505,20 +509,29 @@ mod tests {
         assert_eq!(pair_link("http://localhost:8444", "C"), "http://localhost:8444/#pair=C");
     }
 
-    /// A start names a ticket and nothing else: the provider, the prompt and
-    /// the mode are the host's, so a field that tries to pick one is refused.
+    /// A start names a ticket and, since T-510, the first turn's words;
+    /// the provider and the mode are the host's, so a field that tries to
+    /// pick one is refused. A page that sends no `prompt` (T-498's) still
+    /// parses: the words are then the ticket's own.
     #[test]
-    fn a_start_names_only_its_ticket() {
-        let Request::Start { ticket } =
+    fn a_start_names_its_ticket_and_at_most_a_prompt() {
+        let Request::Start { ticket, prompt } =
             serde_json::from_str(r#"{"op":"start","ticket":"01J"}"#).unwrap()
         else {
             panic!("start")
         };
         assert_eq!(ticket, "01J");
+        assert_eq!(prompt, None);
+        let Request::Start { prompt, .. } =
+            serde_json::from_str(r#"{"op":"start","ticket":"01J","prompt":"fix the test"}"#)
+                .unwrap()
+        else {
+            panic!("start")
+        };
+        assert_eq!(prompt.as_deref(), Some("fix the test"));
         for bad in [
             r#"{"op":"start"}"#,
             r#"{"op":"start","ticket":"01J","provider":"codex"}"#,
-            r#"{"op":"start","ticket":"01J","prompt":"rm -rf"}"#,
             r#"{"op":"start","ticket":"01J","plan":true}"#,
         ] {
             assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");

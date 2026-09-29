@@ -13,6 +13,8 @@ const narrow = () => matchMedia("(max-width: 700px)").matches;
 const receiptOps = ["prompt", "send_now", "take_back", "permission", "dialog", "status"];
 // A filed ticket's description is its first note: the host's note limit.
 export const DESCRIPTION_MAX_BYTES = 32 * 1024;
+// A first prompt's cap, the daemon's `PROMPT_MAX_BYTES` (T-510).
+export const PROMPT_MAX_BYTES = 4096;
 // The longest envelope the relay keeps (control::MAIL_BYTES).
 const MAIL_BYTES = 128 * 1024;
 const sentContext = (item) => `sent:${item.id}`;
@@ -56,6 +58,10 @@ export class Store {
     this.deviceName = "";
     this.detailOpen = false;
     this.sheetOpen = false;
+    // The sidebar's board picker (T-510), open under the board's name.
+    this.boardMenuOpen = false;
+    // The first-prompt sheet a start opens (T-510): the ticket and the words.
+    this.startAsk = undefined;
     this.theme = "system";
     this.alertStatus = "";
     // The desktop sidebar folded to a rail of icons (T-506); app.js reads
@@ -222,6 +228,12 @@ export class Store {
   }
   openSheet(open) {
     this.sheetOpen = open;
+    this.boardMenuOpen = false;
+    this.emit();
+  }
+  openBoardMenu(open) {
+    if (this.boardMenuOpen === open) return;
+    this.boardMenuOpen = open;
     this.emit();
   }
   navigateTicket(boardId, ticket) {
@@ -319,21 +331,51 @@ export class Store {
   startOf(ticket) {
     return ticket && this.active ? this.starts.get(this.active.pin.board, ticket.id) : undefined;
   }
-  // The ticket's title and description go in as its first prompt, the way
-  // the board's Shift+Enter starts one; the host picks the provider.
-  startAgent(id) {
+  // The seat a start reaches (T-510): empty, or a parked agent it wakes.
+  startable(ticket) {
+    return !!ticket && (!ticket.agent || ticket.agent.state === "sleeping");
+  }
+  // The words come first (T-510), as at the desk's Shift+Enter field: a
+  // sheet asks for the first turn, and a blank one is the ticket's own
+  // title and description, or a plain wake.
+  openStart(id) {
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    if (!this.startable(ticket) || !this.canStart || startWaiting(this.startOf(ticket))) return;
+    this.startAsk = { ticket: id, text: "" };
+    this.emit();
+  }
+  closeStart() {
+    if (!this.startAsk) return;
+    this.startAsk = undefined;
+    this.emit();
+  }
+  setStartText(text) {
+    if (!this.startAsk) return;
+    this.startAsk.text = text;
+    this.emit();
+  }
+  confirmStart() {
+    const ask = this.startAsk;
+    if (!ask) return;
+    this.startAsk = undefined;
+    this.startAgent(ask.ticket, ask.text);
+  }
+  // The host picks the provider; the words ride only when there are any,
+  // so an older host, which knows no `prompt`, still takes a blank start.
+  startAgent(id, text = "") {
     const board = this.active?.pin.board;
     const ticket = this.board?.tickets.find((t) => t.id === id);
-    if (!board || !ticket || ticket.agent || !this.canStart || startWaiting(this.startOf(ticket))) return;
+    if (!board || !this.startable(ticket) || !this.canStart || startWaiting(this.startOf(ticket))) return;
     const c = this.connection;
-    const command = c.request({ op: "start", ticket: id }, startContext(id));
+    const prompt = text.trim();
+    const command = c.request({ op: "start", ticket: id, ...(prompt ? { prompt } : {}) }, startContext(id));
     if (command === undefined) {
       this.say("Not started: the connection dropped. Try again when your terminal is back.");
       this.emit();
       return;
     }
     this.starts.sent(board, id, command, c.incarnation, ticket.key);
-    this.say(`Starting an agent on ${ticket.key}…`, "clock");
+    this.say(ticket.agent ? `Waking the agent on ${ticket.key}…` : `Starting an agent on ${ticket.key}…`, "clock");
     this.emit();
   }
   onStartReply(id, reply) {
@@ -668,6 +710,7 @@ export class Store {
     if (this.active && !this.active.revoked) this.returnBoard = this.active;
     this.screen = "pair";
     this.sheetOpen = false;
+    this.boardMenuOpen = false;
     this.focus = "code";
     this.emit();
   }
@@ -720,7 +763,9 @@ export class Store {
     this.entry = undefined;
     this.outputKey = undefined;
     this.sheetOpen = false;
+    this.boardMenuOpen = false;
     this.composer.open = false;
+    this.startAsk = undefined;
     clearAlerts();
     this.identity.lastBoard = chosen.pin.board;
     this.persist();
@@ -929,6 +974,7 @@ export class Store {
   }
   setRail(rail) {
     this.rail = rail;
+    if (rail) this.boardMenuOpen = false;
     try {
       localStorage.setItem("mesophon-sidebar", rail ? "rail" : "full");
     } catch {

@@ -712,8 +712,8 @@ impl Daemon {
             api::Request::Create { title, description, column, tags } => {
                 self.control_create(&by, title, description, column, &tags, None)
             }
-            api::Request::Start { ticket } => {
-                self.control_start_agent(&by, (grant, device, command.id), &ticket)
+            api::Request::Start { ticket, prompt } => {
+                self.control_start_agent(&by, (grant, device, command.id), &ticket, prompt)
             }
         };
         self.control.remember(grant, command.id, reply.clone());
@@ -1193,16 +1193,21 @@ impl Daemon {
     }
 
     /// An agent started from the owner's phone (T-498): the board's
-    /// Shift+Enter on a ticket whose seat is empty — the provider its tiers
-    /// give it, its title and description as the first prompt — as the
-    /// paired device. Refused while the seat is taken, parked or starting;
-    /// answered `starting`, or `provisioning` while a worktree is cut, and
+    /// Shift+Enter on a ticket whose seat is empty or asleep — as the
+    /// paired device. `prompt` is the first turn's words (T-510), and
+    /// blank it is what the desk's blank Enter is: on an empty seat the
+    /// provider its tiers give it starts on the title and description; on
+    /// a sleeping one the agent wakes with nothing to say, since a wake
+    /// with no words is `WakeSession`, never a paste of nothing. Refused
+    /// while the seat is awake, stopping or starting; answered `starting`,
+    /// or `provisioning` while a worktree is cut, and
     /// `control_follow_starts` turns the receipt `started` once it runs.
     fn control_start_agent(
         &mut self,
         by: &Principal,
         (grant, device, command): (BoardId, DeviceId, u64),
         ticket: &str,
+        prompt: Option<String>,
     ) -> Reply {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
         let Some(id) = ulid::Ulid::from_string(ticket)
@@ -1242,8 +1247,23 @@ impl Daemon {
         if self.worktrees_barred && self.ticket_wants_worktree(id) {
             return reject(&self.barred_message("worktrees"));
         }
-        let kind = self.tier_book().start_provider(id).session_kind();
-        let (status, session) = match self.spawn_session(id, kind, true, None, None, false) {
+        // The words cross the same boundary a desk prompt does: scrubbed,
+        // capped and blank-is-none (`sanitize_prompt`).
+        let words = prompt.as_deref().and_then(mesimon_core::command::sanitize_prompt);
+        let asleep = self
+            .board
+            .live_agent(id)
+            .filter(|s| matches!(s.state, SessionState::Sleeping))
+            .map(|s| s.id);
+        let answer = match (asleep, words) {
+            (Some(_), Some(text)) => self.prompt_sleeping(id, text, false),
+            (Some(sid), None) => self.resume_session_in(sid, false, false),
+            (None, words) => {
+                let kind = self.tier_book().start_provider(id).session_kind();
+                self.spawn_session(id, kind, true, words, None, false)
+            }
+        };
+        let (status, session) = match answer {
             Response::Spawned { id, .. } => ("starting", Some(id)),
             Response::Provisioning => ("provisioning", None),
             Response::Err { message } => return reject(&message),
@@ -1839,17 +1859,18 @@ fn permission_peer_closed(stream: &UnixStream) -> bool {
 }
 
 /// Why a phone may not start an agent on this ticket (T-498): one agent per
-/// ticket, a parked one included, read as `spawn_session` reads it, in words
-/// for someone away from the terminal.
+/// ticket, read as `spawn_session` reads it, in words for someone away from
+/// the terminal. A parked one is no refusal since T-510: the start wakes it,
+/// as the desk's Shift+Enter does.
 fn seat_refusal(board: &Board, ticket: ulid::Ulid) -> Option<&'static str> {
     let held = board.live_agent(ticket)?;
-    Some(if held.codex_stopping {
-        "this ticket's agent is still stopping: try again in a moment"
+    if held.codex_stopping {
+        Some("this ticket's agent is still stopping: try again in a moment")
     } else if matches!(held.state, SessionState::Sleeping) {
-        "this ticket's agent is asleep: wake it at your terminal"
+        None
     } else {
-        "this ticket already has an agent"
-    })
+        Some("this ticket already has an agent")
+    }
 }
 
 /// Where a phone's start is (T-498).
@@ -2200,10 +2221,10 @@ mod tests {
     }
 
     /// One agent per ticket (T-498): a phone's start finds the seat taken
-    /// by a live, a parked or a stopping agent, and free once it exited. A
-    /// shell holds no agent seat.
+    /// by a live or a stopping agent, and free once it exited. A parked one
+    /// is the wake road (T-510), and a shell holds no agent seat.
     #[test]
-    fn a_phone_start_needs_the_ticket_s_agent_seat_empty() {
+    fn a_phone_start_needs_the_ticket_s_agent_seat_empty_or_asleep() {
         use mesimon_core::board::ExitReason;
         let mut board = Board::with_default_columns();
         let ticket = ulid::Ulid(7);
@@ -2212,7 +2233,7 @@ mod tests {
         assert_eq!(seat_refusal(&board, ticket), Some("this ticket already has an agent"));
         assert_eq!(seat_refusal(&board, ulid::Ulid(8)), None, "another ticket's seat");
         board.sessions[0].state = SessionState::Sleeping;
-        assert!(seat_refusal(&board, ticket).is_some_and(|m| m.contains("asleep")));
+        assert_eq!(seat_refusal(&board, ticket), None, "a parked agent wakes");
         board.sessions[0].state = SessionState::Exited { reason: ExitReason::UserQuit };
         assert_eq!(seat_refusal(&board, ticket), None);
         board.sessions[0].kind = SessionKind::Codex;

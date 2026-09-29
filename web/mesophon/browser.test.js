@@ -190,14 +190,14 @@ for (const [name, engine] of [
           }
           throw new Error(`the fixture never wrote ${answered}`);
         };
-        // Started from here (T-498): from its card on a desktop, from its
-        // page on a phone. A clock until the session takes its first prompt,
-        // the ticket's own words, then two ticks, and its output on the page.
+        // Started from here (T-498, T-510): from the ticket's page, through
+        // the sheet that asks for the first prompt, sent blank. A clock until
+        // the session takes its first prompt, the ticket's own words, then
+        // two ticks, and its output on the page.
         await page.locator(`button[data-mode="board"]`).locator("visible=true").click();
-        if (label === "phone") {
-          await page.locator(`.ticket[data-id="${filed.id}"]`).click();
-          await page.locator("#detail .start-agent").click();
-        } else await page.locator(`.card-shell [data-start="${filed.id}"]`).click();
+        await page.locator(`.ticket[data-id="${filed.id}"]`).click();
+        await page.locator("#detail .start-agent").click();
+        await page.locator("#start-send").click();
         await page.waitForFunction(() =>
           document.querySelector("#toast").textContent.includes("Starting an agent on"),
         );
@@ -209,7 +209,6 @@ for (const [name, engine] of [
         }
         assert.equal(started?.kind, "claude", "the board's provider started on it");
         await ask("agent-run", "agent-ran", started.id);
-        if (label !== "phone") await page.locator(`.ticket[data-id="${filed.id}"]`).click();
         await page.waitForFunction(
           () => document.querySelector("#detail .start-receipt")?.dataset.status === "started",
           null,
