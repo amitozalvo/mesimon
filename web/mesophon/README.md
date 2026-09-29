@@ -65,9 +65,12 @@ line), read by the host from the transcript as the TUI's card reads it. The
 remembered board keeps `since` and each ticket's `tags`, never `doing` or
 `said`. A needs-you card
 answers a permission or a single-choice question in place; anything else opens
-the ticket. Output shows the last received time of a periodic, bounded 50-line
-window. Scrolling up freezes that window locally; Jump to latest resumes
-following. Reconnect queries receipts but never replays input. The composer
+the ticket. Output draws a periodic, bounded 50-line window as the pane's own
+screen: the lines box is the pane's width in cells (`cols` on the preview
+reply; the longest line stands in for an older host), the type is sized so that
+width fills the panel down to a floor, past which the screen pans sideways, and
+the browser never re-wraps a line the pane laid out. Scrolling up freezes that
+window locally; Jump to latest resumes following. Reconnect queries receipts but never replays input. The composer
 defaults to Queue, with an explicit Steer choice; queued prompts offer Send now
 and Take back. Returned text stays bound to its original session and cannot
 overwrite a newer draft silently. Explicit authenticated revocation clears

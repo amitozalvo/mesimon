@@ -27,6 +27,7 @@ export class Sessions {
         receipt: undefined,
         output: "",
         displayed: "",
+        cols: undefined,
         receivedAt: undefined,
         scroll: 0,
         following: true,

@@ -98,7 +98,7 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
             .any(|i| i.ticket == Some(t) && i.foreground.as_deref() == Some("sleep"))
     });
     let lines = match c.request(Command::TerminalTail { ticket: Some(t), lines: 20 }) {
-        Response::PaneTail { lines } => lines,
+        Response::PaneTail { lines, .. } => lines,
         other => panic!("terminal tail: {other:?}"),
     };
     assert!(lines.iter().any(|l| l.trim() == "adopt-probe-7"), "{lines:?}");
@@ -128,7 +128,7 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
     // The same pane, by the session's own road: the preview keeps its
     // history, and sleep is refused while the command runs.
     let lines = match c.request(Command::PaneTail { session: sid, lines: 20 }) {
-        Response::PaneTail { lines } => lines,
+        Response::PaneTail { lines, .. } => lines,
         other => panic!("pane tail: {other:?}"),
     };
     assert!(lines.iter().any(|l| l.trim() == "adopt-probe-7"), "{lines:?}");

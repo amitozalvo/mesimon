@@ -2900,7 +2900,7 @@ impl App {
             }
         };
         let lines = match self.req(ask) {
-            Response::PaneTail { lines } => lines,
+            Response::PaneTail { lines, .. } => lines,
             // A pane that just died, or a daemon mid-reconnect: keep the last
             // good capture rather than blinking the zone empty — the rail row
             // beside it is what says the session is gone — but still stamp

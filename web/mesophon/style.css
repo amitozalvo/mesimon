@@ -305,6 +305,34 @@ code {
   display: flex;
   flex-direction: column;
 }
+/* Scrollbars (T-506): thin, in the page's own line colour, and drawn only
+   while the pointer is over what scrolls — the way an overlay scrollbar
+   behaves, on a browser that would otherwise keep a classic one on screen.
+   Chrome and Firefox take the standard properties; WebKit, the pseudo-elements. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+*:hover {
+  scrollbar-color: var(--line2) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border-radius: 8px;
+  background: transparent;
+}
+:hover::-webkit-scrollbar-thumb {
+  background: var(--line2);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
 
 /* ---- controls ----------------------------------------------------------- */
 .btn {
@@ -714,8 +742,53 @@ select {
   text-transform: uppercase;
   color: var(--ink3);
 }
-.side-close {
+.side-close,
+.side-toggle {
   display: none;
+}
+.side-about {
+  padding: 0 6px;
+}
+.side-about summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 -6px;
+  padding: 0 12px;
+  border-radius: 12px;
+  color: var(--ink2);
+  font-size: 0.875rem;
+  font-weight: 500;
+  list-style: none;
+  cursor: pointer;
+}
+.side-about summary::-webkit-details-marker {
+  display: none;
+}
+.side-about summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin: 0 5px 0 3px;
+  border-right: 1.5px solid var(--ink3);
+  border-bottom: 1.5px solid var(--ink3);
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+.side-about[open] summary::before {
+  transform: rotate(45deg);
+}
+.side-about summary:hover {
+  background: var(--s1);
+}
+.side-about .hops {
+  margin-top: 6px;
+  padding: 0;
+}
+.side-about .side-note {
+  margin-top: 10px;
+  padding: 0;
 }
 .side-nav {
   display: flex;
@@ -1041,16 +1114,24 @@ select {
 .tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 10px;
+  gap: 4px 6px;
 }
+/* A tag as the TUI's chip (T-506): the name on its tint, in the page's
+   ground ink — the surface every tint was contrast-checked against. */
 .tag {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  color: var(--ink3);
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--tint, var(--s3));
+  color: var(--bg);
   font-family: var(--mono);
   font-size: 0.6875rem;
+  font-weight: 500;
   letter-spacing: 0.04em;
+  line-height: 1;
+  white-space: nowrap;
 }
 .row-go {
   color: var(--ink4);
@@ -1312,11 +1393,6 @@ select {
   color: var(--ink2);
   font-size: 0.78125rem;
 }
-.column-empty {
-  padding: 6px 2px;
-  font-size: 0.8125rem;
-}
-
 /* ---- detail ------------------------------------------------------------------ */
 .detail-head {
   display: flex;
@@ -1351,12 +1427,10 @@ select {
 .selection-key {
   color: var(--ink3);
   font-family: var(--mono);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   letter-spacing: 0;
-}
-.selection-sep {
-  color: var(--ink4);
+  white-space: nowrap;
 }
 .chips {
   display: flex;
@@ -1423,8 +1497,7 @@ select {
   font-weight: 500;
   overflow-wrap: anywhere;
 }
-.attention-note,
-.attention-foot {
+.attention-note {
   color: var(--ink3);
   font-size: 0.8125rem;
   line-height: 1.45;
@@ -1481,28 +1554,21 @@ select {
   font-family: var(--mono);
   font-size: 0.6875rem;
 }
-.wrap-toggle {
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--ink2);
-  font-size: 0.8125rem;
-  cursor: pointer;
-}
-#wrap {
-  width: 18px;
-  height: 18px;
-  margin: 0;
-  accent-color: var(--ink2);
-}
 .output-body {
   position: relative;
   flex: 1;
   min-height: 120px;
   display: flex;
+  container-type: inline-size;
 }
+/* The pane as a screen (T-506). `--cols` is the pane's width in cells; the
+   type is sized so that many cells fill the panel — Plex Mono's advance is
+   0.6em — down to a floor. Above the floor the lines box is exactly the
+   pane's width, so a line the capture joined breaks where the pane broke it;
+   at the floor a wider pane reflows at the panel's width instead, and a rule
+   line is drawn as one row whatever the width. */
 #preview {
+  --cols: 80;
   flex: 1;
   min-width: 0;
   margin: 0;
@@ -1513,15 +1579,29 @@ select {
   background: var(--screen);
   color: var(--out);
   font-family: var(--mono);
-  font-size: 0.78125rem;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  font-size: clamp(0.6875rem, calc((100cqw - 32px) / (var(--cols) * 0.6)), 0.78125rem);
+  line-height: 1.5;
+  white-space: pre;
   tab-size: 4;
 }
-#preview.no-wrap {
-  white-space: pre;
-  overflow-wrap: normal;
+.screen-lines {
+  display: block;
+  width: min(calc(var(--cols) * 1ch), 100%);
+  white-space: pre-wrap;
+  /* A joined line breaks at the last space before the edge rather than at the
+     cell the pane broke it on: a row more now and then, and no word cut in
+     two when the pane reflows at the panel's width. */
+  overflow-wrap: anywhere;
+}
+.screen-rule {
+  display: block;
+  height: 1.5em;
+}
+.screen-rule::before {
+  content: "";
+  display: block;
+  margin-top: 0.7em;
+  border-top: 1px solid var(--ink4);
 }
 .latest {
   position: absolute;
@@ -1724,10 +1804,6 @@ select {
   color: var(--ink2);
   font-size: 0.8125rem;
 }
-.draft-note {
-  color: var(--ink3);
-  font-size: 0.6875rem;
-}
 
 /* ---- new tickets: the sheet, Sent, and the ways in -------------------------------- */
 .tint-0 { --tint: var(--tag-0); }
@@ -1770,13 +1846,6 @@ select {
 .add-to-column:hover {
   background: var(--s1);
   color: var(--ink2);
-}
-.column-about {
-  margin-top: -4px;
-  color: var(--ink3);
-  font-size: 0.78125rem;
-  line-height: 1.4;
-  text-wrap: pretty;
 }
 .from-here {
   display: inline-flex;
@@ -1941,24 +2010,17 @@ dialog.compose::backdrop {
   padding-left: 12px;
 }
 .tag-chip[aria-pressed="true"] {
-  background: var(--s3);
-  color: var(--ink);
-  box-shadow: inset 0 0 0 1.5px var(--ink3);
+  background: var(--tint, var(--s3));
+  color: var(--bg);
+}
+.tag-chip[aria-pressed="true"] .tag-dot {
+  background: var(--bg);
+  opacity: 0.55;
 }
 .field-note {
   color: var(--ink3);
   font-size: 0.8125rem;
   line-height: 1.45;
-}
-.compose-quiet {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  color: var(--ink3);
-  font-size: 0.8125rem;
-}
-.compose-quiet .icon {
-  margin-top: 2px;
 }
 .compose-foot {
   display: grid;
@@ -2054,7 +2116,6 @@ dialog.compose::backdrop {
   font-family: var(--mono);
   font-size: 0.6875rem;
 }
-.sent-tag,
 .sent-tick {
   display: inline-flex;
   align-items: center;
@@ -2291,6 +2352,50 @@ button.sent-sys:hover {
 
 /* ---- desktop: the board's columns take the width; a card opens a side panel ------ */
 @media (min-width: 1101px) {
+  /* The sidebar folds to a rail of icons (T-506): the shin, Now / Board /
+     Sent, and the fold button that opens it again. */
+  .side-toggle {
+    display: inline-flex;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+  }
+  #shell[data-side="rail"] {
+    grid-template-columns: 68px minmax(0, 1fr);
+  }
+  #shell[data-side="rail"] #sidebar {
+    gap: 14px;
+    padding: 16px 10px;
+  }
+  #shell[data-side="rail"] .side-brand {
+    flex-direction: column;
+    gap: 8px;
+    padding: 0;
+  }
+  #shell[data-side="rail"] .side-brand-text,
+  #shell[data-side="rail"] .side-section,
+  #shell[data-side="rail"] .mode > span:not(.badge) {
+    display: none;
+  }
+  #shell[data-side="rail"] .mode {
+    width: 48px;
+    justify-content: center;
+    padding: 0;
+  }
+  #shell[data-side="rail"] .side-nav {
+    align-items: center;
+    gap: 4px;
+  }
+  #shell[data-side="rail"] .mode .badge {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    font-size: 0.6875rem;
+    line-height: 18px;
+  }
   #shell[data-mode="board"] .workspace {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -2503,8 +2608,7 @@ button.sent-sys:hover {
   .segmented label {
     min-height: 44px;
   }
-  .mode-help,
-  .draft-note {
+  .mode-help {
     display: none;
   }
   .output {

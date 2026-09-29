@@ -104,7 +104,9 @@ function fixture() {
     lines: Array.from(
       { length: 50 },
       (_, i) =>
-        `line ${String(i).padStart(2, "0")} · actual-sized periodic output <script>never execute</script>`,
+        i === 10
+          ? "─".repeat(132)
+          : `line ${String(i).padStart(2, "0")} · actual-sized periodic output <script>never execute</script>`,
     ),
     tickets: Array.from({ length: 36 }, (_, i) => ({
       id: `ticket-${i}`,
@@ -222,7 +224,7 @@ function fixture() {
           if (["permission", "dialog"].includes(request.op)) answer({ result: "delivery", status: "input_sent" });
           if (request.op === "snapshot") answer(state.snapshot());
           if (request.op === "preview")
-            answer({ result: "preview", lines: state.lines });
+            answer({ result: "preview", lines: state.lines, cols: 132 });
           if (request.op === "prompt") {
             state.prompts.push(request);
             if (state.disposition === "disconnect") this.close();
@@ -419,7 +421,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator('.sent-item[data-picked="desk"] .sent-tick .tick-picked').count(), 1);
     await shot("sent-picked");
     await status("landed").first().getByRole("button", { name: /Open/ }).click();
-    await until(page, () => document.querySelector("#selection").textContent.startsWith("T-200 ·"));
+    await until(page, () => document.querySelector("#selection").textContent.endsWith(" T-200"));
     await overview();
     await mode("board");
     if (size === "phone") await page.locator('[data-column="TODO"]').click();
@@ -739,7 +741,7 @@ async function keptFlow(browser, engineName) {
     await page.reload();
     await until(page, () => document.documentElement.dataset.page === "kept");
     // The ticket that was open, from memory; back on the list, the rest.
-    await until(page, () => document.querySelector("#selection").textContent.startsWith("T-0 ·"));
+    await until(page, () => document.querySelector("#selection").textContent.endsWith(" T-0"));
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
     await page.locator('.ticket[data-id="ticket-0"]').waitFor();
     assert.match(await page.locator("#work-list").textContent(), /As of/);
@@ -760,7 +762,7 @@ async function keptFlow(browser, engineName) {
     networkDown = false;
     await reloaded;
     assert.equal(await page.evaluate(() => document.documentElement.dataset.page), undefined);
-    await until(page, () => document.querySelector("#selection").textContent.startsWith("T-0 ·"));
+    await until(page, () => document.querySelector("#selection").textContent.endsWith(" T-0"));
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
     await page.locator('button[data-mode="sent"]').locator("visible=true").click();
     await page.locator('.sent-item[data-status="landed"]').filter({ hasText: "Written on the kept page" }).waitFor();
@@ -846,13 +848,29 @@ try {
           assert.match(await page.locator('.ticket[data-id="ticket-4"] .ticket-meta').textContent(), / · 2h · /);
           await select(0);
           assert.match(await page.locator("#detail .chips").textContent(), /BUG/);
+          // The heading is the title, then its key (T-506); a tag wears its
+          // tint as its ground, the TUI's chip.
+          assert.match(await page.locator("#selection").textContent(), /^\S.* T-0$/);
+          const [tagGround, tint] = await page.locator("#detail .chips .tag.tint-0").evaluate((n) => {
+            const hex = getComputedStyle(document.documentElement).getPropertyValue("--tag-0").trim().slice(1);
+            const [r, g, b] = hex.match(/../g).map((c) => parseInt(c, 16));
+            return [getComputedStyle(n).backgroundColor, `rgb(${r}, ${g}, ${b})`];
+          });
+          assert.equal(tagGround, tint);
           await until(page, () =>
             document.querySelector("#preview").textContent.includes("line 49"),
           );
           assert.equal(await page.locator("#preview script").count(), 0);
+          // The pane as a screen (T-506): the host's width sizes the type,
+          // the legend is the time alone, and there is no wrap switch.
+          assert.equal(await page.locator("#preview").evaluate((n) => n.style.getPropertyValue("--cols")), "132");
+          assert.equal(await page.locator("#preview .screen-rule").count(), 1);
+          assert.equal(await page.locator("#wrap").count(), 0);
+          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-ticket.png`) });
+          assert.doesNotMatch(await page.locator("#freshness").textContent(), /Periodic|50 lines/);
           assert.match(
             await page.locator("#freshness").textContent(),
-            /Last received/,
+            /^Last received/,
           );
           await page.locator("#prompt").fill("draft for the first agent");
           await select(1);
@@ -1104,6 +1122,15 @@ try {
           assert.equal(await page.locator(".ticket").count(), 0);
           await page.locator("#search").fill("Agent task 3");
           await mode("board");
+          if (size !== "phone") {
+            // A column's purpose is its title's hover (T-506): no blurb under
+            // the title and no "empty" line, so every column's cards start level.
+            assert.equal(
+              await page.locator('.column[aria-label="TODO"] .column-label').getAttribute("title"),
+              "for work that can and should be done soon",
+            );
+            assert.equal(await page.locator(".column-about, .column-empty").count(), 0);
+          }
           if (size === "phone")
             await page.locator('[data-column="TODO"]').click();
           await select(3);
@@ -1243,17 +1270,33 @@ try {
             });
             await page.setViewportSize(viewport);
           }
+          if (size === "desktop") {
+            // The hops sit under Settings, closed until asked (T-506), and the
+            // sidebar folds to a rail that stays folded across a reload.
+            assert.equal(await page.locator("#about .hop").count(), 3);
+            assert(!(await page.locator("#about .hops").isVisible()));
+            await page.locator("#side-toggle").click();
+            await until(page, () => document.querySelector("#shell").dataset.side === "rail");
+            assert((await page.locator("#sidebar").boundingBox()).width < 80);
+            assert(await page.locator('#sidebar .mode[data-mode="board"]').isVisible());
+            await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-rail.png`) });
+          }
           await page.reload();
           await until(page, () =>
             document
               .querySelector("#selection")
-              .textContent.startsWith("T-2 ·"),
+              .textContent.endsWith(" T-2"),
           );
           assert(await page.locator("#onboarding").isHidden());
           assert.equal(
             await page.locator("html").getAttribute("data-theme"),
             "chalk",
           );
+          if (size === "desktop") {
+            assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.side), "rail");
+            await page.locator("#side-toggle").click();
+            await until(page, () => document.querySelector("#shell").dataset.side === "full");
+          }
           assert.equal(await page.locator("#prompt").inputValue(), "");
           // M2 cards keep untrusted tool/plan text inert and bind each action
           // to the exact projected session and request.

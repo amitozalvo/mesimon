@@ -55,8 +55,10 @@ export class Store {
     this.detailOpen = false;
     this.sheetOpen = false;
     this.theme = "system";
-    this.alertStatus = "Alerts need this browser to stay connected.";
-    this.wrap = true;
+    this.alertStatus = "";
+    // The desktop sidebar folded to a rail of icons (T-506); app.js reads
+    // the remembered choice in.
+    this.rail = false;
     this.focus = null;
     this.outputKey = undefined;
     this.remembered = new Map(); // board id -> signature of the stored snapshot
@@ -814,6 +816,7 @@ export class Store {
       const session = this.sessions.entries.get(original.context);
       if (session) {
         session.output = reply.lines.join("\n");
+        session.cols = Number.isInteger(reply.cols) && reply.cols > 0 ? reply.cols : undefined;
         session.receivedAt = Date.now();
         if (session.following) session.displayed = session.output;
         else session.unread = session.output !== session.displayed;
@@ -861,8 +864,13 @@ export class Store {
     entry.displayed = entry.output;
     this.sync();
   }
-  setWrap(wrap) {
-    this.wrap = wrap;
+  setRail(rail) {
+    this.rail = rail;
+    try {
+      localStorage.setItem("mesophon-sidebar", rail ? "rail" : "full");
+    } catch {
+      /* The fold still holds for this page. */
+    }
     this.emit();
   }
 

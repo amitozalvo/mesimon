@@ -22,11 +22,12 @@ export function stateAge(board, agent) {
         : `${Math.floor(seconds / 86400)}d`;
 }
 
-// The ticket's tags, in the TUI's tints (T-497).
+// The ticket's tags as the TUI paints them (T-506): the name on a ground of
+// its tint, in the page's ground ink.
 export function Tags({ ticket }) {
   const tags = ticket.tags || [];
   if (!tags.length) return null;
-  return html`<span class="tags">${tags.map((t) => html`<span class=${`tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}><span class="tag-dot" aria-hidden="true"></span>${t.name}</span>`)}</span>`;
+  return html`<span class="tags">${tags.map((t) => html`<span class=${`tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}>${t.name}</span>`)}</span>`;
 }
 
 // What the agent is on (a tool step, mono) or last said, one line (T-497).
@@ -81,8 +82,8 @@ function NeedCard({ store, ticket, board, live }) {
   return html`<article class="need">
     <button type="button" class="ticket need-open" data-id=${ticket.id} aria-pressed=${String(pressed)}
       onClick=${() => store.select(ticket.id)}>
-      <span class="ticket-meta"><span class="mark mark-attn" aria-hidden="true"></span><span class="ticket-key">${ticket.key}</span> · ${ticket.agent.provider} ${kind}</span>
       <span class="ticket-title" dir="auto">${ticket.title}</span>
+      <span class="ticket-meta"><span class="mark mark-attn" aria-hidden="true"></span><span class="ticket-key">${ticket.key}</span> · ${ticket.agent.provider} ${kind}</span>
     </button>
     ${permission && html`<div class="need-body">
       <p class="need-line"><${Icon} name="shield" size=${15} cls="attn-ink" /><span>Wants to use ${permission.tool}</span></p>
@@ -190,8 +191,8 @@ function Card({ store, ticket, board }) {
   const since = stateAge(board, agent);
   return html`<button type="button" class=${`ticket card${needs ? " card-attn" : ""}`} data-id=${ticket.id}
     aria-pressed=${String(pressed)} onClick=${() => store.select(ticket.id)}>
-    <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span>
     <span class="ticket-title" dir="auto">${ticket.title}</span>
+    <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span>
     <${Tags} ticket=${ticket} />
     ${agent && html`<span class=${`card-agent${needs ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${agent.state}${since && ` · ${since}`}</span></span>`}
   </button>`;
@@ -207,19 +208,18 @@ export function BoardList({ store, board, bp }) {
   return html`<div class=${bp === "desktop" ? "kanban" : bp === "phone" ? "stack single" : "stack"}>${columns.map((column) => {
     const group = tickets.filter((t) => t.column === column);
     const ghosts = store.sent.waiting(store.active?.pin.board).filter((i) => i.column === column);
+    // What the column is for shows on the title's hover (T-506), so every
+    // column's first card starts at the same height.
     const about = board.columnDescriptions[column];
     return html`<section class="column" key=${column} aria-label=${column}>
-      <h3 class="column-label"><span>${column}</span><span class="group-count">${group.length}</span></h3>
-      ${about && html`<p class="column-about" dir="auto">${about}</p>`}
+      <h3 class="column-label" title=${about || undefined}><span>${column}</span><span class="group-count">${group.length}</span></h3>
       <div class="cards">
         ${ghosts.map((item) => html`<button type="button" key=${item.id} class="ticket card ghost" data-id=${item.id}
           onClick=${() => store.setMode("sent")}>
           <span class="ticket-meta"><span>New</span><${Tick} state=${tickOf[item.status]} /><span>${item.status === "relay" ? "At the relay" : "In this browser"} · ${clock(item.at)}</span></span>
           <span class="ticket-title" dir="auto">${item.title}</span>
         </button>`)}
-        ${group.length
-          ? group.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} />`)
-          : !ghosts.length && html`<p class="empty column-empty">No tickets in this column.</p>`}
+        ${group.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} />`)}
       </div>
       ${bp !== "phone" && html`<button type="button" class="add-to-column" data-column=${column}
         onClick=${() => store.openComposer(column)}><${Icon} name="plus" size=${16} /><span>Add to ${column}</span></button>`}
@@ -270,7 +270,7 @@ function SentItem({ store, board, item }) {
       ${item.description && html`<p class="sent-desc" dir="auto">${item.description}</p>`}
       <p class="sent-meta">
         <span>→ ${item.column}</span>
-        ${item.tags.map((t) => html`<span class=${`sent-tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}><span class="tag-dot" aria-hidden="true"></span>${t.name}</span>`)}
+        ${item.tags.map((t) => html`<span class=${`tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}>${t.name}</span>`)}
         <span>${clock(item.at)}</span>
         ${tick && html`<span class="sent-tick"><${Tick} state=${tick} /><span class="sr-only">${item.picked ? "Picked up" : said}</span></span>`}
       </p>
@@ -329,6 +329,7 @@ export function ColumnTabs({ store, board }) {
   return html`<div class="column-tabs" role="group" aria-label="Column">${board.columns.map((column) => {
     const count = board.visible().filter((t) => t.column === column).length;
     return html`<button type="button" class="column-tab" data-column=${column} aria-pressed=${String(column === board.column)}
+      title=${board.columnDescriptions[column] || undefined}
       onClick=${() => store.setColumn(column)}><span>${column}</span><span class="group-count">${count}</span></button>`;
   })}</div>`;
 }

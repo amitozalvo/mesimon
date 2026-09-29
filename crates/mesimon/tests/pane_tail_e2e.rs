@@ -86,7 +86,7 @@ fn the_terminal_zone_reads_the_shell_pane() {
     let deadline = Instant::now() + Duration::from_secs(10);
     let lines = loop {
         let lines = match c.request(Command::PaneTail { session: sid, lines: 20 }) {
-            Response::PaneTail { lines } => lines,
+            Response::PaneTail { lines, .. } => lines,
             other => panic!("pane tail failed: {other:?}"),
         };
         // The result line: the echo's output, alone on its row. Waiting for

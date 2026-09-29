@@ -538,9 +538,31 @@ impl TmuxBackend {
 
     /// Last N logical lines of a pane, already SGR-free (spike T-9: no `-e`).
     pub fn capture_tail(&self, sid16: &str, lines: usize) -> Result<Vec<String>> {
-        let out = self.run(&["capture-pane", "-p", "-J", "-t", sid16])?;
-        Ok(out
-            .lines()
+        Ok(self.capture_tail_sized(sid16, lines)?.0)
+    }
+
+    /// `capture_tail` plus the pane's width in cells, read in the same tmux
+    /// command queue (T-506): a remote screen that knows the width can put a
+    /// joined line back where the pane wrapped it, and size its type so the
+    /// whole pane fits. 0 when tmux did not say.
+    pub fn capture_tail_sized(&self, sid16: &str, lines: usize) -> Result<(Vec<String>, u16)> {
+        let out = self.run(&[
+            "capture-pane",
+            "-p",
+            "-J",
+            "-t",
+            sid16,
+            ";",
+            "display-message",
+            "-p",
+            "-t",
+            sid16,
+            "#{pane_width}",
+        ])?;
+        let mut rows: Vec<&str> = out.lines().collect();
+        let cols = rows.pop().and_then(|w| w.trim().parse().ok()).unwrap_or(0);
+        let tail = rows
+            .into_iter()
             .rev()
             .filter(|l| !l.trim().is_empty())
             .take(lines)
@@ -548,7 +570,8 @@ impl TmuxBackend {
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
-            .collect())
+            .collect();
+        Ok((tail, cols))
     }
 
     pub fn capture_input_screen(&self, sid16: &str) -> Result<InputScreen> {

@@ -850,7 +850,7 @@ impl Daemon {
                 });
             let dialog = self.control.dialogs.get(&id).filter(|d| d.request == pending.request);
             let screen = match self.pane_tail(id, 50) {
-                Response::PaneTail { lines } => lines.join("\n"),
+                Response::PaneTail { lines, .. } => lines.join("\n"),
                 _ => String::new(),
             };
             let step = if allowed && Instant::now() < pending.deadline && pending.steps < 12 {
@@ -1420,7 +1420,9 @@ impl Daemon {
             return Reply::Revoked;
         }
         match self.pane_tail(id, 50) {
-            Response::PaneTail { lines } => Reply::Preview { lines },
+            Response::PaneTail { lines, cols } => {
+                Reply::Preview { lines, cols: (cols > 0).then_some(cols) }
+            }
             _ => Reply::Rejected { message: "preview unavailable".into() },
         }
     }

@@ -16,6 +16,25 @@ const receiptTick = (status) =>
         ? "two"
         : null;
 
+// The pane's width in cells, for drawing its lines as the screen they came
+// from (T-506). An older host names none: the longest line stands in, which
+// is the pane's width whenever the pane laid its own lines out.
+const screenCols = (entry) => {
+  if (entry?.cols) return entry.cols;
+  const longest = Math.max(0, ...(entry?.displayed || "").split("\n").map((line) => line.length));
+  return Math.min(200, Math.max(80, longest));
+};
+// A line that is only a rule (Claude Code's `────` between turns, a markdown
+// `---`) is drawn as one, however wide the pane was: it is the line that
+// wrapped into three when the browser reflowed the pane.
+const RULE = /^\s*[─━═╌╍┄┅┈┉\-_=~]{8,}\s*$/u;
+const screenRows = (text) => {
+  const lines = text.split("\n");
+  return lines.map((line, i) =>
+    RULE.test(line) ? html`<span class="screen-rule" key=${i}></span>` : i < lines.length - 1 ? `${line}\n` : line,
+  );
+};
+
 function Output({ store, ticket, entry, live }) {
   const ref = useRef();
   const shown = useRef();
@@ -38,18 +57,21 @@ function Output({ store, ticket, entry, live }) {
           ? "No agent output."
           : "");
   const received = entry?.receivedAt
-    ? ` · Last received ${new Date(entry.receivedAt).toLocaleTimeString()}`
-    : " · Nothing received yet";
+    ? `Last received ${new Date(entry.receivedAt).toLocaleTimeString()}`
+    : "Nothing received yet";
+  // The screen (T-506): the lines at the pane's own width, the type sized by
+  // CSS so that width fills the panel, and a line the capture joined wrapped
+  // back where the pane had it. Where the pane is wider than the panel can
+  // show legibly, the lines reflow at the panel's width and the rules stay
+  // one row each (`.screen-lines`).
   return html`<section class="output" aria-label="Output" hidden=${!ticket?.agent}>
     <div class="output-head">
       <h3 class="label">Output</h3>
-      <p id="freshness">${live ? html`<span class="dot" aria-hidden="true"></span>` : null}Periodic preview · up to 50 lines${received}${live ? "" : " · Stale / offline"}</p>
-      <label class="wrap-toggle"><input id="wrap" type="checkbox" checked=${store.wrap}
-        onChange=${(e) => store.setWrap(e.currentTarget.checked)} /><span>Wrap</span></label>
+      <p id="freshness">${live ? html`<span class="dot" aria-hidden="true"></span>` : null}${received}${live ? "" : " · Stale / offline"}</p>
     </div>
     <div class="output-body">
-      <pre id="preview" ref=${ref} class=${store.wrap ? "" : "no-wrap"} aria-label="Agent output" tabindex="0"
-        onScroll=${(e) => store.outputScrolled(e.currentTarget)}>${text}</pre>
+      <pre id="preview" ref=${ref} class="screen" style=${{ "--cols": screenCols(entry) }} aria-label="Agent output" tabindex="0"
+        onScroll=${(e) => store.outputScrolled(e.currentTarget)}><span class="screen-lines">${screenRows(text)}</span></pre>
       <button id="latest" type="button" class="latest" hidden=${!entry || entry.following}
         onClick=${() => store.latest()}><${Icon} name="down" size=${16} /><span>${entry?.unread ? "New preview · Jump to latest" : "Jump to latest"}</span></button>
     </div>
@@ -112,7 +134,6 @@ function Composer({ store, ticket, entry, live }) {
         </div>
       </div>
       <p id="delivery" role="status">${tick && html`<${Tick} state=${tick} />`}<span>${entry?.delivery || ""}</span></p>
-      <p class="draft-note">Ctrl / ⌘ + Enter to send. Drafts stay with each session in this tab. Reloading discards unsent drafts.</p>
     </form>
   </footer>`;
 }
@@ -130,7 +151,7 @@ export function Detail({ store, bp }) {
       <button id="close-detail" type="button" class="icon-btn" aria-label="Close" onClick=${() => store.back()}><${Icon} name="x" size=${20} /></button>
       <div class="detail-title">
         <h2 id="selection" tabindex="-1" dir="auto">${ticket
-          ? html`<span class="selection-key">${ticket.key}</span><span class="selection-sep"> · </span><span>${ticket.title}</span>`
+          ? html`<span class="selection-title">${ticket.title}</span>${" "}<span class="selection-key">${ticket.key}</span>`
           : "Select a ticket"}</h2>
         <div class="chips">
           ${ticket && html`<span class="chip">${ticket.column}</span>`}

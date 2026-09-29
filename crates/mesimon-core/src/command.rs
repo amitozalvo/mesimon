@@ -1497,9 +1497,12 @@ pub enum Response {
     },
     /// PaneTail's answer: oldest line first, ready to draw in that order.
     /// Bounded daemon-side; the client still sanitizes, because a pane holds
-    /// whatever a command decided to print.
+    /// whatever a command decided to print. `cols` is the pane's width in
+    /// cells (T-506), 0 when unknown — an older daemon, or tmux not saying.
     PaneTail {
         lines: Vec<String>,
+        #[serde(default)]
+        cols: u16,
     },
     /// FocusQuiet's answer: how long the client attached to the focused
     /// pane has been silent.

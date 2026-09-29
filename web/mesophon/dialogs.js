@@ -60,7 +60,6 @@ export function Attention({ store, ticket, entry, live }) {
   const off = !live || busy;
   const send = (body) =>
     store.sendInteraction({ ...body, ticket: ticket.id, session: ticket.agent.session }, entry);
-  const foot = html`<p class="attention-foot">The host checks the visible dialog before sending keys. Check the output if delivery is unknown.</p>`;
   if (permission) {
     const expired = Date.now() >= permission.expires_at;
     return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
@@ -75,7 +74,6 @@ export function Attention({ store, ticket, entry, live }) {
         <button type="button" class="btn btn-attn" disabled=${off || expired}
           onClick=${() => send({ op: "permission", request: permission.request, decision: "allow" })}>Approve once</button>
       </div>
-      ${foot}
     </section>`;
   }
   const answer = (response, enabled = true) => ({
@@ -91,7 +89,6 @@ export function Attention({ store, ticket, entry, live }) {
         <button type="button" class="btn" ...${answer({ answer: "reject" })}>Reject plan</button>
         <button type="button" class="btn btn-attn" ...${answer({ answer: "accept" })}>Accept · approve edits manually</button>
       </div>
-      ${foot}
     </section>`;
   const supported = answerable(dialog);
   const draft = entry?.dialogDraft?.request === dialog.request ? entry.dialogDraft.text : "";
@@ -123,6 +120,5 @@ export function Attention({ store, ticket, entry, live }) {
             }}>Send answer</button>
         </div>`
       : html`<p class="attention-note">This dialog shape needs a local answer in the pane.</p>`}
-    ${foot}
   </section>`;
 }

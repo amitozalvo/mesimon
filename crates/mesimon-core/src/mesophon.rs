@@ -253,6 +253,10 @@ pub enum Reply {
     },
     Preview {
         lines: Vec<String>,
+        /// The pane's width in cells (T-506), so the browser draws the lines
+        /// as the screen they came from. Absent from an older host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cols: Option<u16>,
     },
     Delivery {
         status: String,

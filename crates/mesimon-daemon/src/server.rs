@@ -2462,15 +2462,16 @@ impl Daemon {
 
     fn tail_of(&self, name: &str, lines: u16) -> Response {
         let n = lines.clamp(1, MAX_PANE_TAIL_LINES) as usize;
-        match self.backend.capture_tail(name, n) {
+        match self.backend.capture_tail_sized(name, n) {
             // A pane holds whatever a command decided to print, so bound what
             // rides the wire here; what is *drawable* stays the client's own
             // question, the same way transcript text is.
-            Ok(v) => Response::PaneTail {
+            Ok((v, cols)) => Response::PaneTail {
                 lines: v
                     .into_iter()
                     .map(|l| l.chars().take(MAX_PANE_TAIL_COLS).collect())
                     .collect(),
+                cols,
             },
             Err(e) => Response::Err { message: e.to_string() },
         }

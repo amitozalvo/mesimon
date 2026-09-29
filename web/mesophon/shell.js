@@ -158,8 +158,10 @@ function Install({ store }) {
   return null;
 }
 
-function Sidebar({ store, bp }) {
-  const open = store.sheetOpen && bp !== "desktop";
+// The three hops and what travels between them (T-506): under Settings,
+// opened when someone asks. What is out of reach is already the pill's and
+// the strip's word.
+function About({ store }) {
   const link = store.link;
   const seen = lastSeen(store.board);
   const terminal = {
@@ -169,6 +171,21 @@ function Sidebar({ store, bp }) {
     relay: "Unknown while the relay is unreachable",
     nonet: "Unknown while this browser is offline",
   }[link];
+  return html`<details id="about" class="side-about">
+    <summary>Connection</summary>
+    <ol class="hops">
+      <${Hop} icon="smartphone" name="This browser" state=${store.online ? "Online" : "No connection"} ok=${store.online} />
+      <${Hop} icon="cloud" name="Relay" state=${link === "relay" ? "Unreachable" : link === "nonet" ? "Unknown" : "Reachable"} ok=${!["relay", "nonet"].includes(link)} />
+      <${Hop} icon="terminal" name="Your terminal" state=${terminal} ok=${link === "live"} />
+    </ol>
+    ${link === "asleep" && html`<p class="side-note">Your Mac may be asleep, or mesimon isn’t running. If this lasts, check that the board still lists this browser under Remote Control.</p>`}
+    <p class="side-note"><${Icon} name="lock" size=${13} /><span>End-to-end encrypted. The relay routes sealed envelopes it cannot read.</span></p>
+  </details>`;
+}
+
+function Sidebar({ store, bp }) {
+  const open = store.sheetOpen && bp !== "desktop";
+  const link = store.link;
   const boards = store.identity?.boards || [];
   return html`
     ${open && html`<button type="button" class="scrim" aria-label="Close boards and settings" onClick=${() => store.openSheet(false)}></button>`}
@@ -176,6 +193,9 @@ function Sidebar({ store, bp }) {
       <div class="side-brand">
         <${Shin} scale=${3} light=${lightOf(store)} />
         <span class="side-brand-text"><span class="side-title">${store.board?.title || store.active?.title || "mesimon"}</span><span class="side-sub">Remote Control</span></span>
+        <button id="side-toggle" type="button" class="icon-btn side-toggle" aria-expanded=${String(!store.rail)}
+          aria-label=${store.rail ? "Expand the sidebar" : "Collapse the sidebar"} title=${store.rail ? "Expand" : "Collapse"}
+          onClick=${() => store.setRail(!store.rail)}><${Icon} name="panelLeft" size=${18} /></button>
         <button type="button" class="icon-btn side-close" aria-label="Close" onClick=${() => store.openSheet(false)}><${Icon} name="x" size=${20} /></button>
       </div>
       <nav class="side-nav" aria-label="View"><${ModeButtons} store=${store} board=${store.board} /></nav>
@@ -189,16 +209,6 @@ function Sidebar({ store, bp }) {
           </button></li>`)}</ul>
         <button id="add-board" type="button" class="btn btn-quiet" onClick=${() => store.showPairing()}><${Icon} name="plus" size=${16} /><span>Pair another board</span></button>
       </section>
-      <section class="side-section" aria-label="Connection">
-        <h2 class="label">Connection</h2>
-        <ol class="hops">
-          <${Hop} icon="smartphone" name="This browser" state=${store.online ? "Online" : "No connection"} ok=${store.online} />
-          <${Hop} icon="cloud" name="Relay" state=${link === "relay" ? "Unreachable" : link === "nonet" ? "Unknown" : "Reachable"} ok=${!["relay", "nonet"].includes(link)} />
-          <${Hop} icon="terminal" name="Your terminal" state=${terminal} ok=${link === "live"} />
-        </ol>
-        ${link === "asleep" && html`<p class="side-note">Your Mac may be asleep, or mesimon isn’t running. If this lasts, check that the board still lists this browser under Remote Control.</p>`}
-        <p class="side-note"><${Icon} name="lock" size=${13} /><span>End-to-end encrypted. The relay routes sealed envelopes it cannot read.</span></p>
-      </section>
       <section class="side-section settings" aria-label="Settings">
         <h2 class="label">Settings</h2>
         <label class="field">Appearance<select id="theme" value=${store.theme} onChange=${(e) => store.setTheme(e.currentTarget.value)}>
@@ -207,9 +217,10 @@ function Sidebar({ store, bp }) {
           <option value="chalk">Chalk</option>
         </select></label>
         <${Install} store=${store} />
-        <button id="alerts" type="button" class="btn btn-quiet" onClick=${() => store.enableAlerts()}><${Icon} name="bell" size=${16} /><span>Enable connected-browser alerts</span></button>
-        <p id="alert-status" class="side-note">${store.alertStatus}</p>
+        <button id="alerts" type="button" class="btn btn-quiet" onClick=${() => store.enableAlerts()}><${Icon} name="bell" size=${16} /><span>Enable alerts</span></button>
+        ${store.alertStatus && html`<p id="alert-status" class="side-note">${store.alertStatus}</p>`}
         <button id="forget" type="button" class="btn btn-quiet btn-danger" onClick=${() => store.forget()}><${Icon} name="leave" size=${16} /><span>Forget this browser</span></button>
+        <${About} store=${store} />
       </section>
     </aside>`;
 }
@@ -273,7 +284,8 @@ function WorkList({ store, bp }) {
 function Shell({ store, bp, hidden }) {
   const board = store.board;
   const mode = board?.mode || "agents";
-  return html`<div id="shell" hidden=${hidden} data-mode=${mode} data-detail=${String(store.detailOpen)} data-link=${store.link}>
+  return html`<div id="shell" hidden=${hidden} data-mode=${mode} data-detail=${String(store.detailOpen)} data-link=${store.link}
+    data-side=${store.rail ? "rail" : "full"}>
     <${Sidebar} store=${store} bp=${bp} />
     <header id="board-header">
       <button id="board-menu" type="button" aria-expanded=${String(store.sheetOpen)} aria-controls="sidebar"

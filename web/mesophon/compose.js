@@ -110,7 +110,6 @@ export function NewTicket({ store }) {
           ${about && html`<p class="field-note" dir="auto">${about}</p>`}
         </fieldset>
         <${Tags} store=${store} draft=${draft} board=${board} />
-        <p class="compose-quiet"><${Icon} name="moon" size=${15} /><span>It lands quietly. No agent starts until you start one at your terminal.</span></p>
       </div>
       <footer class="compose-foot">
         ${draft.error && html`<p class="compose-error" role="alert">${draft.error}</p>`}

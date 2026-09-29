@@ -15540,3 +15540,50 @@ and packaging tests and the UX suite in Chromium and WebKit at desktop, tablet a
 the projection, teal ticks, the pairing link and the kept page (service worker included, in both
 engines); and all eleven relay acceptance tests against this checkout, both real-browser flows
 included, with a clean fixture audit.
+
+## Mesophon: the pane as a screen, and less on the page (T-506, 2026-09-29, "remote UI fixes")
+
+**The QR code that did not fill the field was the hosted page, not the code.** `remote.mesimon.dev`
+still served phase 3's Mesophon (its `store.js` has no `pairFromLink`), as the phase 4 block says.
+The pairing-link flow passes in the suite in both engines; nothing here changes it. The fix is the
+relay's next `ship.sh` from a main that has phase 4.
+
+**Built: the output pane drawn as the screen it came from.** The tmux backend reads the pane's
+width in the same command queue as the tail (`capture_tail_sized`), `Response::PaneTail` carries
+it as `cols` (`#[serde(default)]`, 0 when unknown) and `Reply::Preview` as `cols: Option<u16>`
+(absent from an older host; the browser then takes the longest line, which is the pane's width
+whenever the pane laid its own lines out). `#preview` sets `--cols`, the type is sized in CSS so
+that many cells fill the panel (Plex Mono's advance is 0.6em, the panel is a size container, so
+`calc((100cqw - 32px) / (var(--cols) * 0.6))`), and the lines box is exactly `cols` wide, so a line
+the `-J` capture joined breaks where the pane broke it. **Below a floor of 11px the pane reflows
+at the panel's width instead** — a 240-column pane on a phone is not readable at any layout, and
+panning every line sideways is worse than reflow — and a line that is only a rule (Claude Code's
+`────` between turns, a markdown `---`) is drawn as one row whatever the width: that was the line
+in the owner's screenshot that wrapped into three. The Wrap switch and "Periodic preview · up to
+50 lines" are gone; the legend is the time received. **Refuted for now: xterm.js.** It would need
+the raw pane with its escapes (`-e`), a ~300 KB vendored module under the no-build rule, and
+colour the TUI's one-saturated-colour law would then have to be argued over again.
+
+**Less on the page.** The three hops and the encryption note sit under Settings as a closed
+`<details>` ("Connection"); the pill and the status strip already say which hop is out. The
+composer's keyboard hint, the dialog cards' footnote, the sheet's "lands quietly" line and the
+standing alerts hint are gone (the alerts status shows only after the button is pressed). The
+desktop sidebar folds to a 68px rail of icons (`#side-toggle`, `data-side` on `#shell`,
+`mesophon-sidebar` in localStorage beside the theme); below the desktop breakpoint the sheet is
+unchanged. Scrollbars are thin, in the page's line colour, and drawn only while the pointer is
+over what scrolls (the standard properties for Chrome and Firefox, the pseudo-elements for
+WebKit). A column's description is its title's hover, and an empty column shows only its Add
+button, so every column's first card starts level. Tags wear their tint as their ground with the
+page's ground for ink, the TUI's chip; a pressed tag in the sheet is the same chip. The ticket
+heading is the title, then its key, small and mono; cards and needs-you cards put the title first.
+
+**Owed:** a CHANGELOG line at the next release for the pane width on the wire and the browser
+changes, and the relay's `ship.sh`.
+
+Verified: every workspace unit test (`cargo ut`), the core mesophon and tmux backend tests,
+`pane_tail_e2e` and `terminal_adopt_e2e` against the real tmux, the release clippy; the browser's
+19 state and packaging tests and the UX suite in Chromium and WebKit at desktop, tablet and phone,
+now asserting the screen's `--cols` from the host, the rule row, no wrap switch, the title-first
+heading, the tinted chip, the column hover, the closed hops and the rail across a reload.
+Screenshots at every size were read by eye. Not verified: the hosted relay, which needs its
+`ship.sh`; the relay's acceptance tests, which live in `mesimon-relay`.
