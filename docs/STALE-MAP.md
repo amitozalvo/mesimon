@@ -15324,3 +15324,121 @@ on main is the install line people copy. `brew audit --online` also reads the ne
 Verified: `ci/site.sh` builds and checks; the page was rendered in Chromium at 1280 px dark and
 360 px light with the three Plex faces loaded, no console output and no horizontal scroll. The
 publish path was not run: it writes to a public repo.
+
+## Mesophon phase 3: the one tick — tickets wait at the relay for an away terminal (T-497, 2026-09-29, "phase 3")
+
+**Built.** A paired browser writes a ticket whether or not its terminal is reachable. The
+Wasm seals it for the host the browser pinned at pairing (`control::seal_mail`: a fresh key
+`crypto::wrap`ped to the host, the body `crypto::seal`ed under it; board and grant in the
+scope, a `Letter` plaintext with domain, direction and id). The page keeps the envelope in
+IndexedDB (a clock) until its own mailbox socket, apart from the host channel, hands it to
+the relay: `Deposit` → `Deposited`, the one tick. The relay keeps it in `control_mail` if the
+depositing device is in the host's last published `control_boards.devices`, at most 64 waiting
+per device and 1024 per board, 128 KiB each, 30 days. Once back, the host collects: after
+`Host` it sends `Collect`, and the relay answers with `Mail` batches of 16, oldest first,
+marked `sent`. The daemon opens each with the grant's device key, files it through
+`control_create` as `Principal::Paired`, and answers with `Collected`: a receipt sealed to that
+browser (`seal_receipt`, a different record revision so neither letter opens as the other).
+The relay pushes it to the browser's mailbox sockets, and the page opens it with the pinned
+host key (`Browser.receipt`): two ticks. A browser that is not a grant's is answered with
+`Discard`. `Withdraw` (Unsend, and Edit before resending) is granted only while the host has
+never been handed the envelope. `Sync` asks after a reload what became of each one:
+`waiting`, `sent`, `answered` with its receipt, or `gone`. A host advertising `mailbox` takes
+every ticket this way, live or away. Phase 2's create op stays for a host without it.
+
+**Decided: exactly once lives on the ticket.** The envelope id is a new `Ticket.envelope`,
+written by `mint_full` in the same `ticket.toml` as the ticket. So a crash between filing and
+answering leaves an envelope that files nothing the second time: the relay hands over again
+only what it never saw answered, and the host answers that from the ticket. A ring of the last
+256 filed ids in `mesophon.json` (`Stored.filed`, with key and column) answers a replay whose
+ticket was since deleted, so a replaying relay cannot bring it back. No `TICKET_SCHEMA` bump:
+an older build that drops the field loses only that memory, never content or a restriction;
+the reasoning is on the constant.
+
+**Decided: the relay's word is one tick, the host's is two.** The relay can only say it keeps
+an envelope; a receipt that does not open under the pinned host key is not an answer, whoever
+sent it (the UX suite forges one). Written while away, a ticket lands where it can: a column
+the board has since lost becomes the default one, and a lost tag is dropped, because nobody is
+there to answer a refusal. The live create op still refuses both.
+
+**Compatibility, measured in the code.** Every side of the control socket drops the peer on a
+frame it cannot parse, and `ControlInfo`'s response denies unknown fields with an exact
+`version: 1` check. So a new host probes the new native `Request::ControlMail`, which an older
+relay answers `InvalidRequest` on the same connection. It sends `Collect` only after the probe
+answered, and the relay sends `Mail` only to a host that sent `Collect`. An older host never
+collects, so the page's `collects` (the host's `mailbox` feature, kept on the identity's board
+entry from its last live handshake) is false and the sheet says so. The page is served by its
+relay, so it is never older than the relay.
+
+**Refuted: reloading while offline.** A page reloaded with no network does not load at all
+until phase 4's service worker. The UX suite proves the clock across a reload with the relay
+unreachable instead, and waits until the ticket is on disk: a reload inside the IndexedDB write
+aborts it.
+
+**New tooling.** Rebuilding `web/mesophon/pkg` needs `wasm-bindgen-cli` 0.2.128, the version
+the relay's Dockerfile pins (`cargo install --locked wasm-bindgen-cli --version 0.2.128`).
+
+Verified: the letters' crypto test, the TOML round trip, daemon and core units, 16 browser
+state tests, the UX suite in Chromium and WebKit at desktop, tablet and phone. That suite
+covers a mailbox host live and away, Unsend and Edit, a forged receipt, a reload with tickets
+on their way, the offline clock, the relay unreachable across a reload, a refused deposit and
+an older host's create op. All eleven relay acceptance tests pass. The new native one covers:
+deposit while away, withdraw, sync, no plaintext in `control_mail`, filing on return, a
+receipt only this browser opens, a column fallback, a re-delivery filing once, a deleted
+ticket not brought back, no withdraw once filed, and revocation refusing new mail. Both
+real-browser flows now stop the host mid-run, file while it is away and see the ticket land
+once.
+
+## The hosted relay: one box for `teams.mesimon.dev` and `remote.mesimon.dev` (T-502, 2026-09-29, "Host the public relay: remote.mesimon.dev and teams.mesimon.dev on one EU VPS")
+
+**Built, in the private relay repository** (`mesimon-relay/deploy/`, its README the runbook):
+a Compose override that publishes 8443 and maps host 443 to the browser listener's 8444 with
+`WEB_ORIGIN=https://remote.mesimon.dev` and certbot's chain and key bind-mounted read-only;
+`ship.sh`, which cross-builds the relay for the box's architecture with the core's musl
+toolchain, builds Mesophon's assets with the core's scripts, assembles the Dockerfile's runtime
+stage around them and streams the image over ssh; `bootstrap.sh` (Docker from Docker's
+repository, certbot, ufw for 22/80/443/8443, unattended-upgrades with a 04:40 UTC reboot window,
+keys-only sshd, the layout under `/srv/mesimon-relay`, the database password); a certbot
+deploy hook that copies the files to uid 10001 and restarts the relay; a nightly `pg_dump`
+encrypted with `age` to a key the box does not hold, kept 14 days and copied off with `rclone`
+when a remote is set; and `smoke.sh`, the hosted layering on a throwaway certificate and spare
+ports. Nothing in the core changed but this block; `docs/REMOTE-CONTROL.md` names the hosted
+address once one answers.
+
+**Decided: the box never compiles.** A 2 GB VPS cannot build the relay plus wasm-bindgen, and a
+Rust build under Docker's emulation on the Mac is slow and flaky. The core already cross-links
+static musl binaries for Linux (`ci/build-linux.sh`), so the relay does the same and the image
+is the Dockerfile's own runtime stage with `ARTIFACTS=prebuilt` naming a build context. BuildKit
+refuses a variable in `COPY --from`, so the choice is a stage: `FROM ${ARTIFACTS} AS artifacts`.
+No registry: `docker save | ssh docker load`, and the only credential on the box is the ssh key.
+
+**Decided: `ports: !override`.** Compose merges a `ports` list by appending entries whose
+{ip, target, published, protocol} differ, so an override that only adds `443:8444` would keep the
+base file's loopback 8444 mapping. `!override` replaces the list; the rendered config was checked.
+
+**Decided: certbot standalone, HTTP-01, and a restart on renewal.** Nothing listens on 80, so
+certbot's own server takes the challenge on issue and on every renewal; GoDaddy's DNS API is not
+open to small accounts, so DNS-01 was not an option. The relay builds its rustls config once at
+start, so the hook restarts it (the entrypoint re-copies `TLS_CERT_FILE`/`TLS_KEY_FILE` on every
+start). The pin printed at startup changes with every renewal and matters only to self-hosted,
+pinning clients; the hosted relay is used without a pin, against the Mozilla roots the client
+already carries.
+
+**Provider, measured on 2026-09-10 sources:** every Hetzner Cost-Optimized shared plan (CX23 up,
+CAX11 up) has been "not available" since 2026-06-26; the cheapest orderable was CPX12 at
+€11.99/month before VAT. The ticket's €4 to 6 estimate no longer holds there; netcup and
+DigitalOcean are named as the same setup. The scripts are architecture-agnostic, so a returning
+Arm plan needs no change.
+
+**Verified:** the merged config renders as intended; `smoke.sh` is green on the local image and
+on an amd64 image assembled around the cross-built static binary, run under emulation: the page
+answers 200 only to `remote.mesimon.dev` and 403 to any other Host, both listeners present the
+supplied certificate with both names, and the entrypoint names `teams.mesimon.dev:8443`. The
+Dockerfile's default compile path was rebuilt after the change.
+
+**Not done, and the author's:** ordering the box, the four DNS rows at GoDaddy (A and AAAA for
+`remote` and `teams`; CAA already `0 issue "letsencrypt.org"`), certbot, the first `ship.sh`,
+the Teams sign-in without a pin, `mesimon mesophon setup --check` and a phone pairing over real
+HTTPS. Two decisions stay open before the address is given out: who may register (registration
+is open, with a 6 MiB frame cap and 256 browser connections but no per-device quota), and whether
+this is a preview host or the paid service.
