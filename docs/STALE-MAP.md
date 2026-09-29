@@ -15090,6 +15090,15 @@ worktree through a focus so Cmd+T opened beside the agent). The user: "not neede
 have `!` to open a shell" — the ticket page's terminal (T-366) is the road to a shell in the
 worktree, and a second one through the terminal's own new-tab was a road nobody asked for.
 
+**Known limit, iTerm2's (its own ticket):** a board in a BACKGROUND tab goes stale — subtitle,
+title and the board itself — until the tab is opened, when everything catches up at once.
+iTerm2's `TokenExecutor.swift` batches a background session's side effects at 1 s and, while
+any VISIBLE session has tokens queued, stops executing a background session's tokens
+altogether ("Avoid blocking the active session … resume processing once active sessions
+drain"); an agent streaming in the front tab never drains, the board's pty backs up, and its
+next `write` blocks the whole loop. Nothing on our side can address the tab strip around
+that: every escape rides the same pty.
+
 **Not built, and why:** `OSC 8` hyperlinks in the note preview and the diff — ratatui 0.30's
 `Cell` has no hyperlink attribute, so a link needs a custom backend or a smuggled modifier bit,
 and the L1 laws would have to learn it; stays banked under T-487's survey. A title format
