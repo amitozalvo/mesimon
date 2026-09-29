@@ -115,6 +115,7 @@ pub(crate) fn probe() -> Option<Ground> {
 struct Out {
     ok: bool,
     stdout: String,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     stderr: String,
 }
 
