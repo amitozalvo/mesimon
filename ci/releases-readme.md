@@ -1,5 +1,7 @@
 # mesimon — releases
 
+[mesimon.dev](https://mesimon.dev)
+
 Prebuilt binaries for **mesimon**, a terminal kanban board that runs your coding agents. Like
 Kubernetes is to containers, mesimon is to Claude Code and Codex. This repository carries
 releases only. The source, and the full documentation, are at
@@ -14,7 +16,7 @@ between you and it.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/install.sh | sh
+curl -fsSL https://mesimon.dev/install.sh | sh
 ```
 
 Or with Homebrew:

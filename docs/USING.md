@@ -32,7 +32,7 @@ The [README](../README.md) gets you to a first agent. This page is the rest.
 ## Installing
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/install.sh | sh
+curl -fsSL https://mesimon.dev/install.sh | sh
 mesimon doctor    # confirm the environment
 ```
 

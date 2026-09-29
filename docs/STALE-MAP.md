@@ -15272,3 +15272,55 @@ reload and revocation. All ten relay acceptance tests pass: the new native test 
 tag, author, receipt after reconnect, three refusals, no plaintext in the relay's tables) and
 both real-browser flows, which now file a ticket through the page. The fixture audit was clean.
 Screenshots were inspected in both themes. Next: phase 3, the one tick.
+
+## mesimon.dev: the site at the root, Remote Control on `remote.mesimon.dev` (T-501, 2026-09-29, "Use mesimon.dev: the site at the root, Remote Control on a subdomain")
+
+The author bought `mesimon.dev` and chose, from a four-question brief: a one-screen landing page
+at the root (docs stay on GitHub, versioned with the code), GitHub Pages to host it,
+`https://remote.mesimon.dev` for Remote Control, and the domain in `homepage` (Cargo, Homebrew),
+a link atop both READMEs, and the install line.
+
+**The site is the releases repo.** Pages serves the root of `amitozalvo/mesimon-releases`' main
+branch, which already carried `install.sh` and nothing else of the source. So
+`https://mesimon.dev/install.sh` is the *released* installer byte for byte, with no second copy
+to drift and no new repo: `release.sh` keeps syncing it after the release it names, and
+`ci/site.sh` never publishes it. Main's `install.sh` may name assets the latest release lacks;
+serving main's would install a broken build between a merge and a release. `site/` holds the
+page (`index.html`, `style.css`, a Copy-button `site.js`, `CNAME`, `.nojekyll`); `ci/site.sh`
+copies in Mesophon's Plex fonts, `assets/demo.gif` and the resting shin as the icon, checks every
+relative reference resolves, and fails when any of the five files that give the install line
+(README, USING, the releases README, `install.sh`, the page) disagrees. `release.sh` builds it
+in every run, dry or not, and publishes it after the tap. `--publish` alone is how the page goes
+live between releases.
+
+**`ci/publish-file.sh`** is `release.sh`'s old `publish_file`, shared: it skips a file whose git
+blob id matches the one the contents API reports (no empty sync commits), and passes content as
+`-F content=@file` because the GIF is 0.7 MB in base64 — an argv near macOS's 1 MiB `ARG_MAX`,
+and over Linux's 128 KiB per-argument cap.
+
+**The page has no amber.** Nothing on it needs you, so the one saturated colour stays the
+board's; the tokens are Graphite (dark) and Chalk (light) by `prefers-color-scheme`, and the
+shin's status light is calm teal. The promises are the README's lines verbatim — promise 1's
+wording is the author's alone.
+
+**Remote Control's origin is fixed at `https://remote.mesimon.dev`, port 443.** A browser keeps
+its pairing keys, remembered boards, Sent list and (T-497 phase 3) outbox per origin, and an
+origin includes the port: the relay's browser listener defaults to 8444, so the hosted relay
+must publish it on 443 (a Compose port map or an ingress) *before* a phone pairs, or the address
+changes the day it moves. Teams keeps its own name (`teams.mesimon.dev:8443`, as the endpoint
+test already spells it); the relay serves both listeners from one certificate, so it carries
+both names. Where the public relay runs is still open — nothing hosted exists yet.
+
+**Trust moved, and it is named.** The install line now trusts the registrar and DNS as well as
+the GitHub account: whoever holds `mesimon.dev` can serve any installer and, once the relay is
+hosted, the code every paired phone runs. `SECURITY.md` puts the site in scope; the author's
+checklist is registrar lock, 2FA, a verified Pages domain (GitHub refuses a takeover of a
+verified name) and CAA records naming the CAs in use.
+
+**Order that matters:** Pages and DNS go live, `ci/site.sh --publish` runs, and
+`curl -fsSL https://mesimon.dev/install.sh | sh` works, *before* this branch merges — the README
+on main is the install line people copy. `brew audit --online` also reads the new `homepage`.
+
+Verified: `ci/site.sh` builds and checks; the page was rendered in Chromium at 1280 px dark and
+360 px light with the three Plex faces loaded, no console output and no horizontal scroll. The
+publish path was not run: it writes to a public repo.

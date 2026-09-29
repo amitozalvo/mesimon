@@ -73,6 +73,7 @@ ci/test-linux.sh                                      # whole suite on Debian 12
 ci/build-linux.sh                                     # the two Linux release binaries, cross-linked here
 ci/release.sh --dry-run                               # the full release gate, minus the upload
 assets/demo/record.sh [tape]                          # re-record a README GIF from <tape>.tape, default demo (vhs)
+ci/site.sh [--publish]                                # build mesimon.dev (site/) into dist/site; publish to Pages
 MESIMON_DEMO_KEY_FILE=<key file> assets/demo/record.sh agent  # the agent clip with the real claude (Sonnet, cents)
 ```
 
@@ -87,6 +88,12 @@ the stamp matches; `MESIMON_RELEASE_RETEST=1` overrides. Releases are cut locall
 runner. **Both Docker steps are paused by the author** until they say Windows/WSL2 is
 operational — the script prints `SKIPPED`, `MESIMON_RELEASE_DOCKER=1` runs them, and you should
 not open Docker Desktop for a release.
+
+**mesimon.dev is GitHub Pages on `amitozalvo/mesimon-releases`' main branch** — the page is
+`site/`, and the `install.sh` it serves is the one `release.sh` syncs there after each release,
+never main's. The install line is in five files and `ci/site.sh` fails when one disagrees.
+**Remote Control's hosted origin is `https://remote.mesimon.dev` (port 443), fixed**: a browser
+keeps its pairing and outbox per origin, so any change re-pairs every phone.
 
 **The Homebrew tap** (`brew install amitozalvo/tap/mesimon`) is one formula, generated from
 `ci/homebrew/mesimon.rb` by `ci/homebrew-formula.sh` and pushed to `amitozalvo/homebrew-tap` by

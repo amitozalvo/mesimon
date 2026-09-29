@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # mesimon installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/install.sh | sh
+#   curl -fsSL https://mesimon.dev/install.sh | sh
 #
 # Re-running this IS the update: it replaces the binary at the same path, and a
 # running board notices the new mtime and offers `update ready (U reloads)`.
@@ -12,8 +12,9 @@
 #   PREFIX=~/bin sh install.sh             install somewhere else
 #
 # Binaries are published from a separate public repo, so there is no GitHub
-# account, login, or invite involved. The source lives in a private repo and
-# is not needed to run mesimon.
+# account, login, or invite involved. mesimon.dev serves this file from that
+# repo's main branch (ci/site.sh), and the source, at amitozalvo/mesimon, is
+# not needed to run mesimon.
 
 set -eu
 

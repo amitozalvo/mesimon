@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
 description = "Board sharing for mesimon: device keys, board keys, invite codes, the relay wire protocol and its TLS client"
 

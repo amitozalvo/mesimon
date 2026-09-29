@@ -134,6 +134,11 @@ Additional targeted gates:
   never publish as part of an ordinary development task.
 - Homebrew formula: `ci/homebrew/mesimon.rb` is the template `release.sh` fills and pushes to
   `amitozalvo/homebrew-tap`; its header gives the local-tap check for a change.
+- mesimon.dev: `site/` is the page, `ci/site.sh` builds it into `dist/site` and checks that every
+  install line agrees; GitHub Pages serves it from `amitozalvo/mesimon-releases`' main branch,
+  whose `install.sh` only `release.sh` updates. `--publish` is outward-facing: never as part of
+  an ordinary task. Remote Control's hosted origin is `https://remote.mesimon.dev` on port 443,
+  fixed, because a browser's pairing lives per origin.
 - README GIFs: `assets/demo/record.sh [tape]` re-records the clip `assets/demo/<tape>.tape`
   names, `demo` (`assets/demo.gif`) by default (needs `vhs`), after a change the recording shows.
   `agent.gif` is the real claude: `MESIMON_DEMO_KEY_FILE=<key file>` (see `assets/demo/README.md`).

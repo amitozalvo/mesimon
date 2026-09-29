@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mesimon — a terminal kanban board that runs your coding agents</title>
+<meta name="description" content="mesimon is a terminal kanban board that runs Claude Code and Codex: one key starts an agent on a ticket, each in its own worktree, and a card lights when its agent needs you.">
+<meta property="og:title" content="mesimon">
+<meta property="og:description" content="A terminal kanban board that runs your coding agents.">
+<meta property="og:url" content="https://mesimon.dev/">
+<meta property="og:image" content="https://mesimon.dev/favicon.png">
+<link rel="icon" href="favicon.png">
+<link rel="stylesheet" href="style.css">
+<script src="site.js" defer></script>
+</head>
+<body>
+<main>
+
+<header class="hero">
+  <svg class="shin" viewBox="0 0 20 16" width="100" height="80" shape-rendering="crispEdges" aria-hidden="true">
+    <path class="sh-body" d="M1 0h3v1h-3zM13 0h3v1h-3zM1 1h4v1h-4zM7 1h3v1h-3zM13 1h4v1h-4zM2 2h3v1h-3zM6 2h4v1h-4zM14 2h3v1h-3zM3 3h6v1h-6zM14 3h3v1h-3zM3 4h5v1h-5zM14 4h3v1h-3zM2 5h16v1h-16zM1 6h18v1h-18zM0 7h20v1h-20zM0 8h20v1h-20zM0 9h20v1h-20zM0 10h20v1h-20zM0 11h20v1h-20zM0 12h20v1h-20zM0 13h20v1h-20zM1 14h18v1h-18zM3 15h14v1h-14z"/>
+    <path class="sh-hi" d="M1 0h3v1h-3zM13 0h3v1h-3zM4 1h1v1h-1zM7 1h3v1h-3zM16 1h1v1h-1zM6 2h1v1h-1zM5 3h1v1h-1zM2 5h1v1h-1zM8 5h6v1h-6zM17 5h1v1h-1zM1 6h1v1h-1zM18 6h1v1h-1zM0 7h1v1h-1zM19 7h1v1h-1z"/>
+    <path class="sh-shade" d="M1 1h1v1h-1zM13 1h1v1h-1zM2 2h1v1h-1zM9 2h1v1h-1zM8 3h1v1h-1zM0 13h1v1h-1zM19 13h1v1h-1zM1 14h2v1h-2zM17 14h2v1h-2zM3 15h14v1h-14z"/>
+    <path class="sh-blush" d="M1 12h2v1h-2zM17 12h2v1h-2z"/>
+    <path class="sh-eye" d="M5 8h2v1h-2zM14 8h2v1h-2zM4 9h3v1h-3zM13 9h3v1h-3zM4 10h2v1h-2zM13 10h2v1h-2z"/>
+    <path class="sh-glint" d="M4 8h1v1h-1zM13 8h1v1h-1zM6 10h1v1h-1zM15 10h1v1h-1z"/>
+    <path class="sh-eye" d="M8 12h1v1h-1zM11 12h1v1h-1zM9 13h2v1h-2z"/>
+    <path class="sh-light" d="M14 0h1v1h-1z"/>
+  </svg>
+  <h1>mesimon <span class="he" lang="he">משימון</span></h1>
+  <p class="lede">A terminal kanban board that runs your coding agents.</p>
+  <p>Your agent is the real Claude Code or Codex, in its own terminal: step into it and you have
+  the same prompt, the same slash commands and the same permission dialogs, and mesimon never
+  sits between you and it.</p>
+</header>
+
+<section class="install" aria-labelledby="install">
+  <h2 id="install">Install</h2>
+  <div class="cmd"><code>curl -fsSL https://mesimon.dev/install.sh | sh</code><button type="button" class="copy" hidden>Copy</button></div>
+  <p class="or">Or with Homebrew:</p>
+  <div class="cmd"><code>brew install amitozalvo/tap/mesimon</code><button type="button" class="copy" hidden>Copy</button></div>
+  <p>Then run <code>mesimon doctor</code>. It checks your setup and prints fixes, and changes
+  nothing. You need macOS on Apple Silicon or Linux (x86_64 or aarch64, WSL2 included), git,
+  and Claude Code or Codex, signed in.
+  <a href="https://github.com/amitozalvo/mesimon/blob/main/docs/USING.md#requirements">Requirements in detail</a>.</p>
+</section>
+
+<figure class="demo">
+  <img src="demo.gif" width="1132" height="590" alt="Starting an agent from the board, answering it from the ticket page, and merging its branch">
+  <figcaption>Start an agent with Shift+Enter on the board. When its card lights, open the ticket
+  and answer, then merge its branch with <kbd>m</kbd>.</figcaption>
+</figure>
+
+<section aria-labelledby="what">
+  <h2 id="what">What it does</h2>
+  <ul>
+    <li><strong>Start an agent on a ticket with one key.</strong> Your ticket's title and
+    description are its first prompt. Claude Code and Codex both work.</li>
+    <li><strong>Each agent can work in its own worktree</strong>, on its own branch, so several
+    agents can change the same repo at once without touching each other's files.</li>
+    <li><strong>The card lights when the agent needs you.</strong> The board stays quiet while
+    agents work, and a card moves to REVIEW on its own when its agent is done.</li>
+    <li><strong>Review and merge with one key.</strong> <kbd>v</kbd> shows the branch's diff and
+    <kbd>m</kbd> merges it, fast-forward only.</li>
+    <li><strong>Agents keep running when you close the board.</strong> The next time you open it,
+    everything is where you left it. Idle agents can sleep and wake into the same
+    conversation.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="promises">
+  <h2 id="promises">Three promises</h2>
+  <ol>
+    <li><strong>A strict write allowlist.</strong> mesimon writes to a short list of paths, every
+    one named, and nowhere else: never your shell rc, your git config, your agent configuration
+    or your tmux config.</li>
+    <li><strong>No config mutation.</strong> <code>mesimon doctor</code> prints fixes for you to
+    apply; it never applies one itself.</li>
+    <li><strong>Zero prompt injection.</strong> mesimon adds, removes and reorders no token of
+    your conversation. The board tools it gives its agents, and a brief you can switch on, are
+    shown in full.</li>
+  </ol>
+  <p><a href="https://github.com/amitozalvo/mesimon/blob/main/docs/PROMISES.md">The promises in full</a>,
+  with every path mesimon writes.</p>
+</section>
+
+<nav class="links" aria-label="More">
+  <a href="https://github.com/amitozalvo/mesimon">Source on GitHub</a>
+  <a href="https://github.com/amitozalvo/mesimon/blob/main/docs/USING.md">Using mesimon</a>
+  <a href="https://github.com/amitozalvo/mesimon/blob/main/docs/REMOTE-CONTROL.md">Remote Control</a>
+  <a href="https://github.com/amitozalvo/mesimon/blob/main/CHANGELOG.md">Changelog</a>
+  <a href="https://github.com/amitozalvo/mesimon/blob/main/SECURITY.md">Security</a>
+</nav>
+
+</main>
+<footer>
+  <p><strong>Alpha.</strong> It works and it is used every day, and it will change under you.
+  Apache-2.0.</p>
+</footer>
+</body>
+</html>

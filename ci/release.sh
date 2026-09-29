@@ -333,9 +333,14 @@ awk -v want="## $tag" '
 ' CHANGELOG.md > dist/notes.md || true
 [ -s dist/notes.md ] || echo "See CHANGELOG.md." > dist/notes.md
 
+# The site is built and checked on every run, so a broken page or an install
+# line that disagrees with the README stops the release before anything ships.
+step "build mesimon.dev"
+ci/site.sh
+
 if [ "$DRY_RUN" = "1" ]; then
   step "dry run — nothing published"
-  echo "artifacts in dist/, notes in dist/notes.md, the tap's formula in dist/mesimon.rb"
+  echo "artifacts in dist/, notes in dist/notes.md, the tap's formula in dist/mesimon.rb, the site in dist/site"
   echo "publish with: ci/release.sh"
   exit 0
 fi
@@ -371,19 +376,15 @@ gh release create "$tag" \
   "${assets[@]}"
 
 # Keep the public repo's install.sh and README in step with what was just
-# released — the curl one-liner reads them straight off its main branch.
-publish_file() {
-  local repo="$1" src="$2" dest="$3" existing
-  existing=$(gh api "repos/$repo/contents/$dest" --jq .sha 2>/dev/null || true)
-  set -- -X PUT "repos/$repo/contents/$dest" \
-    -f message="sync $dest ($tag)" \
-    -f content="$(base64 < "$src" | tr -d '\n')"
-  [ -n "$existing" ] && set -- "$@" -f sha="$existing"
-  gh api "$@" --silent
-}
+# released — the curl one-liner reads them straight off its main branch, which
+# GitHub Pages serves as mesimon.dev.
+publish_file() { ci/publish-file.sh "$1" "$2" "$3" "sync $3 ($tag)"; }
 step "sync install.sh + README to $DIST_REPO"
 publish_file "$DIST_REPO" install.sh install.sh
 publish_file "$DIST_REPO" ci/releases-readme.md README.md
+
+step "publish mesimon.dev"
+ci/site.sh --publish "$tag"
 
 # After the release, never before: the formula's urls are its assets, and a
 # `brew install` against a formula pushed first would 404.
@@ -394,6 +395,6 @@ echo
 echo "published $tag"
 echo
 echo "share this line:"
-echo "  curl -fsSL https://raw.githubusercontent.com/$DIST_REPO/main/install.sh | sh"
+echo "  curl -fsSL https://mesimon.dev/install.sh | sh"
 echo "or, with Homebrew:"
 echo "  brew install ${TAP_REPO%%/*}/tap/mesimon"

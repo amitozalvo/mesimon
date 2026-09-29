@@ -1,5 +1,7 @@
 # mesimon
 
+[mesimon.dev](https://mesimon.dev)
+
 **mesimon** (Hebrew משימון, "the task instrument" — pronounced me-si-**MON**) is a terminal kanban
 board that runs your coding agents. Like Kubernetes is to containers, mesimon is to Claude Code
 and Codex.
@@ -35,7 +37,7 @@ changes are in the [CHANGELOG](CHANGELOG.md).
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/install.sh | sh
+curl -fsSL https://mesimon.dev/install.sh | sh
 ```
 
 Or with Homebrew:

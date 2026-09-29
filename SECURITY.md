@@ -19,7 +19,7 @@ You will get an acknowledgement within a week. Fixes ship in the next release an
 
 In scope: the `mesimon` binary and everything it spawns — the daemon, the private tmux server,
 and the `hook`, `gate` and `mcp` subcommands that run inside an agent's turn — plus the
-installer (`install.sh`) and the update path.
+installer (`install.sh`), the site that serves it (`mesimon.dev`) and the update path.
 
 Out of scope: the coding agents themselves (Claude Code, Codex) and the tmux mesimon bundles on
 macOS — report those upstream — and anything that requires an already-compromised user account

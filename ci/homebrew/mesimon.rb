@@ -16,7 +16,7 @@
 #   brew uninstall mesimon && brew untap msmn-test/local
 class Mesimon < Formula
   desc "Terminal kanban board that runs many coding-agent sessions"
-  homepage "https://github.com/amitozalvo/mesimon"
+  homepage "https://mesimon.dev"
   # No `version`: brew reads it off each url (`brew audit` calls a stated one
   # redundant), and orders alpha.10 after alpha.9.
   license "Apache-2.0"
