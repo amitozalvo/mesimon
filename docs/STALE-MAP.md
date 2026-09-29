@@ -15660,3 +15660,13 @@ this one: it names `Request::Start`. It also carries the fix for T-506's `cols` 
 `Preview`, which had left the relay's acceptance tests uncompilable against the core's main.
 
 **Owed:** a CHANGELOG line at the next release. Physical-phone acceptance is still outstanding.
+
+**Renamed the same night: the Teams listener is `relay.mesimon.dev`, not `teams.mesimon.dev`.**
+The author asked why `teams`, and the answer was that nobody chose it: the endpoint parser's unit
+test had spelled it as an example, T-501 called that "already spelled", and this ticket's brief
+called it fixed. Only `remote.mesimon.dev` is fixed, by the browser's per-origin storage. The host
+is one relay serving Teams and Remote Control, and a name after one feature repeats the
+confusion T-503 files against the Settings row. Nothing had signed in to the old name, so the
+switch cost one DNS row, a reissued certificate, the test string and the runbook; a month later it
+would have cost every signed-in Mac a re-sign-in, since the device file stores the address.
+T-504 (prefill the sign-in, blocked on the registration decision) should read `relay.mesimon.dev`.

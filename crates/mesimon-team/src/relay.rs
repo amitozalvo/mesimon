@@ -353,9 +353,9 @@ mod tests {
         assert_eq!((e.host.as_str(), e.port), ("relay.example.com", 9000));
         assert_eq!(e.pin, Some([0xab; 32]));
         assert_eq!(e.display(), "relay.example.com:9000");
-        let e = RelayEndpoint::parse("teams.mesimon.dev").unwrap();
-        assert_eq!((e.host.as_str(), e.port, e.pin), ("teams.mesimon.dev", 8443, None));
-        assert_eq!(e.display(), "teams.mesimon.dev");
+        let e = RelayEndpoint::parse("relay.mesimon.dev").unwrap();
+        assert_eq!((e.host.as_str(), e.port, e.pin), ("relay.mesimon.dev", 8443, None));
+        assert_eq!(e.display(), "relay.mesimon.dev");
         assert!(RelayEndpoint::parse("").is_none());
         assert!(RelayEndpoint::parse("host:notaport").is_none());
         assert!(RelayEndpoint::parse("host short-pin").is_none());
