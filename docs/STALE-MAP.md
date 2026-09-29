@@ -15442,3 +15442,23 @@ the Teams sign-in without a pin, `mesimon mesophon setup --check` and a phone pa
 HTTPS. Two decisions stay open before the address is given out: who may register (registration
 is open, with a 6 MiB frame cap and 256 browser connections but no per-device quota), and whether
 this is a preview host or the paid service.
+
+**Update, the same evening: the box exists and both names answer.** The author chose Google
+Cloud over Hetzner's out-of-stock shared plans: project `mesimon-relay`, an e2-small in
+`europe-west1-b`, a static IPv4, a VPC rule for 80/443/8443. `bootstrap.sh` ran there, the
+author typed the two A rows (no AAAA: the default subnet is not dual-stack), certbot issued one
+certificate for both names after a staging dry run, and `ship.sh` shipped
+`hosted-20260929-49074a2-b983364` from clean detached worktrees of both repositories. From
+outside: 200 on `https://remote.mesimon.dev/`, 403 on any other Host, and curl verifies the
+Let's Encrypt chain on `teams.mesimon.dev:8443`. Left to the author: the pin-less Teams sign-in,
+`mesimon mesophon setup --check`, a phone pairing, the `age` recipient for backups, and the two
+policy decisions. `docs/REMOTE-CONTROL.md` does not name the address until those are made.
+
+**Two traps measured on the way.** *Compose bind-mounts a file secret with the host file's owner
+and mode.* Docker Desktop on the Mac relaxes file sharing, so the local relay never noticed; on
+Linux the relay container (uid 10001) was refused root's 0600 `database-url` and crash-looped.
+The relay's secret is now uid 10001's at 0400; PostgreSQL's stays root's because its entrypoint
+reads it as root. *GCP images hand out a sudo user, not root, and a passphrase-protected default
+key fails silently under `BatchMode`* (the server accepts the key, the client cannot sign): root
+got gcloud's passphrase-less key through `gcloud compute ssh`, and an `~/.ssh/config` alias
+carries it, with `SetEnv LC_ALL=C.UTF-8` so the Mac's locale stops reaching a box without it.
