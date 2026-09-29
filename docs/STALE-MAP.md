@@ -15737,3 +15737,26 @@ tablet and phone with the start flow rewritten (no card start, the sheet blank a
 wake on a parked agent with the request carrying `prompt`, the overlay's backdrop, the board
 picker). `browser.test.js` (the relay's acceptance) goes through the sheet now; the relay
 repository must land after this one if it names `Request::Start` with fields.
+
+## The sharing dialog, trimmed (T-513, 2026-09-30, "refine sharing settings in menu")
+
+Six changes to the sharing dialog (`App::sharing_rows`), all in the TUI; no wire change.
+
+**Signed in, `YOU` is one row.** `Signed in as <name> on <relay>` stands alone: the relay and
+name fields and `Sign in again` show only while signed out. A new relay was a new identity
+anyway; the cost is that a rename is now a sign-out and a sign-in, which mints a new key.
+
+**Signing out asks first.** Enter on the identity row arms it (`Sign out?`), a second Enter
+sends `TeamSignOut`, and any motion disarms, as `Stop sharing` and `Leave this board` do.
+The author signed out by an Enter they did not know would do it.
+
+**Remote Control is this board's first row, and only when signed in.** It sits under
+`THIS BOARD` and is left out while signed out. With Teams off it is still the section's
+only row. The dialog opens on it, since it is the first row of `THIS BOARD`.
+
+**Notes always go.** The `Notes: included / kept here` switch and `App::share_notes` are gone;
+Publish sends `ShareBoard { notes: true }`. The wire field and the daemon's `notes_withheld`
+stay, so a board already published without notes keeps syncing that way.
+
+**`BOARDS` is `OTHER BOARDS`**, and the board that is open is no longer listed there: it
+was a read-only `open now` row repeating the section above.

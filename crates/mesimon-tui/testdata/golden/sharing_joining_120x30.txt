@@ -4,24 +4,24 @@
 
     Decay treatments   AO >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
 
-    Keymap validator      >╭─ SHARING ∙ SYNCED ─────────────────────────────────────────────╮
+    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
+                           ╭─ SHARING ∙ SYNCED ─────────────────────────────────────────────╮
                            │ YOU                                                            │
-                           │   Relay: relay.example                                         │
-                           │   Display name: Dana                                           │
                            │   Signed in as Dana on relay.example                           │
                            │ THIS BOARD                                                     │
                            │   Amit Ozalvo ∙ owner                                          │
                            │   Dana ∙ contributor ∙ you                                     │
                            │   Lee ∙ viewer                                                 │
                            │   Leave this board                                             │
-                           │ BOARDS                                                         │
+                           │ OTHER BOARDS                                                   │
                            │   Code: 7A3K-M9Q2-XB4D                                         │
-                           │   mesimon ∙ contributor ∙ open now                             │
                            │   Sam's board ∙ viewer                                         │
                            │   your board ∙ owner                                           │
                            │                                                                │
                            │     a one-time code from the board's owner ∙ opens the board   │
                            ╰────────────────────────────────────── enter save ∙ esc cancel ─╯
+
+
 
 
 

@@ -291,8 +291,6 @@ pub enum SharingRow {
     ControlOrigin,
     ControlDevice(String),
     Publish,
-    /// The notes switch, before the board is published.
-    Notes,
     InviteContributor,
     InviteViewer,
     /// The last invite code minted.
@@ -1450,8 +1448,6 @@ pub struct App {
     pub team_relay_draft: String,
     pub team_name_draft: String,
     team_drafts_seeded: bool,
-    /// The sharing dialog's notes switch, before the board is published.
-    pub share_notes: bool,
     /// A join was sent from the team boards dialog (T-335): the boards the
     /// relay listed before it, so the one that appears is the one to open.
     /// Cleared by the daemon's answer, either way.
@@ -1820,7 +1816,6 @@ impl App {
             team_name_draft: String::new(),
             team_drafts_seeded: false,
             pending_paste: None,
-            share_notes: true,
             join_watch: None,
             pending_switch: None,
             teams: cfg!(debug_assertions),
@@ -7081,35 +7076,20 @@ impl App {
         Ok(())
     }
 
-    /// The sharing dialog's rows, off the snapshot: the identity first
-    /// (the two fields and the one gesture that applies), then — signed in
-    /// — this board (the two rows that publish while it is only here, or
-    /// the invites, the members and the way to stop or leave), then the
-    /// boards this device belongs to, behind the way onto one more.
+    /// The sharing dialog's rows, off the snapshot: the identity first —
+    /// signed out, the two fields and `Sign in`; signed in, the one row
+    /// that says who and signs out — then this board (Remote Control, and
+    /// the publish row while it is only here, or the invites, the members
+    /// and the way to stop or leave), then the other boards this device
+    /// belongs to, behind the way onto one more.
     pub fn sharing_rows(&self) -> Vec<SharingRow> {
-        let device = self.team.device.as_ref();
-        let signed = device.is_some_and(|d| d.registered);
-        let drafts_differ = device.is_some_and(|d| {
-            d.relay != self.team_relay_draft || d.display_name != self.team_name_draft
-        });
-        let mut rows = Vec::new();
-        if self.mesophon_available && !self.mesophon_dialog {
-            rows.push(SharingRow::RemoteControl);
-        }
-        rows.extend([SharingRow::Heading("YOU"), SharingRow::Relay, SharingRow::Name]);
-        if !signed || drafts_differ {
-            rows.push(SharingRow::SignIn);
-        }
-        if signed {
-            rows.push(SharingRow::SignOut);
-        } else {
+        let signed = self.team.device.as_ref().is_some_and(|d| d.registered);
+        let mut rows = vec![SharingRow::Heading("YOU")];
+        if !signed {
+            rows.extend([SharingRow::Relay, SharingRow::Name, SharingRow::SignIn]);
             return rows;
         }
-        // Remote Control can expose this parent even when Teams is off.
-        // Keep its sign-in rows, without offering board-sharing actions.
-        if !self.mesophon_dialog && self.mesophon_available && !self.teams {
-            return rows;
-        }
+        rows.push(SharingRow::SignOut);
         rows.push(SharingRow::Heading("THIS BOARD"));
         if self.mesophon_dialog {
             rows.push(SharingRow::ControlStatus);
@@ -7130,11 +7110,16 @@ impl App {
             }
             return rows;
         }
-        match &self.team.board {
-            None => {
-                rows.push(SharingRow::Publish);
-                rows.push(SharingRow::Notes);
+        if self.mesophon_available {
+            rows.push(SharingRow::RemoteControl);
+            // Remote Control can expose this parent even when Teams is off.
+            // Keep it, without offering board-sharing actions.
+            if !self.teams {
+                return rows;
             }
+        }
+        match &self.team.board {
+            None => rows.push(SharingRow::Publish),
             Some(board) => {
                 let owner = board.role == "owner";
                 if owner {
@@ -7148,9 +7133,17 @@ impl App {
                 rows.push(if owner { SharingRow::Unshare } else { SharingRow::Leave });
             }
         }
-        rows.push(SharingRow::Heading("BOARDS"));
+        // This board is the section above, so it is not listed again here.
+        let current = self.team.board.as_ref().map(|b| b.board.as_str());
+        rows.push(SharingRow::Heading("OTHER BOARDS"));
         rows.push(SharingRow::Join);
-        rows.extend(self.team.boards.iter().map(|b| SharingRow::Board(b.board.clone())));
+        rows.extend(
+            self.team
+                .boards
+                .iter()
+                .filter(|b| Some(b.board.as_str()) != current)
+                .map(|b| SharingRow::Board(b.board.clone())),
+        );
         rows
     }
 
@@ -7162,9 +7155,10 @@ impl App {
         let busy = self.team.busy.as_deref().unwrap_or("");
         let error = self.team.error.as_deref().unwrap_or("");
         let editing = matches!(self.mode, Mode::Sharing { editing: Some(_), .. });
-        let device = self.team.device.as_ref();
-        let signed = device.is_some_and(|d| d.registered);
-        let identity = device
+        let identity = self
+            .team
+            .device
+            .as_ref()
             .filter(|d| d.registered)
             .map(|d| format!("{} on {}", d.display_name, d.relay))
             .unwrap_or_default();
@@ -7251,30 +7245,30 @@ impl App {
                 ("Signing in…".into(), "the relay is registering this machine".into(), "")
             }
             SharingRow::SignIn => {
-                let label = if signed { "Sign in again" } else { "Sign in" };
                 // The failure comes first: a row offering a retry has to say
                 // what it is retrying.
                 let detail = if error.starts_with("signing in") {
                     format!("{error} ∙ enter tries again")
                 } else if drafts_missing {
                     "needs the relay and a display name above".into()
-                } else if signed {
-                    "a new name on the same relay keeps your key ∙ a new relay is a new identity"
-                        .into()
                 } else {
                     "mints a device key on this machine ∙ the relay learns your name and public key"
                         .into()
                 };
-                (label.into(), detail, if drafts_missing { "" } else { "sign in" })
+                ("Sign in".into(), detail, if drafts_missing { "" } else { "sign in" })
             }
+            SharingRow::SignOut if armed => (
+                "Sign out?".into(),
+                "this machine forgets its key and shared boards stop syncing ∙ enter again".into(),
+                "sign out",
+            ),
             SharingRow::SignOut => (
                 if identity.is_empty() {
                     "Signed in".into()
                 } else {
                     format!("Signed in as {identity}")
                 },
-                "enter signs out ∙ this machine forgets its key and shared boards stop syncing"
-                    .into(),
+                "your key stays on this machine ∙ enter asks once more to sign out".into(),
                 "sign out",
             ),
             SharingRow::Publish if busy == "sharing" => {
@@ -7282,11 +7276,7 @@ impl App {
             }
             SharingRow::Publish => {
                 let tickets = plural(self.board.tickets.len(), "ticket");
-                let notes = if self.share_notes {
-                    plural(self.board.tickets.iter().map(|t| t.notes.len()).sum(), "note")
-                } else {
-                    "no notes".to_string()
-                };
+                let notes = plural(self.board.tickets.iter().map(|t| t.notes.len()).sum(), "note");
                 let detail = if error.starts_with("sharing") {
                     format!("{error} ∙ enter tries again")
                 } else {
@@ -7294,16 +7284,6 @@ impl App {
                 };
                 ("Publish this board".into(), detail, "publish")
             }
-            SharingRow::Notes if self.share_notes => (
-                "Notes: included".into(),
-                "every member reads the notes ∙ enter keeps them on this machine".into(),
-                "switch",
-            ),
-            SharingRow::Notes => (
-                "Notes: kept here".into(),
-                "titles, columns and order only ∙ enter includes the notes".into(),
-                "switch",
-            ),
             SharingRow::InviteContributor | SharingRow::InviteViewer if busy == "inviting" => {
                 ("Inviting…".into(), "the relay is registering the code".into(), "")
             }
@@ -7377,27 +7357,15 @@ impl App {
                     _ if b.role == "owner" => "your board".to_string(),
                     _ => format!("{}'s board", b.owner_name),
                 };
-                let current = self.team.board.as_ref().is_some_and(|c| c.board == b.board);
-                let mut label = format!("{name} ∙ {}", b.role);
-                if current {
-                    label.push_str(" ∙ open now");
-                }
-                let detail = if current {
-                    let members = self
-                        .team
-                        .board
-                        .as_ref()
-                        .map(|c| c.members.iter().filter(|m| m.status == "active").count())
-                        .unwrap_or(0);
-                    format!("owner {} ∙ {}", b.owner_name, plural(members, "member"))
-                } else if b.root.is_some() {
+                let label = format!("{name} ∙ {}", b.role);
+                let detail = if b.root.is_some() {
                     format!("owner {} ∙ enter opens it in place of this board", b.owner_name)
                 } else if b.role == "owner" {
                     "shared from a checkout on this machine ∙ open it from there".to_string()
                 } else {
                     "joined from another machine ∙ no copy here".to_string()
                 };
-                let word = if !current && b.root.is_some() { "open" } else { "" };
+                let word = if b.root.is_some() { "open" } else { "" };
                 (label, detail, word)
             }
         }
@@ -7441,11 +7409,6 @@ impl App {
         (label, detail, if removable { "remove" } else { "" })
     }
 
-    /// Enter on the sharing dialog: the row under the cursor, in words the
-    /// row itself gave. A field opens in place; signing in, publishing,
-    /// inviting and copying are one press; removing, stopping and leaving
-    /// arm on the first and act on the second; a board is opened in place
-    /// of this one.
     fn control_action(&mut self, action: mesimon_core::mesophon::LocalAction) -> Result<()> {
         match self.req(Command::Mesophon { action }) {
             Response::Mesophon { info } => self.control = info,
@@ -7458,6 +7421,11 @@ impl App {
         Ok(())
     }
 
+    /// Enter on the sharing dialog: the row under the cursor, in words the
+    /// row itself gave. A field opens in place; signing in, publishing,
+    /// inviting and copying are one press; signing out, removing, stopping
+    /// and leaving arm on the first and act on the second; a board is
+    /// opened in place of this one.
     fn sharing_act(&mut self) -> Result<()> {
         let Mode::Sharing { idx, armed, .. } = self.mode else {
             return Ok(());
@@ -7522,12 +7490,11 @@ impl App {
                 // then the identity, off the snapshot.
                 self.send(Command::TeamSignIn { relay, display_name })
             }
-            SharingRow::SignOut => self.send(Command::TeamSignOut),
-            SharingRow::Publish => self.send(Command::ShareBoard { notes: self.share_notes }),
-            SharingRow::Notes => {
-                self.share_notes = !self.share_notes;
-                Ok(())
+            SharingRow::SignOut if armed => {
+                self.mode = Mode::Sharing { idx, editing: None, armed: false };
+                self.send(Command::TeamSignOut)
             }
+            SharingRow::Publish => self.send(Command::ShareBoard { notes: true }),
             SharingRow::InviteContributor => {
                 self.send(Command::MintInvite { role: "contributor".into() })
             }
@@ -7549,7 +7516,10 @@ impl App {
                 self.mode = Mode::Sharing { idx, editing: None, armed: false };
                 self.send(Command::LeaveBoard)
             }
-            SharingRow::Member(_) | SharingRow::Unshare | SharingRow::Leave => {
+            SharingRow::SignOut
+            | SharingRow::Member(_)
+            | SharingRow::Unshare
+            | SharingRow::Leave => {
                 self.mode = Mode::Sharing { idx, editing: None, armed: true };
                 Ok(())
             }
@@ -14138,10 +14108,10 @@ mod tests {
         assert_eq!(app.mode, Mode::Sharing { idx: 1, editing: None, armed: false });
     }
 
-    /// The sharing dialog (T-334): the notes switch rides the publish; a
-    /// member's own row and the owner's are only read, so Enter is inert
-    /// there; removing a member arms on one press, disarms on any motion,
-    /// and sends on the second.
+    /// The sharing dialog (T-334): publishing always takes the notes
+    /// (T-513); a member's own row and the owner's are only read, so Enter
+    /// is inert there; removing a member arms on one press, disarms on any
+    /// motion, and sends on the second.
     #[test]
     fn the_sharing_dialog_arms_before_it_removes() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
@@ -14150,14 +14120,10 @@ mod tests {
         let rows = app.sharing_rows();
         let publish = rows.iter().position(|r| *r == SharingRow::Publish).expect("publish");
         assert_eq!(app.mode, Mode::Sharing { idx: publish, editing: None, armed: false });
-        assert_eq!(rows[publish + 1], SharingRow::Notes);
-        press(&mut app, 'j');
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(!app.share_notes);
-        press(&mut app, 'k');
+        assert_eq!(rows[publish + 1], SharingRow::Heading("OTHER BOARDS"));
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
-            sent.borrow().iter().any(|s| s.contains("ShareBoard { notes: false }")),
+            sent.borrow().iter().any(|s| s.contains("ShareBoard { notes: true }")),
             "{:?}",
             sent.borrow()
         );
@@ -14235,10 +14201,48 @@ mod tests {
         assert_eq!(app.mode, Mode::Sharing { idx: opener, editing: None, armed: false });
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Menu { idx: app.menu_row(Verb::Sharing) });
-        app.team.device = None;
-        assert!(app.sharing_rows().contains(&SharingRow::RemoteControl));
         app.mesophon_available = false;
         assert!(!app.sharing_rows().contains(&SharingRow::RemoteControl));
+        app.mesophon_available = true;
+        app.team.device = None;
+        assert!(!app.sharing_rows().contains(&SharingRow::RemoteControl), "signed out, no door");
+    }
+
+    /// Signed in, the YOU section is the one row that says who (T-513):
+    /// the relay and the name are fields for a sign-in, and a new relay is
+    /// a new identity anyway. Enter on it asks before it signs out, and any
+    /// motion takes the question back. Remote Control is this board's
+    /// first row.
+    #[test]
+    fn signing_out_asks_first() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.team.device = shared_team_fixture().device;
+        app.mesophon_available = true;
+        app.teams = true;
+        let rows = app.sharing_rows();
+        assert_eq!(
+            rows[..4],
+            [
+                SharingRow::Heading("YOU"),
+                SharingRow::SignOut,
+                SharingRow::Heading("THIS BOARD"),
+                SharingRow::RemoteControl,
+            ]
+        );
+        app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
+        assert_eq!(app.ctx().sharing_enter_word, "sign out");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Sharing { idx: 1, editing: None, armed: true });
+        assert_eq!(app.sharing_words(&SharingRow::SignOut, true).0, "Sign out?");
+        assert!(!sent.borrow().iter().any(|s| s.contains("TeamSignOut")));
+        press(&mut app, 'j');
+        assert_eq!(app.mode, Mode::Sharing { idx: 3, editing: None, armed: false });
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!sent.borrow().iter().any(|s| s.contains("TeamSignOut")), "motion disarmed");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent.borrow().iter().any(|s| s.contains("TeamSignOut")));
+        assert_eq!(app.mode, Mode::Sharing { idx: 1, editing: None, armed: false });
     }
 
     #[test]
@@ -19355,7 +19359,10 @@ mod tests {
         app.team = super::joined_team_fixture();
         let rows = app.sharing_rows();
         let leave = rows.iter().position(|r| *r == SharingRow::Leave).expect("leave row");
-        assert_eq!(rows[leave + 1], SharingRow::Heading("BOARDS"));
+        assert_eq!(rows[leave + 1], SharingRow::Heading("OTHER BOARDS"));
+        // This board is the section above; the list under it is the rest.
+        let current = SharingRow::Board(app.team.board.as_ref().expect("joined").board.clone());
+        assert!(!rows.contains(&current));
         assert!(!rows.contains(&SharingRow::Unshare) && !rows.contains(&SharingRow::InviteViewer));
         app.mode = Mode::Sharing { idx: leave, editing: None, armed: false };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();

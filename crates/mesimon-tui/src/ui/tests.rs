@@ -908,10 +908,10 @@ fn golden_sharing_editing_120() {
     golden("sharing_editing_120x30", &render(&app, 120, 30));
 }
 
-/// Signed in, the board not yet published: the identity, then THIS BOARD
-/// with the publish row counting what goes out and the notes switch, then
-/// BOARDS with the way onto one. The cursor is on the publish row, where
-/// the dialog opens.
+/// Signed in, the board not yet published: the identity as one row, then
+/// THIS BOARD with the publish row counting what goes out, notes and all,
+/// then OTHER BOARDS with the way onto one. The cursor is on the publish
+/// row, where the dialog opens.
 #[test]
 fn golden_sharing_publish_120() {
     let mut app = app_graphite(fixture_archived());
@@ -944,9 +944,9 @@ fn golden_sharing_members_120() {
 }
 
 /// A joined board as a contributor (T-335): the members and `Leave this
-/// board`, then the boards — this one (open now), one Dana can open, one
-/// she owns from a checkout elsewhere. The cursor is on the board Enter
-/// would open.
+/// board`, then the other boards — one Dana can open, one she owns from a
+/// checkout elsewhere; this one is the section above (T-513). The cursor
+/// is on the board Enter would open.
 #[test]
 fn golden_sharing_joined_120() {
     let mut app = app_graphite(fixture_archived());
@@ -954,7 +954,7 @@ fn golden_sharing_joined_120() {
     app.seed_team_drafts_for_test();
     let rows = app.sharing_rows();
     let join = rows.iter().position(|r| *r == SharingRow::Join).expect("join");
-    app.mode = Mode::Sharing { idx: join + 2, editing: None, armed: false };
+    app.mode = Mode::Sharing { idx: join + 1, editing: None, armed: false };
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|r| r.contains("Sam's board ∙ viewer")), "{lines:?}");
     golden("sharing_joined_120x30", &lines);
@@ -8190,11 +8190,13 @@ fn the_search_list_scrolls_by_one_to_keep_the_cursor_on_screen() {
 fn golden_mesophon_pair_and_revoke() {
     let mut app = app_graphite(fixture_archived());
     app.mesophon_available = true;
-    app.mode = Mode::Sharing { idx: 0, editing: None, armed: false };
-    golden("sharing_remote_control_120x30", &render(&app, 120, 30));
-    app.mesophon_dialog = true;
     app.team.device = crate::app::shared_team_fixture().device;
     app.seed_team_drafts_for_test();
+    // Signed in, Remote Control is this board's first row (T-513).
+    let door = app.sharing_rows().iter().position(|r| *r == SharingRow::RemoteControl);
+    app.mode = Mode::Sharing { idx: door.expect("the door"), editing: None, armed: false };
+    golden("sharing_remote_control_120x30", &render(&app, 120, 30));
+    app.mesophon_dialog = true;
     app.control = mesimon_core::mesophon::Info {
         enabled: true,
         connected: true,

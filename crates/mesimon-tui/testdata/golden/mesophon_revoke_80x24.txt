@@ -2,13 +2,12 @@
 
     TODO                          2     IN PROGRESS                  2   2   0
 
-    Dec╭─ REMOTE CONTROL ───────────────────────────────────────────────╮R   D
-       │ YOU                                                            │E   O
-    Key│   Relay: relay.example                                         │V   N
-       │   Display name: Amit                                           │I   E
-       │   Signed in as Amit on relay.example                           │E
-       │ THIS BOARD                                                     │W
-       │   Browser access: connected                                    │
+    Decay treatments            >1y     ⠋ Fix OSC-11 detection     >1y   R   D
+       ╭─ REMOTE CONTROL ───────────────────────────────────────────────╮E   O
+    Key│ YOU                                                            │V   N
+       │   Signed in as Amit on relay.example                           │I   E
+       │ THIS BOARD                                                     │E
+       │   Browser access: connected                                    │W
        │   Browser: https://relay.example:8444                          │
        │   Pair a browser                                               │
        │   Pairing code: 7K2M-QX4P-0B9D-RT6W-HN3C-5VJE-8FGA-1YSZ        │
@@ -17,6 +16,7 @@
        │                                                                │
        │     paired to this board ∙ enter twice revokes access          │
        ╰───────────────────────── jk select ∙ enter revoke ∙ esc close ─╯
+
 
 
 
