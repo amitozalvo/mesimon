@@ -15019,8 +15019,10 @@ the rest), and every field given back to the terminal before a `^Z`, a `U` reloa
 
 - **Tab title** (`tab_title`: `off` / `project` / `mesimon`): `<board>` or `mesimon ∙ <board>`.
   Two rows under it, on by default and gated on it: **counts needs-you** (`2 need you ∙ <board>`)
-  and **follows the open session** (`T-12 fix the parser` through a focus, clipped at 48 chars
-  on a word; the checkout's `!` shell and the GATE keep the board's words). The terminal's own
+  and **follows the open session** (`mesimon ∙ <board> ∙ T-12 fix the parser` through a focus,
+  the board's words first as the title row shapes them and the ticket's title clipped at 32
+  chars on a word — the user's shape; the checkout's `!` shell and the GATE keep the board's
+  words). The terminal's own
   title comes back through the xterm title stack — `CSI 22;0 t` before the first write, `CSI
   23;0 t` at the end — never a read: `CSI 21 t` is refused by iTerm2, kitty and ghostty for the
   reason `OSC 52` reads are, and a reply would land on stdin as keystrokes, the trap `osc.rs`
@@ -15038,8 +15040,13 @@ the rest), and every field given back to the terminal before a `^Z`, a `U` reloa
   neither. The user pointed at it.
 - **Tab icon** (iTerm2's `OSC 1337;SetProfileProperty=Icon=Mg==;Custom Icon Path=<base64
   JSON>`): the shin, resting or in its needs-you pose — the two PNGs `mascot::icon` already
-  keeps under `<state>/notifications` for banners, written lazily by the loop on the first frame
-  the row wants them. The escape changes this SESSION's copy of the profile and never the saved
+  keeps under `<state>/notifications` for banners — except that the needs-you TAB icon is a third
+  asset, `tab-needs-you.png`: the pose as a dark silhouette on the attention-colour tile. Live on
+  3.7.2 the pose switch was invisible: a tab gives an icon sixteen pixels and the "!" is a
+  fraction of one there, so the needs-you icon says it with the board's one saturated colour
+  instead (iTerm2 does re-read a changed path — `iTermCacheableImage` keys on it and
+  `setSessionSpecificProfileValues` reloads the tab graphic — so the switch itself was never the
+  problem). Written lazily by the loop on the first frame the row wants them. The escape changes this SESSION's copy of the profile and never the saved
   one (README promise 2 holds; the Python API's own docs say the same of the session route).
   Off, and at quit, the icon mode goes back to `1` (built-in for the current app, iTerm2's
   default) — the profile's own choice cannot be read back, so a profile set to none or to a

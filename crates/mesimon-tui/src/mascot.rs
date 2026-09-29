@@ -9,6 +9,9 @@ use sha2::{Digest, Sha256};
 
 const RESTING: &[u8] = include_bytes!("../../../assets/mascot/resting.png");
 const NEEDS_YOU: &[u8] = include_bytes!("../../../assets/mascot/needs-you.png");
+/// The tab's needs-you icon (T-492): the pose as a dark silhouette on the
+/// attention-colour tile, because a tab's sixteen pixels lose the "!".
+const TAB_NEEDS_YOU: &[u8] = include_bytes!("../../../assets/mascot/tab-needs-you.png");
 
 /// A 256px PNG representation in an ICNS container. This is the app's
 /// stable identity; needs-you remains a per-notification attachment.
@@ -27,7 +30,16 @@ pub(crate) fn app_icon() -> Vec<u8> {
 /// gives each drawing an immutable name, including across binary upgrades;
 /// atomic publication keeps simultaneous boards from exposing half a PNG.
 pub(crate) fn icon(dir: &Path, needs_you: bool) -> std::io::Result<PathBuf> {
-    let bytes = if needs_you { NEEDS_YOU } else { RESTING };
+    publish(dir, if needs_you { NEEDS_YOU } else { RESTING })
+}
+
+/// The tab's icon (T-492): resting is the notification's own file; the
+/// needs-you pose is the tab-sized one, on the attention colour.
+pub(crate) fn tab_icon(dir: &Path, needs_you: bool) -> std::io::Result<PathBuf> {
+    publish(dir, if needs_you { TAB_NEEDS_YOU } else { RESTING })
+}
+
+fn publish(dir: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     mesimon_daemon::paths::own_private_dir(dir).map_err(std::io::Error::other)?;
     let digest = format!("{:x}", Sha256::digest(bytes));
     let path = dir.join(format!("shin-{digest}.png"));

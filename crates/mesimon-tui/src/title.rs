@@ -27,8 +27,12 @@
 //! - **iTerm2's subtitle** (`OSC 21337 status=`): how many need you and
 //!   how many are working;
 //! - **iTerm2's icon** (`OSC 1337;SetProfileProperty=Icon=…;Custom Icon
-//!   Path=…`): the shin, resting or in its needs-you pose, from the two
-//!   PNGs the notifier already keeps under the state dir. The escape
+//!   Path=…`): the shin, resting (the notifier's own PNG) or, while any
+//!   ticket needs you, as a dark silhouette on the attention-colour tile —
+//!   a tab gives an icon sixteen pixels, and the pose's "!" is a fraction
+//!   of one there, so the needs-you icon says it with the board's one
+//!   saturated colour instead. iTerm2 re-reads a changed path (its cache
+//!   keys on the path and a profile reload re-asks the tab graphic). The escape
 //!   changes this SESSION's copy of the profile and never the saved one
 //!   (README promise 2 holds); `finish` sets the icon mode back to
 //!   iTerm2's default, built-in for the current app, since the profile's
@@ -57,10 +61,11 @@ use std::io::Write;
 
 use mesimon_core::text;
 
-/// A tab is a few dozen cells wide on every terminal that has one; a title
-/// clipped here reads better than one the terminal cuts mid-word. On a
-/// word boundary, with an ellipsis, the notification's rule.
-const TITLE_CHARS: usize = 48;
+/// A tab is a few dozen cells wide on every terminal that has one; a
+/// ticket's title clipped here, behind the board's words, reads better
+/// than one the terminal cuts mid-word. On a word boundary, with an
+/// ellipsis, the notification's rule.
+const FOCUS_TITLE_CHARS: usize = 32;
 
 /// Which terminal the board's stdout reaches, as far as the iTerm2-only
 /// rows are concerned. Resolved from the environment in `lib.rs::run`,
@@ -131,8 +136,8 @@ pub(crate) fn shin_icons(repo_root: &std::path::Path) -> std::io::Result<Icons> 
         .map(|home| home.join("notifications"))
         .ok_or_else(|| std::io::Error::other("no state dir"))?;
     Ok(Icons {
-        resting: crate::mascot::icon(&dir, false)?,
-        needs_you: crate::mascot::icon(&dir, true)?,
+        resting: crate::mascot::tab_icon(&dir, false)?,
+        needs_you: crate::mascot::tab_icon(&dir, true)?,
     })
 }
 
@@ -160,14 +165,15 @@ pub(crate) fn board(name: &str, app_word: bool, needs_you: Option<usize>) -> Str
     }
 }
 
-/// A focus handover's words: the ticket's key and title.
-pub(crate) fn focus(key: &str, ticket_title: &str) -> String {
-    let title = clip(&text::scrub_text(ticket_title), TITLE_CHARS);
-    if title.is_empty() {
-        text::scrub_text(key)
-    } else {
-        format!("{} {title}", text::scrub_text(key))
-    }
+/// A focus handover's words: the board's own words first, the way the
+/// title row shapes them, then the ticket's key and title — `mesimon ∙
+/// api ∙ T-12 fix the parser`. The title is clipped shorter than a
+/// board's line, since the board's words take the front of the tab.
+pub(crate) fn focus(name: &str, app_word: bool, key: &str, ticket_title: &str) -> String {
+    let title = clip(&text::scrub_text(ticket_title), FOCUS_TITLE_CHARS);
+    let key = text::scrub_text(key);
+    let ticket = if title.is_empty() { key } else { format!("{key} {title}") };
+    format!("{} ∙ {ticket}", board(name, app_word, None))
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -353,13 +359,18 @@ mod tests {
     }
 
     #[test]
-    fn a_focus_names_the_ticket_and_clips_a_long_title_on_a_word() {
-        assert_eq!(focus("T-12", "fix the parser"), "T-12 fix the parser");
-        assert_eq!(focus("T-12", ""), "T-12");
+    fn a_focus_names_the_board_then_the_ticket_and_clips_a_long_title_on_a_word() {
+        assert_eq!(
+            focus("api", true, "T-12", "fix the parser"),
+            "mesimon ∙ api ∙ T-12 fix the parser"
+        );
+        assert_eq!(focus("api", false, "T-12", "fix the parser"), "api ∙ T-12 fix the parser");
+        assert_eq!(focus("api", true, "T-12", ""), "mesimon ∙ api ∙ T-12");
         let long = "a ".repeat(40) + "tail";
-        let f = focus("T-12", &long);
+        let f = focus("api", false, "T-12", &long);
         assert!(f.ends_with('…'), "{f}");
-        assert!(f.chars().count() <= TITLE_CHARS + "T-12 ".len() + 1, "{f}");
+        let ticket = f.trim_start_matches("api ∙ ");
+        assert!(ticket.chars().count() <= FOCUS_TITLE_CHARS + "T-12 ".len() + 1, "{f}");
     }
 
     #[test]
@@ -374,7 +385,7 @@ mod tests {
     /// type the rest — the scrub is what makes the write safe.
     #[test]
     fn a_control_in_a_title_never_reaches_the_terminal() {
-        let f = focus("T-12", "fix\x07 the\x1b]0;x\x07 parser");
+        let f = focus("api", true, "T-12", "fix\x07 the\x1b]0;x\x07 parser");
         assert!(!f.contains('\x07') && !f.contains('\x1b'), "{f}");
         assert_eq!(board("api\x1b", true, None), "mesimon ∙ api");
     }

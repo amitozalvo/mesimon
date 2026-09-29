@@ -1521,6 +1521,14 @@ mod tests {
     /// tile, ten image pixels to a shin pixel. Needs-you is the pose the
     /// ticket page opens it on, its "!" drawn in pixels beside the arm.
     fn icon_png(needs_you: bool) -> Vec<u8> {
+        icon_png_on(needs_you, false)
+    }
+
+    /// `tab`: the TAB's needs-you icon (T-492). At the sixteen pixels a
+    /// tab gives an icon the "!" is a fraction of a pixel, so that icon is
+    /// the pose as a dark silhouette on the attention-colour tile — the
+    /// board's one saturated colour, readable from across the tab strip.
+    fn icon_png_on(needs_you: bool, tab: bool) -> Vec<u8> {
         const SIZE: u32 = 256;
         const SCALE: i32 = 10;
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
@@ -1538,7 +1546,12 @@ mod tests {
             Color::Rgb(r, g, b) => [r, g, b],
             other => panic!("truecolor ink {other:?}"),
         };
-        let ground = rgb(theme.bg.expect("graphite paints its ground"));
+        let mut ground = rgb(theme.bg.expect("graphite paints its ground"));
+        let mut silhouette = None;
+        if tab {
+            ground = rgb(theme.attn);
+            silhouette = Some(rgb(theme.attn_ink));
+        }
         let (ox, oy) =
             ((SIZE as i32 - pic.w as i32 * SCALE) / 2, (SIZE as i32 - pic.h as i32 * SCALE) / 2);
         // The tile's rounded corners, antialiased; everything inside it is
@@ -1562,7 +1575,7 @@ mod tests {
         let img = image::RgbaImage::from_fn(SIZE, SIZE, |x, y| {
             let (sx, sy) = ((x as i32 - ox).div_euclid(SCALE), (y as i32 - oy).div_euclid(SCALE));
             let role = pic.at(sx as i16, sy as i16);
-            let [r, g, b] = role.map_or(ground, |r| rgb(r.ink(&ink)));
+            let [r, g, b] = role.map_or(ground, |r| silhouette.unwrap_or_else(|| rgb(r.ink(&ink))));
             image::Rgba([r, g, b, coverage(x, y)])
         });
         let mut out = std::io::Cursor::new(Vec::new());
@@ -1576,5 +1589,6 @@ mod tests {
         assert_ne!(resting, waiting);
         golden(&asset("resting.png"), &resting);
         golden(&asset("needs-you.png"), &waiting);
+        golden(&asset("tab-needs-you.png"), &icon_png_on(true, true));
     }
 }

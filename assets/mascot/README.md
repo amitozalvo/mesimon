@@ -11,6 +11,8 @@ cell.
   binary. Both are the medium shin on a graphite tile: resting is the empty
   seat's face, and needs-you is the pose the ticket page opens it on, with the
   amber "!" in pixels beside the waving arm.
+- `tab-needs-you.png`: the same pose as a dark silhouette on the amber tile, for
+  a terminal tab's icon (sixteen pixels lose the "!"; the colour survives).
 
 `crates/mesimon-tui/src/creature.rs` is the engine: it parses `shin.txt`,
 stamps a face over the anchors, places props around the body, and plays one

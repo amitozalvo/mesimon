@@ -2328,9 +2328,12 @@ impl App {
     pub(crate) fn focus_tab_title(&self) -> Option<String> {
         let ticket = self.prefs.tab_title_focus.then(|| self.focus_ticket()).flatten();
         match ticket.and_then(|id| self.board.ticket(id)) {
-            Some(t) if self.prefs.tab_title.is_on() => {
-                Some(crate::title::focus(&t.short_key, &t.title))
-            }
+            Some(t) if self.prefs.tab_title.is_on() => Some(crate::title::focus(
+                &self.board_name(),
+                self.prefs.tab_title == crate::prefs::TabTitle::Mesimon,
+                &t.short_key,
+                &t.title,
+            )),
             _ => self.tab_title(),
         }
     }
@@ -19483,7 +19486,7 @@ mod tests {
         let t = app.board.ticket(app.board.sessions[0].ticket).unwrap();
         let (key, title) = (t.short_key.clone(), t.title.clone());
         app.focused_session_hint = Some(FocusTarget::Session(sid, FocusOrigin::Board));
-        assert_eq!(app.focus_tab_title().unwrap(), format!("{key} {title}"));
+        assert_eq!(app.focus_tab_title().unwrap(), format!("mesimon ∙ {board} ∙ {key} {title}"));
         app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTitleFocus) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!app.prefs.tab_title_focus);
