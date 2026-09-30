@@ -32,6 +32,9 @@ pub enum PrefKey {
     /// A progress ring in the tab (OSC 9;4): spinning while an agent
     /// works, red while one needs you.
     TabProgress,
+    /// iTerm2 paints the whole tab in the theme's hint-line colour (T-528),
+    /// under the needs-you mark when that row paints the whole tab too.
+    TabTheme,
     /// iTerm2 marks the tab in the attention colour while any ticket
     /// needs you: `off`, `dot` (the tab's indicator) or `tab` (its chrome).
     TabColor,
@@ -55,7 +58,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 25] = [
+    pub const ALL: [PrefKey; 26] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::FollowOs,
@@ -68,6 +71,7 @@ impl PrefKey {
         PrefKey::TabTitleNeedsYou,
         PrefKey::TabTitleFocus,
         PrefKey::TabProgress,
+        PrefKey::TabTheme,
         PrefKey::TabColor,
         PrefKey::TabSubtitle,
         PrefKey::TabIcon,
@@ -98,6 +102,7 @@ impl PrefKey {
             PrefKey::TabTitleNeedsYou => "tab_title_needs_you",
             PrefKey::TabTitleFocus => "tab_title_focus",
             PrefKey::TabProgress => "tab_progress",
+            PrefKey::TabTheme => "tab_theme",
             PrefKey::TabColor => "tab_color",
             PrefKey::TabSubtitle => "tab_subtitle",
             PrefKey::TabIcon => "tab_icon",
@@ -115,7 +120,7 @@ impl PrefKey {
     }
 
     /// May one board set this on its own? The machine keeps: where the
-    /// tmux status line sits and the seven terminal integrations (T-492),
+    /// tmux status line sits and the eight terminal integrations (T-492),
     /// which are about the terminal the board runs in and not about a
     /// repo; which day a week starts on, which is about the person; and
     /// the reply row's rung (T-365), which is about how the person reads a
@@ -129,6 +134,7 @@ impl PrefKey {
                 | PrefKey::TabTitleNeedsYou
                 | PrefKey::TabTitleFocus
                 | PrefKey::TabProgress
+                | PrefKey::TabTheme
                 | PrefKey::TabColor
                 | PrefKey::TabSubtitle
                 | PrefKey::TabIcon
@@ -152,6 +158,7 @@ impl PrefKey {
             PrefKey::TabTitleNeedsYou => "tab title counts needs-you",
             PrefKey::TabTitleFocus => "tab title follows the open session",
             PrefKey::TabProgress => "tab progress ring",
+            PrefKey::TabTheme => "tab colour from the theme",
             PrefKey::TabColor => "tab colour when needs you",
             PrefKey::TabSubtitle => "tab subtitle",
             PrefKey::TabIcon => "tab icon",
@@ -205,6 +212,7 @@ mod tests {
                 PrefKey::TabTitleNeedsYou,
                 PrefKey::TabTitleFocus,
                 PrefKey::TabProgress,
+                PrefKey::TabTheme,
                 PrefKey::TabColor,
                 PrefKey::TabSubtitle,
                 PrefKey::TabIcon,

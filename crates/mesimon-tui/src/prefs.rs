@@ -211,6 +211,11 @@ pub(crate) struct Prefs {
     /// A progress ring in the tab (OSC 9;4): spinning while an agent is
     /// mid-turn, red while one needs you. Off by default, the title's rule.
     pub tab_progress: bool,
+    /// iTerm2 paints the whole tab (`OSC 6`) in the theme's hint-line
+    /// colour — the footer band's, `selected` — and repaints it when the
+    /// theme changes (T-528). The needs-you whole-tab colour paints over
+    /// it while any ticket needs you. Off by default; inert elsewhere.
+    pub tab_theme: bool,
     /// iTerm2 marks the tab in the theme's attention colour while any
     /// ticket needs you: its indicator dot (`OSC 21337`) or the whole
     /// tab's chrome (`OSC 6`). Off by default; inert on every other
@@ -293,6 +298,7 @@ impl Default for Prefs {
             tab_title_needs_you: true,
             tab_title_focus: true,
             tab_progress: false,
+            tab_theme: false,
             tab_color: TabColor::Off,
             tab_subtitle: false,
             tab_icon: false,
@@ -322,6 +328,7 @@ const TAB_TITLE_KEY: &str = PrefKey::TabTitle.name();
 const TAB_TITLE_NEEDS_YOU_KEY: &str = PrefKey::TabTitleNeedsYou.name();
 const TAB_TITLE_FOCUS_KEY: &str = PrefKey::TabTitleFocus.name();
 const TAB_PROGRESS_KEY: &str = PrefKey::TabProgress.name();
+const TAB_THEME_KEY: &str = PrefKey::TabTheme.name();
 const TAB_COLOR_KEY: &str = PrefKey::TabColor.name();
 const TAB_SUBTITLE_KEY: &str = PrefKey::TabSubtitle.name();
 const TAB_ICON_KEY: &str = PrefKey::TabIcon.name();
@@ -444,6 +451,7 @@ impl Prefs {
             PrefKey::TabTitleNeedsYou => onoff(self.tab_title_needs_you),
             PrefKey::TabTitleFocus => onoff(self.tab_title_focus),
             PrefKey::TabProgress => onoff(self.tab_progress),
+            PrefKey::TabTheme => onoff(self.tab_theme),
             PrefKey::TabColor => self.tab_color.key(),
             PrefKey::TabSubtitle => onoff(self.tab_subtitle),
             PrefKey::TabIcon => onoff(self.tab_icon),
@@ -498,6 +506,7 @@ impl Prefs {
         doc.insert(TAB_TITLE_NEEDS_YOU_KEY.into(), Value::from(self.tab_title_needs_you));
         doc.insert(TAB_TITLE_FOCUS_KEY.into(), Value::from(self.tab_title_focus));
         doc.insert(TAB_PROGRESS_KEY.into(), Value::from(self.tab_progress));
+        doc.insert(TAB_THEME_KEY.into(), Value::from(self.tab_theme));
         doc.insert(TAB_SUBTITLE_KEY.into(), Value::from(self.tab_subtitle));
         doc.insert(TAB_ICON_KEY.into(), Value::from(self.tab_icon));
         doc.insert(NOTIFY_DOCK_BOUNCE_KEY.into(), Value::from(self.notify_dock_bounce));
@@ -597,6 +606,7 @@ impl BoardPrefs {
             | PrefKey::TabTitleNeedsYou
             | PrefKey::TabTitleFocus
             | PrefKey::TabProgress
+            | PrefKey::TabTheme
             | PrefKey::TabColor
             | PrefKey::TabSubtitle
             | PrefKey::TabIcon
@@ -762,6 +772,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let tab_title_needs_you = flag(TAB_TITLE_NEEDS_YOU_KEY, true);
     let tab_title_focus = flag(TAB_TITLE_FOCUS_KEY, true);
     let tab_progress = flag(TAB_PROGRESS_KEY, false);
+    let tab_theme = flag(TAB_THEME_KEY, false);
     let tab_subtitle = flag(TAB_SUBTITLE_KEY, false);
     let tab_icon = flag(TAB_ICON_KEY, false);
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
@@ -796,6 +807,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         tab_title_needs_you,
         tab_title_focus,
         tab_progress,
+        tab_theme,
         tab_color,
         tab_subtitle,
         tab_icon,
@@ -918,6 +930,7 @@ pub fn tab_title_doctor_line() -> String {
     }
     let onoff = |b: bool| if b { "on" } else { "off" };
     parts.push(format!("progress ring {}", onoff(p.tab_progress)));
+    parts.push(format!("theme colour {}", onoff(p.tab_theme)));
     parts.push(format!("needs-you colour {}", p.tab_color.key()));
     parts.push(format!("subtitle {}", onoff(p.tab_subtitle)));
     parts.push(format!("icon {}", onoff(p.tab_icon)));
@@ -1200,23 +1213,26 @@ mod tests {
         assert_eq!(l.prefs.tab_title, TabTitle::Off, "absent is off");
         assert!(l.prefs.tab_title_needs_you && l.prefs.tab_title_focus);
         assert!(!l.prefs.tab_progress && !l.prefs.tab_subtitle && !l.prefs.tab_icon);
+        assert!(!l.prefs.tab_theme);
         assert_eq!(l.prefs.tab_color, TabColor::Off);
         assert!(!l.prefs.notify_dock_bounce);
         l.prefs.tab_title = TabTitle::Mesimon;
         l.prefs.tab_title_focus = false;
         l.prefs.tab_progress = true;
+        l.prefs.tab_theme = true;
         l.prefs.tab_color = TabColor::Dot;
         save(&p, &l.prefs).unwrap();
         let mut l = load(&p);
         assert_eq!(l.prefs.tab_title, TabTitle::Mesimon);
         assert_eq!(l.prefs.tab_color, TabColor::Dot);
-        assert!(!l.prefs.tab_title_focus && l.prefs.tab_progress);
+        assert!(!l.prefs.tab_title_focus && l.prefs.tab_progress && l.prefs.tab_theme);
         l.prefs.set(Ground::Dark, Flavor::Amber);
         save(&p, &l.prefs).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["tab_title"], "mesimon");
         assert_eq!(v["tab_color"], "dot");
         assert_eq!(v["tab_progress"], true);
+        assert_eq!(v["tab_theme"], true);
         assert_eq!(v["dark"], "amber");
         std::fs::write(&p, r#"{"schema_version":1,"tab_title":"badge","tab_color":"glow"}"#)
             .unwrap();

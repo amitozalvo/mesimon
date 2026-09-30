@@ -547,12 +547,14 @@ pub enum Verb {
     /// The Terminal rows (T-492), each a `prefs.json` key, per machine,
     /// written by the TUI alone: what the tab reads (off, the board's
     /// name, `mesimon ∙ <board>`), whether it counts needs-you, whether it
-    /// follows the open session, the progress ring, iTerm2's needs-you
-    /// colour, iTerm2's subtitle and iTerm2's icon.
+    /// follows the open session, the progress ring, iTerm2's tab in the
+    /// theme's colour (T-528), iTerm2's needs-you colour, iTerm2's subtitle
+    /// and iTerm2's icon.
     TabTitle,
     TabTitleNeedsYou,
     TabTitleFocus,
     TabProgress,
+    TabTheme,
     TabColor,
     TabSubtitle,
     TabIcon,
@@ -893,6 +895,7 @@ impl SettingsSection {
             | Verb::TabTitleNeedsYou
             | Verb::TabTitleFocus
             | Verb::TabProgress
+            | Verb::TabTheme
             | Verb::TabColor
             | Verb::TabSubtitle
             | Verb::TabIcon => Self::Terminal,
@@ -1265,6 +1268,8 @@ pub struct Ctx {
     pub tab_title_needs_you: bool,
     pub tab_title_focus: bool,
     pub tab_progress: bool,
+    /// iTerm2's tab wears the theme's hint-line colour (T-528).
+    pub tab_theme: bool,
     /// iTerm2's needs-you colour (`TabColor::name`, empty in a bare `Ctx`).
     pub tab_color_word: &'static str,
     pub tab_subtitle: bool,
@@ -4233,6 +4238,28 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The tab in the theme's hint-line colour (T-528): the footer's band,
+    // so the tab strip reads as the board's own chrome and a theme change
+    // repaints it. The needs-you row's whole-tab colour paints over it.
+    MenuItem {
+        verb: Verb::TabTheme,
+        label: |c| {
+            if c.tab_theme {
+                "Tab colour from the theme: on".into()
+            } else {
+                "Tab colour from the theme: off".into()
+            }
+        },
+        detail: |c| {
+            if c.iterm2 {
+                "the whole tab in the theme's hint-line colour".into()
+            } else {
+                "iTerm2 only ∙ this terminal is not iTerm2, so the row is inert".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::TabColor,
         label: |c| format!("Tab colour when needs you: {}", or(c.tab_color_word, "off")),
@@ -4867,6 +4894,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::TabTitleNeedsYou,
             Verb::TabTitleFocus,
             Verb::TabProgress,
+            Verb::TabTheme,
             Verb::TabColor,
             Verb::TabSubtitle,
             Verb::TabIcon,
@@ -4922,6 +4950,7 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::TabTitleNeedsYou => PrefKey::TabTitleNeedsYou,
         Verb::TabTitleFocus => PrefKey::TabTitleFocus,
         Verb::TabProgress => PrefKey::TabProgress,
+        Verb::TabTheme => PrefKey::TabTheme,
         Verb::TabColor => PrefKey::TabColor,
         Verb::TabSubtitle => PrefKey::TabSubtitle,
         Verb::TabIcon => PrefKey::TabIcon,
@@ -8489,6 +8518,7 @@ mod tests {
                 vec![
                     Verb::TabTitle,
                     Verb::TabProgress,
+                    Verb::TabTheme,
                     Verb::TabColor,
                     Verb::TabSubtitle,
                     Verb::TabIcon,
@@ -9119,6 +9149,7 @@ mod tests {
             Verb::TabTitleNeedsYou,
             Verb::TabTitleFocus,
             Verb::TabProgress,
+            Verb::TabTheme,
             Verb::TabColor,
             Verb::TabSubtitle,
             Verb::TabIcon,

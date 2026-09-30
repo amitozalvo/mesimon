@@ -2363,7 +2363,8 @@ impl App {
         let iterm2 = matches!(self.terminal, Terminal::ITerm2 { .. });
         // 3.7's escapes: the dot, the subtitle, the icon.
         let status = self.terminal == Terminal::ITerm2 { status: true };
-        let attn = self.theme.flavor.palette().truecolor.attn;
+        let palette = &self.theme.flavor.palette().truecolor;
+        let attn = palette.attn;
         let title = if focus { self.focus_tab_title() } else { self.tab_title() };
         let progress = self.prefs.tab_progress.then_some(if needs_you > 0 {
             Progress::Blocked
@@ -2383,13 +2384,16 @@ impl App {
                 Some(if needs_you > 0 { Mark::Tab(attn) } else { Mark::Off })
             }
         };
+        // The hint line's band (`Theme::selected_bg`) at truecolor, which
+        // is what a tab takes whatever profile the board paints in.
+        let tint = (iterm2 && self.prefs.tab_theme).then_some(palette.selected);
         let subtitle =
             (status && self.prefs.tab_subtitle).then(|| crate::title::subtitle(needs_you, working));
         let icon = (status && self.prefs.tab_icon)
             .then_some(self.icons.as_ref())
             .flatten()
             .map(|i| if needs_you > 0 { i.needs_you.clone() } else { i.resting.clone() });
-        crate::title::Frame { title, progress, mark, subtitle, icon }
+        crate::title::Frame { title, progress, mark, tint, subtitle, icon }
     }
 
     /// The `Fetch origin` row's detail (T-124): what is out of sync, in
@@ -4469,6 +4473,7 @@ impl App {
             tab_title_needs_you: self.prefs.tab_title_needs_you,
             tab_title_focus: self.prefs.tab_title_focus,
             tab_progress: self.prefs.tab_progress,
+            tab_theme: self.prefs.tab_theme,
             tab_color_word: self.prefs.tab_color.name(),
             tab_subtitle: self.prefs.tab_subtitle,
             tab_icon: self.prefs.tab_icon,
@@ -5614,6 +5619,15 @@ impl App {
                     "the tab's progress ring is off"
                 };
                 self.set_pref(word, |p| p.tab_progress = on);
+            }
+            Verb::TabTheme => {
+                let on = !self.prefs.tab_theme;
+                let word = if on {
+                    "the tab wears the theme's colour"
+                } else {
+                    "the tab keeps its own colour"
+                };
+                self.set_pref(word, |p| p.tab_theme = on);
             }
             Verb::TabColor => {
                 let c = self.prefs.tab_color.next();
@@ -19725,6 +19739,7 @@ mod tests {
         app.terminal = Terminal::ITerm2 { status: true };
         let f = app.tab_frame(false);
         assert_eq!(f.mark, Some(Mark::Off), "iTerm2 3.7, nothing needs you");
+        assert_eq!(f.tint, None, "the theme row is off");
         assert_eq!(f.subtitle.as_deref(), Some("1 working"));
         assert_eq!(f.icon, None, "the row is off");
         app.seed_pref(|p| p.tab_icon = true);
@@ -19736,6 +19751,43 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.prefs.tab_title, TabTitle::Off, "the ring closes");
         assert_eq!(app.tab_title(), None);
+    }
+
+    /// The theme row (T-528): Enter saves it; the tab takes the hint
+    /// line's colour on any iTerm2 (`OSC 6` is old) and nowhere else,
+    /// follows a theme change, and yields to the needs-you whole-tab mark.
+    #[test]
+    fn the_theme_row_paints_the_tab_in_the_hint_line_colour() {
+        use crate::title::{Mark, Terminal};
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let (machine, _) = pref_scratch("tabtheme");
+        app.prefs_path = Some(machine.clone());
+        app.settings_section = keymap::SettingsSection::Terminal;
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTheme) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.prefs.tab_theme);
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&machine).unwrap()).unwrap();
+        assert_eq!(v["tab_theme"], true);
+        assert_eq!(app.tab_frame(false).tint, None, "not iTerm2");
+        app.terminal = Terminal::ITerm2 { status: false };
+        let band = |app: &App| {
+            let Some(ratatui::style::Color::Rgb(r, g, b)) = app.theme.selected_bg else {
+                panic!("no band")
+            };
+            u32::from_be_bytes([0, r, g, b])
+        };
+        assert_eq!(app.tab_frame(false).tint, Some(band(&app)), "the hint line's colour");
+        app.theme = Theme::new(Flavor::Blue, Profile::TrueColor);
+        assert_eq!(app.tab_frame(false).tint, Some(band(&app)), "follows the theme");
+        app.seed_pref(|p| p.tab_color = crate::prefs::TabColor::Tab);
+        app.board.tickets[0].woke_at = Some("@100".into());
+        let f = app.tab_frame(false);
+        let attn = Flavor::Blue.palette().truecolor.attn;
+        assert_eq!((f.mark, f.tint), (Some(Mark::Tab(attn)), Some(band(&app))));
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTheme) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.tab_frame(false).tint, None, "off");
     }
 
     #[test]

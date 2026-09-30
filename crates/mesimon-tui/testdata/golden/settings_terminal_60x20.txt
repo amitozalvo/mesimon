@@ -1,12 +1,13 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
     TODO                               2   2   2   0
-
   ╭─ TERMINAL ───────────────────────────────────────────╮
   │   Tab title: off                                     │
   │     the tab keeps its own title ∙ enter names it af~ │
   │   Tab progress ring: off                             │
   │     spins while an agent works, red while one needs~ │
+  │   Tab colour from the theme: off                     │
+  │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
   │   Tab colour when needs you: off                     │
   │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
   │   Tab subtitle: off                                  │
@@ -14,7 +15,6 @@
   │   Tab icon: off                                      │
   │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
   ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
  SETTINGS                                            ? keys

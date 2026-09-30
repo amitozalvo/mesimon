@@ -24,6 +24,10 @@
 //!   indicator=`) or the whole tab's chrome (`OSC 6;1;bg`), in the theme's
 //!   attention colour — the board's one-saturated-colour rule, on the tab
 //!   strip;
+//! - **iTerm2's tab in the theme's colour** (`OSC 6;1;bg`, T-528): the
+//!   whole tab in the hint line's colour, so the tab strip reads as the
+//!   board's chrome; the needs-you whole-tab colour paints over it and
+//!   hands the tab back to it, never to the terminal's own;
 //! - **iTerm2's subtitle** (`OSC 21337 status=`): how many need you and
 //!   how many are working;
 //! - **iTerm2's icon** (`OSC 1337;SetProfileProperty=Icon=…;Custom Icon
@@ -232,10 +236,24 @@ pub(crate) struct Frame {
     pub progress: Option<Progress>,
     /// `Some(Mark::Off)` while the row is on and nothing needs you.
     pub mark: Option<Mark>,
+    /// The whole tab's colour at rest (T-528): the theme's, under a
+    /// `Mark::Tab`, which outranks it while it stands.
+    pub tint: Option<u32>,
     /// `Some("")` clears the subtitle.
     pub subtitle: Option<String>,
     /// The icon file to show; `None` while the row is off.
     pub icon: Option<std::path::PathBuf>,
+}
+
+impl Frame {
+    /// The colour the whole tab wears: the needs-you mark's, else the
+    /// theme's tint, else the terminal's own.
+    fn chrome(&self) -> Option<u32> {
+        match self.mark {
+            Some(Mark::Tab(rgb)) => Some(rgb),
+            _ => self.tint,
+        }
+    }
 }
 
 /// What the tab has been told, so a frame that changes nothing writes
@@ -279,23 +297,28 @@ impl Tab {
             let before = self.last.mark.unwrap_or(Mark::Off);
             let after = want.mark.unwrap_or(Mark::Off);
             // Each kind is reset on its own road: a dot is cleared by an
-            // empty indicator, the chrome by `*;default`.
+            // empty indicator, the chrome below.
             if matches!(before, Mark::Dot(_)) && !matches!(after, Mark::Dot(_)) {
                 out.write_all(b"\x1b]21337;indicator=\x07")?;
             }
-            if matches!(before, Mark::Tab(_)) && !matches!(after, Mark::Tab(_)) {
-                out.write_all(b"\x1b]6;1;bg;*;default\x07")?;
+            if let Mark::Dot(rgb) = after {
+                write!(out, "\x1b]21337;indicator=#{rgb:06x}\x07")?;
             }
+        }
+        // The chrome is one colour with two writers: the needs-you mark,
+        // and under it the theme's tint. `*;default` only when neither
+        // wants it, so a mark that clears hands the tab back to the tint.
+        let (before, after) = (self.last.chrome(), want.chrome());
+        if after != before {
             match after {
-                Mark::Off => {}
-                Mark::Dot(rgb) => write!(out, "\x1b]21337;indicator=#{rgb:06x}\x07")?,
-                Mark::Tab(rgb) => {
+                Some(rgb) => {
                     let [_, r, g, b] = rgb.to_be_bytes();
                     write!(
                         out,
                         "\x1b]6;1;bg;red;brightness;{r}\x07\x1b]6;1;bg;green;brightness;{g}\x07\x1b]6;1;bg;blue;brightness;{b}\x07"
                     )?;
                 }
+                None => out.write_all(b"\x1b]6;1;bg;*;default\x07")?,
             }
         }
         if want.subtitle != self.last.subtitle {
@@ -460,6 +483,7 @@ mod tests {
             title: None,
             progress: Some(Progress::Working),
             mark: Some(Mark::Dot(0xF0A93A)),
+            tint: None,
             subtitle: Some("3 working".into()),
             icon: None,
         };
@@ -490,5 +514,45 @@ mod tests {
         assert!(s.contains("\x1b]6;1;bg;*;default\x07"), "{s:?}");
         assert!(s.contains("\x1b]21337;status=\x07"), "{s:?}");
         assert!(!s.contains("\x1b[23;0t"), "nothing was pushed");
+    }
+
+    /// The theme's tint (T-528) is the chrome at rest: the needs-you mark
+    /// paints over it and gives the tab back to it, never to the
+    /// terminal's own; a theme change repaints it; off and `finish` hand
+    /// the tab back to the terminal.
+    #[test]
+    fn the_theme_tint_sits_under_the_needs_you_mark() {
+        let chrome = |rgb: u32| {
+            let [_, r, g, b] = rgb.to_be_bytes();
+            format!(
+                "\x1b]6;1;bg;red;brightness;{r}\x07\x1b]6;1;bg;green;brightness;{g}\x07\x1b]6;1;bg;blue;brightness;{b}\x07"
+            )
+        };
+        let text = |out: &mut Vec<u8>| String::from_utf8(std::mem::take(out)).unwrap();
+        let (dark, light, attn) = (0x2A2D33, 0xE4E1DA, 0xF0A93A);
+        let mut out = Vec::new();
+        let mut tab = Tab::default();
+        let rest = Frame { tint: Some(dark), mark: Some(Mark::Off), ..Default::default() };
+        tab.sync(&mut out, &rest).unwrap();
+        assert_eq!(text(&mut out), chrome(dark));
+        let blocked = Frame { mark: Some(Mark::Tab(attn)), ..rest.clone() };
+        tab.sync(&mut out, &blocked).unwrap();
+        assert_eq!(text(&mut out), chrome(attn), "needs-you paints over the tint");
+        tab.sync(&mut out, &rest).unwrap();
+        assert_eq!(text(&mut out), chrome(dark), "and hands the tab back to it");
+        let dot = Frame { mark: Some(Mark::Dot(attn)), ..rest.clone() };
+        tab.sync(&mut out, &dot).unwrap();
+        assert_eq!(text(&mut out), "\x1b]21337;indicator=#f0a93a\x07", "a dot leaves the tint");
+        tab.sync(&mut out, &Frame { tint: Some(light), ..dot.clone() }).unwrap();
+        assert_eq!(text(&mut out), chrome(light), "a theme change repaints it");
+        tab.sync(&mut out, &Frame { tint: None, mark: Some(Mark::Off), ..Default::default() })
+            .unwrap();
+        let s = text(&mut out);
+        assert!(s.contains("\x1b]21337;indicator=\x07"), "{s:?}");
+        assert!(s.ends_with("\x1b]6;1;bg;*;default\x07"), "off: the terminal's own: {s:?}");
+        tab.sync(&mut out, &Frame { tint: Some(dark), ..Default::default() }).unwrap();
+        out.clear();
+        tab.finish(&mut out).unwrap();
+        assert_eq!(text(&mut out), "\x1b]6;1;bg;*;default\x07");
     }
 }

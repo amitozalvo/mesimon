@@ -16028,3 +16028,29 @@ warnings` before each target's release build, over the default members (what the
 built from; the wasm crate would only add a `cdylib` notice and is linted by the gate's own
 clippy). It also covers code under `cfg(target_os = "linux")`, which the macOS clippy never
 compiles. It adds about 5 to 10 s per target when warm.
+
+## iTerm2's tab wears the theme's colour (T-528, 2026-09-30, "allow to set terminal tab background color based on theme": "use secondary color (the hint line background) ∙ opt in through terminal settings")
+
+**The row.** Settings › Terminal › **Tab colour from the theme** (`tab_theme`, a bool, off by
+default, machine-only like the other seven T-492 rows), between the progress ring and the
+needs-you colour. On, the whole tab (`OSC 6;1;bg;…`) is the flavor's truecolor `selected`: the
+footer band's colour (`Theme::selected_bg` at truecolor), which is the "secondary colour" the
+ticket names. `App::tab_frame` reads it from the resolved theme every frame, so a pick, a board
+override or a follow-the-OS flip repaints the tab on the next tick. Truecolor whatever the
+board's profile, the attention mark's rule: a tab takes RGB.
+
+**iTerm2 only**, on any version: `OSC 6` predates 3.7. No other terminal has an escape for its
+tab colour (kitty's and WezTerm's are remote control and config), so the row says it is inert
+there, the way its neighbours do.
+
+**One chrome, two writers.** `title::Frame` gained `tint`; `Frame::chrome` is the needs-you
+`Mark::Tab` when it stands, else the tint, else nothing, and `Tab::sync` writes the chrome when
+that answer changes. So a needs-you that clears hands the tab back to the theme's colour, not to
+the terminal's own; `*;default` is written only when neither wants the tab, which is what off,
+`^Z`, `U` and the exit do. The dot is unaffected and sits on the tinted tab.
+
+**Tests.** `title::the_theme_tint_sits_under_the_needs_you_mark` (the escapes through a mark,
+a dot, a theme change, off and `finish`); `app::the_theme_row_paints_the_tab_in_the_hint_line_colour`
+(Enter saves `tab_theme`, the tint is the footer band on any iTerm2 and `None` elsewhere, follows
+a theme swap, and stands beside the needs-you mark); the prefs round-trip; the four
+`settings_terminal*` goldens gained the row (60x20 is now full: 8 rows).
