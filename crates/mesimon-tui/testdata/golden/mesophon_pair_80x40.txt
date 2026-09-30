@@ -2,13 +2,12 @@
 
     TODO                          2     IN PROGRESS                  2   2   0
 
-    Dec╭─ REMOTE CONTROL ───────────────────────────────────────────────╮R   D
+    Dec╭─ REMOTE CONTROL ∙ CONNECTED ───────────────────────────────────╮R   D
        │ THIS BOARD                                                     │E   O
-    Key│   Browser access: connected                                    │V   N
-       │   Browser: https://relay.example:8444                          │I   E
-       │   Pair a browser                                               │E
-       │   Pairing code: 7K2M-QX4P-0B9D-RT6W-HN3C-5VJE-8FGA-1YSZ        │W
-       │   My phone                                                     │
+    Key│   Browser: https://relay.example:8444                          │V   N
+       │   Pair a browser                                               │I   E
+       │   Pairing code: 7K2M-QX4P-0B9D-RT6W-HN3C-5VJE-8FGA-1YSZ        │E
+       │   My phone                                                     │W
        │   Disable Remote Control                                       │
        │                                                                │
        │     one use ∙ expires in ten minutes ∙ enter copies it         │
@@ -34,6 +33,7 @@
        │                                                                │
        │                 scan with your phone's camera                  │
        ╰─────────────────────────── jk select ∙ enter copy ∙ esc close ─╯
+
 
 
 

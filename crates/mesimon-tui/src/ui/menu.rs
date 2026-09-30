@@ -101,7 +101,8 @@ pub(super) fn draw_prompts(f: &mut Frame, app: &App) {
 /// board and the boards this device belongs to, each under a heading the
 /// cursor skips. The rows come from `App::sharing_rows`; a row that is a
 /// field (the relay, the name, a code) is edited in place; the frame's
-/// title carries the sync word and the drafts waiting to go.
+/// title carries the sync word and the drafts waiting to go, or Remote
+/// Control's state.
 pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
     let Mode::Sharing { idx, editing, armed } = &app.mode else { return };
     let rows = app.sharing_rows();
@@ -115,7 +116,14 @@ pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
         .collect();
     let headings: Vec<bool> = rows.iter().map(|r| matches!(r, SharingRow::Heading(_))).collect();
     let title = if app.mesophon_dialog {
-        "REMOTE CONTROL".to_string()
+        let state = if !app.control.enabled {
+            "OFF"
+        } else if app.control.connected {
+            "CONNECTED"
+        } else {
+            "DISCONNECTED"
+        };
+        format!("REMOTE CONTROL ∙ {state}")
     } else {
         match &app.team.board {
             Some(b) => {

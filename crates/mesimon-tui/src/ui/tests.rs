@@ -8224,6 +8224,16 @@ fn golden_mesophon_pair_and_revoke() {
     app.mode = Mode::Sharing { idx, editing: None, armed: true };
     golden("mesophon_revoke_80x24", &render(&app, 80, 24));
     assert!(app.qr.borrow().is_none(), "no room: the code row alone");
+    // The state is the title's (T-513); the pair row says why it is inert.
+    app.control.connected = false;
+    app.control.code = None;
+    let idx = app.sharing_rows().iter().position(|r| *r == SharingRow::ControlPair).unwrap();
+    app.mode = Mode::Sharing { idx, editing: None, armed: false };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("REMOTE CONTROL ∙ DISCONNECTED")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("waits for the relay connection")), "{lines:?}");
+    app.control.enabled = false;
+    assert!(render(&app, 120, 30).iter().any(|l| l.contains("REMOTE CONTROL ∙ OFF")));
 }
 
 #[test]

@@ -15747,6 +15747,9 @@ name fields and `Sign in again` show only while signed out. A new relay was a ne
 anyway; the cost is that a rename is now a sign-out and a sign-in, which mints a new key.
 Remote Control's own dialog has no `YOU` section at all (author, mid-ticket): the identity
 belongs to the sharing dialog it opens from.
+The `Browser access: …` row is gone too: the state is the frame's title (`REMOTE CONTROL ∙
+CONNECTED | DISCONNECTED | OFF`), and a failure reads under the row that acts next (`Enable` or
+`Pair a browser`, which says it waits for the relay while disconnected).
 
 **Signing out asks first.** Enter on the identity row arms it (`Sign out?`), a second Enter
 sends `TeamSignOut`, and any motion disarms, as `Stop sharing` and `Leave this board` do.

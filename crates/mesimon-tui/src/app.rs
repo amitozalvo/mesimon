@@ -287,7 +287,6 @@ pub enum SharingRow {
     ControlEnable,
     ControlDisable,
     ControlPair,
-    ControlStatus,
     ControlOrigin,
     ControlDevice(String),
     Publish,
@@ -7099,7 +7098,6 @@ impl App {
         }
         rows.push(SharingRow::Heading("THIS BOARD"));
         if self.mesophon_dialog {
-            rows.push(SharingRow::ControlStatus);
             if !self.control.origin.is_empty() {
                 rows.push(SharingRow::ControlOrigin);
             }
@@ -7181,25 +7179,22 @@ impl App {
                 "open this address on your phone or computer ∙ enter copies it".into(),
                 "copy",
             ),
-            SharingRow::ControlStatus => (
-                if !self.control.enabled {
-                    "Browser access: off".into()
-                } else if self.control.connected {
-                    "Browser access: connected".into()
-                } else {
-                    "Browser access: disconnected".into()
-                },
-                self.control.error.clone().unwrap_or_else(|| self.control.origin.clone()),
-                "",
-            ),
+            // The state is the frame's title (`draw_sharing`); what failed
+            // reads under the row that would act next.
             SharingRow::ControlEnable => (
                 "Enable Remote Control on this board".into(),
-                "your paired browsers can preview and prompt its agents".into(),
+                self.control.error.clone().unwrap_or_else(|| {
+                    "your paired browsers can preview and prompt its agents".into()
+                }),
                 "enable",
             ),
             SharingRow::ControlPair => (
                 "Pair a browser".into(),
-                "one-use code ∙ expires in ten minutes".into(),
+                match &self.control.error {
+                    Some(error) => error.clone(),
+                    None if self.control.connected => "one-use code ∙ expires in ten minutes".into(),
+                    None => "waits for the relay connection".into(),
+                },
                 if self.control.connected { "pair" } else { "" },
             ),
             SharingRow::ControlDisable => (
@@ -7450,7 +7445,6 @@ impl App {
             SharingRow::RemoteControl => {
                 self.dispatch(Verb::Mesophon, Key::Enter, Scope::Sharing, &self.ctx())
             }
-            SharingRow::ControlStatus => Ok(()),
             SharingRow::ControlOrigin => {
                 self.status = crate::clipboard::copy_status("browser URL", &self.control.origin);
                 Ok(())
