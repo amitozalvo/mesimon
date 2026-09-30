@@ -6,6 +6,31 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.33 — 2026-09-30
+
+### Added
+
+- **Teams reaches the hosted relay on port 443.** The relay field is
+  prefilled with `relay.mesimon.dev:443`, the port office networks let
+  out, and the browser and the wire share it. A Mac that signed in before
+  this release keeps using port 8443, which stays open until October 2027;
+  sign out and in again to move to 443. A self-hosted relay keeps its own
+  port and pin.
+- **Access is renewed before the phone is refused.** Inside the last day of
+  a hosted-relay grant, mesimon redeems its kept code by itself, so a Mac
+  that only uses Remote Control is not refused once a billing period. If
+  the relay refuses the phone's mail for a lapsed grant, mesimon renews
+  once on that refusal too. A cancelled subscription is not retried after
+  the relay says no. Needs a relay updated to this release; an older relay
+  keeps the previous behaviour.
+
+### Fixed
+
+- **An archived ticket's sleeping agent no longer holds a crown seat.** The
+  crown's `start_agent` refused with "3 of 3 crown-started agents are live"
+  after all three tickets had been archived. A seat frees when its agent
+  exits or its ticket is archived; restoring the ticket counts it again.
+
 ## v0.1.0-alpha.32 — 2026-09-30
 
 ### Added
