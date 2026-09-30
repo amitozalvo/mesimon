@@ -15765,3 +15765,33 @@ stay, so a board already published without notes keeps syncing that way.
 
 **`BOARDS` is `OTHER BOARDS`**, and the board that is open is no longer listed there: it
 was a read-only `open now` row repeating the section above.
+
+## Who may register on the hosted relay: decided (T-514, 2026-09-30, "paid registration for the relay: how, how much, free access for my friends")
+
+Nothing shipped in the core; this records the decision T-502 left open, so T-514 (prefill the
+sign-in with `relay.mesimon.dev`) knows what it waits for. The full text is T-514's note; the
+work is T-515 (relay half in `mesimon-relay`, wire and dialog half here).
+
+**Decided: the unit is a registered device, and the gate is an access code at `register`.**
+A device is one Mac install (`msmn.devices`); phones pair to a device and are never
+registered, so Remote Control from a phone is free by construction, and a team board bills per
+member Mac with no seat concept added. `Request::Register` gains `code: Option<String>`
+(`#[serde(default)]`), the hosted relay runs `--registration code`, the compose default stays
+`open` so a self-hoster mints nothing. A code stamps `devices.grant_until` (NULL = forever);
+reads never check it and writes require it, so a lapsed device is read-only and never locked
+out of its own boards. `Request::Redeem { code }` extends a registered device. Existing preview
+devices are grandfathered at NULL. `devices.enabled` stays the kill switch.
+
+**Decided: friends get hand-minted forever codes from a CLI on the box**, labelled by name
+(`mesimon-relay code mint --label dana --forever`), pasted in a chat; revoke is `enabled=false`
+on that label's device. No admin surface on the wire, so no admin credential to get wrong.
+
+**Decided: paid codes are license keys from a merchant of record; the relay never sees a
+payment.** Selling from Israel to EU and US buyers means VAT and sales tax per country, which a
+merchant of record (Lemon Squeezy, Paddle or Polar; fees checked when chosen) carries. The
+relay validates a key it does not know against the provider's public license endpoint at redeem
+and again lazily when the grant expires; no webhook receiver, no payment data on the box.
+
+**Decided: $5 per month or $48 per year, per Mac.** Four paying Macs cover the box (about
+₪65 a month). No free tier at launch beyond hand-minted codes; $3/$30 and $8/$80 were the
+alternatives weighed. An automated trial comes later if uptake asks for it.
