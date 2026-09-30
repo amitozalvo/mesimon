@@ -10,6 +10,7 @@
                            ╭─ SHARING ──────────────────────────────────────────────────────╮
                            │ YOU                                                            │
                            │   Signed in as Amit on relay.example                           │
+                           │   Enter a code                                                 │
                            │ THIS BOARD                                                     │
                            │   Remote Control                                               │
                            │   Publish this board                                           │
@@ -18,7 +19,6 @@
                            │                                                                │
                            │     browser access to this board ∙ pair and revoke             │
                            ╰─────────────────────────── jk select ∙ enter open ∙ esc close ─╯
-
 
 
 

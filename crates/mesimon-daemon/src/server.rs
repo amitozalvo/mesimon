@@ -1996,8 +1996,11 @@ impl Daemon {
             }
             Command::SetAgentPrompt { which, text } => self.set_agent_prompt(which, text),
             Command::IgnoreBriefOffer => self.ignore_brief_offer(),
-            Command::TeamSignIn { relay, display_name } => self.team_sign_in(relay, display_name),
+            Command::TeamSignIn { relay, display_name, code } => {
+                self.team_sign_in(relay, display_name, code)
+            }
             Command::TeamSignOut => self.team_sign_out(),
+            Command::RedeemCode { code } => self.team_redeem(code),
             Command::ShareBoard { notes } => self.team_share(notes),
             Command::UnshareBoard => self.team_unshare(),
             Command::MintInvite { role } => self.team_mint_invite(role),

@@ -5,7 +5,18 @@ output, send a prompt, answer supported Claude dialogs, file new tickets, and st
 agent on a ticket**. It works on desktop and phone.
 Debug builds include Remote Control automatically. In release builds, set
 `MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Sharing → Remote Control**, sign in to
-your relay, and enable this board. Choose **Pair a browser** and scan the QR code the
+your relay, and enable this board.
+
+Signing in registers this Mac with the relay once; the sign-in rows are the relay's address,
+your display name and an **access code**. A relay that gates registration (the hosted one does)
+refuses a sign-in without one and says so under `Sign in`; a self-hosted relay ignores an empty
+field. A code is either one a friend minted for you, which never runs out, or a license key
+from a purchase, which lasts as long as the subscription. A code is used at most as many times
+as it was minted for. Once signed in, **Enter a code** under your name takes a later code: a
+renewal, or a friend's code on a Mac that signed in before the relay had a gate. When a Mac's
+access runs out it keeps reading every board it belongs to, and a paired phone keeps its live
+view, but edits stay on the Mac (the sharing dialog reads `LAPSED`) and a ticket filed from a
+phone while the Mac is away is refused, until a code is entered. Choose **Pair a browser** and scan the QR code the
 dialog shows with your phone’s camera: the page opens with the single-use code filled
 in, and **Connect** pairs. Or open the displayed browser address and type the code. The
 code works once, within ten minutes. The QR appears when the terminal has room for it

@@ -11,6 +11,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Tag {
     SignIn,
+    /// An access code on a signed-in device (T-515).
+    Redeem,
     Share,
     Keys,
     Invite,

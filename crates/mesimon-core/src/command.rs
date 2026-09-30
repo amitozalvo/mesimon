@@ -114,12 +114,21 @@ pub enum Command {
     /// Board sharing (T-215). Every one of these is a person's gesture on
     /// the board and is answered `Ok` at once; the work happens on the
     /// daemon's relay thread and its outcome is read from `Snapshot.team`.
-    /// `relay` is `host[:port] [pin]`; `display_name` is what teammates see.
+    /// `relay` is `host[:port] [pin]`; `display_name` is what teammates see;
+    /// `code` is an access code, which a relay gating registration needs
+    /// (T-515) and any relay stamps a grant from.
     TeamSignIn {
         relay: String,
         display_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
     },
     TeamSignOut,
+    /// An access code on the signed-in device (T-515): a renewal, or a
+    /// friend's code on a Mac that registered before the relay's gate.
+    RedeemCode {
+        code: String,
+    },
     /// Publish this board: mint a key, create the board on the relay, send
     /// every ticket — and every note, unless `notes` is off, in which case
     /// members see titles, columns and order and the notes stay on this
@@ -1110,6 +1119,7 @@ impl Command {
             TeamRefresh => m(Read, false, None),
             TeamSignIn { .. }
             | TeamSignOut
+            | RedeemCode { .. }
             | ShareBoard { .. }
             | UnshareBoard
             | MintInvite { .. }

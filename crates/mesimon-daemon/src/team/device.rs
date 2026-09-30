@@ -24,6 +24,12 @@ pub struct DeviceFile {
     /// Absent between generating the seed and the relay accepting it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<Credential>,
+    /// The access code this machine signed in or last renewed with (T-515),
+    /// kept so a lapsed grant is renewed by redeeming it again: the relay
+    /// stores no key, and a license key's renewal is the provider's word
+    /// on a second look.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_code: Option<String>,
 }
 
 impl std::fmt::Debug for DeviceFile {
@@ -43,6 +49,7 @@ impl DeviceFile {
             display_name,
             relay,
             credential: None,
+            access_code: None,
         }
     }
 
@@ -101,6 +108,13 @@ mod tests {
         file.save(&path).unwrap();
         assert_eq!(DeviceFile::load(&path).unwrap().unwrap().credential, file.credential);
         assert!(!format!("{file:?}").contains(&file.seed));
+        file.access_code = Some("MSMN-1".into());
+        file.save(&path).unwrap();
+        assert_eq!(
+            DeviceFile::load(&path).unwrap().unwrap().access_code.as_deref(),
+            Some("MSMN-1")
+        );
+        assert!(!format!("{file:?}").contains("MSMN-1"), "a code is a secret");
     }
 
     #[test]

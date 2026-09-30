@@ -188,10 +188,22 @@ pub struct StoredRecord {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
-    /// The one request without a credential: mint a device.
+    /// The one request without a credential: mint a device. `code` is an
+    /// access code (T-515): a relay serving `--registration code` refuses
+    /// without one (`CodeRequired`); a valid one, on any relay, stamps the
+    /// device's grant. Absent from the frame when `None`, so a relay from
+    /// before, which refuses unknown fields, still admits a codeless sign-in.
     Register {
         display_name: String,
         public: DevicePublic,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
+    /// An access code on a device the relay already knows (T-515): a
+    /// renewal, or a friend's code on a Mac that registered before the gate.
+    /// Same stamp as at `register`.
+    Redeem {
+        code: String,
     },
     ControlInfo,
     /// Whether the relay keeps Mesophon mail for an away host (T-497). A
@@ -273,6 +285,7 @@ impl Request {
             | Request::Whoami
             | Request::Boards
             | Request::CreateBoard
+            | Request::Redeem { .. }
             | Request::Join { .. } => None,
             Request::Unshare { board }
             | Request::Leave { board }
@@ -294,6 +307,7 @@ impl Request {
             Request::Whoami => "whoami",
             Request::Boards => "boards",
             Request::CreateBoard => "create_board",
+            Request::Redeem { .. } => "redeem",
             Request::Unshare { .. } => "unshare",
             Request::Leave { .. } => "leave",
             Request::MintInvite { .. } => "mint_invite",
@@ -363,6 +377,25 @@ pub enum ErrorCode {
     Capacity,
     #[error("relay unavailable")]
     Unavailable,
+    /// The relay admits new devices by access code and none was given
+    /// (T-515). The sharing dialog opens its code field on it.
+    #[error("this relay needs an access code")]
+    CodeRequired,
+    /// At `register` or `redeem`: the code is not one the relay minted, is
+    /// used up, or the license behind it is not active.
+    #[error("that access code is unknown, used up or expired")]
+    CodeInvalid,
+    /// A write from a device whose access has run out. Reads still answer,
+    /// so the device is read-only, never locked out.
+    #[error("this machine's access has lapsed; enter a code to keep editing")]
+    GrantLapsed,
+    /// A code this build does not know: a relay from after it. Serde's
+    /// catch-all, so the next variant added here no longer reads as a
+    /// broken frame on the clients already shipped (the three above did,
+    /// on every client before alpha.32: they answered `InvalidRequest`).
+    #[serde(other)]
+    #[error("the relay answered with a code this build does not know")]
+    Unknown,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -423,7 +456,11 @@ mod tests {
         let keys = DeviceKeys::generate();
         let frame = Frame {
             credential: Some(Credential::generate()),
-            request: Request::Register { display_name: "Dana".into(), public: keys.public() },
+            request: Request::Register {
+                display_name: "Dana".into(),
+                public: keys.public(),
+                code: None,
+            },
         };
         let mut buffer = Vec::new();
         write_frame(&mut buffer, &frame).unwrap();
@@ -482,6 +519,43 @@ mod tests {
         .unwrap();
         assert!(!text.contains("canary"));
         assert!(text.contains(&board.to_hex()));
+    }
+
+    /// A codeless register is the frame it always was, so a relay from
+    /// before the gate (which refuses unknown fields) still admits it; a
+    /// code rides only when given; and an error code from a relay newer
+    /// than this build parses as `Unknown`, never as a broken frame.
+    #[test]
+    fn the_access_code_is_optional_on_the_wire_and_new_codes_parse() {
+        let keys = DeviceKeys::generate();
+        let plain =
+            Request::Register { display_name: "Dana".into(), public: keys.public(), code: None };
+        let text = serde_json::to_string(&plain).unwrap();
+        assert!(!text.contains("code"), "{text}");
+        assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), plain);
+        let coded = Request::Register {
+            display_name: "Dana".into(),
+            public: keys.public(),
+            code: Some("MSMN-1".into()),
+        };
+        let text = serde_json::to_string(&coded).unwrap();
+        assert!(text.contains("\"code\":\"MSMN-1\""), "{text}");
+        assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), coded);
+        assert_eq!(Request::Redeem { code: "x".into() }.word(), "redeem");
+        assert_eq!(Request::Redeem { code: "x".into() }.board(), None);
+        for (code, text) in [
+            (ErrorCode::CodeRequired, "code_required"),
+            (ErrorCode::CodeInvalid, "code_invalid"),
+            (ErrorCode::GrantLapsed, "grant_lapsed"),
+        ] {
+            assert_eq!(serde_json::to_string(&code).unwrap(), format!("\"{text}\""));
+            assert_eq!(serde_json::from_str::<ErrorCode>(&format!("\"{text}\"")).unwrap(), code);
+        }
+        let from_the_future = r#"{"kind":"error","code":"quota_exceeded"}"#;
+        assert_eq!(
+            serde_json::from_str::<Response>(from_the_future).unwrap(),
+            Response::Error { code: ErrorCode::Unknown }
+        );
     }
 
     #[test]

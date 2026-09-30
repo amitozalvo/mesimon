@@ -8,11 +8,11 @@
 
 
 
-
                            ╭─ SHARING ──────────────────────────────────────────────────────╮
                            │ YOU                                                            │
                            │   Relay: relay.example                                         │
                            │   Display name: Dana                                           │
+                           │   Access code: not set                                         │
                            │   Sign in                                                      │
                            │                                                                │
                            │     host[:port] ∙ self-hosted: add a space and its pin         │

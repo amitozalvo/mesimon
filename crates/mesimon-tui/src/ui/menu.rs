@@ -139,7 +139,8 @@ pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
     let lead = match rows.get(*idx) {
         Some(SharingRow::Relay) => "Relay: ",
         Some(SharingRow::Name) => "Display name: ",
-        Some(SharingRow::Join) => "Code: ",
+        Some(SharingRow::AccessCode) => "Access code: ",
+        Some(SharingRow::Join) | Some(SharingRow::Redeem) => "Code: ",
         _ => "",
     };
     let field = editing.as_ref().map(|b| (lead, b));

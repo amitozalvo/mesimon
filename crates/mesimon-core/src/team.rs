@@ -193,6 +193,18 @@ pub struct TeamInfo {
     /// success of the same kind.
     #[serde(default)]
     pub error: Option<String>,
+    /// The relay refused the sign-in for want of an access code (T-515):
+    /// the dialog's code field is what answers it.
+    #[serde(default)]
+    pub code_required: bool,
+    /// The relay refused a write because this machine's access ran out:
+    /// shared boards are read-only until a code is redeemed.
+    #[serde(default)]
+    pub lapsed: bool,
+    /// The last code entered was accepted; cleared by the next sign-in or
+    /// code.
+    #[serde(default)]
+    pub granted: bool,
 }
 
 #[cfg(test)]

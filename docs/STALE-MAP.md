@@ -15795,3 +15795,62 @@ and again lazily when the grant expires; no webhook receiver, no payment data on
 **Decided: $5 per month or $48 per year, per Mac.** Four paying Macs cover the box (about
 ₪65 a month). No free tier at launch beyond hand-minted codes; $3/$30 and $8/$80 were the
 alternatives weighed. An automated trial comes later if uptake asks for it.
+
+## The relay registration gate: access codes and grants (T-515, 2026-09-30, "relay registration gate: access codes, grants and the paid launch")
+
+T-514's decision, built. The relay half is in `mesimon-relay` (schema, `policy::needs_grant`,
+`access.rs`, the `code mint | code list | device disable` CLI, `serve --registration open|code`,
+`REGISTRATION=code` in `deploy/compose.hosted.yaml`); this repo carries the wire, the daemon
+and the dialog.
+
+**Shipped on the wire**: `Request::Register { code: Option<String> }`, absent from the frame
+when `None` (`skip_serializing_if`), because `Request` refuses unknown fields and a relay from
+before must still admit a codeless sign-in. `Request::Redeem { code }`, board-less,
+authenticated. Three `ErrorCode`s — `CodeRequired`, `CodeInvalid`, `GrantLapsed` — **and a
+`#[serde(other)] Unknown`**, so the next variant no longer reads as a broken frame. **Decided:
+the three new codes do break parsing on every client before alpha.32** (they answer
+`InvalidRequest`, "signing in: invalid request"). Accepted because no shipped client prefills
+the hosted address (that is T-514, blocked on this), and the preview testers are grandfathered
+(`grant_until` NULL) so no shipped client will ever be answered `GrantLapsed`.
+
+**Decided: the grant is checked by the relay, per request, from `devices.grant_until`**
+(`policy::admit`, pure and exhaustive). Writes that need it: `Put`, `CreateBoard`,
+`MintInvite`, `PutKeys`, `Join`. Not gated: every read, `Leave`, `Unshare`, `Revoke`, `Redeem`.
+A lapsed owner who revokes therefore freezes the board until they renew (`PutKeys` is gated);
+that follows from the ticket's list and is recorded, not fixed. Remote Control: a browser's
+device registers past the gate (`register_browser`, born lapsed so its credential buys nothing
+on the Teams listener), and **mail is gated on the host's grant**, refused as `lapsed`, which
+Mesophon words. Live routing while the host is online is not gated — Remote Control is free by
+construction (T-514) and the Mac is what pays.
+
+**Decided: the relay stores no license key.** A code it did not mint is the `Licensor`'s word
+(`access::Licensor`, a trait; `Relay::licensor` is `None` in `main`, and a fake in the
+postgres test). The lazy re-check when a grant expires is **the client's**: the daemon keeps
+the code in `device.toml` (`access_code`) and on the first `GrantLapsed` sends one `Redeem`
+with it by itself (`team_on_lapse`, `renewal_tried`); a renewed subscription is the provider
+saying yes to the same key. A second try needs a person. **Not shipped: the provider's HTTP
+call.** The author has not chosen the merchant of record; when they do, it is one struct
+implementing `Licensor`, wired in `main.rs` for the hosted build only.
+
+**The daemon's lapse**: `TeamInfo.lapsed` (the dialog's title reads `LAPSED`, outranking the
+sync word), `team_pump` sends nothing while lapsed, the outbox keeps the refused edit, and a
+successful `Redeem` re-runs `team_after_broadcast`. `TeamInfo.code_required` opens the dialog's
+code field path; `TeamInfo.granted` says the last code landed. A code typed at sign-in on a Mac
+the relay already knows goes as `Redeem` after the known-key `Denied`
+(`redeem_after_sign_in`).
+
+**The dialog**: `SharingRow::AccessCode` beside Relay and Name while signed out ("Access code:
+set", never the text — a screen may be recorded), `SharingRow::Redeem` ("Enter a code") under
+`Signed in as` while signed in. `Sign in` has no word until the code is filled once the relay
+asked for one. Both fields cap at 128 bytes, the relay's `MAX_CODE_BYTES`. Seven sharing
+goldens gained one row each.
+
+**Refuted**: a `Response::Granted { until }` from `Redeem`. `Response` refuses unknown fields
+too, so no shipped response can gain a field, and a new variant for one number was not worth
+it; the dialog does not show an expiry. Also refuted: storing the license key on the box for
+the relay to re-validate itself — the client has the key and the relay's promise is to hold
+nothing usable.
+
+**After this**: ship the box with `REGISTRATION=code`, mint the author's and the testers'
+codes (`docker compose exec relay mesimon-relay code mint --label NAME --forever`), then
+T-514's prefill.

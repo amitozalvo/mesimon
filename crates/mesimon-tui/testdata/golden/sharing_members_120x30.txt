@@ -7,6 +7,7 @@
     Keymap validator      >╭─ SHARING ∙ OFFLINE ∙ 2 DRAFTS ─────────────────────────────────╮
                            │ YOU                                                            │
                            │   Signed in as Amit on relay.example                           │
+                           │   Enter a code                                                 │
                            │ THIS BOARD                                                     │
                            │   Invite a contributor                                         │
                            │   Invite a viewer                                              │
@@ -21,7 +22,6 @@
                            │                                                                │
                            │     enter removes them ∙ the key rotates for the others        │
                            ╰───────────────────────── jk select ∙ enter remove ∙ esc close ─╯
-
 
 
 

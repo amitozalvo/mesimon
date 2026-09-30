@@ -73,6 +73,18 @@ pub(super) struct TeamCtx {
     /// the members the relay still counts, so it never works from a cache.
     rotate_after_members: bool,
     state_dirty: bool,
+    /// The relay wants an access code at sign-in (T-515).
+    code_required: bool,
+    /// A write was refused for a lapsed grant; cleared when a code lands.
+    lapsed: bool,
+    /// The last code was accepted.
+    granted: bool,
+    /// A code typed at sign-in on a device the relay already knew: the
+    /// register answers `Denied` (known key) and the code goes as `Redeem`.
+    redeem_after_sign_in: bool,
+    /// The one renewal tried by itself after a lapse, with the stored code;
+    /// a second needs a person. Reset when a code is accepted.
+    renewal_tried: bool,
 }
 
 impl TeamCtx {
@@ -104,6 +116,11 @@ impl TeamCtx {
             rotating: None,
             rotate_after_members: false,
             state_dirty: false,
+            code_required: false,
+            lapsed: false,
+            granted: false,
+            redeem_after_sign_in: false,
+            renewal_tried: false,
         }
     }
 
@@ -146,6 +163,16 @@ impl TeamCtx {
 
 fn err(message: impl Into<String>) -> Response {
     Response::Err { message: message.into() }
+}
+
+/// An access code as typed: trimmed, scrubbed, bounded like the relay
+/// bounds it (`access::MAX_CODE_BYTES` there).
+fn clean_code(code: &str) -> Result<String, &'static str> {
+    let code = mesimon_core::text::scrub_text(code.trim());
+    if code.is_empty() || code.len() > 128 {
+        return Err("an access code is one to 128 characters");
+    }
+    Ok(code)
 }
 
 impl Daemon {
@@ -270,7 +297,9 @@ impl Daemon {
                 })
                 .collect(),
             sync: SyncState {
-                state: self.team.sync_word.into(),
+                // A lapse outranks the sync word: nothing goes out until a
+                // code lands (`team_pump`), whatever the last pull said.
+                state: if self.team.lapsed { "lapsed" } else { self.team.sync_word }.into(),
                 drafts: s.outbox.len(),
                 synced_at_ms: self.team.synced_at_ms,
                 detail: (self.team.sync_word == "error").then(|| self.team.error.clone()).flatten(),
@@ -312,12 +341,20 @@ impl Daemon {
             boards,
             busy: self.team.busy.map(str::to_owned),
             error: self.team.error.clone(),
+            code_required: self.team.code_required,
+            lapsed: self.team.lapsed,
+            granted: self.team.granted,
         }
     }
 
     // ---- the person's commands --------------------------------------------
 
-    pub(super) fn team_sign_in(&mut self, relay: String, display_name: String) -> Response {
+    pub(super) fn team_sign_in(
+        &mut self,
+        relay: String,
+        display_name: String,
+        code: Option<String>,
+    ) -> Response {
         let Some(endpoint) = RelayEndpoint::parse(&relay) else {
             return err("relay is host[:port], then a space and the pin for a self-hosted relay");
         };
@@ -325,13 +362,23 @@ impl Daemon {
         if name.is_empty() || name.chars().count() > 64 {
             return err("a display name is one to sixty-four characters");
         }
+        let code = match code.as_deref().map(clean_code) {
+            Some(Err(message)) => return err(message),
+            Some(Ok(code)) => Some(code),
+            None => None,
+        };
         // Keep the keys across sign-ins to the same relay: the boards this
         // device belongs to stay reachable. A new relay is a new identity.
+        let known = self
+            .team
+            .device
+            .as_ref()
+            .is_some_and(|d| d.relay == endpoint && d.credential.is_some());
         let device = match self.team.device.take() {
-            Some(d) if d.relay == endpoint && d.credential.is_some() => {
-                DeviceFile { display_name: name, ..d }
+            Some(d) if known => {
+                DeviceFile { display_name: name, access_code: code.clone().or(d.access_code), ..d }
             }
-            _ => DeviceFile::fresh(name, endpoint),
+            _ => DeviceFile { access_code: code.clone(), ..DeviceFile::fresh(name, endpoint) },
         };
         let Some(keys) = device.keys() else { return err("could not derive device keys") };
         if let Err(e) = Paths::team_device_file().and_then(|p| device.save(&p)) {
@@ -340,12 +387,55 @@ impl Daemon {
         let display_name = device.display_name.clone();
         self.team.device = Some(device);
         self.team.error = None;
+        self.team.code_required = false;
+        self.team.granted = false;
+        self.team.redeem_after_sign_in = known && code.is_some();
         self.team.busy = Some("signing in");
         self.team.connect();
         // A key the relay already knows is refused with `Denied` and keeps
-        // its credential; `on_team` reads that as "only the name changed".
-        self.team.call(Tag::SignIn, Request::Register { display_name, public: keys.public() });
+        // its credential; `on_team` reads that as "only the name changed"
+        // and sends a code typed beside it as `Redeem`.
+        self.team
+            .call(Tag::SignIn, Request::Register { display_name, public: keys.public(), code });
         Response::Ok
+    }
+
+    /// An access code on the signed-in device (T-515). The code is kept in
+    /// the device file so a lapse can renew by itself once.
+    pub(super) fn team_redeem(&mut self, code: String) -> Response {
+        if !self.team.signed_in() {
+            return err("sign in to the relay first");
+        }
+        let code = match clean_code(&code) {
+            Ok(code) => code,
+            Err(message) => return err(message),
+        };
+        if let Some(d) = &mut self.team.device {
+            d.access_code = Some(code.clone());
+            let _ = Paths::team_device_file().and_then(|p| d.save(&p));
+        }
+        self.team.error = None;
+        self.team.granted = false;
+        self.team.busy = Some("redeeming");
+        self.team.call(Tag::Redeem, Request::Redeem { code });
+        Response::Ok
+    }
+
+    /// A write came back `GrantLapsed`: say so, and try the stored code
+    /// once by itself — a renewed subscription is the provider's word on
+    /// the same key, and a friend's forever code never lapses.
+    fn team_on_lapse(&mut self) {
+        self.team.lapsed = true;
+        let stored = self.team.device.as_ref().and_then(|d| d.access_code.clone());
+        match stored {
+            Some(code) if !self.team.renewal_tried => {
+                self.team.renewal_tried = true;
+                self.team.call(Tag::Redeem, Request::Redeem { code });
+            }
+            _ => {
+                self.team.error = Some(format!("{}", ErrorCode::GrantLapsed));
+            }
+        }
     }
 
     pub(super) fn team_sign_out(&mut self) -> Response {
@@ -507,6 +597,7 @@ impl Daemon {
     /// the current epoch is in hand.
     fn team_pump(&mut self) {
         if self.team.put_inflight().is_some()
+            || self.team.lapsed
             || self.team.sync_word == "frozen"
             || self.team.sync_word == "gone"
         {
@@ -569,18 +660,57 @@ impl Daemon {
                     let _ = Paths::team_device_file().and_then(|p| d.save(&p));
                 }
                 self.team.busy = None;
+                self.team.granted =
+                    self.team.device.as_ref().is_some_and(|d| d.access_code.is_some());
+                self.team.lapsed = false;
+                self.team.renewal_tried = false;
                 self.team.connect();
                 self.team.call(Tag::Boards, Request::Boards);
             }
             (Tag::SignIn, Err(ErrorCode::Denied))
                 if self.team.device.as_ref().is_some_and(|d| d.credential.is_some()) =>
             {
-                // Known key, kept credential: the name is all that changed.
+                // Known key, kept credential: the name is all that changed —
+                // and a code typed beside it goes on its own.
                 self.team.busy = None;
                 self.team.connect();
+                if std::mem::take(&mut self.team.redeem_after_sign_in) {
+                    if let Some(code) =
+                        self.team.device.as_ref().and_then(|d| d.access_code.clone())
+                    {
+                        self.team.busy = Some("redeeming");
+                        self.team.call(Tag::Redeem, Request::Redeem { code });
+                    }
+                }
+            }
+            (Tag::SignIn, Err(ErrorCode::CodeRequired)) => {
+                self.team.code_required = true;
+                self.team.fail("signing in", ErrorCode::CodeRequired);
             }
             (Tag::SignIn, Err(code)) => self.team.fail("signing in", code),
+            (Tag::Redeem, Ok(_)) => {
+                self.team.busy = None;
+                self.team.error = None;
+                self.team.granted = true;
+                self.team.lapsed = false;
+                self.team.renewal_tried = false;
+                // The edits that waited go again.
+                self.team_after_broadcast();
+            }
+            (Tag::Redeem, Err(code)) => {
+                // A renewal by itself that failed reads as the lapse it was
+                // trying to end; a code a person typed reads as its own failure.
+                if self.team.busy == Some("redeeming") {
+                    self.team.fail("redeeming", code);
+                } else {
+                    self.team.error = Some(format!("{}", ErrorCode::GrantLapsed));
+                }
+            }
             (Tag::Share, Ok(Wire::BoardCreated { board })) => self.team_on_shared(board),
+            (Tag::Share, Err(ErrorCode::GrantLapsed)) => {
+                self.team.fail("sharing", ErrorCode::GrantLapsed);
+                self.team_on_lapse();
+            }
             (Tag::Share, Err(code)) => self.team.fail("sharing", code),
             (Tag::Keys, Ok(_)) => {
                 if let Some((epoch, key)) = self.team.rotating.take() {
@@ -617,6 +747,9 @@ impl Daemon {
             (Tag::Invite, Err(code)) => {
                 self.team.minting = None;
                 self.team.fail("inviting", code);
+                if code == ErrorCode::GrantLapsed {
+                    self.team_on_lapse();
+                }
             }
             (Tag::Join, Ok(Wire::Joined { board, role, owner })) => {
                 self.team_on_joined(board, role, owner)
@@ -624,6 +757,9 @@ impl Daemon {
             (Tag::Join, Err(code)) => {
                 self.team.joining = None;
                 self.team.fail("joining", code);
+                if code == ErrorCode::GrantLapsed {
+                    self.team_on_lapse();
+                }
             }
             (Tag::Revoke, Ok(_)) => {
                 self.team.rotate_after_members = true;
@@ -950,6 +1086,8 @@ impl Daemon {
                     Some("this board is read-only for you; the edit stays here".into());
                 self.team.state_dirty = true;
             }
+            // The edit stays in the outbox: a code makes it go.
+            Err(ErrorCode::GrantLapsed) => self.team_on_lapse(),
             Err(ErrorCode::NotFound) => self.team_gone(),
             Err(ErrorCode::OperationMismatch) => {
                 state.outbox[at].operation = OperationId::random().to_hex();

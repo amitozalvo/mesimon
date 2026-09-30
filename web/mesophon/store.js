@@ -581,6 +581,7 @@ export class Store {
       if (wire.code === "unavailable") return;
       const why = {
         denied: "this browser may no longer leave tickets for this board. Pair it again.",
+        lapsed: "your terminal's access to the relay has lapsed. Enter a code in its Sharing dialog.",
         capacity: "too many tickets are waiting at the relay.",
         too_large: "it is too long to wait at the relay. Send it while your terminal is live.",
       }[wire.code] || "the relay did not keep it.";

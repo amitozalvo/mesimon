@@ -863,6 +863,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::Mesophon { .. }
         | Command::TeamSignIn { .. }
         | Command::TeamSignOut
+        | Command::RedeemCode { .. }
         | Command::ShareBoard { .. }
         | Command::UnshareBoard
         | Command::MintInvite { .. }
@@ -1765,8 +1766,13 @@ mod tests {
             },
             Command::RenameTicket { id: t, title: "t".into() },
             Command::DeleteTicket { id: t, discard_worktree: true },
-            Command::TeamSignIn { relay: "relay.example".into(), display_name: "Dana".into() },
+            Command::TeamSignIn {
+                relay: "relay.example".into(),
+                display_name: "Dana".into(),
+                code: None,
+            },
             Command::TeamSignOut,
+            Command::RedeemCode { code: "x".into() },
             Command::Mesophon { action: crate::mesophon::LocalAction::Status },
             Command::Mesophon { action: crate::mesophon::LocalAction::Enable },
             Command::ShareBoard { notes: true },
