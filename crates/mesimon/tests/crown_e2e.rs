@@ -912,10 +912,10 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert_eq!(lines_with(&delivered1), before, "nothing lands on an uncrowned board");
 }
 
-/// One ticket landing is two wakes, not three (T-469, seen on T-461): the
-/// delivery, and the rebase the crown itself asked for coming back as its
-/// answer — each with what changed. The merge a person makes and the
-/// merged notice's turn are the person's; the crown is not woken for them.
+/// One ticket landing is three wakes, not four (T-469, seen on T-461; T-527):
+/// the delivery, the rebase the crown itself asked for coming back as its
+/// answer, and the merge — each with what changed. The merged notice's turn
+/// is the person's; the crown is not woken for it.
 #[test]
 fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     let Some(h) = Harness::boot_with_env(
@@ -1031,11 +1031,25 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     start(&mut c, sa);
     stop(&mut c, sa);
 
-    // ---- 3. the person merges and tells the agent: not the crown's news -----
+    // ---- 3. the person merges: the crown hears it once (T-527); the notice
+    //         that tells the agent, and its turn, are the person's ----------
     match c.request(Command::MergeTicket { id: w }) {
         Response::Merge { outcome: mesimon_core::command::MergeOutcome::Merged, .. } => {}
         other => panic!("merge: {other:?}"),
     }
+    wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
+        lines_with(&worker).len() == 3
+    });
+    let merged = lines_with(&worker).pop().unwrap();
+    assert_eq!(
+        merged,
+        format!(
+            "{worker} merged (merge_state ahead → merged) ∙ get_ticket key={kw} for state and \
+             notes"
+        )
+    );
+    start(&mut c, sa);
+    stop(&mut c, sa);
     assert!(matches!(
         c.request(Command::MergeToAgent {
             id: w,
@@ -1054,8 +1068,8 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     std::thread::sleep(std::time::Duration::from_millis(2000));
     assert_eq!(
         lines_with(&worker).len(),
-        2,
-        "the crown heard the delivery and its answer, nothing else:\n{}",
+        3,
+        "the crown heard the delivery, its answer and the merge, nothing else:\n{}",
         std::fs::read_to_string(&got).unwrap()
     );
     let owed: Vec<_> = pending_of(&mut c, Some(a))
@@ -1069,9 +1083,9 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     start(&mut c, ws);
     stop(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the second delivery's wake", || {
-        lines_with(&worker).len() == 3
+        lines_with(&worker).len() == 4
     });
-    assert!(lines_with(&worker)[2].starts_with(&format!("{worker} delivered")));
+    assert!(lines_with(&worker)[3].starts_with(&format!("{worker} delivered")));
     start(&mut c, sa);
     stop(&mut c, sa);
     commit(&h.repo, "elsewhere-again.txt");
@@ -1091,8 +1105,165 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     std::thread::sleep(std::time::Duration::from_millis(2000));
     assert_eq!(
         lines_with(&worker).len(),
-        3,
+        4,
         "the rebase the person asked for is theirs, at a new tip or not:\n{}",
         std::fs::read_to_string(&got).unwrap()
     );
+}
+
+/// A worker's merge wakes the crown that started it (T-527), whoever made
+/// it: here a `git merge --ff-only` in a terminal, which no mesimon road
+/// sees — only the worktree flags' refresh reads the branch as merged. One
+/// line, once; and a delivery merged before the crown heard of it is the
+/// delivery's line with the merge in its delta, not two.
+#[test]
+fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
+    // The flags every second rather than every ten.
+    let Some(h) = Harness::boot_with_env(
+        "crown_merge",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_merge");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-91 merged by hand");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = format!("{kw} \"mesimon-probe-91 merged by hand\"");
+    let wait_ahead = |c: &mut TestClient| {
+        wait_until(
+            std::time::Duration::from_secs(10),
+            "the flags to read the branch ahead",
+            || read(c, sa, &kw).unwrap().merge_state.as_deref() == Some("ahead"),
+        );
+    };
+
+    // ---- 1. the delivery, heard -------------------------------------------
+    commit(&path, "work.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    wait_ahead(&mut c);
+
+    // ---- 2. merged in a terminal: one line, the merge ---------------------
+    git(&h.repo, &["merge", "--ff-only", "-q", &branch]);
+    wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
+        lines_with(&worker).len() == 2
+    });
+    assert_eq!(
+        lines_with(&worker)[1],
+        format!(
+            "{worker} merged (merge_state ahead → merged) ∙ get_ticket key={kw} for state and \
+             notes"
+        )
+    );
+    wait_until(std::time::Duration::from_secs(5), "the merged feed line", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"worker\":\"{w}\""))
+                    && l.contains("\"cause\":\"merged\"")
+            })
+        })
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    // More refreshes at `merged`, and a turn that leaves it there: silent.
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(
+        lines_with(&worker).len(),
+        2,
+        "one wake per merge:\n{}",
+        std::fs::read_to_string(&got).unwrap()
+    );
+
+    // ---- 3. delivered and merged while the crown works: one line ----------
+    start(&mut c, sa);
+    commit(&path, "more.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    let owed = |c: &mut TestClient| -> Vec<Option<String>> {
+        pending_of(c, Some(a))
+            .into_iter()
+            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+            .map(|p| p.text)
+            .collect()
+    };
+    wait_until(std::time::Duration::from_secs(10), "the delivery to be owed", || {
+        owed(&mut c).len() == 1
+    });
+    wait_ahead(&mut c);
+    git(&h.repo, &["merge", "--ff-only", "-q", &branch]);
+    wait_until(std::time::Duration::from_secs(10), "the merge to join the delivery", || {
+        owed(&mut c)
+            .first()
+            .cloned()
+            .flatten()
+            .is_some_and(|t| t.starts_with(&format!("{worker} delivered (merge_state merged")))
+    });
+    assert_eq!(owed(&mut c).len(), 1, "one row, not two");
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the one line to land", || {
+        lines_with(&worker).len() == 3
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    let lines = lines_with(&worker);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines[2].starts_with(&format!("{worker} delivered (merge_state merged")), "{lines:?}");
 }

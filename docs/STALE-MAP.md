@@ -15948,3 +15948,67 @@ and FamilyShield, CleanBrowsing, AdGuard) all resolve it to GitHub Pages. A bloc
 domain's age or an empty category, not a verdict against the site. The categorization requests
 need a vendor account or a captcha and are the author's; the ticket lists them. The site
 reaches the web when the author publishes it (`ci/site.sh --publish`, or the next release).
+
+## A worker's merge wakes the crown that started it (T-527, 2026-09-30, "A worker's merge wakes the crown that started it, once, whoever merged")
+
+**Seen on T-524.** The crown started T-525 and T-526, heard both deliveries and waited on the
+merges to close its loop. The author merged T-526 by hand in a terminal and the crown never
+heard; it learned on its own next `get_ticket`. T-469 read a merge as the person's news, which
+was right while a person closed every loop. A crown that started the worker holds the
+follow-up, and the merge is the event it waits for.
+
+**Shipped: a fourth cause, `WakeCause::Merged`** (`server/crownwake.rs`). It is detected where
+the state changes, not where words are sent: `absorb_worktree_flags`, the one place `m` (its
+synchronous refresh), the train (the same) and a hand merge or a forge squash (the tick's
+sample) all end. A ticket whose folded flags read `merged` after reading unmerged is queued on
+`Daemon::crown_landed`, and `hear_merges`, a tick stage just before `drain_crown_wakes`, judges
+it. Hearing it on the tick rather than inside the refresh means the line names the column the
+merge flow left the card in, and a reading that fell back before the tick is dropped. A first
+reading (no flag on record) counts only for a branch a wake already told the crown of: the
+first sample comes a slow bucket after the cut, and a restart forgets `crown_heard` and would
+otherwise re-hear every branch merged before it.
+
+**Who.** Only a worker this crown started (`started_by_crown`: its agent still holds a seat),
+so never the crown's own ticket. **Not a worker whose ask the crown sent**, which the ticket
+asked to argue: the answer wake closes an ask, the ticket's follow-up belongs to whoever
+started it (a person, who merges it), and once that turn ends nothing records that the crown
+asked. **A shared-checkout worker has no branch, so there is nothing to detect**: its commits
+are on the base the moment they exist, and its delivery (a new HEAD) is its only event.
+
+**One landing, one line** (`merge_verdict`). Silent when a wake already told the crown
+`merged` at this tip; that same rule keeps a reading that flaps `merged → ahead → merged` to one
+wake, which is what the ticket's "never inside the flap pin" asks of a flag with no pin of its
+own. `Merged` when the crown was told of this delivery: at the tip it was told of, or at the
+tip the last judged turn left (the merge flow's rebase of it, judged but not told). Otherwise
+the crown never heard of this tip, and the wake is `Delivered` with `merge_state merged` in its
+delta. `Merged` ranks lowest in the coalescing order, so a merge that lands while a delivery,
+an answer or a hand is still owed folds into that line (`CrownWake::fold`) rather than adding
+a second. The merge moves both baselines, so a turn probe that read the branch just before it
+is not a second delivery.
+
+**The delta** reads `merge_state ahead → merged` (or `needs_rebase → merged`), plus `column`
+when it moved. A merged branch's `ahead` is not said: an ff merge reads 0 and a squash keeps
+its count, and neither adds to the word. A branch merged again at a new tip says
+`merge_state merged` again, because the word alone did not change.
+
+**Nothing is pasted into the worker**: the merged notice stays `m`'s and the train's, gated on
+`merge_notice`. An asleep crown is woken as for a delivery (T-414's road, unchanged). The prompt
+editor's detail for the crown wake names the four events.
+
+**Changed test.** `one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask` asserted
+T-469's "a merge is not news". `m`'s merge is now its third line, `merged (merge_state ahead →
+merged)`, and the merged notice's turn and the idle turn after it stay silent.
+
+**Known limit.** A branch merged before the flags first sampled it (inside the first slow
+bucket after the cut) and before any wake told the crown of it is not heard: that first
+reading looks the same as a restart's.
+
+**Tests.** `crownwake` unit tests: `a_merge_after_its_delivery_is_one_merged_line`,
+`a_merge_the_crown_never_heard_of_is_its_delivery` (with the fold into an owed delivery),
+`a_merge_already_told_is_silent`, `a_checkout_or_an_unstarted_worker_has_no_merge_to_hear`, and
+the coalescing order. `crown_e2e::a_hand_merge_wakes_the_crown_that_started_the_worker`: the
+crown starts a worktree worker, hears its delivery, a `git merge --ff-only` runs in the repo,
+the sample (every second under `MESIMON_WT_REFRESH_TICKS=4`) reads it, and the crown's pane
+gets one `merged` line and the feed a `crown_wake` with `cause merged`. Further refreshes and an
+idle turn are silent. A second commit delivered under a working crown and merged by hand before
+it idles is one owed row and one line, `delivered (merge_state merged…)`.

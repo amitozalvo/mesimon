@@ -549,9 +549,9 @@ pub struct Daemon {
     /// changed. In memory on purpose, like the move gate's: the feed is the
     /// record, this is what the next frame needs.
     crown_touches: HashMap<ulid::Ulid, CrownTouch>,
-    /// Wakes the crown is owed (T-414, T-469): one per worker that
-    /// delivered, answered the crown's ask or raised its hand since the
-    /// crown's last turn, rendered into ONE sentence when the crown itself
+    /// Wakes the crown is owed (T-414, T-469, T-527): one per worker that
+    /// delivered, answered the crown's ask, raised its hand or was merged
+    /// since the crown's last turn, rendered into ONE sentence when the crown itself
     /// is idle. In memory on purpose, like a held ask (T-413): a restart
     /// re-derives every worker's state at Low confidence anyway, and the
     /// crown can list the board. Uncrowning drops them.
@@ -563,6 +563,11 @@ pub struct Daemon {
     /// it, and the first delivery after one wakes the crown again. A new
     /// crown starts with it empty.
     crown_heard: HashMap<ulid::Ulid, crownwake::Heard>,
+    /// Tickets whose branch the worktree flags just read `merged` after
+    /// reading it unmerged, or on a first reading of a branch the crown was
+    /// told of (T-527), heard by the crown on the next tick (`hear_merges`).
+    /// Filled only while a crown is worn.
+    crown_landed: Vec<ulid::Ulid>,
     /// What the turn now running on a ticket was asked for (T-469), set by
     /// the ack of words that carried a reason (`Owed::asked`) and taken by
     /// that turn's end: the crown's ask comes back as an answer, a
@@ -985,6 +990,7 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_touches: HashMap::new(),
         crown_wakes: Vec::new(),
         crown_heard: HashMap::new(),
+        crown_landed: Vec::new(),
         turn_asks: HashMap::new(),
         machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
         tier_set_at: HashMap::new(),
@@ -2257,6 +2263,7 @@ impl Daemon {
             self.refresh_machine_tiers();
             changed |= stage!("drain_tier_switches", self.drain_tier_switches());
             changed |= stage!("drain_queue", self.drain_queue());
+            changed |= stage!("hear_merges", self.hear_merges());
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
             let a = stage!("archive_figures", self.archive_figures());
             if a != self.archive_cache {
@@ -9896,7 +9903,20 @@ impl Daemon {
                 continue;
             }
             let a = worktree::aggregate(&legs);
-            changed |= self.wt_merged.insert(t, a.merged) != Some(a.merged);
+            let was = self.wt_merged.insert(t, a.merged);
+            changed |= was != Some(a.merged);
+            // Unmerged to merged is a landing, whoever made it (T-527). A
+            // first reading is one only for a branch the crown was already
+            // told of: the first sample comes a slow bucket after the cut,
+            // and a restart, which forgets what the crown heard, must not
+            // re-hear every branch merged before it.
+            let told = self.crown_heard.get(&t).is_some_and(|h| h.was_told());
+            if a.merged
+                && self.board.crown.is_some()
+                && (was == Some(false) || (was.is_none() && told))
+            {
+                self.crown_landed.push(t);
+            }
             changed |= self.wt_ahead.insert(t, a.ahead) != Some(a.ahead);
             changed |= self.wt_needs_rebase.insert(t, a.needs_rebase) != Some(a.needs_rebase);
             changed |= self.wt_tip.insert(t, a.tip.clone()) != Some(a.tip);

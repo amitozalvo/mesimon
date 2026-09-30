@@ -212,7 +212,8 @@ The crown starts at most three agents at once; **Settings › Agents** changes t
 starting off. A sleeping agent still holds its seat until its ticket is archived. A ticket the
 crown started can never be crowned itself. Crowning types nothing into the agent's conversation: the crowned agent learns
 it through its tools. When an agent it started delivers, answers what it asked, or raises its
-hand, one sentence saying so is pasted into the crown's session.
+hand, one sentence saying so is pasted into the crown's session. So is the merge of that agent's
+worktree branch, whether `m`, the merge train or your own `git merge` made it.
 
 ## Sleeping idle agents
 

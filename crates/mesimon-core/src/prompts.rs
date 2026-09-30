@@ -77,7 +77,7 @@ impl AgentPrompt {
             AgentPrompt::Merged => "after this ticket's branch was merged",
             AgentPrompt::NoteUpdated => "when a note on the ticket changed",
             AgentPrompt::CrownWake => {
-                "when an agent the crown started ends its turn or raises its hand"
+                "when an agent the crown started delivers, is merged, answers or raises its hand"
             }
         }
     }

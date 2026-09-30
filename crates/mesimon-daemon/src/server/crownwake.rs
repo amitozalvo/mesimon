@@ -1,5 +1,5 @@
-//! What wakes the crown (T-414, narrowed by T-469): three ticket events, not
-//! every `Stop`.
+//! What wakes the crown (T-414, narrowed by T-469, T-527): four ticket
+//! events, not every `Stop`.
 //!
 //! A worker's turn ending is how its process breathes, not what happened to
 //! its ticket. One landing used to be three wakes — the delivery, the rebase
@@ -12,13 +12,18 @@
 //!    of, or, in a shared checkout, a HEAD it has not heard of;
 //! 2. **answered your ask** — the turn that took the crown's `ask_agent`
 //!    words ended, whatever it left behind;
-//! 3. **raised its hand** — `raise_hand`, as before.
+//! 3. **raised its hand** — `raise_hand`, as before;
+//! 4. **merged** — a worker it started has its branch read `merged` by the
+//!    worktree flags (`hear_merges`), however it got there: `m`, the train,
+//!    or a `git merge` in a terminal. A shared-checkout worker has no branch,
+//!    so nothing to read; its commits are on the base the moment they exist.
 //!
 //! A turn that took mesimon's own merge-flow words (`m`'s or the train's
 //! rebase ask, the merged notice) is a merge step: the person already knows,
-//! and the crown learns on its next `get_ticket`. Every wake line carries
-//! what changed since the crown last heard (`merge_state needs_rebase →
-//! ahead`, `column REVIEW`), so the obvious costs no tool call.
+//! and the crown learns on its next `get_ticket` — or from the merge itself,
+//! which the flags see and the words do not. Every wake line carries what
+//! changed since the crown last heard (`merge_state needs_rebase → ahead`,
+//! `column REVIEW`), so the obvious costs no tool call.
 
 use super::*;
 
@@ -60,9 +65,13 @@ impl Told {
 }
 
 /// What the crown is woken for, in the precedence two events on one worker
-/// coalesce by: a hand outranks an answer, an answer a delivery.
+/// coalesce by: a hand outranks an answer, an answer a delivery, and a
+/// delivery a merge — a merge folded into any other line is said in its
+/// delta (`merge_state merged`), so a delivery and its merge between two
+/// crown turns are one line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum WakeCause {
+    Merged,
     Delivered,
     Answered,
     Raised,
@@ -72,6 +81,7 @@ impl WakeCause {
     /// The clause after the ticket in the sentence.
     fn clause(self) -> &'static str {
         match self {
+            WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered your ask",
             WakeCause::Raised => "raised its hand",
@@ -81,6 +91,7 @@ impl WakeCause {
     /// The feed's word.
     fn word(self) -> &'static str {
         match self {
+            WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered",
             WakeCause::Raised => "raised",
@@ -96,6 +107,21 @@ pub(super) struct CrownWake {
     cause: WakeCause,
     from: Option<Told>,
     to: Option<Told>,
+}
+
+impl CrownWake {
+    /// A second event on the same worker before delivery: the stronger
+    /// cause, the latest work, and `from` kept unless nothing was described
+    /// yet — the delta runs from what the crown last heard to now.
+    fn fold(&mut self, cause: WakeCause, from: Option<Told>, to: Option<Told>) {
+        self.cause = self.cause.max(cause);
+        if self.to.is_none() {
+            self.from = from;
+        }
+        if to.is_some() {
+            self.to = to;
+        }
+    }
 }
 
 /// Whether a turn's end wakes the crown, and why. `before` is the worker's
@@ -118,18 +144,48 @@ pub(super) fn verdict(
     before.is_none_or(|b| b.tip != now.tip).then_some(WakeCause::Delivered)
 }
 
+/// Whether a worker's branch reading `merged` wakes the crown (T-527), and
+/// as what. `now` is the work as merged, `heard` what the crown has heard of
+/// the worker. Only a worker THIS crown started (`started`) — the crown's
+/// own ticket is never one, since no crown starts itself — and never a
+/// checkout, which has no branch to land. A merge the crown was already
+/// told of at this tip is silent, which is also what keeps a reading that
+/// flaps `merged → ahead → merged` to one wake. Otherwise: the crown was
+/// woken for this delivery (the tip it was told of, or the one the last
+/// looked-at turn left — the merge flow's own rebase of it) and hears
+/// `merged`; or it never heard of this tip, and the merge is the delivery
+/// line with `merged` in its delta.
+pub(super) fn merge_verdict(started: bool, heard: &Heard, now: &Told) -> Option<WakeCause> {
+    if !started || now.merge != Some("merged") {
+        return None;
+    }
+    let told = heard.told.as_ref();
+    if told.is_some_and(|t| t.merge == Some("merged") && t.tip == now.tip) {
+        return None;
+    }
+    let known = told.is_some_and(Told::mergeable)
+        && [told, heard.judged.as_ref()].into_iter().flatten().any(|t| t.tip == now.tip);
+    Some(if known { WakeCause::Merged } else { WakeCause::Delivered })
+}
+
 /// What changed between what the crown last heard and now, in words:
 /// `merge_state needs_rebase → ahead`, `ahead 1 → 3`, `commit 1a2b3c4`,
-/// `column REVIEW`. With nothing heard before, the state itself.
+/// `column REVIEW`. With nothing heard before, the state itself. A branch
+/// merged again at a new tip says `merge_state merged` once more, and a
+/// merged branch's `ahead` is not said: an ff merge reads 0 and a squash
+/// keeps its count, and neither is news beside the word.
 pub(super) fn delta(before: Option<&Told>, now: &Told) -> Vec<String> {
     let mut out = Vec::new();
     match (before.and_then(|b| b.merge), now.merge) {
         (Some(was), Some(is)) if was != is => out.push(format!("merge_state {was} → {is}")),
         (None, Some(is)) => out.push(format!("merge_state {is}")),
+        (Some(_), Some("merged")) if before.is_some_and(|b| b.tip != now.tip) => {
+            out.push("merge_state merged".into());
+        }
         _ => {}
     }
     if let Some(b) = before.filter(|b| b.merge.is_some() && now.merge.is_some()) {
-        if b.ahead != now.ahead {
+        if b.ahead != now.ahead && now.merge != Some("merged") {
             out.push(format!("ahead {} → {}", b.ahead, now.ahead));
         }
     }
@@ -151,6 +207,13 @@ pub(super) fn delta(before: Option<&Told>, now: &Told) -> Vec<String> {
 pub(super) struct Heard {
     judged: Option<Told>,
     told: Option<Told>,
+}
+
+impl Heard {
+    /// A wake has described this worker's work to the crown.
+    pub(super) fn was_told(&self) -> bool {
+        self.told.is_some()
+    }
 }
 
 /// What a probe was for.
@@ -376,6 +439,45 @@ impl Daemon {
         }
     }
 
+    /// Branches the worktree flags just read `merged` (`crown_landed`,
+    /// filled by `absorb_worktree_flags`): the one place `m`, the train and
+    /// a merge made in a terminal all end. Heard on the tick rather than
+    /// inside the refresh that saw them, so the line says the column the
+    /// merge flow left the card in; a reading that fell back before the
+    /// tick was no merge. Both baselines move to the merge, so a turn probe
+    /// that read the branch just before it is not a second delivery.
+    pub(super) fn hear_merges(&mut self) -> bool {
+        if self.crown_landed.is_empty() {
+            return false;
+        }
+        let landed = std::mem::take(&mut self.crown_landed);
+        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
+        let mut woke = false;
+        for worker in landed {
+            if self.wt_merged.get(&worker) != Some(&true) {
+                continue;
+            }
+            let Some(column) = self.board.ticket(worker).map(|t| t.column.clone()) else {
+                continue;
+            };
+            let now = Told {
+                tip: self.wt_tip.get(&worker).cloned().unwrap_or_default(),
+                merge: Some("merged"),
+                ahead: self.wt_ahead.get(&worker).copied().unwrap_or(0),
+                column,
+            };
+            let started = worker != crown && self.started_by_crown(worker, crown);
+            let heard = self.crown_heard.get(&worker).cloned().unwrap_or_default();
+            let Some(cause) = merge_verdict(started, &heard, &now) else { continue };
+            let heard = self.crown_heard.entry(worker).or_default();
+            heard.judged = Some(now.clone());
+            let from = heard.told.replace(now.clone());
+            self.note_crown_wake(worker, cause, from, Some(now));
+            woke = true;
+        }
+        woke
+    }
+
     /// Record that the crown is owed a wake about `worker`, and try to
     /// deliver it now. Only while the crown is worn, and — an answer aside,
     /// which the crown asked for — only for an agent THIS crown started.
@@ -397,13 +499,7 @@ impl Daemon {
             return;
         }
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
-            w.cause = w.cause.max(cause);
-            if w.to.is_none() {
-                w.from = from;
-            }
-            if to.is_some() {
-                w.to = to;
-            }
+            w.fold(cause, from, to);
         } else {
             self.crown_wakes.push(CrownWake { worker, cause, from, to });
         }
@@ -418,6 +514,7 @@ impl Daemon {
     /// new crown has heard nothing.
     pub(super) fn drop_crown_wakes(&mut self) {
         self.crown_heard.clear();
+        self.crown_landed.clear();
         if self.crown_wakes.is_empty() {
             return;
         }
@@ -473,8 +570,10 @@ mod tests {
         assert_eq!(verdict(Some(&first), &first, false, false), None, "same tip");
         let fresh = branch("base", "clean", 0, "IN PROGRESS");
         assert_eq!(verdict(None, &fresh, false, false), None, "nothing to merge");
+        // A turn's end at a merged branch is not a delivery: the merge is
+        // heard where the flags read it (`merge_verdict`).
         let merged = branch("bbb", "merged", 0, "DONE");
-        assert_eq!(verdict(Some(&first), &merged, false, false), None, "a merge is not news");
+        assert_eq!(verdict(Some(&first), &merged, false, false), None, "not a delivery");
         // New work on top is a new delivery; so is a branch the base moved
         // past, which still has something to merge.
         let more = branch("ccc", "ahead", 2, "REVIEW");
@@ -532,5 +631,103 @@ mod tests {
     fn coalesced_causes_keep_the_strongest() {
         assert!(WakeCause::Raised > WakeCause::Answered);
         assert!(WakeCause::Answered > WakeCause::Delivered);
+        assert!(WakeCause::Delivered > WakeCause::Merged);
+    }
+
+    fn heard(judged: Option<Told>, told: Option<Told>) -> Heard {
+        Heard { judged, told }
+    }
+
+    /// T-527's own case: the crown was woken for the delivery, then the
+    /// branch lands — one `merged` line saying so, whoever merged it. The
+    /// merge flow's own rebase of that delivery is the same landing.
+    #[test]
+    fn a_merge_after_its_delivery_is_one_merged_line() {
+        let delivered = branch("aaa", "ahead", 1, "REVIEW");
+        let landed = branch("aaa", "merged", 0, "REVIEW");
+        let h = heard(Some(delivered.clone()), Some(delivered.clone()));
+        assert_eq!(merge_verdict(true, &h, &landed), Some(WakeCause::Merged));
+        // An ff merge reads `ahead 0`; the word says it, the count is noise.
+        assert_eq!(delta(Some(&delivered), &landed), vec!["merge_state ahead → merged"]);
+        // Told of the delivery behind the base; `m` asked for the rebase (a
+        // merge step, judged but not told) and merged the rebased tip.
+        let behind = branch("aaa", "needs_rebase", 1, "REVIEW");
+        let rebased = branch("bbb", "ahead", 1, "REVIEW");
+        let landed = branch("bbb", "merged", 0, "DONE");
+        let h = heard(Some(rebased), Some(behind.clone()));
+        assert_eq!(merge_verdict(true, &h, &landed), Some(WakeCause::Merged));
+        assert_eq!(
+            delta(Some(&behind), &landed),
+            vec!["merge_state needs_rebase → merged", "column DONE"]
+        );
+    }
+
+    /// A tip the crown never heard of, delivered and merged between two of
+    /// its turns, is ONE line: the delivery, with `merged` in its delta.
+    #[test]
+    fn a_merge_the_crown_never_heard_of_is_its_delivery() {
+        let landed = branch("aaa", "merged", 0, "REVIEW");
+        // Nothing heard at all (a restart, or a merge inside the turn).
+        assert_eq!(merge_verdict(true, &Heard::default(), &landed), Some(WakeCause::Delivered));
+        assert_eq!(delta(None, &landed), vec!["merge_state merged", "column REVIEW"]);
+        // A merge step judged it, but no wake ever told the crown.
+        let h = heard(Some(branch("aaa", "ahead", 1, "REVIEW")), None);
+        assert_eq!(merge_verdict(true, &h, &landed), Some(WakeCause::Delivered));
+        // Told of older work; newer commits landed before any turn ended.
+        let older = branch("000", "ahead", 1, "REVIEW");
+        let h = heard(Some(older.clone()), Some(older));
+        assert_eq!(merge_verdict(true, &h, &landed), Some(WakeCause::Delivered));
+        // The delivery still waiting on a working crown takes the merge in:
+        // one line, the delivery's, its delta running to the merge.
+        let delivered = branch("aaa", "ahead", 1, "REVIEW");
+        let mut w = CrownWake {
+            worker: ulid::Ulid::nil(),
+            cause: WakeCause::Delivered,
+            from: None,
+            to: Some(delivered.clone()),
+        };
+        let h = heard(Some(delivered.clone()), Some(delivered.clone()));
+        let cause = merge_verdict(true, &h, &landed).unwrap();
+        w.fold(cause, Some(delivered), Some(landed));
+        assert_eq!(w.cause, WakeCause::Delivered);
+        assert_eq!(
+            delta(w.from.as_ref(), w.to.as_ref().unwrap()),
+            vec!["merge_state merged", "column REVIEW"]
+        );
+        // Merged once, then new work merged again: the word is said again.
+        let first = branch("aaa", "merged", 0, "DONE");
+        let again = branch("ccc", "merged", 0, "DONE");
+        assert_eq!(delta(Some(&first), &again), vec!["merge_state merged"]);
+    }
+
+    /// One wake per merge: a second reading at `merged` is silent, and so
+    /// is one that flapped back and forth at the same tip.
+    #[test]
+    fn a_merge_already_told_is_silent() {
+        let landed = branch("aaa", "merged", 0, "DONE");
+        let h = heard(Some(landed.clone()), Some(landed.clone()));
+        assert_eq!(merge_verdict(true, &h, &landed), None);
+        // New work after it is a delivery; that one's merge is news again.
+        let more = branch("bbb", "ahead", 1, "REVIEW");
+        let h = heard(Some(more.clone()), Some(more));
+        assert_eq!(
+            merge_verdict(true, &h, &branch("bbb", "merged", 0, "DONE")),
+            Some(WakeCause::Merged)
+        );
+    }
+
+    /// A shared checkout has no branch to land, and a worker this crown did
+    /// not start — the crown's own ticket among them — never wakes it.
+    #[test]
+    fn a_checkout_or_an_unstarted_worker_has_no_merge_to_hear() {
+        let head = checkout("1111111aaaa", "REVIEW");
+        let h = heard(Some(head.clone()), Some(head.clone()));
+        assert_eq!(merge_verdict(true, &h, &head), None);
+        assert_eq!(merge_verdict(true, &Heard::default(), &head), None);
+        let landed = branch("aaa", "merged", 0, "DONE");
+        let delivered = branch("aaa", "ahead", 1, "REVIEW");
+        let h = heard(Some(delivered.clone()), Some(delivered));
+        assert_eq!(merge_verdict(false, &h, &landed), None);
+        assert_eq!(merge_verdict(false, &Heard::default(), &landed), None);
     }
 }
