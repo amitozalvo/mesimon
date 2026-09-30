@@ -10,6 +10,11 @@ use serde_json::Value;
 pub const VERSION: u32 = 1;
 pub const MAX_BYTES: usize = 256 * 1024;
 pub const QUEUE: usize = 32;
+/// The refusal word for mail a host's lapsed grant does not admit: a
+/// `Refused` code to the browser, and (T-522) an `Error` code to the
+/// collecting host, which renews on it. A host from before drops any
+/// `Error` frame unread, so the relay may send it to every host.
+pub const LAPSED: &str = "lapsed";
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -430,6 +435,14 @@ impl Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The host hears its lapse (T-522) on a frame every host already
+    /// parses: an `Error`, which a host from before drops unread.
+    #[test]
+    fn the_lapsed_word_rides_an_error_frame() {
+        let text = serde_json::to_string(&Wire::Error { code: LAPSED.into() }).unwrap();
+        assert_eq!(text, r#"{"kind":"error","code":"lapsed"}"#);
+        assert!(matches!(serde_json::from_str(&text), Ok(Wire::Error { code }) if code == LAPSED));
+    }
     #[test]
     fn connection_binds_identity_scope_direction_and_sequence() {
         let host = DeviceKeys::generate();

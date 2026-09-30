@@ -16027,3 +16027,59 @@ below.
 is set, which `relay/README.md` documents; (2) with it set, core's `browser.test.js` (T-498,
 T-510) writes `agent-run` and waits for `agent-ran`, and nothing in the relay's `mesophon.rs`
 answers it: the relay half of that fixture step was never committed.
+
+## A grant is renewed before the phone is refused (T-522, 2026-09-30, "A lapsed grant is renewed before the phone is refused, not only on a board write")
+
+T-516's open item, the core half. Until now the daemon renewed a grant only on a gated board
+write's `GrantLapsed` (`team_on_lapse`). Remote Control's mail is refused `lapsed` to the
+*browser*, so a Mac that uses Remote Control and writes no shared board had its phone refused
+once a billing period until a person typed the key again.
+
+**Built: the daemon knows when its grant ends.** `Request::Grant` → `Response::Grant { until:
+Option<u64> }` (unix seconds, `None` for no end). It is a new request, not an answer to `Redeem`:
+T-515's refutation stands, because `Response` refuses unknown variants and an alpha.32 daemon
+would read a new answer to its own `Redeem` as a failure. A new request is only ever sent by a
+host that can read the answer, and a relay from before answers it `InvalidRequest` (the
+`ControlMail` precedent), which the daemon reads as "not said" and keeps T-515's behaviour.
+**Deviation from the brief:** the end is not kept in `device.toml`; the relay is asked at start,
+after a sign-in, after every accepted code and hourly (`GRANT_EVERY`), and a cached end could
+only be staler than that.
+
+**Built: the renewal window.** `TeamCtx::grant_tick` runs in `team_tick` *before* the shared-board
+check, because Remote Control alone is reason enough. Inside the grant's last day
+(`RENEW_WINDOW`), or past it, it sends one `Redeem` with the kept code. Polar grants
+`current_period_end + 3 days`, so a renewal a day before the end comes two days after the
+charge. Renewals by themselves are at least `RENEW_AGAIN` (6 h) apart, even after one lands,
+and the interval is held under the relay's one-day floor (a compile-time assert). The relay
+never stamps less than a day, so without the gap a past-due or cancelling key would be redeemed
+on every tick. With it, a grant extended a day at a time is renewed before it runs out, and a
+cancelled one is asked a few times before Polar's no. `renewal_tried` still allows one try per
+lapse: a `CodeInvalid` stops every renewal by itself until a person's code is accepted. A
+`Redeem` the relay did not answer (`Unavailable`, which is also Polar stumbling) does not count
+as a try.
+
+**Built: the mail refusal is the lapse edge.** `control::LAPSED` is the one spelling of the
+word. When the relay sends the host `Wire::Error { code: LAPSED }`, `on_control` runs
+`team_on_lapse`, the same one automatic `Redeem` a refused write runs. An `Error` frame is one
+every host already parses and drops unread (`NetEvent::Frame(_)`), so the relay may send it to
+hosts from before. A renewal that fails before any refusal says `renewing: <code>` rather than
+claiming a lapse that has not happened.
+
+**Owed, in `mesimon-relay` (nothing changes for a user until it ships):**
+- Answer `Request::Grant` from `devices.grant_until` for the caller, ungated.
+  `policy::needs_grant` and the dispatch are exhaustive, so **the relay stops compiling against
+  this core until it classifies `Grant`**.
+- On `Deposit::Refused(LAPSED)`, also send `Wire::Error { code: LAPSED }` to the board's
+  collecting host.
+- After a lapsed host's `Collect`, send the same frame.
+- Spell `mail.rs`'s literal `"lapsed"` as `control::LAPSED`.
+- Check: `polar.rs::until` floors at `now + LEASH` even when `ends_at` has passed, so a key Polar
+  still calls `granted` after its subscription ends buys a day on every redeem. This predates
+  T-522, which only makes the redeems regular.
+
+Verified: `teamglue::tests` checks four things. A grant in its last day is renewed once on the
+tick, and a failed renewal is not retried by the clock. A renewal that lands is followed by one
+per interval. A mail refusal renews once and a second refusal after a failed renewal does not.
+The end is asked hourly, only with a kept code. Wire round-trips are in `wire.rs` and
+`control.rs`. No e2e: the relay half is what makes the edge live, and its postgres test is
+where the fake licensor is. **Owed:** a CHANGELOG line at the release that ships the relay half.

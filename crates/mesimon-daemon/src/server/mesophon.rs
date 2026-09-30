@@ -458,7 +458,7 @@ impl Daemon {
             &event,
             NetEvent::Online(..)
                 | NetEvent::Offline
-                | NetEvent::Frame(Wire::Peer { .. } | Wire::Gone { .. })
+                | NetEvent::Frame(Wire::Peer { .. } | Wire::Gone { .. } | Wire::Error { .. })
         );
         match event {
             NetEvent::Online(origin, mail) => {
@@ -501,6 +501,12 @@ impl Daemon {
                 self.control.peers.remove(&peer);
             }
             NetEvent::Frame(Wire::Published) => {}
+            // The relay refused the phone's mail for this Mac's lapsed grant
+            // (T-522): the same edge as a refused board write, so a Mac that
+            // writes no shared board still renews by itself.
+            NetEvent::Frame(Wire::Error { code }) if code == control::LAPSED => {
+                self.team_on_lapse()
+            }
             NetEvent::Frame(_) => {}
         }
         self.control_expire_permissions();

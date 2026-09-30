@@ -205,6 +205,14 @@ pub enum Request {
     Redeem {
         code: String,
     },
+    /// When the caller's grant ends (T-522), so a host renews before its
+    /// phone is refused rather than after. A read, never gated. Answered
+    /// `Response::Grant { until }` in unix seconds, `None` for a grant with
+    /// no end (a friend's code, an open relay, a preview device) — a new
+    /// answer sent only to a caller that asked, so no client from before
+    /// reads it. A relay from before answers `InvalidRequest`, and the host
+    /// then renews only on a refusal, as it did.
+    Grant,
     ControlInfo,
     /// Whether the relay keeps Mesophon mail for an away host (T-497). A
     /// relay from before answers `InvalidRequest` and the host collects
@@ -286,6 +294,7 @@ impl Request {
             | Request::Boards
             | Request::CreateBoard
             | Request::Redeem { .. }
+            | Request::Grant
             | Request::Join { .. } => None,
             Request::Unshare { board }
             | Request::Leave { board }
@@ -308,6 +317,7 @@ impl Request {
             Request::Boards => "boards",
             Request::CreateBoard => "create_board",
             Request::Redeem { .. } => "redeem",
+            Request::Grant => "grant",
             Request::Unshare { .. } => "unshare",
             Request::Leave { .. } => "leave",
             Request::MintInvite { .. } => "mint_invite",
@@ -337,6 +347,7 @@ impl fmt::Debug for Request {
 pub enum Response {
     ControlInfo { version: u32, origin: Option<String> },
     ControlMail { version: u32 },
+    Grant { until: Option<u64> },
     Registered { device: DeviceId, credential: Credential },
     Device { device: DeviceId, display_name: String },
     Boards { boards: Vec<BoardSummary> },
@@ -543,6 +554,12 @@ mod tests {
         assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), coded);
         assert_eq!(Request::Redeem { code: "x".into() }.word(), "redeem");
         assert_eq!(Request::Redeem { code: "x".into() }.board(), None);
+        assert_eq!(serde_json::to_string(&Request::Grant).unwrap(), r#"{"kind":"grant"}"#);
+        assert_eq!((Request::Grant.word(), Request::Grant.board()), ("grant", None));
+        for until in [Some(1_790_000_000), None] {
+            let text = serde_json::to_string(&Response::Grant { until }).unwrap();
+            assert_eq!(serde_json::from_str::<Response>(&text).unwrap(), Response::Grant { until });
+        }
         for (code, text) in [
             (ErrorCode::CodeRequired, "code_required"),
             (ErrorCode::CodeInvalid, "code_invalid"),

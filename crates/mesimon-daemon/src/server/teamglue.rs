@@ -40,6 +40,18 @@ fn pull_every() -> u64 {
 }
 const MEMBERS_EVERY: u64 = 120;
 const OFFLINE_BACKOFF: u64 = 20;
+/// Ticks between asking the relay when this device's grant ends: an hour.
+const GRANT_EVERY: u64 = 3_600_000 / TICK_MS;
+/// A grant is renewed by itself inside its last day (T-522), in seconds.
+/// Polar's runs three days past the paid period, so by then the renewal
+/// charge has landed and a `Redeem` grants the next period.
+const RENEW_WINDOW: u64 = 86_400;
+/// Renewals by itself go at least this far apart, in seconds, and under the
+/// relay's one-day floor: a grant extended a day at a time (past due) is
+/// renewed before it runs out, and a cancelled one is asked a bounded number
+/// of times before its no.
+const RENEW_AGAIN: u64 = 6 * 3_600;
+const _: () = assert!(RENEW_AGAIN < RENEW_WINDOW);
 
 pub(super) struct TeamCtx {
     jobs: Sender<Job>,
@@ -85,13 +97,24 @@ pub(super) struct TeamCtx {
     /// The one renewal tried by itself after a lapse, with the stored code;
     /// a second needs a person. Reset when a code is accepted.
     renewal_tried: bool,
+    /// When this device's grant ends, as the relay last said (T-522): `None`
+    /// until it answers `Grant`, and always on a relay from before, which
+    /// cannot; `Some(None)` is a grant with no end.
+    grant_until: Option<Option<u64>>,
+    /// The tick `Grant` was last asked on.
+    last_grant: u64,
+    /// The earliest a renewal by itself may go again, in unix seconds.
+    renew_after: u64,
 }
 
 impl TeamCtx {
     pub(super) fn new(tx: Sender<Msg>) -> Self {
-        let jobs = crate::team::sync::spawn(move |done| {
+        Self::with_jobs(crate::team::sync::spawn(move |done| {
             let _ = tx.send(Msg::Team(done));
-        });
+        }))
+    }
+
+    fn with_jobs(jobs: Sender<Job>) -> Self {
         Self {
             jobs,
             device: None,
@@ -121,6 +144,9 @@ impl TeamCtx {
             granted: false,
             redeem_after_sign_in: false,
             renewal_tried: false,
+            grant_until: None,
+            last_grant: 0,
+            renew_after: 0,
         }
     }
 
@@ -158,6 +184,68 @@ impl TeamCtx {
     fn fail(&mut self, what: &str, code: ErrorCode) {
         self.busy = None;
         self.error = Some(format!("{what}: {code}"));
+    }
+
+    /// The code kept for renewing by itself (`device.toml`), if any.
+    fn stored_code(&self) -> Option<String> {
+        self.device.as_ref().and_then(|d| d.access_code.clone())
+    }
+
+    /// Ask when the grant ends. Only a device with a kept code asks: without
+    /// one there is nothing to renew with.
+    fn ask_grant(&mut self, ticks: u64) {
+        if self.stored_code().is_some() {
+            self.last_grant = ticks;
+            self.call(Tag::Grant, Request::Grant);
+        }
+    }
+
+    /// The grant's own wheel (T-522), shared board or not — Remote Control
+    /// alone is reason enough: ask hourly when the grant ends, and renew by
+    /// itself inside its last day, before the relay refuses the phone's mail.
+    fn grant_tick(&mut self, ticks: u64, now: u64) {
+        if ticks.saturating_sub(self.last_grant) >= GRANT_EVERY {
+            self.ask_grant(ticks);
+        }
+        let ending = matches!(self.grant_until, Some(Some(until)) if now + RENEW_WINDOW >= until);
+        if ending && now >= self.renew_after {
+            self.renew(now);
+        }
+    }
+
+    /// One renewal by itself with the kept code: a renewed subscription is
+    /// the provider's word on the same key, and a friend's forever code never
+    /// lapses. False when there is no code, a redeem is already out, or the
+    /// last renewal failed and no code has been accepted since.
+    fn renew(&mut self, now: u64) -> bool {
+        let Some(code) = self.stored_code() else { return false };
+        if self.renewal_tried || self.inflight.contains(&Tag::Redeem) {
+            return false;
+        }
+        self.renewal_tried = true;
+        self.renew_after = now + RENEW_AGAIN;
+        self.call(Tag::Redeem, Request::Redeem { code });
+        true
+    }
+
+    /// The relay refused for a lapsed grant — a write's `GrantLapsed`, or the
+    /// phone's mail (`control::LAPSED`): say so, and renew once by itself.
+    fn on_lapse(&mut self, now: u64) {
+        self.lapsed = true;
+        if !self.renew(now) {
+            self.error = Some(format!("{}", ErrorCode::GrantLapsed));
+        }
+    }
+
+    /// A code was accepted. The next renewal is judged by the grant's new
+    /// end, so ask for it.
+    fn redeemed(&mut self, ticks: u64) {
+        self.busy = None;
+        self.error = None;
+        self.granted = true;
+        self.lapsed = false;
+        self.renewal_tried = false;
+        self.ask_grant(ticks);
     }
 }
 
@@ -208,6 +296,7 @@ impl Daemon {
         self.team_after_broadcast();
         if self.team.signed_in() {
             self.team.call(Tag::Boards, Request::Boards);
+            self.team.ask_grant(self.ticks);
         }
     }
 
@@ -389,6 +478,7 @@ impl Daemon {
         self.team.error = None;
         self.team.code_required = false;
         self.team.granted = false;
+        self.team.grant_until = None;
         self.team.redeem_after_sign_in = known && code.is_some();
         self.team.busy = Some("signing in");
         self.team.connect();
@@ -421,21 +511,10 @@ impl Daemon {
         Response::Ok
     }
 
-    /// A write came back `GrantLapsed`: say so, and try the stored code
-    /// once by itself — a renewed subscription is the provider's word on
-    /// the same key, and a friend's forever code never lapses.
-    fn team_on_lapse(&mut self) {
-        self.team.lapsed = true;
-        let stored = self.team.device.as_ref().and_then(|d| d.access_code.clone());
-        match stored {
-            Some(code) if !self.team.renewal_tried => {
-                self.team.renewal_tried = true;
-                self.team.call(Tag::Redeem, Request::Redeem { code });
-            }
-            _ => {
-                self.team.error = Some(format!("{}", ErrorCode::GrantLapsed));
-            }
-        }
+    /// A write came back `GrantLapsed`, or the relay refused the phone's
+    /// mail for this Mac's lapse (`control::LAPSED`, T-522).
+    pub(super) fn team_on_lapse(&mut self) {
+        self.team.on_lapse(now_secs());
     }
 
     pub(super) fn team_sign_out(&mut self) -> Response {
@@ -446,6 +525,7 @@ impl Daemon {
         self.team.boards.clear();
         self.team.error = None;
         self.team.busy = None;
+        self.team.grant_until = None;
         self.broadcast();
         Response::Ok
     }
@@ -553,6 +633,7 @@ impl Daemon {
         if !self.team.signed_in() || self.ticks < self.team.backoff_until {
             return;
         }
+        self.team.grant_tick(self.ticks, now_secs());
         let Some(board) = self.team.board() else { return };
         let ticks = self.ticks;
         // A join in progress is a conversation, not a heartbeat: the joiner
@@ -644,6 +725,12 @@ impl Daemon {
         let Done { tag, result } = done;
         self.team.inflight.remove(&tag);
         if let Err(ErrorCode::Unavailable) = &result {
+            // A renewal by itself the relay did not answer (it, or the
+            // provider behind it, stumbled) was not a try: the next one
+            // waits out `RENEW_AGAIN`, not a person.
+            if tag == Tag::Redeem && self.team.busy != Some("redeeming") {
+                self.team.renewal_tried = false;
+            }
             self.team.sync_word = "offline";
             self.team.backoff_until = self.ticks + OFFLINE_BACKOFF;
             if self.team.busy.is_some() {
@@ -666,6 +753,7 @@ impl Daemon {
                 self.team.renewal_tried = false;
                 self.team.connect();
                 self.team.call(Tag::Boards, Request::Boards);
+                self.team.ask_grant(self.ticks);
             }
             (Tag::SignIn, Err(ErrorCode::Denied))
                 if self.team.device.as_ref().is_some_and(|d| d.credential.is_some()) =>
@@ -689,23 +777,25 @@ impl Daemon {
             }
             (Tag::SignIn, Err(code)) => self.team.fail("signing in", code),
             (Tag::Redeem, Ok(_)) => {
-                self.team.busy = None;
-                self.team.error = None;
-                self.team.granted = true;
-                self.team.lapsed = false;
-                self.team.renewal_tried = false;
+                self.team.redeemed(self.ticks);
                 // The edits that waited go again.
                 self.team_after_broadcast();
             }
             (Tag::Redeem, Err(code)) => {
-                // A renewal by itself that failed reads as the lapse it was
-                // trying to end; a code a person typed reads as its own failure.
+                // A code a person typed reads as its own failure; a renewal
+                // by itself as the lapse it was trying to end, or — tried in
+                // the grant's last day, before any refusal — as a renewal.
                 if self.team.busy == Some("redeeming") {
                     self.team.fail("redeeming", code);
-                } else {
+                } else if self.team.lapsed {
                     self.team.error = Some(format!("{}", ErrorCode::GrantLapsed));
+                } else {
+                    self.team.error = Some(format!("renewing: {code}"));
                 }
             }
+            (Tag::Grant, Ok(Wire::Grant { until })) => self.team.grant_until = Some(until),
+            // A relay from before cannot say; a refusal still renews.
+            (Tag::Grant, Err(_)) => {}
             (Tag::Share, Ok(Wire::BoardCreated { board })) => self.team_on_shared(board),
             (Tag::Share, Err(ErrorCode::GrantLapsed)) => {
                 self.team.fail("sharing", ErrorCode::GrantLapsed);
@@ -1564,12 +1654,152 @@ fn other_word(r: &Wire) -> &'static str {
         Wire::Error { .. } => "error",
         Wire::ControlInfo { .. } => "control_info",
         Wire::ControlMail { .. } => "control_mail",
+        Wire::Grant { .. } => "grant",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mesimon_team::wire::Credential;
+    use std::sync::mpsc::{channel, Receiver};
+
+    const NOW: u64 = 1_790_000_000;
+
+    /// A signed-in context whose calls land on the returned receiver.
+    fn signed_in(code: Option<&str>) -> (TeamCtx, Receiver<Job>) {
+        let (jobs, rx) = channel();
+        let mut team = TeamCtx::with_jobs(jobs);
+        let relay = RelayEndpoint::parse("relay.example:9000").unwrap();
+        team.device = Some(DeviceFile {
+            credential: Some(Credential::generate()),
+            access_code: code.map(Into::into),
+            ..DeviceFile::fresh("Dana".into(), relay)
+        });
+        (team, rx)
+    }
+
+    /// The calls sent since the last look, by tag.
+    fn sent(rx: &Receiver<Job>) -> Vec<Tag> {
+        rx.try_iter()
+            .filter_map(|job| match job {
+                Job::Call { tag, .. } => Some(tag),
+                Job::Connect { .. } => None,
+            })
+            .collect()
+    }
+
+    /// The relay answered `tag`, and nothing on the context changed: how
+    /// a failed renewal looks from here (the daemon's arm only words it).
+    fn answered(team: &mut TeamCtx, tag: &Tag) {
+        team.inflight.remove(tag);
+    }
+
+    /// T-522: inside the grant's last day the kept code goes by itself,
+    /// once; outside it, or with nothing to go on, nothing does. A failed
+    /// renewal is not retried by the clock.
+    #[test]
+    fn a_grant_in_its_last_day_is_renewed_once_on_the_tick() {
+        let (mut team, rx) = signed_in(Some("MSMN-1"));
+        team.grant_until = Some(Some(NOW + RENEW_WINDOW + 60));
+        team.grant_tick(1, NOW);
+        assert_eq!(sent(&rx), [], "a day and a minute left: not yet");
+
+        team.grant_until = Some(Some(NOW + 3_600));
+        team.grant_tick(2, NOW);
+        assert_eq!(sent(&rx), [Tag::Redeem]);
+        team.grant_tick(3, NOW + 1);
+        assert_eq!(sent(&rx), [], "one in flight is enough");
+        answered(&mut team, &Tag::Redeem);
+        team.grant_tick(4, NOW + RENEW_AGAIN);
+        assert_eq!(sent(&rx), [], "a failed renewal waits for a person");
+
+        // A grant that has already run out, learned at connect, renews too.
+        let (mut team, rx) = signed_in(Some("MSMN-1"));
+        team.grant_until = Some(Some(NOW - 60));
+        team.grant_tick(1, NOW);
+        assert_eq!(sent(&rx), [Tag::Redeem]);
+
+        for (code, until) in [
+            (Some("MSMN-1"), Some(None)), // a grant with no end
+            (Some("MSMN-1"), None),       // a relay from before: never said
+            (None, Some(Some(NOW + 60))), // no code kept to renew with
+        ] {
+            let (mut team, rx) = signed_in(code);
+            team.grant_until = until;
+            team.grant_tick(1, NOW);
+            assert_eq!(sent(&rx), [], "{code:?} {until:?}");
+        }
+    }
+
+    /// A renewal that lands does not make the next one immediate: a grant
+    /// the provider extends a day at a time (past due, cancelling) is asked
+    /// again after `RENEW_AGAIN`, before it runs out, and not before.
+    #[test]
+    fn a_renewal_that_lands_is_followed_by_one_per_interval() {
+        let (mut team, rx) = signed_in(Some("MSMN-1"));
+        team.grant_until = Some(Some(NOW + 3_600));
+        team.grant_tick(1, NOW);
+        assert_eq!(sent(&rx), [Tag::Redeem]);
+        answered(&mut team, &Tag::Redeem);
+        team.redeemed(2);
+        assert_eq!(sent(&rx), [Tag::Grant], "the new end is asked for");
+        assert!(!team.lapsed && team.granted && !team.renewal_tried);
+
+        // Past due: the relay's floor, a day from the redeem.
+        answered(&mut team, &Tag::Grant);
+        team.grant_until = Some(Some(NOW + RENEW_WINDOW));
+        team.grant_tick(3, NOW + 1);
+        team.grant_tick(4, NOW + RENEW_AGAIN - 1);
+        assert_eq!(sent(&rx), []);
+        team.grant_tick(5, NOW + RENEW_AGAIN);
+        assert_eq!(sent(&rx), [Tag::Redeem]);
+    }
+
+    /// The phone's mail refused for this Mac's lapse is the same edge as a
+    /// refused write: one renewal by itself, and after it fails a second
+    /// refusal only says so. A code a person enters starts the count again.
+    #[test]
+    fn a_mail_refusal_renews_once_and_a_failed_renewal_is_not_retried() {
+        let (mut team, rx) = signed_in(Some("MSMN-1"));
+        team.on_lapse(NOW);
+        assert!(team.lapsed);
+        assert_eq!(sent(&rx), [Tag::Redeem]);
+        assert_eq!(team.error, None, "the renewal speaks for itself");
+
+        answered(&mut team, &Tag::Redeem);
+        team.on_lapse(NOW + 5);
+        assert_eq!(sent(&rx), [], "a second refusal after a failed renewal");
+        assert_eq!(team.error.as_deref(), Some(ErrorCode::GrantLapsed.to_string().as_str()));
+
+        team.redeemed(9);
+        assert_eq!(sent(&rx), [Tag::Grant]);
+        team.on_lapse(NOW + 10);
+        assert_eq!(sent(&rx), [Tag::Redeem], "an accepted code resets the one try");
+
+        let (mut team, rx) = signed_in(None);
+        team.on_lapse(NOW);
+        assert_eq!(sent(&rx), [], "nothing kept to renew with");
+        assert!(team.lapsed && team.error.is_some());
+    }
+
+    /// The grant's end is asked hourly, and only by a device that kept a
+    /// code: there is nothing to renew without one.
+    #[test]
+    fn the_grant_is_asked_hourly_with_a_kept_code() {
+        let (mut team, rx) = signed_in(Some("MSMN-1"));
+        team.grant_tick(GRANT_EVERY - 1, NOW);
+        assert_eq!(sent(&rx), []);
+        team.grant_tick(GRANT_EVERY, NOW);
+        assert_eq!(sent(&rx), [Tag::Grant]);
+        answered(&mut team, &Tag::Grant);
+        team.grant_tick(2 * GRANT_EVERY - 1, NOW);
+        assert_eq!(sent(&rx), []);
+
+        let (mut team, rx) = signed_in(None);
+        team.grant_tick(GRANT_EVERY, NOW);
+        assert_eq!(sent(&rx), []);
+    }
 
     /// A viewer may read, tag, and mark a card seen; every write to a
     /// ticket or a note is refused, and so is minting one.

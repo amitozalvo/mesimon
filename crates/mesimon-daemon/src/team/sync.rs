@@ -13,6 +13,8 @@ pub enum Tag {
     SignIn,
     /// An access code on a signed-in device (T-515).
     Redeem,
+    /// When this device's grant ends (T-522).
+    Grant,
     Share,
     Keys,
     Invite,
