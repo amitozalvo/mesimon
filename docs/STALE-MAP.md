@@ -16012,3 +16012,19 @@ the sample (every second under `MESIMON_WT_REFRESH_TICKS=4`) reads it, and the c
 gets one `merged` line and the feed a `crown_wake` with `cause merged`. Further refreshes and an
 idle turn are silent. A second commit delivered under a working crown and merged by hand before
 it idles is one owed row and one line, `delivered (merge_state merged…)`.
+
+## A warning only musl can raise now fails the Linux build (T-484, 2026-09-30, "localtime.rs uses libc::time_t, deprecated on musl targets (warning in the Linux release builds)")
+
+The libc crate deprecates its `time_t` alias on musl targets (the type's width is due to change
+there), and `localtime.rs` spelled it, so both cross builds printed a warning since alpha.28. The
+release gate's clippy compiles the Darwin libc and the build denies nothing, so no step failed.
+
+**The fix.** `local_of` converts with `secs.try_into()` and lets `localtime_r`'s parameter infer
+`time_t`, so the alias is never named. The week-start test that repeated the same libc call now
+reads `local_of`, which is `pub(crate)` for it.
+
+**The gate.** `ci/build-linux.sh` runs `cargo clippy --locked --all-targets --target <t> -- -D
+warnings` before each target's release build, over the default members (what the binary is
+built from; the wasm crate would only add a `cdylib` notice and is linted by the gate's own
+clippy). It also covers code under `cfg(target_os = "linux")`, which the macOS clippy never
+compiles. It adds about 5 to 10 s per target when warm.

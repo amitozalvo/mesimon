@@ -18879,10 +18879,8 @@ mod tests {
         let until: u64 = until.trim_start_matches('@').parse().expect("@<secs>");
         let now = mesimon_core::clock::now_secs();
         assert!(until > now);
-        let secs = libc::time_t::try_from(until).unwrap();
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        unsafe { libc::localtime_r(&secs, &mut tm) };
-        assert_eq!((tm.tm_wday, tm.tm_hour, tm.tm_min), (0, 9, 0));
+        let at = crate::localtime::local_of(until).expect("resolves");
+        assert_eq!((at.wday, at.hour, at.min), (0, 9, 0));
         // Two more presses wrap the ring back to Monday.
         let ctx = app.ctx();
         app.dispatch(Verb::WeekStart, Key::Enter, Scope::Settings, &ctx).unwrap();

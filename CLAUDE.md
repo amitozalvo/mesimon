@@ -488,6 +488,9 @@ will not show up in our tests until they break something.
   signals only, and a stated High signal commits through it.
 - **`probe_activity` only scans `Running`**, which is what makes `Idle{Background}` immune to it.
 - **`log` is a zsh builtin** — use `/usr/bin/log`.
+- **The libc crate deprecates its `time_t` alias on musl**, so spelling `libc::time_t` warns in
+  the Linux builds only. Let a call's signature infer it; `ci/build-linux.sh` clippies each musl
+  target with `-D warnings`.
 - **A tmux pane id is unique per server, and the server exits with its last session.** A wake
   that kills the only session restarts the server, and the new pane is `%0` like the old one;
   a pane identity must carry the server pid (`#{pid}`) beside `#{pane_id}`.

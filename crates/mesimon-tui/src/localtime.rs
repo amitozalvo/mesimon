@@ -13,8 +13,11 @@ use mesimon_core::snooze::LocalTime;
 use mesimon_core::clock::now_secs as epoch_now;
 
 /// The moment `secs` in local time, or `None` when libc cannot say.
-fn local_of(secs: u64) -> Option<LocalTime> {
-    let t = libc::time_t::try_from(secs).ok()?;
+pub(crate) fn local_of(secs: u64) -> Option<LocalTime> {
+    // `t`'s type is inferred from `localtime_r`'s parameter and never spelled:
+    // the libc crate deprecates the `time_t` alias on musl (its width is due
+    // to change there), and naming it warns in the Linux release builds only.
+    let t = secs.try_into().ok()?;
     // SAFETY: `localtime_r` writes only into the `tm` we hand it, which is
     // zero-initialised and lives for the call; a null return means it
     // could not, and we read nothing then.

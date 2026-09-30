@@ -62,6 +62,15 @@ for t in $targets; do
 done
 
 for t in $targets; do
+  # The release gate's clippy compiles the Darwin libc and nothing under
+  # `cfg(target_os = "linux")`, and the build below denies no warning — so a
+  # warning only this target can raise (the libc crate deprecates its
+  # `time_t` alias on musl, T-484) would scroll past. This is that clippy
+  # over the target that ships, and over the default members, which are what
+  # the binary is built from (the wasm crate is not, and is linted by the
+  # gate's own clippy).
+  step "clippy --target $t"
+  cargo clippy --locked --all-targets --target "$t" -- -D warnings
   step "build --release --target $t"
   upper=$(printf '%s' "$t" | tr 'a-z-' 'A-Z_')
   # Per-target so the host build is untouched; `link-self-contained=yes` is
