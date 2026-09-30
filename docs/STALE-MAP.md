@@ -16124,3 +16124,18 @@ image (the page 200 on its name and 403 on another Host, another name closed, a 
 answered `denied`, both ports presenting the certificate). **Owed, the author's:**
 `deploy/ship.sh`; the `pf` check in `deploy/README.md` §6 (block outbound 8443, sign in on
 443, pair a phone); then the release, with a CHANGELOG line, and the site publish after it.
+
+## Publishing alpha.33 across three products (T-524, 2026-09-30, "verify latest tickets work and publish new version")
+
+**Shipped:** the alpha.33 bump and notes (T-519, T-522, T-518), the suite stamp at the release
+commit, and the relay half of T-522 on the relay's `msmn/T-522-grant-answer` branch, rebased
+on its T-519 branch so one fast-forward carries both. The relay did not compile against core
+main from T-522's merge until that branch: `Request` is exhaustive on the relay by design.
+
+**Found.** Publishing took five hand steps across three entry points (`ci/release.sh`,
+`deploy/ship.sh`, `ci/site.sh`), with the order rule (relay first) written only in prose, and
+the public design record had been carrying relay-side decisions since T-502. Both are tickets
+of their own: T-525 (relay records leave the public repo; the relay gets its own STALE-MAP and
+CLAUDE.md) and T-526 (one ship command, relay then core then site, with a relay version probe).
+Until they land: an agent asked to publish bumps, tests and stamps, prepares relay branches in
+a scratchpad worktree, and stops; ship, tag, push and release are the author's.
