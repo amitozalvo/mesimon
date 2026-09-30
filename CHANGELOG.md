@@ -6,6 +6,53 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.32 — 2026-09-30
+
+### Added
+
+- **The hosted relay needs an access code to sign in.** The sharing dialog
+  (Esc → Sharing) has an `Access code` row beside the relay and the display
+  name. Enter the code you were given, then `Sign in`. A relay that gates
+  registration refuses a sign-in without one and says so under `Sign in`;
+  a self-hosted relay ignores an empty field. A Mac that signed in before
+  this release keeps its access and needs no code.
+- **`Enter a code` under your name takes a later code**, for a renewal or a
+  code given to a Mac that signed in earlier. When a Mac's access runs out
+  the dialog's title reads `LAPSED`: every board it belongs to still reads
+  and syncs in, edits stay on this Mac until a code is entered, a paired
+  phone keeps its live view, and a ticket filed from the phone while the
+  Mac is away is refused.
+- **Remote Control's Start button asks for the first prompt.** Blank starts
+  the agent on the ticket's title and description; on a sleeping agent the
+  button reads `Wake agent` and wakes it, with the words if any. The
+  button is on the ticket page only, no longer on Board cards.
+- **The sidebar's board name is a board picker**: press it to switch between
+  paired boards or pair another. The `Paired boards` section is gone.
+
+### Changed
+
+- **The relay field is prefilled with `relay.mesimon.dev`**, the hosted
+  relay, which needs no pin. A self-hosted relay replaces it with its own
+  address, a space and the pin it printed; `Ctrl+U` clears the field.
+- **Signing out asks first.** Enter on `Signed in as …` shows `Sign out?`;
+  a second Enter signs out, and any other key cancels.
+- **The sharing dialog is shorter.** Signed in, the identity is one row; the
+  relay and name fields show only while signed out. `Notes: included / kept
+  here` is gone and notes always sync (a board already shared without notes
+  keeps syncing that way). `Browser access` moved into the Remote Control
+  dialog's title (`CONNECTED`, `DISCONNECTED` or `OFF`), and the open board
+  no longer repeats under `OTHER BOARDS`. Remote Control is the first row
+  under `THIS BOARD`, shown only while signed in.
+- **Remote Control's ticket page is shorter**: the agent card under the title
+  is gone (the shin beside the title carries the state), and the tags,
+  column and key share one line. `+ Add to <column>` shows on hover or
+  focus. On a desktop the ticket opens over the board and a press outside
+  closes it.
+- **Signing in to a relay from an older release**: a relay updated to this
+  release answers three new refusals (code required, code invalid, access
+  lapsed) that mesimon before alpha.32 reads as `invalid request`. Update
+  to see the actual reason.
+
 ## v0.1.0-alpha.31 — 2026-09-29
 
 ### Added
