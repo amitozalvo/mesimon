@@ -15998,3 +15998,32 @@ crown-started sleeping records; archiving one and snoozing another leaves one co
 seat and `started_by` stay on the record; a restore counts it again. No e2e: making a stub
 session sleep-eligible in `crown_e2e` costs a hook script for one filter, and the daemon side
 only reads the core's answer.
+
+## The relay's migration runs under an advisory lock (T-521, 2026-09-30, "Relay postgres tests flake in parallel: concurrent migrate() DDL")
+
+**Relay half only** (`mesimon-relay` 137bcf8); nothing in this repository changed but this block.
+`Relay::migrate()` ran `schema.sql` with `batch_execute`, and the file wrapped only its first
+block in `BEGIN`/`COMMIT`. `CREATE TABLE IF NOT EXISTS` is not safe against itself on an empty
+catalog: two callers at once collide on a `pg_type` row or deadlock, so `relay/tests/postgres.rs`
+passed only with `--test-threads=1`, and two relay containers starting at once would race the
+same way.
+
+**What shipped.** `migrate()` opens one transaction, takes `pg_advisory_xact_lock` on a constant
+(`MIGRATION_LOCK`, "msmnmigr" in ASCII), runs the whole schema and commits. `schema.sql` carries
+no `BEGIN`/`COMMIT` of its own, because its `COMMIT` would end that transaction and drop the lock
+halfway through; the whole schema is now atomic where only its first block was.
+
+**Why the lock and not the harness.** The ticket offered a second road: `run_postgres.py`
+migrates once and each test gets its own database. That fixes the tests and leaves production's
+two-containers race open; the lock fixes both, and the tests keep sharing one cluster.
+
+**Tests.** `concurrent_migrations_queue_on_a_fresh_database` creates a database, starts 8 relays
+behind a barrier and migrates them all at once; on the old code 7 of 8 failed, 3 runs of 3. The
+whole `--ignored` suite ran green three times in parallel, bar the two Mesophon browser tests
+below.
+
+**Found, not fixed.** `mesophon.rs`'s two browser tests fail alone and on unchanged code:
+(1) the fixture's private `HOME` hides Playwright's browsers unless `PLAYWRIGHT_BROWSERS_PATH`
+is set, which `relay/README.md` documents; (2) with it set, core's `browser.test.js` (T-498,
+T-510) writes `agent-run` and waits for `agent-ran`, and nothing in the relay's `mesophon.rs`
+answers it: the relay half of that fixture step was never committed.
