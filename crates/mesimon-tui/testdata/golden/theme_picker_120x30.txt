@@ -1,17 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
-
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
-
-    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-
-    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
-
-                           ╭─ THEME ∙ for a dark terminal ──────────────────────────────────╮
-                           │   graphite                                                dark │
+                           ╭─ THEME ∙ for a dark terminal ∙ 1/15 ───────────────────────────╮
+    TODO                   │   graphite                                                dark │ DONE                   0
                            │     dark, the default                                          │
-                           │   chalk                                                  light │
+    Decay treatments      >│   chalk                                                  light │
                            │     light, paper                                               │
-                           │   blue                                                    dark │
+    Keymap validator      >│   blue                                                    dark │
                            │     navy and gold, the Borland look                            │
                            │   amber                                                   dark │
                            │     amber on black                                             │
@@ -19,12 +12,19 @@
                            │     green-black, white ink, a green glow                       │
                            │   solarized                                              light │
                            │     solarized light, cream and blue-grey                       │
+                           │   void                                                    dark │
+                           │     graphite on true black                                     │
+                           │   nord                                                    dark │
+                           │     nord, arctic blue-grey                                     │
+                           │   mocha                                                   dark │
+                           │     catppuccin mocha, lavender ink                             │
+                           │   tokyo                                                   dark │
+                           │     tokyo night, periwinkle ink                                │
+                           │   rose                                                    dark │
+                           │     rosé pine, gold on plum                                    │
+                           │   gruvbox                                                 dark │
+                           │     gruvbox dark, warm cream ink                               │
+                           │   latte                                                  light │
+                           │     catppuccin latte, cool paper                               │
                            ╰──── jk preview ∙ enter keep ∙ tab for light ∙ esc put it back ─╯
-
-
-
-
-
-
-
  THEME                                                                                                           ? keys

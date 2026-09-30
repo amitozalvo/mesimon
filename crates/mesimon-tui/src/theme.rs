@@ -45,6 +45,24 @@ pub(crate) enum Flavor {
     Green,
     /// Solarized light: cream paper, blue-grey ink.
     Solarized,
+    /// Graphite's tokens on true black, for OLED panels (T-529).
+    Void,
+    /// Nord: the arctic blue-grey ground and its snow ink.
+    Nord,
+    /// Catppuccin Mocha: lavender-tinted ink on a violet-black ground.
+    Mocha,
+    /// Tokyo Night: periwinkle ink on a night ground.
+    Tokyo,
+    /// Rosé Pine: plum ground, gold needs-you.
+    Rose,
+    /// Gruvbox dark: warm cream ink, bright yellow needs-you.
+    Gruvbox,
+    /// Catppuccin Latte: cool paper, slate ink.
+    Latte,
+    /// Gruvbox light: cream-yellow paper, warm ink.
+    GruvboxLight,
+    /// A VFD cyan glow on a teal-black ground, white ink.
+    Ice,
 }
 
 /// Which of the terminal's two answers a theme sits on. The OSC 11 query
@@ -125,8 +143,14 @@ impl Slot {
 /// is warm and the ink is cool, both carrying a chroma Paper forbids
 /// (C* 10 on the cream, 9 on the blue-grey) and nowhere near a chromatic
 /// ground's 40 — so the clause holds both under 16 and ≥ 90° apart, which
-/// is what keeps the ink from reading as a tint of the paper. The law tests
-/// match on this exhaustively, so a sixth shape needs a sixth clause, argued.
+/// is what keeps the ink from reading as a tint of the paper. The sixth is a
+/// ported terminal SCHEME (T-529, 2026-10-01): the ground and the ink may
+/// each carry a hue up to C* 24, with no relation demanded between them —
+/// Nord's ground is C* 8.4, Catppuccin's ink is C* 16 on the ground's own
+/// hue, Gruvbox's cream is C* 22 on a neutral ground — and everything else
+/// (the contrast matrix, the register budget, the bars, the ring, `attn`'s
+/// provenance) is the law as written. The law tests match on this
+/// exhaustively, so a seventh shape needs a seventh clause, argued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Paper,
@@ -134,18 +158,28 @@ pub(crate) enum Kind {
     Phosphor,
     Ladder,
     TintedPaper,
+    Scheme,
 }
 
 impl Flavor {
     /// Every flavor, in picker order. The paper pair first because they are
     /// the defaults; the rest in the order they were built.
-    pub const ALL: [Flavor; 6] = [
+    pub const ALL: [Flavor; 15] = [
         Flavor::Graphite,
         Flavor::Chalk,
         Flavor::Blue,
         Flavor::Amber,
         Flavor::Green,
         Flavor::Solarized,
+        Flavor::Void,
+        Flavor::Nord,
+        Flavor::Mocha,
+        Flavor::Tokyo,
+        Flavor::Rose,
+        Flavor::Gruvbox,
+        Flavor::Latte,
+        Flavor::GruvboxLight,
+        Flavor::Ice,
     ];
 
     /// The stable id: what `prefs.json` stores and `MESIMON_THEME` accepts.
@@ -157,6 +191,15 @@ impl Flavor {
             Flavor::Amber => "amber",
             Flavor::Green => "green",
             Flavor::Solarized => "solarized",
+            Flavor::Void => "void",
+            Flavor::Nord => "nord",
+            Flavor::Mocha => "mocha",
+            Flavor::Tokyo => "tokyo",
+            Flavor::Rose => "rose",
+            Flavor::Gruvbox => "gruvbox",
+            Flavor::Latte => "latte",
+            Flavor::GruvboxLight => "gruvbox-light",
+            Flavor::Ice => "ice",
         }
     }
 
@@ -180,6 +223,15 @@ impl Flavor {
             Flavor::Amber => "amber on black",
             Flavor::Green => "green-black, white ink, a green glow",
             Flavor::Solarized => "solarized light, cream and blue-grey",
+            Flavor::Void => "graphite on true black",
+            Flavor::Nord => "nord, arctic blue-grey",
+            Flavor::Mocha => "catppuccin mocha, lavender ink",
+            Flavor::Tokyo => "tokyo night, periwinkle ink",
+            Flavor::Rose => "rosé pine, gold on plum",
+            Flavor::Gruvbox => "gruvbox dark, warm cream ink",
+            Flavor::Latte => "catppuccin latte, cool paper",
+            Flavor::GruvboxLight => "gruvbox light, cream-yellow paper",
+            Flavor::Ice => "teal-black, white ink, a cyan glow",
         }
     }
 
@@ -193,7 +245,7 @@ impl Flavor {
         self.palette().kind
     }
 
-    /// THE exhaustive gate: six arms, no `_`.
+    /// THE exhaustive gate: fifteen arms, no `_`.
     pub(crate) fn palette(self) -> &'static Palette {
         match self {
             Flavor::Graphite => &GRAPHITE,
@@ -202,6 +254,15 @@ impl Flavor {
             Flavor::Amber => &AMBER,
             Flavor::Green => &GREEN,
             Flavor::Solarized => &SOLARIZED,
+            Flavor::Void => &VOID,
+            Flavor::Nord => &NORD,
+            Flavor::Mocha => &MOCHA,
+            Flavor::Tokyo => &TOKYO,
+            Flavor::Rose => &ROSE,
+            Flavor::Gruvbox => &GRUVBOX,
+            Flavor::Latte => &LATTE,
+            Flavor::GruvboxLight => &GRUVBOX_LIGHT,
+            Flavor::Ice => &ICE,
         }
     }
 }
@@ -724,6 +785,488 @@ static SOLARIZED: Palette = Palette {
         attn_ink: 15,
     },
     ansi8: &LIGHT_ANSI8,
+};
+
+/// Graphite's sixteen-colour form, shared by every dark scheme (T-529):
+/// sixteen colours cannot hold a tinted ground or a tinted ink, and saying
+/// so is 06 §2.7.
+const DARK_ANSI16: Ansi16 = Ansi16 {
+    bg: None,
+    selected: Some(8),
+    ramp: [Color::Reset, I7, I8, I8],
+    attn: 11,
+    err: 1,
+    calm: 6,
+    attn_ink: 0,
+};
+
+/// Chalk's sixteen-colour form, shared by every light scheme.
+const LIGHT_ANSI16: Ansi16 = Ansi16 {
+    bg: None,
+    selected: Some(7),
+    ramp: [Color::Reset, I0, I8, I8],
+    attn: 3,
+    err: 1,
+    calm: 6,
+    attn_ink: 15,
+};
+
+/// Graphite on true black (T-529): every token graphite's, the ground
+/// `#000000` for an OLED panel, and the diff tints re-stepped from it.
+/// Every contrast rises (dim3 3.1 on the ground); Paper's clauses hold
+/// unchanged.
+static VOID: Palette = Palette {
+    ground: Ground::Dark,
+    kind: Kind::Paper,
+    truecolor: TrueColor {
+        bg: 0x000000,
+        selected: 0x1C1D20,
+        rest: [0xE9E7E1, 0xB6B2A9, 0x8C8880, 0x5E5B55],
+        sel: [0xF1EFE9, 0xC3BFB6, 0x9A968D, 0x6B675F],
+        attn: 0xF0A93A,
+        err: 0xD5809A,
+        calm: 0x6FBFB0,
+        attn_ink: 0x000000,
+        ghost: 0x5E5B55,
+        dormant: 0x8C8880,
+        cursor: 0xF1EFE9,
+        diff: Some((0x0E1F1A, 0x22141A)),
+        diff_hi: Some((0x1E3730, 0x3A2630)),
+        tints: Some(Tints {
+            // Graphite's ring: its hues at its lightness clear both surfaces
+            // here by more, not less.
+            ring: [
+                0xF47A7A, 0xBAA601, 0x7EB850, 0x20C188, 0x00BCB9, 0x00B8D8, 0x46ACFC, 0x9697FF,
+                0xD182DA, 0xEB79AA,
+            ],
+            fade: 0.70,
+        }),
+        shadow: 0x000000,
+    },
+    ansi256: Ansi256 {
+        // The cube's black, then graphite's surface and ramp.
+        bg: Some(16),
+        selected: Some(235),
+        ramp: [253, 250, 248, 241],
+        attn: 214,
+        err: 175,
+        calm: 73,
+        attn_ink: 16,
+        ghost: 241,
+        dormant: 246,
+        cursor: 253,
+    },
+    ansi16: DARK_ANSI16,
+    ansi8: &DARK_ANSI8,
+};
+
+/// Nord (Arctic Ice Studio) as a mesimon theme (T-529): nord0 is the
+/// ground, nord1 the cursor surface, nord6 the ink, nord3 / nord8 the bars
+/// and `calm`. Nord has no loud yellow — nord13 is C* 35 — so needs-you is
+/// a yellow a step louder (C* 50, hue 82°) that still clears nord11's red
+/// by the register budget; the red is lightened to L* 71 so the delete
+/// flash reads on its hi tint over this soft L* 22 ground. The dims are
+/// derived from the ink at graphite's contrast proportions; the ring is
+/// graphite's hues re-lit for both surfaces (worst 4.5:1).
+static NORD: Palette = Palette {
+    ground: Ground::Dark,
+    kind: Kind::Scheme,
+    truecolor: TrueColor {
+        bg: 0x2E3440,
+        selected: 0x3B4252,
+        rest: [0xECEFF4, 0xB5B8C0, 0x9398A0, 0x656A75],
+        sel: [0xECEFF4, 0xB4B8C2, 0xA5AAB4, 0x737986],
+        attn: 0xF2C26B,
+        err: 0xED969E,
+        calm: 0x88C0D0,
+        attn_ink: 0x2E3440,
+        ghost: 0x4C566A,
+        dormant: 0x8A94A6,
+        cursor: 0xECEFF4,
+        diff: Some((0x274851, 0x583B3D)),
+        diff_hi: Some((0x295764, 0x6D4649)),
+        tints: Some(Tints {
+            // Shared Graphite hue identities in OKLCH, lightness raised for
+            // 4.5:1 on this L* 22 ground and its surface.
+            ring: [
+                0xFF8F8E, 0xC3AF1D, 0x84BF56, 0x2BC68D, 0x08C3C0, 0x05BEDF, 0x5CB5FF, 0xA4A7FE,
+                0xE292EB, 0xFD89BA,
+            ],
+            fade: 0.70,
+        }),
+        shadow: 0x2E3440,
+    },
+    ansi256: Ansi256 {
+        bg: Some(236),
+        selected: Some(238),
+        ramp: [255, 252, 248, 243],
+        attn: 221,
+        err: 210,
+        calm: 110,
+        attn_ink: 236,
+        ghost: 243,
+        dormant: 248,
+        cursor: 255,
+    },
+    ansi16: DARK_ANSI16,
+    ansi8: &DARK_ANSI8,
+};
+
+/// Catppuccin Mocha (T-529): `base` is the ground, `surface0` the cursor
+/// surface, `text` the ink — lavender-tinted at C* 16 on the ground's own
+/// hue, which is the whole look and what Paper's 8.2 refused. `peach` is
+/// needs-you, deepened from `#FAB387` to C* 52 so it clears `maroon` by
+/// the register budget; `teal` is `calm`; `surface2` / `overlay2` the bars.
+static MOCHA: Palette = Palette {
+    ground: Ground::Dark,
+    kind: Kind::Scheme,
+    truecolor: TrueColor {
+        bg: 0x1E1E2E,
+        selected: 0x313244,
+        rest: [0xCDD6F4, 0x9DA4BE, 0x7D829A, 0x54576C],
+        sel: [0xCDD6F4, 0x9DA4BE, 0x9196B0, 0x65697F],
+        attn: 0xFFA46B,
+        err: 0xEBA0AC,
+        calm: 0x94E2D5,
+        attn_ink: 0x1E1E2E,
+        ghost: 0x585B70,
+        dormant: 0x9399B2,
+        cursor: 0xCDD6F4,
+        diff: Some((0x1B3A35, 0x44282D)),
+        diff_hi: Some((0x255049, 0x5F3940)),
+        tints: Some(Tints {
+            // Graphite's ring: ≥ 4.7:1 on both surfaces here.
+            ring: [
+                0xF47A7A, 0xBAA601, 0x7EB850, 0x20C188, 0x00BCB9, 0x00B8D8, 0x46ACFC, 0x9697FF,
+                0xD182DA, 0xEB79AA,
+            ],
+            fade: 0.70,
+        }),
+        shadow: 0x1E1E2E,
+    },
+    ansi256: Ansi256 {
+        // The cube's periwinkle column (189 / 146 / 103 / 60) is the ink's
+        // hue at four values; the ground and surface are the grey ramp's.
+        bg: Some(234),
+        selected: Some(237),
+        ramp: [189, 146, 103, 60],
+        attn: 216,
+        err: 217,
+        calm: 80,
+        attn_ink: 234,
+        ghost: 60,
+        dormant: 103,
+        cursor: 189,
+    },
+    ansi16: DARK_ANSI16,
+    ansi8: &DARK_ANSI8,
+};
+
+/// Tokyo Night (T-529): `bg` and `bg_highlight` are the surfaces, `fg` the
+/// ink — C* 23, the most tinted ink in the set, and the dims stay on its
+/// hue. `orange` is needs-you; the red is quieted to C* 40 so the orange
+/// stays the loudest; `teal` is `calm`; `fg_gutter` and `comment` the bars.
+static TOKYO: Palette = Palette {
+    ground: Ground::Dark,
+    kind: Kind::Scheme,
+    truecolor: TrueColor {
+        bg: 0x1A1B26,
+        selected: 0x292E42,
+        rest: [0xC0CAF5, 0x929ABC, 0x787F9C, 0x51546A],
+        sel: [0xC0CAF5, 0x929BBF, 0x8891B3, 0x5D6480],
+        attn: 0xFF9E64,
+        err: 0xE4849C,
+        calm: 0x73DACA,
+        attn_ink: 0x1A1B26,
+        ghost: 0x414868,
+        dormant: 0x7982A9,
+        cursor: 0xC0CAF5,
+        diff: Some((0x173631, 0x40252B)),
+        diff_hi: Some((0x214C45, 0x5B363E)),
+        tints: Some(Tints {
+            // Graphite's ring: ≥ 5.0:1 on both surfaces here.
+            ring: [
+                0xF47A7A, 0xBAA601, 0x7EB850, 0x20C188, 0x00BCB9, 0x00B8D8, 0x46ACFC, 0x9697FF,
+                0xD182DA, 0xEB79AA,
+            ],
+            fade: 0.70,
+        }),
+        shadow: 0x1A1B26,
+    },
+    ansi256: Ansi256 {
+        bg: Some(234),
+        selected: Some(236),
+        ramp: [189, 146, 103, 60],
+        attn: 215,
+        err: 211,
+        calm: 80,
+        attn_ink: 234,
+        ghost: 60,
+        dormant: 103,
+        cursor: 189,
+    },
+    ansi16: DARK_ANSI16,
+    ansi8: &DARK_ANSI8,
+};
+
+/// Rosé Pine (T-529): `base` and `overlay` are the surfaces, `text` the
+/// ink. `gold` is needs-you, pushed to C* 57, and `love` is quieted to
+/// C* 44 so the one loud colour is still needs-you; `foam` is `calm`;
+/// `highlight_med` and `subtle` the bars.
+static ROSE: Palette = Palette {
+    ground: Ground::Dark,
+    kind: Kind::Scheme,
+    truecolor: TrueColor {
+        bg: 0x191724,
+        selected: 0x26233A,
+        rest: [0xE0DEF4, 0xACAABE, 0x848294, 0x575565],
+        sel: [0xE0DEF4, 0xACAAC1, 0x89869D, 0x5E5B72],
+        attn: 0xF8B95A,
+        err: 0xE17893,
+        calm: 0x9CCFD8,
+        attn_ink: 0x191724,
+        ghost: 0x403D52,
+        dormant: 0x817D9E,
+        cursor: 0xE0DEF4,
+        diff: Some((0x0D3237, 0x3C2128)),
+        diff_hi: Some((0x13484F, 0x57323B)),
+        tints: Some(Tints {
+            // Graphite's ring: ≥ 5.7:1 on both surfaces here.
+            ring: [
+                0xF47A7A, 0xBAA601, 0x7EB850, 0x20C188, 0x00BCB9, 0x00B8D8, 0x46ACFC, 0x9697FF,
+                0xD182DA, 0xEB79AA,
+            ],
+            fade: 0.70,
+        }),
+        shadow: 0x191724,
+    },
+    ansi256: Ansi256 {
+        bg: Some(233),
+        selected: Some(236),
+        ramp: [189, 146, 103, 60],
+        attn: 222,
+        err: 211,
+        calm: 152,
+        attn_ink: 233,
+        ghost: 60,
+        dormant: 103,
+        cursor: 189,
+    },
+    ansi16: DARK_ANSI16,
+    ansi8: &DARK_ANSI8,
+};
+
+/// Gruvbox dark (T-529): `bg` / `bg1` the surfaces, `fg` the ink — a C* 22
+/// cream on a neutral ground, which no earlier kind admitted. `yellow` is
+/// the beam at C* 74; the red is lightened to `#F58A74` so the delete flash
+/// reads on its hi tint; `aqua` is `calm`; `bg2` / `gray` the bars. The
+/// 256 form is gruvbox's own (223 / 187 / 144 / 101 over 235 / 237).
+static GRUVBOX: Palette = Palette {
+    ground: Ground::Dark,
+    kind: Kind::Scheme,
+    truecolor: TrueColor {
+        bg: 0x282828,
+        selected: 0x3C3836,
+        rest: [0xEBDBB2, 0xB3A88B, 0x938A74, 0x635F53],
+        sel: [0xEBDBB2, 0xB4A88B, 0xA89D83, 0x766E5F],
+        attn: 0xFABD2F,
+        err: 0xF58A74,
+        calm: 0x8EC07C,
+        attn_ink: 0x282828,
+        ghost: 0x504945,
+        dormant: 0x928374,
+        cursor: 0xEBDBB2,
+        diff: Some((0x303D2B, 0x4A302A)),
+        diff_hi: Some((0x3A4C34, 0x5E3B33)),
+        tints: Some(Tints {
+            // Shared Graphite hue identities in OKLCH; the red, violet and
+            // pink lifted a step for 4.5:1 on the L* 24 surface.
+            ring: [
+                0xF87D7D, 0xBAA600, 0x7EB84F, 0x21C188, 0x04BCB9, 0x09B8D7, 0x45ACFC, 0x9697FF,
+                0xD485DE, 0xEF7CAD,
+            ],
+            fade: 0.70,
+        }),
+        shadow: 0x282828,
+    },
+    ansi256: Ansi256 {
+        bg: Some(235),
+        selected: Some(237),
+        ramp: [223, 187, 144, 101],
+        attn: 214,
+        err: 209,
+        calm: 108,
+        attn_ink: 235,
+        ghost: 239,
+        dormant: 245,
+        cursor: 223,
+    },
+    ansi16: DARK_ANSI16,
+    ansi8: &DARK_ANSI8,
+};
+
+/// Catppuccin Latte (T-529): `base` is the paper, `crust` the cursor
+/// surface, `text` the ink — slate on a cool paper, the ink on the paper's
+/// own hue, which TintedPaper's 90° clause refused. Latte's `peach` is L*
+/// 60 and 3.3:1 on the paper, so needs-you is a darker peach at L* 44;
+/// `red` and `teal` are darkened the same way, as Solarized's accents were.
+/// The cursor bar is a step under the ink so the bar ladder holds.
+static LATTE: Palette = Palette {
+    ground: Ground::Light,
+    kind: Kind::Scheme,
+    truecolor: TrueColor {
+        bg: 0xEFF1F5,
+        selected: 0xDCE0E8,
+        rest: [0x4C4F69, 0x64677E, 0x6D7086, 0x9E9FB0],
+        sel: [0x4C4F69, 0x5A5C75, 0x63657D, 0x9092A5],
+        attn: 0xB04A00,
+        err: 0xA8323F,
+        calm: 0x0F6B70,
+        attn_ink: 0xFFFFFF,
+        ghost: 0x9CA0B0,
+        dormant: 0x6C6F85,
+        cursor: 0x33354A,
+        diff: Some((0xC9ECEE, 0xFCDBDA)),
+        diff_hi: Some((0xACDADD, 0xEFC5C4)),
+        tints: Some(Tints {
+            // Chalk's ring: ≥ 4.7:1 on both surfaces here.
+            ring: [
+                0xA12E36, 0x6A5E00, 0x3C6D00, 0x006F4C, 0x006C6A, 0x00697C, 0x00629E, 0x534DAE,
+                0x84398D, 0x9A2F63,
+            ],
+            fade: 0.76,
+        }),
+        shadow: 0xEFF1F5,
+    },
+    ansi256: Ansi256 {
+        // Light-256 never paints `selected` (06 §2.6); chalk's darker
+        // accent indices, since Latte's own fail on 255 as its truecolor
+        // ones fail on the paper.
+        bg: Some(255),
+        selected: None,
+        ramp: [236, 239, 242, 245],
+        attn: 130,
+        err: 125,
+        calm: 30,
+        attn_ink: 231,
+        ghost: 245,
+        dormant: 242,
+        cursor: 236,
+    },
+    ansi16: LIGHT_ANSI16,
+    ansi8: &LIGHT_ANSI8,
+};
+
+/// Gruvbox light (T-529): `bg` / `bg1` the surfaces — a C* 22 cream-yellow
+/// paper, twice what TintedPaper allows — `fg` the ink. Every accent is
+/// darkened to clear the paper, Solarized's move: `yellow` to L* 42,
+/// `red` to L* 40 and C* 38 under the register budget, `aqua` to L* 41.
+/// The 256 form is gruvbox's own greys (237 / 239 / 241 / 243 on 230).
+static GRUVBOX_LIGHT: Palette = Palette {
+    ground: Ground::Light,
+    kind: Kind::Scheme,
+    truecolor: TrueColor {
+        bg: 0xFBF1C7,
+        selected: 0xEBDBB2,
+        rest: [0x3C3836, 0x605B52, 0x777063, 0xA7A088],
+        sel: [0x3C3836, 0x615A51, 0x6B6358, 0x9A9079],
+        attn: 0x8A5A06,
+        err: 0x974546,
+        calm: 0x386A4B,
+        attn_ink: 0xFFFFFF,
+        ghost: 0x928374,
+        dormant: 0x665C54,
+        cursor: 0x3C3836,
+        diff: Some((0xD4EBDB, 0xFBDBD9)),
+        diff_hi: Some((0xBBD9C4, 0xEEC5C3)),
+        tints: Some(Tints {
+            // Chalk's ring: ≥ 4.5:1 on both surfaces here.
+            ring: [
+                0xA12E36, 0x6A5E00, 0x3C6D00, 0x006F4C, 0x006C6A, 0x00697C, 0x00629E, 0x534DAE,
+                0x84398D, 0x9A2F63,
+            ],
+            fade: 0.76,
+        }),
+        // A neutral at the paper's lightness: the paper is C* 22, and a
+        // bar faded into it would go yellow.
+        shadow: 0xF2F2F2,
+    },
+    ansi256: Ansi256 {
+        bg: Some(230),
+        selected: None,
+        ramp: [237, 239, 241, 243],
+        attn: 94,
+        err: 124,
+        calm: 29,
+        attn_ink: 231,
+        ghost: 243,
+        dormant: 241,
+        cursor: 237,
+    },
+    ansi16: LIGHT_ANSI16,
+    ansi8: &LIGHT_ANSI8,
+};
+
+/// A VFD cyan glow (T-529): green's shape at hue 192°. sRGB cannot make a
+/// cyan past C* 45 (`#00FFFF` is C* 50 in Lab), so the Phosphor clause's
+/// beam floor is 45 with the beam the most chromatic token by ≥ 12 —
+/// which is what "C* ≥ 60" was for on amber and green. The ink is green's
+/// cool white leaned onto the hue; `err` is a red quieted to C* 32 so it
+/// sits the budget under the beam; `calm` is the hue gone pale at L* 88,
+/// held dE ≥ 20 from every ramp step by its lightness.
+static ICE: Palette = Palette {
+    ground: Ground::Dark,
+    kind: Kind::Phosphor,
+    truecolor: TrueColor {
+        // L* 8.2, hue 193°.
+        bg: 0x071B1A,
+        selected: 0x153030,
+        rest: [0xE6F1F2, 0xADBBBB, 0x829190, 0x526262],
+        sel: [0xEEF8F9, 0xB2C1C1, 0x849797, 0x546766],
+        // The beam: L* 83.2, C* 45.2, hue 192°.
+        attn: 0x2EE6E0,
+        // L* 67, C* 32, hue 10°: 7.0 on the ground.
+        err: 0xDC8D9A,
+        calm: 0xA1EAE5,
+        attn_ink: 0x071B1A,
+        ghost: 0x526262,
+        dormant: 0x829190,
+        // L* 84, C* 30: the hue without the beam.
+        cursor: 0x83E1DC,
+        diff: Some((0x0F3130, 0x3B2025)),
+        diff_hi: Some((0x174745, 0x563137)),
+        tints: Some(Tints {
+            // Graphite's ring: ≥ 5.2:1 on both surfaces here.
+            ring: [
+                0xF47A7A, 0xBAA601, 0x7EB850, 0x20C188, 0x00BCB9, 0x00B8D8, 0x46ACFC, 0x9697FF,
+                0xD182DA, 0xEB79AA,
+            ],
+            fade: 0.70,
+        }),
+        shadow: 0x161616,
+    },
+    ansi256: Ansi256 {
+        bg: Some(233),
+        selected: Some(236),
+        ramp: [255, 250, 248, 241],
+        attn: 51,
+        err: 210,
+        calm: 159,
+        attn_ink: 233,
+        ghost: 241,
+        dormant: 246,
+        cursor: 152,
+    },
+    ansi16: Ansi16 {
+        bg: None,
+        selected: Some(8),
+        ramp: [Color::Reset, I7, I8, I8],
+        attn: 14,
+        err: 9,
+        calm: 6,
+        attn_ink: 0,
+    },
+    ansi8: &DARK_ANSI8,
 };
 
 pub(crate) struct Theme {
@@ -1500,6 +2043,14 @@ mod tests {
     /// rung is under C* 16 and ≥ 90° of hue from the paper, the register
     /// budget holds, the diff tints are a step down from the paper, and the
     /// fade target is the paper itself (measured: the ring drifts ≤ 20°).
+    /// A scheme (T-529): the ground and its surface carry at most C* 24 on
+    /// one hue, every ink rung at most C* 24 with no hue relation demanded
+    /// (Nord's ink is nearly grey, Catppuccin's shares the ground's hue,
+    /// Gruvbox's is a warm cream on a neutral), the register budget holds,
+    /// the diff tints are a step off the ground, and the fade target is the
+    /// ground under C* 12 and a neutral above it. The phosphor's beam floor
+    /// is 45 since the same ticket — sRGB has no cyan past C* 45 — with the
+    /// beam the most chromatic token by ≥ 12, which is what 60 was for.
     /// Every kind: the changed-word tints are their lines' tints a step
     /// stronger (`assert_diff_hi`).
     #[test]
@@ -1541,7 +2092,10 @@ mod tests {
                 }
                 Kind::Phosphor => {
                     let (la, ca) = lch(t.attn);
-                    assert!(ca >= 60.0, "{f:?}: attn is not the beam, C* {ca:.1}");
+                    // 45, not 60 (T-529): sRGB has no cyan past C* 45, and
+                    // what the floor was for — the beam out-shouting every
+                    // other token — is the ≥ 12 margin below.
+                    assert!(ca >= 45.0, "{f:?}: attn is not the beam, C* {ca:.1}");
                     let phosphor = hue(t.attn);
                     for (name, c) in [
                         ("bg", t.bg),
@@ -1578,10 +2132,11 @@ mod tests {
                     }
                     assert_register_budget(f);
                     // The tokens the accent must out-shout: every other
-                    // chromatic thing on the board sits under it in chroma.
+                    // chromatic thing on the board sits a register-budget
+                    // margin under it in chroma.
                     for (name, c) in [("cursor", t.cursor), ("calm", t.calm), ("err", t.err)] {
                         let (_, cx) = lch(c);
-                        assert!(cx < ca, "{f:?}: {name} C* {cx:.1} rivals attn C* {ca:.1}");
+                        assert!(cx + 12.0 <= ca, "{f:?}: {name} C* {cx:.1} rivals attn C* {ca:.1}");
                     }
                     let _ = la;
                     assert_eq!(t.attn_ink, t.bg, "{f:?}: the ink on the beam is the ground");
@@ -1700,6 +2255,52 @@ mod tests {
                         );
                     }
                     assert_eq!(t.shadow, t.bg, "{f:?}: tinted paper fades into its own ground");
+                }
+                Kind::Scheme => {
+                    let (lb, cb) = lch(t.bg);
+                    let (ls, cs) = lch(t.selected);
+                    assert!(cb <= 24.0, "{f:?}: the ground is a colour, C* {cb:.1}");
+                    assert!(cs <= 24.0, "{f:?}: the surface is a colour, C* {cs:.1}");
+                    if cb >= 3.0 && cs >= 3.0 {
+                        let gap = hue_gap(t.bg, t.selected);
+                        assert!(gap <= 20.0, "{f:?}: selected is {gap:.1}° off the ground's hue");
+                    }
+                    match f.ground() {
+                        Ground::Dark => assert!(
+                            ls - lb >= 6.0,
+                            "{f:?}: selected is not a step up ({ls:.1} vs {lb:.1})"
+                        ),
+                        Ground::Light => assert!(
+                            lb - ls >= 4.0,
+                            "{f:?}: selected is not a step down ({ls:.1} vs {lb:.1})"
+                        ),
+                    }
+                    for ink in greys {
+                        let (_, c) = lch(*ink);
+                        assert!(c <= 24.0, "{f:?}: ink {ink:06X} has C* {c:.1} > 24");
+                    }
+                    assert_register_budget(f);
+                    let (add, del) = t.diff.expect("a scheme has two tints");
+                    for (name, tint) in [("add", add), ("del", del)] {
+                        let (l, _) = lch(tint);
+                        let step = match f.ground() {
+                            Ground::Dark => l - lb,
+                            Ground::Light => lb - l,
+                        };
+                        assert!(
+                            (2.0..=12.0).contains(&step),
+                            "{f:?}: the {name} tint is not a step off the ground ({l:.1})"
+                        );
+                    }
+                    // A ground under C* 12 fades its own bar without lending
+                    // it a hue (Solarized's measurement); above it, a neutral.
+                    if cb <= 12.0 {
+                        assert_eq!(t.shadow, t.bg, "{f:?}: a quiet scheme fades into its ground");
+                    } else {
+                        let (lsh, csh) = lch(t.shadow);
+                        assert!(csh <= 8.2, "{f:?}: the shadow is not neutral, C* {csh:.1}");
+                        assert!((lsh - lb).abs() <= 3.0, "{f:?}: shadow L* {lsh:.1} vs {lb:.1}");
+                    }
                 }
             }
             assert_diff_hi(f);

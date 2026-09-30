@@ -442,7 +442,7 @@ the owed row (`queued ∙ after T-3`) inherits when there is no branch to join. 
 header names its ticket. (STALE-MAP "The UI overhaul" + "The ticket page's subtitle leads with
 tags".)
 
-**Six themes, picked from the Esc menu, saved in two slots (2026-09-02, user request; solarized 2026-09-03).** A
+**Fifteen themes, picked from the Esc menu, saved in two slots (2026-09-02, user request; solarized 2026-09-03; nine ported schemes, `void` and `ice` under a sixth `Kind::Scheme` and a 45 beam floor, T-529 2026-10-01 — STALE-MAP "Fifteen themes").** A
 theme is a `Palette` TABLE in `theme.rs` (truecolor hexes plus hand-authored 256/16/8 forms, the
 diff tints, the tag ring, and `shadow`, the colour `faded()` blends toward) and
 `Flavor::palette()` is the exhaustive gate — a sixth flavor does not compile until `palette`,

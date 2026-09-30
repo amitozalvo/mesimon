@@ -16054,3 +16054,64 @@ a dot, a theme change, off and `finish`); `app::the_theme_row_paints_the_tab_in_
 (Enter saves `tab_theme`, the tint is the footer band on any iTerm2 and `None` elsewhere, follows
 a theme swap, and stands beside the needs-you mark); the prefs round-trip; the four
 `settings_terminal*` goldens gained the row (60x20 is now full: 8 rows).
+
+## Fifteen themes, a sixth kind, and the beam floor (T-529, 2026-10-01, user request)
+
+"Propose new theme colors, try to go beyond the limits set in the beginning" — then "do
+everything including ice". Nine themes shipped beside the six: `void`, `nord`, `mocha`, `tokyo`,
+`rose`, `gruvbox`, `latte`, `gruvbox-light` and `ice`. One proposal did not: `prism`, graphite
+with `err` and `calm` at needs-you's chroma, was drawn so the one-saturated-colour rule could
+be judged on a board rather than in prose, and the recommendation against it stood — the rule
+in CLAUDE.md is still true of every theme.
+
+**The roster decision was wrong about the board.** "Five themes" refused Catppuccin, Gruvbox
+and their kin because a multi-hue scheme loses most of itself under a one-accent, grey-ramp
+law. That is true of an editor: the hues live in the syntax. The board draws no syntax, and the
+ten hues a user sees on it are already the tag ring. What a scheme gives a *terminal* is a
+ground, an ink and sixteen colours; what people recognise is the ground-and-ink pair, and that
+survives whole. A mesimon board also sits around a pane running the user's own scheme, so a
+matching ground removes the seam between board and pane. What actually blocked the ports was
+one number: Paper caps every grey at C* 8.2 (Nord's ground is 8.4), and TintedPaper admits a
+tinted paper only with the ink ≥ 90° away (Catppuccin's ink is C* 16 on the ground's own hue;
+Gruvbox's cream is C* 22 on a neutral).
+
+**`Kind::Scheme` is the sixth clause**: the ground and its cursor surface carry at most C* 24 on
+one hue (within 20° when both have one; the surface a step up on a dark ground, ≥ 6 L*, and a
+step down on a light one, ≥ 4), every ink rung at most C* 24 with no hue relation demanded, the
+register budget, both diff tints 2–12 L* off the ground, and the fade target the ground itself
+under C* 12 and a neutral within 3 L* above it (gruvbox light's paper is C* 22, so its shadow is
+`#F2F2F2`). Everything else — the contrast matrix, the bar ladder, the ring law, `attn_is_its_
+own_colour`, both provenance laws — is the law as written and sweeps `Flavor::ALL`.
+
+**What did not survive the numbers, per scheme.** Nord has no loud yellow (nord13 is C* 35):
+needs-you is a yellow a step louder at C* 50, and nord11's red is lightened to L* 71 so the
+delete flash clears its hi tint over the soft L* 22 ground. Mocha's peach deepened from
+`#FAB387` to C* 52 to clear maroon by the budget. Tokyo Night's red quieted to C* 40 so orange
+stays the loudest. Rosé Pine's gold pushed to C* 57 and `love` quieted to C* 44 — the one loud
+colour is still needs-you. Gruvbox's red lightened to `#F58A74` for the flash. Latte's peach is
+L* 60 and 3.3:1 on the paper, so needs-you is a darker peach at L* 44, and its cursor bar sits a
+step under the ink for the bar ladder. Gruvbox light's accents darkened as Solarized's were. The
+dim rungs are derived from each scheme's base ink at graphite's contrast proportions (dim1 ≥
+4.9, dim2 ≥ 4.3, dim3 ≥ 2.3 on the ground) rather than taken from the scheme, because the
+schemes' own subtext values are set for an editor's density and fail the matrix on the cursor
+surface. Rings: graphite's ring is reused where it clears both surfaces (mocha, tokyo, rose,
+void, ice ≥ 4.7); nord's and gruvbox's are re-lit by the 2026-09-09 procedure (worst 4.5); the
+light schemes take chalk's (≥ 4.5).
+
+**The phosphor's beam floor was a fact about two hues.** `ice` is a VFD cyan glow — green's
+shape at 192°, white ink, `err` a red quieted to C* 32, `calm` the hue gone pale at L* 88 — and
+sRGB cannot make a cyan past C* 45 (`#00FFFF` is C* 50 in Lab). "C* ≥ 60" was written around
+amber and green and was for one thing: the beam out-shouting every other token. The clause now
+says that directly — floor 45, and the beam the most chromatic token by ≥ 12 (cursor, `calm`,
+`err`), which green clears by 26 and ice by 13 (err 32.2 under 45.2) — and amber's ladder is
+unchanged. `void` is graphite on `#000000` under Paper, every contrast up.
+
+**Indexed forms.** Every dark scheme takes graphite's sixteen-colour form (`DARK_ANSI16`) and the
+light ones chalk's (`LIGHT_ANSI16`): sixteen colours hold neither a tinted ground nor a tinted
+ink, 06 §2.7's rule. At 256, mocha, tokyo and rose put their ink on the cube's periwinkle
+column (189 / 146 / 103 / 60) over the grey ground; gruvbox and gruvbox light use gruvbox's own
+mappings; nord, void, latte and ice sit on the grey ramp; light-256 paints no `selected` as
+ever. Goldens: the two theme-picker goldens moved because the list has fifteen rows and now
+fills a 30-row terminal and scrolls (`1/16`), the dialog's own rule; every other golden is
+colourless and stood. `MESIMON_THEME` accepts every new name. Measured with a script that
+reproduces graphite and green as PASS before it was trusted; the mocks are on the ticket.
