@@ -44,7 +44,7 @@ for p in $pages; do
   mkdir -p "$out/$(dirname "$p")"
   cp "site/$p" "$out/$p"
 done
-cp site/style.css site/site.js site/CNAME site/.nojekyll "$out/"
+cp site/style.css site/site.js site/CNAME site/.nojekyll site/robots.txt site/sitemap.xml "$out/"
 cp assets/demo.gif "$out/demo.gif"
 cp assets/mascot/resting.png "$out/favicon.png"
 for f in plex-sans-latin.woff2 plex-sans-hebrew-500.woff2 plex-mono-400-latin.woff2 OFL.txt; do
@@ -69,6 +69,22 @@ for f in README.md docs/USING.md ci/releases-readme.md install.sh site/index.htm
   grep -qF "$ONE_LINER" "$f" || die "$f does not give the install line" "use: $ONE_LINER"
 done
 [ "$(cat "$out/CNAME")" = "mesimon.dev" ] || die "site/CNAME must name mesimon.dev"
+
+# The crawlers that feed the web filters' classifiers read the sitemap: it names
+# every page a search may show and no other, so a noindex page stays out of it.
+listed=$(grep -oE '<loc>[^<]+</loc>' site/sitemap.xml | sed -E 's|^<loc>https://mesimon\.dev/||; s|</loc>$||')
+for p in $pages; do
+  d="$(dirname "$p")/"; [ "$d" = "./" ] && d=""
+  if grep -q 'name="robots" content="noindex"' "site/$p"; then
+    ! grep -qxF "$d" <<<"$listed" || die "site/sitemap.xml lists $p, which is noindex"
+  else
+    grep -qxF "$d" <<<"$listed" || die "site/sitemap.xml does not list $p" "add <url><loc>https://mesimon.dev/$d</loc></url>"
+  fi
+done
+for d in $listed; do
+  [ -f "$out/${d}index.html" ] || die "site/sitemap.xml lists https://mesimon.dev/$d, which the build does not have"
+done
+grep -qxF "Sitemap: https://mesimon.dev/sitemap.xml" site/robots.txt || die "site/robots.txt does not name the sitemap"
 
 echo "built $out ($(find "$out" -type f | wc -l | tr -d ' ') files, $(du -sh "$out" | cut -f1))"
 [ "$publish" = "1" ] || exit 0

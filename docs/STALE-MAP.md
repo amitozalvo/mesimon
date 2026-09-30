@@ -15927,3 +15927,24 @@ ticket changes what the tree says from here on, not what was already pushed.
 `ci/check-relay.sh` compares the live relay's `GET /version` (the core commit it was built
 against) with this history, and `ci/release.sh` runs it before anything slow. Relay half:
 see mesimon-relay (T-526).
+
+## mesimon.dev says what it is to a web filter (T-520, 2026-09-30, "Get mesimon.dev past corporate web filters: categorization requests and the signals classifiers read")
+
+**Built.** The landing page has an About section: open-source developer software, Apache-2.0,
+who writes it and where, the GitHub link and `support@mesimon.dev`, then a privacy line (no
+analytics, no cookies, nothing loaded from another site). The footer of both indexable pages
+names the author and "Made in Israel", as `NOTICE` already does. `site/robots.txt` allows every
+path and names `site/sitemap.xml`, which lists `/` and `/relay/`. **The sitemap leaves out
+`/relay/thanks/` on purpose**: that page is `noindex`, and a sitemap that submits a noindex page
+contradicts itself. robots.txt does not disallow it either, because a crawler kept out never
+reads the noindex. `ci/site.sh` copies both files and refuses a sitemap that misses an indexable
+page, lists a noindex one or names a page the build lacks, and a robots.txt that does not name
+the sitemap.
+
+**Found, one day after registration (2026-09-29).** Google Safe Browsing reports no unsafe
+content. Talos gives no content category and an Unknown web reputation, and does not list the
+domain as blocked. Seven filtering resolvers (Cloudflare's 1.1.1.2 and 1.1.1.3, Quad9, OpenDNS
+and FamilyShield, CleanBrowsing, AdGuard) all resolve it to GitHub Pages. A block today is by the
+domain's age or an empty category, not a verdict against the site. The categorization requests
+need a vendor account or a captcha and are the author's; the ticket lists them. The site
+reaches the web when the author publishes it (`ci/site.sh --publish`, or the next release).
