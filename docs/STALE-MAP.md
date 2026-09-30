@@ -15305,11 +15305,9 @@ wording is the author's alone.
 
 **Remote Control's origin is fixed at `https://remote.mesimon.dev`, port 443.** A browser keeps
 its pairing keys, remembered boards, Sent list and (T-497 phase 3) outbox per origin, and an
-origin includes the port: the relay's browser listener defaults to 8444, so the hosted relay
-must publish it on 443 (a Compose port map or an ingress) *before* a phone pairs, or the address
-changes the day it moves. Teams keeps its own name (`teams.mesimon.dev:8443`, as the endpoint
-test already spells it); the relay serves both listeners from one certificate, so it carries
-both names. Where the public relay runs is still open — nothing hosted exists yet.
+origin includes the port, so the hosted relay must serve the page on 443 *before* a phone
+pairs, or the address changes the day it moves. Teams has a name of its own (T-498's block
+renames it, T-519 moves its port). Relay half: see mesimon-relay (T-501).
 
 **Trust moved, and it is named.** The install line now trusts the registrar and DNS as well as
 the GitHub account: whoever holds `mesimon.dev` can serve any installer and, once the relay is
@@ -15391,77 +15389,13 @@ once.
 
 ## The hosted relay: one box for `teams.mesimon.dev` and `remote.mesimon.dev` (T-502, 2026-09-29, "Host the public relay: remote.mesimon.dev and teams.mesimon.dev on one EU VPS")
 
-**Built, in the private relay repository** (`mesimon-relay/deploy/`, its README the runbook):
-a Compose override that publishes 8443 and maps host 443 to the browser listener's 8444 with
-`WEB_ORIGIN=https://remote.mesimon.dev` and certbot's chain and key bind-mounted read-only;
-`ship.sh`, which cross-builds the relay for the box's architecture with the core's musl
-toolchain, builds Mesophon's assets with the core's scripts, assembles the Dockerfile's runtime
-stage around them and streams the image over ssh; `bootstrap.sh` (Docker from Docker's
-repository, certbot, ufw for 22/80/443/8443, unattended-upgrades with a 04:40 UTC reboot window,
-keys-only sshd, the layout under `/srv/mesimon-relay`, the database password); a certbot
-deploy hook that copies the files to uid 10001 and restarts the relay; a nightly `pg_dump`
-encrypted with `age` to a key the box does not hold, kept 14 days and copied off with `rclone`
-when a remote is set; and `smoke.sh`, the hosted layering on a throwaway certificate and spare
-ports. Nothing in the core changed but this block; `docs/REMOTE-CONTROL.md` names the hosted
-address once one answers.
-
-**Decided: the box never compiles.** A 2 GB VPS cannot build the relay plus wasm-bindgen, and a
-Rust build under Docker's emulation on the Mac is slow and flaky. The core already cross-links
-static musl binaries for Linux (`ci/build-linux.sh`), so the relay does the same and the image
-is the Dockerfile's own runtime stage with `ARTIFACTS=prebuilt` naming a build context. BuildKit
-refuses a variable in `COPY --from`, so the choice is a stage: `FROM ${ARTIFACTS} AS artifacts`.
-No registry: `docker save | ssh docker load`, and the only credential on the box is the ssh key.
-
-**Decided: `ports: !override`.** Compose merges a `ports` list by appending entries whose
-{ip, target, published, protocol} differ, so an override that only adds `443:8444` would keep the
-base file's loopback 8444 mapping. `!override` replaces the list; the rendered config was checked.
-
-**Decided: certbot standalone, HTTP-01, and a restart on renewal.** Nothing listens on 80, so
-certbot's own server takes the challenge on issue and on every renewal; GoDaddy's DNS API is not
-open to small accounts, so DNS-01 was not an option. The relay builds its rustls config once at
-start, so the hook restarts it (the entrypoint re-copies `TLS_CERT_FILE`/`TLS_KEY_FILE` on every
-start). The pin printed at startup changes with every renewal and matters only to self-hosted,
-pinning clients; the hosted relay is used without a pin, against the Mozilla roots the client
-already carries.
-
-**Provider, measured on 2026-09-10 sources:** every Hetzner Cost-Optimized shared plan (CX23 up,
-CAX11 up) has been "not available" since 2026-06-26; the cheapest orderable was CPX12 at
-€11.99/month before VAT. The ticket's €4 to 6 estimate no longer holds there; netcup and
-DigitalOcean are named as the same setup. The scripts are architecture-agnostic, so a returning
-Arm plan needs no change.
-
-**Verified:** the merged config renders as intended; `smoke.sh` is green on the local image and
-on an amd64 image assembled around the cross-built static binary, run under emulation: the page
-answers 200 only to `remote.mesimon.dev` and 403 to any other Host, both listeners present the
-supplied certificate with both names, and the entrypoint names `teams.mesimon.dev:8443`. The
-Dockerfile's default compile path was rebuilt after the change.
-
-**Not done, and the author's:** ordering the box, the four DNS rows at GoDaddy (A and AAAA for
-`remote` and `teams`; CAA already `0 issue "letsencrypt.org"`), certbot, the first `ship.sh`,
-the Teams sign-in without a pin, `mesimon mesophon setup --check` and a phone pairing over real
-HTTPS. Two decisions stay open before the address is given out: who may register (registration
-is open, with a 6 MiB frame cap and 256 browser connections but no per-device quota), and whether
-this is a preview host or the paid service.
-
-**Update, the same evening: the box exists and both names answer.** The author chose Google
-Cloud over Hetzner's out-of-stock shared plans: project `mesimon-relay`, an e2-small in
-`europe-west1-b`, a static IPv4, a VPC rule for 80/443/8443. `bootstrap.sh` ran there, the
-author typed the two A rows (no AAAA: the default subnet is not dual-stack), certbot issued one
-certificate for both names after a staging dry run, and `ship.sh` shipped
-`hosted-20260929-49074a2-b983364` from clean detached worktrees of both repositories. From
-outside: 200 on `https://remote.mesimon.dev/`, 403 on any other Host, and curl verifies the
-Let's Encrypt chain on `teams.mesimon.dev:8443`. Left to the author: the pin-less Teams sign-in,
-`mesimon mesophon setup --check`, a phone pairing, the `age` recipient for backups, and the two
-policy decisions. `docs/REMOTE-CONTROL.md` does not name the address until those are made.
-
-**Two traps measured on the way.** *Compose bind-mounts a file secret with the host file's owner
-and mode.* Docker Desktop on the Mac relaxes file sharing, so the local relay never noticed; on
-Linux the relay container (uid 10001) was refused root's 0600 `database-url` and crash-looped.
-The relay's secret is now uid 10001's at 0400; PostgreSQL's stays root's because its entrypoint
-reads it as root. *GCP images hand out a sudo user, not root, and a passphrase-protected default
-key fails silently under `BatchMode`* (the server accepts the key, the client cannot sign): root
-got gcloud's passphrase-less key through `gcloud compute ssh`, and an `~/.ssh/config` alias
-carries it, with `SetEnv LC_ALL=C.UTF-8` so the Mac's locale stops reaching a box without it.
+**Relay half only: see mesimon-relay (T-502).** Nothing in the core changed but this block.
+What a core reader needs: one hosted relay answers Remote Control at
+`https://remote.mesimon.dev` (the origin T-501 fixed) and Teams at `relay.mesimon.dev` (the
+name is T-498's block, the port T-519's). A client uses it without a pin, against the Mozilla
+roots it already carries: the certificate is renewed, so the pin the relay prints at startup
+changes with every renewal and matters only to a self-hosted, pinning client.
+`docs/REMOTE-CONTROL.md` names the address since T-514.
 
 ## Mesophon phase 4: the home screen, scan-to-pair, a fuller board and teal ticks (T-497, 2026-09-29, "phase 4")
 
@@ -15661,40 +15595,17 @@ this one: it names `Request::Start`. It also carries the fix for T-506's `cols` 
 
 **Owed:** a CHANGELOG line at the next release. Physical-phone acceptance is still outstanding.
 
-**Renamed the same night: the Teams listener is `relay.mesimon.dev`, not `teams.mesimon.dev`.**
-The author asked why `teams`, and the answer was that nobody chose it: the endpoint parser's unit
-test had spelled it as an example, T-501 called that "already spelled", and this ticket's brief
-called it fixed. Only `remote.mesimon.dev` is fixed, by the browser's per-origin storage. The host
-is one relay serving Teams and Remote Control, and a name after one feature repeats the
-confusion T-503 files against the Settings row. Nothing had signed in to the old name, so the
-switch cost one DNS row, a reissued certificate, the test string and the runbook; a month later it
-would have cost every signed-in Mac a re-sign-in, since the device file stores the address.
-T-504 (prefill the sign-in, blocked on the registration decision) should read `relay.mesimon.dev`.
+**Renamed the same night: the Teams address is `relay.mesimon.dev`, not `teams.mesimon.dev`.**
+Nobody had chosen `teams`: the endpoint parser's unit test spelled it as an example and T-501
+read that as settled. Only `remote.mesimon.dev` is fixed, by the browser's per-origin storage.
+The host is one relay serving Teams and Remote Control, and a name after one feature repeats
+the confusion T-503 files against the Settings row. The device file stores the address, so a
+rename after the first sign-ins would cost every signed-in Mac a re-sign-in; none had signed in
+yet.
 
-**Closed out the same night.** The author signed in without a pin, ran `mesimon mesophon setup
---check` and paired, all against the renamed address. Backups round-trip: the box encrypts to an
-`age` recipient whose private half lives only on the author's Mac, and a dump fetched back
-decrypted there and listed every table. What remains is policy, not plumbing: where copies go
-off the box (an rclone remote is one line in `backup.env`), who may register, and whether this
-is a preview or the paid service. The address stays unlisted until those are decided.
-
-**Decided (author, late that night): a private preview now, paid later.** A few invited people
-test the hosted relay first; the author expects no viral uptake. Registration stays open for the
-preview, bounded by the relay's own caps (6 MiB frames, 256 browser connections) and a 20 GB
-disk, with the address unlisted and handed out by hand; the gate or billing comes with the paid
-launch. So the user docs keep not naming the address, T-504 (prefill the sign-in) stays blocked
-until that launch, and T-503 (the Settings row's name) is free to go. Testers on a release build
-need `MESIMON_MESOPHON=1` for Remote Control, which the tester steps on the ticket say.
-
-**Backup copies leave the box, into a bucket the box cannot read back.** `gs://mesimon-relay-backups`
-in the same project (uniform access, public access prevented, a 90-day delete rule). The VM runs
-as a dedicated service account holding `roles/storage.objectCreator` on that bucket and nothing
-else, so a compromised box can add a dump and can neither list, read, delete nor overwrite one;
-attaching the account took one stop and start of the VM, since a running instance cannot change
-its service account. Measured on the way: rclone lists a bucket before every upload, which a
-write-only role forbids, and its `no_check_bucket = true` (plus `--no-check-dest` on the copy) is
-what makes a write-only remote work. The dumps are `age`-encrypted to a key only the author's Mac
-holds, so the bucket's contents are opaque to GCP too.
+**The rest of that night was the hosted relay's**: closing it out, the preview-then-paid
+decision and where backups go. See mesimon-relay (T-502). For the core: testers on a release
+build need `MESIMON_MESOPHON=1` for Remote Control.
 
 ## Mesophon: the start asks for its words, and the page loses its duplicates (T-510, 2026-09-30, "remote UI fixes")
 
@@ -15768,40 +15679,18 @@ was a read-only `open now` row repeating the section above.
 
 ## Who may register on the hosted relay: decided (T-514, 2026-09-30, "paid registration for the relay: how, how much, free access for my friends")
 
-Nothing shipped in the core; this records the decision T-502 left open, so T-514 (prefill the
-sign-in with `relay.mesimon.dev`) knows what it waits for. The full text is T-514's note; the
-work is T-515 (relay half in `mesimon-relay`, wire and dialog half here).
-
-**Decided: the unit is a registered device, and the gate is an access code at `register`.**
-A device is one Mac install (`msmn.devices`); phones pair to a device and are never
-registered, so Remote Control from a phone is free by construction, and a team board bills per
-member Mac with no seat concept added. `Request::Register` gains `code: Option<String>`
-(`#[serde(default)]`), the hosted relay runs `--registration code`, the compose default stays
-`open` so a self-hoster mints nothing. A code stamps `devices.grant_until` (NULL = forever);
-reads never check it and writes require it, so a lapsed device is read-only and never locked
-out of its own boards. `Request::Redeem { code }` extends a registered device. Existing preview
-devices are grandfathered at NULL. `devices.enabled` stays the kill switch.
-
-**Decided: friends get hand-minted forever codes from a CLI on the box**, labelled by name
-(`mesimon-relay code mint --label dana --forever`), pasted in a chat; revoke is `enabled=false`
-on that label's device. No admin surface on the wire, so no admin credential to get wrong.
-
-**Decided: paid codes are license keys from a merchant of record; the relay never sees a
-payment.** Selling from Israel to EU and US buyers means VAT and sales tax per country, which a
-merchant of record (Lemon Squeezy, Paddle or Polar; fees checked when chosen) carries. The
-relay validates a key it does not know against the provider's public license endpoint at redeem
-and again lazily when the grant expires; no webhook receiver, no payment data on the box.
-
-**Decided: $5 per month or $48 per year, per Mac.** Four paying Macs cover the box (about
-₪65 a month). No free tier at launch beyond hand-minted codes; $3/$30 and $8/$80 were the
-alternatives weighed. An automated trial comes later if uptake asks for it.
+Nothing shipped in the core. The decision (who registers, who is free, what it costs, who
+sells it) is the relay's record: see mesimon-relay (T-514). What reaches the core, built in
+T-515: **the unit is a registered device**, one Mac install; phones pair to a device and are
+never registered, so a phone never needs a code. **The gate is an access code at
+`register`**: `Request::Register` gains `code: Option<String>` (`#[serde(default)]`), and
+`Request::Redeem { code }` extends a registered device. A self-hosted relay stays open by
+default and needs no code.
 
 ## The relay registration gate: access codes and grants (T-515, 2026-09-30, "relay registration gate: access codes, grants and the paid launch")
 
-T-514's decision, built. The relay half is in `mesimon-relay` (schema, `policy::needs_grant`,
-`access.rs`, the `code mint | code list | device disable` CLI, `serve --registration open|code`,
-`REGISTRATION=code` in `deploy/compose.hosted.yaml`); this repo carries the wire, the daemon
-and the dialog.
+T-514's decision, built. The relay half is in `mesimon-relay` (see its T-515); this repo
+carries the wire, the daemon and the dialog.
 
 **Shipped on the wire**: `Request::Register { code: Option<String> }`, absent from the frame
 when `None` (`skip_serializing_if`), because `Request` refuses unknown fields and a relay from
@@ -15811,26 +15700,17 @@ authenticated. Three `ErrorCode`s — `CodeRequired`, `CodeInvalid`, `GrantLapse
 the three new codes do break parsing on every client before alpha.32** (they answer
 `InvalidRequest`, "signing in: invalid request"). Accepted because no shipped client prefills
 the hosted address (that is T-514, blocked on this), and the preview testers are grandfathered
-(`grant_until` NULL) so no shipped client will ever be answered `GrantLapsed`.
+(their grants have no end) so no shipped client will ever be answered `GrantLapsed`.
 
-**Decided: the grant is checked by the relay, per request, from `devices.grant_until`**
-(`policy::admit`, pure and exhaustive). Writes that need it: `Put`, `CreateBoard`,
-`MintInvite`, `PutKeys`, `Join`. Not gated: every read, `Leave`, `Unshare`, `Revoke`, `Redeem`.
-A lapsed owner who revokes therefore freezes the board until they renew (`PutKeys` is gated);
-that follows from the ticket's list and is recorded, not fixed. Remote Control: a browser's
-device registers past the gate (`register_browser`, born lapsed so its credential buys nothing
-on the Teams listener), and **mail is gated on the host's grant**, refused as `lapsed`, which
-Mesophon words. Live routing while the host is online is not gated — Remote Control is free by
-construction (T-514) and the Mac is what pays.
+**The grant is the relay's to check, per request.** A write the relay gates answers
+`GrantLapsed`; reads are never gated, so a lapsed device is read-only and never locked out of
+its own boards. Remote Control's mail is refused `lapsed` while the host's grant has lapsed,
+which Mesophon words. Which requests are gated, and why, is the relay's record.
 
-**Decided: the relay stores no license key.** A code it did not mint is the `Licensor`'s word
-(`access::Licensor`, a trait; `Relay::licensor` is `None` in `main`, and a fake in the
-postgres test). The lazy re-check when a grant expires is **the client's**: the daemon keeps
-the code in `device.toml` (`access_code`) and on the first `GrantLapsed` sends one `Redeem`
-with it by itself (`team_on_lapse`, `renewal_tried`); a renewed subscription is the provider
-saying yes to the same key. A second try needs a person. **Not shipped: the provider's HTTP
-call.** The author has not chosen the merchant of record; when they do, it is one struct
-implementing `Licensor`, wired in `main.rs` for the hosted build only.
+**Decided: the client keeps the code; the relay keeps no license key.** The daemon keeps the
+code in `device.toml` (`access_code`) and on the first `GrantLapsed` sends one `Redeem` with it
+by itself (`team_on_lapse`, `renewal_tried`); a renewed subscription is the licensor saying yes
+to the same key. A second try needs a person. (T-522 also renews before the grant ends.)
 
 **The daemon's lapse**: `TeamInfo.lapsed` (the dialog's title reads `LAPSED`, outranking the
 sync word), `team_pump` sends nothing while lapsed, the outbox keeps the refused edit, and a
@@ -15851,10 +15731,6 @@ it; the dialog does not show an expiry. Also refuted: storing the license key on
 the relay to re-validate itself — the client has the key and the relay's promise is to hold
 nothing usable.
 
-**After this**: ship the box with `REGISTRATION=code`, mint the author's and the testers'
-codes (`docker compose exec relay mesimon-relay code mint --label NAME --forever`), then
-T-514's prefill.
-
 ## The sign-in is prefilled with the hosted relay (T-514, 2026-09-30, "Prefill the relay sign-in with relay.mesimon.dev")
 
 **Built.** `mesimon_core::team::HOSTED_RELAY` is the one place `relay.mesimon.dev` is written:
@@ -15867,10 +15743,9 @@ hint is unchanged. `docs/REMOTE-CONTROL.md` names the address in the sign-in par
 Two goldens reminted, one row each.
 
 **Why now.** T-502 left the address unlisted until a registration gate existed; T-515 shipped
-the gate (`--registration code`, hand-minted codes, per-Mac grants), so a default address no
-longer points every install at an open relay. The constant lives in the core rather than in
-`mesimon-team` because the TUI does not link the team crate (TLS and the crypto stack) and
-should not start to for one string.
+the gate, so a default address no longer points every install at an open relay. The constant
+lives in the core rather than in `mesimon-team` because the TUI does not link the team crate
+(TLS and the crypto stack) and should not start to for one string.
 
 **A prefilled field concatenates on paste.** `EditBuffer::from_text` opens with the cursor at
 the end, so a self-hoster who pastes their address without clearing first gets the hosted
@@ -15883,85 +15758,31 @@ section, so it names nothing.
 
 ## mesimon.dev/relay: the hosted relay's page and the checkout's thanks page (T-517, 2026-09-30, "mesimon.dev/relay: the hosted relay's page, checkout link, terms and the thanks page")
 
-**Built.** `site/relay/index.html` (what the relay does, $48 a year or $5 a month per
-computer, the Polar checkout link, the sign-in steps, the lapse, self-hosting, then terms and
-privacy on the same page) and `site/relay/thanks/index.html`, the checkout link's
-`success_url` (noindex). The landing page links `relay/` from its footer nav. Both pages take
-`style.css` by a relative path, so the file:// preview and Pages agree; the buy button is ink
-on the ground, so the site still has no saturated colour.
+**Built.** `site/relay/index.html` (what the relay does, its price and checkout link, the
+sign-in steps, the lapse, self-hosting, then terms and privacy on the same page) and
+`site/relay/thanks/index.html`, the checkout link's `success_url` (noindex). The landing page
+links `relay/` from its footer nav. Both pages take `style.css` by a relative path, so the
+file:// preview and Pages agree; the buy button is ink on the ground, so the site still has no
+saturated colour.
 
 **`ci/site.sh` copies a list of pages** (`pages=`), and the reference check now resolves each
 page's links from that page's own directory, a directory link by its `index.html`. A new page
 is one word on that line.
 
-**The privacy line is the relay's schema, not the ticket's list.** `msmn.devices` keeps
-`display_name` in plaintext (the schema's own comment: the one plaintext a person supplies),
-so the page names it beside the public keys, the routing metadata, the sealed records and the
-key's hash; only Remote Control's mail has a stated lifetime (30 days). The page offers
-deletion on request through support, since the box sits in the EU.
+What the page says about price, seller, privacy, refunds and the relay image, and why, is the
+relay's record: see mesimon-relay (T-517, T-516). Publishing is the author's
+(`ci/site.sh --publish`).
 
-**Not claimed:** where to get the relay image. The relay repo is private and no image is
-pushed to a registry, so "Run your own" says a self-run relay needs no key and links
-REMOTE-CONTROL.md, which says nothing yet about obtaining one. **Refunds** point at Polar's
-Buyer Terms, which defer to "the applicable refund policy"; the page states none of its own.
+## The relay validates paid license keys (T-516, 2026-09-30)
 
-**Publishing is the author's:** `ci/site.sh --publish`, then the checkout link's success URL
-set to `https://mesimon.dev/relay/thanks`, then Polar's review (T-516) told the page is live.
-
-## Polar validates the relay's license keys (T-516, 2026-09-30, "Polar is the merchant of record: the relay's Licensor validates Polar license keys")
-
-The relay half, in `mesimon-relay`: `relay/src/polar.rs`, `serve --licensor polar:<org id>`,
-`LICENSOR` in `deploy/compose.hosted.yaml`, runbook §8. No code in this repo changed; the relay
-page's privacy line did (below).
-
-**Decided: a Mac's seat is Polar's activation, and the relay keeps the activation id, never the
-key** (`devices.license_activation`, nullable, no bump). The first redeem activates the key,
-labelled with the device id; a later redeem validates naming that seat. A seat Polar no longer
-knows — freed in the customer portal, or a new subscription's key — is taken again when free
-and refused when another Mac holds it (`CodeInvalid`). **Deviation from the brief: no validate
-after activate**; activate's response carries the same granted key and its subscription.
-
-**Decided: the grant runs to the paid period's end, not to `expires_at`.** The brief said
-`until = expires_at`, `None` forever. A subscription key with no fixed expiry has
-`expires_at: null`, so that rule would have given every subscriber a forever grant that no
-cancellation ends. Polar returns the subscription beside the key from API version 2027-01
-(polarsource/polar#14950, 2026-09-29; production serves it), so the relay pins
-`Polar-Version: 2027-01` and grants `ends_at` when set, `current_period_end` when cancelling
-at period end, `current_period_end` + 3 days when active or trialing (the renewal charge and
-its retries), a day when past due, 30 days when Polar names no end, and never under a day: a
-grant stamped already ended would have the daemon renew on every write, since
-`renewal_tried` resets on a successful `Redeem`.
-
-**Refuted: one short leash (a day) for every key.** Remote Control mail is gated on the host's
-grant and refused `lapsed` without the host hearing of it; only a gated board write runs
-`team_on_lapse`. A daily lapse would break paid Remote Control daily. With period grants it
-still happens once a period on a Mac that writes no shared board. **Open, in the core**: renew
-on the mail refusal, or before `until`.
-
-**Decided: `Register` refuses a known device and a bad name before redeeming.** A rollback gives
-a minted use back but not a Polar seat, and the daemon's known-key road (`Register` with a code,
-`Denied`, then `Redeem`) would otherwise spend the seat inside a rolled-back registration and
-then be refused its own seat.
-
-**Decided: Polar's no is a 404 `ResourceNotFound` or a 403 `NotPermitted`**, both carrying
-`error`. Everything else — 5xx, 429, a redirect, a body that does not parse, and a 404 without
-`error` (the version middleware's answer to a version it does not serve) — is `Unavailable`,
-so a buyer is never told a good key is bad because Polar stumbled. Only a `<PREFIX>-<UUID>` key
-leaves the relay; one 5 s budget covers every call of a check, because the relay answers one
-request at a time. The key is never logged.
-
-**Wired by flag, not by build** (T-515 planned a hosted-only build): the base compose sets no
-`LICENSOR`, so a self-hosted relay never calls out.
-
-**The relay page (T-517) said the relay keeps "a hash of your license key"**; it never did.
-It now names Polar's seat id and says the seat is labelled with the device id.
-
-Verified: unit tests on a fake Polar (granted, kept seat, lost seat, revoked, expired, unknown,
-5xx, garbage, 429, stray 404, redirect, silence, key shape), the postgres test (the seat kept
-and named again; a known key refused before the licensor is asked), `live_polar` against
-api.polar.sh with an unknown key, and `deploy/smoke.sh` on an image with `LICENSOR` set.
-**Not yet:** a sandbox pass with a real key (it needs a sandbox organisation), then the
-author's ship and a real purchase.
+**Relay half only: see mesimon-relay (T-516).** No code in this repository changed. For a core
+reader: a code the relay did not mint is checked with the merchant of record at `Redeem`, and
+the relay keeps the merchant's seat id, never the key. A paid grant runs to the end of the
+period paid for, a little past it, and never less than a day: the floor T-522's renewal
+interval is held under. It left one item for the core, built in T-522: renew before the grant
+ends and on the mail refusal, not only on a refused board write. The relay page (T-517) had
+said the relay keeps "a hash of your license key"; it never did, and the page now says what
+it keeps.
 
 ## An archived ticket's agent is out of the crown's budget (T-518, 2026-09-30, "An archived ticket's sleeping agent still holds a crown seat")
 
@@ -16001,32 +15822,8 @@ only reads the core's answer.
 
 ## The relay's migration runs under an advisory lock (T-521, 2026-09-30, "Relay postgres tests flake in parallel: concurrent migrate() DDL")
 
-**Relay half only** (`mesimon-relay` 137bcf8); nothing in this repository changed but this block.
-`Relay::migrate()` ran `schema.sql` with `batch_execute`, and the file wrapped only its first
-block in `BEGIN`/`COMMIT`. `CREATE TABLE IF NOT EXISTS` is not safe against itself on an empty
-catalog: two callers at once collide on a `pg_type` row or deadlock, so `relay/tests/postgres.rs`
-passed only with `--test-threads=1`, and two relay containers starting at once would race the
-same way.
-
-**What shipped.** `migrate()` opens one transaction, takes `pg_advisory_xact_lock` on a constant
-(`MIGRATION_LOCK`, "msmnmigr" in ASCII), runs the whole schema and commits. `schema.sql` carries
-no `BEGIN`/`COMMIT` of its own, because its `COMMIT` would end that transaction and drop the lock
-halfway through; the whole schema is now atomic where only its first block was.
-
-**Why the lock and not the harness.** The ticket offered a second road: `run_postgres.py`
-migrates once and each test gets its own database. That fixes the tests and leaves production's
-two-containers race open; the lock fixes both, and the tests keep sharing one cluster.
-
-**Tests.** `concurrent_migrations_queue_on_a_fresh_database` creates a database, starts 8 relays
-behind a barrier and migrates them all at once; on the old code 7 of 8 failed, 3 runs of 3. The
-whole `--ignored` suite ran green three times in parallel, bar the two Mesophon browser tests
-below.
-
-**Found, not fixed.** `mesophon.rs`'s two browser tests fail alone and on unchanged code:
-(1) the fixture's private `HOME` hides Playwright's browsers unless `PLAYWRIGHT_BROWSERS_PATH`
-is set, which `relay/README.md` documents; (2) with it set, core's `browser.test.js` (T-498,
-T-510) writes `agent-run` and waits for `agent-ran`, and nothing in the relay's `mesophon.rs`
-answers it: the relay half of that fixture step was never committed.
+**Relay half only**; nothing in this repository changed but this block. See mesimon-relay
+(T-521).
 
 ## A grant is renewed before the phone is refused (T-522, 2026-09-30, "A lapsed grant is renewed before the phone is refused, not only on a board write")
 
@@ -16047,16 +15844,14 @@ only be staler than that.
 
 **Built: the renewal window.** `TeamCtx::grant_tick` runs in `team_tick` *before* the shared-board
 check, because Remote Control alone is reason enough. Inside the grant's last day
-(`RENEW_WINDOW`), or past it, it sends one `Redeem` with the kept code. Polar grants
-`current_period_end + 3 days`, so a renewal a day before the end comes two days after the
-charge. Renewals by themselves are at least `RENEW_AGAIN` (6 h) apart, even after one lands,
-and the interval is held under the relay's one-day floor (a compile-time assert). The relay
-never stamps less than a day, so without the gap a past-due or cancelling key would be redeemed
-on every tick. With it, a grant extended a day at a time is renewed before it runs out, and a
-cancelled one is asked a few times before Polar's no. `renewal_tried` still allows one try per
-lapse: a `CodeInvalid` stops every renewal by itself until a person's code is accepted. A
-`Redeem` the relay did not answer (`Unavailable`, which is also Polar stumbling) does not count
-as a try.
+(`RENEW_WINDOW`), or past it, it sends one `Redeem` with the kept code. A paid grant runs a
+little past the period's charge (mesimon-relay, T-516), so a renewal in the last day comes after
+the charge. Renewals by themselves are at least `RENEW_AGAIN` (6 h) apart, even after one lands,
+and the interval is held under the relay's one-day floor (a compile-time assert): the relay
+never stamps less than a day, so without the gap a key granted a day at a time would be redeemed
+on every tick, and with it such a grant is renewed before it runs out. `renewal_tried` still
+allows one try per lapse: a `CodeInvalid` stops every renewal by itself until a person's code is
+accepted. A `Redeem` the relay did not answer (`Unavailable`) does not count as a try.
 
 **Built: the mail refusal is the lapse edge.** `control::LAPSED` is the one spelling of the
 word. When the relay sends the host `Wire::Error { code: LAPSED }`, `on_control` runs
@@ -16067,7 +15862,7 @@ claiming a lapse that has not happened.
 
 **Relay half: built (T-524, 2026-09-30), on the relay's `msmn/T-522-grant-answer` branch.** The
 relay answers `Request::Grant` and sends the host `Wire::Error { code: LAPSED }` on the two
-refusal roads above; its record is in that repository, not here.
+refusal roads above; its record is mesimon-relay's (T-522).
 
 Verified: `teamglue::tests` checks four things. A grant in its last day is renewed once on the
 tick, and a failed renewal is not retried by the clock. A renewal that lands is followed by one
@@ -16084,46 +15879,19 @@ default and `display()` is unchanged (it prints any port but 8443), so the field
 no special case for the hosted name. Two goldens reminted; `docs/REMOTE-CONTROL.md` and
 `site/relay/` name the port.
 
-Relay (`mesimon-relay`, branch `msmn/T-519-teams-on-443`): `relay/src/shared.rs` is a TLS
-front on one `TcpListener`. It reads each ClientHello with `rustls::server::Acceptor` before
-any handshake, recording every byte. The Teams name continues its handshake on the front's
-thread (`Accepted::into_connection`) into the same `exchange`, socket limits and relay mutex
-as the Teams port. The browser's name sends the socket and the recorded bytes over a tokio
-channel to the web runtime, which replays them into a `tokio_rustls` handshake of its own and
-serves the connection with hyper-util's auto builder with upgrades, the service axum-server
-runs. Any other name, or none (a client dialling an IP address), is closed.
-`serve --listen-shared ADDR --teams-host NAME` takes `--web-listen`'s place, so the browser
-app has exactly one door and every phone and host meet in one in-memory hub.
-`mesimon_relay::serve(relay, Listeners, cert, key)` is the one entry `main` and `board_e2e`
-share. Container: `SHARED_PORT`. Hosted compose: `443:8445` and `8443:8443`; 8444 is not
-listened on.
+Relay half: see mesimon-relay (T-519). The wire is unchanged. The relay reads each
+connection's server name before the handshake: the Teams name reaches the Teams framer, the
+browser's name (the origin's host) the web app, and any other name, or none (a client dialling
+an IP address), is closed. The browser side still advertises no ALPN, so browsers speak
+HTTP/1.1 and the WebSocket upgrade is the one that works.
 
-**Why a replay for the browser and not for Teams.** Teams is blocking std I/O, so the front
-hands it the accepted connection itself. The web side is async, and tokio-rustls takes no
-half-finished rustls connection; replaying the bytes into a fresh handshake is how an SNI
-proxy does it and keeps the web side's TLS its own. An async front would have pushed the
-blocking framer across a sync bridge without its read timeouts.
-
-**Decided against the ticket's sketch.** No `--web-host`: the browser's name is the origin's
-host, because a flag that disagreed with the origin would 403 every request. No second
-`ServerConfig` with ALPN `h2`: the browser port has always advertised no ALPN, so browsers
-speak HTTP/1.1 and the WebSocket upgrade is the one that works; offering h2 would move the
-control socket onto RFC 8441 extended CONNECT, which nothing here enables.
-
-**Order and the old port.** Ship the relay before a release carries the new default: until
+**Order and the old port.** The relay ships before a release carries the new default: until
 then 443 is the browser listener, and a Teams frame there reads an HTTP 400 as an invalid
-request. 8443 stays published until 2027-10: a Mac that signed in before keeps
-`relay.mesimon.dev:8443` in its device file, and nothing rewrites a stored endpoint (signing
-out and in again picks up 443).
+request. A Mac that signed in before keeps `relay.mesimon.dev:8443` in its device file, and
+nothing rewrites a stored endpoint (signing out and in again picks up 443).
 
-**Verified:** the relay's unit tests (the Teams name completes a handshake on the front,
-another name or none is closed, the browser's name reaches a router through the replay with a
-GET and a WebSocket); `board_e2e` through the shared port alone; `mesophon.rs`'s two
-non-browser e2es and `postgres.rs` on the ports of their own; `deploy/smoke.sh` on a local
-image (the page 200 on its name and 403 on another Host, another name closed, a Teams frame
-answered `denied`, both ports presenting the certificate). **Owed, the author's:**
-`deploy/ship.sh`; the `pf` check in `deploy/README.md` §6 (block outbound 8443, sign in on
-443, pair a phone); then the release, with a CHANGELOG line, and the site publish after it.
+Verified here: the endpoint test that parses `HOSTED_RELAY` and the two goldens; the relay's
+checks are in its record.
 
 ## Publishing alpha.33 across three products (T-524, 2026-09-30, "verify latest tickets work and publish new version")
 
@@ -16139,3 +15907,17 @@ of their own: T-525 (relay records leave the public repo; the relay gets its own
 CLAUDE.md) and T-526 (one ship command, relay then core then site, with a relay version probe).
 Until they land: an agent asked to publish bumps, tests and stamps, prepares relay branches in
 a scratchpad worktree, and stops; ship, tag, push and release are the author's.
+
+## The relay's design record leaves the public repository (T-525, 2026-09-30, "Relay design records leave the public repo: mesimon-relay gets its own STALE-MAP and CLAUDE.md")
+
+**Decided: a relay decision is recorded in `mesimon-relay/docs/STALE-MAP.md`.** This repository
+is public, and the relay had no design record of its own, so its hosting, billing and licensor
+decisions were written here from T-501 on. The relay's half of T-501, T-502 (with its
+same-night follow-up under T-498), T-514, T-515, T-516, T-517, T-519 and T-521 moved there
+verbatim; each block here keeps the wire shape, the core's behaviour, its ticket key and date,
+and a line pointing at the relay by key. T-516's heading no longer quotes its brief. A weakness
+found in either repository is written only there. `CLAUDE.md` and `AGENTS.md` carry the rule,
+and the relay's own contract has the recipe for working on it from a scratchpad worktree.
+
+**Not undone:** the moved text is still in this repository's git history, which is public. This
+ticket changes what the tree says from here on, not what was already pushed.

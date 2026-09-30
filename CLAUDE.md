@@ -43,7 +43,11 @@ user drive the real TUI. E2e tests are safe: they use their own `/tmp/msmn-e2e-*
    `theme.rs`, the goldens, the back-compat fixtures. Executable truth cannot drift.
 2. **`docs/STALE-MAP.md` is the design record**: what shipped, what was refuted, and why. Read
    it before changing something you did not build, and **append a block when you ship
-   something** — that is how a decision survives.
+   something** — that is how a decision survives. **This repository is public; the relay's
+   record is not**: a decision about the relay's internals, its hosting, billing or a weakness
+   goes in `mesimon-relay/docs/STALE-MAP.md`, and the public block keeps the wire and the
+   core's behaviour and links by ticket key. A weakness found in either repository is never
+   written here.
 3. **The README's three promises bind** (see Boundaries). They are commitments to users; the
    README gives each one line, and `docs/PROMISES.md` holds their full text.
 4. **The pre-code research corpus is not in this repository.** The ~346k-word planning corpus
@@ -555,6 +559,8 @@ tags are unique and newest-first, and the top entry is `v{CARGO_PKG_VERSION}`.
   that builds against this one as a sibling checkout; its clients — `crates/mesimon-team`,
   `crates/mesimon-web`, `web/mesophon` — are Apache and live here. Never bring relay code into
   this repo (CONTRIBUTING.md records the CLA rule). `mt/` is gitignored research scratch.
+  Relay work happens in a worktree of its own, never in the author's relay checkout:
+  `mesimon-relay/CLAUDE.md` has the recipe.
 - **The three README promises.** A strict write allowlist: mesimon writes to `<repo>/.mesimon`,
   the state dir, `$GIT_DIR/info/exclude`, the worktrees it cuts and the remote-tracking refs an
   opt-in fetch updates, and nowhere else. No config mutation: `doctor` prints fixes and never

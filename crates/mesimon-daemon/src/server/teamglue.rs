@@ -43,13 +43,13 @@ const OFFLINE_BACKOFF: u64 = 20;
 /// Ticks between asking the relay when this device's grant ends: an hour.
 const GRANT_EVERY: u64 = 3_600_000 / TICK_MS;
 /// A grant is renewed by itself inside its last day (T-522), in seconds.
-/// Polar's runs three days past the paid period, so by then the renewal
+/// A paid grant runs a little past the paid period, so by then the renewal
 /// charge has landed and a `Redeem` grants the next period.
 const RENEW_WINDOW: u64 = 86_400;
 /// Renewals by itself go at least this far apart, in seconds, and under the
-/// relay's one-day floor: a grant extended a day at a time (past due) is
-/// renewed before it runs out, and a cancelled one is asked a bounded number
-/// of times before its no.
+/// relay's one-day floor: a grant extended a day at a time is renewed before
+/// it runs out, and a cancelled one is asked a bounded number of times before
+/// its no.
 const RENEW_AGAIN: u64 = 6 * 3_600;
 const _: () = assert!(RENEW_AGAIN < RENEW_WINDOW);
 

@@ -26,6 +26,11 @@ Use this precedence when sources disagree:
 For a behavioral change, update tests and append the resulting decision or deviation to
 `docs/STALE-MAP.md`. Avoid adding historical implementation detail to this file.
 
+This repository is public; the relay's record is not. A decision about the relay's internals,
+its hosting, billing or a weakness goes in `mesimon-relay/docs/STALE-MAP.md`, and the public
+block keeps the wire and the core's behaviour and links by ticket key. A weakness found in
+either repository is never written into this one.
+
 ## Architecture and invariants
 
 The workspace has five crates:
@@ -57,7 +62,8 @@ Preserve these boundaries:
 - The paid Teams relay is a separate, private repository (`mesimon-relay`) built against this
   one as a sibling checkout; `crates/mesimon-team`, `crates/mesimon-web` and `web/mesophon` are
   its Apache clients. Do not bring relay code into this repository. `mt/` is gitignored research
-  scratch, not project content.
+  scratch, not project content. Relay work happens in a worktree of its own, never in the
+  author's relay checkout: `mesimon-relay/AGENTS.md` has the recipe.
 - `web/mesophon` has no build step: the relay serves it as it is under a CSP with no inline
   style or script, so styling stays in `style.css` and Preact/htm stay vendored plain modules
   with no bare imports (`web/mesophon/vendor/README.md`).
