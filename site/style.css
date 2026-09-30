@@ -169,6 +169,21 @@ kbd {
 }
 .or { margin: 0.25rem 0 0.5rem; }
 
+/* The relay's pages. The buy button is ink on the ground, no new colour. */
+.crumb { margin: 0 0 1.5rem; color: var(--ink3); font-size: 0.9rem; }
+.hero h1:last-child { margin-bottom: 1.5rem; }
+.amount { color: var(--ink); font-size: 1.25rem; }
+.buy {
+  display: inline-block;
+  padding: 0.6rem 1.4rem;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--bg);
+  font-weight: 600;
+  text-decoration: none;
+}
+.buy:hover { background: var(--ink2); }
+
 .demo { margin: 3rem 0 0; }
 .demo img {
   display: block;

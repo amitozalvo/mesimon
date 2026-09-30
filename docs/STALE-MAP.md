@@ -15880,3 +15880,30 @@ a paste that replaces a draft equal to the default, both being new behaviour for
 
 **Owed:** a CHANGELOG line at the next release, with T-515's. `docs/USING.md` has no Teams
 section, so it names nothing.
+
+## mesimon.dev/relay: the hosted relay's page and the checkout's thanks page (T-517, 2026-09-30, "mesimon.dev/relay: the hosted relay's page, checkout link, terms and the thanks page")
+
+**Built.** `site/relay/index.html` (what the relay does, $48 a year or $5 a month per
+computer, the Polar checkout link, the sign-in steps, the lapse, self-hosting, then terms and
+privacy on the same page) and `site/relay/thanks/index.html`, the checkout link's
+`success_url` (noindex). The landing page links `relay/` from its footer nav. Both pages take
+`style.css` by a relative path, so the file:// preview and Pages agree; the buy button is ink
+on the ground, so the site still has no saturated colour.
+
+**`ci/site.sh` copies a list of pages** (`pages=`), and the reference check now resolves each
+page's links from that page's own directory, a directory link by its `index.html`. A new page
+is one word on that line.
+
+**The privacy line is the relay's schema, not the ticket's list.** `msmn.devices` keeps
+`display_name` in plaintext (the schema's own comment: the one plaintext a person supplies),
+so the page names it beside the public keys, the routing metadata, the sealed records and the
+key's hash; only Remote Control's mail has a stated lifetime (30 days). The page offers
+deletion on request through support, since the box sits in the EU.
+
+**Not claimed:** where to get the relay image. The relay repo is private and no image is
+pushed to a registry, so "Run your own" says a self-run relay needs no key and links
+REMOTE-CONTROL.md, which says nothing yet about obtaining one. **Refunds** point at Polar's
+Buyer Terms, which defer to "the applicable refund policy"; the page states none of its own.
+
+**Publishing is the author's:** `ci/site.sh --publish`, then the checkout link's success URL
+set to `https://mesimon.dev/relay/thanks`, then Polar's review (T-516) told the page is live.

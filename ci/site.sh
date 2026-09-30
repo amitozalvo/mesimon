@@ -34,23 +34,35 @@ elif [ $# -gt 0 ]; then
   die "usage: ci/site.sh [--publish [label]]"
 fi
 
+# Every page, by its path under site/; each is served at its directory.
+pages="index.html relay/index.html relay/thanks/index.html"
+
 out=dist/site
 rm -rf "$out"
 mkdir -p "$out/fonts"
-cp site/index.html site/style.css site/site.js site/CNAME site/.nojekyll "$out/"
+for p in $pages; do
+  mkdir -p "$out/$(dirname "$p")"
+  cp "site/$p" "$out/$p"
+done
+cp site/style.css site/site.js site/CNAME site/.nojekyll "$out/"
 cp assets/demo.gif "$out/demo.gif"
 cp assets/mascot/resting.png "$out/favicon.png"
 for f in plex-sans-latin.woff2 plex-sans-hebrew-500.woff2 plex-mono-400-latin.woff2 OFL.txt; do
   cp "web/mesophon/fonts/$f" "$out/fonts/"
 done
 
-# Every relative reference resolves inside the build.
-refs=$( {
-  grep -oE '(href|src)="[^"]+"' site/index.html | sed -E 's/^[a-z]+="//; s/"$//'
-  grep -oE 'url\([^)]+\)' site/style.css | sed -E 's/^url\(//; s/\)$//'
-} | grep -vE '^(https?:|#|mailto:)' || true)
-for r in $refs; do
-  [ -f "$out/$r" ] || die "site/ refers to $r, which the build does not have"
+# Every relative reference resolves inside the build, from the file that makes
+# it; a reference to a directory resolves to its index.html.
+local_refs() { grep -vE '^(https?:|#|mailto:)' || true; }
+for p in $pages; do
+  dir="$out/$(dirname "$p")"
+  for r in $(grep -oE '(href|src)="[^"]+"' "site/$p" | sed -E 's/^[a-z]+="//; s/"$//' | local_refs); do
+    r="${r%%#*}"
+    [ -f "$dir/$r" ] || [ -f "$dir/$r/index.html" ] || die "site/$p refers to $r, which the build does not have"
+  done
+done
+for r in $(grep -oE 'url\([^)]+\)' site/style.css | sed -E 's/^url\(//; s/\)$//' | local_refs); do
+  [ -f "$out/$r" ] || die "site/style.css refers to $r, which the build does not have"
 done
 
 for f in README.md docs/USING.md ci/releases-readme.md install.sh site/index.html; do
