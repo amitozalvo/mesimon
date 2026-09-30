@@ -10,7 +10,7 @@
 
                            ╭─ SHARING ──────────────────────────────────────────────────────╮
                            │ YOU                                                            │
-                           │   Relay: not set                                               │
+                           │   Relay: relay.mesimon.dev                                     │
                            │   Display name: not set                                        │
                            │   Access code: not set                                         │
                            │   Sign in                                                      │

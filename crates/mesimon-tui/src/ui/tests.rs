@@ -882,8 +882,9 @@ fn golden_agent_prompt_editing_120() {
 }
 
 /// The sharing dialog signed out (T-334, one dialog since T-335): the YOU
-/// section alone — the two fields unset and `Sign in` saying what it
-/// needs — with `SHARING` in the frame's top edge.
+/// section alone — the relay prefilled with the hosted address (T-514), the
+/// name and code unset and `Sign in` saying what it needs — with `SHARING`
+/// in the frame's top edge.
 #[test]
 fn golden_sharing_signed_out_120() {
     let mut app = app_graphite(fixture_archived());
@@ -891,9 +892,9 @@ fn golden_sharing_signed_out_120() {
     golden("sharing_signed_out_120x30", &render(&app, 120, 30));
 }
 
-/// The same with the relay row open as a field, an address half typed:
-/// the row's name leads the field, the cursor sits at its end, and the
-/// detail teaches the address form.
+/// The same with the relay row open as a field on the hosted address: the
+/// row's name leads the field, the cursor sits at its end, and the detail
+/// says what a self-hoster types over it.
 #[test]
 fn golden_sharing_editing_120() {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
@@ -901,9 +902,6 @@ fn golden_sharing_editing_120() {
     app.team_name_draft = "Dana".into();
     app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
-    for c in "relay.example".chars() {
-        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).expect("type");
-    }
     assert!(matches!(app.mode, Mode::Sharing { editing: Some(_), .. }), "{:?}", app.mode);
     golden("sharing_editing_120x30", &render(&app, 120, 30));
 }

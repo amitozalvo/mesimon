@@ -10,12 +10,12 @@
 
                            ╭─ SHARING ──────────────────────────────────────────────────────╮
                            │ YOU                                                            │
-                           │   Relay: relay.example                                         │
+                           │   Relay: relay.mesimon.dev                                     │
                            │   Display name: Dana                                           │
                            │   Access code: not set                                         │
                            │   Sign in                                                      │
                            │                                                                │
-                           │     host[:port] ∙ self-hosted: add a space and its pin         │
+                           │     self-hosted: replace with host[:port], a space, its pin    │
                            ╰────────────────────────────────────── enter save ∙ esc cancel ─╯
 
 

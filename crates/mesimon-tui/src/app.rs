@@ -1451,6 +1451,8 @@ pub struct App {
     /// The team list's two fields (T-334): what is typed, seeded once from
     /// the identity the daemon reports and kept across a sign-out so the
     /// next sign-in starts from the last words.
+    /// Starts as the hosted relay (T-514), so the common sign-in is a name
+    /// and Enter; a self-hoster types over it.
     pub team_relay_draft: String,
     pub team_name_draft: String,
     /// The access code typed for the next sign-in (T-515); never in the
@@ -1821,7 +1823,7 @@ impl App {
             last_ticket_up: None,
             settings_section: keymap::SettingsSection::Root,
             column_agents: false,
-            team_relay_draft: String::new(),
+            team_relay_draft: mesimon_core::team::HOSTED_RELAY.into(),
             team_name_draft: String::new(),
             team_code_draft: String::new(),
             team_drafts_seeded: false,
@@ -7243,7 +7245,7 @@ impl App {
                     format!("Relay: {}", self.team_relay_draft)
                 },
                 if editing {
-                    "host[:port] ∙ self-hosted: add a space and its pin".into()
+                    "self-hosted: replace with host[:port], a space, its pin".into()
                 } else {
                     "where shared boards meet ∙ enter edits".into()
                 },
@@ -14096,8 +14098,16 @@ mod tests {
                 SharingRow::SignIn
             ]
         );
+        // The relay field is prefilled with the hosted relay (T-514); a
+        // self-hoster kills the line and types their own.
+        assert_eq!(app.team_relay_draft, mesimon_core::team::HOSTED_RELAY);
+        assert_eq!(
+            app.sharing_words(&SharingRow::Relay, false).0,
+            format!("Relay: {}", mesimon_core::team::HOSTED_RELAY)
+        );
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.scope(), Scope::Input);
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
         for c in "relay.example".chars() {
             press(&mut app, c);
         }
@@ -14153,6 +14163,8 @@ mod tests {
         app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
         assert!(!app.on_paste("nowhere").unwrap(), "a list row is not a field");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        // The field opens on the hosted address (T-514); ctrl-u clears it first.
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
         let line = format!("127.0.0.1 {}", "ab".repeat(32));
         assert!(app.on_paste(&line).unwrap());
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();

@@ -13,6 +13,13 @@ use serde::{Deserialize, Serialize};
 /// newer build is kept as bytes and applied when the daemon is upgraded.
 pub const RECORD_SCHEMA: u32 = 1;
 
+/// The hosted relay (T-514): what the sign-in's relay field holds before a
+/// person types. No pin: it presents a public certificate, verified against
+/// the Mozilla roots the client carries. A self-hoster replaces it with their
+/// own address and the pin their relay printed. This is the one place the
+/// address is written; `docs/REMOTE-CONTROL.md` repeats it in prose.
+pub const HOSTED_RELAY: &str = "relay.mesimon.dev";
+
 /// What is inside a sealed record. One object per ticket (its scalars), one
 /// per note (its body), one for the column list, one for the board's own
 /// name. The object id of a ticket or a note is its ULID, so nothing maps

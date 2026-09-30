@@ -15854,3 +15854,29 @@ nothing usable.
 **After this**: ship the box with `REGISTRATION=code`, mint the author's and the testers'
 codes (`docker compose exec relay mesimon-relay code mint --label NAME --forever`), then
 T-514's prefill.
+
+## The sign-in is prefilled with the hosted relay (T-514, 2026-09-30, "Prefill the relay sign-in with relay.mesimon.dev")
+
+**Built.** `mesimon_core::team::HOSTED_RELAY` is the one place `relay.mesimon.dev` is written:
+`App::new` seeds `team_relay_draft` from it, so a fresh install's sharing dialog opens on
+`Relay: relay.mesimon.dev` and the common sign-in is a name, a code and Enter. The endpoint
+test in `mesimon-team/src/relay.rs` parses the constant (a `mesimon-core` dev-dependency,
+the crate's first) rather than a second literal. The field's editing hint now says what a
+self-hoster does (`self-hosted: replace with host[:port], a space, its pin`); the resting
+hint is unchanged. `docs/REMOTE-CONTROL.md` names the address in the sign-in paragraph.
+Two goldens reminted, one row each.
+
+**Why now.** T-502 left the address unlisted until a registration gate existed; T-515 shipped
+the gate (`--registration code`, hand-minted codes, per-Mac grants), so a default address no
+longer points every install at an open relay. The constant lives in the core rather than in
+`mesimon-team` because the TUI does not link the team crate (TLS and the crypto stack) and
+should not start to for one string.
+
+**A prefilled field concatenates on paste.** `EditBuffer::from_text` opens with the cursor at
+the end, so a self-hoster who pastes their address without clearing first gets the hosted
+address glued in front. Ctrl-U (`EditKillToStart`) clears the line and the two tests that
+type or paste a relay press it first. Not changed: a field that selects its text on open, or
+a paste that replaces a draft equal to the default, both being new behaviour for one row.
+
+**Owed:** a CHANGELOG line at the next release, with T-515's. `docs/USING.md` has no Teams
+section, so it names nothing.
