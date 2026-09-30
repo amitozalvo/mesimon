@@ -209,8 +209,8 @@ time. Only you can give it, and `ctrl-o` on the crowned card takes it back.
 on another; the moved, tagged and started cards light as they change.</sub>
 
 The crown starts at most three agents at once; **Settings › Agents** changes the number or turns
-starting off, and a sleeping agent still holds its seat. A ticket the crown started can never be
-crowned itself. Crowning types nothing into the agent's conversation: the crowned agent learns
+starting off. A sleeping agent still holds its seat until its ticket is archived. A ticket the
+crown started can never be crowned itself. Crowning types nothing into the agent's conversation: the crowned agent learns
 it through its tools. When an agent it started delivers, answers what it asked, or raises its
 hand, one sentence saying so is pasted into the crown's session.
 

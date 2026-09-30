@@ -15962,3 +15962,39 @@ and named again; a known key refused before the licensor is asked), `live_polar`
 api.polar.sh with an unknown key, and `deploy/smoke.sh` on an image with `LICENSOR` set.
 **Not yet:** a sandbox pass with a real key (it needs a sandbox organisation), then the
 author's ship and a real purchase.
+
+## An archived ticket's agent is out of the crown's budget (T-518, 2026-09-30, "An archived ticket's sleeping agent still holds a crown seat")
+
+**Fixed.** `start_agent` refused with "3 of 3 crown-started agents are live (T-421, T-422,
+T-461)" after the author had archived all three: archive keeps a ticket's sleeping records,
+a sleeping record holds its seat, and `Board::crown_started()` counted every `started_by`
+record that held one. It now also asks that the record's ticket be on the board — present and
+not archived, which covers a snooze. `crown_seats`, the receipt's `budget_left` and the
+refusal all read `crown_started()`, so none of them counts or names an archived key. The
+refusal now says a seat frees when its agent exits *or its ticket is archived*; `docs/USING.md`
+says the same.
+
+**Why the count and not the archive.** The other road was `archive_ticket` exiting the
+crown-started record or clearing its `started_by`. Exiting breaks archive's own promise
+("off the board, everything kept", sleeping sessions included) and makes a restore lose a
+conversation. Clearing `started_by` loses the provenance D10 rests on: a restored ticket's
+agent could then be crowned, and the graph would be two levels deep. Filtering the count
+mutates nothing. A restore counts the seat again, and the one-level rule still holds because
+`crown_ticket` reads `started_by` off `live_agent`, which is unchanged.
+
+**Why this does not reopen the money fire.** The crown cannot reach an archived ticket:
+`crown_target` refuses one for every keyed tool except the restore, and a woken sleeping
+agent needs a person's `c`. A restore can leave the count above the budget; that behaves
+like lowering the budget below what is held: the next start is refused and nothing is killed.
+The crown can archive a worker's ticket and later restore it, but the agent stays asleep
+until a person wakes it, so the running crown-started agents still stay at or under the budget.
+
+**Not changed.** A start parked behind a worktree cut (`pending_spawns`) still counts while it
+is parked, whatever its ticket's state. If its ticket is archived in the few seconds before
+the cut lands, the replay is refused by `spawn_session`'s archived gate and dropped.
+
+**Tests.** `board::tests::an_archived_tickets_sleeping_agent_frees_its_crown_seat`: three
+crown-started sleeping records; archiving one and snoozing another leaves one counted; the
+seat and `started_by` stay on the record; a restore counts it again. No e2e: making a stub
+session sleep-eligible in `crown_e2e` costs a hook script for one filter, and the daemon side
+only reads the core's answer.
