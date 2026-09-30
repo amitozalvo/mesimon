@@ -15907,3 +15907,58 @@ Buyer Terms, which defer to "the applicable refund policy"; the page states none
 
 **Publishing is the author's:** `ci/site.sh --publish`, then the checkout link's success URL
 set to `https://mesimon.dev/relay/thanks`, then Polar's review (T-516) told the page is live.
+
+## Polar validates the relay's license keys (T-516, 2026-09-30, "Polar is the merchant of record: the relay's Licensor validates Polar license keys")
+
+The relay half, in `mesimon-relay`: `relay/src/polar.rs`, `serve --licensor polar:<org id>`,
+`LICENSOR` in `deploy/compose.hosted.yaml`, runbook §8. No code in this repo changed; the relay
+page's privacy line did (below).
+
+**Decided: a Mac's seat is Polar's activation, and the relay keeps the activation id, never the
+key** (`devices.license_activation`, nullable, no bump). The first redeem activates the key,
+labelled with the device id; a later redeem validates naming that seat. A seat Polar no longer
+knows — freed in the customer portal, or a new subscription's key — is taken again when free
+and refused when another Mac holds it (`CodeInvalid`). **Deviation from the brief: no validate
+after activate**; activate's response carries the same granted key and its subscription.
+
+**Decided: the grant runs to the paid period's end, not to `expires_at`.** The brief said
+`until = expires_at`, `None` forever. A subscription key with no fixed expiry has
+`expires_at: null`, so that rule would have given every subscriber a forever grant that no
+cancellation ends. Polar returns the subscription beside the key from API version 2027-01
+(polarsource/polar#14950, 2026-09-29; production serves it), so the relay pins
+`Polar-Version: 2027-01` and grants `ends_at` when set, `current_period_end` when cancelling
+at period end, `current_period_end` + 3 days when active or trialing (the renewal charge and
+its retries), a day when past due, 30 days when Polar names no end, and never under a day: a
+grant stamped already ended would have the daemon renew on every write, since
+`renewal_tried` resets on a successful `Redeem`.
+
+**Refuted: one short leash (a day) for every key.** Remote Control mail is gated on the host's
+grant and refused `lapsed` without the host hearing of it; only a gated board write runs
+`team_on_lapse`. A daily lapse would break paid Remote Control daily. With period grants it
+still happens once a period on a Mac that writes no shared board. **Open, in the core**: renew
+on the mail refusal, or before `until`.
+
+**Decided: `Register` refuses a known device and a bad name before redeeming.** A rollback gives
+a minted use back but not a Polar seat, and the daemon's known-key road (`Register` with a code,
+`Denied`, then `Redeem`) would otherwise spend the seat inside a rolled-back registration and
+then be refused its own seat.
+
+**Decided: Polar's no is a 404 `ResourceNotFound` or a 403 `NotPermitted`**, both carrying
+`error`. Everything else — 5xx, 429, a redirect, a body that does not parse, and a 404 without
+`error` (the version middleware's answer to a version it does not serve) — is `Unavailable`,
+so a buyer is never told a good key is bad because Polar stumbled. Only a `<PREFIX>-<UUID>` key
+leaves the relay; one 5 s budget covers every call of a check, because the relay answers one
+request at a time. The key is never logged.
+
+**Wired by flag, not by build** (T-515 planned a hosted-only build): the base compose sets no
+`LICENSOR`, so a self-hosted relay never calls out.
+
+**The relay page (T-517) said the relay keeps "a hash of your license key"**; it never did.
+It now names Polar's seat id and says the seat is labelled with the device id.
+
+Verified: unit tests on a fake Polar (granted, kept seat, lost seat, revoked, expired, unknown,
+5xx, garbage, 429, stray 404, redirect, silence, key shape), the postgres test (the seat kept
+and named again; a known key refused before the licensor is asked), `live_polar` against
+api.polar.sh with an unknown key, and `deploy/smoke.sh` on an image with `LICENSOR` set.
+**Not yet:** a sandbox pass with a real key (it needs a sandbox organisation), then the
+author's ship and a real purchase.
