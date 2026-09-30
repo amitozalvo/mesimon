@@ -16065,24 +16065,16 @@ every host already parses and drops unread (`NetEvent::Frame(_)`), so the relay 
 hosts from before. A renewal that fails before any refusal says `renewing: <code>` rather than
 claiming a lapse that has not happened.
 
-**Owed, in `mesimon-relay` (nothing changes for a user until it ships):**
-- Answer `Request::Grant` from `devices.grant_until` for the caller, ungated.
-  `policy::needs_grant` and the dispatch are exhaustive, so **the relay stops compiling against
-  this core until it classifies `Grant`**.
-- On `Deposit::Refused(LAPSED)`, also send `Wire::Error { code: LAPSED }` to the board's
-  collecting host.
-- After a lapsed host's `Collect`, send the same frame.
-- Spell `mail.rs`'s literal `"lapsed"` as `control::LAPSED`.
-- Check: `polar.rs::until` floors at `now + LEASH` even when `ends_at` has passed, so a key Polar
-  still calls `granted` after its subscription ends buys a day on every redeem. This predates
-  T-522, which only makes the redeems regular.
+**Relay half: built (T-524, 2026-09-30), on the relay's `msmn/T-522-grant-answer` branch.** The
+relay answers `Request::Grant` and sends the host `Wire::Error { code: LAPSED }` on the two
+refusal roads above; its record is in that repository, not here.
 
 Verified: `teamglue::tests` checks four things. A grant in its last day is renewed once on the
 tick, and a failed renewal is not retried by the clock. A renewal that lands is followed by one
 per interval. A mail refusal renews once and a second refusal after a failed renewal does not.
 The end is asked hourly, only with a kept code. Wire round-trips are in `wire.rs` and
 `control.rs`. No e2e: the relay half is what makes the edge live, and its postgres test is
-where the fake licensor is. **Owed:** a CHANGELOG line at the release that ships the relay half.
+where the fake licensor is. The CHANGELOG line is in v0.1.0-alpha.33's notes.
 
 ## Teams on 443: the wire and the browser on one port, split by server name (T-519, 2026-09-30, "Teams on 443: the hosted relay serves the wire and the browser on one port, split by server name")
 
