@@ -142,7 +142,8 @@ Additional targeted gates:
   install line agrees; GitHub Pages serves it from `amitozalvo/mesimon-releases`' main branch,
   whose `install.sh` only `release.sh` updates. `--publish` is outward-facing: never as part of
   an ordinary task. Remote Control's hosted origin is `https://remote.mesimon.dev` on port 443,
-  fixed, because a browser's pairing lives per origin.
+  fixed, because a browser's pairing lives per origin. Teams' is `relay.mesimon.dev:443`, the
+  same port split by SNI; 8443 stays published until 2027-10 for Macs that signed in before.
 - README GIFs: `assets/demo/record.sh [tape]` re-records the clip `assets/demo/<tape>.tape`
   names, `demo` (`assets/demo.gif`) by default (needs `vhs`), after a change the recording shows.
   `agent.gif` is the real claude: `MESIMON_DEMO_KEY_FILE=<key file>` (see `assets/demo/README.md`).

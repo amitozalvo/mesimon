@@ -18,7 +18,13 @@ pub const RECORD_SCHEMA: u32 = 1;
 /// the Mozilla roots the client carries. A self-hoster replaces it with their
 /// own address and the pin their relay printed. This is the one place the
 /// address is written; `docs/REMOTE-CONTROL.md` repeats it in prose.
-pub const HOSTED_RELAY: &str = "relay.mesimon.dev";
+///
+/// It names port 443 (T-519) because an office network commonly lets out
+/// only 80 and 443: the hosted relay serves Teams and the browser on that
+/// one port, split by the name each connection asks for. The endpoint's
+/// default port stays 8443, a self-hoster's, and the hosted relay still
+/// answers there for a Mac that signed in before.
+pub const HOSTED_RELAY: &str = "relay.mesimon.dev:443";
 
 /// What is inside a sealed record. One object per ticket (its scalars), one
 /// per note (its body), one for the column list, one for the board's own

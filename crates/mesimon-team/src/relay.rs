@@ -353,11 +353,14 @@ mod tests {
         assert_eq!((e.host.as_str(), e.port), ("relay.example.com", 9000));
         assert_eq!(e.pin, Some([0xab; 32]));
         assert_eq!(e.display(), "relay.example.com:9000");
-        // The hosted address parses as it is prefilled: default port, no pin.
+        // The hosted address parses as it is prefilled: port 443, no pin,
+        // and it reads back as typed (T-519).
         let hosted = mesimon_core::team::HOSTED_RELAY;
         let e = RelayEndpoint::parse(hosted).unwrap();
-        assert_eq!((e.host.as_str(), e.port, e.pin), (hosted, 8443, None));
+        assert_eq!((e.host.as_str(), e.port, e.pin), ("relay.mesimon.dev", 443, None));
         assert_eq!(e.display(), hosted);
+        // A bare name is a self-hoster's, on the default port.
+        assert_eq!(RelayEndpoint::parse("relay.example").unwrap().port, 8443);
         assert!(RelayEndpoint::parse("").is_none());
         assert!(RelayEndpoint::parse("host:notaport").is_none());
         assert!(RelayEndpoint::parse("host short-pin").is_none());

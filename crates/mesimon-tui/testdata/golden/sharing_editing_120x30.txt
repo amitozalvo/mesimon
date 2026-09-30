@@ -10,7 +10,7 @@
 
                            ╭─ SHARING ──────────────────────────────────────────────────────╮
                            │ YOU                                                            │
-                           │   Relay: relay.mesimon.dev                                     │
+                           │   Relay: relay.mesimon.dev:443                                 │
                            │   Display name: Dana                                           │
                            │   Access code: not set                                         │
                            │   Sign in                                                      │

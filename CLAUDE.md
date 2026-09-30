@@ -93,7 +93,9 @@ not open Docker Desktop for a release.
 `site/`, and the `install.sh` it serves is the one `release.sh` syncs there after each release,
 never main's. The install line is in five files and `ci/site.sh` fails when one disagrees.
 **Remote Control's hosted origin is `https://remote.mesimon.dev` (port 443), fixed**: a browser
-keeps its pairing and outbox per origin, so any change re-pairs every phone.
+keeps its pairing and outbox per origin, so any change re-pairs every phone. **Teams' is
+`relay.mesimon.dev:443`** on the same port, split by SNI (T-519); 8443 stays published until
+2027-10 for Macs that signed in before.
 
 **The Homebrew tap** (`brew install amitozalvo/tap/mesimon`) is one formula, generated from
 `ci/homebrew/mesimon.rb` by `ci/homebrew-formula.sh` and pushed to `amitozalvo/homebrew-tap` by

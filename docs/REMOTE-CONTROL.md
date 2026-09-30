@@ -9,7 +9,7 @@ your relay, and enable this board.
 
 Signing in registers this Mac with the relay once; the sign-in rows are the relay's address,
 your display name and an **access code**. The address is prefilled with the hosted relay,
-`relay.mesimon.dev`, which needs no pin; a self-hosted relay replaces it with its own
+`relay.mesimon.dev:443`, which needs no pin; a self-hosted relay replaces it with its own
 address, a space and the pin that relay printed when it started. A relay that gates registration (the hosted one does)
 refuses a sign-in without one and says so under `Sign in`; a self-hosted relay ignores an empty
 field. A code is either one a friend minted for you, which never runs out, or a license key

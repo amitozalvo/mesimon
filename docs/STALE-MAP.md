@@ -16083,3 +16083,52 @@ per interval. A mail refusal renews once and a second refusal after a failed ren
 The end is asked hourly, only with a kept code. Wire round-trips are in `wire.rs` and
 `control.rs`. No e2e: the relay half is what makes the edge live, and its postgres test is
 where the fake licensor is. **Owed:** a CHANGELOG line at the release that ships the relay half.
+
+## Teams on 443: the wire and the browser on one port, split by server name (T-519, 2026-09-30, "Teams on 443: the hosted relay serves the wire and the browser on one port, split by server name")
+
+**Built, in both repositories.** Core: `HOSTED_RELAY` is `relay.mesimon.dev:443`, so the
+sign-in opens on `Relay: relay.mesimon.dev:443`. `RelayEndpoint::parse` keeps 8443 as its
+default and `display()` is unchanged (it prints any port but 8443), so the field round-trips;
+no special case for the hosted name. Two goldens reminted; `docs/REMOTE-CONTROL.md` and
+`site/relay/` name the port.
+
+Relay (`mesimon-relay`, branch `msmn/T-519-teams-on-443`): `relay/src/shared.rs` is a TLS
+front on one `TcpListener`. It reads each ClientHello with `rustls::server::Acceptor` before
+any handshake, recording every byte. The Teams name continues its handshake on the front's
+thread (`Accepted::into_connection`) into the same `exchange`, socket limits and relay mutex
+as the Teams port. The browser's name sends the socket and the recorded bytes over a tokio
+channel to the web runtime, which replays them into a `tokio_rustls` handshake of its own and
+serves the connection with hyper-util's auto builder with upgrades, the service axum-server
+runs. Any other name, or none (a client dialling an IP address), is closed.
+`serve --listen-shared ADDR --teams-host NAME` takes `--web-listen`'s place, so the browser
+app has exactly one door and every phone and host meet in one in-memory hub.
+`mesimon_relay::serve(relay, Listeners, cert, key)` is the one entry `main` and `board_e2e`
+share. Container: `SHARED_PORT`. Hosted compose: `443:8445` and `8443:8443`; 8444 is not
+listened on.
+
+**Why a replay for the browser and not for Teams.** Teams is blocking std I/O, so the front
+hands it the accepted connection itself. The web side is async, and tokio-rustls takes no
+half-finished rustls connection; replaying the bytes into a fresh handshake is how an SNI
+proxy does it and keeps the web side's TLS its own. An async front would have pushed the
+blocking framer across a sync bridge without its read timeouts.
+
+**Decided against the ticket's sketch.** No `--web-host`: the browser's name is the origin's
+host, because a flag that disagreed with the origin would 403 every request. No second
+`ServerConfig` with ALPN `h2`: the browser port has always advertised no ALPN, so browsers
+speak HTTP/1.1 and the WebSocket upgrade is the one that works; offering h2 would move the
+control socket onto RFC 8441 extended CONNECT, which nothing here enables.
+
+**Order and the old port.** Ship the relay before a release carries the new default: until
+then 443 is the browser listener, and a Teams frame there reads an HTTP 400 as an invalid
+request. 8443 stays published until 2027-10: a Mac that signed in before keeps
+`relay.mesimon.dev:8443` in its device file, and nothing rewrites a stored endpoint (signing
+out and in again picks up 443).
+
+**Verified:** the relay's unit tests (the Teams name completes a handshake on the front,
+another name or none is closed, the browser's name reaches a router through the replay with a
+GET and a WebSocket); `board_e2e` through the shared port alone; `mesophon.rs`'s two
+non-browser e2es and `postgres.rs` on the ports of their own; `deploy/smoke.sh` on a local
+image (the page 200 on its name and 403 on another Host, another name closed, a Teams frame
+answered `denied`, both ports presenting the certificate). **Owed, the author's:**
+`deploy/ship.sh`; the `pf` check in `deploy/README.md` §6 (block outbound 8443, sign in on
+443, pair a phone); then the release, with a CHANGELOG line, and the site publish after it.
