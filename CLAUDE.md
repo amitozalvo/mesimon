@@ -86,7 +86,10 @@ exempt from `unwrap_used` via `clippy.toml`. Say so **before** opening Docker De
 
 **Release order**: bump + CHANGELOG → commit → `MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3
 -B ci/test-run.py` → tag → push → `ci/release.sh`. Never verify before the bump — the bump
-relinks every crate and the run is thrown away. The runner stamps `target/suite-passed.json`
+relinks every crate and the run is thrown away. From the tag on, the author runs **one
+command, the relay repository's `deploy/ship.sh all`** (`--dry-run` runs every check): the
+relay, then the tag, push and `ci/release.sh`, which publishes the site. `ci/release.sh` refuses
+while the live relay lacks a change to what it serves (`ci/check-relay.sh` reads its `/version`). The runner stamps `target/suite-passed.json`
 (HEAD sha + the tmux that drove it, by path and hash) and `release.sh` skips its own suite when
 the stamp matches; `MESIMON_RELEASE_RETEST=1` overrides. Releases are cut locally, not on a
 runner. **Both Docker steps are paused by the author** until they say Windows/WSL2 is
@@ -561,6 +564,9 @@ tags are unique and newest-first, and the top entry is `v{CARGO_PKG_VERSION}`.
   this repo (CONTRIBUTING.md records the CLA rule). `mt/` is gitignored research scratch.
   Relay work happens in a worktree of its own, never in the author's relay checkout:
   `mesimon-relay/CLAUDE.md` has the recipe.
+- **A ticket that touches `crates/mesimon-team` carries its relay half** on a relay branch
+  named after the same ticket (`msmn/<KEY>-…` in `mesimon-relay`), built and tested against
+  this branch, so nothing is owed at release time.
 - **The three README promises.** A strict write allowlist: mesimon writes to `<repo>/.mesimon`,
   the state dir, `$GIT_DIR/info/exclude`, the worktrees it cuts and the remote-tracking refs an
   opt-in fetch updates, and nowhere else. No config mutation: `doctor` prints fixes and never

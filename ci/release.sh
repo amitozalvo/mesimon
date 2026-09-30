@@ -13,6 +13,8 @@
 #   * the tag must exist, point at HEAD, and match the workspace version
 #   * the tag must already be pushed, so the release cannot describe a commit
 #     nobody else can fetch
+#   * the live relay must already carry every change to what it serves
+#     (ci/check-relay.sh), so a release never talks to a relay that predates it
 #   * the full suite and clippy must pass, with tmux REQUIRED (a skipped e2e
 #     suite is a gate that certifies nothing)
 #   * the suite must pass on Linux too, in Docker, against the tmux a distro
@@ -32,6 +34,7 @@
 #         MESIMON_RELEASE_RETEST=1 ci/release.sh   run the suite here even when
 #                                                  ci/test-run.py has stamped a
 #                                                  pass at HEAD on the bundled tmux
+#         MESIMON_RELAY_ORIGIN=none ci/release.sh  without asking the live relay
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -108,6 +111,14 @@ notes_head=$(grep -m1 -E "^## $tag( — | - )[0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGE
 notes_date=${notes_head##* }
 [ "$notes_date" = "$(date +%F)" ] || \
   echo "note: CHANGELOG.md dates $tag $notes_date; today is $(date +%F)"
+
+# The relay ships before the release that needs it (T-526): an older relay
+# answers a new wire request InvalidRequest, and the phone's page rides its
+# image. The live relay says which core commit it was built from, and git
+# says whether anything it serves changed since. Asked here, before anything
+# slow, and on every road to a release, deploy/ship.sh all or by hand.
+step "the live relay is current"
+ci/check-relay.sh
 
 # --- the gate ---------------------------------------------------------------
 

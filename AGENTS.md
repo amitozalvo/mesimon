@@ -64,6 +64,9 @@ Preserve these boundaries:
   its Apache clients. Do not bring relay code into this repository. `mt/` is gitignored research
   scratch, not project content. Relay work happens in a worktree of its own, never in the
   author's relay checkout: `mesimon-relay/AGENTS.md` has the recipe.
+- A ticket that touches `crates/mesimon-team` carries its relay half on a relay branch named
+  after the same ticket (`msmn/<KEY>-…` in `mesimon-relay`), built and tested against this
+  branch, so nothing is owed at release time.
 - `web/mesophon` has no build step: the relay serves it as it is under a CSP with no inline
   style or script, so styling stays in `style.css` and Preact/htm stay vendored plain modules
   with no bare imports (`web/mesophon/vendor/README.md`).
@@ -141,7 +144,10 @@ Additional targeted gates:
 - Linux suite: `ci/test-linux.sh` (requires Docker).
 - Linux release artifacts: `ci/build-linux.sh`.
 - Release rehearsal: `ci/release.sh --dry-run`; follow the script's current Docker policy and
-  never publish as part of an ordinary development task.
+  never publish as part of an ordinary development task. The author releases with one command,
+  the relay repository's `deploy/ship.sh all` (`--dry-run` runs every check): the relay, then
+  the tag, push and `ci/release.sh`, which refuses while the live relay lacks a change to what
+  it serves (`ci/check-relay.sh`).
 - Homebrew formula: `ci/homebrew/mesimon.rb` is the template `release.sh` fills and pushes to
   `amitozalvo/homebrew-tap`; its header gives the local-tap check for a change.
 - mesimon.dev: `site/` is the page, `ci/site.sh` builds it into `dist/site` and checks that every

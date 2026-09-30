@@ -15921,3 +15921,9 @@ and the relay's own contract has the recipe for working on it from a scratchpad 
 
 **Not undone:** the moved text is still in this repository's git history, which is public. This
 ticket changes what the tree says from here on, not what was already pushed.
+
+## One ship command, and a release that refuses a relay behind it (T-526, 2026-09-30, "One ship command: relay, then core, then the site, in order, with the checks that make the order safe")
+
+`ci/check-relay.sh` compares the live relay's `GET /version` (the core commit it was built
+against) with this history, and `ci/release.sh` runs it before anything slow. Relay half:
+see mesimon-relay (T-526).
