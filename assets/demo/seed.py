@@ -149,7 +149,7 @@ class Wire:
         return reply
 
 
-def board(repo, tape="demo"):
+def board(repo, tape="demo", start=True):
     key_file = os.environ.get("DEMO_KEY_FILE")
     tickets = BOARDS[tape]
     if key_file:
@@ -169,6 +169,9 @@ def board(repo, tape="demo"):
     # The first step into an agent practises the way back first; the person
     # on the tape has done that once already (agent.tape steps in).
     w.ask({"cmd": "gate_passed"})
+    # ci/sandbox.sh with the real claude starts none: an agent spends usage.
+    if not start:
+        return
     # One agent already at work, so the board opens with a spinner on it.
     at_work = ids[AT_WORK.get(tape, BUSY)]
     tree = sign_in(w, repo, key_file, at_work) if key_file else None

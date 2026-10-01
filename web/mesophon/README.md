@@ -5,9 +5,9 @@ prompt/receipt protocol, including main’s queued follow-ups. Build generated a
 There is no build step for the page itself: Preact and htm are vendored as plain
 modules (`vendor/README.md`), fonts are self-hosted (`fonts/`), and every style
 is in `style.css`, because the relay's CSP allows no inline style or script.
-The relay's image clones this repository from GitHub; to try unpushed changes in
-a local relay, build its image from this checkout with `ci/build-local-image.sh`
-in `mesimon-relay`.
+The relay's image clones this repository from GitHub; to try unpushed changes,
+`ci/sandbox.sh` runs a local relay that serves this directory as it is (a
+reload shows an edit) beside a host board built from this checkout.
 
 - `connection.js`: authentication, request correlation, deadlines and reconnect.
 - `identity.js`: atomic IndexedDB device identity, remembered board selection,

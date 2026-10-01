@@ -1,0 +1,90 @@
+# The local sandbox: a relay and its PostgreSQL, and a mesimon host signed in
+# to that relay, all in Docker and apart from this machine's own boards and
+# sign-in. Driven by ci/sandbox.sh; see the comment at its top.
+#
+# Its own project, volumes and port: the author's long-lived local relay
+# (project `mesimon-teams`, 8443/8444) is never touched.
+name: mesimon-sandbox
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mesimon
+      POSTGRES_USER: mesimon
+      # Throwaway: the database listens on a socket in a volume only these
+      # two containers mount, and publishes no port.
+      POSTGRES_PASSWORD: sandbox
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - pgsocket:/var/run/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mesimon -d mesimon"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  relay:
+    # Built from the sibling mesimon-relay checkout and this working tree by
+    # `ci/sandbox.sh relay`.
+    image: ${MESIMON_SANDBOX_RELAY_IMAGE:-mesimon-teams-relay:sandbox}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      host:
+        condition: service_started
+    # In the host's network: the host reaches Remote Control through the
+    # browser port, and over HTTP mesimon sends its credential to localhost
+    # only. So the relay is the host's localhost, as a relay on a Mac is.
+    network_mode: service:host
+    environment:
+      DATABASE_URL: host=/var/run/postgresql user=mesimon password=sandbox dbname=mesimon
+      # Only labels the generated certificate; the pin is what admits it.
+      TLS_HOSTNAME: localhost
+      # The browser's origin must be the address it types, port included, and
+      # the relay listens on that same port inside the container.
+      WEB_ORIGIN: http://localhost:${MESIMON_SANDBOX_PORT:-8454}
+      WEB_PORT: ${MESIMON_SANDBOX_PORT:-8454}
+      WEB_LISTEN_ADDRESS: 127.0.0.1
+    volumes:
+      - pgsocket:/var/run/postgresql
+      - relaytls:/var/lib/relay/tls
+      # The page is served from disk on every request: an edit here is a
+      # browser reload away. The Wasm in pkg/ comes from ci/build-mesophon.sh.
+      - ../../web/mesophon:/usr/local/share/mesophon:ro
+
+  host:
+    build:
+      context: .
+      dockerfile: host.Dockerfile
+      args:
+        RUST_VERSION: ${MESIMON_SANDBOX_RUST:-1}
+    image: mesimon-sandbox-host
+    init: true
+    # The relay's browser port, published from this network (see `relay`).
+    ports:
+      - "127.0.0.1:${MESIMON_SANDBOX_PORT:-8454}:${MESIMON_SANDBOX_PORT:-8454}"
+    environment:
+      # Set by ci/sandbox.sh to the README clips' scripted stand-in when
+      # claude has no sign-in; left unset, the agents are the real claude.
+      - MESIMON_CLAUDE_BIN
+      - MESIMON_NO_UPDATE_CHECK=1
+    volumes:
+      # The checkout, read-only: cargo builds into `target`, never into it.
+      - ../..:/work:ro
+      # Its git directory at the same path, so a ticket worktree's `.git`
+      # pointer resolves and `mesimon --version` names the commit.
+      - ${MESIMON_SANDBOX_GIT:?run ci/sandbox.sh}:${MESIMON_SANDBOX_GIT:?run ci/sandbox.sh}:ro
+      - registry:/usr/local/cargo/registry
+      - target:/target
+      # The sandbox's HOME: its board state, its device identity and pairing
+      # survive a restart; `ci/sandbox.sh reset` removes them.
+      - home:/root
+
+volumes:
+  pgdata:
+  pgsocket:
+  relaytls:
+  registry:
+  target:
+  home:

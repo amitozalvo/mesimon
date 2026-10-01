@@ -16470,3 +16470,58 @@ Sleeping does not, a wake to Spawning counts again) and `an_archived_tickets_age
 W3's start is refused, naming both and `sleep_agent`; after W2 is parked, W2 is out of
 `crown_started` and W3's start goes through with `budget_left` 0, before the archive. The
 settings golden carries the new hint.
+
+## A Docker sandbox for trying unreleased work, Remote Control included (T-542, 2026-10-01, "local manual testing of mesimon + remote control UI": "need to be able to see changes before we publish them especially the remote control which now has no real way of doing so")
+
+**Seen.** A Mesophon change could be seen only after a relay deploy: the author's Mac is signed
+in to the hosted relay, whose page is the published one, and the long-lived local relay
+(`mesimon-teams`) rebuilds its whole image for a one-line page edit and wants this Mac signed in
+to it instead.
+
+**Shipped.** `ci/sandbox.sh` runs Compose project `mesimon-sandbox` from `ci/sandbox/`:
+PostgreSQL, the relay built from the sibling `mesimon-relay` checkout and this working tree
+(`ci/build-local-image.sh mesimon-teams-relay:sandbox`), and a Debian host that builds mesimon
+from the read-only mounted checkout into a `target` volume and runs it with its own `HOME`.
+`up` seeds the README demo's board (`assets/demo/seed.py`), signs the host in to the sandbox
+relay, enables Remote Control and prints a `/#pair=` link; `tui`, `pair`, `build`, `relay`,
+`wasm`, `down` and `reset` do the rest. The page is http://localhost:8454.
+
+- **The relay serves the checkout.** The relay's `--web-assets` is a `ServeDir`, read per
+  request, so `web/mesophon` is bind-mounted over it read-only: a page edit is a reload. Only
+  `crates/mesimon-web` needs a step (`wasm`), and only a relay change rebuilds its image.
+- **The relay lives in the host's network.** The host reaches Remote Control through the
+  relay's browser port, and `RelayClient::control_socket` sends a credential over HTTP to
+  `localhost` alone. Rather than loosen that, the relay runs with `network_mode: service:host`,
+  so the topology is a Mac running a local relay. The relay joins the host and not the other
+  way round so `relay` recreates only the relay; the host's processes, its private tmux among
+  them, survive a relay rebuild.
+- **The agents are the real claude, on Sonnet at medium effort, once there is a sign-in.**
+  `claude setup-token` (the author's subscription) saved alone in
+  `~/.config/mesimon/sandbox-claude-token` reaches the container over stdin, and the sandbox's
+  `.profile` reads it into `CLAUDE_CODE_OAUTH_TOKEN`, so it is on no command line. `up` adds a
+  machine tier `sonnet` (model `sonnet`, effort `medium`) and makes it the default, once.
+  With a token `up` starts no agent, since an agent spends usage; without one,
+  `MESIMON_CLAUDE_BIN` is the demo's stand-in, which spends nothing, and `up` starts it on one
+  ticket. Claude Code is installed in the image under `/opt/claude`, because the `HOME` volume
+  would hide `/root`. Its first-run screens are answered in `/root/.claude.json`, and trusting
+  `/root` covers every worktree under the state dir (measured: no trust dialog in a worktree,
+  2.1.286).
+- **`up` always restarts the daemon**, so the newest build and the profile's environment reach
+  every new pane. A paired browser reconnects by itself, and so does a TUI.
+- **Isolation.** The sandbox has its own project, volumes and port, and the author's
+  `mesimon-teams` relay, this Mac's boards and its sign-ins are never touched. `reset` deletes
+  the board, the device, the relay's database and its certificate, and keeps cargo's registry
+  and target, so the next `up` is not a cold build. There is one sandbox per machine: `up` from
+  a ticket worktree moves it there, and the git common dir is mounted at its own path so the
+  worktree's `.git` pointer resolves.
+
+**Not done.** The sandbox is for a phone only through HTTPS, which it does not set up: it is
+a desktop browser on this Mac (a phone-width window serves). `seed.py`'s `board` grew a
+`start` flag and nothing else.
+
+**Verified.** `up` from cold to a pairing link; Playwright paired a 400-px browser and saw Now
+with the stand-in at work, then the ticket's output. A file written into `web/mesophon` was
+served at once and 404 once removed. `build`, a relay recreate and a host recreate each came
+back Live with the pairing kept. With a placeholder token, a promptless spawn started claude
+in its worktree as "Sonnet 5.5 with medium effort" (`--model sonnet --effort medium`) with no
+first-run screen. The TUI was drawn in a detached tmux inside the host.

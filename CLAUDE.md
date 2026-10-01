@@ -74,6 +74,7 @@ cargo run                                             # TUI for cwd; `-- daemon 
 MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui     # remint goldens after a deliberate visual change
 python3 -B ci/test-run.py                             # bounded runner: 20-min deadline, lock, fixture audit
 ci/test-linux.sh                                      # whole suite on Debian 12 in Docker (~90 s warm)
+ci/sandbox.sh [up|tui|pair|build|relay]               # Docker sandbox: this tree's daemon + relay + Remote Control page
 ci/build-linux.sh                                     # the two Linux release binaries, cross-linked here
 ci/release.sh --dry-run                               # the full release gate, minus the upload
 assets/demo/record.sh [tape]                          # re-record a README GIF from <tape>.tape, default demo (vhs)

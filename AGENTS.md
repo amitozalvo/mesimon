@@ -144,6 +144,8 @@ Additional targeted gates:
 - Deliberate TUI rendering change: `MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui`, followed
   by visual inspection of every golden diff.
 - Linux suite: `ci/test-linux.sh` (requires Docker).
+- Trying unreleased work by hand, Remote Control included: `ci/sandbox.sh` (requires Docker and
+  the `mesimon-relay` checkout beside this one); its header lists what each change needs.
 - Linux release artifacts: `ci/build-linux.sh`.
 - Release rehearsal: `ci/release.sh --dry-run`; follow the script's current Docker policy and
   never publish as part of an ordinary development task. The author releases with one command,
