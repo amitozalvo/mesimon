@@ -278,6 +278,27 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         Span::styled(previous, d2),
         Span::styled(created, d2),
     ];
+    // What the ticket's agents have cost (T-327): mesimon's estimate, and the
+    // words beside it say whose prices — a plan subscriber pays none of it.
+    // A model with no published price here is counted in tokens instead.
+    if let Some(c) = app.cost_of(ticket.id) {
+        use mesimon_core::cost::{tokens_word, usd_word};
+        let words = match (c.usd > 0.0, c.unpriced > 0) {
+            (true, false) => {
+                vec![(usd_word(c.usd), d2), (" at API prices".to_string(), app.theme.dim3())]
+            }
+            (true, true) => vec![
+                (usd_word(c.usd), d2),
+                (
+                    format!(" at API prices + {} tokens unpriced", tokens_word(c.unpriced)),
+                    app.theme.dim3(),
+                ),
+            ],
+            (false, _) => vec![(format!("{} tokens", tokens_word(c.tokens)), d2)],
+        };
+        ident_spans.push(Span::styled(" ∙ ".to_string(), app.theme.dim3()));
+        ident_spans.extend(words.into_iter().map(|(t, st)| Span::styled(t, st)));
+    }
     // The crown (T-411): the page says so in the crown's own tint, and
     // names the key that takes it back.
     if app.board.is_crowned(ticket.id) {

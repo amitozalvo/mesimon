@@ -556,6 +556,7 @@ mod tests {
                 crown_touches: Vec::new(),
                 machine_tiers: Default::default(),
                 usage: Default::default(),
+                costs: Default::default(),
                 shell_env: Default::default(),
                 git: Default::default(),
                 pending: Vec::new(),

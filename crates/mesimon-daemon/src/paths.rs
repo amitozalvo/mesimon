@@ -83,6 +83,11 @@ impl Paths {
     pub fn started_file(&self) -> PathBuf {
         self.state_dir.join("started.json")
     }
+    /// What each ticket's agents have spent, in tokens by hour and model, and
+    /// how far each transcript has been read (T-327).
+    pub fn costs_file(&self) -> PathBuf {
+        self.state_dir.join("costs.json")
+    }
     /// This board's overrides of the machine's `prefs.json` (T-361): the
     /// TUI's file, not the daemon's, under the state dir so it is private to
     /// the machine and never rides a team board.

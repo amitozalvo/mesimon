@@ -199,6 +199,9 @@ const CODEX_CLEANUP_STALE_MS: u64 = 60_000;
 const SLEEP_MIN_AGE_MS: u64 = 60_000;
 /// RSS aggregate refresh (10 s) — one `ps` fork, only while panes exist.
 const RSS_TICKS: u64 = 40;
+/// How often the tickets' transcripts are read for their cost (T-327) when
+/// no turn's end asked sooner: 30 s, so a long turn's figure still moves.
+const COST_TICKS: u64 = 120;
 /// A sleep-safe ticket whose sessions have all been asleep this long feeds
 /// the header's archive suggestion (same offer-not-action shape as sleep).
 const ARCHIVE_SUGGEST_MS: u64 = 3_600_000;
@@ -331,6 +334,9 @@ enum Msg {
     Control(u64, crate::team::control_io::Event, Sender<()>),
     /// A quota probe came back (T-327): whose, and what it said.
     UsageRead(Provider, crate::usage::Outcome),
+    /// A pass over the tickets' transcripts landed (T-327): what each read
+    /// found, to fold into the cost ledger.
+    CostScanned(Vec<crate::cost::Done>),
 }
 
 pub struct Daemon {
@@ -373,6 +379,8 @@ pub struct Daemon {
     queue_barred: bool,
     /// `started.json` (T-441): the same bar. The set filters either way.
     started_barred: bool,
+    /// `costs.json` (T-327): the same bar. The ledger counts either way.
+    costs_barred: bool,
     /// One attention machine per session, keyed by session UUID.
     machines: HashMap<uuid::Uuid, Machine>,
     /// Words mesimon owes a pane an ack for, by session — the ONE ledger
@@ -438,6 +446,13 @@ pub struct Daemon {
     /// `crate::started`): the census leaves these out after the record that
     /// held one is gone or has moved on.
     started: std::collections::HashSet<String>,
+    /// What each ticket's agents have spent (T-327, `crate::cost`): every
+    /// transcript they held, how far it is read, tokens by hour and model.
+    costs: crate::cost::Ledger,
+    /// A pass over the transcripts is on a worker.
+    cost_scanning: bool,
+    /// A turn ended: read the transcripts on the next bucket, not the clock.
+    cost_due: bool,
     /// Provider-owned passive observation cursors; never persisted.
     recovery: HashMap<uuid::Uuid, Box<dyn AgentRecovery>>,
     /// A person has seen the unknown-cleanup warning for this exact generation.
@@ -819,6 +834,8 @@ pub fn run(paths: Paths) -> Result<()> {
     let (started, started_notices, started_barred) =
         crate::started::load_or_recover(&paths, &board.sessions);
     notices.extend(started_notices);
+    let (costs, cost_notices, costs_barred) = crate::cost::load_or_recover(&paths);
+    notices.extend(cost_notices);
     let queued: Vec<QueuedAsk> = queue_entries
         .into_iter()
         .filter_map(|e| {
@@ -952,6 +969,7 @@ pub fn run(paths: Paths) -> Result<()> {
         worktrees_barred,
         queue_barred,
         started_barred,
+        costs_barred,
         machines,
         owed: HashMap::new(),
         queued,
@@ -964,6 +982,9 @@ pub fn run(paths: Paths) -> Result<()> {
         external_scanning: false,
         external_rescan_wanted: false,
         started,
+        costs,
+        cost_scanning: false,
+        cost_due: true,
         recovery: HashMap::new(),
         cleanup_resume_offers: HashMap::new(),
         reaping: HashMap::new(),
@@ -1127,6 +1148,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ShellEnvCaptured(_) => "shell env captured".into(),
             Msg::ExternalScanned(_) => "external scanned".into(),
             Msg::UsageRead(p, _) => format!("usage read {}", p.word()).into(),
+            Msg::CostScanned(_) => "costs scanned".into(),
             Msg::GitSampled(..) => "git sampled".into(),
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
@@ -1161,6 +1183,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
             Msg::ExternalScanned(items) => d.on_external_scanned(items),
             Msg::UsageRead(p, outcome) => d.on_usage_read(p, outcome),
+            Msg::CostScanned(done) => d.on_cost_scanned(done),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
@@ -2330,6 +2353,9 @@ impl Daemon {
             changed |= stage!("hear_deferred", self.hear_deferred());
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
             changed |= stage!("drive_usage", self.drive_usage(now));
+            if !self.cost_scanning && (self.cost_due || self.ticks.is_multiple_of(COST_TICKS)) {
+                stage!("queue_cost_scan", self.queue_cost_scan());
+            }
             let a = stage!("archive_figures", self.archive_figures());
             if a != self.archive_cache {
                 self.archive_cache = a;
@@ -3249,7 +3275,10 @@ impl Daemon {
             // The quota moves at a turn's end, and a rate-limit stop means a
             // window is full (T-327). A Claude hook is Claude's quota.
             match &sig {
-                Signal::Stop { .. } => self.usage.turn_ended(Provider::Claude),
+                Signal::Stop { .. } => {
+                    self.usage.turn_ended(Provider::Claude);
+                    self.cost_due = true;
+                }
                 Signal::StopFailure { class: attention::StopFailureClass::RateLimit } => {
                     self.usage.limited(Provider::Claude)
                 }
@@ -5582,6 +5611,7 @@ impl Daemon {
             crown_touches: self.recent_crown_touches(),
             machine_tiers: self.machine_tiers.tiers.clone(),
             usage: self.usage.view(),
+            costs: self.costs.view(now_ms()),
         }
     }
 
@@ -5940,6 +5970,52 @@ impl Daemon {
             return;
         }
         let _ = store::save_sessions(&self.paths, &self.board);
+    }
+
+    /// The single write path for `costs.json` (T-327).
+    fn persist_costs(&self) {
+        if self.costs_barred {
+            return;
+        }
+        let _ = crate::cost::save(&self.paths, &self.costs);
+    }
+
+    /// Read what the tickets' transcripts grew since the last pass, on a
+    /// worker (T-327). Every transcript a session points at now is learned
+    /// first: the ledger keeps it after the record forgets it.
+    fn queue_cost_scan(&mut self) {
+        self.cost_due = false;
+        let learned: Vec<_> = self
+            .board
+            .sessions
+            .iter()
+            .filter_map(|r| crate::cost::transcript_of(r).map(|(p, codex)| (r.ticket, p, codex)))
+            .collect();
+        for (ticket, path, codex) in learned {
+            self.costs.learn(ticket, &path.display().to_string(), codex);
+        }
+        let jobs = self.costs.jobs();
+        if jobs.is_empty() {
+            return;
+        }
+        self.cost_scanning = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::CostScanned(crate::cost::scan(jobs, now_ms())));
+        });
+    }
+
+    /// A pass landed: fold it in, drop the tickets the board no longer has,
+    /// save, and say so when a figure moved.
+    fn on_cost_scanned(&mut self, done: Vec<crate::cost::Done>) {
+        self.cost_scanning = false;
+        let live: std::collections::HashSet<ulid::Ulid> =
+            self.board.tickets.iter().map(|t| t.id).collect();
+        let moved = self.costs.apply(done) | self.costs.keep(&live);
+        if moved {
+            self.persist_costs();
+            self.broadcast();
+        }
     }
 
     /// The single write path for `started.json`.

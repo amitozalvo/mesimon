@@ -218,6 +218,39 @@ impl UsageLine {
     }
 }
 
+/// What a card's corner says (T-327): how long the card has sat, or what its
+/// ticket's agents have cost — `$` on the board flips it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardCorner {
+    #[default]
+    Age,
+    Cost,
+}
+
+impl CardCorner {
+    pub const fn key(self) -> &'static str {
+        match self {
+            CardCorner::Age => "age",
+            CardCorner::Cost => "cost",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "age" => Some(CardCorner::Age),
+            "cost" => Some(CardCorner::Cost),
+            _ => None,
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            CardCorner::Age => CardCorner::Cost,
+            CardCorner::Cost => CardCorner::Age,
+        }
+    }
+}
+
 /// When the quota line names a window's reset time (T-327).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UsageResets {
@@ -394,6 +427,8 @@ pub(crate) struct Prefs {
     pub usage_resets: UsageResets,
     pub usage_claude: bool,
     pub usage_codex: bool,
+    /// What the cards' corner says: age by default, cost on `$` (T-327).
+    pub card_corner: CardCorner,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -435,6 +470,7 @@ impl Default for Prefs {
             usage_resets: UsageResets::Near,
             usage_claude: true,
             usage_codex: true,
+            card_corner: CardCorner::Age,
             doc: Map::new(),
         }
     }
@@ -473,6 +509,7 @@ const USAGE_MODEL_KEY: &str = PrefKey::UsageModel.name();
 const USAGE_RESETS_KEY: &str = PrefKey::UsageResets.name();
 const USAGE_CLAUDE_KEY: &str = PrefKey::UsageClaude.name();
 const USAGE_CODEX_KEY: &str = PrefKey::UsageCodex.name();
+const CARD_CORNER_KEY: &str = PrefKey::CardCorner.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -614,6 +651,7 @@ impl Prefs {
             PrefKey::UsageResets => self.usage_resets.key(),
             PrefKey::UsageClaude => onoff(self.usage_claude),
             PrefKey::UsageCodex => onoff(self.usage_codex),
+            PrefKey::CardCorner => self.card_corner.key(),
         }
     }
 
@@ -690,6 +728,13 @@ impl Prefs {
             .is_some_and(|v| UsageResets::from_key(v).is_none())
         {
             doc.insert(USAGE_RESETS_KEY.into(), Value::from(self.usage_resets.key()));
+        }
+        if !doc
+            .get(CARD_CORNER_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| CardCorner::from_key(v).is_none())
+        {
+            doc.insert(CARD_CORNER_KEY.into(), Value::from(self.card_corner.key()));
         }
         for (key, s) in [
             (NOTIFY_SOUND_NEEDS_YOU_KEY, self.notify_sound_needs_you),
@@ -792,7 +837,8 @@ impl BoardPrefs {
             | PrefKey::UsageModel
             | PrefKey::UsageResets
             | PrefKey::UsageClaude
-            | PrefKey::UsageCodex => false,
+            | PrefKey::UsageCodex
+            | PrefKey::CardCorner => false,
             _ => self.bool(key).is_some(),
         }
     }
@@ -992,6 +1038,11 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let usage_model = flag(USAGE_MODEL_KEY, true);
     let usage_claude = flag(USAGE_CLAUDE_KEY, true);
     let usage_codex = flag(USAGE_CODEX_KEY, true);
+    let card_corner = doc
+        .get(CARD_CORNER_KEY)
+        .and_then(Value::as_str)
+        .and_then(CardCorner::from_key)
+        .unwrap_or_default();
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
@@ -1027,6 +1078,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         usage_resets,
         usage_claude,
         usage_codex,
+        card_corner,
         doc,
     };
     if schema > SCHEMA {

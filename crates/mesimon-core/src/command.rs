@@ -1527,6 +1527,12 @@ pub enum Response {
         /// nothing read and nothing wanted, which draws no line.
         #[serde(default)]
         usage: crate::usage::Usage,
+        /// What each ticket's agents have spent (T-327): tokens off their
+        /// transcripts, priced at the API list price where this build knows
+        /// the model. An estimate, and the board says so. Absent from an
+        /// older daemon parses as none.
+        #[serde(default)]
+        costs: Vec<crate::cost::TicketCost>,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the

@@ -369,15 +369,17 @@ no tag registry writes, no session read at any tier. `authorize()` is real for `
 **Schema evolution.** Every new `SessionRecord` field must be `#[serde(default)]` — the defaults
 *are* the migration (back-compat fixture test in `core/src/board.rs`). A parse error
 **quarantines** the file (bytes preserved as `<name>.quarantine-<ms>`, board up on a default,
-notice in the advisory row) rather than killing the daemon. Each of the six state files carries
+notice in the advisory row) rather than killing the daemon. Each of the seven state files carries
 its own `schema_version`; a file from a newer build is left untouched and its writes are
 **barred** rather than downgraded. Every save goes through
-`persist_columns`/`persist_sessions`/`persist_worktrees`/`persist_queue`/`persist_started`, which
-honour the bars — never call `store::save_*`, `worktree::save_bindings`, `askqueue::save` or
-`started::save` directly. The ask queue's starts and wakes ride `queue.json` (T-418) and come
+`persist_columns`/`persist_sessions`/`persist_worktrees`/`persist_queue`/`persist_started`/
+`persist_costs`, which honour the bars — never call `store::save_*`, `worktree::save_bindings`,
+`askqueue::save`, `started::save` or `cost::save` directly. The ask queue's starts and wakes ride `queue.json` (T-418) and come
 back after a restart; a queued PANE ask is memory-only on purpose and dies with the daemon.
 `started.json` (T-441) keeps every conversation a spawned session held, out of the External
-drawer after the record is gone. `SessionState` is matched
+drawer after the record is gone; `costs.json` (T-327) keeps every transcript a ticket's sessions
+held, with how far it is read and its tokens by hour. The machine's quota reading is not a state
+file: `~/.local/state/mesimon/usage.json` is a shared cache, merged per provider. `SessionState` is matched
 non-exhaustively in places: use `state.is_live()` for working-set membership and
 `state.has_pane()` for pane existence. `Sleeping` is live-but-parked.
 

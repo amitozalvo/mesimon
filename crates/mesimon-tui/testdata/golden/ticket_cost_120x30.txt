@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago ∙ $12.10 at API prices
+
+
+  PREVIEW                                                                                  SESSIONS                  2
+
+                       ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                   ⠋ ✻ claude               >1y
+                        ██▀▄▀▀▀▀   ▄▀▀▀                                                   ◦ $ bash                 >1y
+                       ▄▀███▀▄▄▄▄▄▄▀█▀▄    ▄▄▄▄▄▄▄▄▄                                       x sleep
+                     ▄▀████████████████▀▄  █▀▀▀▀████
+                     █████▀████████▀█████  ██▀▀▀████
+                     █████▀▀▀██████▀▀▀███  ██▀▀█████
+                     ▀▀▀██████▀▀██████▀▀▀▀▀▀▀███████▄
+                      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+    ● working
+    nothing said yet ∙ the first words land when the turn does
+
+
+
+
+
+
+
+
+
+
+ jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown                                   ? keys

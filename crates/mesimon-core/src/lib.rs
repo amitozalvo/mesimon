@@ -18,6 +18,7 @@ pub mod claudemd;
 pub mod clock;
 pub mod command;
 pub mod content;
+pub mod cost;
 pub mod diff;
 pub mod exe;
 pub mod fracindex;

@@ -4,10 +4,7 @@
 
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
 
-    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
-
-
-                           ╭─ USAGE ────────────────────────────────────────────────────────╮
+    Keymap validator      >╭─ USAGE ────────────────────────────────────────────────────────╮
                            │                                                                │
                            │   claude ∙ max                         official ∙ read 2m ago  │
                            │     5-hour             14%   resets 17:50                      │
@@ -18,10 +15,13 @@
                            │   codex                                                        │
                            │     sign-in expired ∙ run codex login in a shell, then r       │
                            │                                                                │
-                           ╰─────────────────────────── r read now ∙ s settings ∙ esc back ─╯
-
-
-
+                           │   this board                         estimate ∙ at API prices  │
+                           │     24 hours $3.40 ∙ 7 days $12.52 ∙ 30 days $12.52            │
+                           │     T-3 Fix OSC-11 detection             $12.10   5.2M tokens  │
+                           │     T-1 Decay treatments                   $0.42   48k tokens  │
+                           │     T-5 Grapheme truncation            unpriced   300k tokens  │
+                           │                                                                │
+                           ╰── jk select ∙ enter open ∙ r read now ∙ s settings ∙ esc back ─╯
 
 
 

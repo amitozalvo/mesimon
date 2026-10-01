@@ -509,7 +509,7 @@ fn dialog_open(app: &App) -> bool {
             Mode::Menu { .. }
                 | Mode::Settings { .. }
                 | Mode::Notifications { .. }
-                | Mode::Usage
+                | Mode::Usage { .. }
                 | Mode::Theme { .. }
                 | Mode::Archived { .. }
                 | Mode::External { .. }

@@ -13,15 +13,15 @@
    │   space     ticket page           r         rename                                  !         terminal         │
    │   /         search                ^o        crown                                   p         show replies     │
    │                                   tab       describe                                P         show every reply │
-   │                                   n         note                                                               │
-   │                                   ^t        tags                                  APP                          │
-   │                                   a         archive                                 esc       menu             │
-   │                                   z         snooze                                  q         quit             │
-   │                                   d         delete                                  ?         keys             │
+   │                                   n         note                                    $         show costs       │
+   │                                   ^t        tags                                                               │
+   │                                   a         archive                               APP                          │
+   │                                   z         snooze                                  esc       menu             │
+   │                                   d         delete                                  q         quit             │
+   │                                                                                     ?         keys             │
    │                                                                                     ^L        redraw           │
    │                                                                                     ^Z        suspend mesimon  │
    ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

@@ -6,6 +6,7 @@ pub mod askqueue;
 pub mod attachments;
 pub mod census;
 pub mod claudemd;
+pub mod cost;
 pub mod diff;
 pub mod feed;
 pub mod git;

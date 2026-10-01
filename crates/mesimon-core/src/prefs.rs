@@ -71,10 +71,13 @@ pub enum PrefKey {
     UsageResets,
     UsageClaude,
     UsageCodex,
+    /// What a card's corner says (T-327): its `age` (the default) or its
+    /// ticket's estimated `cost` — `$` on the board flips it.
+    CardCorner,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 34] = [
+    pub const ALL: [PrefKey; 35] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::FollowOs,
@@ -109,6 +112,7 @@ impl PrefKey {
         PrefKey::UsageResets,
         PrefKey::UsageClaude,
         PrefKey::UsageCodex,
+        PrefKey::CardCorner,
     ];
 
     /// The JSON key in both files.
@@ -148,6 +152,7 @@ impl PrefKey {
             PrefKey::UsageResets => "usage_resets",
             PrefKey::UsageClaude => "usage_claude",
             PrefKey::UsageCodex => "usage_codex",
+            PrefKey::CardCorner => "card_corner",
         }
     }
 
@@ -184,6 +189,7 @@ impl PrefKey {
                 | PrefKey::UsageResets
                 | PrefKey::UsageClaude
                 | PrefKey::UsageCodex
+                | PrefKey::CardCorner
         )
     }
 
@@ -224,6 +230,7 @@ impl PrefKey {
             PrefKey::UsageResets => "usage line's reset times",
             PrefKey::UsageClaude => "usage line's claude",
             PrefKey::UsageCodex => "usage line's codex",
+            PrefKey::CardCorner => "card corner",
         }
     }
 
@@ -241,6 +248,7 @@ impl PrefKey {
                 | PrefKey::Peek
                 | PrefKey::UsageLine
                 | PrefKey::UsageResets
+                | PrefKey::CardCorner
         )
     }
 }
@@ -279,6 +287,7 @@ mod tests {
                 PrefKey::UsageResets,
                 PrefKey::UsageClaude,
                 PrefKey::UsageCodex,
+                PrefKey::CardCorner,
             ]
         );
     }

@@ -584,6 +584,9 @@ pub enum Verb {
     Usage,
     UsageRefresh,
     SettingsUsage,
+    /// `$` on the board, and the Usage settings' last row: a card's corner
+    /// shows the ticket's estimated cost rather than its age.
+    CardCorner,
     UsageShow,
     UsageFiveHour,
     UsageWeekly,
@@ -944,7 +947,8 @@ impl SettingsSection {
             | Verb::UsageModel
             | Verb::UsageResets
             | Verb::UsageClaude
-            | Verb::UsageCodex => Self::Usage,
+            | Verb::UsageCodex
+            | Verb::CardCorner => Self::Usage,
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
@@ -1346,6 +1350,10 @@ pub struct Ctx {
     pub usage_summary: String,
     /// A read is in flight: `r` would only start a second.
     pub usage_reading: bool,
+    /// The cards' corner shows each ticket's cost, not its age (`$`).
+    pub card_cost: bool,
+    /// The Usage dialog has ticket rows to select and open.
+    pub usage_tickets: bool,
     /// The board runs in iTerm2, directly (no outer tmux): the rows that
     /// only iTerm2 answers say so when it is not.
     pub iterm2: bool,
@@ -2510,6 +2518,21 @@ static BOARD: &[Binding] = &[
                 "show every reply"
             }
         },
+        avail: always,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        // Overlay-only, the replies' reason (T-327): the corner of every
+        // card says what the ticket cost instead of how long it has sat, and
+        // back. A view preference the board itself shows working, kept in
+        // `prefs.json` like the replies' rung and also a Settings › Usage row.
+        keys: &[Key::Char('$')],
+        verb: Verb::CardCorner,
+        show: "$",
+        hint: |c| if c.card_cost { "show ages" } else { "show costs" },
         avail: always,
         class: Class::Plain,
         group: Group::View,
@@ -4531,6 +4554,19 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    MenuItem {
+        verb: Verb::CardCorner,
+        label: |c| format!("Card corner: {}", if c.card_cost { "cost" } else { "age" }),
+        detail: |c| {
+            if c.card_cost {
+                "each ticket's cost at API prices, an estimate ∙ $ on the board".into()
+            } else {
+                "how long the card has sat ∙ enter or $ shows its cost".into()
+            }
+        },
+        avail: always,
+        key: "$",
+    },
     // How a snoozed ticket comes back.
     MenuItem {
         verb: Verb::SnoozeQuiet,
@@ -5151,6 +5187,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::UsageResets,
             Verb::UsageClaude,
             Verb::UsageCodex,
+            Verb::CardCorner,
         ],
         SettingsSection::Behaviour => &[
             Verb::MergeTrain,
@@ -5225,6 +5262,7 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::UsageResets => PrefKey::UsageResets,
         Verb::UsageClaude => PrefKey::UsageClaude,
         Verb::UsageCodex => PrefKey::UsageCodex,
+        Verb::CardCorner => PrefKey::CardCorner,
         _ => return None,
     })
 }
@@ -5626,10 +5664,33 @@ static ARCHIVED: &[Binding] = &[
 /// `^k` as a second spelling of `Back` so the key that opened it closes it
 /// (the drawer's `e`, the archived list's `V`). `Act` does not mutate:
 /// nothing the daemon owns changes when a link opens.
-/// The Usage dialog (T-327): no rows to choose yet, so no `jk`; `r` reads
-/// every provider the settings name again now, `s` opens the line's
-/// settings, Esc goes back to the menu that opened it.
+/// The Usage dialog (T-327): `jk` and Enter pick one of this board's
+/// costliest tickets and open it, while there are any; `r` reads every
+/// provider the settings name again now, `s` opens the line's settings, Esc
+/// goes back to the menu that opened it.
 static USAGE: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: |c| c.usage_tickets,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "open",
+        avail: |c| c.usage_tickets,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 15,
+    },
     Binding {
         keys: &[Key::Char('r')],
         verb: Verb::UsageRefresh,
@@ -9578,6 +9639,7 @@ mod tests {
             Verb::UsageResets,
             Verb::UsageClaude,
             Verb::UsageCodex,
+            Verb::CardCorner,
         ];
         for item in SETTINGS_ITEMS {
             let expect = prefs.contains(&item.verb);

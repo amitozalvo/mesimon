@@ -6,19 +6,19 @@
 
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
 
-                            ╭─ KEYS ∙ board ──────────────────────────────────────────────╮
-                            │ MOVE AROUND                    VIEW                         │
-                            │   hjkl      move around          !         terminal         │
-                            │   enter     column settings      p         show replies     │
-                            │   /         search               P         show every reply │
-                            │                                                             │
-                            │ TICKETS                        APP                          │
-                            │   o         new ticket           esc       menu             │
-                            │   HJKL      move column          q         quit             │
-                            │   O         new column           ?         keys             │
-                            │   r         rename column        ^L        redraw           │
-                            │   d         delete column        ^Z        suspend mesimon  │
-                            ╰─────────────────────────────────────────────────────────────╯
+             ╭─ KEYS ∙ board ─────────────────────────────────────────────────────────────────────────────╮
+             │ MOVE AROUND                    VIEW                            APP                         │
+             │   hjkl      move around          !         terminal              esc       menu            │
+             │   enter     column settings      p         show replies          q         quit            │
+             │   /         search               P         show every reply      ?         keys            │
+             │                                  $         show costs            ^L        redraw          │
+             │ TICKETS                                                          ^Z        suspend mesimon │
+             │   o         new ticket                                                                     │
+             │   HJKL      move column                                                                    │
+             │   O         new column                                                                     │
+             │   r         rename column                                                                  │
+             │   d         delete column                                                                  │
+             ╰────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 

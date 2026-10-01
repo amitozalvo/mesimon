@@ -398,9 +398,12 @@ pub enum Mode {
         idx: usize,
     },
     /// The Usage dialog (T-327), from the menu's Usage row: each provider's
-    /// every window, its reset and how old the reading is. Esc returns to
-    /// the menu on that row.
-    Usage,
+    /// every window, its reset and how old the reading is, then this board's
+    /// costliest tickets, the cursor's `idx` among them. Esc returns to the
+    /// menu on that row.
+    Usage {
+        idx: usize,
+    },
     /// The agent-prompt list, one level under Settings > Agents (T-353): the
     /// three sentences mesimon types into an agent's box. `idx` is the cursor
     /// over `keymap::prompt_items`; the list STAYS when a row is chosen, the
@@ -1372,6 +1375,9 @@ pub struct App {
     /// Subscription quota (T-327), off the snapshot: each provider's reading,
     /// what the daemon reads for, and what is in flight.
     pub usage: mesimon_core::usage::Usage,
+    /// What each ticket's agents have spent (T-327), off the snapshot: the
+    /// card's `$` corner, the ticket page's facts line, the Usage dialog.
+    pub costs: Vec<mesimon_core::cost::TicketCost>,
     /// When `SetUsageWants` was last pushed, and what it said — the
     /// reconcile's back-off, and what a settings change compares against.
     usage_pushed: Option<(Instant, mesimon_core::usage::Wants)>,
@@ -1884,6 +1890,7 @@ impl App {
             crown_touches: Vec::new(),
             machine_tiers: Default::default(),
             usage: Default::default(),
+            costs: Vec::new(),
             usage_pushed: None,
             clock: |secs| Some(mesimon_core::usage::utc_of(secs)),
             now: mesimon_core::clock::now_ms,
@@ -2300,6 +2307,7 @@ impl App {
             crown_touches,
             machine_tiers,
             usage,
+            costs,
         } = snap;
         let was = self.cursor_column().map(|c| c.name.clone());
         // The cursor holds its TICKET across the pass (T-335): a card that
@@ -2337,6 +2345,7 @@ impl App {
         self.terminals = terminals;
         self.machine_tiers = machine_tiers;
         self.usage = usage;
+        self.costs = costs;
         self.absorb_crown_touches(crown_touches, crown_was, &placed);
         self.settle_drawer();
         self.seed_team_drafts();
@@ -3754,6 +3763,39 @@ impl App {
         }
     }
 
+    /// What a card's corner says in place of its age (T-327): the ticket's
+    /// estimated cost while `$` has the corner on cost, blank for a ticket
+    /// with nothing priced; `None` while the corner shows the age.
+    pub(crate) fn card_corner(&self, ticket: ulid::Ulid) -> Option<String> {
+        (self.prefs.card_corner == crate::prefs::CardCorner::Cost).then(|| {
+            self.cost_of(ticket)
+                .filter(|c| c.usd > 0.0)
+                .map(|c| mesimon_core::cost::usd_corner(c.usd))
+                .unwrap_or_default()
+        })
+    }
+
+    /// One ticket's account (T-327), if its agents have spent anything.
+    pub(crate) fn cost_of(&self, ticket: ulid::Ulid) -> Option<&mesimon_core::cost::TicketCost> {
+        self.costs.iter().find(|c| c.ticket == ticket)
+    }
+
+    /// The Usage dialog's ticket rows: the board's costliest tickets on the
+    /// board or archived, priced ones by dollars and then the rest by
+    /// tokens, at most six.
+    pub(crate) fn costly_tickets(&self) -> Vec<&mesimon_core::cost::TicketCost> {
+        let mut rows: Vec<&mesimon_core::cost::TicketCost> =
+            self.costs.iter().filter(|c| self.board.ticket(c.ticket).is_some()).collect();
+        rows.sort_by(|a, b| {
+            b.usd
+                .partial_cmp(&a.usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.tokens.cmp(&a.tokens))
+        });
+        rows.truncate(6);
+        rows
+    }
+
     /// Ask the daemon to read now (T-327) — every provider the settings
     /// name, whether or not the line is showing it. `quiet` is the dialog
     /// opening, which asks only of a reading older than the turn-end floor.
@@ -4365,7 +4407,7 @@ impl App {
             Mode::Theme { .. } => Scope::Theme,
             Mode::Settings { .. } => Scope::Settings,
             Mode::Notifications { .. } => Scope::Notifications,
-            Mode::Usage => Scope::Usage,
+            Mode::Usage { .. } => Scope::Usage,
             // Editing a template IS a text field, the Name row's rule.
             Mode::Prompts { editing: Some(_), .. } => Scope::Input,
             Mode::Prompts { .. } => Scope::Prompts,
@@ -4709,6 +4751,8 @@ impl App {
             usage_codex: self.prefs.usage_codex,
             usage_summary: crate::ui::usage::summary(self),
             usage_reading: !self.usage.reading.is_empty(),
+            card_cost: self.prefs.card_corner == crate::prefs::CardCorner::Cost,
+            usage_tickets: !self.costly_tickets().is_empty(),
             iterm2: matches!(self.terminal, crate::title::Terminal::ITerm2 { .. }),
             iterm2_status: self.terminal == crate::title::Terminal::ITerm2 { status: true },
             notify_dock_bounce: self.prefs.notify_dock_bounce,
@@ -5179,8 +5223,18 @@ impl App {
             // The quota (T-327): the dialog reads again on opening when the
             // reading is older than a turn's worth, and `r` asks outright.
             Verb::Usage => {
-                self.mode = Mode::Usage;
+                self.mode = Mode::Usage { idx: 0 };
                 self.refresh_usage(true);
+            }
+            Verb::CardCorner => {
+                let v = self.prefs.card_corner.next();
+                let word = match v {
+                    crate::prefs::CardCorner::Cost => {
+                        "cards show what their agents cost ∙ an estimate at API prices"
+                    }
+                    crate::prefs::CardCorner::Age => "cards show how long they have sat",
+                };
+                self.set_pref(word, |p| p.card_corner = v);
             }
             Verb::UsageRefresh => self.refresh_usage(false),
             Verb::UsageShow => {
@@ -6592,6 +6646,13 @@ impl App {
                 let idx = step(idx, self.board.archived_tickets().len(), down);
                 self.mode = Mode::Archived { idx };
             }
+            Scope::Usage => {
+                let Mode::Usage { idx } = self.mode else {
+                    return;
+                };
+                let idx = step(idx, self.costly_tickets().len(), down);
+                self.mode = Mode::Usage { idx };
+            }
             Scope::Links => {
                 if let Mode::Links { links, idx, .. } = &mut self.mode {
                     *idx = step(*idx, links.len(), down);
@@ -6827,6 +6888,19 @@ impl App {
                 self.set_system_prompt(true)
             }
             Scope::Drawer => self.adopt_external(true),
+            // A costly ticket's row opens its page (T-327).
+            Scope::Usage => {
+                let Mode::Usage { idx } = self.mode else {
+                    return Ok(());
+                };
+                let list: Vec<ulid::Ulid> =
+                    self.costly_tickets().iter().map(|c| c.ticket).collect();
+                if let Some(id) = list.get(idx.min(list.len().saturating_sub(1))).copied() {
+                    self.mode = Mode::Normal;
+                    self.screen = Screen::Ticket { ticket: id, rail_idx: 0 };
+                }
+                Ok(())
+            }
             Scope::Archived => {
                 let Mode::Archived { idx } = self.mode else {
                     return Ok(());
@@ -11204,6 +11278,7 @@ struct Snapshot {
     crown_touches: Vec<mesimon_core::command::CrownTouch>,
     machine_tiers: mesimon_core::tier::MachineTiers,
     usage: mesimon_core::usage::Usage,
+    costs: Vec<mesimon_core::cost::TicketCost>,
 }
 
 impl Snapshot {
@@ -11230,6 +11305,7 @@ impl Snapshot {
                 crown_touches,
                 machine_tiers,
                 usage,
+                costs,
             } => Some(Self {
                 board,
                 grace,
@@ -11251,6 +11327,7 @@ impl Snapshot {
                 crown_touches,
                 machine_tiers,
                 usage,
+                costs,
             }),
             _ => None,
         }
@@ -11721,6 +11798,7 @@ pub(crate) mod test_support {
                     crown_touches: Vec::new(),
                     machine_tiers: self.machine_tiers.clone(),
                     usage: self.usage.clone(),
+                    costs: Vec::new(),
                 }),
                 // The column lifecycle (T-117), as the daemon does it — the
                 // refusals included, so the status a test reads is the
@@ -15683,7 +15761,7 @@ mod tests {
         // The dialog: nothing read yet, so opening it asks.
         let ctx = app.ctx();
         app.dispatch(Verb::Usage, Key::Enter, Scope::Menu, &ctx).unwrap();
-        assert!(matches!(app.mode, Mode::Usage));
+        assert!(matches!(app.mode, Mode::Usage { .. }));
         assert_eq!(app.scope(), Scope::Usage);
         assert!(sent_contains(&sent, "RefreshUsage { claude: true, codex: false }"));
         let asks = || sent.borrow().iter().filter(|c| c.contains("RefreshUsage")).count();

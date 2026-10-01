@@ -234,6 +234,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             app.remote_initials(t.id).as_deref(),
             if left { crate::ui::CrownMark::None } else { app.crown_mark(t.id) },
             app.card_tier_word(t.id).as_deref(),
+            app.card_corner(t.id),
         );
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are

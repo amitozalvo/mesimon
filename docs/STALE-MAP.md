@@ -17231,3 +17231,54 @@ goldens (`board_usage_near_120x30`, `board_usage_every_80x24`, `usage_dialog_120
 The plan word is the provider's (`max`, `prolite`). A Claude Code older than `get_usage` reads
 as "needs an update", and Codex's per-model buckets are named by the last segment of their
 label (`Spark`). The dialog has no rows to select yet; phase 2 adds this board's tickets.
+
+## What a ticket cost (T-327 phase 2, 2026-10-01, the brief's second idea: "per-ticket cost with a provenance label … the nodeterm lesson ('keep cost visible') made concrete. Read-only, no config touched")
+
+**Shipped.** Every ticket's agents are counted off their transcripts into `costs.json` (a
+seventh state file: schema, quarantine and bar like the rest, `persist_costs` the one road),
+priced in core, and shown three ways: the ticket page's facts line (`∙ $4.20 at API prices`;
+`∙ 300k tokens` where nothing is priced), Esc › Usage's board section (24 hours, 7 days, 30
+days, the six costliest tickets, Enter opens one), and the card corner, which `$` flips between
+the ticket's age and its cost (`<$1`, `$12`, `$1.2k`; blank where nothing priced was counted),
+remembered as the machine pref `card_corner` and a Settings › Usage row.
+
+**Counting (`core::cost`, `daemon/src/cost.rs`).** A Claude Code transcript writes one line per
+content block, every copy carrying the message's final `usage`, so a message counts once by
+`message.id|requestId` (a 64-id window: a message's lines are adjacent). Cache writes are split
+`ephemeral_1h`/`ephemeral_5m` and priced 2×/1.25× input; an older usage without the split reads
+as 5-minute. `usage.speed: "fast"` keys the model `<id>:fast` at twice every rate. Subagents
+write `<session>/subagents/agent-*.jsonl` beside the session's transcript, found each pass and
+counted to the same ticket. Codex rollouts carry running `token_count` totals: the growth is
+counted, cached input moved from `input` to `read`, a fall read as a new count, the model from
+the last `turn_context`. Tokens are kept by unix hour and model, so the dialog's rolling windows
+need no time zone. The ledger learns every transcript a ticket's records point at before each
+pass, and keeps it after the record forgets it (`/clear`, a replaced agent); a ticket that left
+the board takes its account with it.
+
+**Prices.** Anthropic's published table, fetched 2026-10-01 (platform.claude.com/docs/en/
+about-claude/pricing): Fable 5.1 $10/$50 with reads at $0.25 (0.025×), Opus 5.5 $4/$20 with
+reads at $0.20 (0.05×), Sonnet 5.5 $2/$10, Haiku 4.5 $1/$5, and the older ids, longest id
+first so `claude-opus-5-5` is never read as `claude-opus-5`. Bedrock and Vertex ids are read
+through at the same prices — an estimate either way. No Codex model (`gpt-6-astra`,
+`gpt-5.6-*`, `codex-auto-review` on the author's machine) has a price this build could verify,
+so Codex is counted and left unpriced rather than guessed.
+
+**When it reads.** On a worker, every 30 s and at the next 1 s bucket after a `Stop` hook,
+reading only what grew past each cursor (to the last whole line, at most 32 MiB a pass). A
+transcript shorter than its cursor was rewritten and is read again.
+
+**The `$` key** is overlay-only like `p`/`P` (a view preference the board shows working); its
+hint is `show costs`/`show ages`, short enough that the help overlay keeps its three columns —
+`cards show their cost` reflowed it to two.
+
+**Tests.** `core::cost` (the published prices, the longest id, a real transcript line with its
+1-hour writes, fast mode, Codex totals and deltas, the windows, the words), `daemon::cost` (a
+message counted once across its blocks, a half-written line left for the next pass, subagents,
+Codex growth, unpriced tokens, round-trip, bar, quarantine, a dropped ticket), and the TUI's
+`golden_cards_show_their_cost`, `golden_ticket_page_says_what_it_cost` and the dialog golden with
+its board section, selection and Enter.
+
+**Known limits.** A ticket counts from this version on, plus whatever its current records'
+transcripts hold; a conversation a record forgot before the ledger existed is gone. A rewritten
+transcript is counted again. The dollar figure is the API's list price, not a plan's bill, and
+a 1.1× US-only inference multiplier or a negotiated discount is not applied.

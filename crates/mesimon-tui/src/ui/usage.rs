@@ -264,8 +264,10 @@ const LABEL_W: usize = 18;
 
 /// The Usage dialog: per provider, a heading with where its numbers stand
 /// (official, and how old), then every window with its reset, the pace of
-/// its headline week (experimental, and said so), or why there is nothing.
-pub(super) fn draw(f: &mut Frame, app: &App) {
+/// its headline week (experimental, and said so), or why there is nothing;
+/// then this board's estimate — its last 24 hours, week and month, and its
+/// costliest tickets, the cursor on `idx`.
+pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     let theme = &app.theme;
     let now = (app.now)();
     let rows_guess = 12u16;
@@ -366,6 +368,66 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
                 Span::styled(tail, theme.dim3()),
             ];
             lines.push(split(left, vec![Span::styled("experimental".to_string(), theme.dim3())]));
+        }
+    }
+    // This board: mesimon's own arithmetic, and the heading says so.
+    lines.push(Line::default());
+    lines.push(split(
+        vec![Span::styled("   this board".to_string(), theme.base())],
+        vec![
+            Span::styled("estimate".to_string(), theme.dim2()),
+            Span::styled(" ∙ at API prices".to_string(), theme.dim3()),
+        ],
+    ));
+    let rows = app.costly_tickets();
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "     nothing counted yet ∙ a ticket's agents count as they work".to_string(),
+            theme.dim2(),
+        )));
+    } else {
+        use mesimon_core::cost::{tokens_word, usd_word};
+        let (day, week, month) = app
+            .costs
+            .iter()
+            .fold((0.0, 0.0, 0.0), |(d, w, m), c| (d + c.day, w + c.week, m + c.month));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "     24 hours {} ∙ 7 days {} ∙ 30 days {}",
+                usd_word(day),
+                usd_word(week),
+                usd_word(month)
+            ),
+            theme.dim2(),
+        )));
+        // As many rows as the screen has room for, the cursor's in view.
+        let room = (f.area().height as usize).saturating_sub(lines.len() + 6).max(1);
+        let idx = idx.min(rows.len() - 1);
+        let first = idx.saturating_sub(room.saturating_sub(1));
+        for (i, c) in rows.iter().enumerate().skip(first).take(room) {
+            let Some(t) = app.board.ticket(c.ticket) else { continue };
+            let price = if c.usd > 0.0 { usd_word(c.usd) } else { "unpriced".to_string() };
+            let right = format!("{price}   {} tokens", tokens_word(c.tokens));
+            let key = format!("     {} ", t.short_key);
+            let room = w.saturating_sub(key.width() + right.width() + 4);
+            let title = truncate(&clean(&t.title), room);
+            let selected = i == idx;
+            let (key_ink, title_ink, value_ink) = if selected {
+                let sel = theme.selected_row().fg(theme.sel.base);
+                (sel, sel, sel)
+            } else {
+                (theme.dim3(), theme.base(), theme.dim2())
+            };
+            let mut line = split(
+                vec![Span::styled(key, key_ink), Span::styled(title, title_ink)],
+                vec![Span::styled(right, value_ink)],
+            );
+            if selected {
+                let used = super::spans_width(&line.spans);
+                line.spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+                line = line.style(theme.selected_row());
+            }
+            lines.push(line);
         }
     }
     lines.push(Line::default());

@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+
+    Decay treatments      <$1     ⠋ Fix OSC-11 detecti~ $12     ✓ Grapheme truncation         z Painted accent bar
+
+    Keymap validator              ⠋ Adopt drawer import         x Flaky e2e on runner
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ T-1 Decay treatments ∙ created >1y ago
+ cards show what their agents cost ∙ an estimate at API prices for this session

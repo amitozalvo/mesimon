@@ -394,6 +394,7 @@ pub(super) fn render(
     editor: Option<&str>,
     crown: CrownMark<'_>,
     tier_word: Option<&str>,
+    corner: Option<String>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -468,8 +469,13 @@ pub(super) fn render(
     // session-less card carries it too. Seconds tick only while an agent is
     // working — a shell's `Running` is not work (`glyphs::is_working`), so a
     // settled card counts in minutes.
-    let age = created_at_epoch_ms(ticket.column_since())
-        .map(|ms| age_slot(ctx.now_ms, ms, sessions.iter().any(|s| glyphs::is_working(s))));
+    let age = match corner {
+        // `$` (T-327): the ticket's estimated cost holds the slot instead —
+        // blank where nothing priced was counted.
+        Some(word) => (!word.is_empty()).then_some(word),
+        None => created_at_epoch_ms(ticket.column_since())
+            .map(|ms| age_slot(ctx.now_ms, ms, sessions.iter().any(|s| glyphs::is_working(s)))),
+    };
 
     // Accent bar weight (06 §2.4a). An alarm card never demotes to
     // dormant/ghost — it holds its state hue in every de-emphasis context
@@ -540,7 +546,8 @@ pub(super) fn render(
     };
     let age_cells = match (&crown_word, &age) {
         (Some(w), _) => w.width() + 1,
-        (None, Some(_)) => 4, // sp + 3-cell slot
+        // sp + the 3-cell slot, wider for a cost (`$1.2k`).
+        (None, Some(a)) => a.width().max(3) + 1,
         (None, None) => 0,
     };
     let wt_cells = wt_mark.as_ref().map(|(m, _)| m.width() + 1).unwrap_or(0);

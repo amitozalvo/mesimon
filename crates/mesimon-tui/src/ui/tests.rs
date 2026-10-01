@@ -9181,13 +9181,68 @@ fn usage_line_drops_a_window_that_rolled_over() {
     assert!(!advisory(&app, 120).contains("claude"), "{:?}", advisory(&app, 120));
 }
 
+/// Three tickets' accounts (T-327): T-3 the costliest, T-5 a Codex
+/// ticket counted in tokens with no price, T-1 under a dollar.
+fn cost_fixture() -> Vec<mesimon_core::cost::TicketCost> {
+    use mesimon_core::cost::TicketCost;
+    let c = |n: u128, usd: f64, tokens: u64, unpriced: u64, day: f64| TicketCost {
+        ticket: ulid_n(n),
+        usd,
+        tokens,
+        unpriced,
+        day,
+        week: usd,
+        month: usd,
+    };
+    vec![
+        c(1, 0.42, 48_000, 0, 0.0),
+        c(3, 12.1, 5_200_000, 0, 3.4),
+        c(5, 0.0, 300_000, 300_000, 0.0),
+    ]
+}
+
+/// `$` (T-327): every card's corner says what its ticket cost, at API
+/// prices, and back; the status line names the estimate as one.
+#[test]
+fn golden_cards_show_their_cost() {
+    let mut app = app_graphite(fixture(false));
+    app.costs = cost_fixture();
+    press(&mut app, '$');
+    assert_eq!(app.prefs.card_corner, crate::prefs::CardCorner::Cost);
+    assert!(app.status.contains("an estimate at API prices"), "{}", app.status);
+    let rows = render(&app, 120, 30);
+    let all = rows.join("\n");
+    assert!(all.contains("Fix OSC-11 detecti~ $12"), "{all}");
+    assert!(all.contains("Decay treatments      <$1"), "{all}");
+    assert!(!rows[4].contains(">1y"), "no card wears its age: {:?}", rows[4]);
+    golden("board_cost_corner_120x30", &rows);
+    press(&mut app, '$');
+    assert_eq!(app.prefs.card_corner, crate::prefs::CardCorner::Age);
+    assert!(render(&app, 120, 30).join("\n").contains(">1y"));
+}
+
+/// The ticket page says what its agents cost, and at whose prices; a Codex
+/// ticket's tokens are counted with no price.
+#[test]
+fn golden_ticket_page_says_what_it_cost() {
+    let mut app = app_graphite(fixture(false));
+    app.costs = cost_fixture();
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let rows = render(&app, 120, 30);
+    assert!(rows[3].contains("∙ $12.10 at API prices"), "{:?}", rows[3]);
+    golden("ticket_cost_120x30", &rows);
+    app.screen = Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    assert!(render(&app, 120, 30)[3].contains("∙ 300k tokens"));
+}
+
 /// The Usage dialog: the provider's numbers with their age and resets, the
 /// experimental pace row said to be one, and why codex has none.
 #[test]
 fn golden_usage_dialog() {
     use mesimon_core::usage::Severity;
     let mut app = usage_app(14.0, Severity::Normal);
-    app.mode = Mode::Usage;
+    app.costs = cost_fixture();
+    app.mode = Mode::Usage { idx: 0 };
     let rows = render(&app, 120, 30);
     let all = rows.join("\n");
     assert!(all.contains("claude ∙ max"), "{all}");
@@ -9196,9 +9251,20 @@ fn golden_usage_dialog() {
     assert!(all.contains("experimental"), "{all}");
     assert!(all.contains("sign-in expired ∙ run codex login in a shell, then r"), "{all}");
     assert!(all.contains("r read now ∙ s settings ∙ esc back"), "{all}");
+    assert!(all.contains("24 hours $3.40 ∙ 7 days $12.52 ∙ 30 days $12.52"), "{all}");
+    assert!(all.contains("unpriced   300k tokens"), "{all}");
     golden("usage_dialog_120x30", &rows);
     // The menu row answers before it is opened.
     assert_eq!(crate::ui::usage::summary(&app), "claude Fable 64% ∙ codex signed out");
+    // The rows are the costliest first, and Enter opens the one under the
+    // cursor.
+    let order: Vec<_> = app.costly_tickets().iter().map(|c| c.ticket).collect();
+    assert_eq!(order, [ulid_n(3), ulid_n(1), ulid_n(5)]);
+    press(&mut app, 'j');
+    assert!(matches!(app.mode, Mode::Usage { idx: 1 }));
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid_n(1)));
 }
 
 #[test]
