@@ -17648,3 +17648,74 @@ refused, none writing a feed line; the answer's receipt waits until the stub's `
 reads `answered`/`Okta`, `♛ answered`, the feed line, `answered by T-1: Okta` through the edge to
 `Running` and gone at `Idle`, and that turn's end wakes the crown with `answered your ask`; a
 plan and a two-question dialog refused; off again, refused.
+
+## Remote Control's prompt and answer roads stop colliding (T-568, 2026-10-02, part E of T-564: "the phone names who queued and what holds it")
+
+**The bugs, on a friend's board.** A phone's queued prompt sat in `control.pending` until it
+was delivered, and `control_dialog_answer` refused "input is already pending" while that entry
+stood; the question then held the words (T-565) and `send_queued_ask` refused at the dialog, so
+only Take back broke it, and the browser mirrored it by counting a `queued` receipt as
+`waiting`. A Steer went straight to `paste_to_ticket`, so at a question the words and Enter
+landed in the dialog. `control_prompt` dropped whatever was queued (a crown's ask, a held one)
+with a feed line and nothing else. The snapshot's `queued` was the words alone, so every bubble
+read "Queued · waits for idle" and offered Send now where the daemon would refuse it.
+
+**Queued words are not input in flight.** `control_input_in_flight` is a phone's pending entry
+whose pane holds no queued ask: a steer parked for its paste, or a delivery owed its Enter. Only
+that, or a dialog delivery, refuses an answer, the phone's and the crown's `answer_agent` (T-569)
+alike. In the browser a session keeps two receipts,
+`receipt` (prompt, Send now, Take back) and `answer` (dialog, permission), and `latest` is the
+one the delivery line and its ticks speak for; a reply to the other moves it quietly, and still
+returns refused words to the draft. `answerBusy` (an answer on its way, or a prompt at
+`awaiting_delivery`) is the one predicate the question card, the Now card and `sendInteraction`
+read. `receipts()` polls both.
+
+**A send at a dialog is refused in the board's words.** `pane_waits_on_you` (`RequiresAction`,
+or a question the stale clock demoted, T-565) is the predicate `send_queued_ask` already
+refused on, now named and shared with the phone's Steer and Send now, which are refused before
+anything queued is touched. The sentence is `command::ANSWER_IN_PANE_FIRST`, and
+`mesophon::answer_first(here)` says "answer it here first" when the phone draws a card it can
+answer (a permission, a plan, one single-choice question). The page turns Steer off while
+`queue.js::waitsOnYou` (a dialog, a permission or `needs attention`), says why under the radio
+on every width, and sends a Queue instead; Queue stays.
+
+**Replacing is said.** `control_prompt` reads the ask it replaces before `forget_queued`: the
+crown's key, `held` for a person's words held on a question, else `you`. It rides
+`Reply::Delivery.replaced` (absent everywhere else), and the page appends "It replaced …" to
+the line. The crown's side is one record at the queue's exits: `forget_queued` now takes
+`dropped_by` (`person` when a person acted on the words: replaced, took back, talked past in
+the pane, sent ahead from the desk; `board` when the seat went: sleep, kill, delete, the sweep),
+`park_ask` records a person's words over the crown's, and `drain_queue`/`send_queued_ask` record
+a seat that changed. `crown_dropped` is in memory like the asks, keyed by the target, cleared by
+the crown's next ask there, and only the crown that asked reads it, as `AgentTicketView.asked:
+{status: "dropped", by, since_secs}` on `get_ticket` with `key`. `CROWN_WAKES` names the field.
+
+**The phone reads the row.** `api::Ticket.queue` (`by`, `sends`, `held`, `waits`, `asking`) is
+`pending_items`' row for the ticket in the phone's fields. `queue.js::queueWords` is the TUI's
+grammar (`after_words`): `T-411's agent · you send`, `held · agent asked · you send`, `… · you
+answer first` while the send is refused, `queued · after T-3's answer` / `after T-3 +1` /
+`after its turn` / `sends next`, and `T-411's agent · queued · …` for a crown that sends. Send
+now hides on `sendRefused` (`waitsOnYou`, or the ticket's own key in `asking`). The receipt line
+for `queued` is now "Queued.", since the row says what it waits on; a host before T-568 sends no
+`queue`, and the row keeps "Queued · waits for idle".
+
+**Refuted: `queued` itself as an object behind a feature word.** The brief's shape. The host
+learns nothing from the browser to choose a shape by, so an older page would have drawn
+`[object Object]`. A sibling field is ignored by the old page and read by the new one, with the
+words in one place, and nothing needed advertising.
+
+**Tests.** Core: `the_queue_s_facts_ride_beside_its_words`,
+`a_receipt_names_whose_queued_words_it_replaced`, `a_send_at_a_dialog_is_refused_toward_the_answer`,
+`the_crown_is_told_where_a_dropped_ask_is_read`, and `asked` in the `AgentTicketView` round
+trip. E2e: `the_crown_lets_one_agent_edit_the_others` reads `asked: dropped` by a person after a
+take-back and after a person's words replace a re-ask, nothing on the worker's own read, and
+clears on the next ask. Browser state: the two receipts, the `replaced` words, every row
+rendering, the Steer and Send now locks; UX (Chromium and WebKit, three sizes): Steer off with
+its reason at a stop, Send now hidden, a queued prompt at a question with the answer still
+live, and the four host rows. Relay acceptance
+`a_queued_phone_prompt_waits_behind_its_own_answer_and_names_what_holds_it` (branch
+`msmn/T-568-remote-control-s-prompt-and` in `mesimon-relay`, cut from T-567's): the desk's words
+replaced (`you`), the crown's (its key, and its `asked`), held ones (`held`); the steer and Send
+now refused with no key typed; the answer going while the words wait; the held words sent after
+the turn. `ux.test.js`'s fake host answers a permission `decision_sent`, as the real one does,
+and `browser.test.js` clicks the card rather than the rename title that wears the same words.

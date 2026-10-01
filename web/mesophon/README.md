@@ -15,7 +15,12 @@ reload shows an edit) beside a host board built from this checkout.
   only) and the tickets this browser sent it.
 - `board.js`: bounded board projection, Now's groups, filters and list position.
 - `sessions.js`: drafts, delivery receipts and reading position keyed by board,
-  ticket and session. Drafts exist only in this tab and are lost on reload.
+  ticket and session. Drafts exist only in this tab and are lost on reload. A
+  prompt and a dialog's answer keep separate receipts, so a queued prompt never
+  locks the answer buttons.
+- `queue.js`: a ticket's queued words as the page says them (whose, held or not,
+  what they wait on), and what a send meets: Steer and Send now wait while the
+  agent waits on you.
 - `starts.js`: the agents this tab started, per board and ticket: a clock while
   the host starts one, two ticks once its session runs, or why not.
 - `edits.js`: the card edits this tab sent (rename, move, tag) until the host

@@ -562,6 +562,24 @@ fn the_crown_lets_one_agent_edit_the_others() {
         other => panic!("take-back: {other:?}"),
     }
     assert!(pending_of(&mut c, Some(b)).is_empty());
+    // T-568: the crown reads that its words were dropped, and by whom; the
+    // worker reading its own ticket reads nothing of the crown's.
+    let dropped = |c: &mut TestClient| {
+        read(c, sa, &kb).unwrap().asked.map(|a| (a.status, a.by, a.since_secs.is_some()))
+    };
+    assert_eq!(dropped(&mut c), Some(("dropped".into(), "person".into(), true)));
+    match c.send(Principal::Agent { session: sb }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => assert!(ticket.asked.is_none(), "{:?}", ticket.asked),
+        other => panic!("the worker's own read: {other:?}"),
+    }
+    // The crown's next ask supersedes it; a person's words queued over that
+    // ask drop it again, and say so.
+    let bv = read(&mut c, sa, &kb).unwrap();
+    match ask(&mut c, sa, &kb, "mesimon-probe-63b once more", bv.seen) {
+        Response::AgentAsked { held_for_person, .. } => assert!(held_for_person),
+        other => panic!("the re-ask: {other:?}"),
+    }
+    assert_eq!(dropped(&mut c), None, "a new ask clears the dropped one");
     // A person's own queued ask is never overwritten by the crown's.
     match c.request(Command::PromptSession {
         ticket: b,
@@ -575,6 +593,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::Queued { .. } | Response::Ok => {}
         other => panic!("the person's queued ask: {other:?}"),
     }
+    assert_eq!(dropped(&mut c), Some(("dropped".into(), "person".into(), true)));
     if pending_of(&mut c, Some(b)).iter().any(|p| p.by.is_none() && !p.in_flight) {
         let bv = read(&mut c, sa, &kb).unwrap();
         match ask(&mut c, sa, &kb, "mesimon-probe-65 over it", bv.seen) {
@@ -592,6 +611,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::AgentAsked { replaced, .. } => assert!(!replaced),
         other => panic!("the third ask: {other:?}"),
     }
+    assert_eq!(dropped(&mut c), None, "the third ask clears the record");
     assert!(!landed("mesimon-probe-66"));
     assert!(matches!(c.request(Command::SendQueuedAsk { ticket: b }), Response::Ok));
     wait_until(std::time::Duration::from_secs(10), "the sent words to land", || {

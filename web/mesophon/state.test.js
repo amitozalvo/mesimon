@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Sessions, receiptTick, reasonText } from "./sessions.js";
+import { Sessions, answerBusy, receiptTick, reasonText } from "./sessions.js";
+import { afterWords, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS } from "./board.js";
 const ticket = (id, session) => ({
   id,
@@ -166,7 +167,7 @@ test("dialog and approval receipts preserve drafts and never imply execution", (
   entry.draft = "later follow-up";
   sessions.sent(entry, 7, "host", "permission", "");
   sessions.reply(entry, { result: "delivery", status: "decision_sent" });
-  assert.equal(entry.receipt.unresolved, false);
+  assert.equal(entry.answer.unresolved, false);
   assert.equal(entry.draft, "later follow-up");
   assert.match(entry.delivery, /Decision sent/);
   sessions.sent(entry, 8, "host", "dialog", "");
@@ -180,33 +181,123 @@ test("a dialog answer is answered only on the hook's word, and an unknown one sa
   const entry = sessions.get("board-a", ticket("one", "session-a"));
   sessions.sent(entry, 1, "host", "dialog", "");
   sessions.reply(entry, { result: "delivery", status: "awaiting_delivery" });
-  assert.equal(entry.receipt.waiting, true, "the card's buttons wait");
-  assert.equal(receiptTick(entry.receipt.status), "clock");
+  assert.equal(entry.answer.waiting, true, "the card's buttons wait");
+  assert.equal(receiptTick(entry.answer.status), "clock");
   // The agent's own hook said the dialog took it: two ticks.
   sessions.reply(entry, { result: "delivery", status: "answered" });
-  assert.equal(entry.receipt.unresolved, false);
+  assert.equal(entry.answer.unresolved, false);
   assert.equal(entry.delivery, "Answered.");
-  assert.equal(receiptTick(entry.receipt.status), "two");
+  assert.equal(receiptTick(entry.answer.status), "two");
   // Keys went in and nothing confirmed them: one tick, and the buttons live.
   sessions.sent(entry, 2, "host", "dialog", "");
   sessions.reply(entry, { result: "delivery", status: "input_sent" });
-  assert.equal(entry.receipt.waiting, false);
+  assert.equal(entry.answer.waiting, false);
   assert.equal(entry.delivery, "Keys sent, not confirmed · check the pane.");
-  assert.equal(receiptTick(entry.receipt.status), "one");
+  assert.equal(receiptTick(entry.answer.status), "one");
   // No key could be chosen: no tick, the reason in words, try again.
   sessions.sent(entry, 3, "host", "dialog", "");
   sessions.reply(entry, { result: "delivery", status: "unknown", reason: "label_wrapped; cursor moved" });
-  assert.equal(entry.receipt.waiting, false);
+  assert.equal(entry.answer.waiting, false);
   assert.equal(
     entry.delivery,
     "Could not answer: the option does not read as one row on the screen; the selection already moved · try again or answer in the pane.",
   );
-  assert.equal(receiptTick(entry.receipt.status), null);
+  assert.equal(receiptTick(entry.answer.status), null);
   // An older host names no reason, and a word this page does not know shows as it came.
   sessions.sent(entry, 4, "host", "dialog", "");
   sessions.reply(entry, { result: "delivery", status: "unknown" });
   assert.match(entry.delivery, /Delivery unknown/);
   assert.equal(reasonText("pane_gone"), "pane gone");
+});
+
+test("a queued prompt never locks the answer buttons; the answer keeps its own receipt (T-568)", () => {
+  const sessions = new Sessions();
+  const entry = sessions.get("board-a", ticket("one", "session-a"));
+  entry.draft = "after the question";
+  sessions.sent(entry, 1, "host");
+  sessions.reply(entry, { result: "delivery", status: "queued" });
+  assert.equal(entry.receipt.waiting, true, "the words wait for the turn");
+  assert.equal(answerBusy(entry), false, "a queued prompt is not input on its way");
+  sessions.sent(entry, 2, "host", "dialog", "");
+  assert.equal(answerBusy(entry), true, "an answer on its way holds the buttons");
+  assert.equal(entry.receipt.id, 1, "the queued prompt keeps its receipt");
+  sessions.reply(entry, { result: "delivery", status: "answered" }, 2);
+  assert.equal(answerBusy(entry), false);
+  assert.equal(entry.delivery, "Answered.");
+  assert.equal(receiptTick(entry.latest.status), "two");
+  // The prompt's own receipt moves quietly: the line says what was sent last.
+  sessions.reply(entry, { result: "delivery", status: "queued" }, 1);
+  assert.equal(entry.delivery, "Answered.");
+  // Cancelled by the host after all: the words come back to the draft.
+  sessions.reply(entry, { result: "delivery", status: "rejected" }, 1);
+  assert.equal(entry.draft, "after the question");
+  // A prompt going into the pane is input on its way.
+  entry.draft = "steer";
+  sessions.sent(entry, 3, "host");
+  assert.equal(answerBusy(entry), true);
+  sessions.reply(entry, { result: "delivery", status: "submitted" }, 3);
+  assert.equal(answerBusy(entry), false);
+  // A drop restores what was waiting, the queued prompt's words included.
+  entry.draft = "kept words";
+  sessions.sent(entry, 4, "host");
+  sessions.reply(entry, { result: "delivery", status: "queued" }, 4);
+  sessions.sent(entry, 5, "host", "dialog", "");
+  sessions.lost();
+  assert.equal(answerBusy(entry), false);
+  assert.equal(entry.draft, "kept words");
+  assert.match(entry.delivery, /Delivery unknown/);
+});
+
+test("a receipt says whose queued words the prompt replaced (T-568)", () => {
+  const sessions = new Sessions();
+  const entry = sessions.get("board-a", ticket("one", "session-a"));
+  const say = (id, replaced, status = "queued") => {
+    entry.draft = `words ${id}`;
+    sessions.sent(entry, id, "host");
+    sessions.reply(entry, { result: "delivery", status, replaced });
+    return entry.delivery;
+  };
+  assert.equal(say(1, { by: "T-411" }), "Queued. It replaced T-411’s agent’s queued words.");
+  assert.equal(say(2, { by: "you" }), "Queued. It replaced your queued words.");
+  assert.equal(say(3, { by: "held" }), "Queued. It replaced the words held for the agent’s question.");
+  assert.match(say(4, { by: "you" }, "submitted"), /^Submitted to the agent\..* It replaced your queued words\.$/);
+  assert.equal(say(5, undefined), "Queued.");
+});
+
+test("the queued row names whose words wait and on what (T-568)", () => {
+  const row = (queue, state = "idle", extra = {}) =>
+    queueWords({ key: "T-3", queued: "words", queue, agent: { state, ...extra } });
+  // A host before T-568 sends the words alone.
+  assert.equal(row(undefined), "Queued · waits for idle");
+  // The crown's words wait on your send, and on your answer first.
+  assert.equal(row({ by: "T-411" }), "T-411's agent · you send");
+  assert.equal(row({ by: "T-411", asking: ["T-3"] }, "needs attention"), "T-411's agent · you answer first");
+  // Words the host held on a question.
+  assert.equal(row({ held: "agent asked" }), "held · agent asked · you send");
+  assert.equal(row({ held: "agent asked", asking: ["T-3"] }, "needs attention"), "held · agent asked · you answer first");
+  // Words that go by themselves.
+  assert.equal(row({ waits: ["T-5"], asking: ["T-5"] }), "queued · after T-5's answer");
+  assert.equal(row({ waits: ["T-2", "T-5"], asking: ["T-5"] }), "queued · after T-5's answer +1");
+  assert.equal(row({ waits: ["T-2", "T-5"] }), "queued · after T-2 +1");
+  assert.equal(row({ waits: ["T-3"] }, "working"), "queued · after its turn");
+  assert.equal(row({}), "queued · sends next");
+  assert.equal(row({ by: "T-411", sends: true, waits: ["T-5"] }), "T-411's agent · queued · after T-5");
+  assert.equal(afterWords(["T-3"], ["T-3"], "T-3"), "after your answer");
+  assert.equal(afterWords([], [], "T-3"), undefined);
+});
+
+test("Steer and Send now wait while the agent waits on you; Queue does not (T-568)", () => {
+  const at = (agent, queue) => ({ key: "T-3", queued: "words", queue, agent });
+  assert.equal(waitsOnYou({ state: "working" }), false);
+  assert.equal(waitsOnYou({ state: "needs attention" }), true);
+  assert.equal(waitsOnYou({ state: "working", dialog: { kind: "plan" } }), true);
+  assert.equal(waitsOnYou({ state: "working", permission: { tool: "Bash" } }), true);
+  assert.equal(waitsOnYou(undefined), false);
+  assert.equal(sendRefused(at({ state: "idle" }, {})), false);
+  assert.equal(sendRefused(at({ state: "needs attention" }, {})), true);
+  // A question the host reads stale still refuses the send.
+  assert.equal(sendRefused(at({ state: "unknown" }, { held: "agent asked", asking: ["T-3"] })), true);
+  assert.equal(sendRefused(at({ state: "idle" }, { waits: ["T-5"], asking: ["T-5"] })), false);
 });
 
 test("Now groups agents by the host's own state word", () => {

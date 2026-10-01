@@ -591,6 +591,11 @@ pub struct Daemon {
     /// changed. In memory on purpose, like the move gate's: the feed is the
     /// record, this is what the next frame needs.
     crown_touches: HashMap<ulid::Ulid, CrownTouch>,
+    /// The crown's asks dropped before they were sent (T-568), by the
+    /// ticket they were for: what the crown's `get_ticket` on it reads as
+    /// `asked`. In memory, like the asks themselves (T-413); the crown's
+    /// next ask to the ticket clears it.
+    crown_dropped: HashMap<ulid::Ulid, CrownDrop>,
     /// Wakes the crown is owed (T-414, T-469, T-527): one per worker that
     /// delivered, answered the crown's ask, raised its hand or was merged
     /// since the crown's last turn, rendered into ONE sentence when the crown itself
@@ -1051,6 +1056,7 @@ pub fn run(paths: Paths) -> Result<()> {
         board_version: 0,
         agent_replay: HashMap::new(),
         crown_touches: HashMap::new(),
+        crown_dropped: HashMap::new(),
         crown_wakes: Vec::new(),
         crown_heard: HashMap::new(),
         crown_landed: Vec::new(),
@@ -1576,6 +1582,14 @@ struct QueuedAsk {
     /// woken with it once idle. Rides `queue.json` (schema 2) on the
     /// seats that ride it.
     plan: bool,
+}
+
+/// A crown's ask that left the queue unsent (T-568): whose crown it was,
+/// who dropped it (`person` or `board`, `AgentAskedView::by`) and when.
+struct CrownDrop {
+    crown: ulid::Ulid,
+    by: &'static str,
+    at_ms: u64,
 }
 
 impl QueuedAsk {
@@ -3583,7 +3597,7 @@ impl Daemon {
             }
             changed = true;
         }
-        changed | self.forget_queued(ticket, "queued_ask_dropped_by_hand", "local")
+        changed | self.forget_queued(ticket, "queued_ask_dropped_by_hand", "local", "person")
     }
 
     /// Start the delivery of an owed Enter: the pane is provably alive.
@@ -4124,7 +4138,10 @@ impl Daemon {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
                 match self.agent_ticket_view(target) {
-                    Some(view) => Response::AgentTicket { ticket: view },
+                    Some(mut view) => {
+                        view.asked = self.crown_asked_view(ticket, target);
+                        Response::AgentTicket { ticket: view }
+                    }
                     None => no_such_ticket(),
                 }
             }
@@ -4942,6 +4959,28 @@ impl Daemon {
         Some(self.seen_token(target))
     }
 
+    /// The crown's ask to `ticket` left the queue unsent (T-568): its next
+    /// `get_ticket` on the ticket reads `asked: dropped`, and who.
+    fn crown_dropped_ask(&mut self, ticket: ulid::Ulid, crown: ulid::Ulid, by: &'static str) {
+        let board = &self.board;
+        self.crown_dropped.retain(|t, _| board.ticket(*t).is_some());
+        self.crown_dropped.insert(ticket, CrownDrop { crown, by, at_ms: now_ms() });
+    }
+
+    /// What the crown on `crown` reads of its last ask to `ticket` (T-568).
+    fn crown_asked_view(
+        &self,
+        crown: ulid::Ulid,
+        ticket: ulid::Ulid,
+    ) -> Option<mesimon_core::command::AgentAskedView> {
+        let drop = self.crown_dropped.get(&ticket).filter(|d| d.crown == crown)?;
+        Some(mesimon_core::command::AgentAskedView {
+            status: "dropped".into(),
+            by: drop.by.into(),
+            since_secs: Some(now_ms().saturating_sub(drop.at_ms) / 1000),
+        })
+    }
+
     /// The touches still worth drawing, for the snapshot.
     fn recent_crown_touches(&self) -> Vec<CrownTouch> {
         let now = mesimon_core::clock::now_ms();
@@ -5494,6 +5533,7 @@ impl Daemon {
             crown: self.board.is_crowned(id).then(|| mesimon_core::mcp::CROWN_WAKES.to_string()),
             state: self.agent_state_view(id),
             needs_you: self.agent_needs_you(id),
+            asked: None,
             seen: Some(self.seen_token(id)),
         })
     }
@@ -7091,7 +7131,7 @@ impl Daemon {
         let ticket = self.board.tickets.remove(pos);
         self.moves.forget(id);
         self.train.forget(id);
-        self.forget_queued(id, "queued_ask_dropped", "local");
+        self.forget_queued(id, "queued_ask_dropped", "local", "board");
         self.owed.retain(|_, o| o.ticket != id);
         self.drop_crown_if(id);
         // Sessions detach and keep running through the grace band (D21).
@@ -8066,7 +8106,7 @@ impl Daemon {
         // Sending now while an ask waits is the user talking to the agent
         // ahead of it: the waiting words are theirs to drop, and they just
         // did (the TUI's status says so).
-        self.forget_queued(ticket, "queued_ask_dropped", "local");
+        self.forget_queued(ticket, "queued_ask_dropped", "local", "person");
         self.deliver(ticket, seat, text, Ack::PROMPT, plan)
     }
 
@@ -8177,7 +8217,7 @@ impl Daemon {
                 }
                 continue;
             }
-            self.forget_queued(ticket, "queued_ask_dropped", "local");
+            self.forget_queued(ticket, "queued_ask_dropped", "local", "person");
             match self.deliver(ticket, seat, text, Ack::PROMPT, false) {
                 Response::Err { message } => {
                     eprintln!("mesimon: column ask failed: {message}");
@@ -8530,6 +8570,21 @@ impl Daemon {
             Some(_) => ("agent", "ask_agent".to_string(), "ask_agent_replaced"),
             None => ("local", format!("queued_{word}"), "queued_ask_replaced"),
         };
+        // A person's words over the crown's (T-568): the crown's are dropped,
+        // and its `get_ticket` says so. The crown's own new ask supersedes
+        // whatever became of its last.
+        match by {
+            Some(_) => {
+                self.crown_dropped.remove(&ticket);
+            }
+            None => {
+                if let Some(crown) =
+                    self.queued.iter().find(|q| q.ticket == ticket).and_then(|q| q.by)
+                {
+                    self.crown_dropped_ask(ticket, crown, "person");
+                }
+            }
+        }
         if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == ticket) {
             q.text = text;
             // Editing queued words does not reinterpret the accepted start
@@ -8688,6 +8743,19 @@ impl Daemon {
         self.board.sessions.iter().find(|s| s.id == id).is_some_and(|s| self.rec_asking(s))
     }
 
+    /// Does this pane's agent wait on a person — a dialog up, or a question
+    /// the stale clock demoted (T-565)? A paste there lands in the dialog as
+    /// its answer, so a send (`send_queued_ask`, T-420) and a phone's steer
+    /// (T-568) are refused.
+    fn pane_waits_on_you(&self, id: uuid::Uuid) -> bool {
+        self.session_asking(id)
+            || self
+                .board
+                .sessions
+                .iter()
+                .any(|s| s.id == id && matches!(s.state, SessionState::RequiresAction { .. }))
+    }
+
     fn rec_asking(&self, rec: &SessionRecord) -> bool {
         attention::on_question(&rec.state, self.machines.get(&rec.id))
     }
@@ -8769,6 +8837,9 @@ impl Daemon {
             let word = seat.word();
             if !self.seat_stands(ticket, &seat) {
                 self.feed.board("automation", "queued_ask_dropped_target_gone", Some(ticket));
+                if let Some(crown) = by {
+                    self.crown_dropped_ask(ticket, crown, "board");
+                }
                 continue;
             }
             // A pane's paste is owed an ack, so the checkout is held by its
@@ -8871,17 +8942,32 @@ impl Daemon {
             .map(|q| q.ticket)
             .collect();
         for t in &stale {
-            self.forget_queued(*t, "queued_ask_dropped_target_gone", "automation");
+            self.forget_queued(*t, "queued_ask_dropped_target_gone", "automation", "board");
         }
         !stale.is_empty()
     }
 
-    fn forget_queued(&mut self, ticket: ulid::Ulid, why: &str, actor: &str) -> bool {
+    /// Drop the ticket's queued ask, unsent. `dropped_by` is what the
+    /// crown's `get_ticket` says of its own words (T-568): `person` when a
+    /// person acted on them (replaced, took back, talked past), `board` when
+    /// the seat they waited at went (the agent slept or ended, the ticket
+    /// left).
+    fn forget_queued(
+        &mut self,
+        ticket: ulid::Ulid,
+        why: &str,
+        actor: &str,
+        dropped_by: &'static str,
+    ) -> bool {
         let before = self.queued.len();
-        let session = self.queued.iter().find(|q| q.ticket == ticket).and_then(|q| match q.seat {
+        let queued = self.queued.iter().find(|q| q.ticket == ticket);
+        let session = queued.and_then(|q| match q.seat {
             QueuedSeat::Pane(id) => Some(id),
             _ => None,
         });
+        if let Some(crown) = queued.and_then(|q| q.by) {
+            self.crown_dropped_ask(ticket, crown, dropped_by);
+        }
         self.queued.retain(|q| q.ticket != ticket);
         if let Some(id) = session {
             self.control_cancel(id);
@@ -9141,21 +9227,18 @@ impl Daemon {
         // answers in the pane first; the ask keeps waiting. A question the
         // stale clock demoted to `Unknown` is still up (T-565).
         if let QueuedSeat::Pane(id) = self.queued[i].seat {
-            if self.session_asking(id)
-                || self
-                    .board
-                    .sessions
-                    .iter()
-                    .any(|s| s.id == id && matches!(s.state, SessionState::RequiresAction { .. }))
-            {
+            if self.pane_waits_on_you(id) {
                 return Response::Err {
-                    message: "the agent is waiting on you ∙ answer it in the pane first".into(),
+                    message: mesimon_core::command::ANSWER_IN_PANE_FIRST.into(),
                 };
             }
         }
         let q = self.queued.remove(i);
         self.persist_queue();
         if !self.seat_stands(ticket, &q.seat) {
+            if let Some(crown) = q.by {
+                self.crown_dropped_ask(ticket, crown, "board");
+            }
             self.broadcast();
             return Response::Err { message: "queued session changed".into() };
         }
@@ -9180,7 +9263,7 @@ impl Daemon {
     }
 
     fn drop_queued_ask(&mut self, ticket: ulid::Ulid) -> Response {
-        if self.forget_queued(ticket, "queued_ask_dropped", "local") {
+        if self.forget_queued(ticket, "queued_ask_dropped", "local", "person") {
             self.broadcast();
             Response::Ok
         } else {
@@ -10893,7 +10976,7 @@ impl Daemon {
             self.reaping.insert(sid, Instant::now() + REAP_GRACE);
         }
         // The user ended the session an ask was waiting for.
-        self.forget_queued(ticket, "queued_ask_dropped", "local");
+        self.forget_queued(ticket, "queued_ask_dropped", "local", "board");
         self.persist_and_notify();
         Response::Ok
     }
@@ -11634,7 +11717,7 @@ impl Daemon {
         // needs an awake pane, and waking it later against their gesture is
         // not what they asked for.
         if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
-            self.forget_queued(t, "queued_ask_dropped", "local");
+            self.forget_queued(t, "queued_ask_dropped", "local", "board");
         }
         Ok(())
     }

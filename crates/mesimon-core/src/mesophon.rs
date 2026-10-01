@@ -292,8 +292,13 @@ pub struct Command {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Ticket {
+    /// The words queued for the ticket's agent.
     #[serde(default)]
     pub queued: Option<String>,
+    /// Whose those words are and what they wait on (T-568). Beside `queued`,
+    /// never in its place: an older page reads `queued` as the words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<Queue>,
     pub id: String,
     pub key: String,
     pub title: String,
@@ -317,6 +322,43 @@ pub struct Ticket {
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
+}
+
+/// A queued ask's facts as a phone reads them (T-568), the board's own row
+/// (`command::Pending`) in its fields: whose words they are, whether they
+/// wait on a person's send, and whose turn or answer they wait on.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Queue {
+    /// The key of the crown ticket whose agent queued the words (T-413);
+    /// absent for a person's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// The crown's words go by the queue like a person's (T-550); a crown's
+    /// that does not send waits on a person's send.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sends: bool,
+    /// Why the board held the words for a person's send: `agent asked`
+    /// when the agent stopped on a question (T-420, T-565).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
+    /// The keys whose turn the words wait for, the ticket's own among them
+    /// while its own agent works (`Pending::waits_on`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waits: Vec<String>,
+    /// The keys among those whose agent is on a question, which a person
+    /// answers; for held words, the ticket's own while its agent asks
+    /// (`Pending::asking`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asking: Vec<String>,
+}
+
+/// Whose queued words a phone's prompt took the place of (T-568): `by` is
+/// the crown ticket's key for its agent's words, `held` for a person's
+/// words the board held on a question, and `you` for a person's own. A
+/// word, never an enum, so a newer host's word does not fail an older page.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Replaced {
+    pub by: String,
 }
 
 /// How a phone's ticket was picked up, and when: `by` is `desk` (its page was
@@ -422,6 +464,10 @@ pub enum Reply {
         /// gone in. Absent everywhere else, and from an older host.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// A prompt that took the place of queued words says whose (T-568).
+        /// Absent everywhere else, and from an older host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replaced: Option<Replaced>,
     },
     Rejected {
         message: String,
@@ -479,7 +525,18 @@ pub enum Reply {
 impl Reply {
     /// A `Delivery` receipt with no reason.
     pub fn delivery(status: &str) -> Self {
-        Reply::Delivery { status: status.into(), reason: None }
+        Reply::Delivery { status: status.into(), reason: None, replaced: None }
+    }
+}
+
+/// What a phone's send is refused with while its agent waits on a person
+/// (T-568): the sentence the board's own send gives (T-420), pointed at the
+/// card the phone draws where it draws one it can answer.
+pub fn answer_first(here: bool) -> &'static str {
+    if here {
+        "the agent is waiting on you ∙ answer it here first"
+    } else {
+        crate::command::ANSWER_IN_PANE_FIRST
     }
 }
 
@@ -683,6 +740,7 @@ mod tests {
     fn a_ticket_carries_tags_pickup_and_the_agent_s_step_only_when_known() {
         let bare = Ticket {
             queued: None,
+            queue: None,
             id: "01J".into(),
             key: "T-1".into(),
             title: "t".into(),
@@ -838,6 +896,83 @@ mod tests {
             serde_json::to_value(Reply::Edited { ticket: "01J".into() }).unwrap(),
             serde_json::json!({"result":"edited","ticket":"01J"})
         );
+    }
+
+    /// A queued ask's facts ride beside its words (T-568): an older page
+    /// reads `queued` as the words and never sees an object there, and a
+    /// person's own ask with nothing ahead says nothing more.
+    #[test]
+    fn the_queue_s_facts_ride_beside_its_words() {
+        let ticket = |queue| Ticket {
+            queued: Some("next".into()),
+            queue,
+            id: "01J".into(),
+            key: "T-3".into(),
+            title: "t".into(),
+            column: "TODO".into(),
+            agent: None,
+            tags: vec![],
+            picked: None,
+            notes: 0,
+            noted: String::new(),
+        };
+        let json = serde_json::to_value(ticket(Some(Queue::default()))).unwrap();
+        assert_eq!((&json["queued"], &json["queue"]), (&"next".into(), &serde_json::json!({})));
+        assert!(serde_json::to_value(ticket(None)).unwrap().get("queue").is_none());
+        let held = Queue {
+            by: Some("T-411".into()),
+            sends: false,
+            held: Some("agent asked".into()),
+            waits: vec![],
+            asking: vec!["T-3".into()],
+        };
+        let json = serde_json::to_value(ticket(Some(held.clone()))).unwrap();
+        assert_eq!(
+            json["queue"],
+            serde_json::json!({"by": "T-411", "held": "agent asked", "asking": ["T-3"]})
+        );
+        let back: Ticket = serde_json::from_value(json).unwrap();
+        assert_eq!(back.queue, Some(held));
+        // From a host before T-568: the words alone.
+        let old: Ticket = serde_json::from_str(
+            r#"{"queued":"next","id":"01J","key":"T-3","title":"t","column":"TODO","agent":null}"#,
+        )
+        .unwrap();
+        assert!(old.queue.is_none());
+    }
+
+    /// A receipt says whose words a prompt replaced, and only then; an older
+    /// host's receipt, without the field, still parses.
+    #[test]
+    fn a_receipt_names_whose_queued_words_it_replaced() {
+        assert_eq!(
+            serde_json::to_value(Reply::delivery("queued")).unwrap(),
+            serde_json::json!({"result": "delivery", "status": "queued"})
+        );
+        let replaced = Reply::Delivery {
+            status: "queued".into(),
+            reason: None,
+            replaced: Some(Replaced { by: "T-411".into() }),
+        };
+        assert_eq!(
+            serde_json::to_value(&replaced).unwrap(),
+            serde_json::json!({"result": "delivery", "status": "queued", "replaced": {"by": "T-411"}})
+        );
+        let Reply::Delivery { replaced, .. } =
+            serde_json::from_str(r#"{"result":"delivery","status":"submitted"}"#).unwrap()
+        else {
+            panic!("delivery")
+        };
+        assert_eq!(replaced, None);
+    }
+
+    /// A refused send names where the answer goes: the phone's own card when
+    /// it draws one it can answer, else the pane, in the board's words.
+    #[test]
+    fn a_send_at_a_dialog_is_refused_toward_the_answer() {
+        assert_eq!(answer_first(true), "the agent is waiting on you ∙ answer it here first");
+        assert_eq!(answer_first(false), crate::command::ANSWER_IN_PANE_FIRST);
+        assert!(answer_first(false).ends_with("answer it in the pane first"));
     }
 
     #[test]

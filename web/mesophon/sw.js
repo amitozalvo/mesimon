@@ -28,6 +28,7 @@ const PAGE = [
   "./markdown.js",
   "./notes.js",
   "./notepad.js",
+  "./queue.js",
   "./sent.js",
   "./sessions.js",
   "./shell.js",

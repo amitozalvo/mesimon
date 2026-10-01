@@ -2161,6 +2161,18 @@ button.note-row:hover {
 .segmented:disabled {
   opacity: 0.5;
 }
+.segmented label.off {
+  opacity: 0.5;
+}
+.segmented label.off,
+.segmented input:disabled {
+  cursor: not-allowed;
+}
+.steer-why {
+  margin: 6px 2px 0;
+  color: var(--ink3);
+  font-size: 0.75rem;
+}
 .mode-help {
   flex: 1;
   min-width: 0;

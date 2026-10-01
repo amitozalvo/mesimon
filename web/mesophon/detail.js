@@ -8,6 +8,7 @@ import { Attention } from "./dialogs.js";
 import { StartButton, StartReceipt, Tags, stateAge } from "./lists.js";
 import { NotesCard, NoteReader } from "./notepad.js";
 import { receiptTick } from "./sessions.js";
+import { queueWords, sendRefused, waitsOnYou } from "./queue.js";
 
 // The pane's width in cells, for drawing its lines as the screen they came
 // from (T-506). An older host names none: the longest line stands in, which
@@ -76,19 +77,23 @@ function Composer({ store, ticket, entry, live }) {
   const agent = ticket?.agent?.state === "sleeping" ? undefined : ticket?.agent;
   const acting = entry?.receipt?.waiting && entry.receipt.status !== "queued";
   const queueOff = !live || !agent?.promptable || ticket?.queued == null || !!acting;
-  const mode = entry?.mode || "queue";
-  const sendOff =
-    !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting || !entry?.draft.trim();
-  const tick = receiptTick(entry?.receipt?.status);
+  // At a dialog a steer would be its answer (T-568): Steer is off, and the
+  // words queue, until the agent no longer waits on you.
+  const steerOff = waitsOnYou(agent);
+  const mode = steerOff ? "queue" : entry?.mode || "queue";
+  const sendOff = !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting ||
+    !!entry?.answer?.waiting || !entry?.draft.trim();
+  const tick = receiptTick(entry?.latest?.status);
   return html`<footer class="composer-area">
     <section id="queued-row" class="bubble-row" aria-label="Queued prompt" hidden=${ticket?.queued == null}>
       <div class="bubble">
         <pre id="queued-text" dir="auto">${ticket?.queued || ""}</pre>
-        <p class="bubble-meta"><${Icon} name="hourglass" size=${13} /><span>Queued · waits for idle</span><${Tick} state="one" /></p>
+        <p class="bubble-meta"><${Icon} name="hourglass" size=${13} /><span id="queued-meta">${queueWords(ticket)}</span><${Tick} state="one" /></p>
       </div>
       <div class="bubble-actions">
         <button id="take-back" type="button" class="btn btn-quiet" disabled=${queueOff} onClick=${() => store.queueAction("take_back")}>Take back</button>
-        <button id="send-now" type="button" class="btn" disabled=${queueOff} onClick=${() => store.queueAction("send_now")}>Send now</button>
+        <button id="send-now" type="button" class="btn" disabled=${queueOff} hidden=${sendRefused(ticket)}
+          onClick=${() => store.queueAction("send_now")}>Send now</button>
       </div>
     </section>
     <section id="returned-row" class="returned" aria-label="Retained prompt text" hidden=${!entry?.returned}>
@@ -119,13 +124,14 @@ function Composer({ store, ticket, entry, live }) {
             <legend class="sr-only">Delivery</legend>
             <label class=${mode === "queue" ? "on" : ""}><input type="radio" name="prompt-mode" value="queue"
               checked=${mode === "queue"} onChange=${() => store.setDelivery("queue")} /><${Icon} name="hourglass" size=${14} /><span>Queue</span></label>
-            <label class=${mode === "steer" ? "on" : ""}><input type="radio" name="prompt-mode" value="steer"
-              checked=${mode === "steer"} onChange=${() => store.setDelivery("steer")} /><${Icon} name="zap" size=${14} /><span>Steer</span></label>
+            <label class=${`${mode === "steer" ? "on" : ""}${steerOff ? " off" : ""}`}><input type="radio" name="prompt-mode" value="steer"
+              checked=${mode === "steer"} disabled=${steerOff} onChange=${() => store.setDelivery("steer")} /><${Icon} name="zap" size=${14} /><span>Steer</span></label>
           </fieldset>
           <p class="mode-help">${mode === "steer" ? "Goes in now, mid-turn." : "Waits for the turn to end."}</p>
           <button id="send" type="submit" class="send" disabled=${sendOff}
             aria-label=${mode === "steer" ? "Send prompt" : "Queue prompt"}><${Icon} name="up" size=${20} width=${2.2} /></button>
         </div>
+        <p id="steer-why" class="steer-why" hidden=${!steerOff}>Steer is off while the agent waits on you · answer it first. Queue still works.</p>
       </div>
       <p id="delivery" role="status" hidden=${!tick && !entry?.delivery}>${tick && html`<${Tick} state=${tick} />`}<span>${entry?.delivery || ""}</span></p>
     </form>

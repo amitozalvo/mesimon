@@ -90,8 +90,9 @@ pub const PERSONS_QUESTIONS: &str = persons_questions!();
 /// board would tell it, and that monitor made it read as busy, which held
 /// the very wake it was waiting for (`session_idle`). It also says where a
 /// worker's question is read (T-566): a crown on a friend's board saw only
-/// `needs-you`, guessed, and sent words that could not land; and which
-/// questions the crown may answer (T-569).
+/// `needs-you`, guessed, and sent words that could not land; which
+/// questions the crown may answer (T-569); and where an ask of its that was
+/// dropped before it was sent is read (T-568).
 pub const CROWN_WAKES: &str = concat!(
     "The board wakes this session on its own: when an agent the crown started delivers, is \
      merged, answers the crown's ask or raises its hand, one sentence naming the ticket and \
@@ -106,7 +107,10 @@ pub const CROWN_WAKES: &str = concat!(
      request); ask_agent is refused while it stands. Where the board lets the crown answer \
      (Settings → Agents → Crown answers questions), a question an agent the crown started \
      asks wakes this session and answer_agent answers it; every other stop, an agent a person \
-     started, and a question on a board that does not let the crown answer stay a person's. ",
+     started, and a question on a board that does not let the crown answer stay a person's. \
+     An ask dropped before it was sent (a person replaced it, took it back or talked past it, \
+     or its agent went first) reads asked: dropped on that ticket's get_ticket, with who \
+     dropped it. ",
     persons_questions!()
 );
 
@@ -1804,6 +1808,14 @@ mod tests {
             assert!(description.contains(outcome), "answer_agent names {outcome}");
         }
         lint_tool_text(description).unwrap();
+    }
+
+    /// T-568: the crown learns where an ask of its that never went is read.
+    #[test]
+    fn the_crown_is_told_where_a_dropped_ask_is_read() {
+        for words in ["asked: dropped", "dropped before it was sent", "who dropped it"] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
     }
 
     #[test]

@@ -7,7 +7,7 @@ import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { answerable, requestSummary } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
-import { receiptTick } from "./sessions.js";
+import { answerBusy, receiptTick } from "./sessions.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 export const lastSeen = (board) => (board?.receivedAt ? clock(board.receivedAt) : "");
@@ -147,11 +147,11 @@ function NeedCard({ store, ticket, board, live }) {
   const pressed = ticket.id === board.selected;
   const { permission, dialog, session } = ticket.agent;
   const entry = (permission || dialog) ? store.entryFor(ticket) : undefined;
-  const off = !live || !!entry?.receipt?.waiting;
+  const off = !live || answerBusy(entry);
   const send = (body) => store.sendInteraction({ ...body, ticket: ticket.id, session }, entry);
   const question = answerable(dialog) ? dialog.questions[0] : undefined;
   const expired = permission && Date.now() >= permission.expires_at;
-  const tick = receiptTick(entry?.receipt?.status);
+  const tick = receiptTick(entry?.latest?.status);
   return html`<article class="need">
     <button type="button" class="ticket need-open" data-id=${ticket.id} aria-pressed=${String(pressed)}
       onClick=${() => store.select(ticket.id)}>

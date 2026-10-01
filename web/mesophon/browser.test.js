@@ -95,12 +95,11 @@ for (const [name, engine] of [
         await page
           .getByRole("button", { name: "Connect", exact: true })
           .click();
-        await page
-          .getByRole("button", { name: /private-ticket-canary/ })
-          .waitFor();
-        await page
-          .getByRole("button", { name: /private-ticket-canary/ })
-          .click();
+        // The card, not the ticket page's rename title (T-530), which
+        // wears the same words once the ticket is selected.
+        const card = page.locator(".ticket.card", { hasText: "private-ticket-canary" });
+        await card.waitFor();
+        await card.click();
         await page.waitForFunction(() =>
           document
             .querySelector("#preview")

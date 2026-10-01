@@ -3,6 +3,7 @@
 import { html } from "./html.js";
 import { Icon } from "./icons.js";
 import { Markdown } from "./markdown.js";
+import { answerBusy } from "./sessions.js";
 
 // The single-choice question the host can answer by keys; anything else is
 // answered in the pane.
@@ -21,7 +22,8 @@ export function Attention({ store, ticket, entry, live }) {
   const permission = ticket?.agent?.permission;
   const dialog = ticket?.agent?.dialog;
   if (!permission && !dialog) return html`<section id="attention" hidden></section>`;
-  const busy = !!entry?.receipt?.waiting;
+  // An answer on its way, never a prompt queued for the turn (T-568).
+  const busy = answerBusy(entry);
   const off = !live || busy;
   const send = (body) =>
     store.sendInteraction({ ...body, ticket: ticket.id, session: ticket.agent.session }, entry);

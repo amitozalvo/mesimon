@@ -1125,6 +1125,10 @@ impl DiffTarget {
 /// than on the field so a client cannot lift it.
 pub const PROMPT_MAX_BYTES: usize = 4096;
 
+/// Why a send into a pane is refused while its agent waits on a person
+/// (T-420): a paste there lands in the dialog as its answer.
+pub const ANSWER_IN_PANE_FIRST: &str = "the agent is waiting on you ∙ answer it in the pane first";
+
 /// The daemon-side boundary for a user-typed prompt, and the twin of
 /// [`crate::board::sanitize_tag`]: user text about to leave mesimon for
 /// somebody else's process.
@@ -1836,6 +1840,12 @@ pub struct AgentTicketView {
     /// only — `list_board` keeps its one word.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_you: Option<AgentNeedsYouView>,
+    /// What became of the crown's last ask to this ticket's agent where
+    /// nothing else would tell it (T-568): words dropped before they were
+    /// sent. The crown's `get_ticket` with `key` only; its next ask to the
+    /// ticket clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<AgentAskedView>,
     /// An opaque stamp over everything a keyed edit may assume — column,
     /// order, title, tags, notes, workspace, the agent's state — returned
     /// to the daemon by every keyed mutation, which refuses when the ticket
@@ -1888,6 +1898,20 @@ pub struct AgentNeedsYouView {
     pub question: Option<AgentQuestionView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answerable: Option<bool>,
+}
+
+/// The crown's last ask, where it did not go (T-568). `status` is a word —
+/// `dropped` — so an older client drops what it cannot read. `by` says who
+/// dropped it: `person` (words replaced from the board or Remote Control,
+/// taken back, or talked past in the pane) or `board` (the seat the words
+/// waited at went, or the ticket did).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAskedView {
+    pub status: String,
+    pub by: String,
+    /// Seconds since it was dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_secs: Option<u64>,
 }
 
 /// One question a stopped agent asks (T-566): its words, its options'
@@ -2744,11 +2768,14 @@ mod tests {
             crown: None,
             state: None,
             needs_you: None,
+            asked: None,
             seen: None,
         };
         assert!(!serde_json::to_string(&t).unwrap().contains("repos"));
-        // An agent at no stop says nothing about one (T-566).
+        // An agent at no stop says nothing about one (T-566), nor a crown
+        // whose ask nobody dropped about that (T-568).
         assert!(!serde_json::to_string(&t).unwrap().contains("needs_you"));
+        assert!(!serde_json::to_string(&t).unwrap().contains("asked"));
         // A board with no column described says nothing about it (T-467).
         assert!(!serde_json::to_string(&t).unwrap().contains("column_descriptions"));
         t.repos = vec![AgentRepoView {
@@ -2757,10 +2784,20 @@ mod tests {
             merge_state: "ahead".into(),
         }];
         t.column_descriptions.insert("BACKLOG".into(), "someday".into());
-        let back: AgentTicketView =
-            serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        t.asked = Some(AgentAskedView {
+            status: "dropped".into(),
+            by: "person".into(),
+            since_secs: Some(4),
+        });
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(
+            json["asked"],
+            serde_json::json!({"status": "dropped", "by": "person", "since_secs": 4})
+        );
+        let back: AgentTicketView = serde_json::from_value(json).unwrap();
         assert_eq!(back.repos, t.repos);
         assert_eq!(back.column_descriptions, t.column_descriptions);
+        assert_eq!(back.asked, t.asked);
     }
 
     /// `Notice.kind` is a String precisely so a kind this build has never heard

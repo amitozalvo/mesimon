@@ -3,7 +3,8 @@
 // requests and the theme attribute. Transport stays in connection.js.
 import { Connection } from "./connection.js";
 import { BoardState } from "./board.js";
-import { Sessions } from "./sessions.js";
+import { Sessions, answerBusy } from "./sessions.js";
+import { sendRefused, waitsOnYou } from "./queue.js";
 import { Sent } from "./sent.js";
 import { Mailbox } from "./mailbox.js";
 import { Starts, startWaiting } from "./starts.js";
@@ -344,16 +345,23 @@ export class Store {
   receipts() {
     const c = this.connection;
     for (const session of this.sessions.entries.values()) {
-      const receipt = session.receipt;
-      if (session.board !== this.active?.pin.board || !receipt?.unresolved) continue;
-      if (receipt.incarnation !== c.incarnation) {
-        this.sessions.reply(session, { result: "delivery", status: "unknown" });
-      } else if (
-        ![...c.pending.values()].some(
-          (p) => p.context === session.key && receiptOps.includes(p.body.op),
-        )
-      ) {
-        c.request({ op: "status", command: receipt.id }, session.key);
+      if (session.board !== this.active?.pin.board) continue;
+      // The prompt's receipt and the answer's (T-568), each asked after
+      // while no request about it is on its way.
+      for (const receipt of [session.receipt, session.answer]) {
+        if (!receipt?.unresolved) continue;
+        if (receipt.incarnation !== c.incarnation) {
+          this.sessions.reply(session, { result: "delivery", status: "unknown" }, receipt.id);
+        } else if (
+          ![...c.pending.entries()].some(
+            ([id, p]) =>
+              p.context === session.key &&
+              receiptOps.includes(p.body.op) &&
+              (id === receipt.id || p.body.command === receipt.id),
+          )
+        ) {
+          c.request({ op: "status", command: receipt.id }, session.key);
+        }
       }
     }
     // A ticket sent before a drop or a reload: ask what became of it, once.
@@ -384,7 +392,7 @@ export class Store {
   // Permission and dialog answers, bound to the exact ticket, session and request.
   sendInteraction(body, target) {
     const c = this.connection;
-    if (!this.live || !c.online || !c.features?.includes(body.op) || !target || target.receipt?.waiting)
+    if (!this.live || !c.online || !c.features?.includes(body.op) || !target || answerBusy(target))
       return;
     const id = c.request(body, target.key);
     if (id === undefined) return;
@@ -1465,7 +1473,8 @@ export class Store {
         : original?.body.op === "status"
           ? original.body.command
           : undefined;
-      if (session?.receipt?.id === command && command !== undefined) this.sessions.reply(session, reply);
+      if (command !== undefined && [session?.receipt, session?.answer].some((r) => r?.id === command))
+        this.sessions.reply(session, reply, command);
       else if (reply.result === "rejected" && original?.body.op === "preview" && session) {
         session.displayed = `Preview unavailable: ${reply.message}`;
         // A rejected preview can indicate session replacement; refresh identity.
@@ -1532,7 +1541,8 @@ export class Store {
     const entry = this.entry;
     const current = this.board?.current;
     if (!this.live || !current?.agent?.promptable || current.queued == null ||
-      (entry.receipt?.waiting && entry.receipt.status !== "queued"))
+      (entry.receipt?.waiting && entry.receipt.status !== "queued") ||
+      (op === "send_now" && sendRefused(current)))
       return;
     const id = this.connection.request({ op, ticket: entry.ticket, session: entry.session }, entry.key);
     if (id !== undefined) this.sessions.sent(entry, id, this.connection.incarnation, op, current.queued);
@@ -1551,8 +1561,9 @@ export class Store {
   }
   submitPrompt() {
     const entry = this.entry;
-    if (!this.live || !this.board?.current?.agent?.promptable || !entry?.draft.trim() ||
-      entry.review || entry.receipt?.waiting)
+    const agent = this.board?.current?.agent;
+    if (!this.live || !agent?.promptable || !entry?.draft.trim() ||
+      entry.review || entry.receipt?.waiting || entry.answer?.waiting)
       return;
     if (new TextEncoder().encode(entry.draft).length > 4096) {
       entry.delivery = "Prompt must fit in 4096 UTF-8 bytes.";
@@ -1560,7 +1571,9 @@ export class Store {
       return;
     }
     const id = this.connection.request(
-      { op: "prompt", ticket: entry.ticket, session: entry.session, text: entry.draft, queued: entry.mode === "queue" },
+      // Steer is off while the agent waits on you (T-568): the words queue.
+      { op: "prompt", ticket: entry.ticket, session: entry.session, text: entry.draft,
+        queued: entry.mode === "queue" || waitsOnYou(agent) },
       entry.key,
     );
     if (id !== undefined) this.sessions.sent(entry, id, this.connection.incarnation);

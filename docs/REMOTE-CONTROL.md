@@ -139,6 +139,32 @@ cannot be recovered, the browser shows **outcome unknown**; check the agent befo
 sending again. Prompt text is limited to 4096 UTF-8 bytes; previews show the last
 50 lines, and oversized responses are rejected.
 
+**Queue** waits for the agent's turn to end; **Steer** goes in now. A ticket holds
+one set of queued words, from the browser, your terminal or the crowned agent. The
+row above the composer says whose they are and what they wait on:
+
+- **queued · after T-3**, **after T-3 +1**, **after its turn**: they go by
+  themselves once those agents' turns end. **after T-3's answer** waits on a
+  question that you answer, and **sends next** waits on nothing.
+- **held · agent asked · you send**: the agent stopped on a question after the
+  words were queued, so they wait for you to read them and press **Send now**.
+- **T-411's agent · you send**: the crowned agent's words, which wait for your
+  **Send now** unless your terminal lets the crown send its own.
+- **… · you answer first**: the agent is waiting on you; answer it, then send.
+
+While the agent waits on you (a question, a plan, a permission, or any other
+stop), a paste would land in the dialog as its answer. **Steer** is then off and
+says why under the choice, **Send now** is hidden, and your terminal refuses both:
+"the agent is waiting on you ∙ answer it here first" when this page can answer
+it, or "… in the pane first" when it cannot. **Queue** still works: the words wait
+behind your answer. Queued words never block an answer, so you can answer the
+question they wait behind; only a steer still going into the pane does.
+
+A prompt that takes the place of queued words says whose they were: "It replaced
+your queued words", "It replaced the words held for the agent's question", or "It
+replaced T-411's agent's queued words". The crowned agent reads that its words
+were dropped the next time it reads that ticket.
+
 ## Permissions
 
 Claude permission requests can be approved once or denied while their remote

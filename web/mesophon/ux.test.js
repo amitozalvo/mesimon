@@ -308,7 +308,7 @@ function fixture() {
           };
           if (state.holdAll) return;
           if (request.op === "foreground") answer({ result: "delivery", status: "observed" });
-          if (request.op === "permission") answer({ result: "delivery", status: "input_sent" });
+          if (request.op === "permission") answer({ result: "delivery", status: "decision_sent" });
           if (request.op === "dialog") answer(state.dialogReply || { result: "delivery", status: "input_sent" });
           if (request.op === "snapshot") answer(state.snapshot());
           if (request.op === "preview")
@@ -325,7 +325,8 @@ function fixture() {
               if (state.disposition === "queued")
                 state.tickets.find((t) => t.id === request.ticket).queued =
                   request.text;
-              answer({ result: "delivery", status: state.disposition });
+              answer({ result: "delivery", status: state.disposition,
+                ...(state.replaced ? { replaced: state.replaced } : {}) });
             }
           }
           if (["send_now", "take_back"].includes(request.op)) {
@@ -1828,6 +1829,10 @@ try {
             await page.locator("#queued-text").textContent(),
             "queued follow-up",
           );
+          // T-568: this agent needs attention, so the host would refuse a
+          // send: Send now is not offered, and an older host's words stand.
+          assert(await page.locator("#send-now").isHidden());
+          assert.equal(await page.locator("#queued-meta").textContent(), "Queued · waits for idle");
           assert.equal(await page.locator("#prompt").inputValue(), "");
           await page.evaluate(() => fixture.channel().close());
           await until(
@@ -1875,6 +1880,15 @@ try {
             await page.locator("#returned-text").textContent(),
             "newer draft",
           );
+          // T-568: at a stop a steer would be the dialog's answer: Steer is
+          // off and says why, until the agent works again.
+          assert(await page.locator('input[name="prompt-mode"][value="steer"]').isDisabled());
+          assert(await page.locator("#steer-why").isVisible());
+          await page.evaluate(() => {
+            fixture.tickets[1].agent.state = "working";
+            fixture.update();
+          });
+          await until(page, () => document.querySelector("#steer-why").hidden);
           await delivery("steer");
           await page.evaluate(() => {
             fixture.disposition = "submitted";
@@ -2179,6 +2193,54 @@ try {
           await page.locator("#attention").screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-plan.png`) });
           await attention("Reject plan").click();
           assert.equal(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).request), "plan-1");
+          // T-568: words queued for the turn never lock the answer. At the
+          // question Steer is off, so the words queue; the receipt says whose
+          // words they replaced, and the answer still goes.
+          await page.evaluate(() => {
+            fixture.tickets[0].agent.dialog = { request: "question-2", kind: "questions", questions: [{ question: "Which shade?", header: "Shade",
+              multiSelect: false, options: [{ label: "Light", description: "" }, { label: "Dark", description: "" }] }] };
+            fixture.disposition = "queued";
+            fixture.replaced = { by: "T-411" };
+            fixture.update();
+          });
+          await until(page, () => document.querySelector("#attention").textContent.includes("Which shade?"));
+          assert(await page.locator("#steer-why").isVisible());
+          await page.locator("#prompt").fill("after the answer");
+          await page.locator("#send").click();
+          await page.locator("#queued-row").waitFor({ state: "visible" });
+          assert.equal(await page.evaluate(() => fixture.prompts.at(-1).queued), true);
+          await until(page, () => document.querySelector("#delivery").textContent.includes("It replaced T-411’s agent’s queued words."));
+          assert(await page.locator("#send-now").isHidden());
+          assert(await attention("Dark").isEnabled(), "a queued prompt does not lock the answer");
+          await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "answered" }; });
+          await attention("Dark").click();
+          await until(page, () => document.querySelector("#delivery").textContent.includes("Answered."));
+          assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1)),
+            { op: "dialog", request: "question-2", response: { answer: "choice", index: 1 }, ticket: "m2", session: "m2-session" });
+          // The row says whose words wait and on what, as the host says it.
+          const queuedMeta = (queue, agent) => page.evaluate(([queue, agent]) => {
+            Object.assign(fixture.tickets[0], { queue });
+            Object.assign(fixture.tickets[0].agent, agent);
+            fixture.update();
+          }, [queue, agent]);
+          const meta = (words) => until(page, (w) => document.querySelector("#queued-meta").textContent === w, words);
+          await queuedMeta({ held: "agent asked", asking: ["T-M2"] }, {});
+          await meta("held · agent asked · you answer first");
+          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-queued-at-question.png`) });
+          await queuedMeta({ held: "agent asked" }, { state: "idle", dialog: null });
+          await meta("held · agent asked · you send");
+          assert(await page.locator("#send-now").isVisible());
+          await queuedMeta({ by: "T-411" }, {});
+          await meta("T-411's agent · you send");
+          await queuedMeta({ waits: ["T-3"], asking: ["T-3"] }, {});
+          await meta("queued · after T-3's answer");
+          await page.evaluate(() => {
+            fixture.dialogReply = undefined;
+            fixture.replaced = undefined;
+            fixture.tickets[0].queued = null;
+            fixture.tickets[0].queue = undefined;
+            fixture.update();
+          });
           // Connected phone browsers still receive an in-page alert when the
           // platform cannot construct a system Notification.
           await page.evaluate(async () => {

@@ -938,9 +938,7 @@ impl Daemon {
                 self.control_settle_dialog(id, crown, "unknown", Some(reason.into()), &screen);
             }
         }
-        if self.control.dialog_deliveries.contains_key(&id)
-            || self.control.pending.contains_key(&id)
-        {
+        if self.control.dialog_deliveries.contains_key(&id) || self.control_input_in_flight(id) {
             return Reply::Rejected { message: "input is already pending".into() };
         }
         let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == request) else {
@@ -1145,7 +1143,7 @@ impl Daemon {
                 self.control.remember(
                     grant,
                     command,
-                    Reply::Delivery { status: status.into(), reason },
+                    Reply::Delivery { status: status.into(), reason, replaced: None },
                 );
                 self.feed.board_outcome(
                     by.actor(),
@@ -1298,9 +1296,8 @@ impl Daemon {
                 "{key}'s dialog is not a shape the board answers; a person answers it"
             ));
         }
-        if self.control.dialog_deliveries.contains_key(&id)
-            || self.control.pending.contains_key(&id)
-        {
+        // Queued words wait behind the answer and do not hold it (T-568).
+        if self.control.dialog_deliveries.contains_key(&id) || self.control_input_in_flight(id) {
             return Err(format!("an answer for {key}'s question is already on its way"));
         }
         self.control.dialog_deliveries.insert(
@@ -2238,9 +2235,11 @@ impl Daemon {
             tickets: columns
                 .iter()
                 .flat_map(|c| self.board.column_tickets(&c.name))
-                .map(|t| api::Ticket {
+                .map(|t| (t, self.queued.iter().find(|q| q.ticket == t.id)))
+                .map(|(t, q)| api::Ticket {
                     id: t.id.to_string(),
-                    queued: self.queued.iter().find(|q| q.ticket == t.id).map(|q| q.text.clone()),
+                    queued: q.map(|q| q.text.clone()),
+                    queue: q.map(|q| self.control_queue(q)),
                     key: t.short_key.clone(),
                     title: t.title.clone(),
                     column: t.column.clone(),
@@ -2283,26 +2282,8 @@ impl Daemon {
             since: s.state_changed_at,
             doing,
             said,
-            dialog: self
-                .control
-                .dialogs
-                .get(&s.id)
-                .filter(|_| {
-                    matches!(
-                        s.state,
-                        SessionState::RequiresAction {
-                            reason: mesimon_core::board::Reason::Question
-                                | mesimon_core::board::Reason::Plan
-                        }
-                    )
-                })
-                .cloned(),
-            permission: self
-                .control
-                .permissions
-                .get(&s.id)
-                .filter(|p| Instant::now() < p.deadline)
-                .map(|p| p.projection.clone()),
+            dialog: self.control_dialog_of(s).cloned(),
+            permission: self.control_permission_of(s.id).cloned(),
             session: s.id.to_string(),
             provider: if s.kind == SessionKind::Codex { "codex" } else { "claude" }.into(),
             state: match s.state {
@@ -2318,6 +2299,60 @@ impl Daemon {
             }
             .into(),
             promptable: self.control_target(&t.id.to_string(), &s.id.to_string()).is_some(),
+        }
+    }
+
+    /// The dialog a phone draws for this agent: the hook stream's projection,
+    /// while the agent is stopped on a question or a plan.
+    fn control_dialog_of(&self, s: &SessionRecord) -> Option<&api::Dialog> {
+        use mesimon_core::board::Reason;
+        self.control.dialogs.get(&s.id).filter(|_| {
+            matches!(
+                s.state,
+                SessionState::RequiresAction { reason: Reason::Question | Reason::Plan }
+            )
+        })
+    }
+
+    /// The permission a phone draws for this session, until it expires.
+    fn control_permission_of(&self, id: uuid::Uuid) -> Option<&api::Permission> {
+        self.control
+            .permissions
+            .get(&id)
+            .filter(|p| Instant::now() < p.deadline)
+            .map(|p| &p.projection)
+    }
+
+    /// Does the phone draw a card it can answer for this session's stop
+    /// (T-568): a permission, a plan, or one question with one choice?
+    /// Then a send it refuses points at that card, not the pane.
+    fn control_answers_here(&self, id: uuid::Uuid) -> bool {
+        let Some(s) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
+        self.control_permission_of(id).is_some()
+            || self.control_dialog_of(s).is_some_and(|d| match &d.content {
+                api::DialogContent::Plan { .. } => true,
+                api::DialogContent::Questions { questions } => dialog_answerable(questions),
+            })
+    }
+
+    /// A phone's words on their way into this pane (T-568): a steer parked
+    /// for its paste, or a delivery pasted and owed its Enter. A phone's ask
+    /// still in the queue is not in flight: it waits for the turn to end,
+    /// and a dialog's answer is what ends it.
+    fn control_input_in_flight(&self, id: uuid::Uuid) -> bool {
+        self.control.pending.contains_key(&id)
+            && !self.queued.iter().any(|q| matches!(q.seat, QueuedSeat::Pane(s) if s == id))
+    }
+
+    /// A queued ask as a phone reads it (T-568): the board's own row
+    /// (`pending_items`) in the phone's fields.
+    fn control_queue(&self, q: &QueuedAsk) -> api::Queue {
+        api::Queue {
+            by: q.by.and_then(|c| self.board.ticket(c)).map(|c| c.short_key.clone()),
+            sends: q.sends,
+            held: q.held.map(str::to_string),
+            waits: self.ask_waits_on(q.ticket),
+            asking: self.ask_asking(q.ticket),
         }
     }
 
@@ -2403,34 +2438,82 @@ impl Daemon {
                 message: "a prompt is already waiting for this session".into(),
             };
         }
-        self.forget_queued(ticket, "queued_ask_replaced", "mesophon");
+        // A steer goes in now, and at a dialog a paste is the dialog's
+        // answer (T-568): refused in the board's words, before anything
+        // queued is touched. A queued prompt waits for the turn, as the
+        // board's own does, and is held while a question stands (T-565).
+        if !queued && self.pane_waits_on_you(id) {
+            return Reply::Rejected {
+                message: api::answer_first(self.control_answers_here(id)).into(),
+            };
+        }
+        // The ticket has one queued ask, and this prompt takes its place:
+        // whose it was is said on the receipt (T-568), never dropped
+        // silently. The crown's own `get_ticket` says so too.
+        let replaced = self.queued.iter().find(|q| q.ticket == ticket).map(|q| api::Replaced {
+            by: q
+                .by
+                .and_then(|c| self.board.ticket(c))
+                .map(|c| c.short_key.clone())
+                .or_else(|| q.held.map(|_| "held".into()))
+                .unwrap_or_else(|| "you".into()),
+        });
+        self.forget_queued(ticket, "queued_ask_replaced", "mesophon", "person");
         self.control.pending.insert(
             id,
             Pending { grant, device, command, ticket, pasted: false, send_now_receipt: None },
         );
-        if queued {
-            if let Err(message) =
-                self.park_ask(ticket, QueuedSeat::Pane(id), text, None, false, false)
-            {
-                self.control_cancel(id);
-                return Reply::Rejected { message };
-            }
-            self.drain_queue();
-            self.broadcast();
-            return if self.queued.iter().any(|q| q.ticket == ticket) {
-                Reply::delivery("queued")
-            } else if self.parked(id) {
-                Reply::delivery("awaiting_delivery")
-            } else {
-                self.control
-                    .receipts
-                    .get(&grant)
-                    .and_then(|r| r.get(&command))
-                    .cloned()
-                    .unwrap_or(Reply::delivery("unknown"))
-            };
+        let reply = if queued {
+            self.control_queue_prompt(grant, command, (ticket, id), text)
+        } else {
+            self.control_steer((grant, device, command), (ticket, id), &text)
+        };
+        match reply {
+            Reply::Delivery { status, reason, .. } => Reply::Delivery { status, reason, replaced },
+            other => other,
         }
-        match self.paste_to_ticket(ticket, &text, Ack::PROMPT) {
+    }
+
+    /// A phone's Queue: the words park as the board's queued ask, and go when
+    /// the turn ends, or now when the agent is already idle.
+    fn control_queue_prompt(
+        &mut self,
+        grant: BoardId,
+        command: u64,
+        target: (ulid::Ulid, uuid::Uuid),
+        text: String,
+    ) -> Reply {
+        let (ticket, id) = target;
+        if let Err(message) = self.park_ask(ticket, QueuedSeat::Pane(id), text, None, false, false)
+        {
+            self.control_cancel(id);
+            return Reply::Rejected { message };
+        }
+        self.drain_queue();
+        self.broadcast();
+        if self.queued.iter().any(|q| q.ticket == ticket) {
+            Reply::delivery("queued")
+        } else if self.parked(id) {
+            Reply::delivery("awaiting_delivery")
+        } else {
+            self.control
+                .receipts
+                .get(&grant)
+                .and_then(|r| r.get(&command))
+                .cloned()
+                .unwrap_or(Reply::delivery("unknown"))
+        }
+    }
+
+    /// A phone's Steer: the words go into the pane now, mid-turn.
+    fn control_steer(
+        &mut self,
+        by: (BoardId, DeviceId, u64),
+        target: (ulid::Ulid, uuid::Uuid),
+        text: &str,
+    ) -> Reply {
+        let ((grant, device, command), (ticket, id)) = (by, target);
+        match self.paste_to_ticket(ticket, text, Ack::PROMPT) {
             Ok(()) => {
                 let waiting = self.parked(id);
                 if waiting {
@@ -2488,6 +2571,12 @@ impl Daemon {
         };
         let ticket = q.ticket;
         if let Some((grant, device, command)) = send_now {
+            // `send_queued_ask` refuses it too; this says where to answer.
+            if self.pane_waits_on_you(id) {
+                return Reply::Rejected {
+                    message: api::answer_first(self.control_answers_here(id)).into(),
+                };
+            }
             if let Some(p) = self.control.pending.get_mut(&id) {
                 p.send_now_receipt = Some((grant, device, command));
             } else {
