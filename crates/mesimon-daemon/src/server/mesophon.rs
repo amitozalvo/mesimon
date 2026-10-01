@@ -831,6 +831,22 @@ impl Daemon {
         self.control_changed();
     }
 
+    /// The question dialog a session stopped on, for the crown's
+    /// `get_ticket` (T-566): `(request, questions)` off the projection
+    /// Remote Control draws, which `control_observe_dialog` keeps from every
+    /// hook frame whether or not a phone is paired. `None` where the hook
+    /// stream carried no question dialog for the session.
+    pub(super) fn control_questions(
+        &self,
+        session: uuid::Uuid,
+    ) -> Option<(&str, &[api::Question])> {
+        let dialog = self.control.dialogs.get(&session)?;
+        match &dialog.content {
+            api::DialogContent::Questions { questions } => Some((&dialog.request, questions)),
+            api::DialogContent::Plan { .. } => None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn control_dialog_answer(
         &mut self,
@@ -2403,11 +2419,16 @@ enum DialogStep {
     Paste(String),
 }
 
+/// The question shapes the board's answer road takes (T-566 says it to the
+/// crown as `answerable`): one question, one choice. Multi-question and
+/// multi-select forms are unmeasured, and answered in the pane.
+pub(super) fn dialog_answerable(questions: &[api::Question]) -> bool {
+    questions.len() == 1 && !questions[0].multi_select
+}
+
 fn dialog_target(dialog: &api::Dialog, response: &api::DialogAnswer) -> Option<String> {
     match (&dialog.content, response) {
-        (api::DialogContent::Questions { questions }, answer)
-            if questions.len() == 1 && !questions[0].multi_select =>
-        {
+        (api::DialogContent::Questions { questions }, answer) if dialog_answerable(questions) => {
             match answer {
                 api::DialogAnswer::Choice { index } => {
                     questions[0].options.get(*index).map(|o| o.label.clone())

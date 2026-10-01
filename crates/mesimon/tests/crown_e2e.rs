@@ -1598,17 +1598,36 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     start(&mut c, sa);
     stop(&mut c, sa);
 
-    // ---- a worker already on its question holds the words (T-565) ----------
+    // ---- a worker on its question: the crown's words wait behind it ---------
     // The friend's board: asked while W waits on a person's answer, the
     // words read `after its turn` for a turn only the answer could end.
-    // They are held at once — the answer may change them — and a person
-    // sends them after it.
+    // Onto a question already standing the crown's ask is refused (T-566),
+    // so it reads the question instead; words it queued before the question
+    // are held the moment it comes (T-565), and a person sends them after.
     let question = r#"{"tool_name":"AskUserQuestion"}"#;
     start(&mut c, ws);
     hook_send(&hook_sock, &ws.to_string(), "PreToolUse", question);
     c.await_state(ws, "asking", SessionState::question_stop);
-    let (held, why) = ask(&mut c, &kw, "mesimon-probe-90 after the answer");
-    assert!(held && why.contains("question"), "{why}");
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAskTicket {
+            key: kw.clone(),
+            text: "mesimon-probe-90 over the question".into(),
+            seen: v.seen,
+            plan: false,
+        },
+    ) {
+        Response::Err { message } => assert!(message.contains("asking a question"), "{message}"),
+        other => panic!("ask_agent over a standing question: {other:?}"),
+    }
+    assert!(row(&mut c, w).is_none(), "a refused ask queues nothing");
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", question);
+    c.await_state(ws, "answered", |s| *s == SessionState::Running);
+    let (held, _) = ask(&mut c, &kw, "mesimon-probe-90 after the answer");
+    assert!(!held, "the crown's words for its working worker go after the turn");
+    hook_send(&hook_sock, &ws.to_string(), "PreToolUse", question);
+    c.await_state(ws, "asking again", SessionState::question_stop);
     let r = row(&mut c, w).expect("held on W's card");
     assert!(r.is_held() && r.sends && r.held.as_deref() == Some("agent asked"), "{r:?}");
     assert_eq!(r.asking, vec![kw.clone()], "the card says the answer comes first: {r:?}");
@@ -1861,4 +1880,131 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     assert!(!merged(), "refused");
     std::thread::sleep(std::time::Duration::from_millis(2000));
     assert_eq!(lines_with(&worker).len(), 3, "once");
+}
+
+/// T-566: a worker stopped on `AskUserQuestion` reads `needs-you` with the
+/// stop's reason and the question on `get_ticket` — off the projection
+/// Remote Control draws, on a board with no phone paired — and the crown's
+/// `ask_agent` to it is refused in words naming the road, until the answer.
+#[test]
+fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_question",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_question");
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "the worker");
+    let kw = key_of(&mut c, w);
+    let sa = spawn(&mut c, a);
+    let sw = spawn(&mut c, w);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook_send(&hook_sock, &sw.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sw, "running", |s| *s == SessionState::Running);
+    let ask = |c: &mut TestClient, text: &str| {
+        let v = read(c, sa, &kw).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+            },
+        )
+    };
+    let asked_touch =
+        |c: &mut TestClient| touches(c).into_iter().any(|t| t.ticket == w && t.action == "asked");
+    // A working agent is at no stop.
+    assert!(read(&mut c, sa, &kw).unwrap().needs_you.is_none());
+
+    // ---- one question: the reason, the words, the options, the request ----
+    let one = json!({
+        "tool_name": "AskUserQuestion",
+        "tool_use_id": "toolu_q1",
+        "tool_input": { "questions": [{
+            "question": "Which auth provider?",
+            "header": "Auth",
+            "options": [
+                { "label": "Okta", "description": "SSO" },
+                { "label": "Auth0", "description": "hosted" }
+            ],
+            "multiSelect": false
+        }]}
+    });
+    hook_send(&hook_sock, &sw.to_string(), "PreToolUse", &one.to_string());
+    c.await_state(sw, "asking", |s| matches!(s, SessionState::RequiresAction { .. }));
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert_eq!(v.state.as_ref().map(|s| s.state.as_str()), Some("needs-you"));
+    let needs = v.needs_you.expect("a question stop says what it is");
+    assert_eq!(needs.reason, "question");
+    assert_eq!(needs.request.as_deref(), Some("toolu_q1"));
+    assert_eq!(needs.questions, Some(1));
+    assert_eq!(needs.answerable, Some(true));
+    let q = needs.question.expect("the one question");
+    assert_eq!(q.text, "Which auth provider?");
+    assert_eq!(q.options, ["Okta", "Auth0"]);
+    assert!(!q.multi_select);
+    // `list_board` keeps its one word.
+    match c.send(Principal::Agent { session: sa }, Command::AgentListBoard) {
+        Response::AgentBoard { board } => {
+            let row = board.tickets.iter().find(|t| t.key == kw).unwrap();
+            assert_eq!(row.state.as_deref(), Some("needs-you"));
+            assert!(!serde_json::to_string(&board).unwrap().contains("needs_you"));
+        }
+        other => panic!("list_board: {other:?}"),
+    }
+
+    // ---- ask_agent is refused while it stands, in words naming the road ----
+    match ask(&mut c, "mesimon-probe-566 over the question") {
+        Response::Err { message } => {
+            let opening = format!("{kw}'s agent is asking a question");
+            for words in [
+                opening.as_str(),
+                "a person answers it in the pane or from Remote Control",
+                "get_ticket (needs_you)",
+                "would wait behind the answer",
+            ] {
+                assert!(message.contains(words), "the refusal says {words:?}: {message}");
+            }
+        }
+        other => panic!("ask_agent over a question: {other:?}"),
+    }
+    assert!(!asked_touch(&mut c), "a refusal lights nothing");
+    assert!(pending_of(&mut c, Some(w)).is_empty(), "and queues nothing");
+
+    // ---- several questions: counted, not answerable, no one question -------
+    let two = json!({
+        "tool_name": "AskUserQuestion",
+        "tool_use_id": "toolu_q2",
+        "tool_input": { "questions": [
+            { "question": "Which provider?", "header": "Auth",
+              "options": [{ "label": "Okta", "description": "" }], "multiSelect": false },
+            { "question": "Which region?", "header": "Region",
+              "options": [{ "label": "eu", "description": "" }], "multiSelect": false }
+        ]}
+    });
+    hook_send(&hook_sock, &sw.to_string(), "PermissionRequest", &two.to_string());
+    wait_until(std::time::Duration::from_secs(5), "the second dialog", || {
+        read(&mut c, sa, &kw).unwrap().needs_you.and_then(|n| n.request).as_deref()
+            == Some("toolu_q2")
+    });
+    let needs = read(&mut c, sa, &kw).unwrap().needs_you.unwrap();
+    assert_eq!((needs.questions, needs.answerable), (Some(2), Some(false)));
+    assert!(needs.question.is_none(), "{needs:?}");
+
+    // ---- answered: the field is gone and the crown's words go through -------
+    hook_send(&hook_sock, &sw.to_string(), "PostToolUse", &two.to_string());
+    c.await_state(sw, "running again", |s| *s == SessionState::Running);
+    assert!(read(&mut c, sa, &kw).unwrap().needs_you.is_none());
+    match ask(&mut c, "mesimon-probe-566 after the answer") {
+        Response::AgentAsked { .. } => {}
+        other => panic!("ask_agent after the answer: {other:?}"),
+    }
+    assert!(asked_touch(&mut c));
 }

@@ -1779,6 +1779,12 @@ pub struct AgentTicketView {
     /// board shows, never the pane. Absent when the ticket has no agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<AgentStateView>,
+    /// What the stop is, while the agent is `needs-you` (T-566): the reason,
+    /// and for a question the dialog as the board saw it. A crown reading a
+    /// worker otherwise knew only that it waited, and guessed. `get_ticket`
+    /// only — `list_board` keeps its one word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_you: Option<AgentNeedsYouView>,
     /// An opaque stamp over everything a keyed edit may assume — column,
     /// order, title, tags, notes, workspace, the agent's state — returned
     /// to the daemon by every keyed mutation, which refuses when the ticket
@@ -1811,6 +1817,36 @@ pub struct AgentStateView {
     /// The agent's `raise_hand` reason, while the hand is up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raised: Option<String>,
+}
+
+/// The stop a `needs-you` agent is at (T-566). `reason` is
+/// `board::agent_reason_word`'s vocabulary. On a question stop whose dialog
+/// the hook stream carried, the rest is the projection Remote Control
+/// draws: `request` names that dialog (an answer binds to it), `questions`
+/// counts it, `question` is the one question when it asks one, and
+/// `answerable` says whether the board's own answer road takes its shape —
+/// one question, one choice. Absent where the board saw no dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentNeedsYouView {
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questions: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<AgentQuestionView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answerable: Option<bool>,
+}
+
+/// One question a stopped agent asks (T-566): its words, its options'
+/// labels in order, and whether more than one may be chosen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentQuestionView {
+    pub text: String,
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub multi_select: bool,
 }
 
 /// One of the crown's recent edits (T-411), for the board to light the
@@ -2656,9 +2692,12 @@ mod tests {
             crowned: false,
             crown: None,
             state: None,
+            needs_you: None,
             seen: None,
         };
         assert!(!serde_json::to_string(&t).unwrap().contains("repos"));
+        // An agent at no stop says nothing about one (T-566).
+        assert!(!serde_json::to_string(&t).unwrap().contains("needs_you"));
         // A board with no column described says nothing about it (T-467).
         assert!(!serde_json::to_string(&t).unwrap().contains("column_descriptions"));
         t.repos = vec![AgentRepoView {

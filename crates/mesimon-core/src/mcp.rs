@@ -67,7 +67,9 @@ pub const HANDLED_METHODS: [&str; 5] =
 /// said where the crown would otherwise go looking — a crown on another
 /// board armed a git monitor to learn what its workers did, not knowing the
 /// board would tell it, and that monitor made it read as busy, which held
-/// the very wake it was waiting for (`session_idle`).
+/// the very wake it was waiting for (`session_idle`). It also says where a
+/// worker's question is read (T-566): a crown on a friend's board saw only
+/// `needs-you`, guessed, and sent words that could not land.
 pub const CROWN_WAKES: &str = "The board wakes this session on its own: when an agent the crown \
                                started delivers, is merged, answers the crown's ask or raises \
                                its hand, one sentence naming the ticket and what changed arrives \
@@ -79,7 +81,10 @@ pub const CROWN_WAKES: &str = "The board wakes this session on its own: when an 
                                budget, and archive_ticket then takes its ticket off the board \
                                and reclaims a merged worktree. That is the crown's to do, not a \
                                person's to be asked for; a person's own agent is the one the \
-                               crown may not park.";
+                               crown may not park. A worker stopped on a question reads \
+                               needs-you, and get_ticket on its ticket carries the question \
+                               (needs_you: the reason, the words, the options). The question is \
+                               a person's to answer, and ask_agent is refused while it stands.";
 
 /// Words that turn a description into an instruction. Tool text is injected
 /// into every request; it may describe, and it may not tell the model what to
@@ -1577,6 +1582,17 @@ mod tests {
             let name = t["name"].as_str().unwrap();
             assert!(bytes <= MAX_TOOL_BYTES, "{name} is {bytes} bytes, cap is {MAX_TOOL_BYTES}");
         }
+    }
+
+    /// T-566: the crown is told where a worker's question is read and whose
+    /// it is to answer. Result data may instruct; these words describe, and
+    /// the tool-text lint says so.
+    #[test]
+    fn the_crown_is_told_where_a_question_is_read() {
+        for words in ["needs-you", "needs_you", "a person's to answer", "ask_agent is refused"] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+        assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
     }
 
     #[test]

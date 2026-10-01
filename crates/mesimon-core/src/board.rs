@@ -1783,6 +1783,24 @@ pub fn agent_state_word(state: &SessionState) -> &'static str {
     }
 }
 
+/// Why a `needs-you` agent stopped, as ONE WORD for an agent reading the
+/// ticket (T-566): `agent_state_word`'s companion, lower-case and plain
+/// where the card's `reason_word` is a badge (`INPUT`, `SETUP`). Both
+/// spawn-time modals read `startup`, as they share a rank.
+pub fn agent_reason_word(reason: Reason) -> &'static str {
+    match reason {
+        Reason::Permission => "permission",
+        Reason::Secret => "secret",
+        Reason::Question => "question",
+        Reason::Plan => "plan",
+        Reason::Elicitation => "elicitation",
+        Reason::Auth => "auth",
+        Reason::QuotaResume => "quota",
+        Reason::Trust => "trust",
+        Reason::StartupModal | Reason::ResumeDialog => "startup",
+    }
+}
+
 /// Hand-written rather than derived, for one field: `mcp_tools` starts ON, and
 /// `#[derive(Default)]` would start it off. A default `Board` is what a repo
 /// with no `columns.toml` gets and what `store::load` falls back to when the

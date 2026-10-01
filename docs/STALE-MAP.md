@@ -17386,3 +17386,48 @@ the friend's board.
 **Out of scope (T-564's other parts).** The crown learning or answering the question, Remote
 Control's receipt (`Reply::Delivery{queued}` for a held park) and its prompt/answer collision,
 the phone naming who queued.
+
+## The crown reads a worker's question (T-566, 2026-10-02, "The crown learns a worker's question")
+
+**The bug.** A worker the crown started stopped on `AskUserQuestion`, and the crown's
+`get_ticket` said `needs-you` and nothing else: `agent_state_word` maps every `RequiresAction`
+to that one word. The crown guessed, and sent an `ask_agent` that could never land while the
+question stood.
+
+**`get_ticket` says what the stop is.** `AgentTicketView.needs_you` (absent when the agent is at
+no stop) carries `reason`, `board::agent_reason_word`'s lower-case vocabulary (`question`,
+`permission`, `secret`, `plan`, `elicitation`, `auth`, `quota`, `trust`, `startup`; both
+spawn-time modals read `startup`). On a question stop it adds the dialog as Remote Control draws
+it, from `control.dialogs`: `request` (the tool use id, which a later answer will bind to),
+`questions` (how many), `question` (`text`, the option labels, `multi_select`) when it asks one,
+and `answerable`, which is `mesophon::dialog_answerable`, the same predicate `dialog_target`
+answers by: one question, one choice. The projection is shown only while the state is
+`RequiresAction{Question}`, as `control_agent` gates it, so a dialog the agent left without a
+hook (an Esc) is not shown. `control_observe_dialog` runs on every hook frame, paired or not, so
+nothing was lifted. The words are scrubbed (`scrub_text`) on the way to another agent.
+`list_board` keeps its one word.
+
+**`ask_agent` refuses a questioned agent.** At `SessionState::question_stop` (Question, Secret,
+Elicitation: T-565's one predicate, which the queue's hold and `park_ask` read too) the crown's
+ask is an error naming the road: a person answers in the pane or from Remote Control, the crown reads it with
+`get_ticket`. Nothing queues and nothing lights. The 1.5 s settle after an answer still reads
+the stop, so the refusal outlives the answer by that much. A question the stale clock demoted
+to `Unknown` is not refused and shows no `needs_you`; `park_ask` still holds the words behind it
+(`attention::on_question`, T-565). T-565's crown road in `the_crown_sends_its_asks_to_the_agents_it_started`
+is now words queued while the worker works and held when its question comes, since an ask onto
+a question already standing is refused.
+
+**`CROWN_WAKES` says it**: a worker on a question reads `needs-you` and its `get_ticket`
+carries the question; the question is a person's to answer and `ask_agent` is refused while it
+stands. No tool text changed: a worker at a stop is frozen and calls no tool, so only the crown
+needs the field, and the crown is told in its own view and receipts.
+
+**Not here.** Waking the crown on a question and the crown answering one (the crown-answers
+ticket); the park-time hold (T-565).
+
+**Tests.** `mcp::the_crown_is_told_where_a_question_is_read` (the words, and the tool-text lint
+over `CROWN_WAKES`); `crown_e2e::the_crown_reads_a_worker_s_question_and_cannot_talk_over_it`:
+one question shows its reason, words, options, request and `answerable`, `list_board` shows no
+field, `ask_agent` is refused with the words and queues nothing, a two-question
+`PermissionRequest` counts and is not answerable, and after `PostToolUse` the field is gone and
+the ask goes through.

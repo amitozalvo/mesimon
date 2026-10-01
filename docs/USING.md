@@ -239,7 +239,9 @@ hand, one sentence saying so is pasted into the crown's session. So is the merge
 worktree branch, whether `m`, the merge train or your own `git merge` made it. The crown is told
 this when it reads its own ticket and in every `start_agent` and `ask_agent` receipt, so it has
 nothing to poll: a background monitor it runs makes its session read as busy, and the wake waits
-until the monitor ends.
+until the monitor ends. When an agent stops on a question, the crown reads the question and its
+options on that agent's ticket, and its words for that agent are refused until you answer, in the
+pane or from Remote Control.
 
 ## Sleeping idle agents
 

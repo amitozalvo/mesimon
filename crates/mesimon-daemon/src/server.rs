@@ -14,16 +14,16 @@ use anyhow::{Context, Result};
 use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::attention::{self, Change, EndKind, Machine, Signal, StartSource};
 use mesimon_core::board::{
-    agent_state_word, foreground_of, sanitize_tag, AgentProvider, AgentTools, Archived, Board,
-    Confidence, ExitReason, PickedUp, Provenance, Reason, SessionKind, SessionRecord, SessionState,
-    StopReason, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy, PICKED_AT_DESK,
-    PICKED_BY_AGENT,
+    agent_reason_word, agent_state_word, foreground_of, sanitize_tag, AgentProvider, AgentTools,
+    Archived, Board, Confidence, ExitReason, PickedUp, Provenance, Reason, SessionKind,
+    SessionRecord, SessionState, StopReason, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
+    PICKED_AT_DESK, PICKED_BY_AGENT,
 };
 use mesimon_core::command::{
-    AgentAutomoveView, AgentBoardView, AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow,
-    AgentTicketView, Command, CrownTouch, DiffTarget, Envelope, Event, ExternalItem, GraceItem,
-    MergeOutcome, Notice, Pending, PendingAction, Resources, Response, TerminalItem, WorktreeItem,
-    WorktreeRepoItem, PROTOCOL_VERSION,
+    AgentAutomoveView, AgentBoardView, AgentNeedsYouView, AgentQuestionView, AgentRepoView,
+    AgentStateView, AgentTagView, AgentTicketRow, AgentTicketView, Command, CrownTouch, DiffTarget,
+    Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Notice, Pending, PendingAction,
+    Resources, Response, TerminalItem, WorktreeItem, WorktreeRepoItem, PROTOCOL_VERSION,
 };
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
@@ -4165,6 +4165,18 @@ impl Daemon {
                         message: format!("{key}'s session is external; a person resumes it first"),
                     };
                 }
+                // A question stands (T-566): words queued now could only wait
+                // behind its answer, and the answer is a person's. Refused,
+                // so the crown reads the question rather than guessing.
+                if self.board.live_agent(target).is_some_and(|rec| rec.state.question_stop()) {
+                    return Response::Err {
+                        message: format!(
+                            "{key}'s agent is asking a question; a person answers it in the pane \
+                             or from Remote Control, and the crown reads it with get_ticket \
+                             (needs_you). Words queued now would wait behind the answer."
+                        ),
+                    };
+                }
                 // Sanitized by subtraction alone, as the person's own words
                 // are: nothing is added, and blank words queue nothing.
                 let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
@@ -5218,7 +5230,33 @@ impl Daemon {
             crowned: self.board.is_crowned(id),
             crown: self.board.is_crowned(id).then(|| mesimon_core::mcp::CROWN_WAKES.to_string()),
             state: self.agent_state_view(id),
+            needs_you: self.agent_needs_you(id),
             seen: Some(self.seen_token(id)),
+        })
+    }
+
+    /// What a `needs-you` agent's stop is (T-566): its reason, and on a
+    /// question the dialog as Remote Control draws it, gated on the state
+    /// as that draw is — a dialog the agent has since left is not shown.
+    /// The words are an agent's, leaving for another agent: scrubbed.
+    fn agent_needs_you(&self, id: ulid::Ulid) -> Option<AgentNeedsYouView> {
+        let rec = self.board.live_agent(id)?;
+        let SessionState::RequiresAction { reason } = rec.state else { return None };
+        let dialog = (reason == Reason::Question).then(|| self.control_questions(rec.id)).flatten();
+        let scrub = mesimon_core::text::scrub_text;
+        Some(AgentNeedsYouView {
+            reason: agent_reason_word(reason).to_string(),
+            request: dialog.map(|(request, _)| request.to_string()),
+            questions: dialog.map(|(_, qs)| qs.len()),
+            question: dialog.and_then(|(_, qs)| match qs {
+                [q] => Some(AgentQuestionView {
+                    text: scrub(&q.question),
+                    options: q.options.iter().map(|o| scrub(&o.label)).collect(),
+                    multi_select: q.multi_select,
+                }),
+                _ => None,
+            }),
+            answerable: dialog.map(|(_, qs)| mesophon::dialog_answerable(qs)),
         })
     }
 
