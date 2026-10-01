@@ -6,6 +6,25 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.34 — 2026-10-01
+
+### Added
+
+- **Nine more themes.** The theme picker adds void, nord, mocha (Catppuccin
+  Mocha), tokyo (Tokyo Night), rose (Rosé Pine), gruvbox, ice (dark) and
+  latte (Catppuccin Latte), gruvbox-light (light), for fifteen in all. The
+  existing six are unchanged.
+- **iTerm2's tab can take the theme's colour.** Turn it on in Settings ›
+  Terminal › `Tab colour from the theme` (off by default, per machine). The
+  tab is painted in the colour of the board's hint line and repainted when
+  the theme changes. `Tab colour when needs you` still takes the tab while a
+  ticket needs you, then hands it back.
+- **The crown is woken when a worker it started is merged.** Merging that
+  worker's worktree branch with `m`, the merge train or your own
+  `git merge` pastes one line into the crown's session. A merge the crown
+  was already told of is not repeated. Workers on the shared checkout have
+  no branch and send no merge wake.
+
 ## v0.1.0-alpha.33 — 2026-09-30
 
 ### Added
