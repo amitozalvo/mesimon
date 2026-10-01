@@ -17087,3 +17087,34 @@ sweep), `worktree_e2e::m4_worktree_lifecycle` (the delete road's `-d` and `-D`),
 `workspace_e2e` (per-leg verdicts on a workspace) pass unchanged: every one waits on the feed row
 or the binding's status, which now land from the worker. No new golden; the snapshot does not
 spell the flight — a tree being removed reads as it did until it is gone.
+
+## The tiers list reorders on the board's keys (T-562, 2026-10-01, user: "reorder tiers in settings just like reordering tickets on board ∙ same keys")
+
+**The keys.** `Scope::Tiers` carries the board's `Verb::Nudge` on `J`, `K`, Alt+↑ and Alt+↓:
+`jk` steps the cursor, `JK` steps it carrying the tier, and the cursor rides with it. An edge
+press stays put, as a card's does. The hint is `JK move` (not `move tier`: the dialog frame
+then had no room for `esc back`). `App::dispatch` sends a `Nudge` in this scope to
+`nudge_tier`; every other scope's still goes to the board's `nudge`.
+
+**The order is a layer's own.** `Command::MoveTier { scope, id, to_index }`, where `to_index` is
+a slot among the tiers that layer orders (`Book::ordered`), clamped like `MoveTag`'s. The machine
+orders every tier it made, in `tiers.toml`. A board orders only its own tiers, in `columns.toml`.
+Its version of a machine tier stays where the machine puts it (`Book::custom` draws it there), so
+at board scope that row is inert and unhinted (`Ctx::tier_can_nudge`), and the daemon refuses it
+with "the machine orders its tiers". `tier::move_tier` moves the owned entries among their own
+slots and leaves every other entry where it is, so the board's override entries keep their
+places in its list. The order is the one the list draws, `^n` cycles and the Default tier row
+steps through. Agents may not send it (`agent_allows`, beside `SaveTier`).
+
+**The Alt law, restated.** `alt_is_admitted_only_for_a_nudge` used to demand all four Alt atoms
+or none. The tiers list has one axis, so the rule is now about pairs: every Alt atom must have
+its shifted twin in the same entry (`AltDown`↔`J`, and so on), and every shifted direction its
+Alt. The board's and the picker's entries still carry all four. This is the third nudge,
+argued with the same two clauses: it moves the thing under the cursor one step, and its
+legacy-floor spelling is in its own key list.
+
+**Tests.** `tier::a_layer_reorders_only_the_tiers_it_owns`,
+`keymap::the_tiers_list_moves_a_tier_on_the_boards_keys`,
+`app::the_tiers_list_moves_a_tier_on_the_boards_keys` (machine scope, edge press, `+ new tier`,
+board scope on a machine row and on its own two), and `tier_e2e` (`tiers.toml` reordered on
+disk and back, board scope refused on an override). Golden: `tiers_machine_120x30`.

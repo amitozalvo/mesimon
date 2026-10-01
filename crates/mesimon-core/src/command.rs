@@ -566,6 +566,16 @@ pub enum Command {
         scope: TierScope,
         id: String,
     },
+    /// Reposition a tier in one layer's order (T-562) — the order the
+    /// tiers list draws and `^n` cycles. `to_index` is a slot among the
+    /// tiers that layer orders: the machine's own, or a board's own (its
+    /// versions of machine tiers stand where the machine puts them). It is
+    /// clamped there, as `MoveTag`'s is.
+    MoveTier {
+        scope: TierScope,
+        id: String,
+        to_index: usize,
+    },
     /// The default tier of one layer; `None` at board scope inherits the
     /// machine's, at machine scope falls back to `claude`.
     SetDefaultTier {
@@ -1199,6 +1209,7 @@ impl Command {
             | SetAgentProvider { .. }
             | SaveTier { .. }
             | DeleteTier { .. }
+            | MoveTier { .. }
             | SetDefaultTier { .. }
             | SetParkAfterMinutes { .. }
             | SetCrownBudget { .. }

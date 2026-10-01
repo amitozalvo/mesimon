@@ -4726,6 +4726,7 @@ impl App {
             tiers_enter_word: "",
             tier_edit_enter_word: "",
             tier_on_step: false,
+            tier_can_nudge: false,
         };
         // Agent tiers (T-443): the rows, the dialogs' Enter words and `^n`.
         self.fill_tier_ctx(&mut ctx);
@@ -5190,6 +5191,7 @@ impl App {
                 None => {}
             },
             Verb::Grab => self.grab(key, scope, ctx)?,
+            Verb::Nudge if scope == Scope::Tiers => self.nudge_tier(key)?,
             Verb::Nudge => self.nudge(key)?,
             Verb::Repeat => self.repeat_last()?,
             // `a` on a ticket that is already archived restores it right
@@ -11797,6 +11799,18 @@ pub(crate) mod test_support {
                     }
                     Ok(Response::Ok)
                 }
+                Command::MoveTier { scope, id, to_index } => {
+                    let book = mesimon_core::tier::Book::new(&self.machine_tiers, &self.board);
+                    let ordered = book.ordered(scope);
+                    let list = match scope {
+                        mesimon_core::tier::TierScope::Machine => &mut self.machine_tiers.tiers,
+                        mesimon_core::tier::TierScope::Board => &mut self.board.tiers,
+                    };
+                    Ok(match mesimon_core::tier::move_tier(list, &ordered, &id, to_index) {
+                        Some(_) => Response::Ok,
+                        None => Response::Err { message: "not this scope's to order".into() },
+                    })
+                }
                 Command::SetTicketTier { id, tier } => {
                     let book = mesimon_core::tier::Book::new(&self.machine_tiers, &self.board);
                     let want = match tier.as_deref() {
@@ -14851,6 +14865,67 @@ mod tests {
         // Esc goes back to the list, on the tier.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Tiers { idx: 0, naming: None });
+    }
+
+    /// T-562 (user: "reorder tiers in settings just like reordering tickets
+    /// on board ∙ same keys"): `JK` and Alt up/down move the tier under the
+    /// cursor along its scope's order and the cursor rides with it. An edge
+    /// press, `+ new tier`, and a machine tier seen from a board send nothing.
+    #[test]
+    fn the_tiers_list_moves_a_tier_on_the_boards_keys() {
+        use mesimon_core::board::AgentProvider;
+        use mesimon_core::tier::{Effort, Tier, TierScope};
+        let tier = |id: &str, name: &str| Tier {
+            id: id.into(),
+            name: name.into(),
+            provider: AgentProvider::ClaudeCode,
+            model: String::new(),
+            effort: Effort::Default,
+        };
+        let mut board = board_three_columns();
+        board.tiers = vec![tier("01MINE", "mine"), tier("01ALSO", "also")];
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        for t in [tier("01QUICK", "quick"), tier("01CODER", "coder")] {
+            let saved = app.req(Command::SaveTier { scope: TierScope::Machine, tier: t });
+            assert!(matches!(saved, Response::Ok), "{saved:?}");
+        }
+        app.refresh().unwrap();
+        let names = |app: &App| -> Vec<String> {
+            app.tier_rows()
+                .into_iter()
+                .filter_map(|r| match r {
+                    TierRow::Tier(t, _) => Some(t.name),
+                    TierRow::New => None,
+                })
+                .collect()
+        };
+        let moves = || sent.borrow().iter().filter(|r| r.contains("MoveTier")).count();
+        app.mode = Mode::Tiers { idx: 0, naming: None };
+        assert_eq!(names(&app), ["quick", "coder"]);
+        press(&mut app, 'J');
+        assert_eq!(names(&app), ["coder", "quick"]);
+        assert_eq!(app.mode, Mode::Tiers { idx: 1, naming: None }, "the cursor rides with it");
+        assert_eq!(app.status, "moved quick down");
+        press(&mut app, 'J');
+        assert_eq!(moves(), 1, "an edge press stays put");
+        app.handle_key(KeyCode::Up, KeyModifiers::ALT).unwrap();
+        assert_eq!(names(&app), ["quick", "coder"]);
+        assert_eq!(app.mode, Mode::Tiers { idx: 0, naming: None });
+        app.mode = Mode::Tiers { idx: 2, naming: None };
+        press(&mut app, 'K');
+        assert_eq!(moves(), 2, "+ new tier has no place in the order");
+
+        // This board's view: its own two move, the machine's do not.
+        app.settings_board_scope = true;
+        assert_eq!(names(&app), ["quick", "coder", "mine", "also"]);
+        app.mode = Mode::Tiers { idx: 1, naming: None };
+        press(&mut app, 'J');
+        assert_eq!(moves(), 2, "the machine orders its tiers");
+        app.mode = Mode::Tiers { idx: 3, naming: None };
+        press(&mut app, 'K');
+        assert_eq!(names(&app), ["quick", "coder", "also", "mine"]);
+        assert_eq!(app.mode, Mode::Tiers { idx: 2, naming: None });
+        assert_eq!(app.board.tiers[1].id, "01MINE", "the board's file holds its order");
     }
 
     fn app_tier(sent: &std::cell::RefCell<Vec<String>>) -> String {

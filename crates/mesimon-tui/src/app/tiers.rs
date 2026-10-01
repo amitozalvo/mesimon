@@ -345,6 +345,7 @@ impl App {
                     Some(TierRow::New) => "new tier",
                     None => "",
                 };
+                c.tier_can_nudge = self.tier_slot(*idx).is_some();
             }
             Mode::TierEdit { idx, field: None, armed, .. } => {
                 let field = self.tier_fields().get(*idx).copied();
@@ -382,6 +383,43 @@ impl App {
         };
         rows.push(TierRow::New);
         rows
+    }
+
+    /// The tier on list row `idx` as its scope orders it (T-562): the tier,
+    /// its slot, and how many the scope orders. `None` on a row the scope
+    /// does not order — `+ new tier`, a machine tier seen from a board — or
+    /// where it orders one alone, which has nowhere to go.
+    fn tier_slot(&self, idx: usize) -> Option<(Tier, usize, usize)> {
+        let Some(TierRow::Tier(t, _)) = self.tier_rows().get(idx).cloned() else { return None };
+        let ordered = self.tiers().ordered(self.tier_scope());
+        let at = ordered.iter().position(|id| *id == t.id)?;
+        (ordered.len() > 1).then_some((t, at, ordered.len()))
+    }
+
+    /// `JK` (and Alt up/down) on the list (T-562): the board's nudge — the
+    /// tier under the cursor one step along its scope's order, and the
+    /// cursor rides with it. An edge press stays put, as a card's does.
+    pub(super) fn nudge_tier(&mut self, key: Key) -> Result<()> {
+        let Mode::Tiers { idx, naming: None } = self.mode else { return Ok(()) };
+        let Some((t, at, n)) = self.tier_slot(idx) else { return Ok(()) };
+        let down = matches!(key, Key::Char('J') | Key::AltDown);
+        let to = if down { Some(at + 1).filter(|&to| to < n) } else { at.checked_sub(1) };
+        let Some(to) = to else { return Ok(()) };
+        let scope = self.tier_scope();
+        match self.req(Command::MoveTier { scope, id: t.id.clone(), to_index: to }) {
+            Response::Err { message } => self.status = message,
+            _ => {
+                self.refresh()?;
+                let idx = self
+                    .tier_rows()
+                    .iter()
+                    .position(|r| matches!(r, TierRow::Tier(x, _) if x.id == t.id))
+                    .unwrap_or(idx);
+                self.mode = Mode::Tiers { idx, naming: None };
+                self.status = format!("moved {} {}", t.name, if down { "down" } else { "up" });
+            }
+        }
+        Ok(())
     }
 
     /// A list row's label and detail.

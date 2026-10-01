@@ -2023,6 +2023,7 @@ impl Daemon {
             Command::SetTicketTier { id, tier } => self.set_ticket_tier(id, tier),
             Command::SaveTier { scope, tier } => self.save_tier(scope, tier),
             Command::DeleteTier { scope, id } => self.delete_tier(scope, id),
+            Command::MoveTier { scope, id, to_index } => self.move_tier(scope, id, to_index),
             Command::SetDefaultTier { scope, id } => self.set_default_tier(scope, id),
             Command::SetParkAfterMinutes { minutes } => self.set_park_after_minutes(minutes),
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),

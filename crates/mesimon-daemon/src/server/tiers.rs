@@ -1,4 +1,4 @@
-//! Agent tiers in the daemon (T-443): the machine layer's cache, the four
+//! Agent tiers in the daemon (T-443): the machine layer's cache, the five
 //! commands, and the switch a running seat is owed.
 //!
 //! A tier reaches a session one way — `LaunchContext.tier`, read at every
@@ -276,6 +276,46 @@ impl Daemon {
                 }
             }
             self.persist_sessions();
+        }
+        self.broadcast();
+        Response::Ok
+    }
+
+    /// `Command::MoveTier` (T-562): one layer's order, which the tiers list
+    /// draws and `^n` cycles. A board moves only its own tiers.
+    pub(super) fn move_tier(&mut self, scope: TierScope, id: String, to: usize) -> Response {
+        let ordered = self.tier_book().ordered(scope);
+        let refused = || Response::Err {
+            message: match scope {
+                TierScope::Machine => format!("no tier {id} on this machine"),
+                TierScope::Board => {
+                    "the machine orders its tiers ∙ this board orders its own".to_string()
+                }
+            },
+        };
+        match scope {
+            TierScope::Machine => {
+                let mut next = self.machine_tiers.tiers.clone();
+                match tier::move_tier(&mut next.tiers, &ordered, &id, to) {
+                    None => return refused(),
+                    Some(false) => return Response::Ok,
+                    Some(true) => {}
+                }
+                if let Err(message) = self.machine_tiers.save(next) {
+                    return Response::Err { message };
+                }
+            }
+            TierScope::Board => {
+                if self.columns_barred {
+                    return Response::Err { message: self.barred_message("columns") };
+                }
+                match tier::move_tier(&mut self.board.tiers, &ordered, &id, to) {
+                    None => return refused(),
+                    Some(false) => return Response::Ok,
+                    Some(true) => {}
+                }
+                self.persist_columns();
+            }
         }
         self.broadcast();
         Response::Ok

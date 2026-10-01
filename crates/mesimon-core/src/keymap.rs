@@ -1244,6 +1244,9 @@ pub struct Ctx {
     pub tiers_enter_word: &'static str,
     pub tier_edit_enter_word: &'static str,
     pub tier_on_step: bool,
+    /// The tiers list's cursor is on a tier its scope orders, beside another
+    /// one (T-562): the machine's tiers, or a board's own.
+    pub tier_can_nudge: bool,
     // ---- search (T-349) ----
     /// The picker is up. Every binding in its scope is gated on it, so a bare
     /// `Ctx` hints none of them — the tag picker's `tag_naming` rule.
@@ -3709,7 +3712,8 @@ static SHARING: &[Binding] = &[
 
 /// The tiers list (T-443): the Sharing list's shapes — a row per tier and
 /// one to make one, Enter's word read off the row under the cursor — plus
-/// the Settings dialog's `b`, because the list has two scopes.
+/// the Settings dialog's `b`, because the list has two scopes, and the
+/// board's nudge, because the list has an order (T-562).
 static TIERS: &[Binding] = &[
     Binding {
         keys: &[Key::Char('b')],
@@ -3732,6 +3736,22 @@ static TIERS: &[Binding] = &[
         group: Group::Navigate,
         mutates: false,
         prio: 10,
+    },
+    Binding {
+        // The board's nudge on a list with one axis (T-562, user: "same
+        // keys"): `jk` steps the cursor, `JK` steps it carrying the tier,
+        // and the Alt atoms are the shifted letters' twins in the same entry
+        // (`alt_is_admitted_only_for_a_nudge`). The order is the one `^n`
+        // cycles and the Default tier row steps through.
+        keys: &[Key::Char('J'), Key::Char('K'), Key::AltUp, Key::AltDown],
+        verb: Verb::Nudge,
+        show: "JK",
+        hint: |_| "move",
+        avail: |c| c.tier_can_nudge,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: true,
+        prio: 15,
     },
     Binding {
         keys: &[Key::Enter],
@@ -7449,26 +7469,47 @@ mod tests {
     /// — the picker's arrangement, brought to the board — and the footer
     /// names THAT, so the hinted half of the clause is bought back: the key
     /// the footer teaches is one every terminal can send.
+    ///
+    /// The tiers list's (T-562) is the board's nudge again, argued the same
+    /// way: it moves the row under the cursor one step, and `JK` is in its
+    /// own key list. The list has one axis, so it carries the two Alt atoms
+    /// of that axis — which is why the rule below is "every Alt atom has its
+    /// shifted twin beside it, and every shifted direction its Alt", not
+    /// "all four".
     #[test]
     fn alt_is_admitted_only_for_a_nudge() {
-        const ALT: &[Key] = &[Key::AltLeft, Key::AltRight, Key::AltUp, Key::AltDown];
+        const TWINS: &[(Key, Key)] = &[
+            (Key::AltLeft, Key::Char('H')),
+            (Key::AltDown, Key::Char('J')),
+            (Key::AltUp, Key::Char('K')),
+            (Key::AltRight, Key::Char('L')),
+        ];
         let mut found: Vec<(Scope, Verb)> = Vec::new();
         for scope in Scope::ALL {
             for b in bindings(scope) {
-                if b.keys.iter().any(|k| ALT.contains(k)) {
+                if b.keys.iter().any(|k| TWINS.iter().any(|(alt, _)| alt == k)) {
                     found.push((scope, b.verb));
-                    // All four or none: a direction left out is a key that
-                    // resolves to nothing while its three neighbours work.
-                    for k in ALT {
-                        assert!(b.keys.contains(k), "{:?} in {scope:?} is missing {k:?}", b.verb);
+                    // Twins or nothing: a direction with one spelling is a
+                    // key that resolves to nothing while its twin works.
+                    for (alt, floor) in TWINS {
+                        assert_eq!(
+                            b.keys.contains(alt),
+                            b.keys.contains(floor),
+                            "{:?} in {scope:?}: {alt:?} and {floor:?} go together",
+                            b.verb
+                        );
                     }
                 }
             }
         }
         assert_eq!(
             found,
-            vec![(Scope::Board, Verb::Nudge), (Scope::TagChord, Verb::TagCarryLeft)],
-            "an alt binding that is not one of the two nudges"
+            vec![
+                (Scope::Board, Verb::Nudge),
+                (Scope::TagChord, Verb::TagCarryLeft),
+                (Scope::Tiers, Verb::Nudge),
+            ],
+            "an alt binding that is not one of the three nudges"
         );
 
         // The board's. The capability it accelerates is on the floor twice
@@ -7539,6 +7580,36 @@ mod tests {
             assert_eq!(resolve(Scope::TagChord, Key::AltLeft, c), None);
             assert_eq!(hint_for(Scope::TagChord, Verb::TagCarryLeft, c), None);
         }
+    }
+
+    /// T-562 (user: "reorder tiers in settings just like reordering tickets
+    /// on board ∙ same keys"): the board's `JK` and Alt up/down move the tier
+    /// under the cursor, `jk` still steps, and on a row the scope does not
+    /// order — `+ new tier`, a machine tier seen from a board — both spellings
+    /// are inert and the hint goes with them.
+    #[test]
+    fn the_tiers_list_moves_a_tier_on_the_boards_keys() {
+        let on = Ctx { tier_can_nudge: true, tiers_enter_word: "edit", ..Default::default() };
+        for k in [Key::Char('J'), Key::Char('K'), Key::AltUp, Key::AltDown] {
+            assert_eq!(resolve(Scope::Tiers, k, &on), Some(Verb::Nudge), "{k:?}");
+            assert_eq!(
+                resolve(Scope::Board, k, &Ctx { can_nudge: true, ..on.clone() }),
+                Some(Verb::Nudge)
+            );
+        }
+        assert_eq!(resolve(Scope::Tiers, Key::Char('j'), &on), Some(Verb::CursorDown));
+        assert_eq!(resolve(Scope::Tiers, Key::Char('H'), &on), None, "one axis");
+        assert_eq!(hint_for(Scope::Tiers, Verb::Nudge, &on), Some(("JK", "move")));
+        assert!(footer_items(Scope::Tiers, &on).iter().any(|b| b.verb == Verb::Nudge));
+        let off = Ctx { tier_can_nudge: false, ..on };
+        assert_eq!(resolve(Scope::Tiers, Key::Char('J'), &off), None);
+        assert_eq!(resolve(Scope::Tiers, Key::AltUp, &off), None);
+        assert_eq!(hint_for(Scope::Tiers, Verb::Nudge, &off), None);
+        // The page under it has no order: `J` there is nothing.
+        assert_eq!(
+            resolve(Scope::TierEdit, Key::Char('J'), &Ctx { tier_can_nudge: true, ..off }),
+            None
+        );
     }
 
     /// 04 §2.0 rule 2, the part that bit us: no `ctrl+<digit>` other than the

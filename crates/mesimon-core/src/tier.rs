@@ -365,6 +365,47 @@ impl<'a> Book<'a> {
     pub fn stored_pick(&self, id: &str) -> Option<String> {
         (id != self.default_tier().id).then(|| id.to_string())
     }
+
+    /// The ids `scope`'s layer orders (T-562), in its order: every tier the
+    /// machine made, or a board's own. A board's version of a machine tier
+    /// stands where the machine puts it, so the board has no say there.
+    pub fn ordered(&self, scope: TierScope) -> Vec<String> {
+        match scope {
+            TierScope::Machine => self
+                .machine
+                .tiers
+                .iter()
+                .filter(|t| !t.is_builtin())
+                .map(|t| t.id.clone())
+                .collect(),
+            TierScope::Board => self
+                .custom()
+                .into_iter()
+                .filter(|(_, s)| *s == Source::Board)
+                .map(|(t, _)| t.id)
+                .collect(),
+        }
+    }
+}
+
+/// Move `id` to slot `to` among the entries of `list` that [`Book::ordered`]
+/// names — one layer's tiers — clamped to the last slot. Every other entry
+/// keeps its place. `None` when `id` is not one of them; otherwise whether
+/// anything moved.
+pub fn move_tier(list: &mut [Tier], ordered: &[String], id: &str, to: usize) -> Option<bool> {
+    let slots: Vec<usize> = (0..list.len()).filter(|&i| ordered.contains(&list[i].id)).collect();
+    let from = slots.iter().position(|&i| list[i].id == id)?;
+    let to = to.min(slots.len() - 1);
+    if from == to {
+        return Some(false);
+    }
+    let mut owned: Vec<Tier> = slots.iter().map(|&i| list[i].clone()).collect();
+    let t = owned.remove(from);
+    owned.insert(to, t);
+    for (i, t) in slots.into_iter().zip(owned) {
+        list[i] = t;
+    }
+    Some(true)
 }
 
 /// A tier name a person typed: 1–16 characters of `[A-Za-z0-9_-]`, not a
@@ -448,6 +489,55 @@ mod tests {
 
     fn claude_code() -> AgentProvider {
         AgentProvider::ClaudeCode
+    }
+
+    /// T-562: each layer orders its own. The machine moves among its tiers;
+    /// a board moves only its own, and its version of a machine tier is not
+    /// one of them — it stands where the machine puts it.
+    #[test]
+    fn a_layer_reorders_only_the_tiers_it_owns() {
+        let mut machine = MachineTiers {
+            default_tier: None,
+            tiers: vec![
+                tier("A", "quick", claude_code(), "", Effort::Default),
+                tier("B", "coder", claude_code(), "", Effort::Default),
+                tier("C", "deep", claude_code(), "", Effort::Default),
+            ],
+        };
+        let mut board = Board {
+            tiers: vec![
+                tier("D", "mine", claude_code(), "", Effort::Default),
+                tier("B", "coder", claude_code(), "opus", Effort::Max),
+                tier("E", "also", AgentProvider::Codex, "", Effort::Default),
+            ],
+            ..Board::default()
+        };
+        let names = |m: &MachineTiers, b: &Board| -> Vec<String> {
+            Book::new(m, b).custom().into_iter().map(|(t, _)| t.name).collect()
+        };
+        assert_eq!(Book::new(&machine, &board).ordered(TierScope::Machine), ["A", "B", "C"]);
+        assert_eq!(Book::new(&machine, &board).ordered(TierScope::Board), ["D", "E"]);
+
+        // The machine's: the last to the top, clamped past the end, a move
+        // to where it stands is no move.
+        let ordered = Book::new(&machine, &board).ordered(TierScope::Machine);
+        assert_eq!(move_tier(&mut machine.tiers, &ordered, "C", 0), Some(true));
+        assert_eq!(names(&machine, &board), ["deep", "quick", "coder", "mine", "also"]);
+        let ordered = Book::new(&machine, &board).ordered(TierScope::Machine);
+        assert_eq!(move_tier(&mut machine.tiers, &ordered, "C", 9), Some(true));
+        assert_eq!(names(&machine, &board), ["quick", "coder", "deep", "mine", "also"]);
+        let ordered = Book::new(&machine, &board).ordered(TierScope::Machine);
+        assert_eq!(move_tier(&mut machine.tiers, &ordered, "C", 2), Some(false));
+        assert_eq!(move_tier(&mut machine.tiers, &ordered, "D", 0), None, "the board's own");
+
+        // The board's: its own two swap, the override between them keeps its
+        // entry, and the override is not the board's to move.
+        let ordered = Book::new(&machine, &board).ordered(TierScope::Board);
+        assert_eq!(move_tier(&mut board.tiers, &ordered, "E", 0), Some(true));
+        assert_eq!(names(&machine, &board), ["quick", "coder", "deep", "also", "mine"]);
+        assert_eq!(board.tiers[1].id, "B");
+        let ordered = Book::new(&machine, &board).ordered(TierScope::Board);
+        assert_eq!(move_tier(&mut board.tiers, &ordered, "B", 0), None, "the machine orders it");
     }
 
     #[test]

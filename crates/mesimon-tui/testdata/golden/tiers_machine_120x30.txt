@@ -15,7 +15,7 @@
                            │   + new tier                                                   │
                            │                                                                │
                            │     every board ∙ enter edits                                  │
-                           ╰───────────── jk select ∙ enter edit ∙ b this board ∙ esc back ─╯
+                           ╰─── jk select ∙ JK move ∙ enter edit ∙ b this board ∙ esc back ─╯
 
 
 
@@ -27,4 +27,4 @@
 
 
 
- TIERS  jk select ∙ enter edit ∙ b this board ∙ esc back                                                         ? keys
+ TIERS  jk select ∙ JK move ∙ enter edit ∙ b this board ∙ esc back                                               ? keys

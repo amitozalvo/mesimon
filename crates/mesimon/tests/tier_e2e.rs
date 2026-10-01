@@ -127,6 +127,30 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
     let dup = tier("01DUP", "Coder", AgentProvider::ClaudeCode, "", Effort::Default);
     err_containing(c.request(Command::SaveTier { scope: TierScope::Board, tier: dup }), "already");
 
+    // ---- the order (T-562) ----------------------------------------------------
+    // The machine's order is its file's; a board's version of a machine tier
+    // is not the board's to move. Moved there and back, so the rings below
+    // read as they were.
+    let order = || {
+        let text = std::fs::read_to_string(&machine_file).unwrap_or_default();
+        (text.find("name = \"quick\""), text.find("name = \"coder\""))
+    };
+    let mv = |id: &str, to_index| Command::MoveTier {
+        scope: TierScope::Machine,
+        id: id.into(),
+        to_index,
+    };
+    assert!(matches!(c.request(mv("01QUICK", 0)), Response::Ok));
+    let (q, k) = order();
+    assert!(q.zip(k).is_some_and(|(q, k)| q < k), "quick moved above coder on disk");
+    assert!(matches!(c.request(mv("01QUICK", 1)), Response::Ok));
+    let (q, k) = order();
+    assert!(q.zip(k).is_some_and(|(q, k)| k < q), "and back");
+    err_containing(
+        c.request(Command::MoveTier { scope: TierScope::Board, id: "01CODER".into(), to_index: 0 }),
+        "the machine orders",
+    );
+
     // ---- a start on the ticket's pick ----------------------------------------
     let t1 = create(&mut c, "picked at the composer", Some("01CODER"));
     assert_eq!(c.board().ticket(t1).unwrap().tier.as_deref(), Some("01CODER"));

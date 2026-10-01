@@ -1004,6 +1004,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::SetTicketTier { .. }
         | Command::SaveTier { .. }
         | Command::DeleteTier { .. }
+        | Command::MoveTier { .. }
         | Command::SetDefaultTier { .. }
         | Command::SetParkAfterMinutes { .. }
         | Command::SetCrownBudget { .. }
@@ -1832,6 +1833,11 @@ mod tests {
                 tier: crate::tier::Tier::builtin(crate::board::AgentProvider::Codex),
             },
             Command::DeleteTier { scope: crate::tier::TierScope::Board, id: "x".into() },
+            Command::MoveTier {
+                scope: crate::tier::TierScope::Machine,
+                id: "x".into(),
+                to_index: 0,
+            },
             Command::SetDefaultTier { scope: crate::tier::TierScope::Board, id: None },
             Command::Hello { version: 1, client: "x".into() },
             Command::Snapshot,
