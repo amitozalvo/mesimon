@@ -1,6 +1,7 @@
 // The work list: Now (agents grouped by the host's state word), Board
-// (every ticket, by column) and Sent (the tickets this browser filed). Rows
-// are buttons; the pressed one is selected.
+// (every ticket, by column) and Sent (the tickets this browser filed). A
+// ticket is the same card in Now and on the Board (T-533); a card is a
+// button, and the pressed one is selected.
 import { html } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
@@ -85,37 +86,61 @@ function StateMark({ ticket }) {
   return html`<span class="mark mark-idle" aria-hidden="true"></span>`;
 }
 
-function Row({ store, ticket, board, live }) {
-  const pressed = ticket.id === board.selected;
+// What a needs-you agent needs, in the words a person would use; any other
+// agent's own state word.
+function stateWord(agent) {
+  if (agent.state !== "needs attention") return agent.state;
+  return agent.permission
+    ? "needs approval"
+    : agent.dialog?.kind === "plan"
+      ? "has a plan"
+      : agent.dialog
+        ? "has a question"
+        : "needs you";
+}
+
+// A ticket, drawn the same wherever it is listed (T-533): the title; its
+// tags, with the key at the right (and the column, where the list around it
+// is not that column); the agent's state and age; and, live, what it is on.
+function Face({ store, ticket, board, column }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
-  return html`<button type="button" class="ticket row" data-id=${ticket.id} aria-pressed=${String(pressed)}
-    onClick=${() => store.select(ticket.id)}>
-    <${StateMark} ticket=${ticket} />
-    <span class="row-text">
-      <span class="ticket-title" dir="auto">${ticket.title}</span>
-      <span class="ticket-meta"><span class="ticket-key">${ticket.key}</span>${agent ? ` · ${agent.provider} · ${agent.state}` : " · No agent"}${since && html` · <span class="age">${since}</span>`} · ${ticket.column}<${FromHere} store=${store} ticket=${ticket} /></span>
-      <${Headline} agent=${agent} />
-    </span>
-    <${Icon} name="chevronRight" size=${16} cls="row-go" />
+  return html`<span class="ticket-title" dir="auto">${ticket.title}</span>
+    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta">${column && html`<span>${ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
+    ${agent && html`<span class=${`card-agent${agent.state === "needs attention" ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${stateWord(agent)}${since && ` · ${since}`}</span></span>`}
+    <${Headline} agent=${agent} />`;
+}
+
+function Card({ store, ticket, board, column }) {
+  const needs = ticket.agent?.state === "needs attention";
+  return html`<button type="button" class=${`ticket card${needs ? " card-attn" : ""}`} data-id=${ticket.id}
+    aria-pressed=${String(ticket.id === board.selected)} onClick=${() => store.select(ticket.id)}>
+    <${Face} store=${store} ticket=${ticket} board=${board} column=${column} />
   </button>`;
 }
 
-// A needs-you card answers what it can in place; the rest opens the ticket.
+// A ticket written here that has not landed yet (T-497), dashed; it opens Sent.
+function Ghost({ store, item, column }) {
+  return html`<button type="button" class="ticket card ghost" data-id=${item.id} onClick=${() => store.setMode("sent")}>
+    <span class="ticket-meta"><span>New</span><${Tick} state=${tickOf[item.status]} /><span>${item.status === "relay" ? "At the relay" : "In this browser"} · ${clock(item.at)}${column ? ` · → ${item.column}` : ""}</span></span>
+    <span class="ticket-title" dir="auto">${item.title}</span>
+  </button>`;
+}
+
+// A needs-you card is a card that answers what it can in place; the rest
+// opens the ticket.
 function NeedCard({ store, ticket, board, live }) {
   const pressed = ticket.id === board.selected;
   const { permission, dialog, session } = ticket.agent;
   const entry = (permission || dialog) ? store.entryFor(ticket) : undefined;
   const off = !live || !!entry?.receipt?.waiting;
   const send = (body) => store.sendInteraction({ ...body, ticket: ticket.id, session }, entry);
-  const kind = permission ? "needs approval" : dialog?.kind === "plan" ? "has a plan" : dialog ? "has a question" : "needs you";
   const question = answerable(dialog) ? dialog.questions[0] : undefined;
   const expired = permission && Date.now() >= permission.expires_at;
   return html`<article class="need">
     <button type="button" class="ticket need-open" data-id=${ticket.id} aria-pressed=${String(pressed)}
       onClick=${() => store.select(ticket.id)}>
-      <span class="ticket-title" dir="auto">${ticket.title}</span>
-      <span class="ticket-meta"><span class="mark mark-attn" aria-hidden="true"></span><span class="ticket-key">${ticket.key}</span> · ${ticket.agent.provider} ${kind}</span>
+      <${Face} store=${store} ticket=${ticket} board=${board} column=${true} />
     </button>
     ${permission && html`<div class="need-body">
       <p class="need-line"><${Icon} name="shield" size=${15} cls="attn-ink" /><span>Wants to use ${permission.tool}</span></p>
@@ -176,20 +201,12 @@ function Asleep({ store }) {
 }
 
 // Tickets written here that have not landed yet (T-497): what waits in this
-// browser or at the relay. A row opens Sent.
+// browser or at the relay, as the Board's ghosts. One opens Sent.
 function Waiting({ store }) {
   const waiting = store.sent.waiting(store.active?.pin.board);
   if (!waiting.length) return null;
   return html`<${Group} label="Waiting to land" count=${waiting.length}>
-    <div class="rows">${waiting.map((item) => html`<button type="button" key=${item.id} class="ticket row waiting-row"
-      data-id=${item.id} onClick=${() => store.setMode("sent")}>
-      <${Tick} state=${tickOf[item.status]} />
-      <span class="row-text">
-        <span class="ticket-title" dir="auto">${item.title}</span>
-        <span class="ticket-meta">→ ${item.column} · ${clock(item.at)} · ${item.status === "relay" ? "at the relay" : "in this browser"}</span>
-      </span>
-      <${Icon} name="chevronRight" size=${16} cls="row-go" />
-    </button>`)}</div>
+    <div class="cards">${waiting.map((item) => html`<${Ghost} key=${item.id} store=${store} item=${item} column=${true} />`)}</div>
   </${Group}>`;
 }
 
@@ -203,10 +220,10 @@ export function NowList({ store, board, live }) {
       <div class="needs">${needs.map((t) => html`<${NeedCard} key=${t.id} store=${store} ticket=${t} board=${board} live=${live} />`)}</div>
     </${Group}>`}
     ${working.length > 0 && html`<${Group} label="Working" count=${working.length}>
-      <div class="rows">${working.map((t) => html`<${Row} key=${t.id} store=${store} ticket=${t} board=${board} live=${live} />`)}</div>
+      <div class="cards">${working.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} column=${true} />`)}</div>
     </${Group}>`}
     ${idle.length > 0 && html`<${Group} label="Idle" count=${idle.length}>
-      <div class="rows">${idle.map((t) => html`<${Row} key=${t.id} store=${store} ticket=${t} board=${board} live=${live} />`)}</div>
+      <div class="cards">${idle.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} column=${true} />`)}</div>
     </${Group}>`}
     ${empty && html`<p class="empty">${board.search
       ? "No tickets match your search."
@@ -214,19 +231,6 @@ export function NowList({ store, board, live }) {
         ? "No agents here. Open Board to see every ticket."
         : "This board has no tickets yet."}</p>`}
   `;
-}
-
-function Card({ store, ticket, board }) {
-  const pressed = ticket.id === board.selected;
-  const agent = ticket.agent;
-  const needs = agent?.state === "needs attention";
-  const since = stateAge(board, agent);
-  return html`<button type="button" class=${`ticket card${needs ? " card-attn" : ""}`} data-id=${ticket.id}
-    aria-pressed=${String(pressed)} onClick=${() => store.select(ticket.id)}>
-    <span class="ticket-title" dir="auto">${ticket.title}</span>
-    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta"><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
-    ${agent && html`<span class=${`card-agent${needs ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${agent.state}${since && ` · ${since}`}</span></span>`}
-  </button>`;
 }
 
 // Phone: one column at a time. Tablet: columns stacked. Desktop: side by side.
@@ -245,11 +249,7 @@ export function BoardList({ store, board, bp }) {
     return html`<section class="column" key=${column} aria-label=${column}>
       <h3 class="column-label" title=${about || undefined}><span>${column}</span><span class="group-count">${group.length}</span></h3>
       <div class="cards">
-        ${ghosts.map((item) => html`<button type="button" key=${item.id} class="ticket card ghost" data-id=${item.id}
-          onClick=${() => store.setMode("sent")}>
-          <span class="ticket-meta"><span>New</span><${Tick} state=${tickOf[item.status]} /><span>${item.status === "relay" ? "At the relay" : "In this browser"} · ${clock(item.at)}</span></span>
-          <span class="ticket-title" dir="auto">${item.title}</span>
-        </button>`)}
+        ${ghosts.map((item) => html`<${Ghost} key=${item.id} store=${store} item=${item} />`)}
         ${group.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} />`)}
       </div>
       ${bp !== "phone" && html`<button type="button" class="add-to-column" data-column=${column}

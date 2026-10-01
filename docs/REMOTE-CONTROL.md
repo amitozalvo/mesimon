@@ -56,11 +56,12 @@ While the relay answers, the page is always the relay’s current one.
 
 **Now** puts what needs you first: a permission request or a single-choice
 question can be answered right on its card, and anything else opens the ticket.
-Below it are the agents that are working, then the idle ones. Each row shows how long
-the agent has been in its state and, while live, the step it is on (a tool call, in
-mono) or the first line of its latest reply. Cards and the ticket show the ticket’s tags. **Board** shows every
-ticket by column: one column at a time on a phone, all of them side by side on a
-wide screen. The status pill says whether the board is live. When it is not, the
+Below it are the agents that are working, then the idle ones. A ticket is the same
+card in Now and on the Board: its title, its tags and key, how long the agent has been
+in its state and, while live, the step it is on (a tool call, in mono) or the first
+line of its latest reply. In Now the card also names the ticket’s column. **Board**
+shows every ticket by column: one column at a time on a phone, all of them side by
+side on a wide screen. The status pill says whether the board is live. When it is not, the
 page says which hop is out of reach (this browser, the relay, or your terminal),
 keeps showing the board as it last saw it, marked as not live, and disables
 answers and prompts until the terminal is back.

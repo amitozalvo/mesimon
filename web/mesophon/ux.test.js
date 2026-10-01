@@ -505,10 +505,10 @@ async function ticketFlow(browser, engineName, size, viewport) {
       await shot(`sent-away-${name}`);
     }
     await theme("graphite");
-    // Now and the board show what is on its way.
+    // Now and the board show what is on its way, as the same ghost card.
     await mode("agents");
-    await page.locator(".waiting-row").first().waitFor();
-    assert.equal(await page.locator(".waiting-row").count(), 2);
+    await page.locator(".ticket.card.ghost").first().waitFor();
+    assert.equal(await page.locator(".ticket.card.ghost").count(), 2);
     await mode("board");
     // Both went to IN PROGRESS: the bar keeps the column the last one used.
     if (size === "phone") await page.locator('[data-column="IN PROGRESS"]').click();
@@ -1108,6 +1108,7 @@ try {
           // at it, the step it is on or its last reply line, and tags.
           await page.evaluate(() => {
             fixture.tickets[0].tags = [{ group: 1, name: "BUG", tint: 0 }];
+            fixture.tickets[1].tags = [{ group: 1, name: "FEATURE", tint: 6 }];
             Object.assign(fixture.tickets[0].agent, { since: Date.now() - 5 * 60000, doing: "Bash(cargo test -p mesimon-daemon)" });
             Object.assign(fixture.tickets[4].agent, { since: Date.now() - 2 * 3600000, said: "Fixed, and three tests pass." });
             fixture.update();
@@ -1115,9 +1116,29 @@ try {
           await until(page, () =>
             document.querySelector('.ticket[data-id="ticket-0"] .headline-step')?.textContent.includes("cargo test"),
           );
-          assert.match(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), / · 5m · /);
+          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-agent').textContent(), "claude · working · 5m");
           assert.equal(await page.locator('.ticket[data-id="ticket-4"] .headline').textContent(), "Fixed, and three tests pass.");
-          assert.match(await page.locator('.ticket[data-id="ticket-4"] .ticket-meta').textContent(), / · 2h · /);
+          assert.equal(await page.locator('.ticket[data-id="ticket-4"] .card-agent').textContent(), "claude · idle · 2h");
+          // A ticket is one card in Now and on the Board (T-533): its tags
+          // show in both, a needs-you card wears the same face, and Now adds
+          // only the column, which the Board says by where the card stands.
+          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .tag').textContent(), "BUG");
+          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), "IN PROGRESS·T-0");
+          assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .tag').textContent(), "FEATURE");
+          assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .card-agent').textContent(), "codex · needs you");
+          const anatomy = () =>
+            page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((n) =>
+              [n, ...n.querySelectorAll("[class]")].map((c) => c.getAttribute("class")),
+            );
+          const inNow = await anatomy();
+          await mode("board");
+          if (size === "phone") await page.locator('[data-column="IN PROGRESS"]').click();
+          assert.deepEqual(await anatomy(), inNow);
+          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), "T-0");
+          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-board.png`) });
+          await mode("agents");
+          await page.locator(".need").first().waitFor();
+          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-now.png`) });
           await select(0);
           assert.match(await page.locator("#detail .chips").textContent(), /BUG/);
           // The heading is the title alone; the key sits at the right of the

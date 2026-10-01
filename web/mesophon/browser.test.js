@@ -236,12 +236,12 @@ for (const [name, engine] of [
           assert.match(await page.locator(".compose-dest").textContent(), /waits at the relay/);
           await page.getByLabel("Title", { exact: true }).fill(away);
           await page.getByRole("button", { name: "Send ticket", exact: true }).click();
-          await page.locator(".waiting-row").filter({ hasText: away }).waitFor();
+          await page.locator(".ticket.card.ghost").filter({ hasText: away }).waitFor();
           await page.waitForFunction(() =>
             document.querySelector("#toast").textContent.includes("waits at the relay"),
           );
           await ask("host-start", "host-started");
-          await page.locator(".waiting-row").filter({ hasText: away }).waitFor({ state: "detached", timeout: 30000 });
+          await page.locator(".ticket.card.ghost").filter({ hasText: away }).waitFor({ state: "detached", timeout: 30000 });
           const back = (await command({ cmd: "snapshot" })).board;
           const landed = back.tickets.filter((t) => t.title === away);
           assert.equal(landed.length, 1, "filed once");

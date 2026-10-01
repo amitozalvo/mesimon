@@ -16115,3 +16115,24 @@ ever. Goldens: the two theme-picker goldens moved because the list has fifteen r
 fills a 30-row terminal and scrolls (`1/16`), the dialog's own rule; every other golden is
 colourless and stood. `MESIMON_THEME` accepts every new name. Measured with a script that
 reproduces graphite and green as PASS before it was trusted; the mocks are on the ticket.
+
+## Remote Control: a ticket is one card in Now and on the Board (T-533, 2026-10-01, "remote control missing tags on inbox page … actually looks like the tickets are not the same component on inbox page and board page")
+
+**The missing tags were the second component.** Phase 4 (T-497) gave Board's `Card` the tags
+and Now's `Row` the age and the agent's line, and T-506/T-510 then reworked the card alone, so
+Now — the inbox-shaped page — never had tags. The rows are gone: `lists.js` draws a ticket
+through one `Face` (title; a line of tags with the key at the right; the agent's mark, provider,
+state and age; and while live, the step or reply line), in one `Card` for Now's Working and
+Idle groups and the Board's columns. **A needs-you card is that face** at its head, with what
+it needs under it (`.need` takes the card's radius and padding); its state reads the same on
+the Board (`needs approval`, `has a plan`, `has a question`, `needs you`), where it read
+`needs attention` before. **Now adds only the column**, before the key, since the Board says it
+by where the card stands. Board cards gain the agent's line, as the TUI's card has it. The
+"Waiting to land" rows are the Board's dashed `Ghost`, with the column in Now; the relay's
+acceptance test reads `.ticket.card.ghost` where it read `.waiting-row`.
+
+Verified: the browser's state and packaging tests and the UX suite in Chromium and WebKit at
+desktop, tablet and phone, now asserting that a ticket's card has the same parts in Now and on
+the Board, its tag in both, the needs-you card's tag and state words, and the ghosts in Now.
+Screenshots of Now and the Board at each size were read by eye. Not run: `browser.test.js`,
+which needs the relay's fixture.
