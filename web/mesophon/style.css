@@ -786,62 +786,16 @@ select {
 .side-toggle {
   display: none;
 }
-.side-about {
-  padding: 0 6px;
-}
-.side-about summary {
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 -6px;
-  padding: 0 12px;
-  border-radius: 12px;
-  color: var(--ink2);
-  font-size: 0.875rem;
-  font-weight: 500;
-  list-style: none;
-  cursor: pointer;
-}
-.side-about summary::-webkit-details-marker {
-  display: none;
-}
-.side-about summary::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  margin: 0 5px 0 3px;
-  border-right: 1.5px solid var(--ink3);
-  border-bottom: 1.5px solid var(--ink3);
-  transform: rotate(-45deg);
-  transition: transform 0.15s;
-}
-.side-about[open] summary::before {
-  transform: rotate(45deg);
-}
-.side-about summary:hover {
-  background: var(--s1);
-}
-.side-about .hops {
-  margin-top: 6px;
-  padding: 0;
-}
-.side-about .side-note {
-  margin-top: 10px;
-  padding: 0;
-}
 .side-nav {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.side-section {
+/* Settings sits at the sidebar's foot (T-548) and opens its dialog. */
+.side-foot {
+  margin-top: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-.side-section > .label {
-  padding: 0 6px;
 }
 .side-board {
   width: 100%;
@@ -934,8 +888,29 @@ select {
 .side-note .icon {
   margin-top: 2px;
 }
-.settings .field {
-  padding: 0 6px;
+
+/* ---- the Settings dialog (T-548) ------------------------------------------------- */
+.settings-actions {
+  display: grid;
+  gap: 2px;
+  margin: -6px -10px 0;
+}
+.settings-actions .side-note {
+  padding: 4px 10px 0;
+}
+.settings-about .hops {
+  margin-top: 12px;
+  padding: 0;
+}
+.settings-about .side-note {
+  margin-top: 12px;
+  padding: 0;
+}
+.settings-sheet .hop-icon {
+  background: var(--s2);
+}
+.settings-forget {
+  margin: 0 -10px;
 }
 
 /* ---- modes: sidebar nav on desktop, a tab bar below that ---------------------- */
@@ -2788,7 +2763,6 @@ button.sent-sys:hover {
   }
   #shell[data-side="rail"] .side-brand-text,
   #shell[data-side="rail"] .board-menu,
-  #shell[data-side="rail"] .side-section,
   #shell[data-side="rail"] .mode > span:not(.badge) {
     display: none;
   }
@@ -2797,7 +2771,8 @@ button.sent-sys:hover {
     justify-content: center;
     padding: 0;
   }
-  #shell[data-side="rail"] .side-nav {
+  #shell[data-side="rail"] .side-nav,
+  #shell[data-side="rail"] .side-foot {
     align-items: center;
     gap: 4px;
   }
@@ -2928,8 +2903,7 @@ button.sent-sys:hover {
   #sidebar.open .side-close {
     display: inline-flex;
   }
-  #sidebar.open .board-menu,
-  #sidebar.open .hop-icon {
+  #sidebar.open .board-menu {
     background: var(--s2);
   }
   #sidebar.open .board-menu .side-board[aria-current="true"] {

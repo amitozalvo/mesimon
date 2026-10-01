@@ -2057,15 +2057,42 @@ try {
             });
             await page.setViewportSize(viewport);
           }
+          // Settings is a dialog (T-548): the sidebar's foot opens it, and so
+          // does the pill below the desktop breakpoint; the hops are in it.
+          await overview();
+          const settings = page.locator("#settings-sheet");
+          assert(!(await page.locator("#about .hops").isVisible()));
           if (size === "desktop") {
-            // The hops sit under Settings, closed until asked (T-506), and the
-            // sidebar folds to a rail that stays folded across a reload.
-            assert.equal(await page.locator("#about .hop").count(), 3);
-            assert(!(await page.locator("#about .hops").isVisible()));
+            const foot = await page.locator("#settings").boundingBox();
+            const side = await page.locator("#sidebar").boundingBox();
+            assert(side.y + side.height - (foot.y + foot.height) < 40, "Settings sits at the sidebar's foot");
+            await page.locator("#settings").click();
+          } else {
+            await page.locator("#board-menu").click();
+            await page.locator("#settings").click();
+            await page.locator("#sidebar").waitFor({ state: "hidden" });
+          }
+          await settings.waitFor({ state: "visible" });
+          assert.equal(await settings.locator("#about .hop").count(), 3);
+          for (const id of ["theme", "alerts", "forget"])
+            assert(await settings.locator(`#${id}`).isVisible(), id);
+          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-settings.png`) });
+          await page.keyboard.press("Escape");
+          await settings.waitFor({ state: "hidden" });
+          if (size !== "desktop") {
+            await page.locator(".pill-button").click();
+            await settings.waitFor({ state: "visible" });
+            await page.locator("#settings-done").click();
+            await settings.waitFor({ state: "hidden" });
+          }
+          if (size === "desktop") {
+            // The sidebar folds to a rail that stays folded across a reload,
+            // and Settings stays at its foot as an icon.
             await page.locator("#side-toggle").click();
             await until(page, () => document.querySelector("#shell").dataset.side === "rail");
             assert((await page.locator("#sidebar").boundingBox()).width < 80);
             assert(await page.locator('#sidebar .mode[data-mode="board"]').isVisible());
+            assert(await page.locator("#settings").isVisible());
             await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-rail.png`) });
           }
           await page.reload();

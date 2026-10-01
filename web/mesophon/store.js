@@ -61,6 +61,8 @@ export class Store {
     this.deviceName = "";
     this.detailOpen = false;
     this.sheetOpen = false;
+    // The Settings dialog (T-548), opened from the sidebar's foot or the pill.
+    this.settingsOpen = false;
     // The sidebar's board picker (T-510), open under the board's name.
     this.boardMenuOpen = false;
     // The first-prompt sheet a start opens (T-510): the ticket and the words.
@@ -285,6 +287,13 @@ export class Store {
   }
   openSheet(open) {
     this.sheetOpen = open;
+    this.boardMenuOpen = false;
+    this.emit();
+  }
+  openSettings(open) {
+    if (this.settingsOpen === open) return;
+    this.settingsOpen = open;
+    this.sheetOpen = false;
     this.boardMenuOpen = false;
     this.emit();
   }
@@ -1202,7 +1211,7 @@ export class Store {
   showPairing() {
     if (this.active && !this.active.revoked) this.returnBoard = this.active;
     this.screen = "pair";
-    this.sheetOpen = false;
+    this.sheetOpen = this.settingsOpen = false;
     this.boardMenuOpen = false;
     this.focus = "code";
     this.emit();
@@ -1255,7 +1264,7 @@ export class Store {
     this.board = this.boards.get(chosen.pin.board);
     this.entry = undefined;
     this.outputKey = undefined;
-    this.sheetOpen = false;
+    this.sheetOpen = this.settingsOpen = false;
     this.boardMenuOpen = false;
     this.composer.open = false;
     this.startAsk = undefined;

@@ -16892,3 +16892,31 @@ your ask`; an idle worker takes the words at once; a parked worker is held at a 
 the holder, and at a free seat the wake waits on the crown's turn while a `start_agent` behind it
 is refused naming it, then wakes the worker and its words land; switching off, and uncrowning,
 each hold a sending ask that then never lands; no words in the feed or `queue.json`.
+
+## Settings is a dialog at the sidebar's foot (T-548, 2026-10-01, "remote control settings button to open settings in a dialog": "should be located at the bottom of the navbar ∙ all these should be moved to the dialog")
+
+Remote Control's sidebar held a Settings section under the views: Appearance, Add to Home
+Screen, Enable alerts, Forget this browser, and the Connection hops as a closed `<details>`
+(T-506). It is now one button, `#settings` (a gear, the `.mode` row's shape), in `.side-foot`,
+which `margin-top: auto` pins to the sidebar's bottom; the rail keeps it as an icon there. It
+opens `#settings-sheet`, a `dialog.compose` like the ticket sheets (centred on a wide screen, from
+the bottom on a phone), with Done, Escape and the backdrop to close. Inside: Appearance, then
+Home Screen and alerts, then Connection, now an open section (`#about`, the three hops and the
+encryption note) because a dialog asked for is room enough, and Forget this browser last, as a
+destructive action sits. The state is `store.settingsOpen` / `openSettings`, cleared by
+`showPairing` (so Forget and a revocation close it) and `openBoard`.
+
+**The pill opens the dialog**, not the phone's sheet: the sheet no longer holds the hops, and the
+pill is the connection's word, so it opens the place that says which hop is out. The phone's sheet
+is the board picker and the Settings button.
+
+**The dialog is always in the DOM**, closed or open, unlike the ticket sheets that render empty
+while closed: `#theme` stays a live control from the first frame, which the ux suite's theme
+switches rely on, and a closed dialog's controls have no client rects, so the phone's 44px audit
+skips them.
+
+**Tests.** `ux.test.js`, every engine and size: the hops are not visible until asked; on a
+desktop the button sits within 40px of the sidebar's bottom and opens the dialog; below that the
+header's sheet does, and the sheet closes behind it; the dialog shows the theme, alerts, forget
+and three hops; Escape closes it; the pill opens it and Done closes it; the rail still shows the
+button. Screenshots: `<engine>-<size>-settings.png`.

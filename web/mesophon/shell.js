@@ -1,5 +1,6 @@
-// The page: pairing, or the board shell (sidebar, list, detail). Layout is
-// CSS; the breakpoint only chooses which list shape to draw.
+// The page: pairing, or the board shell (sidebar, list, detail), and the
+// Settings dialog. Layout is CSS; the breakpoint only chooses which list
+// shape to draw.
 import { html, useEffect, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
@@ -61,7 +62,7 @@ function LinkIcon({ link, size = 14 }) {
 function Pill({ store }) {
   const link = store.link;
   return html`<button type="button" class="pill-button" aria-label=${`Connection: ${linkLabel[link]}`}
-    onClick=${() => store.openSheet(true)}>
+    aria-haspopup="dialog" onClick=${() => store.openSettings(true)}>
     <span class="pill" data-link=${link}><${LinkIcon} link=${link} /><span>${linkLabel[link]}</span></span>
   </button>`;
 }
@@ -160,9 +161,9 @@ function Install({ store }) {
   return null;
 }
 
-// The three hops and what travels between them (T-506): under Settings,
-// opened when someone asks. What is out of reach is already the pill's and
-// the strip's word.
+// The three hops and what travels between them (T-506), in the Settings
+// dialog (T-548). What is out of reach is already the pill's and the
+// strip's word; the pill opens the dialog that says why.
 function About({ store }) {
   const link = store.link;
   const seen = lastSeen(store.board);
@@ -173,8 +174,8 @@ function About({ store }) {
     relay: "Unknown while the relay is unreachable",
     nonet: "Unknown while this browser is offline",
   }[link];
-  return html`<details id="about" class="side-about">
-    <summary>Connection</summary>
+  return html`<section id="about" class="settings-about" aria-labelledby="about-heading">
+    <h3 id="about-heading" class="label">Connection</h3>
     <ol class="hops">
       <${Hop} icon="smartphone" name="This browser" state=${store.online ? "Online" : "No connection"} ok=${store.online} />
       <${Hop} icon="cloud" name="Relay" state=${link === "relay" ? "Unreachable" : link === "nonet" ? "Unknown" : "Reachable"} ok=${!["relay", "nonet"].includes(link)} />
@@ -182,7 +183,51 @@ function About({ store }) {
     </ol>
     ${link === "asleep" && html`<p class="side-note">Your Mac may be asleep, or mesimon isn’t running. If this lasts, check that the board still lists this browser under Remote Control.</p>`}
     <p class="side-note"><${Icon} name="lock" size=${13} /><span>End-to-end encrypted. The relay routes sealed envelopes it cannot read.</span></p>
-  </details>`;
+  </section>`;
+}
+
+// Settings (T-548): a dialog the sidebar's foot opens, so the sidebar holds
+// only the boards and the views. Always drawn, open or not, so the theme
+// control is in the page from the first frame.
+function Settings({ store }) {
+  const ref = useRef();
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (store.settingsOpen && !dialog.open) dialog.showModal();
+    if (!store.settingsOpen && dialog.open) dialog.close();
+  });
+  const close = () => store.openSettings(false);
+  return html`<dialog id="settings-sheet" class="compose settings-sheet" ref=${ref} aria-labelledby="settings-heading"
+      onCancel=${(e) => {
+        e.preventDefault();
+        close();
+      }}
+      onClose=${close}
+      onClick=${(e) => {
+        if (e.target === e.currentTarget) close();
+      }}>
+    <div class="compose-form">
+      <header class="compose-head">
+        <span></span>
+        <h2 id="settings-heading">Settings</h2>
+        <button id="settings-done" type="button" class="btn btn-quiet compose-send-top" onClick=${close}>Done</button>
+      </header>
+      <div class="compose-body settings">
+        <label class="field">Appearance<select id="theme" value=${store.theme} onChange=${(e) => store.setTheme(e.currentTarget.value)}>
+          <option value="system">System</option>
+          <option value="graphite">Graphite</option>
+          <option value="chalk">Chalk</option>
+        </select></label>
+        <div class="settings-actions">
+          <${Install} store=${store} />
+          <button id="alerts" type="button" class="btn btn-quiet" onClick=${() => store.enableAlerts()}><${Icon} name="bell" size=${16} /><span>Enable alerts</span></button>
+          ${store.alertStatus && html`<p id="alert-status" class="side-note">${store.alertStatus}</p>`}
+        </div>
+        <${About} store=${store} />
+        <button id="forget" type="button" class="btn btn-quiet btn-danger settings-forget" onClick=${() => store.forget()}><${Icon} name="leave" size=${16} /><span>Forget this browser</span></button>
+      </div>
+    </div>
+  </dialog>`;
 }
 
 // The board's name under the brand is the picker (T-510): a press lists
@@ -225,19 +270,11 @@ function Sidebar({ store, bp }) {
       </div>
       ${store.boardMenuOpen && html`<${BoardMenu} store=${store} />`}
       <nav class="side-nav" aria-label="View"><${ModeButtons} store=${store} board=${store.board} /></nav>
-      <section class="side-section settings" aria-label="Settings">
-        <h2 class="label">Settings</h2>
-        <label class="field">Appearance<select id="theme" value=${store.theme} onChange=${(e) => store.setTheme(e.currentTarget.value)}>
-          <option value="system">System</option>
-          <option value="graphite">Graphite</option>
-          <option value="chalk">Chalk</option>
-        </select></label>
-        <${Install} store=${store} />
-        <button id="alerts" type="button" class="btn btn-quiet" onClick=${() => store.enableAlerts()}><${Icon} name="bell" size=${16} /><span>Enable alerts</span></button>
-        ${store.alertStatus && html`<p id="alert-status" class="side-note">${store.alertStatus}</p>`}
-        <button id="forget" type="button" class="btn btn-quiet btn-danger" onClick=${() => store.forget()}><${Icon} name="leave" size=${16} /><span>Forget this browser</span></button>
-        <${About} store=${store} />
-      </section>
+      <div class="side-foot">
+        <button id="settings" type="button" class="mode" aria-haspopup="dialog" title="Settings"
+          onClick=${() => store.openSettings(true)}>
+          <${Icon} name="settings" size=${22} width=${1.8} /><span>Settings</span></button>
+      </div>
     </aside>`;
 }
 
@@ -348,5 +385,6 @@ export function App({ store }) {
     <${StartSheet} store=${store} />
     <${CardSheet} store=${store} />
     <${NoteSheet} store=${store} />
+    <${Settings} store=${store} />
     <${Toast} store=${store} />`;
 }
