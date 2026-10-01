@@ -7,6 +7,7 @@ import { Sessions } from "./sessions.js";
 import { Sent } from "./sent.js";
 import { Mailbox } from "./mailbox.js";
 import { Starts, startWaiting } from "./starts.js";
+import { Edits } from "./edits.js";
 import { showAlert, clearAlerts } from "./awareness.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
@@ -74,6 +75,12 @@ export class Store {
     this.sentLoaded = new Set(); // boards whose stored Sent list is read
     this.composer = emptyDraft(undefined);
     this.starts = new Starts(); // agents this tab started (T-498)
+    // Card edits waiting on the host (T-530), the title being written over
+    // the ticket page's heading, and the column-and-tags sheet's ticket.
+    this.edits = new Edits();
+    this.renaming = undefined;
+    this.cardSheet = undefined;
+    this.editError = "";
     this.toast = undefined;
     this.depositing = new Set(); // ids handed to the mailbox socket, unanswered
     // True when this page came from the service worker's kept copy (T-497):
@@ -188,6 +195,7 @@ export class Store {
   }
   select(id) {
     if (!this.board) return;
+    if (this.board.selected !== id) this.renaming = undefined;
     this.board.selected = id;
     this.active.selected = id;
     this.persist();
@@ -390,6 +398,113 @@ export class Store {
       // The board shows the new agent; its output follows.
       this.refresh();
     }
+    this.emit();
+  }
+
+  // ---- card edits (T-530) ---------------------------------------------------
+  // Whether the live host takes this edit: an older one would drop the peer
+  // on an op it does not know, so the page offers none while it is away.
+  canEdit(op) {
+    return this.live && !!this.connection?.features?.includes(op);
+  }
+  editWaiting(ticket, op) {
+    return !!ticket && !!this.active && this.edits.waiting(this.active.pin.board, ticket.id, op);
+  }
+  // Send one edit and wear it on the board until the host answers.
+  edit(ticket, op, body, patch, extra = {}) {
+    const board = this.active?.pin.board;
+    if (!board || !ticket || !this.canEdit(op)) return false;
+    const command = this.connection.request({ op, ticket: ticket.id, ...body }, "edit");
+    if (command === undefined) {
+      this.editError = "Not sent: the connection dropped. Try again when your terminal is back.";
+      this.say(this.editError);
+      this.emit();
+      return false;
+    }
+    this.editError = "";
+    const item = this.edits.sent(command, { board, ticket: ticket.id, key: ticket.key, op, patch, ...extra });
+    this.board.tickets = this.edits.wear(board, this.board.tickets, [item]);
+    this.sync();
+    return true;
+  }
+  onEditReply(command, reply) {
+    const item = this.edits.take(command);
+    if (!item) return;
+    if (reply.result === "rejected") {
+      const what = { rename: "Not renamed", move: "Not moved", tag: "Tags not changed" }[item.op];
+      this.editError = `${what}: ${reply.message || "the terminal refused it."}`;
+      this.say(this.editError);
+    } else if (reply.result === "edited" && item.moved) this.say(`Moved ${item.key} to ${item.patch.column}`, "two");
+    // The board that follows is the truth, the refusal's included.
+    this.refresh();
+    this.emit();
+  }
+  // The title, written over the ticket page's heading.
+  startRename() {
+    const ticket = this.board?.current;
+    if (!ticket || !this.canEdit("rename") || this.editWaiting(ticket, "rename")) return;
+    this.renaming = { ticket: ticket.id, text: ticket.title };
+    this.focus = "rename";
+    this.emit();
+  }
+  setRename(text) {
+    if (!this.renaming) return;
+    this.renaming.text = text;
+    this.emit();
+  }
+  cancelRename() {
+    if (!this.renaming) return;
+    this.renaming = undefined;
+    this.focus = "selection";
+    this.emit();
+  }
+  confirmRename() {
+    const ask = this.renaming;
+    const ticket = ask && this.board?.tickets.find((t) => t.id === ask.ticket);
+    const title = ask?.text.replace(/\s+/g, " ").trim();
+    if (!ticket || !title) return;
+    this.renaming = undefined;
+    this.focus = "selection";
+    if (title === ticket.title || !this.edit(ticket, "rename", { title }, { title })) this.emit();
+  }
+  // To another column, or to a slot in one: before the card `before` names,
+  // or at the column's end. A drop where the card already is sends nothing.
+  moveTicket(id, column, before = null) {
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    if (!ticket || !this.board.columns.includes(column) || before === id) return;
+    const moved = ticket.column !== column;
+    if (!moved) {
+      const others = this.board.tickets.filter((t) => t.column === column && t.id !== id);
+      const slot = before ? others.findIndex((t) => t.id === before) : others.length;
+      const now = this.board.tickets.filter((t) => t.column === column).findIndex((t) => t.id === id);
+      if (slot < 0 || slot === now) return;
+    }
+    this.edit(ticket, "move", { column, ...(before ? { before } : {}) }, { column }, { before, moved });
+  }
+  // One tag per group, as on the board: another on the group replaces it,
+  // the worn one comes off. Only the board's own tags are offered.
+  toggleTicketTag(id, tag) {
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    if (!ticket) return;
+    const worn = (ticket.tags || []).some((t) => t.group === tag.group && t.name === tag.name);
+    const tags = (ticket.tags || []).filter((t) => t.group !== tag.group);
+    if (!worn) tags.push({ group: tag.group, name: tag.name, tint: tag.tint });
+    tags.sort((a, b) => a.group - b.group);
+    this.edit(ticket, "tag", { group: tag.group, ...(worn ? {} : { name: tag.name }) }, { tags });
+  }
+  // The sheet that moves a ticket and sets its tags, opened from its line.
+  openCardSheet(id) {
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    if (!ticket || !(this.canEdit("move") || this.canEdit("tag"))) return;
+    this.cardSheet = id;
+    this.editError = "";
+    this.emit();
+  }
+  closeCardSheet() {
+    if (!this.cardSheet) return;
+    this.cardSheet = undefined;
+    this.editError = "";
+    this.focus = "card-line";
     this.emit();
   }
 
@@ -767,6 +882,7 @@ export class Store {
     this.boardMenuOpen = false;
     this.composer.open = false;
     this.startAsk = undefined;
+    this.renaming = this.cardSheet = undefined;
     clearAlerts();
     this.identity.lastBoard = chosen.pin.board;
     this.persist();
@@ -796,6 +912,8 @@ export class Store {
     this.sent = new Sent();
     this.sentLoaded.clear();
     this.starts = new Starts();
+    this.edits = new Edits();
+    this.renaming = this.cardSheet = undefined;
     this.composer = emptyDraft(undefined);
     this.active = this.board = this.entry = this.returnBoard = undefined;
     clearAlerts();
@@ -828,6 +946,7 @@ export class Store {
       if (this.active) {
         this.sessions.purge(this.active.pin.board);
         this.starts.purge(this.active.pin.board);
+        this.edits.purge(this.active.pin.board);
         this.boards.delete(this.active.pin.board);
         this.forgetRemembered(this.active.pin.board);
         if (this.composer.board === this.active.pin.board) this.composer = emptyDraft(undefined);
@@ -879,6 +998,8 @@ export class Store {
   onLost() {
     this.live = false;
     this.sessions.lost();
+    // Whatever took, the next board says; nothing is sent again.
+    this.edits.lost();
     this.sync();
   }
   onReply(reply, original, id) {
@@ -889,6 +1010,10 @@ export class Store {
     }
     if (typeof original?.context === "string" && original.context.startsWith("start:")) {
       this.onStartReply(original.context.slice("start:".length), reply);
+      return;
+    }
+    if (original?.context === "edit") {
+      this.onEditReply(id, reply);
       return;
     }
     if (reply.result === "awareness") {
@@ -906,7 +1031,7 @@ export class Store {
         this.board = new BoardState(this.active.selected);
         this.boards.set(this.active.pin.board, this.board);
       }
-      this.board.update(reply);
+      this.board.update({ ...reply, tickets: this.edits.wear(this.active.pin.board, reply.tickets) });
       this.notePickups(reply.tickets);
       if (this.active.title !== reply.title || this.active.selected !== this.board.selected) {
         this.active.title = reply.title;

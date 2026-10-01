@@ -139,6 +139,60 @@ function Composer({ store, ticket, entry, live }) {
   </footer>`;
 }
 
+// The heading, and the rename it opens (T-530): a press on the title
+// writes over it, Enter saves and Escape puts it back.
+function Title({ store, ticket }) {
+  const ask = ticket && store.renaming?.ticket === ticket.id ? store.renaming : undefined;
+  const field = useRef();
+  // The caret starts at the end: a rename is most often a tweak.
+  useLayoutEffect(() => {
+    const node = field.current;
+    if (node) node.setSelectionRange(node.value.length, node.value.length);
+  }, [ask?.ticket]);
+  if (ask)
+    return html`<form id="rename-form" class="rename" onSubmit=${(e) => {
+      e.preventDefault();
+      store.confirmRename();
+    }}>
+      <textarea id="rename-title" ref=${field} aria-label=${`Title of ${ticket.key}`} rows="2" dir="auto" maxlength="2048"
+        enterkeyhint="done" value=${ask.text} onInput=${(e) => store.setRename(e.currentTarget.value)}
+        onKeyDown=${(e) => {
+          if (e.key === "Enter" && !e.isComposing) {
+            e.preventDefault();
+            e.currentTarget.form.requestSubmit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            store.cancelRename();
+          }
+        }}></textarea>
+      <div class="rename-actions">
+        <button id="rename-cancel" type="button" class="btn btn-quiet" onClick=${() => store.cancelRename()}>Cancel</button>
+        <button id="rename-save" type="submit" class="btn btn-pri" disabled=${!ask.text.trim()}>Save</button>
+      </div>
+    </form>`;
+  const renames = !!ticket && store.canEdit("rename") && !store.editWaiting(ticket, "rename");
+  return html`<h2 id="selection" tabindex="-1" dir="auto">${!ticket
+    ? "Select a ticket"
+    : renames
+      ? html`<button id="rename" type="button" class="title-button" aria-describedby="rename-hint"
+          onClick=${() => store.startRename()}>${ticket.title}<${Icon} name="pencil" size=${16} cls="title-pencil" /></button>`
+      : ticket.title}</h2>
+    ${renames && html`<span id="rename-hint" class="sr-only">Rename</span>`}`;
+}
+
+// The ticket's tags and column (T-510), and with a host that takes the
+// card edits (T-530) one button that opens the sheet moving and tagging it.
+function TicketLine({ store, ticket }) {
+  const moves = store.canEdit("move");
+  const tags = store.canEdit("tag") && store.board.allowedTags.length > 0;
+  const add = tags && !ticket.tags?.length;
+  const chips = html`<${Tags} ticket=${ticket} />${add && html`<span class="chip chip-quiet add-tag"><${Icon} name="plus" size=${12} width=${2.4} /><span>Tag</span></span>`}<span class="chip chip-column">${ticket.column}${moves && html`<${Icon} name="chevronDown" size=${12} width=${2.4} />`}</span>`;
+  if (!moves && !tags) return html`<div class="chips">${chips}</div>`;
+  return html`<button id="card-line" type="button" class="chips chips-edit" aria-haspopup="dialog" aria-describedby="card-line-hint"
+      onClick=${() => store.openCardSheet(ticket.id)}>${chips}</button>
+    <span id="card-line-hint" class="sr-only">${moves && tags ? "Move or tag this ticket" : moves ? "Move this ticket" : "Tag this ticket"}</span>`;
+}
+
 // What the ticket page says over an empty or a parked seat (T-498, T-510).
 function seatWords(store, agent) {
   const what = agent ? `${agent.provider} is asleep on this ticket.` : "No agent on this ticket.";
@@ -170,9 +224,9 @@ export function Detail({ store, bp }) {
         ${agent && html`<span id="agent-word" class="sr-only">${agent.provider} · ${agent.state}${since ? ` · ${since}` : ""}</span>`}
       </div>
       <div class="detail-title">
-        <h2 id="selection" tabindex="-1" dir="auto">${ticket ? ticket.title : "Select a ticket"}</h2>
+        <${Title} store=${store} ticket=${ticket} />
         ${ticket && html`<div class="ticket-line">
-          <div class="chips"><${Tags} ticket=${ticket} /><span class="chip">${ticket.column}</span></div>
+          <${TicketLine} store=${store} ticket=${ticket} />
           <span class="selection-key">${ticket.key}</span>
         </div>`}
       </div>

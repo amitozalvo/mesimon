@@ -5,7 +5,7 @@ import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { NowList, BoardList, SentList, ColumnTabs, lastSeen } from "./lists.js";
 import { Detail } from "./detail.js";
-import { NewTicket, QuickNew, StartSheet } from "./compose.js";
+import { NewTicket, QuickNew, StartSheet, CardSheet } from "./compose.js";
 
 // Subscribe during the commit, not after paint: a fast boot can emit before
 // a deferred effect runs, and that change would never reach the page.
@@ -332,7 +332,9 @@ export function App({ store }) {
         ? document.getElementById("selection")
         : want === "row"
           ? document.querySelector('#tickets .ticket[aria-pressed="true"]')
-          : document.getElementById(want === "prompt" ? "prompt" : want === "pair" ? "pair" : "code");
+          : document.getElementById(
+              { prompt: "prompt", pair: "pair", rename: "rename-title", "card-line": "card-line" }[want] || "code",
+            );
     if (target?.getClientRects().length) target.focus({ preventScroll: true });
   });
   return html`
@@ -340,5 +342,6 @@ export function App({ store }) {
     <${Shell} store=${store} bp=${bp} hidden=${store.screen === "pair"} />
     <${NewTicket} store=${store} />
     <${StartSheet} store=${store} />
+    <${CardSheet} store=${store} />
     <${Toast} store=${store} />`;
 }

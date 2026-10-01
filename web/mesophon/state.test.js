@@ -397,3 +397,38 @@ test("a start goes clock to two ticks, settles once, and never crosses boards", 
   assert.equal(starts.get("board-a", "one"), undefined);
   assert.equal(starts.get("board-b", "one").command, 1);
 });
+test("a card edit is worn until the host answers, in its slot, and never crosses boards", async () => {
+  const { Edits } = await import("./edits.js");
+  const edits = new Edits();
+  const card = (id, column) => ({ id, key: id.toUpperCase(), title: id, column, tags: [] });
+  const host = [card("a", "TODO"), card("b", "TODO"), card("c", "DONE"), card("d", "DONE")];
+  const order = (tickets) => tickets.map((t) => `${t.id}:${t.column}`);
+  edits.sent(1, { board: "board-a", ticket: "a", op: "rename", patch: { title: "Renamed" } });
+  edits.sent(2, { board: "board-a", ticket: "b", op: "move", patch: { column: "DONE" }, before: "d" });
+  edits.sent(3, { board: "board-a", ticket: "c", op: "tag", patch: { tags: [{ group: 1, name: "BUG", tint: 0 }] } });
+  edits.sent(4, { board: "board-b", ticket: "a", op: "move", patch: { column: "DONE" }, before: null });
+  const worn = edits.wear("board-a", host);
+  assert.deepEqual(order(worn), ["a:TODO", "c:DONE", "b:DONE", "d:DONE"]);
+  assert.equal(worn[0].title, "Renamed");
+  assert.deepEqual(worn[1].tags, [{ group: 1, name: "BUG", tint: 0 }]);
+  assert.equal(host[0].title, "a", "the host's reply is not written over");
+  // Wearing it twice lands it in the same place: a snapshot taken before
+  // the host had it, and one taken after.
+  assert.deepEqual(order(edits.wear("board-a", worn)), order(worn));
+  assert(edits.waiting("board-a", "b", "move") && !edits.waiting("board-a", "b", "rename"));
+  assert(!edits.waiting("board-b", "b"));
+  // Without a card to go before, a move lands at its column's end, and an
+  // empty column takes it at the end of the list.
+  assert.deepEqual(order(edits.wear("board-b", host)), ["b:TODO", "c:DONE", "d:DONE", "a:DONE"]);
+  const empty = new Edits();
+  empty.sent(1, { board: "x", ticket: "a", op: "move", patch: { column: "REVIEW" }, before: "gone" });
+  assert.deepEqual(order(empty.wear("x", host)), ["b:TODO", "c:DONE", "d:DONE", "a:REVIEW"]);
+  // The answer ends it; a dropped connection or a revoke ends them all.
+  assert.equal(edits.take(1).op, "rename");
+  assert.equal(edits.take(1), undefined);
+  assert.equal(edits.wear("board-a", host)[0].title, "a");
+  edits.purge("board-a");
+  assert.deepEqual([...edits.items.keys()], [4]);
+  edits.lost();
+  assert.equal(edits.items.size, 0);
+});

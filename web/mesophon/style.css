@@ -1365,6 +1365,7 @@ select {
   letter-spacing: 0.08em;
 }
 .cards {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1382,6 +1383,36 @@ select {
 }
 .card-attn {
   box-shadow: inset 0 0 0 1px var(--attn-line);
+}
+/* A card dragged to a column (T-530): the column is outlined and a bar
+   marks where the card lands, between cards or at the column's end. */
+.ticket.card[draggable="true"] {
+  cursor: grab;
+}
+.column.drop-target {
+  border-radius: 18px;
+  outline: 1px dashed var(--line2);
+  outline-offset: 6px;
+}
+.ticket.card.drop-before {
+  position: relative;
+}
+.ticket.card.drop-before::before,
+.cards.drop-end::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--ink2);
+  pointer-events: none;
+}
+.ticket.card.drop-before::before {
+  top: -7px;
+}
+.cards.drop-end::after {
+  bottom: -7px;
 }
 /* A card's line (T-510): the tags at the left, the key at the right, as
    the ticket page's line. */
@@ -1481,6 +1512,90 @@ select {
 .detail-shin {
   flex-shrink: 0;
   margin-top: 2px;
+}
+/* The title takes a press (T-530): it writes over itself. The pencil shows
+   on hover and focus where there is a pointer, and always on a touch screen. */
+.title-button {
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+  text-align: inherit;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.title-pencil {
+  display: inline-block;
+  margin-left: 8px;
+  vertical-align: -0.05em;
+  color: var(--ink4);
+}
+@media (hover: hover) {
+  .title-pencil {
+    opacity: 0;
+  }
+  .title-button:hover {
+    background: var(--s1);
+  }
+  .title-button:hover .title-pencil,
+  .title-button:focus-visible .title-pencil {
+    opacity: 1;
+  }
+}
+.rename {
+  display: grid;
+  gap: 8px;
+}
+.rename textarea {
+  width: 100%;
+  min-height: 44px;
+  max-height: 30dvh;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--s2);
+  color: var(--ink);
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.3;
+  resize: none;
+  field-sizing: content;
+}
+.rename textarea:focus {
+  outline: 2px solid var(--line2);
+  outline-offset: 0;
+}
+.rename-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* The ticket's line as one button (T-530): it opens the sheet that moves
+   and tags the ticket, with a 44px target around chips drawn as before. */
+.chips-edit {
+  min-height: 44px;
+  margin: -10px -8px;
+  padding: 10px 8px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.chips-edit:hover {
+  background: var(--s1);
+}
+.chip-column {
+  gap: 4px;
+}
+.add-tag {
+  gap: 3px;
+  padding: 0 8px 0 6px;
 }
 .chips:empty {
   display: none;

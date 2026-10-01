@@ -117,6 +117,31 @@ pub enum Request {
         #[serde(default)]
         prompt: Option<String>,
     },
+    /// Retitle a ticket (T-530): the board's rename from a phone. A blank
+    /// title is refused; the host scrubs and caps it as it does the desk's.
+    Rename {
+        ticket: String,
+        title: String,
+    },
+    /// Move a ticket to a column (T-530), before the ticket `before` names,
+    /// or at the column's end without one. In its own column it is a
+    /// reorder. The board's own gates apply: a column that needs the work
+    /// merged refuses an unmerged ticket.
+    Move {
+        ticket: String,
+        column: String,
+        #[serde(default)]
+        before: Option<String>,
+    },
+    /// Put one of the board's tags on a ticket, replacing the one it wore on
+    /// that group, or with no `name` take the group's tag off (T-530). A tag
+    /// the board does not have is refused: a phone never adds a word.
+    Tag {
+        ticket: String,
+        group: u8,
+        #[serde(default)]
+        name: Option<String>,
+    },
 }
 
 /// A ticket a paired browser sealed for the host's mailbox (T-497): the
@@ -284,6 +309,10 @@ pub enum Reply {
         ticket: String,
         key: String,
         column: String,
+    },
+    /// A rename, move or tag took (T-530); the board that follows shows it.
+    Edited {
+        ticket: String,
     },
     Awareness {
         ticket: String,
@@ -536,6 +565,50 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");
         }
+    }
+
+    /// The card edits (T-530) name the ticket and what changes, nothing
+    /// else; a move without `before` lands at the column's end, and a tag
+    /// without `name` takes the group's tag off.
+    #[test]
+    fn a_card_edit_names_its_ticket_and_only_what_changes() {
+        let Request::Move { ticket, column, before } =
+            serde_json::from_str(r#"{"op":"move","ticket":"01J","column":"DONE"}"#).unwrap()
+        else {
+            panic!("move")
+        };
+        assert_eq!((ticket.as_str(), column.as_str(), before), ("01J", "DONE", None));
+        let Request::Move { before, .. } =
+            serde_json::from_str(r#"{"op":"move","ticket":"01J","column":"DONE","before":"01K"}"#)
+                .unwrap()
+        else {
+            panic!("move")
+        };
+        assert_eq!(before.as_deref(), Some("01K"));
+        let Request::Tag { group, name, .. } =
+            serde_json::from_str(r#"{"op":"tag","ticket":"01J","group":2}"#).unwrap()
+        else {
+            panic!("tag")
+        };
+        assert_eq!((group, name), (2, None));
+        let Request::Rename { title, .. } =
+            serde_json::from_str(r#"{"op":"rename","ticket":"01J","title":"Fix it"}"#).unwrap()
+        else {
+            panic!("rename")
+        };
+        assert_eq!(title, "Fix it");
+        for bad in [
+            r#"{"op":"rename","ticket":"01J"}"#,
+            r#"{"op":"move","ticket":"01J"}"#,
+            r#"{"op":"move","ticket":"01J","column":"DONE","force":true}"#,
+            r#"{"op":"tag","ticket":"01J","group":1,"name":"NEW","register":true}"#,
+        ] {
+            assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            serde_json::to_value(Reply::Edited { ticket: "01J".into() }).unwrap(),
+            serde_json::json!({"result":"edited","ticket":"01J"})
+        );
     }
 
     #[test]

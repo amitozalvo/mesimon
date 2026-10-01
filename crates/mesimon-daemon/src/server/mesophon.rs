@@ -545,6 +545,10 @@ impl Daemon {
                     "awareness",
                     "create",
                     "start",
+                    // The card edits (T-530).
+                    "rename",
+                    "move",
+                    "tag",
                     // Tickets for an away host wait at the relay (T-497).
                     if self.control.mail { "mailbox" } else { "" },
                 ]
@@ -720,6 +724,13 @@ impl Daemon {
             }
             api::Request::Start { ticket, prompt } => {
                 self.control_start_agent(&by, (grant, device, command.id), &ticket, prompt)
+            }
+            api::Request::Rename { ticket, title } => self.control_rename(&by, &ticket, &title),
+            api::Request::Move { ticket, column, before } => {
+                self.control_move(&by, &ticket, &column, before.as_deref())
+            }
+            api::Request::Tag { ticket, group, name } => {
+                self.control_tag(&by, &ticket, group, name)
             }
         };
         self.control.remember(grant, command.id, reply.clone());
@@ -1319,6 +1330,116 @@ impl Daemon {
 
     /// A batch from the relay's mailbox (T-497): every envelope answered,
     /// then the next batch asked for, until the relay sends an empty one.
+    /// A ticket on the board and not archived, by the id a browser sent.
+    fn control_ticket(&self, ticket: &str) -> Option<ulid::Ulid> {
+        ulid::Ulid::from_string(ticket)
+            .ok()
+            .filter(|id| self.board.ticket(*id).is_some_and(|t| !t.is_archived()))
+    }
+
+    /// A new title from the owner's phone (T-530): the desk's rename,
+    /// scrubbed and capped the same way, and refused blank. The same title
+    /// again writes nothing.
+    fn control_rename(&mut self, by: &Principal, ticket: &str, title: &str) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_ticket(ticket) else {
+            return reject("ticket unavailable");
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::RenameTicket, &Resource::Ticket { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
+        match phone_title(t, title) {
+            Err(message) => return reject(message),
+            Ok(None) => {}
+            Ok(Some(title)) => {
+                if let Response::Err { message } = self.with_ticket(id, |t| t.title = title) {
+                    return reject(&message);
+                }
+                self.feed.board(by.actor(), "mesophon_rename_ticket", Some(id));
+            }
+        }
+        Reply::Edited { ticket: id.to_string() }
+    }
+
+    /// A move from the owner's phone (T-530): `place_ticket`, as a person,
+    /// so every gate a move at the desk meets applies, and a move inside
+    /// the ticket's own column is a reorder.
+    fn control_move(
+        &mut self,
+        by: &Principal,
+        ticket: &str,
+        column: &str,
+        before: Option<&str>,
+    ) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_ticket(ticket) else {
+            return reject("ticket unavailable");
+        };
+        let before = match before.map(ulid::Ulid::from_string) {
+            None => None,
+            Some(Ok(b)) => Some(b),
+            Some(Err(_)) => return reject("ticket unavailable"),
+        };
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        match self.place_ticket(
+            id,
+            column,
+            Position::Before(before),
+            by,
+            None,
+            "mesophon_move_ticket",
+        ) {
+            Ok(_) => Reply::Edited { ticket: id.to_string() },
+            Err(message) => reject(&message),
+        }
+    }
+
+    /// A tag from the owner's phone (T-530): one the board already has, on
+    /// its group, replacing the group's other one; with no name, the
+    /// group's tag comes off. A phone never adds to the vocabulary, as when
+    /// it files a ticket. Wearing what is worn writes nothing.
+    fn control_tag(
+        &mut self,
+        by: &Principal,
+        ticket: &str,
+        group: u8,
+        name: Option<String>,
+    ) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_ticket(ticket) else {
+            return reject("ticket unavailable");
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::TagTicket, &Resource::Ticket { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
+        match phone_tag(&self.board, t, group, name.as_deref()) {
+            Err(message) => return reject(&message),
+            Ok(false) => {}
+            Ok(true) => {
+                if let Response::Err { message } = self.with_ticket(id, |t| t.set_tag(group, name))
+                {
+                    return reject(&message);
+                }
+                self.feed.board(by.actor(), "mesophon_tag_ticket", Some(id));
+            }
+        }
+        Reply::Edited { ticket: id.to_string() }
+    }
+
     fn control_mail(&mut self, items: Vec<control::MailItem>) {
         let Some(board) = self.control.stored.as_ref().map(|s| s.board) else { return };
         let more = !items.is_empty();
@@ -1950,6 +2071,33 @@ fn preview_path(s: &SessionRecord) -> Option<&str> {
     s.agent_preview_path.as_deref().or(s.transcript_path.as_deref())
 }
 
+/// The title a phone's rename writes (T-530), scrubbed and capped as the
+/// desk's, and refused blank; `None` when the ticket already has it.
+fn phone_title(t: &Ticket, raw: &str) -> Result<Option<String>, &'static str> {
+    let title = mesimon_core::board::sanitize_title(raw.trim());
+    if title.trim().is_empty() {
+        return Err("a ticket needs a title");
+    }
+    Ok((t.title != title).then_some(title))
+}
+
+/// Whether a phone's tag changes the ticket (T-530). A name must be one
+/// the board has on that group, spelled as the board spells it: a phone
+/// never adds a word. `None` takes the group's tag off.
+fn phone_tag(
+    board: &mesimon_core::board::Board,
+    t: &Ticket,
+    group: u8,
+    name: Option<&str>,
+) -> Result<bool, String> {
+    if let Some(name) = name {
+        if board.tag_def(group, name).is_none() {
+            return Err(format!("tag {name} is no longer on this board"));
+        }
+    }
+    Ok(t.tag_in(group).map(|r| r.name.as_str()) != name)
+}
+
 fn filed_tags(
     board: &mesimon_core::board::Board,
     picks: &[api::TagPick],
@@ -2326,6 +2474,60 @@ mod tests {
         assert_eq!(worn, vec![(1, "BUG".to_string()), (2, "QUESTION".to_string())]);
         for stale in [pick(1, "bug"), pick(2, "BUG"), pick(1, "NEW")] {
             assert!(filed_tags(&board, &[stale]).is_err());
+        }
+        assert!(board.tag_def(1, "NEW").is_none(), "a phone never registers a tag");
+    }
+
+    /// A phone's rename (T-530) is the desk's title, refused blank, and
+    /// the same title again changes nothing; its tag is one the board has,
+    /// on that group, and wearing what is worn changes nothing.
+    #[test]
+    fn a_phone_retitles_and_tags_with_the_board_s_own_words() {
+        let mut board = Board::with_default_columns();
+        board.register_tag(1, "BUG").unwrap();
+        board.register_tag(1, "FEATURE").unwrap();
+        board.register_tag(2, "QUESTION").unwrap();
+        let t = Ticket {
+            id: ulid::Ulid(1),
+            short_key: "T-1".into(),
+            title: "Fix it".into(),
+            column: "TODO".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
+            entered_at: None,
+            woke_at: None,
+            manual_merge: false,
+            execution_policy: Default::default(),
+            tier: None,
+            envelope: None,
+            workspace: None,
+            import_origin: None,
+            raised: None,
+            previous_column: None,
+            picked: None,
+            tags: vec![mesimon_core::board::TagRef { name: "BUG".into(), group: 1 }],
+            notes: Vec::new(),
+            archived: None,
+        };
+        assert_eq!(phone_title(&t, "  Fix it  "), Ok(None));
+        assert_eq!(
+            phone_title(&t, "Fix the\u{1b}[31m login"),
+            Ok(Some("Fix the[31m login".into()))
+        );
+        for blank in ["", "   ", "\u{1b}"] {
+            assert_eq!(phone_title(&t, blank), Err("a ticket needs a title"), "{blank:?}");
+        }
+        let long = phone_title(&t, &"ש".repeat(5000)).unwrap().unwrap();
+        assert!(long.len() <= mesimon_core::board::TITLE_MAX_BYTES);
+        assert_eq!(phone_tag(&board, &t, 1, Some("BUG")), Ok(false));
+        assert_eq!(phone_tag(&board, &t, 1, Some("FEATURE")), Ok(true));
+        assert_eq!(phone_tag(&board, &t, 1, None), Ok(true));
+        assert_eq!(phone_tag(&board, &t, 2, None), Ok(false));
+        assert_eq!(phone_tag(&board, &t, 2, Some("QUESTION")), Ok(true));
+        for (group, stale) in [(1, "bug"), (2, "BUG"), (1, "NEW"), (11, "BUG")] {
+            assert!(phone_tag(&board, &t, group, Some(stale)).is_err(), "{group} {stale}");
         }
         assert!(board.tag_def(1, "NEW").is_none(), "a phone never registers a tag");
     }

@@ -19,6 +19,7 @@ const PAGE = [
   "./connection.js",
   "./detail.js",
   "./dialogs.js",
+  "./edits.js",
   "./html.js",
   "./icons.js",
   "./identity.js",

@@ -30,21 +30,23 @@ function destination(store) {
     note: "Sending needs your terminal." };
 }
 
-function Tags({ store, draft, board }) {
+// The board's tags as pressable chips, a row per group: the New ticket
+// sheet's and the column-and-tags sheet's (T-530).
+function TagChoices({ allowed, worn, onToggle, disabled = false }) {
   const groups = [];
-  for (const tag of board.allowedTags) {
+  for (const tag of allowed) {
     const group = groups.find((g) => g.group === tag.group);
     if (group) group.tags.push(tag);
     else groups.push({ group: tag.group, tags: [tag] });
   }
   if (!groups.length) return null;
-  return html`<fieldset class="choices">
+  return html`<fieldset class="choices" disabled=${disabled}>
     <legend>Tags <span class="muted">· one per group</span></legend>
     ${groups.map((g) => html`<div class="choice-row" key=${g.group} role="group" aria-label=${`Tag group ${g.group}`}>
       ${g.tags.map((tag) => {
-        const worn = draft.tags.some((t) => t.group === tag.group && t.name === tag.name);
-        return html`<button type="button" class=${`tag-chip tint-${tag.tint}`} aria-pressed=${String(worn)}
-          onClick=${() => store.toggleTag(tag)}><span class="tag-dot" aria-hidden="true"></span><span>${tag.name}</span></button>`;
+        const on = worn.some((t) => t.group === tag.group && t.name === tag.name);
+        return html`<button type="button" class=${`tag-chip tint-${tag.tint}`} aria-pressed=${String(on)}
+          onClick=${() => onToggle(tag)}><span class="tag-dot" aria-hidden="true"></span><span>${tag.name}</span></button>`;
       })}
     </div>`)}
   </fieldset>`;
@@ -109,7 +111,7 @@ export function NewTicket({ store }) {
               onChange=${() => store.setComposer("column", column)} /><span>${column}</span></label>`)}</div>
           ${about && html`<p class="field-note" dir="auto">${about}</p>`}
         </fieldset>
-        <${Tags} store=${store} draft=${draft} board=${board} />
+        <${TagChoices} allowed=${board.allowedTags} worn=${draft.tags} onToggle=${(tag) => store.toggleTag(tag)} />
       </div>
       <footer class="compose-foot">
         ${draft.error && html`<p class="compose-error" role="alert">${draft.error}</p>`}
@@ -205,5 +207,52 @@ export function StartSheet({ store }) {
           <${Icon} name="play" size=${18} /><span>${asleep ? (words ? "Wake with these words" : "Wake agent") : words ? "Start with these words" : "Start on the title"}</span></button>
       </footer>
     </form>
+  </dialog>`;
+}
+
+// A ticket's column and tags (T-530), opened from the ticket page's line:
+// each press goes to the board as it is made, as the board's own keys do,
+// and Done closes the sheet. Only the board's own tags are offered.
+export function CardSheet({ store }) {
+  const ref = useRef();
+  const board = store.board;
+  const ticket = store.cardSheet && board?.tickets.find((t) => t.id === store.cardSheet);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (ticket && !dialog.open) dialog.showModal();
+    if (!ticket && dialog.open) dialog.close();
+  });
+  if (!ticket) return html`<dialog id="card-sheet" class="compose" ref=${ref}></dialog>`;
+  const about = board.columnDescriptions[ticket.column];
+  return html`<dialog id="card-sheet" class="compose" ref=${ref} aria-labelledby="card-heading"
+      onCancel=${(e) => {
+        e.preventDefault();
+        store.closeCardSheet();
+      }}
+      onClose=${() => store.closeCardSheet()}
+      onClick=${(e) => {
+        if (e.target === e.currentTarget) store.closeCardSheet();
+      }}>
+    <div class="compose-form">
+      <header class="compose-head">
+        <span></span>
+        <h2 id="card-heading">${ticket.key}</h2>
+        <button id="card-done" type="button" class="btn btn-quiet compose-send-top" onClick=${() => store.closeCardSheet()}>Done</button>
+      </header>
+      <div class="compose-body">
+        <p class="start-title" dir="auto">${ticket.title}</p>
+        <fieldset class="choices" disabled=${!store.canEdit("move")}>
+          <legend>Column</legend>
+          <div class="choice-row">${board.columns.map((column) => html`<label class="choice" key=${column}>
+            <input type="radio" name="card-column" value=${column} checked=${column === ticket.column}
+              onChange=${() => store.moveTicket(ticket.id, column)} /><span>${column}</span></label>`)}</div>
+          ${about && html`<p class="field-note" dir="auto">${about}</p>`}
+        </fieldset>
+        <${TagChoices} allowed=${board.allowedTags} worn=${ticket.tags || []} disabled=${!store.canEdit("tag")}
+          onToggle=${(tag) => store.toggleTicketTag(ticket.id, tag)} />
+      </div>
+      ${store.editError && html`<footer class="compose-foot"><p class="compose-error" role="alert">${store.editError}</p></footer>`}
+    </div>
   </dialog>`;
 }

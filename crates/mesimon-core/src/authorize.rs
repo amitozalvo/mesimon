@@ -23,6 +23,15 @@ pub enum Action {
     /// phone gains the start without `Mutate` on the ticket, which would also
     /// move, rename and merge it. The crown's `start_agent` stays a `Mutate`.
     StartAgent,
+    /// The three edits a card takes from the owner's paired phone (T-530):
+    /// a move to a column (or a slot in one), a new title, and a tag from
+    /// the board's vocabulary on or off. For every other principal each is
+    /// the `Mutate` it always was, so `place_ticket` asks `MoveTicket` of
+    /// every mover; the phone gains the three without `Mutate`, which would
+    /// also reach `PromptColumn`, merges, workspaces and deletes.
+    MoveTicket,
+    RenameTicket,
+    TagTicket,
 }
 
 /// What it is being attempted on.
@@ -75,9 +84,22 @@ impl Decision {
 /// `FileTicket` is the one board write a `Paired` phone makes: the owner at
 /// the keyboard or on their paired device, into a column, and nothing else.
 /// `StartAgent` is its one start, on a ticket; `authorize_execution` is the
-/// floor under it.
+/// floor under it. `MoveTicket`, `RenameTicket` and `TagTicket` are its card
+/// edits, on the ticket (and a move's destination column); for everyone
+/// else they are `Mutate`.
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
+    if matches!(action, Action::MoveTicket | Action::RenameTicket | Action::TagTicket) {
+        let Principal::Paired { .. } = principal else {
+            return authorize(principal, &Action::Mutate, resource);
+        };
+        return match (action, resource) {
+            (_, Resource::Ticket { .. }) | (Action::MoveTicket, Resource::Column { .. }) => {
+                Decision::Allow
+            }
+            _ => deny("a paired device edits one ticket: its column, its title and its tags"),
+        };
+    }
     if matches!(action, Action::PromptExisting | Action::ApproveExisting) {
         return match (principal, resource) {
             (Principal::Local | Principal::Paired { .. }, Resource::Session { .. }) => {
@@ -113,8 +135,8 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
         Principal::Paired { .. } => match action {
             Action::Read => Decision::Allow,
             _ => deny(
-                "paired devices only read, prompt, answer existing permissions, file tickets \
-                 and start agents",
+                "paired devices only read, prompt, answer existing permissions, file tickets, \
+                 start agents and move, rename and tag tickets",
             ),
         },
         Principal::Agent { .. } => match (action, resource) {
@@ -134,6 +156,10 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 | Action::StartAgent,
                 _,
             ) => deny("an agent cannot import external content"),
+            // Answered as `Mutate` at the top.
+            (Action::MoveTicket | Action::RenameTicket | Action::TagTicket, _) => {
+                authorize(principal, &Action::Mutate, resource)
+            }
         },
         // A teammate on a shared board (T-215): tickets and notes per the
         // role the relay enforced, never a session, never the board's own
@@ -154,6 +180,10 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 | Action::StartAgent,
                 _,
             ) => deny("a teammate cannot import external content"),
+            // Answered as `Mutate` at the top.
+            (Action::MoveTicket | Action::RenameTicket | Action::TagTicket, _) => {
+                authorize(principal, &Action::Mutate, resource)
+            }
         },
     }
 }
@@ -269,6 +299,42 @@ mod tests {
             assert!(authorize(&by, &Action::FileTicket, &column).denied());
         }
         assert!(authorize(&paired, &Action::Mutate, &column).denied());
+    }
+
+    /// The phone's card edits (T-530): a move, a title and a tag on one
+    /// ticket, a move into a column, and nothing a `Mutate` would add. For
+    /// everyone else each edit is answered exactly as `Mutate` is, so the
+    /// movers `place_ticket` serves keep the rules they had.
+    #[test]
+    fn a_phone_moves_renames_and_tags_one_ticket_and_others_keep_mutate() {
+        let paired = Principal::Paired { device: "device".into(), grant: "grant".into() };
+        let ticket = Resource::Ticket { id: ulid::Ulid::nil() };
+        let column = Resource::Column { name: "DONE".into() };
+        let session = Resource::Session { id: uuid::Uuid::nil() };
+        let edits = [Action::MoveTicket, Action::RenameTicket, Action::TagTicket];
+        for edit in &edits {
+            assert_eq!(authorize(&paired, edit, &ticket), Decision::Allow, "{edit:?}");
+            for elsewhere in [Resource::Board, session.clone()] {
+                assert!(authorize(&paired, edit, &elsewhere).denied(), "{edit:?}");
+            }
+        }
+        assert_eq!(authorize(&paired, &Action::MoveTicket, &column), Decision::Allow);
+        assert!(authorize(&paired, &Action::RenameTicket, &column).denied());
+        assert!(authorize(&paired, &Action::TagTicket, &column).denied());
+        for resource in [&ticket, &column] {
+            assert!(authorize(&paired, &Action::Mutate, resource).denied());
+        }
+        for by in [Principal::Local, agent(), remote(), automation()] {
+            for edit in &edits {
+                for resource in [&ticket, &column, &Resource::Board, &session] {
+                    assert_eq!(
+                        authorize(&by, edit, resource),
+                        authorize(&by, &Action::Mutate, resource),
+                        "{by:?} {edit:?} {resource:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// The teammate floor (T-215): like an agent on sessions and the board's

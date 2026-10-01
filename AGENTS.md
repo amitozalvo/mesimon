@@ -70,9 +70,11 @@ Preserve these boundaries:
 - `web/mesophon` has no build step: the relay serves it as it is under a CSP with no inline
   style or script, so styling stays in `style.css` and Preact/htm stay vendored plain modules
   with no bare imports (`web/mesophon/vendor/README.md`).
-- A paired phone's writes are `Action::FileTicket` into a column and `Action::StartAgent` on a
-  ticket (under `authorize_execution`): never widen `Paired` to `Mutate`, which also reaches
-  `PromptColumn`, moves and merges, and a filed ticket starts nothing by itself.
+- A paired phone's writes are `Action::FileTicket` into a column, `Action::StartAgent` on a
+  ticket (under `authorize_execution`) and the card edits `MoveTicket`/`RenameTicket`/`TagTicket`
+  (each is `Mutate` for every other principal, so `place_ticket` asks `MoveTicket` of every
+  mover): never widen `Paired` to `Mutate`, which also reaches `PromptColumn`, merges and
+  deletes, and a filed ticket starts nothing by itself.
 - Every side of the Mesophon control socket drops a peer on a frame it cannot parse, so mail
   frames go only where asked for: a host sends `Collect` after `ControlMail` answered, and the
   relay sends `Mail` only to a host that sent `Collect`.

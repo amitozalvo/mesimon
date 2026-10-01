@@ -16160,3 +16160,68 @@ the shortest split is too tall. **At 80 columns the board still gets one column*
 hint (T-534) makes TICKETS 47 cells wide, so no two-column split fits. The ticket page at 80x24
 now fits in two columns; it used to lose its APP group under the `~` (pinned by
 `help_groups_sit_side_by_side_when_they_fit`). Five goldens moved.
+
+## Remote Control moves, renames and tags a ticket (T-530, 2026-10-01, "Remote control ticket operations": "Rename (click on title in ticket overlay) ∙ Move column (drag and drop or long press on mobile or something else if you find better alternative) ∙ set tags (think how and where)")
+
+**Built: three ops on the control channel, three narrow actions.** `Request::Rename { ticket,
+title }`, `Request::Move { ticket, column, before }` and `Request::Tag { ticket, group, name }`
+(all `deny_unknown_fields`), answered by the new `Reply::Edited { ticket }` or `Rejected`, and
+advertised as the features `rename`, `move` and `tag`, so a newer page never sends them to an
+older host, which would drop the peer on an op it does not know. No `Command` on `orch.sock`
+changed. `authorize` gains `Action::MoveTicket`, `RenameTicket` and `TagTicket`: a `Paired`
+principal gets each on a `Resource::Ticket` (a move also on its destination `Column`) and nothing
+else; for every other principal each is answered exactly as `Mutate` (tested over every
+principal and resource), so `place_ticket` and `reorder_within` now ask `MoveTicket` of every
+mover and no mover's rules changed. `Paired` still has no `Mutate`: that would also reach
+`PromptColumn`, merges, workspaces and deletes.
+
+**The host's side is the desk's.** A move is `place_ticket` as the person (`Paired.is_human()`),
+feed rule `mesophon_move_ticket`: the DONE gate, the archived refusal and the in-column reorder
+all apply, and without `before` the ticket lands at the column's end, as the desk's own
+`MoveTicket { before: None }`. A rename is `sanitize_title` of the trimmed words, refused blank
+(`phone_title`). A tag must be one the registry has on that group, spelled as it spells it,
+and replaces the group's other one; no name takes the group's tag off (`phone_tag`): a phone
+never adds a word, as when it files a ticket. The same title or tag again writes nothing and
+feeds nothing. Each refuses a missing or archived ticket and a viewer's copy
+(`team_viewer_refusal`). The writes go through `with_ticket` and `place_ticket`, so a shared
+board syncs them as it syncs a desk edit.
+
+**Decided: where each edit lives on the page.** The title on the ticket page is a button that
+writes over itself (`#rename-form`): Enter or Save sends, Escape or Cancel puts it back, the
+caret starts at the end. The line under it (tags and column) is one button, `#card-line`, with a
+`+ Tag` chip when the ticket wears none and a chevron on the column; it opens `#card-sheet`, the
+New ticket sheet's Column radios and tag chips (`TagChoices`, now shared), where every press is
+its own op and Done closes the sheet. A refusal shows in the sheet's foot, since a modal sheet
+covers the toast. **On a desktop's Board a card drags** (HTML5 drag and drop on the card button):
+over a column, the slot is before the first card whose middle is below the pointer, marked by a
+bar and a dashed outline, and a drop where the card already is sends nothing.
+
+**Refuted: long press on a phone, and drag where columns stack.** A long press is not
+discoverable, collides with scrolling, text selection and the system's own long-press menu,
+and a phone shows one column at a time, so there is nowhere visible to drop. The sheet is two
+presses, labelled, and works for a keyboard and a screen reader too. A tablet stacks its
+columns, so a drag to another column needs a scroll mid-drag; measured: Playwright's drag on
+the tablet layout picked up the wrong card after the scroll. Drag is the desktop kanban's alone.
+
+**Built: an edit shows at once and is never replayed.** `edits.js` keeps each edit by command
+id until its answer and wears it on every board reply meanwhile, so a snapshot the host took
+before the edit cannot flicker the card back; a move takes the card to its slot. The answer
+removes it and asks for a fresh board, which is also how a refusal is put back. A dropped
+connection forgets every waiting edit: the next board says what took, and nothing is sent
+again, because all three are idempotent on the host and a lost answer costs nothing.
+
+**No relay change.** The ops ride the sealed control channel, which the relay cannot read.
+The hosted relay serves this page only after its next `ship.sh` from a main that has it.
+
+Verified: core units (the wire shapes, the three actions against `Mutate` for every principal),
+the daemon's `phone_title`/`phone_tag` units, the release clippy; 21 browser state and
+packaging tests (`Edits.wear`: slots, a second wear, boards apart, the answer and the drop); the
+UX suite in Chromium and WebKit at desktop, tablet and phone with a new edit flow: the rename
+with Escape, a blank title and Enter, the sheet's move and tags on and off, a refusal in the
+sheet, drag to another column and within one, a drop in place, nothing offered while away or
+by an older host, and 44px targets in the phone's sheet. Screenshots were read in both
+engines. **Not verified:** Firefox, which has historically refused to start a drag from a
+`<button>` (the sheet still works there); a physical phone; the relay's acceptance tests,
+which live in `mesimon-relay` and were not run.
+
+**Owed:** a CHANGELOG line at the next release, and the relay's `ship.sh` after it merges.

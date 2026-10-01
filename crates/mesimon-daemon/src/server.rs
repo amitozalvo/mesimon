@@ -5013,12 +5013,13 @@ impl Daemon {
         {
             return Err(format!("worktree unmerged — merge before {dest}"));
         }
-        if let Decision::Deny { reason } = authorize(by, &Action::Mutate, &Resource::Ticket { id })
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::MoveTicket, &Resource::Ticket { id })
         {
             return Err(format!("denied: {reason}"));
         }
         if let Decision::Deny { reason } =
-            authorize(by, &Action::Mutate, &Resource::Column { name: dest.to_string() })
+            authorize(by, &Action::MoveTicket, &Resource::Column { name: dest.to_string() })
         {
             return Err(format!("denied: {reason}"));
         }
@@ -5072,7 +5073,8 @@ impl Daemon {
         pos: &Position,
         by: &Principal,
     ) -> std::result::Result<(), String> {
-        if let Decision::Deny { reason } = authorize(by, &Action::Mutate, &Resource::Ticket { id })
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::MoveTicket, &Resource::Ticket { id })
         {
             return Err(format!("denied: {reason}"));
         }

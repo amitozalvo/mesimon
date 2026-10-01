@@ -2,7 +2,7 @@
 // (every ticket, by column) and Sent (the tickets this browser filed). A
 // ticket is the same card in Now and on the Board (T-533); a card is a
 // button, and the pressed one is selected.
-import { html } from "./html.js";
+import { html, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { answerable, requestSummary } from "./dialogs.js";
@@ -111,10 +111,23 @@ function Face({ store, ticket, board, column }) {
     <${Headline} agent=${agent} />`;
 }
 
-function Card({ store, ticket, board, column }) {
+// On a desktop's Board a card drags (T-530): `drag` is its column's drop
+// state, absent where nothing drags.
+function Card({ store, ticket, board, column, drag }) {
   const needs = ticket.agent?.state === "needs attention";
-  return html`<button type="button" class=${`ticket card${needs ? " card-attn" : ""}`} data-id=${ticket.id}
-    aria-pressed=${String(ticket.id === board.selected)} onClick=${() => store.select(ticket.id)}>
+  const cls = `ticket card${needs ? " card-attn" : ""}${drag?.before === ticket.id ? " drop-before" : ""}`;
+  return html`<button type="button" class=${cls} data-id=${ticket.id}
+    aria-pressed=${String(ticket.id === board.selected)} onClick=${() => store.select(ticket.id)}
+    draggable=${drag ? "true" : undefined}
+    onDragStart=${drag && ((e) => {
+      dragged = ticket.id;
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", ticket.key);
+    })}
+    onDragEnd=${drag && (() => {
+      dragged = undefined;
+      drag.end();
+    })}>
     <${Face} store=${store} ticket=${ticket} board=${board} column=${column} />
   </button>`;
 }
@@ -233,8 +246,25 @@ export function NowList({ store, board, live }) {
   `;
 }
 
-// Phone: one column at a time. Tablet: columns stacked. Desktop: side by side.
+// The card a drag holds (T-530); one at a time.
+let dragged;
+// Where a drop over a column lands: before the first card whose middle is
+// below the pointer, or at the column's end.
+const dropBefore = (column, y) => {
+  for (const node of column.querySelectorAll(".ticket.card[data-id]:not(.ghost)")) {
+    if (node.dataset.id === dragged) continue;
+    const rect = node.getBoundingClientRect();
+    if (y < rect.top + rect.height / 2) return node.dataset.id;
+  }
+  return null;
+};
+
+// Phone: one column at a time. Tablet: columns stacked. Desktop: side by
+// side, and there a card drags to another column or to another place in its
+// own (T-530). Everywhere, the line on the ticket's page moves it.
 export function BoardList({ store, board, bp }) {
+  const [drop, setDrop] = useState(null);
+  const drags = bp === "desktop" && store.canEdit("move");
   const tickets = board.visible();
   const columns = bp === "phone" ? board.columns.filter((c) => c === board.column) : board.columns;
   if (!tickets.length && board.search) return html`<p class="empty">No tickets match your search.</p>`;
@@ -246,11 +276,36 @@ export function BoardList({ store, board, bp }) {
     // What the column is for shows on the title's hover (T-506), so every
     // column's first card starts at the same height.
     const about = board.columnDescriptions[column];
-    return html`<section class="column" key=${column} aria-label=${column}>
+    const here = drop?.column === column ? drop : undefined;
+    const drag = drags ? { before: here?.before, end: () => setDrop(null) } : undefined;
+    const over = drags
+      ? {
+          onDragOver: (e) => {
+            if (!dragged) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            const before = dropBefore(e.currentTarget, e.clientY);
+            if (here?.before !== before || !here) setDrop({ column, before });
+          },
+          onDragLeave: (e) => {
+            if (here && !e.currentTarget.contains(e.relatedTarget)) setDrop(null);
+          },
+          onDrop: (e) => {
+            if (!dragged) return;
+            e.preventDefault();
+            const id = dragged;
+            const before = dropBefore(e.currentTarget, e.clientY);
+            dragged = undefined;
+            setDrop(null);
+            store.moveTicket(id, column, before);
+          },
+        }
+      : {};
+    return html`<section class=${`column${here ? " drop-target" : ""}`} key=${column} aria-label=${column} ...${over}>
       <h3 class="column-label" title=${about || undefined}><span>${column}</span><span class="group-count">${group.length}</span></h3>
-      <div class="cards">
+      <div class=${`cards${here && here.before === null ? " drop-end" : ""}`}>
         ${ghosts.map((item) => html`<${Ghost} key=${item.id} store=${store} item=${item} />`)}
-        ${group.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} />`)}
+        ${group.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} drag=${drag} />`)}
       </div>
       ${bp !== "phone" && html`<button type="button" class="add-to-column" data-column=${column}
         onClick=${() => store.openComposer(column)}><${Icon} name="plus" size=${16} /><span>Add to ${column}</span></button>`}

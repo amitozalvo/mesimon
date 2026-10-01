@@ -18,6 +18,8 @@ in `mesimon-relay`.
   ticket and session. Drafts exist only in this tab and are lost on reload.
 - `starts.js`: the agents this tab started, per board and ticket: a clock while
   the host starts one, two ticks once its session runs, or why not.
+- `edits.js`: the card edits this tab sent (rename, move, tag) until the host
+  answers, worn on the board meanwhile so an earlier snapshot cannot undo them.
 - `sent.js`: the Sent list, per board: a filed ticket's status (a clock while
   sealed in this browser, one tick at the relay, two once landed; unsent,
   unknown or refused), its key once landed, and what survives a reload.
@@ -136,6 +138,16 @@ answer is `provisioning` or `starting`, and the host moves the same receipt to
 `started` once the session has taken its first prompt; `starts.js` keeps it
 per ticket in this tab and asks `status` on every tick until it settles. A
 lost answer is recovered that way, never by starting again.
+
+The card edits (T-530) are the `rename`, `move` and `tag` ops, each advertised
+as the feature of that name and offered only while the host is live. A press on
+the ticket page's title writes over it; its line opens a sheet whose column and
+tag presses go to the host one at a time; a desktop's Board drags a card to a
+column or a slot (`before`). The host answers `edited` or `rejected`, through
+`MoveTicket` (`place_ticket`, so every gate a desk move meets), `RenameTicket`
+and `TagTicket` (a tag the board already has). `edits.js` wears each edit on the
+board until its answer, and a dropped connection forgets them: the next board
+says what took, and nothing is sent again.
 
 A landed ticket turns teal once the host's board says it was picked up
 (`picked`: `by` is `desk` when its page was opened in the TUI, `agent` when an

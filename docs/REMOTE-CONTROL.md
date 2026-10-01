@@ -1,8 +1,8 @@
 # Remote Control (browser preview)
 
 Remote Control (Mesophon) lets your own browser **view tickets, preview an agent’s
-output, send a prompt, answer supported Claude dialogs, file new tickets, and start an
-agent on a ticket**. It works on desktop and phone.
+output, send a prompt, answer supported Claude dialogs, file new tickets, move, rename
+and tag tickets, and start an agent on a ticket**. It works on desktop and phone.
 Debug builds include Remote Control automatically. In release builds, set
 `MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Sharing → Remote Control**, sign in to
 your relay, and enable this board.
@@ -28,8 +28,8 @@ code works once, within ten minutes. The QR appears when the terminal has room f
 
 Each board requires explicit enablement and pairing, including private boards.
 Enabling Remote Control does not share a board with teammates. The host must stay awake
-and its board daemon must be running. This preview does not yet provide editing
-existing tickets, stopping or waking agents, interactive terminals, or starting stopped
+and its board daemon must be running. This preview does not yet provide editing a
+ticket's details or notes, stopping agents, interactive terminals, or starting stopped
 daemons.
 For a browser on this Mac, set the relay’s `WEB_ORIGIN=http://localhost:8444`
 and publish port 8444 on loopback only. Run `mesimon mesophon setup` to check the
@@ -94,6 +94,21 @@ a ticket you delete is not brought back by a late copy. Written against a column
 tag the board has since lost, it lands in the default column, without that tag. A
 terminal that has never been live with this version keeps no tickets for later, and
 the sheet says so.
+
+## Moving, renaming and tagging a ticket
+
+On a ticket's page, press its **title** to write over it: **Enter** or **Save** sends the
+new title, **Escape** or **Cancel** puts the old one back. Press the **line under the title**
+(the ticket's tags and column) to open a sheet with the board's columns and tags. A column
+moves the ticket there, to the end of that column. A tag goes on and replaces the ticket's
+tag in the same group; pressing a tag the ticket wears takes it off. Each press reaches your
+board as you make it, and **Done** closes the sheet. On a desktop's Board you can also drag
+a card to another column, or to another place in its own.
+
+These edits follow your terminal's rules. A column that needs the work merged refuses an
+unmerged ticket, and the sheet says why. Only the board's own tags are offered: new tags are
+made at your terminal. The edits need your terminal live; while it is out of reach the title
+and the line are plain text. A terminal older than this version offers none of them.
 
 ## Starting an agent
 

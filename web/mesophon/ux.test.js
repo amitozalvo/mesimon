@@ -75,6 +75,11 @@ function fixture() {
     starts: [],
     startCommands: [],
     startDisposition: "starting",
+    // The card edits (T-530): applied and answered `edited`, `rejected`
+    // with `editRefusal`, or held unanswered.
+    edits: [],
+    editDisposition: "edited",
+    editRefusal: "worktree unmerged — merge before DONE",
     refuse: false,
     sockets: [],
     // The relay's mailbox, kept across reloads the way a relay would be.
@@ -166,6 +171,25 @@ function fixture() {
     },
     update() {
       this.reply(this.snapshot());
+    },
+    // The host's rename, move or tag, as the daemon applies it.
+    applyEdit(request) {
+      const at = this.tickets.findIndex((t) => t.id === request.ticket);
+      const ticket = this.tickets[at];
+      if (request.op === "rename") ticket.title = request.title;
+      if (request.op === "tag") {
+        const tags = (ticket.tags || []).filter((t) => t.group !== request.group);
+        const tag = this.snapshot().allowed_tags.find((t) => t.group === request.group && t.name === request.name);
+        if (tag) tags.push(tag);
+        ticket.tags = tags.sort((a, b) => a.group - b.group);
+      }
+      if (request.op === "move") {
+        this.tickets.splice(at, 1);
+        ticket.column = request.column;
+        let to = request.before ? this.tickets.findIndex((t) => t.id === request.before && t.column === ticket.column) : -1;
+        if (to < 0) to = this.tickets.findLastIndex((t) => t.column === ticket.column) + 1 || this.tickets.length;
+        this.tickets.splice(to, 0, ticket);
+      }
     },
   });
   class Socket {
@@ -304,6 +328,14 @@ function fixture() {
             else if (state.startDisposition !== "hold") {
               answer({ result: "delivery", status: "starting" });
               state.begin(request.ticket, id);
+            }
+          }
+          if (["rename", "move", "tag"].includes(request.op)) {
+            state.edits.push(request);
+            if (state.editDisposition === "rejected") answer({ result: "rejected", message: state.editRefusal });
+            else if (state.editDisposition !== "hold") {
+              state.applyEdit(request);
+              answer({ result: "edited", ticket: request.ticket });
             }
           }
           if (request.op === "status")
@@ -930,6 +962,190 @@ async function startFlow(browser, engineName, size, viewport) {
     console.log(`${engineName} ${size}: start from the ticket's sheet, clock, ticks, wake with words, refusal, lost answer, away, older host, board picker passed`);
   } catch (error) {
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-start-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
+// Editing a card from here (T-530): the title written over itself, the
+// line's sheet moving and tagging the ticket a press at a time, a refusal
+// in the sheet's own words, drag and drop where the columns sit side by side,
+// a reorder and a drop where the card already is; nothing while the
+// terminal is away, and nothing from an older host.
+async function editFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => window.fixture.features.push("rename", "move", "tag"));
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const mode = (name) => page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+  const overview = async () => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+  };
+  const closeOverlay = async () => {
+    if (size === "desktop" && (await page.locator(".detail-scrim").count()))
+      await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
+  };
+  const connected = () =>
+    until(page, () => document.querySelector("#connection").textContent === "Connected");
+  const toast = (text) => until(page, (text) => document.querySelector("#toast").textContent.includes(text), text);
+  const shot = (name) =>
+    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+  const edits = () => page.evaluate(() => fixture.edits);
+  const lastEdit = () => page.evaluate(() => fixture.edits.at(-1));
+  const column = (name) => page.locator(`.column[aria-label="${name}"]`);
+  const order = (name) =>
+    column(name).locator(".ticket.card").evaluateAll((cards) => cards.map((c) => c.dataset.id));
+  const sheet = page.locator("#card-sheet");
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await mode("board");
+    if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
+    await page.locator('.ticket[data-id="ticket-3"]').click();
+    await page.locator("#rename").waitFor();
+
+    // The title writes over itself: Escape puts it back and sends nothing.
+    await page.locator("#rename").click();
+    assert.equal(await page.evaluate(() => document.activeElement.id), "rename-title");
+    assert.equal(await page.locator("#rename-title").inputValue(), "Agent task 3");
+    assert.deepEqual(
+      await page.locator("#rename-title").evaluate((n) => [n.selectionStart, n.selectionEnd]),
+      [12, 12],
+      "the caret starts at the end",
+    );
+    await page.locator("#rename-title").fill("");
+    assert(await page.locator("#rename-save").isDisabled(), "a ticket needs a title");
+    await page.locator("#rename-title").fill("Not this");
+    await page.keyboard.press("Escape");
+    await page.locator("#rename-form").waitFor({ state: "detached" });
+    assert.equal(await page.locator("#selection").textContent(), "Agent task 3");
+    assert.deepEqual(await edits(), []);
+    // Enter saves: the page wears it at once, and the host's board agrees.
+    await page.locator("#rename").click();
+    await page.locator("#rename-title").fill("Renamed  from the\nphone");
+    await shot("rename");
+    await page.keyboard.press("Enter");
+    assert.equal(await page.locator("#selection").textContent(), "Renamed from the phone");
+    assert.deepEqual(await lastEdit(), { op: "rename", ticket: "ticket-3", title: "Renamed from the phone" });
+    if (size !== "phone")
+      assert.equal(await page.locator('.ticket[data-id="ticket-3"] .ticket-title').textContent(), "Renamed from the phone");
+
+    // The line opens the sheet. A column moves it at the press; a tag goes
+    // on, another on its group replaces it, and a press on the worn one
+    // takes it off.
+    assert.equal(await page.locator("#card-line .chip-column").textContent(), "TODO");
+    assert.equal(await page.locator("#card-line .add-tag").textContent(), "Tag");
+    await page.locator("#card-line").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.equal(await page.locator("#card-heading").textContent(), "T-3");
+    assert(await sheet.getByRole("radio", { name: "TODO", exact: true }).isChecked());
+    await sheet.getByRole("radio", { name: "DONE", exact: true }).check();
+    assert.deepEqual(await lastEdit(), { op: "move", ticket: "ticket-3", column: "DONE" });
+    await until(page, () => document.querySelector("#card-line .chip-column").textContent === "DONE");
+    await sheet.getByRole("button", { name: "BUG", exact: true }).click();
+    assert.deepEqual(await lastEdit(), { op: "tag", ticket: "ticket-3", group: 1, name: "BUG" });
+    await sheet.getByRole("button", { name: "FEATURE", exact: true }).click();
+    await sheet.getByRole("button", { name: "QUESTION", exact: true }).click();
+    await until(page, () => document.querySelectorAll("#card-sheet .tag-chip[aria-pressed=true]").length === 2);
+    assert.deepEqual(await sheet.locator(".tag-chip[aria-pressed=true]").allTextContents(), ["FEATURE", "QUESTION"]);
+    await sheet.getByRole("button", { name: "QUESTION", exact: true }).click();
+    assert.deepEqual(await lastEdit(), { op: "tag", ticket: "ticket-3", group: 2 });
+    await until(page, () => document.querySelectorAll("#card-sheet .tag-chip[aria-pressed=true]").length === 1);
+    if (size === "phone") {
+      const short = await sheet.evaluate((node) =>
+        [...node.querySelectorAll("button, input")]
+          .filter((n) => n.getClientRects().length && n.type !== "radio" && n.getBoundingClientRect().height < 44)
+          .map((n) => n.id || n.textContent),
+      );
+      assert.deepEqual(short, []);
+    }
+    await shot("card-sheet");
+
+    // Refused: the sheet says why, and the board's own word puts it back.
+    await page.evaluate(() => {
+      fixture.editDisposition = "rejected";
+    });
+    // `check()` would insist it stays checked; a refusal is the board saying no.
+    await sheet.getByRole("radio", { name: "IN PROGRESS", exact: true }).click();
+    await until(page, () => document.querySelector("#card-sheet .compose-error")?.textContent.includes("Not moved"));
+    assert.equal(
+      await sheet.locator(".compose-error").textContent(),
+      "Not moved: worktree unmerged — merge before DONE",
+    );
+    await until(page, () => document.querySelector("#card-sheet input[value=DONE]").checked);
+    await shot("card-sheet-refused");
+    await page.locator("#card-done").click();
+    await sheet.waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => document.activeElement.id), "card-line");
+    assert.deepEqual(await page.locator("#card-line .tag").allTextContents(), ["FEATURE"]);
+    await page.evaluate(() => {
+      fixture.editDisposition = "edited";
+    });
+    assert.equal((await edits()).length, 7);
+
+    // Where the columns sit side by side, a card drags to its place.
+    if (size !== "desktop")
+      assert.equal(await page.locator(".ticket.card[draggable=true]").count(), 0, "stacked columns move through the sheet");
+    else {
+      await overview();
+      await closeOverlay();
+      assert.equal(await page.locator('.ticket.card[data-id="ticket-5"]').getAttribute("draggable"), "true");
+      await page.locator('.ticket.card[data-id="ticket-5"]').dragTo(page.locator('.ticket.card[data-id="ticket-0"]'), {
+        targetPosition: { x: 40, y: 4 },
+      });
+      assert.deepEqual(await lastEdit(), { op: "move", ticket: "ticket-5", column: "IN PROGRESS", before: "ticket-0" });
+      await until(page, () =>
+        document.querySelector('.column[aria-label="IN PROGRESS"] .ticket.card')?.dataset.id === "ticket-5");
+      await toast("Moved T-5 to IN PROGRESS");
+      // A reorder in its own column is a move to its slot there, and a
+      // drop where the card already is sends nothing.
+      const todo = await order("TODO");
+      await page.locator(`.ticket.card[data-id="${todo[1]}"]`).dragTo(column("TODO").locator(".column-label"));
+      assert.deepEqual(await lastEdit(), { op: "move", ticket: todo[1], column: "TODO", before: todo[0] });
+      await until(page, (want) => document.querySelector('.column[aria-label="TODO"] .ticket.card')?.dataset.id === want, todo[1]);
+      const sent = (await edits()).length;
+      await page.locator(`.ticket.card[data-id="${todo[1]}"]`).dragTo(column("TODO").locator(".column-label"));
+      assert.equal((await edits()).length, sent, "a drop where the card already is sends nothing");
+      assert.equal(await page.locator(".drop-target, .drop-before, .drop-end").count(), 0, "no marker outlives the drag");
+      await shot("dragged");
+    }
+
+    // The terminal away: no title to press, no line to open.
+    await overview();
+    await closeOverlay();
+    if (size === "phone") await page.locator('.column-tab[data-column="DONE"]').click();
+    await page.locator('.ticket[data-id="ticket-3"]').click();
+    await page.locator("#rename").waitFor();
+    await page.evaluate(() => {
+      fixture.refuse = true;
+      fixture.channel().close();
+    });
+    await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
+    assert.equal(await page.locator("#rename, #card-line").count(), 0);
+    assert.equal(await page.locator("#selection").textContent(), "Renamed from the phone");
+    if (size === "desktop")
+      assert.equal(await page.locator(".ticket.card[draggable=true]").count(), 0, "nothing drags while away");
+    // An older host, live again, offers none of it.
+    await page.evaluate(() => {
+      fixture.refuse = false;
+      fixture.features = fixture.features.filter((f) => !["rename", "move", "tag"].includes(f));
+    });
+    await connected();
+    assert.equal(await page.locator("#rename, #card-line, .ticket.card[draggable=true]").count(), 0);
+    assert.deepEqual(await page.locator("#detail .chips .chip").allTextContents(), ["DONE"]);
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: rename, the column-and-tags sheet, refusal, drag and drop, away and an older host passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-edit-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -1705,6 +1921,7 @@ try {
         }
         await ticketFlow(browser, engineName, size, viewport);
         await startFlow(browser, engineName, size, viewport);
+        await editFlow(browser, engineName, size, viewport);
       }
       await pairLinkFlow(browser, engineName);
       await keptFlow(browser, engineName);
