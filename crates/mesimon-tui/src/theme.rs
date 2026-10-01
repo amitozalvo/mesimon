@@ -2033,11 +2033,12 @@ impl Theme {
         })
     }
 
-    /// The glow behind the bolt (T-544): the ground of a cell its channel
-    /// crosses, the crown's tint a quarter-strength or so into `ground` at
-    /// its hottest and gone as it cools — a halo, not a fill, so a letter
-    /// it passes behind still reads. Only where the ring has a halfway;
-    /// below it the bolt is its dots alone.
+    /// The glow behind the bolt (T-544): the ground of a lettered cell its
+    /// channel passes behind, the crown's tint a quarter-strength or so
+    /// into `ground` at its hottest and gone as it cools — a halo, not a
+    /// fill, so the letter still reads. A blank cell takes a dot and no
+    /// glow (T-556). Only where the ring has a halfway; below it the bolt
+    /// is its dots alone.
     pub fn bolt_glow(&self, heat: f32, ground: Option<Color>) -> Option<Color> {
         if !self.paints_tags() {
             return None;

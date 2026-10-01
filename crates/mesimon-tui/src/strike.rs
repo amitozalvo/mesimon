@@ -10,13 +10,15 @@
 //! card's title lands on the same clock (`Theme::crown_land`): the word for
 //! what was done appears as the bolt arrives, not before it.
 //!
-//! The bolt is drawn in braille, two dots by four to a cell, and never over
-//! a letter: its dots go in the board's blank cells, not in the gap between
-//! two words, and every cell its channel crosses takes a faint glow of the
-//! crown's tint behind whatever is written there — so it reads unbroken,
-//! passing behind the cards it crosses, and every title stays legible.
-//! Drawn over the letters, or between them, a title read as corrupted
-//! rather than struck. It arcs over the board rather than running straight,
+//! The bolt is drawn in braille, two dots by four to a cell, one dot wide
+//! in every phase, and never over a letter: its dots go in the board's
+//! blank cells, not in the gap between two words, and a cell it passes
+//! behind — a letter, a word's gap — takes a faint glow of the crown's tint
+//! behind what is written there, so it reads unbroken, passing behind the
+//! cards it crosses, and every title stays legible. A blank cell takes the
+//! dot alone, no ground: glowing those too made a one-dot line read as a
+//! one-cell ribbon (T-556). Drawn over the letters, or between them, a
+//! title read as corrupted rather than struck. It arcs over the board rather than running straight,
 //! so a crown and a card on one row are joined over the row, and it lands
 //! from above on the struck title's first letter, where the landing's light
 //! starts. Neither the struck title's row nor the one the bolt leaves from
@@ -59,7 +61,8 @@ const BURN_TAIL_MS: u64 = 120;
 /// How far the arc bows from the straight line, against its length.
 const BEND: f32 = 0.22;
 /// How far each fractal step may push its midpoint, against its length.
-const ROUGH: f32 = 0.28;
+/// 0.28 let the path wander a cell or two off its line (T-556).
+const ROUGH: f32 = 0.18;
 
 /// One crown touch as this board animates it.
 #[derive(Debug, Clone)]
@@ -388,9 +391,10 @@ const BRAILLE: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 
 /// `area`, every bolt's dots merged cell by cell first so two crossing
 /// bolts share their cells. Only a blank cell takes a dot — a letter, a
 /// glyph, half of a wide character and the gap between two words stay —
-/// but every cell the channel crosses takes its glow, a faint ground of
-/// the crown's tint behind whatever is written there, so the bolt runs
-/// unbroken behind the titles it crosses. `skip` names the cells it takes
+/// and only those cells take the glow, a faint ground of the crown's tint
+/// behind what is written there, so the bolt runs unbroken behind the
+/// titles it crosses; a cell that took a dot keeps its own ground, so the
+/// channel is a line and not a ribbon. `skip` names the cells it takes
 /// neither on, and a painted cell — a tag bar, a needs-you row, a chord's
 /// flash: any ground but the page's and the cursor's surface — is never
 /// touched, because what is painted there is the board's structure.
@@ -408,13 +412,10 @@ pub(crate) fn paint(
             if h <= 0.0 {
                 continue;
             }
-            // The hottest strokes are drawn two dots wide, both columns of
-            // the cell, so the channel thickens as it burns.
-            let cols: &[i32] = if h >= 1.8 && !d.fork { &[0, 1] } else { &[d.x.rem_euclid(2)] };
+            // One dot wide in every phase: the return stroke is hotter by
+            // its ink alone, never by a second column (T-556).
             let cell = cells.entry((d.x.div_euclid(2), d.y.div_euclid(4))).or_insert((0, 0.0));
-            for &c in cols {
-                cell.0 |= BRAILLE[d.y.rem_euclid(4) as usize][c as usize];
-            }
+            cell.0 |= BRAILLE[d.y.rem_euclid(4) as usize][d.x.rem_euclid(2) as usize];
             cell.1 = cell.1.max(h);
         }
     }
@@ -431,10 +432,10 @@ pub(crate) fn paint(
             c @ Color::Rgb(..) => Some(c),
             _ => theme.bg,
         };
-        let glow = theme.bolt_glow(h, ground);
         // Blank, and not a word's gap — a blank between two letters is
         // part of the words it parts — nor the cell under a wide
-        // character's second half.
+        // character's second half. Anything else the bolt passes behind,
+        // and the glow is what carries it there.
         let blank = |x: u16| buf[(x, y)].symbol() == " ";
         let left = (x > area.x).then(|| x - 1);
         let right = (x + 1 < area.right()).then_some(x + 1);
@@ -442,7 +443,7 @@ pub(crate) fn paint(
             || left.is_some_and(|l| buf[(l, y)].symbol().width() > 1)
             || (left.is_some_and(|l| !blank(l)) && right.is_some_and(|r| !blank(r)))
         {
-            if let Some(g) = glow {
+            if let Some(g) = theme.bolt_glow(h, ground) {
                 buf[(x, y)].set_bg(g);
             }
             continue;
@@ -450,10 +451,7 @@ pub(crate) fn paint(
         let Some(ink) = theme.bolt_ink(h, ground) else { continue };
         let Some(ch) = char::from_u32(0x2800 + u32::from(bits)) else { continue };
         let style = Style::default().fg(ink).remove_modifier(Modifier::all());
-        buf[(x, y)].set_char(ch).set_style(match glow {
-            Some(g) => style.bg(g),
-            None => style,
-        });
+        buf[(x, y)].set_char(ch).set_style(style);
     }
 }
 
@@ -622,7 +620,7 @@ mod tests {
                 buf.set_string(0, 12, "xx ".repeat(33), Style::default());
                 let dots = bolt(11, &[(5, 3), (70, 20)], 0);
                 let skip = |x: u16, y: u16| y == 20 || (x, y) == (5, 3);
-                paint(&mut buf, area, &theme, &[(dots, LEADER_MS + 10)], &skip);
+                paint(&mut buf, area, &theme, &[(dots.clone(), LEADER_MS + 10)], &skip);
                 let mut drawn = 0;
                 for y in 0..30 {
                     for x in 0..100 {
@@ -635,7 +633,33 @@ mod tests {
                         assert!(y != 20 && (x, y) != (5, 3), "{flavor:?}: a skipped cell");
                         assert_ne!(c.fg, theme.attn, "{flavor:?}/{profile:?}: attn");
                         assert!(c.modifier.is_empty(), "no SGR on the bolt");
+                        assert_eq!(c.bg, Color::Reset, "a dot's cell keeps its own ground");
+                        // Exactly the dots, no second column.
+                        let own = dots
+                            .iter()
+                            .filter(|d| {
+                                (d.x.div_euclid(2), d.y.div_euclid(4)) == (x.into(), y.into())
+                            })
+                            .fold(0u32, |b, d| {
+                                b | u32::from(
+                                    BRAILLE[d.y.rem_euclid(4) as usize][d.x.rem_euclid(2) as usize],
+                                )
+                            });
+                        assert_eq!(
+                            ch as u32 - 0x2800,
+                            own,
+                            "{flavor:?}: more than its dots at {x},{y}"
+                        );
                     }
+                }
+                // The glow is behind the letters the channel crosses, and
+                // only there.
+                let glowing = (0..100).filter(|&x| buf[(x, 12)].bg != Color::Reset).count();
+                if theme.paints_tags() {
+                    assert!(glowing > 0, "{flavor:?}/{profile:?}: no glow behind the words");
+                    assert!(glowing < 20, "{flavor:?}/{profile:?}: {glowing} cells glow");
+                } else {
+                    assert_eq!(glowing, 0, "{flavor:?}/{profile:?}: glow below the ring");
                 }
                 assert_eq!(buf[(30, 9)].symbol(), "漢", "a wide character is never cut");
                 let words = (0..99).map(|x| buf[(x, 12)].symbol()).collect::<String>();

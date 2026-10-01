@@ -16720,6 +16720,35 @@ held tint, over), still when off and in mono, an archive burning in place then g
 written in, a park dimmed and a `woke` bolt sweeping the crown. `crown_e2e`: the touch's `from`, a
 crowned filing touched `created`, an uncrowned one not. The Appearance goldens gained the row.
 
+## The crown's bolt is a one-dot line (T-556, 2026-10-01, a friend of the author on T-544's showcase: the lightning is too thick and can be thinner)
+
+**Seen.** The channel was one braille dot wide, but three things made it read as a band: every
+cell it crossed took the glow, so a dot's own cell became a tinted cell and a jag into the next
+cell two; the return stroke lit both columns of each cell (`cols = &[0, 1]` at heat ≥ 1.8) for
+~200 ms; and `ROUGH` = 0.28 over four levels let the path wander a cell or two off its line.
+
+**Shipped** (`strike::paint`, `Theme::bolt_glow`, board-side only).
+- **Glow only behind what is written.** A cell that holds a letter, a word's gap or a wide
+  character's second half still takes `bolt_glow` as its ground — that is what carries the bolt
+  unbroken through a title. A blank cell takes the dot alone and keeps its own ground; none was
+  tried first, as the ticket asked, and it reads right in both themes, so no fainter tint was
+  added.
+- **One dot wide in every phase.** The second column is gone; the return stroke is hotter by
+  `bolt_ink` alone (heat 2 is already the cursor ramp's bright ink). No thicker head was wanted.
+- **`ROUGH` 0.28 → 0.18.** The arc (`BEND`) and the forks are untouched, so a crown and a card
+  on one row are still joined over the row.
+- **Judged by eye** the way T-544 was: a scratch `ui` test rendered the struck fixture at the
+  leader, the stroke, the cooling and a move with its trail, Graphite and Chalk, as spans with
+  each cell's fg/bg (the page needs `<meta charset>` or the braille is mojibake), Playwright
+  screenshotted it over `python3 -m http.server`. Before: a tinted ribbon one to two cells tall.
+  After: a dotted line with tint only where it passes behind words. The scratch test was removed.
+
+**Tests.** `the_bolt_paints_braille_and_leaves_what_it_must` now asserts every braille cell's bits
+are exactly its dots' (no second column) on its own ground (no glow), and that the glow sits on
+the words row it crosses and only there — fewer than twenty cells, none below the ring. The
+`theme` test is unchanged: the glow's inks did not move, only where they are painted. The `ui`
+strike tests read the dots and did not move.
+
 ## A woken agent sleeps in its column too (T-543 follow-up, 2026-10-01, author: "T-534 is not sleeping even though in DONE and DONE is set to sleep agents after 1 min")
 
 **Seen.** T-534's agent had been asleep, was woken at 12:21:56Z, and sat in DONE at its prompt.
