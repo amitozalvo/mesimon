@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Sessions, answerBusy, receiptTick, reasonText } from "./sessions.js";
 import { afterWords, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS } from "./board.js";
+import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
 const ticket = (id, session) => ({
   id,
   key: id,
@@ -298,6 +299,47 @@ test("Steer and Send now wait while the agent waits on you; Queue does not (T-56
   // A question the host reads stale still refuses the send.
   assert.equal(sendRefused(at({ state: "unknown" }, { held: "agent asked", asking: ["T-3"] })), true);
   assert.equal(sendRefused(at({ state: "idle" }, { waits: ["T-5"], asking: ["T-5"] })), false);
+});
+
+test("a batch is answered whole: one answer per question, words in place of picks (T-571)", () => {
+  const q = (question, multiSelect, ...labels) => ({
+    question, header: question, multiSelect, options: labels.map((label) => ({ label, description: "" })),
+  });
+  const dialog = { request: "r1", kind: "questions", questions: [
+    q("Which color?", false, "Blue", "Green"),
+    q("Which toppings?", true, "Cheese", "Olives", "Basil"),
+    q("Which size?", false, "Small", "Large"),
+  ] };
+  assert.equal(answerable(dialog), false, "the card's one-tap answer is for one single-choice question");
+  assert.equal(measured(dialog), true);
+  assert.equal(measured({ ...dialog, questions: [dialog.questions[0], dialog.questions[0]] }), false, "twins");
+  assert.equal(measured({ ...dialog, questions: [...dialog.questions, ...dialog.questions.slice(0, 2)] }), false, "five");
+  assert.equal(measured({ request: "p", kind: "plan", markdown: "x" }), false);
+  const entry = {};
+  const form = dialogForm(entry, dialog);
+  assert.equal(formAnswers(dialog, form), null, "nothing picked yet");
+  form.picks[0] = [1];
+  form.picks[1] = [2, 0];
+  assert.equal(formAnswers(dialog, form), null, "the third question still open");
+  form.texts[2] = "  Large please ";
+  assert.deepEqual(formAnswers(dialog, form), [
+    { answer: "choice", index: 1 },
+    { answer: "choices", indices: [0, 2] },
+    { answer: "text", text: "Large please" },
+  ]);
+  // Words replace a question's picks; blank words do not.
+  form.texts[1] = "Pineapple";
+  assert.deepEqual(formAnswers(dialog, form)[1], { answer: "text", text: "Pineapple" });
+  form.texts[1] = "   ";
+  assert.deepEqual(formAnswers(dialog, form)[1], { answer: "choices", indices: [0, 2] });
+  // The same request keeps the form through a retry; a new one starts afresh.
+  assert.equal(dialogForm(entry, dialog), form);
+  assert.deepEqual(dialogForm(entry, { ...dialog, request: "r2" }).picks, [[], [], []]);
+  assert.equal(
+    reasonText("answer_differs; cursor moved"),
+    "the pane's answers differ from yours, so Submit was not pressed; the selection already moved",
+  );
+  assert.equal(reasonText("tick_not_taken"), "an option did not take its tick");
 });
 
 test("Now groups agents by the host's own state word", () => {

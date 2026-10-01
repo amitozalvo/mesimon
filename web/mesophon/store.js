@@ -474,6 +474,12 @@ export class Store {
     this.emit();
   }
 
+  // Whether the live host answers a batch, or a question that takes several
+  // choices, whole (T-571): an older one would drop the peer on `answers`.
+  get answersWhole() {
+    return this.live && !!this.connection?.features?.includes("dialog_multi");
+  }
+
   // ---- card edits (T-530) ---------------------------------------------------
   // Whether the live host takes this edit: an older one would drop the peer
   // on an op it does not know, so the page offers none while it is away.

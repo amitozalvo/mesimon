@@ -1431,6 +1431,130 @@ async function editFlow(browser, engineName, size, viewport) {
 
 // A pairing QR (T-497): the code arrives in the link's fragment, fills the
 // field, leaves the address bar, and still waits for Connect.
+// A batch, or a question that takes several choices, is answered whole on
+// the ticket (T-571): radios and ticks, words in place of either, one Submit
+// carrying one answer per question, the T-567 receipts, the form kept through
+// a retry, and an older host leaving the dialog to the pane.
+async function batchFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => window.fixture.features.push("dialog_multi"));
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const attention = page.locator("#attention");
+  const pick = (role, name) => attention.getByRole(role, { name, exact: true });
+  const button = (name) => attention.getByRole("button", { name, exact: true });
+  const sent = () => page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1));
+  const receipt = () => page.evaluate(() => ({
+    text: document.querySelector("#delivery").textContent,
+    ticks: document.querySelectorAll("#delivery .tick path").length,
+  }));
+  const connected = () =>
+    until(page, () => document.querySelector("#connection").textContent === "Connected");
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await page.evaluate(() => {
+      const q = (question, multiSelect, ...labels) => ({ question, header: question, multiSelect,
+        options: labels.map((label) => ({ label, description: `${label} paint` })) });
+      fixture.tickets = [{ id: "batch", key: "T-B", title: "Three questions", column: "IN PROGRESS",
+        agent: { session: "batch-session", provider: "claude", state: "needs attention", promptable: true,
+          dialog: { request: "toolu_b", kind: "questions", questions: [
+            q("Which color?", false, "Blue", "Green"),
+            q("Which toppings?", true, "Cheese", "Olives", "Basil"),
+            q("Which size?", false, "Small", "Large"),
+          ] } } }];
+      fixture.update();
+    });
+    // The needs-you card answers one question in place; this one opens the ticket.
+    await page.getByRole("button", { name: "Answer in the ticket", exact: true }).click();
+    await until(page, () => document.querySelector("#attention")?.textContent.includes("Which toppings?"));
+    assert.equal(await attention.getByRole("radio").count(), 4);
+    assert.equal(await attention.getByRole("checkbox").count(), 3);
+    assert(await button("Submit answers").isDisabled(), "every question needs an answer");
+    await pick("radio", "Green").click();
+    await pick("checkbox", "Cheese").click();
+    await pick("checkbox", "Basil").click();
+    await pick("checkbox", "Olives").click();
+    await pick("checkbox", "Olives").click();
+    assert.equal(await pick("radio", "Green").getAttribute("aria-checked"), "true");
+    assert.equal(await pick("checkbox", "Olives").getAttribute("aria-checked"), "false");
+    assert(await button("Submit answers").isDisabled(), "the size is still open");
+    await attention.locator('[data-question="2"] input').fill("Large please");
+    await page.locator("#attention").screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-batch.png`) });
+    await button("Submit answers").click();
+    assert.deepEqual(await sent(), {
+      op: "dialog", request: "toolu_b", ticket: "batch", session: "batch-session",
+      response: { answer: "answers", answers: [
+        { answer: "choice", index: 1 },
+        { answer: "choices", indices: [0, 2] },
+        { answer: "text", text: "Large please" },
+      ] },
+    });
+    // T-567's receipts: keys not confirmed, a reason, and the hook's word;
+    // the form keeps its picks through each.
+    await until(page, () => document.querySelector("#delivery").textContent.includes("not confirmed"));
+    assert.equal((await receipt()).ticks, 1);
+    assert.equal(await pick("checkbox", "Basil").getAttribute("aria-checked"), "true");
+    await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "unknown", reason: "answer_differs" }; });
+    await button("Submit answers").click();
+    await until(page, () => document.querySelector("#delivery").textContent.includes("Could not answer"));
+    assert.match((await receipt()).text, /the pane's answers differ from yours, so Submit was not pressed · try again or answer in the pane/);
+    assert(await button("Submit answers").isEnabled());
+    await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "answered" }; });
+    await button("Submit answers").click();
+    await until(page, () => document.querySelector("#delivery").textContent.includes("Answered."));
+    assert.equal((await receipt()).ticks, 2);
+    // Words in place of the ticks: the ticks step aside and the words go.
+    await page.evaluate(() => { fixture.dialogReply = undefined; });
+    await attention.locator('[data-question="1"] input').fill("Pineapple");
+    assert(await pick("checkbox", "Cheese").isDisabled());
+    await button("Submit answers").click();
+    assert.deepEqual((await sent()).response.answers[1], { answer: "text", text: "Pineapple" });
+    await button("Decline questions").click();
+    assert.deepEqual((await sent()).response, { answer: "reject" });
+    // One question with several choices alone: ticks and one Submit.
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.dialog = { request: "toolu_m", kind: "questions", questions: [
+        { question: "Which regions?", header: "Regions", multiSelect: true,
+          options: [{ label: "Europe", description: "" }, { label: "America", description: "" }] }] };
+      fixture.update();
+    });
+    await until(page, () => document.querySelector("#attention").textContent.includes("Which regions?"));
+    await pick("checkbox", "America").click();
+    await button("Submit answer").click();
+    assert.deepEqual((await sent()).response, { answer: "answers", answers: [{ answer: "choices", indices: [1] }] });
+    // An older host, live again, leaves the dialog to the pane.
+    await page.evaluate(() => {
+      fixture.refuse = true;
+      fixture.channel().close();
+    });
+    await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
+    assert(await pick("checkbox", "America").isDisabled(), "away, the form waits");
+    await page.evaluate(() => {
+      fixture.refuse = false;
+      fixture.features = fixture.features.filter((f) => f !== "dialog_multi");
+    });
+    await connected();
+    await until(page, () => document.querySelector("#attention").textContent.includes("needs a local answer in the pane"));
+    assert.equal(await attention.getByRole("checkbox").count(), 0);
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: a batch and a several-choice question answered whole, receipts and an older host passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-batch-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 async function pairLinkFlow(browser, engineName) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", serviceWorkers: "block" });
   await context.addInitScript(fixture);
@@ -2316,6 +2440,7 @@ try {
         await ticketFlow(browser, engineName, size, viewport);
         await startFlow(browser, engineName, size, viewport);
         await editFlow(browser, engineName, size, viewport);
+        await batchFlow(browser, engineName, size, viewport);
         await notesFlow(browser, engineName, size, viewport);
       }
       await pairLinkFlow(browser, engineName);

@@ -32,6 +32,9 @@ const reasonWords = {
   deadline: "it took too long",
   state_changed: "the agent moved on",
   pane_unreachable: "the pane did not take the keys",
+  // A batch or a several-choice question (T-571).
+  tick_not_taken: "an option did not take its tick",
+  answer_differs: "the pane's answers differ from yours, so Submit was not pressed",
   "cursor moved": "the selection already moved",
 };
 export const reasonText = (reason) =>
