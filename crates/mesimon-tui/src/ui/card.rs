@@ -357,6 +357,7 @@ pub(super) fn render(
     peek: Option<&crate::peek::Peek>,
     tags: &[crate::tags::Painted],
     doomed: bool,
+    archiving: bool,
     unseen: bool,
     snooze: Option<&str>,
     owed: bool,
@@ -375,6 +376,12 @@ pub(super) fn render(
     // diff's del tint under an `err` title — until the second `d` or the
     // cancel, on the MOVE ghost's cadence (`Theme::delete_lit`).
     let doomed = doomed && theme.delete_lit(ctx.spin);
+    // The `a` chord is armed on this card (T-545): it fades to the move
+    // trail's semi-transparent look and back (`Theme::archive_faded`). The
+    // faded phase IS a trail, and it gives up the cursor surface — but not
+    // the accordion, which `selected` keeps open so the column never jumps.
+    let fading = archiving && theme.archive_faded(ctx.spin);
+    let trail = trail || fading;
     // The launch window starts at the keypress, not at the session record.
     // A worktree ticket's first spawn is PARKED while the worktree is cut
     // (~2 s of git, sometimes more), and provisioning is lazy — a queued or
@@ -422,7 +429,7 @@ pub(super) fn render(
     // A pending move's trail is semi-transparent everything — even an attn
     // card demotes while its ghost is in hand (the ghost carries the weight).
     let attn_card = !trail && matches!(glyph, Some((_, Register::Attn)));
-    let cursorish = selected || held;
+    let cursorish = (selected || held) && !fading;
 
     // Age: time in COLUMN (author 2026-09-01) — it counts from the ticket's
     // `entered_at`, so only a column move restarts it; a session changing
@@ -705,15 +712,22 @@ pub(super) fn render(
     if accordion || opened {
         let acc_style = if doomed {
             theme.delete_row()
-        } else if selected {
+        } else if cursorish {
             theme.selected_row()
         } else {
             Style::default()
         };
-        let ramp = if selected { &theme.sel } else { &theme.rest };
-        let dim = Style::default().fg(ramp.dim1);
-        let quiet = Style::default().fg(ramp.dim2);
-        let faint = Style::default().fg(ramp.dim3);
+        let ramp = if cursorish { &theme.sel } else { &theme.rest };
+        // A trail is semi-transparent everything, its open rows included.
+        let (dim, quiet, faint) = if trail {
+            (theme.dim3(), theme.dim3(), theme.dim3())
+        } else {
+            (
+                Style::default().fg(ramp.dim1),
+                Style::default().fg(ramp.dim2),
+                Style::default().fg(ramp.dim3),
+            )
+        };
         let mut push = |spans: Vec<Span<'static>>| {
             let mut all = bar_spans();
             all.push(Span::raw(" "));
@@ -772,12 +786,18 @@ pub(super) fn render(
             let key = truncate(&key, inner);
             let key_cells = key.width();
             let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
-            let chips = if tags.is_empty() {
+            let mut chips = if tags.is_empty() {
                 Vec::new()
             } else {
                 let gap = if key_cells > 0 { 1 } else { 0 };
                 crate::tags::chips(theme, tags, inner.saturating_sub(key_cells + gap))
             };
+            if trail {
+                // The names stay; their tints go with the bar's.
+                for c in &mut chips {
+                    c.style = faint;
+                }
+            }
             let used = super::spans_width(&chips);
             row.extend(chips);
             row.push(Span::raw(" ".repeat(inner.saturating_sub(used + key_cells))));
@@ -828,7 +848,7 @@ pub(super) fn render(
             push(vec![
                 Span::styled(left, dim),
                 Span::raw(" ".repeat(fill)),
-                Span::styled(g.to_string(), register_style(theme, reg)),
+                Span::styled(g.to_string(), if trail { faint } else { register_style(theme, reg) }),
                 Span::styled(format!(" {a:>3}"), quiet),
             ]);
         }

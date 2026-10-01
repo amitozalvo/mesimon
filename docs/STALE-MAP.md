@@ -16573,3 +16573,31 @@ DONE opts in and the ticket moves there; three seconds later it is still paned (
 fails with the hold removed: verified); the client leaves and it is `Sleeping` with its
 conversation, the other ticket's agent still paned, and the feed carries `autosleep` as
 `automation`.
+
+## A pending archive fades the card (T-545, 2026-10-01, "pending archive (single a) should be indicated": "like delete, but different. maybe flashing semi-transparent?")
+
+**Seen.** The first `d` flashes its card red until the second `d` or the cancel (2026-09-03),
+and the first `z` blinks its title (2026-09-04). The first `a` changed nothing on the card:
+only the footer's "a again archives" said a second press was owed.
+
+**Shipped.** From the first `a` to the second, or the stray key that cancels, the armed card
+square-waves between the move trail's look and its ordinary cursor look, 400 ms each phase,
+the faded one first (`Theme::archive_faded`). The faded phase is the trail exactly: the cursor
+surface goes, the bar goes ghost, and every ink is `rest.dim3`, including the open rows, tag
+chips and session glyphs. The accordion stays open (`selected` holds), so the column never
+changes height. The ticket page's title row, the page's card, leaves the band and takes the
+trail's ink the same way. `App::archiving` is the predicate, beside `App::doomed`.
+
+- **Why the trail and not a third colour.** "Semi-transparent" already means one thing on this
+  board: a pending move's original spot. An archived card leaves the board, and fading is how
+  it will go. The red stays a deletion's, and the snooze keeps its title-only blink on the
+  cursor surface, so each of the three armed chords looks different at a glance.
+- **A trail's open rows go faint too.** Before this, a move trail with `P` on drew its meta
+  row on the resting ramp with painted chips. "Semi-transparent everything" now covers them.
+- **Mono holds still**, as the MOVE ghost does: it has no luminance to fade, and dropping the
+  reversed surface would read as the cursor leaving. The footer carries the arming there.
+
+**Tests.** `test_archive_armed_fades_the_card` (every flavor: the faded phase draws the title in
+`rest.dim3` on the page ground with a ghost bar, never the delete's tint, then the cursor card;
+bystanders hold still; the cancel puts the cursor card back), `test_archive_armed_fades_the_ticket_title`,
+and `archive_fade_square_waves_except_in_mono`. Goldens are colourless and unchanged.

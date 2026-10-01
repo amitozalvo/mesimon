@@ -202,6 +202,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             peek.as_deref(),
             &painted,
             app.doomed(t.id),
+            app.archiving(t.id),
             unseen,
             app.snooze_row(t.id).as_deref(),
             app.owed(t.id),

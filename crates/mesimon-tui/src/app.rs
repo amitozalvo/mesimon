@@ -1940,6 +1940,12 @@ impl App {
         matches!(&self.delete_armed, Some(Doomed::Ticket(t)) if *t == ticket)
     }
 
+    /// Is the `a` chord armed on this ticket? The card (and the ticket page's
+    /// title row) fade in and out while it is (T-545).
+    pub fn archiving(&self, ticket: ulid::Ulid) -> bool {
+        self.archive_armed == Some(ticket)
+    }
+
     /// Whether something on screen is mid-motion and wants the next frame
     /// sooner than the spinner's cadence: the composer dialog growing, the
     /// screen's reading zone turning a page, a refused card shaking, the

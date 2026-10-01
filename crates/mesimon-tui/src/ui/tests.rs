@@ -7758,6 +7758,87 @@ fn test_delete_armed_flashes_the_ticket_title() {
     assert_ne!(buf[(118u16, 3u16)].bg, del_bg, "the state row keeps the band");
 }
 
+/// The first `a` arms an archive, and the card says so until the second `a`
+/// or the cancel (T-545, "like delete, but different. maybe flashing
+/// semi-transparent?"): it fades to the move trail's look — the ghost bar
+/// and dim3 ink on the page's ground, the cursor surface given up — and back
+/// to the cursor card, on the delete's cadence. Never the delete's tint;
+/// bystanders hold still; a cancel puts the cursor card back.
+#[test]
+fn test_archive_armed_fades_the_card() {
+    for flavor in Flavor::ALL {
+        let theme = Theme::new(flavor, Profile::TrueColor);
+        let at = |buf: &ratatui::buffer::Buffer, needle: &str| {
+            for y in 0..30u16 {
+                let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect::<String>();
+                if let Some(ix) = row.find(needle) {
+                    return Some((row[..ix].chars().count() as u16, y));
+                }
+            }
+            None
+        };
+        let sel_bg = theme.selected_bg.expect("truecolor paints selected");
+        let ghost = theme.bar(crate::theme::BarWeight::Ghost).1.bg;
+        let mut app = App::for_test(fixture(false), Theme::new(flavor, Profile::TrueColor));
+        app.cursor_col = 0;
+        let rest = cells(&app, 120, 30);
+        let (bx, by) = at(&rest, "Grapheme").expect("bystander title");
+        let ground = rest[(bx, by)].bg;
+        press(&mut app, 'a');
+        assert_eq!(app.status, "a again archives");
+        app.spin_epoch.set(Some(std::time::Instant::now()));
+        let faded = cells(&app, 120, 30);
+        let (x, y) = at(&faded, "Decay").expect("armed title, frame 0");
+        let c = &faded[(x, y)];
+        assert_eq!((c.fg, c.bg), (theme.rest.dim3, ground), "{flavor:?}: faded phase is a trail");
+        assert_ne!(Some(c.bg), theme.diff_del_bg(), "{flavor:?}: never the deletion's tint");
+        assert!(
+            (0..x).any(|bar_x| Some(faded[(bar_x, y)].bg) == ghost),
+            "{flavor:?}: the bar goes ghost with the card"
+        );
+        let bystander0 = (faded[(bx, by)].fg, faded[(bx, by)].bg);
+        // 410 ms back → frame 4 (or 5 under scheduler slop) — the cursor phase.
+        app.spin_epoch.set(Some(std::time::Instant::now() - std::time::Duration::from_millis(410)));
+        let lit = cells(&app, 120, 30);
+        let c = &lit[(x, y)];
+        assert_eq!((c.fg, c.bg), (theme.sel.base, sel_bg), "{flavor:?}: then the cursor card");
+        assert_eq!((lit[(bx, by)].fg, lit[(bx, by)].bg), bystander0, "bystanders hold still");
+        app.spin_epoch.set(Some(std::time::Instant::now()));
+        press(&mut app, 'x');
+        assert_eq!(app.status, "archive cancelled");
+        let after = cells(&app, 120, 30);
+        let c = &after[(x, y)];
+        assert_eq!((c.fg, c.bg), (theme.sel.base, sel_bg), "cancel puts the cursor card back");
+    }
+}
+
+/// The ticket page's title row is that page's card: `a` there fades it off
+/// the band and back.
+#[test]
+fn test_archive_armed_fades_the_ticket_title() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let band = theme.selected_bg.expect("graphite paints the band");
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 0;
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    press(&mut app, 'a');
+    let title_at = |app: &App| {
+        let buf = cells(app, 120, 30);
+        let row: String = (0..120u16).map(|x| buf[(x, 2u16)].symbol()).collect();
+        let x = row.find("Decay").expect("title row") as u16;
+        ((buf[(x, 2u16)].fg, buf[(x, 2u16)].bg), buf[(118u16, 2u16)].bg, buf[(118u16, 3u16)].bg)
+    };
+    app.spin_epoch.set(Some(std::time::Instant::now()));
+    let ((fg, bg), edge, state) = title_at(&app);
+    assert_eq!(fg, theme.rest.dim3, "faded: the trail's ink");
+    assert_ne!(bg, band, "faded: off the band");
+    assert_eq!(edge, bg, "the whole row leaves the band");
+    assert_eq!(state, band, "the state row keeps the band");
+    app.spin_epoch.set(Some(std::time::Instant::now() - std::time::Duration::from_millis(410)));
+    let ((fg, bg), _, _) = title_at(&app);
+    assert_eq!((fg, bg), (theme.sel.base, band), "then the title as it rests");
+}
+
 /// Requirement 2 of the pending-move gesture: while the ghost blinks in its
 /// target column, the ORIGINAL card stays visible semi-transparent (dim3
 /// title, ghost bar) — and the same title therefore appears twice on the row.

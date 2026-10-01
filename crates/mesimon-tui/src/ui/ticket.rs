@@ -182,8 +182,13 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // `z` arms here too: the title blinks on the move ghost's clock, the
     // board card's treatment for an armed snooze, in this band's own ramp.
     let snoozing = app.snooze_row(ticket_id).is_some();
+    // `a` arms here too (T-545): the title row fades off the band to the
+    // move trail's semi-transparent look and back, as the board card does.
+    let fading = app.archiving(ticket_id) && theme.archive_faded(app.spin_frame());
     let title_style = if doomed {
         theme.err_text().add_modifier(Modifier::BOLD)
+    } else if fading {
+        theme.dim3()
     } else if snoozing {
         let blink = theme.move_blink(app.spin_frame());
         let fg = if blink.fg == Some(theme.sel.dim3) { ink.dim3 } else { ink.base };
@@ -208,7 +213,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             // (T-442), and `^o` here sweeps it there from the plain ink on the
             // band's ground. Below TrueColor the tint is the quiet grey, so
             // the title keeps its ink and only the head walks it.
-            let holder = app.board.is_crowned(ticket_id) && !app.doomed(ticket_id) && !snoozing;
+            let holder = app.board.is_crowned(ticket_id)
+                && !app.doomed(ticket_id)
+                && !app.archiving(ticket_id)
+                && !snoozing;
             let rest = if holder && theme.paints_tags() {
                 theme.crown_text().add_modifier(Modifier::BOLD)
             } else {
@@ -569,9 +577,12 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         .map(|(i, mut l)| {
             let used: usize = super::spans_width(&l.spans);
             l.spans.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used))));
-            // Row 1 is the title row; lit, it takes the deletion ground.
+            // Row 1 is the title row; lit, it takes the deletion ground, and
+            // faded, the page's own.
             if doomed && i == 1 {
                 l.style(theme.delete_row())
+            } else if fading && i == 1 {
+                l.style(Style::default())
             } else {
                 l.style(band)
             }

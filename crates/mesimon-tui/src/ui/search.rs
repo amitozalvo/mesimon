@@ -326,6 +326,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         &painted_tags,
         false,
         false,
+        false,
         None,
         app.owed(ticket.id),
         app.pending_row(ticket.id).as_deref(),

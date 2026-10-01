@@ -1771,6 +1771,21 @@ impl Theme {
         !self.has_colour() || (frame / PHASE_FRAMES).is_multiple_of(2)
     }
 
+    /// The pending-archive card (T-545, "like delete, but different. maybe
+    /// flashing semi-transparent?"): from the first `a` to the second, or the
+    /// stray key that cancels, the card square-waves between its ordinary
+    /// cursor look and the move trail's semi-transparent one — no surface,
+    /// the ghost bar, every ink at `rest.dim3` — on the delete's cadence
+    /// (400 ms a phase, the faded one first). An archived card leaves the
+    /// board, and it fades the way it will go; the red stays a deletion's.
+    /// Grey ramp only, repainting on the redraw clock, never SGR 5. Mono has
+    /// no luminance to fade, so the card holds the cursor look there, as the
+    /// MOVE ghost does, and the footer carries the arming alone.
+    pub fn archive_faded(&self, frame: usize) -> bool {
+        const PHASE_FRAMES: usize = 4; // 4 × 100 ms redraw-clock frames
+        self.has_colour() && (frame / PHASE_FRAMES).is_multiple_of(2)
+    }
+
     pub fn delete_row(&self) -> Style {
         match self.diff_del_bg() {
             Some(bg) => Style::default().bg(bg),
@@ -2608,6 +2623,22 @@ mod tests {
             // Mono has no ramp to blink: steady cursor treatment.
             let t = Theme::new(flavor, Profile::Mono);
             assert_eq!(t.move_blink(0), t.move_blink(5));
+        }
+    }
+
+    /// The pending archive (T-545) fades on the delete's 400 ms square wave
+    /// wherever there is colour, faded first, and holds still in Mono.
+    #[test]
+    fn archive_fade_square_waves_except_in_mono() {
+        for flavor in Flavor::ALL {
+            for p in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8] {
+                let t = Theme::new(flavor, p);
+                let wave: Vec<bool> = (0..16).map(|f| t.archive_faded(f)).collect();
+                let want: Vec<bool> = (0..16).map(|f| (f / 4) % 2 == 0).collect();
+                assert_eq!(wave, want, "{flavor:?}/{p:?}");
+            }
+            let t = Theme::new(flavor, Profile::Mono);
+            assert!((0..16).all(|f| !t.archive_faded(f)), "{flavor:?}: Mono holds still");
         }
     }
 
