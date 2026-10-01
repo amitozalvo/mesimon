@@ -202,6 +202,16 @@ pub(crate) fn interrupted(tier: Tier) -> char {
     }
 }
 
+/// The idle mark (06 §4.2): `◦` U+25E6, a small ring with nothing inside —
+/// an agent up and at its prompt. ASCII `.`, §4.1's own fallback.
+pub(crate) fn idle_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        '.'
+    } else {
+        '◦'
+    }
+}
+
 /// The suggestion mark. NOT a chevron: `›` reads as "you are here" — every
 /// terminal prompt has trained that — and a suggestion is the opposite, an
 /// offer you have not taken. NOT `◊` either: a full-height diamond outline is
@@ -393,9 +403,10 @@ pub(crate) fn is_working(rec: &SessionRecord) -> bool {
 /// `Spawning` is only the first half of it. Shift+Enter's Enter is DEFERRED
 /// to the `SessionStart` frame (paste detection swallows one sent with the
 /// text), and that same frame moves the record to `Idle{Unknown}` — a state
-/// that rightly carries no glyph, because an idle agent is one waiting for
-/// you. So the card went dark for the ~500 ms between the session starting
-/// and `UserPromptSubmit` acking the prompt, mid-launch (dogfood 2026-09-01).
+/// that then carried no glyph, because an idle agent is one waiting for you
+/// (it wears the still idle ring since T-546, `is_ready`). So the card went
+/// dark for the ~500 ms between the session starting and `UserPromptSubmit`
+/// acking the prompt, mid-launch (dogfood 2026-09-01).
 /// `pending_submit` is precisely what says that wait is OURS: the daemon is
 /// still pressing Enter on a 500 ms cadence and the turn has not begun.
 ///
@@ -420,12 +431,24 @@ pub(crate) fn is_launching(rec: &SessionRecord) -> bool {
     }
 }
 
+/// Is this an agent up at its prompt that no turn has ended on — woken, or
+/// started with nothing asked (T-546)? That is the `Idle{Unknown}` a
+/// `SessionStart` lands in. A composed launch's owed Enter is the launch
+/// window's (`is_launching`), and a shell is never one: its pane is alive
+/// from spawn to death and has no turns.
+pub(crate) fn is_ready(rec: &SessionRecord) -> bool {
+    rec.kind.is_agent()
+        && rec.state == (SessionState::Idle { stop_reason: StopReason::Unknown })
+        && !is_launching(rec)
+}
+
 /// The card's aggregate state glyph, or None when nothing is abnormal —
 /// a normal card starts its title at T[0] (07 §4.1).
 ///
 /// Precedence (07 §4.2, D34.9 removes unclaimed, no dependency model yet):
 /// requires_action > failed/exited{!=0} > idle{end_turn} unseen > running >
-/// launching (`is_launching`) > sleeping (all sessions) > unknown. Running is a deviation from
+/// launching (`is_launching`) > background > interrupted > ready
+/// (`is_ready`) > sleeping (all sessions) > unknown. Running is a deviation from
 /// 07 §4.1's "normal card has no glyph": the ticking age alone read as
 /// ambiguous, so a working card carries the grey spinner (author 2026-08-30),
 /// and spawning followed it for the same reason one press later. `spin` is
@@ -506,6 +529,14 @@ pub(crate) fn card_glyph(
     {
         return Some((interrupted(tier), Register::Grey));
     }
+    // An agent up and at its prompt that no turn has ended on: woken, or
+    // started with nothing asked. The card carried NO glyph for it — the
+    // `z` went and nothing came — identical to a ticket nobody had ever
+    // opened (T-546). It wears the idle ring the rail already gives it.
+    // Agents only: a shell's quiet pane says nothing about the ticket.
+    if sessions.iter().any(|s| is_ready(s)) {
+        return Some((idle_mark(tier), Register::Grey));
+    }
     if sessions.iter().all(|s| matches!(s.state, SessionState::Sleeping)) {
         return Some(('z', Register::Dormant));
     }
@@ -524,7 +555,7 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
     // mark for as long as its pane lives, because pane death is the only
     // shell event there is.
     if rec.state == SessionState::Running && !is_working(rec) {
-        return (if ascii { '.' } else { '◦' }, Register::Grey);
+        return (idle_mark(tier), Register::Grey);
     }
     // The launch window, which outlives `Spawning`: the composed prompt is
     // typed but not yet accepted, so this `Idle` is not a settled state.
@@ -548,7 +579,7 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
         SessionState::Idle { stop_reason: StopReason::Interrupted } => {
             (interrupted(tier), Register::Grey)
         }
-        SessionState::Idle { .. } => (if ascii { '.' } else { '◦' }, Register::Grey),
+        SessionState::Idle { .. } => (idle_mark(tier), Register::Grey),
         SessionState::Sleeping => ('z', Register::Dormant),
         SessionState::Exited { reason: ExitReason::Crashed } => ('x', Register::Err),
         SessionState::Exited { .. } => (if ascii { '+' } else { '✓' }, Register::Grey),
@@ -735,7 +766,7 @@ mod tests {
         let mut composed = rec(SessionState::Idle { stop_reason: StopReason::Unknown });
         composed.pending_submit = true;
         // The same record without the owed Enter is an ordinary idle agent
-        // waiting for YOU, and says nothing — that part must not change.
+        // waiting for YOU, and wears the still idle ring (T-546), never an arc.
         let plain = rec(SessionState::Idle { stop_reason: StopReason::Unknown });
         for tier in [Tier::Unicode, Tier::Ascii] {
             assert!(is_launching(&composed));
@@ -745,7 +776,10 @@ mod tests {
                 Some((launching(tier, 0), Register::Grey)),
                 "the card went dark mid-launch"
             );
-            assert_eq!(card_glyph(&[&plain], false, tier, 0), None);
+            assert_eq!(
+                card_glyph(&[&plain], false, tier, 0),
+                Some((idle_mark(tier), Register::Grey))
+            );
             assert_eq!(session_glyph(&composed, tier, 0), (launching(tier, 0), Register::Grey));
             // And the whole press-to-turn path is one unbroken mark: spawn,
             // session start, ack. Only the last frame changes what it says.
@@ -977,6 +1011,68 @@ mod tests {
             card_glyph(&[&lost, &cut], false, Tier::Unicode, 0),
             Some((interrupted(Tier::Unicode), Register::Grey))
         );
+    }
+
+    /// A woken agent that has not run yet sits at `Idle{Unknown}` — the
+    /// `SessionStart` of the wake put it there and no turn has ended since —
+    /// and the card said nothing at all: the `z` went and nothing came, so it
+    /// read as a ticket with no agent (T-546). It wears the idle ring, still,
+    /// on the grey ramp, exactly what the rail already shows for it.
+    #[test]
+    fn a_woken_agent_that_has_not_run_wears_the_idle_ring() {
+        let woken = rec(SessionState::Idle { stop_reason: StopReason::Unknown });
+        assert!(is_ready(&woken));
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            let ring = Some((idle_mark(tier), Register::Grey));
+            assert_eq!(card_glyph(&[&woken], false, tier, 0), ring);
+            assert_eq!(Some(session_glyph(&woken, tier, 0)), ring, "the card and the rail agree");
+            for f in 0..40 {
+                assert_eq!(card_glyph(&[&woken], false, tier, f), ring, "still: nothing is moving");
+            }
+            // Still, so an owed ask lays its mark over it like any resting one.
+            assert_eq!(queued_over(ring, tier, 0), Some((queued(tier, 0), Register::Grey)));
+        }
+        assert_eq!(idle_mark(Tier::Unicode), '◦');
+        assert_eq!(idle_mark(Tier::Ascii), '.');
+        // Codex wakes the same way.
+        let mut codex = woken.clone();
+        codex.kind = SessionKind::Codex;
+        assert!(is_ready(&codex));
+        // A shell is never ready: its pane is all it has, and a card with only
+        // a quiet shell still starts its title at T[0].
+        let mut sh = rec(SessionState::Idle { stop_reason: StopReason::Unknown });
+        sh.kind = SessionKind::Bash;
+        assert!(!is_ready(&sh));
+        assert_eq!(card_glyph(&[&sh], false, Tier::Unicode, 0), None);
+        // Under every state with something to say; over a lost session.
+        let busy = rec(SessionState::Running);
+        let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        let cut = rec(SessionState::Idle { stop_reason: StopReason::Interrupted });
+        let watch = rec(SessionState::Idle { stop_reason: StopReason::Monitoring });
+        let lost = rec(SessionState::Unknown { reason: UnknownReason::DaemonRestarted });
+        let mut composed = woken.clone();
+        composed.pending_submit = true;
+        let u = Tier::Unicode;
+        assert_eq!(
+            card_glyph(&[&woken, &busy], false, u, 0),
+            Some((spinner(u, 0), Register::Grey))
+        );
+        assert_eq!(card_glyph(&[&woken, &done], false, u, 0), Some(('✓', Register::Calm)));
+        assert_eq!(
+            card_glyph(&[&woken, &cut], false, u, 0),
+            Some((interrupted(u), Register::Grey))
+        );
+        assert_eq!(
+            card_glyph(&[&woken, &watch], false, u, 0),
+            Some((background(u, 0), Register::Grey))
+        );
+        assert!(!is_ready(&composed), "an owed Enter is the launch window's");
+        assert_eq!(card_glyph(&[&composed], false, u, 0), Some((launching(u, 0), Register::Grey)));
+        assert_eq!(card_glyph(&[&lost, &woken], false, u, 0), Some((idle_mark(u), Register::Grey)));
+        // Every other idle is not this one.
+        for idle in [&done, &cut, &watch, &busy] {
+            assert!(!is_ready(idle), "{:?} is not ready", idle.state);
+        }
     }
 
     #[test]

@@ -16601,3 +16601,33 @@ trail's ink the same way. `App::archiving` is the predicate, beside `App::doomed
 `rest.dim3` on the page ground with a ghost bar, never the delete's tint, then the cursor card;
 bystanders hold still; the cancel puts the cursor card back), `test_archive_armed_fades_the_ticket_title`,
 and `archive_fade_square_waves_except_in_mono`. Goldens are colourless and unchanged.
+
+## A woken agent wears the idle ring (T-546, 2026-10-01, "need glyph for woken agents that did not run yet")
+
+**Seen.** A wake re-enters the pane, and its `SessionStart` puts the record at `Idle{Unknown}`.
+Until a turn runs, `card_glyph` had no arm for that state, so the card's `z` went and nothing
+came. The card looked exactly like a ticket that never had an agent. Waking is now routine (a
+column sleeps its idle agents, T-543; the crown parks and wakes the agents it started, T-539),
+so the blank card was common.
+
+**Shipped.** `glyphs::is_ready`: an agent (never a shell) at `Idle{Unknown}` with no owed Enter.
+That covers a wake, a spawn with nothing asked, a `/clear`, and a restart that re-derives a quiet
+tail. The card shows `glyphs::idle_mark` (`◦`, ASCII `.`) on `Register::Grey`. That is the mark
+`session_glyph` already gave the state on the rail and in the accordion, so card and rail now
+agree. Its precedence: under interrupted and over sleeping and `waiting`, because it is a known
+fact, not a lost track. With this, every live agent state has a card mark. A shell alone still
+draws nothing, and `Throttled` stays a banner.
+
+- **It amends "an `Idle` agent rightly has no glyph"** (the launch window, 2026-09-01). That rule
+  is the same one 07 §4.1 states, and the author overrode it for interrupted (2026-09-04, "it
+  looks like no session exists there") for the same reason as here.
+- **Still, not slow.** Nothing is happening, so it does not move. `◦` is in `is_still_mark`
+  already, so a queued ask lays its owed mark over it like any resting mark.
+- **The bar does not change.** A card with a paned session was already on `Live(Grey)`.
+
+**Tests.** `a_woken_agent_that_has_not_run_wears_the_idle_ring` (glyphs: both tiers, still on
+every frame, card equals rail, under spinner/✓/⊘/background/launching, over `waiting`, shell
+excluded, Codex included); `test_woken_agent_wears_the_idle_ring` (ui: the ring before the title
+in `dim2`, and a card with no session stays bare); `the_owed_enter_is_still_launching` now
+expects the ring for the plain idle record. No golden moved: no fixture has an agent at
+`Idle{Unknown}`.

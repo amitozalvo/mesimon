@@ -7161,6 +7161,31 @@ fn test_sleeping_mark_is_dormant() {
     assert_eq!(buf[(x, y)].fg, dim3, "the rail's sleeping mark is dormant too");
 }
 
+/// T-546: an agent woken and not yet asked anything sits at `Idle{Unknown}`,
+/// and its card was a bare title — the same card as T-1, which has never had
+/// an agent. It wears the idle ring on the grey ramp, where the `z` was.
+#[test]
+fn test_woken_agent_wears_the_idle_ring() {
+    let mut board = fixture(false);
+    board.sessions.push(session(
+        21,
+        ulid_n(2),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: StopReason::Unknown },
+    ));
+    let mut app = app_graphite(board);
+    app.cursor_col = 3;
+    let lines = render(&app, 120, 30);
+    let buf = cells(&app, 120, 30);
+    let row = |title: &str| lines.iter().position(|l| l.contains(title)).expect(title);
+    let y = row("Keymap validator");
+    assert!(lines[y].contains("◦ Keymap validator"), "the woken card wears the ring: {}", lines[y]);
+    let x = lines[y].find("◦").map(|b| lines[y][..b].chars().count()).expect("ring") as u16;
+    assert_eq!(buf[(x, y as u16)].fg, app.theme.rest.dim2, "on the grey ramp, never the accent");
+    let never = &lines[row("Decay treatments")];
+    assert!(!never.contains("◦ Decay"), "a ticket with no agent still says nothing: {never}");
+}
+
 /// The done mark as a card row spells it, read and unread.
 const DONE: &str = "✓";
 const DONE_UNREAD: &str = "✔";
