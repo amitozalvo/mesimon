@@ -1601,7 +1601,8 @@ try {
             fixture.tickets[0].tags = [{ group: 1, name: "BUG", tint: 0 }];
             fixture.tickets[1].tags = [{ group: 1, name: "FEATURE", tint: 6 }];
             Object.assign(fixture.tickets[0].agent, { since: Date.now() - 5 * 60000, doing: "Bash(cargo test -p mesimon-daemon)" });
-            Object.assign(fixture.tickets[4].agent, { since: Date.now() - 2 * 3600000, said: "Fixed, and three tests pass." });
+            Object.assign(fixture.tickets[4].agent, { since: Date.now() - 40 * 60000, said: "Fixed, and three tests pass." });
+            Object.assign(fixture.tickets[6].agent, { state: "idle", since: Date.now() - 2 * 3600000 });
             fixture.update();
           });
           await until(page, () =>
@@ -1609,7 +1610,13 @@ try {
           );
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-agent').textContent(), "claude · working · 5m");
           assert.equal(await page.locator('.ticket[data-id="ticket-4"] .headline').textContent(), "Fixed, and three tests pass.");
-          assert.equal(await page.locator('.ticket[data-id="ticket-4"] .card-agent').textContent(), "claude · idle · 2h");
+          assert.equal(await page.locator('.ticket[data-id="ticket-4"] .card-agent').textContent(), "claude · idle · 40m");
+          // Now lists a stopped agent for an hour (T-560); the Board, always.
+          assert.equal(
+            await page.locator('.group:has(.ticket[data-id="ticket-4"]) .group-label').textContent(),
+            "Recently idle1",
+          );
+          assert.equal(await page.locator('.ticket[data-id="ticket-6"]').count(), 0);
           // A ticket is one card in Now and on the Board (T-533): its tags
           // show in both, a needs-you card wears the same face, and Now adds
           // only the column, which the Board says by where the card stands.
@@ -1626,6 +1633,7 @@ try {
           if (size === "phone") await page.locator('[data-column="IN PROGRESS"]').click();
           assert.deepEqual(await anatomy(), inNow);
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), "T-0");
+          assert.equal(await page.locator('.ticket[data-id="ticket-6"] .card-agent').textContent(), "claude · idle · 2h");
           await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-board.png`) });
           await mode("agents");
           await page.locator(".need").first().waitFor();

@@ -5,6 +5,15 @@ const phase = (ticket) =>
     : ["starting", "working"].includes(ticket.agent?.state)
       ? "working"
       : "idle";
+// How long a stopped agent stays on Now (T-560): about an hour.
+export const RECENT_MS = 3600000;
+// Whether Now lists this agent: one that needs you or works, always; any
+// other only while its state is under an hour old at `now`. An age it cannot
+// tell (an older host sends no since) keeps the agent.
+const recent = (ticket, now) => {
+  const age = now - ticket.agent?.since;
+  return phase(ticket) !== "idle" || !(age >= RECENT_MS);
+};
 
 export class BoardState {
   constructor(selected) {
@@ -47,9 +56,12 @@ export class BoardState {
   }
   visible() {
     const query = this.search.toLocaleLowerCase().trim();
+    // A remembered board is measured at the moment it describes, not now.
+    const now = this.cached ? this.receivedAt : Date.now();
     const visible = this.tickets.filter(
       (t) =>
         (this.mode === "board" || t.agent) &&
+        (this.mode !== "agents" || recent(t, now)) &&
         (this.mode !== "agents" ||
           this.filter === "all" ||
           (this.filter === "running"

@@ -17308,3 +17308,26 @@ to learn where "here" is. A section opening on the machine's, as the dialog does
 **Test.** `leaving_a_section_drops_the_board_scope`: `b` in Appearance, Esc to the root, then
 Terminal's tab-title row acts and writes the machine file; `s` from the usage dialog with a
 stale flag lands in machine scope.
+
+## Now lists a stopped agent for an hour (T-560, 2026-10-02, "remote control show \"recently idle\" on NOW page": "idle for about an hour")
+
+**Now's third group is "Recently idle".** It held every agent that was neither working nor
+needing you — idle, sleeping, exited, failed, rate limited, unknown — however long ago it
+stopped, so a board's week of parked agents sat under the two groups that matter. Now an agent
+in that group is listed while its state word is under an hour old (`board.js::RECENT_MS`, by
+the host's `since`, which is `SessionRecord::state_changed_at`). Needs-you and Working are
+unchanged, and the Board still shows every ticket. The cut is in `BoardState::visible`, so the
+header's agent count, the groups and a search on Now agree; a search on Now does not reach a
+stale agent, the Board's does.
+
+**The clock is the board's moment.** A live board measures against now, and the 2 s refresh
+drops a card as it crosses the hour. A remembered board measures against `receivedAt`, when it
+was seen: it is "the board as it was then", so it lists what was recent then. An agent with no
+`since` (an older host) stays, since its age cannot be told.
+
+**An empty Now says "Nothing in the last hour. Open Board to see every ticket."** in place of
+"No agents here.", which became wrong the moment old agents could be there and not shown.
+
+**Tests.** `state.test.js` covers the cut per group, the missing `since`, the count, a search
+and a remembered board; `ux.test.js`'s Now run puts a 40-minute idle agent under "Recently
+idle" and a 2-hour one on the Board only, every engine and size.

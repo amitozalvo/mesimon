@@ -1,7 +1,7 @@
-// The work list: Now (agents grouped by the host's state word), Board
-// (every ticket, by column) and Sent (the tickets this browser filed). A
-// ticket is the same card in Now and on the Board (T-533); a card is a
-// button, and the pressed one is selected.
+// The work list: Now (agents grouped by the host's state word, a stopped
+// one only for an hour; T-560), Board (every ticket, by column) and Sent
+// (the tickets this browser filed). A ticket is the same card in Now and on
+// the Board (T-533); a card is a button, and the pressed one is selected.
 import { html, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
@@ -235,13 +235,13 @@ export function NowList({ store, board, live }) {
     ${working.length > 0 && html`<${Group} label="Working" count=${working.length}>
       <div class="cards">${working.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} column=${true} />`)}</div>
     </${Group}>`}
-    ${idle.length > 0 && html`<${Group} label="Idle" count=${idle.length}>
+    ${idle.length > 0 && html`<${Group} label="Recently idle" count=${idle.length}>
       <div class="cards">${idle.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} column=${true} />`)}</div>
     </${Group}>`}
     ${empty && html`<p class="empty">${board.search
       ? "No tickets match your search."
       : board.tickets.length
-        ? "No agents here. Open Board to see every ticket."
+        ? "Nothing in the last hour. Open Board to see every ticket."
         : "This board has no tickets yet."}</p>`}
   `;
 }

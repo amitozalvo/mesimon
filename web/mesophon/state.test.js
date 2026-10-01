@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Sessions } from "./sessions.js";
-import { BoardState } from "./board.js";
+import { BoardState, RECENT_MS } from "./board.js";
 const ticket = (id, session) => ({
   id,
   key: id,
@@ -188,6 +188,35 @@ test("Now groups agents by the host's own state word", () => {
   board.search = "three";
   assert.deepEqual(board.sections().idle.map((t) => t.id), ["three"]);
   assert.equal(board.sections().working.length, 0);
+});
+
+test("Now keeps a stopped agent for an hour; the Board keeps it always (T-560)", () => {
+  const now = Date.now();
+  const rows = ["fresh", "stale", "parked", "working", "needs", "older-host"].map((id) => ticket(id, id));
+  Object.assign(rows[0].agent, { state: "idle", since: now - RECENT_MS + 60000 });
+  Object.assign(rows[1].agent, { state: "idle", since: now - RECENT_MS - 60000 });
+  Object.assign(rows[2].agent, { state: "sleeping", since: now - 3 * RECENT_MS });
+  Object.assign(rows[3].agent, { state: "working", since: now - 3 * RECENT_MS });
+  Object.assign(rows[4].agent, { state: "needs attention", since: now - 3 * RECENT_MS });
+  rows[5].agent.state = "exited";
+  const board = new BoardState();
+  board.update({ title: "Board", columns: ["TODO"], tickets: rows });
+  const { needs, working, idle } = board.sections();
+  assert.deepEqual(needs.map((t) => t.id), ["needs"]);
+  assert.deepEqual(working.map((t) => t.id), ["working"]);
+  assert.deepEqual(idle.map((t) => t.id), ["fresh", "older-host"]);
+  assert.equal(board.visible().length, 4);
+  board.search = "stale";
+  assert.deepEqual(board.visible(), []);
+  board.search = "";
+  board.mode = "board";
+  assert.equal(board.visible().length, 6);
+  // A remembered board is measured at the moment it was seen: what was
+  // recent then is listed, however long ago that was.
+  const remembered = new BoardState();
+  remembered.update(board.snapshot(), { cached: true, at: now - 5 * RECENT_MS });
+  for (const t of remembered.tickets) if (t.agent.since) t.agent.since -= 5 * RECENT_MS;
+  assert.deepEqual(remembered.sections().idle.map((t) => t.id), ["fresh", "older-host"]);
 });
 
 test("a remembered board keeps no prompt text, tool input or dialog", () => {
