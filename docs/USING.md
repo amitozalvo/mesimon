@@ -226,10 +226,19 @@ until the monitor ends.
 
 **Settings › Agents › Sleep idle agents** optionally sleeps finished agent sessions after
 15, 30, 60 or 120 idle minutes. It is off by default and applies to this board, even with the
-TUI closed. The daemon checks every five minutes, measuring from when the turn finishes.
+TUI closed. The daemon checks every ten seconds, measuring from when the turn finishes.
 Running turns, background work and sessions needing attention stay awake. Wake resumes the
 same conversation. The board's `park_after_minutes` setting accepts any whole number of
 minutes; `0` disables it.
+
+A column can opt its own tickets in: **Agent behaviour › Sleep idle agents** in the column's
+settings sleeps a Claude agent on a ticket in that column after 1, 5, 15 or 60 minutes idle.
+It is off by default. The same rules apply: only a finished turn counts, and anything running,
+waiting on you or with background work stays awake. A ticket you move into the column whose
+agent finished long ago sleeps within seconds. When both timers are on, the shorter one wins.
+If you are attached to the agent's pane and have typed in it within the timer, it stays
+awake until you leave or go quiet for that long. On disk this is the column's
+`sleep_after_minutes`, any whole number; `0` disables it.
 
 ## Light and dark themes
 

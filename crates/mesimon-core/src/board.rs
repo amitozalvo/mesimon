@@ -896,7 +896,17 @@ pub struct ColumnSettings {
     pub offers: Option<ColumnOffers>,
     #[serde(default, skip_serializing_if = "TrainReach::is_off")]
     pub train: TrainReach,
+    /// Park a Claude agent here once its finished turn has been idle this
+    /// many minutes (T-543); zero is off. The board's `park_after_minutes`
+    /// still applies everywhere, and the shorter of the two wins
+    /// (`Board::idle_sleep_after`). No schema bump: a build that drops it
+    /// only stops sleeping agents, which narrows nothing.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sleep_after_minutes: u32,
 }
+
+/// The column's auto-sleep choices, in the order Enter cycles them.
+pub const COLUMN_SLEEP_MINUTES: [u32; 5] = [0, 1, 5, 15, 60];
 
 impl ColumnSettings {
     pub fn offers(&self) -> ColumnOffers {
@@ -906,7 +916,17 @@ impl ColumnSettings {
     /// Whether any automation would act on a ticket here — the header's one
     /// optional mark.
     pub fn automated(&self) -> bool {
-        self.on_working.is_some() || self.on_done.is_some() || self.train != TrainReach::Off
+        self.on_working.is_some()
+            || self.on_done.is_some()
+            || self.train != TrainReach::Off
+            || self.sleep_after_minutes > 0
+    }
+
+    /// The next auto-sleep choice after this column's: through
+    /// `COLUMN_SLEEP_MINUTES`, a value from elsewhere landing on the next
+    /// one above it.
+    pub fn next_sleep_after(&self) -> u32 {
+        COLUMN_SLEEP_MINUTES.iter().copied().find(|&m| m > self.sleep_after_minutes).unwrap_or(0)
     }
 
     /// The non-default settings in words, for `doctor` and the dialog.
@@ -947,6 +967,9 @@ impl ColumnSettings {
         }
         if self.train != TrainReach::Off {
             out.push(format!("train: {}", self.train.word()));
+        }
+        if self.sleep_after_minutes > 0 {
+            out.push(format!("sleeps idle agents after {} min", self.sleep_after_minutes));
         }
         out
     }
@@ -1408,6 +1431,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 /// `@<unix secs>` → seconds. The one parser for the ticket's own stamps.
 pub fn stamp_secs(stamp: &str) -> Option<u64> {
     stamp.strip_prefix('@')?.parse().ok()
@@ -1838,6 +1865,25 @@ impl Board {
 
     pub fn column(&self, name: &str) -> Option<&Column> {
         self.columns.iter().find(|c| c.name == name)
+    }
+
+    /// The timer that parks an idle agent on `ticket` (T-543), in minutes,
+    /// with the automation rule that names the park in the feed: the
+    /// shorter of the board's `park_after_minutes` and the ticket's column's
+    /// `sleep_after_minutes`, the column's on a tie. `None` when neither is
+    /// on.
+    pub fn idle_sleep_after(&self, ticket: ulid::Ulid) -> Option<(u32, &'static str)> {
+        let column = self
+            .ticket(ticket)
+            .and_then(|t| self.column(&t.column))
+            .map_or(0, |c| c.settings.sleep_after_minutes);
+        let board = self.park_after_minutes;
+        match (column, board) {
+            (0, 0) => None,
+            (0, b) => Some((b, "inactivity_park")),
+            (c, b) if b == 0 || c <= b => Some((c, "autosleep")),
+            (_, b) => Some((b, "inactivity_park")),
+        }
     }
 
     /// The column a ticket lands in when nothing named one (T-279): the
@@ -2503,6 +2549,56 @@ mod tests {
             serde_json::from_value::<Board>(legacy).unwrap().agent_provider,
             AgentProvider::ClaudeCode
         );
+    }
+
+    /// T-543: a column opts its tickets into the idle park. The shorter
+    /// timer of the column's and the board's wins and names its rule; a
+    /// ticket in a column that did not opt in keeps only the board's.
+    #[test]
+    fn a_columns_sleep_timer_races_the_boards() {
+        let mut board = Board::default();
+        let mut done = Column::new("DONE", "b");
+        done.settings.sleep_after_minutes = 5;
+        board.columns = vec![Column::new("TODO", "a"), done];
+        board.tickets = vec![ticket(1, "TODO", "a"), ticket(2, "DONE", "a")];
+        let (todo, in_done) = (ulid::Ulid(1), ulid::Ulid(2));
+        assert_eq!(board.idle_sleep_after(todo), None, "nothing on");
+        assert_eq!(board.idle_sleep_after(in_done), Some((5, "autosleep")));
+        assert_eq!(board.idle_sleep_after(ulid::Ulid(9)), None, "no such ticket");
+        board.park_after_minutes = 15;
+        assert_eq!(board.idle_sleep_after(todo), Some((15, "inactivity_park")));
+        assert_eq!(board.idle_sleep_after(in_done), Some((5, "autosleep")));
+        board.park_after_minutes = 5;
+        assert_eq!(
+            board.idle_sleep_after(in_done),
+            Some((5, "autosleep")),
+            "a tie is the column's"
+        );
+        board.park_after_minutes = 1;
+        assert_eq!(board.idle_sleep_after(in_done), Some((1, "inactivity_park")));
+    }
+
+    #[test]
+    fn a_columns_sleep_choice_cycles_and_reads_in_words() {
+        let mut s = ColumnSettings::default();
+        let mut seen = vec![s.sleep_after_minutes];
+        for _ in 0..5 {
+            s.sleep_after_minutes = s.next_sleep_after();
+            seen.push(s.sleep_after_minutes);
+        }
+        assert_eq!(seen, [0, 1, 5, 15, 60, 0]);
+        s.sleep_after_minutes = 30;
+        assert_eq!(s.next_sleep_after(), 60, "a hand-edited value joins the cycle");
+        s.sleep_after_minutes = 120;
+        assert_eq!(s.next_sleep_after(), 0);
+        assert!(!ColumnSettings::default().automated());
+        s.sleep_after_minutes = 5;
+        assert!(s.automated(), "the header marks a column that sleeps agents");
+        assert_eq!(s.summary(), ["sleeps idle agents after 5 min"]);
+        let json = serde_json::to_string(&ColumnSettings::default()).unwrap();
+        assert!(!json.contains("sleep_after_minutes"), "off is not written: {json}");
+        let back: ColumnSettings = serde_json::from_str(r#"{"sleep_after_minutes":5}"#).unwrap();
+        assert_eq!(back.sleep_after_minutes, 5);
     }
 
     #[test]

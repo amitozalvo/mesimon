@@ -10643,17 +10643,20 @@ impl Daemon {
 
     /// Automatic sleep is deliberately narrower than a user's sleep gesture:
     /// only a confirmed finished turn, timed from its settled state transition.
+    /// The timer is the ticket's (`Board::idle_sleep_after`): the board's
+    /// `park_after_minutes`, or its column's own `sleep_after_minutes`
+    /// (T-543) when that is sooner.
     fn park_inactive(&mut self, now: u64) -> bool {
-        let minutes = self.board.park_after_minutes;
-        if minutes == 0 {
-            return false;
-        }
-        let timeout = u64::from(minutes).saturating_mul(inactivity_minute_ms());
+        let minute = inactivity_minute_ms();
         let candidates: Vec<_> = self
             .board
             .sessions
             .iter()
-            .filter(|rec| {
+            .filter_map(|rec| {
+                let (minutes, rule) = self.board.idle_sleep_after(rec.ticket)?;
+                Some((rec, u64::from(minutes).saturating_mul(minute), rule))
+            })
+            .filter(|&(rec, timeout, _)| {
                 rec.inactivity_park_due(now, timeout)
                     && self.board.ticket(rec.ticket).is_some_and(|t| t.raised.is_none())
                     && !self.pending_resumes.iter().any(|pending| pending.session == rec.id)
@@ -10666,11 +10669,11 @@ impl Daemon {
                             && view.manual_compaction_prior.is_none()
                     })
             })
-            .map(|rec| rec.id)
+            .map(|(rec, timeout, rule)| (rec.id, timeout, rule))
             .collect();
-        let by = Principal::Automation { rule: "inactivity_park".into() };
         let mut changed = false;
-        for id in candidates {
+        for (id, timeout, rule) in candidates {
+            let by = Principal::Automation { rule: rule.into() };
             let rec =
                 self.board.sessions.iter().find(|rec| rec.id == id).expect("candidate exists");
             if !matches!(
@@ -10681,6 +10684,16 @@ impl Daemon {
             {
                 continue;
             }
+            // A person attached to the pane and typing in it within the
+            // timeout holds it awake (T-543): a column's minute is short
+            // enough to land while someone reads the answer, and the sleep
+            // would close the terminal under them. One `list-clients` fork,
+            // only for a session already due; a client quiet past the
+            // timeout is someone who walked away, and the park goes on.
+            let quiet_secs = self.backend.client_quiet_secs(&rec.sid16()).ok().flatten();
+            if quiet_secs.is_some_and(|secs| secs.saturating_mul(1000) < timeout) {
+                continue;
+            }
             let adapter = crate::agents::adapter(rec.kind).expect("Claude adapter");
             // Preserve the exact conversation, using the same history and identity
             // predicates as resume. A fresh-start fallback is not an automatic park.
@@ -10689,7 +10702,7 @@ impl Daemon {
             }
             let ticket = rec.ticket;
             if self.sleep_one(id, false).is_ok() {
-                self.feed.board("automation", "inactivity_park", Some(ticket));
+                self.feed.board("automation", rule, Some(ticket));
                 changed = true;
             }
         }
@@ -11523,13 +11536,15 @@ fn server_guard_ticks() -> u64 {
         .unwrap_or(SERVER_GUARD_TICKS)
 }
 
-/// Five-minute sweep; shortened only by the subprocess test harness.
+/// Ten-second sweep: a column's shortest timer is a minute (T-543), and a
+/// sweep that judges nothing but the records in memory until one is due
+/// costs nothing between. Shortened only by the subprocess test harness.
 fn inactivity_park_ticks() -> u64 {
     std::env::var("MESIMON_INACTIVITY_PARK_TICKS")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(1200)
+        .unwrap_or(40)
 }
 
 /// Tests can compress a minute without changing the persisted setting's units.

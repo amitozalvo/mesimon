@@ -4275,6 +4275,7 @@ impl App {
             },
             col_on_working: cs.on_working.clone().unwrap_or_default(),
             col_on_done: cs.on_done.clone().unwrap_or_default(),
+            col_sleep_after: cs.sleep_after_minutes,
             col_requires_merge: cs.requires_merge,
             col_reclaim: cs.reclaim,
             col_train_word: cs.train.word(),
@@ -6102,6 +6103,9 @@ impl App {
             Verb::ColumnOnDone => {
                 let next = self.next_column_target(|s| s.on_done.clone());
                 self.set_column(|s| s.on_done = next)?;
+            }
+            Verb::ColumnSleepAfter => {
+                self.set_column(|s| s.sleep_after_minutes = s.next_sleep_after())?
             }
             Verb::ColumnRequiresMerge => {
                 self.set_column(|s| s.requires_merge = !s.requires_merge)?
@@ -14710,6 +14714,40 @@ mod tests {
             assert_eq!(app.ctx().col_offers_word, offer.word());
         }
         assert!(sent_contains(&sent, "SetColumnSettings"));
+    }
+
+    /// T-543: the column's idle park is a row in Agent behaviour that
+    /// cycles its minutes on the wire, names the board's timer while it is
+    /// off, and is not offered on a board where no Claude would hear it.
+    #[test]
+    fn column_sleep_cycles_on_the_wire_and_names_the_boards_timer() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.column_agents = true;
+        let row = |app: &App| {
+            keymap::column_items(&app.ctx()).into_iter().find(|m| m.verb == Verb::ColumnSleepAfter)
+        };
+        assert_eq!((row(&app).unwrap().label)(&app.ctx()), "Sleep idle agents: off");
+        app.board.park_after_minutes = 30;
+        assert_eq!((row(&app).unwrap().label)(&app.ctx()), "Sleep idle agents: board (30 min)");
+        let idx = keymap::column_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::ColumnSleepAfter)
+            .unwrap();
+        if let Mode::ColumnSettings { idx: i, .. } = &mut app.mode {
+            *i = idx;
+        }
+        for minutes in [1, 5, 15, 60, 0] {
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.board.column("todo").unwrap().settings.sleep_after_minutes, minutes);
+            assert_eq!(app.ctx().col_sleep_after, minutes);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!((row(&app).unwrap().label)(&app.ctx()), "Sleep idle agents after 1 min");
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetColumnSettings")).count(), 6);
+        app.board.agent_provider = mesimon_core::board::AgentProvider::Codex;
+        assert!(row(&app).is_none(), "nothing parks a Codex agent here");
     }
 
     /// The OS flipped (T-485): the watch's channel says so, and the board

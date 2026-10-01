@@ -569,7 +569,9 @@ column name to a literal after `board::template_settings`, the one seeding table
 and the store's v3→v4 migration of an existing one — `COLUMNS_SCHEMA` 4). `on_working`/`on_done`
 ARE automove (`core/src/automove.rs` reads the ticket's column's settings), `train` is the merge
 train's reach (`Merge` = candidates + rebase asks, `Rebase` = asks only), `requires_merge` is the
-DONE gate, `reclaim` is the sleep/archive offer and `X`/`Z`, `workspace` defaults a ticket CREATED
+DONE gate, `reclaim` is the sleep/archive offer and `X`/`Z`, `sleep_after_minutes` is the
+column's own idle park (T-543; `Board::idle_sleep_after` races it against the board's
+`park_after_minutes` in `park_inactive`), `workspace` defaults a ticket CREATED
 there by stamping the ticket field at mint (never retroactive), `collapsed` pins a spine, `claude_mode`
 rides `--permission-mode` (`inherit` = the user's own `defaultMode`, else `auto`/`plan`/`manual`;
 the enum cannot spell `bypassPermissions`; `--permission-mode` is in `resume_argv`'s `owned` list so

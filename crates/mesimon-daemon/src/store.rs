@@ -52,6 +52,8 @@ pub(crate) mod imports;
 /// T-499 removed v4's `auto_run` with no bump: a file that still carries it
 /// loads, the key is ignored and gone on the next write, and forgetting it
 /// only narrows what a spawn gets — the reverse of the reason to bump.
+/// T-543 added a column's `sleep_after_minutes` with no bump for the same
+/// reason: a build that drops it only stops parking idle agents there.
 pub const COLUMNS_SCHEMA: u32 = 6;
 /// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
 /// build would read the ticket, ignore the array, and on its next
@@ -2099,6 +2101,7 @@ order = "a0"
                     reclaim: true,
                     offers: Some(mesimon_core::board::ColumnOffers::Sleep),
                     train: mesimon_core::board::TrainReach::Merge,
+                    sleep_after_minutes: 5,
                 },
             }],
             tags: vec![
@@ -2121,6 +2124,7 @@ order = "a0"
         assert!(text.contains("claude_mode = \"plan\""), "{text}");
         assert!(text.contains("agent_tools = \"read\""), "{text}");
         assert!(text.contains("description = \"planned for this version\""), "{text}");
+        assert!(text.contains("sleep_after_minutes = 5"), "{text}");
         assert!(!text.contains("on_done"), "{text}");
         assert_eq!(back.tags.len(), 2);
         assert_eq!(back.tags[0].name, "BUG");

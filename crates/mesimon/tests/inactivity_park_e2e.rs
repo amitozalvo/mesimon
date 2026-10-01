@@ -153,3 +153,89 @@ fn inactivity_parks_only_finished_resumable_turns_and_wakes_the_same_conversatio
     assert!(matches!(c.request(Command::SetParkAfterMinutes { minutes: 0 }), Response::Ok));
     assert_eq!(c.board().park_after_minutes, 0);
 }
+
+/// T-543: a column opts its tickets into the idle park. Nothing sleeps
+/// before a column asks, a person attached to the pane holds it awake past
+/// the timer, and the park lands the moment they leave — on the column's
+/// ticket only, with the column's rule in the feed.
+#[test]
+fn a_column_parks_its_idle_agents_and_spares_the_rest() {
+    let Some(h) = Harness::boot_with_env(
+        "autosleep",
+        Some(STUB),
+        &[
+            ("MESIMON_INACTIVITY_PARK_TICKS", "1"),
+            // One "minute" is long enough that a check three seconds after
+            // the attach is still inside the attached person's window.
+            ("MESIMON_INACTIVITY_MINUTE_MS", "10000"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+        ],
+    ) else {
+        return;
+    };
+    let mut c = h.client("autosleep");
+    let (kept, _) = start(&h, &mut c, "stays awake");
+    finish(&h, &mut c, kept);
+    let (parked, conversation) = start(&h, &mut c, "sleeps in done");
+    finish(&h, &mut c, parked);
+    let state = |c: &mut TestClient, id| {
+        c.board().sessions.iter().find(|s| s.id == id).unwrap().state.clone()
+    };
+
+    // Older than a column minute, and no column has asked: both awake.
+    std::thread::sleep(Duration::from_millis(10_500));
+    assert_eq!(c.board().park_after_minutes, 0);
+    for id in [kept, parked] {
+        assert!(state(&mut c, id).has_pane(), "slept with nothing on: {id}");
+    }
+
+    // Somebody attaches to the agent about to be parked.
+    let sid16 = parked.simple().to_string()[..16].to_string();
+    let mut client = tmux(&h.paths.tmux_sock())
+        .args(["-C", "attach", "-t", &sid16])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a control-mode tmux client");
+    wait_until(Duration::from_secs(10), "the attached client", || {
+        tmux(&h.paths.tmux_sock())
+            .args(["list-clients", "-t", &sid16])
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+    });
+
+    let board = c.board();
+    let mut done = board.column("DONE").unwrap().settings.clone();
+    done.sleep_after_minutes = 1;
+    done.requires_merge = false;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "DONE".into(), settings: done }),
+        Response::Ok
+    ));
+    let ticket = board.sessions.iter().find(|s| s.id == parked).unwrap().ticket;
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: ticket, column: "DONE".into(), before: None }),
+        Response::Ok
+    ));
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        state(&mut c, parked).has_pane(),
+        "parked under a person attached to it: {:?}",
+        state(&mut c, parked)
+    );
+
+    client.kill().unwrap();
+    let _ = client.wait();
+    c.await_state(parked, "parked by its column", |s| *s == SessionState::Sleeping);
+    assert!(state(&mut c, kept).has_pane(), "a column that did not ask kept its agent");
+    let board = c.board();
+    let rec = board.sessions.iter().find(|s| s.id == parked).unwrap();
+    assert_eq!(rec.claude_session_id, Some(conversation), "the conversation is kept");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    wait_until(Duration::from_secs(5), "the autosleep feed line", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| l.contains("\"autosleep\"") && l.contains("\"automation\""))
+        })
+    });
+}

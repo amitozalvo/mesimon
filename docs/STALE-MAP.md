@@ -16525,3 +16525,51 @@ served at once and 404 once removed. `build`, a relay recreate and a host recrea
 back Live with the pairing kept. With a placeholder token, a promptless spawn started claude
 in its worktree as "Sonnet 5.5 with medium effort" (`--model sonnet --effort medium`) with no
 first-run screen. The TUI was drawn in a detached tmux inside the host.
+
+## A column sleeps its idle agents (T-543, 2026-10-01, "autosleep tickets": "opt-in in column settings. for idle only")
+
+**Shipped.** `ColumnSettings.sleep_after_minutes` (0 = off, the default) is D23's automatic
+tier as the per-column policy the 2026-08-30 header-suggestion entry deferred to M5
+(`sleep = never|offer|auto`): the column dialog's **Agent behaviour › Sleep idle agents**
+cycles off / 1 / 5 / 15 / 60 min (`COLUMN_SLEEP_MINUTES`; a hand-edited value joins the cycle
+at the next choice above it). It is not a second sweep. T-391's `park_inactive` now reads each
+ticket's timer through `Board::idle_sleep_after`, the shorter of the board's
+`park_after_minutes` and the ticket's column's, the column's on a tie, and the feed line and
+the `Automation` principal name the rule that fired (`autosleep` or `inactivity_park`).
+
+- **"For idle only" is T-391's predicate, unchanged.** `inactivity_park_due`: a Claude at
+  High-confidence `Idle{EndTurn}`, aged from the settle, plus the daemon's holds (raised hand,
+  owed prompt, queued follow-up, pending resume or transition, compaction, wake's board and
+  conversation guards, missing history). Background work, monitoring, attention, `Unknown` and
+  Codex never qualify, and a shell is never parked. The row hides on a board where nothing uses
+  Claude (`claude_unused`), as the Mode row does.
+- **Timed from the settle, not from column entry.** A ticket moved into the column whose agent
+  finished an hour ago sleeps at the next sweep, which is the case the setting exists for
+  (finished work dragged to DONE). The 1-minute floor is D23's 60 s automation floor.
+- **A person attached and typing holds it awake (new, both timers).** A column minute is short
+  enough to land while someone reads the agent's answer in its pane, and a park closes the
+  terminal under them. For a session already due, one `list-clients` fork
+  (`client_quiet_secs`, T-299's) asks whether a client is attached and has typed within the
+  timeout; if so it is skipped and judged again on the next sweep. A client quiet past the
+  timeout is someone who walked away, and the park proceeds, so a pane left attached overnight
+  still sleeps under the board-wide timer.
+- **The sweep runs every 10 s, not every 5 min** (`inactivity_park_ticks` 1200 → 40): a
+  1-minute timer read every five minutes would be up to six. The sweep judges in-memory records
+  and forks only for a due candidate.
+- **No schema bump.** Dropping the field turns the automation off, which narrows nothing, which
+  is T-499's no-bump case (doctrine on `COLUMNS_SCHEMA`). `automated()` counts it, so the
+  column header carries its automation mark, and `summary` gives doctor's line `sleeps idle
+  agents after N min`. Not seeded on the template columns: the setting is opt-in.
+
+**Tests.** `board`: `a_columns_sleep_timer_races_the_boards`,
+`a_columns_sleep_choice_cycles_and_reads_in_words` (cycle, `automated`, summary, serde skip);
+`keymap`: the Agent behaviour rows; `app`:
+`column_sleep_cycles_on_the_wire_and_names_the_boards_timer` (label reads `board (30 min)`
+while the column is off, five presses on the wire, hidden on a Codex board); `store`: the
+round trip writes `sleep_after_minutes = 5`; golden `column_agent_behaviour_120x30` gained the
+row. `inactivity_park_e2e::a_column_parks_its_idle_agents_and_spares_the_rest`: two finished
+agents stay awake past a column minute with nothing on; a control-mode client attaches to one,
+DONE opts in and the ticket moves there; three seconds later it is still paned (the assertion
+fails with the hold removed: verified); the client leaves and it is `Sleeping` with its
+conversation, the other ticket's agent still paned, and the feed carries `autosleep` as
+`automation`.

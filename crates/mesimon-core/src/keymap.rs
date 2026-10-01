@@ -490,6 +490,8 @@ pub enum Verb {
     ColumnTools,
     ColumnOnWorking,
     ColumnOnDone,
+    /// The column's idle park (T-543): Enter cycles `COLUMN_SLEEP_MINUTES`.
+    ColumnSleepAfter,
     ColumnRequiresMerge,
     ColumnReclaim,
     ColumnTrain,
@@ -1389,6 +1391,8 @@ pub struct Ctx {
     pub col_tools_word: &'static str,
     pub col_on_working: String,
     pub col_on_done: String,
+    /// The column's own idle park in minutes; zero is off (T-543).
+    pub col_sleep_after: u32,
     pub col_requires_merge: bool,
     pub col_reclaim: bool,
     pub col_train_word: &'static str,
@@ -5089,7 +5093,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ColumnAgentBehaviour,
         label: |_| "Agent behaviour".into(),
-        detail: |_| "mode, tools, creation and turn transitions".into(),
+        detail: |_| "mode, tools, turn transitions and sleep".into(),
         avail: |c| !c.col_new,
         key: "",
     },
@@ -5173,6 +5177,19 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         avail: |c| !c.col_new,
         key: "",
     },
+    // T-543. Claude only, as the board's own row is: a Codex board hides it,
+    // because nothing would act on a Codex agent here.
+    MenuItem {
+        verb: Verb::ColumnSleepAfter,
+        label: |c| match (c.col_sleep_after, c.park_after_minutes) {
+            (0, 0) => "Sleep idle agents: off".into(),
+            (0, board) => format!("Sleep idle agents: board ({board} min)"),
+            (minutes, _) => format!("Sleep idle agents after {minutes} min"),
+        },
+        detail: |_| "after a finished turn ∙ enter cycles off / 1 / 5 / 15 / 60 min".into(),
+        avail: |c| !c.col_new && !c.claude_unused,
+        key: "",
+    },
     MenuItem {
         verb: Verb::ColumnRequiresMerge,
         label: |c| format!("Entry needs a merged branch: {}", yes_no(c.col_requires_merge)),
@@ -5230,6 +5247,7 @@ pub fn column_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
                     | Verb::ColumnTools
                     | Verb::ColumnOnWorking
                     | Verb::ColumnOnDone
+                    | Verb::ColumnSleepAfter
             );
             m.live(ctx)
                 && if ctx.col_new || ctx.col_naming {
@@ -8093,7 +8111,13 @@ mod tests {
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(
             column_items(&agents).iter().map(|m| m.verb).collect::<Vec<_>>(),
-            [Verb::ColumnClaudeMode, Verb::ColumnTools, Verb::ColumnOnWorking, Verb::ColumnOnDone]
+            [
+                Verb::ColumnClaudeMode,
+                Verb::ColumnTools,
+                Verb::ColumnOnWorking,
+                Verb::ColumnOnDone,
+                Verb::ColumnSleepAfter
+            ]
         );
     }
 
