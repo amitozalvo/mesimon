@@ -6,6 +6,94 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.35 — 2026-10-01
+
+### Added
+
+- **A column can put its idle agents to sleep.** In a column's settings,
+  `Agent behaviour › Sleep idle agents` cycles off, 1, 5, 15 and 60 minutes
+  (off by default). A Claude agent on a ticket in that column is put to sleep
+  once it has sat idle at its prompt for that long, a woken agent that was
+  never prompted included; its conversation is kept and `c` wakes it. An agent
+  doing background work or watching a monitor is left alone, and so is one
+  whose pane you are typing in. The board-wide timer in `Settings › Agents`
+  still applies; whichever timer is due first wins. The check runs every ten
+  seconds.
+- **The crown can sleep the agents it started, and a sleeping agent frees its
+  seat.** A new `sleep_agent` tool, for the crown only, parks an idle agent
+  the crown started (conversation kept, `c` wakes it). An agent a person
+  started is refused. The crown's start budget now counts only the agents it
+  started that are awake, so a parked worker makes room for another start
+  without an archive. The crown is also told, on its receipts and on its own
+  ticket, that the board wakes it when a worker delivers, merges, answers or
+  raises its hand, so it has no reason to poll.
+- **The crown can deliver its own asks, if you let it.** `Settings › Agents ›
+  Crown sends its asks` (off by default, per board) lets the words the crown
+  sends with `ask_agent` reach an agent the crown started as soon as that
+  agent is idle, without your `Ctrl+Y`. An ask to an agent a person started
+  still waits for `Ctrl+Y`. Words for a sleeping agent wake it and need a free
+  seat in the budget. Turning the setting off, or uncrowning, holds whatever
+  has not been sent. The card reads `♛ sent` at delivery and the feed logs
+  `ask_agent_sent`. With this on, one agent's words reach another agent's
+  turn with no person between them.
+- **The crown's actions play as lightning.** When the crown moves, starts,
+  parks, archives, files or asks on a ticket, a bolt runs from the crown's
+  card to that ticket and the title lights for two seconds with the word for
+  what was done. A moved card leaves a faded copy where it was while the bolt
+  plays, and a worker's delivery or merge strikes the crown's card in return.
+  `Settings › Appearance › Crown's actions: lightning / still` turns the
+  motion off, per machine. The mono theme draws no bolt.
+- **A held ask says it waits on you.** On the cursor card, an ask that waits
+  for you reads `T-544 asks ∙ you send` or `agent asked ∙ you send`, with
+  `^y send ∙ ^u take back` on the row under it. The ticket page's row reads
+  the same.
+- **Remote Control renames, moves and tags a ticket.** On the ticket page,
+  press the title to rename it (Enter saves, Escape puts it back) and press
+  the line under it to pick a column and tags. On a desktop's Board a card
+  drags to another column or to another slot in its own. A move obeys the
+  DONE gate, and a tag must be one the board already has. Needs a relay
+  updated to this release; the hosted relay is.
+- **Remote Control reads and edits a ticket's notes.** The ticket page shows
+  the description under the title and the other notes as rows. A note opens
+  in place, with Previous and Next; Edit opens a sheet, and a phone can add,
+  edit and delete notes, never the description. A saved note offers
+  `Tell claude` while the agent is awake. A note changed at the terminal
+  since you opened it is not overwritten: the page offers `Keep theirs` or
+  `Save mine`. Notes you opened stay readable while your terminal is away,
+  and an edit made then waits at the relay and lands once. Needs a relay
+  updated to this release.
+
+### Changed
+
+- **The `?` overlay lays its key groups side by side.** Each column is as
+  wide as its widest line, so a 120-column board shows the overlay in 14 rows
+  where it took 20. The `> <` row now reads `move card, stay on original
+  column`.
+- **A pending archive fades the card.** After the first `a`, the card
+  alternates between faded and normal until the second `a` or a cancelling
+  key; the ticket page's title row fades the same way. The mono theme holds
+  still.
+- **A woken agent that has not run yet wears the idle ring** (`◦`) on its
+  card, where before it looked like a ticket with no agent.
+- **Remote Control's Now and Board draw the same card.** Now's cards carry
+  tags and the agent's line as the Board's do, and a needs-you card says
+  `needs approval`, `has a plan`, `has a question` or `needs you` on both.
+- **Remote Control's settings open in a dialog** from a gear at the sidebar's
+  foot; the connection hops are inside it, and the connection pill opens it
+  on a phone. The Sent page's tick legend is gone (each tick keeps its word
+  as a title), and `Started from this browser` sits on the ticket page's tag
+  line.
+
+### Fixed
+
+- **The crown is not woken for a delivery the merge train will land.** It
+  hears once, at the merge. If the train gives the ticket up (a rebase that
+  left it behind, a refused merge, a disarmed train, the ticket moved off the
+  train's columns), the held delivery wakes the crown then. A worker on the
+  shared checkout wakes the crown as before.
+- **The header's memory chip no longer lands one column to the right** in
+  iTerm2, where it could read `0190GiB` for 0.9 GiB after the `☕️` glyph.
+
 ## v0.1.0-alpha.34 — 2026-10-01
 
 ### Added
