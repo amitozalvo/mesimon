@@ -1244,9 +1244,9 @@ pub fn usage_doctor_line() -> String {
                 r.windows.iter().map(|w| format!("{} {}", w.label, w.percent_word())).collect();
             let plan = r.plan.as_deref().map(|p| format!("{p}: ")).unwrap_or_default();
             format!(
-                "{plan}{} (read {} ago)",
+                "{plan}{} (read {})",
                 if windows.is_empty() { "no windows reported".into() } else { windows.join(", ") },
-                crate::text::age_slot(now, r.read_at_ms, false)
+                crate::text::age_ago(now, r.read_at_ms)
             )
         } else {
             "not read yet (a board reads it while open)".to_string()

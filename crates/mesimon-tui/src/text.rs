@@ -111,13 +111,19 @@ pub(crate) fn until_word(now_ms: u64, then_ms: u64) -> String {
     }
 }
 
-/// The ticket page's "created …" clause. `created now ago` was the slot
-/// read literally; `just now` is what a person says.
-pub(crate) fn age_created(now_ms: u64, then_ms: u64) -> String {
+/// How long ago, said as a person says it: `2m ago`, or `just now` where
+/// the slot reads `now` — `created now ago` and `read now ago` were the slot
+/// read literally (T-327).
+pub(crate) fn age_ago(now_ms: u64, then_ms: u64) -> String {
     match age_slot(now_ms, then_ms, false).as_str() {
-        "now" => "created just now".into(),
-        age => format!("created {age} ago"),
+        "now" => "just now".into(),
+        age => format!("{age} ago"),
     }
+}
+
+/// The ticket page's "created …" clause.
+pub(crate) fn age_created(now_ms: u64, then_ms: u64) -> String {
+    format!("created {}", age_ago(now_ms, then_ms))
 }
 
 /// A marquee window into `s`: skip `offset` display cells (whole grapheme

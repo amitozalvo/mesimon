@@ -303,7 +303,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
             vec![
                 Span::styled("official".to_string(), theme.dim2()),
                 Span::styled(
-                    format!(" ∙ read {} ago", crate::text::age_slot(now, r.read_at_ms, false)),
+                    format!(" ∙ read {}", crate::text::age_ago(now, r.read_at_ms)),
                     theme.dim3(),
                 ),
             ]

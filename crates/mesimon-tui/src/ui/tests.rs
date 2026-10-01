@@ -9267,6 +9267,22 @@ fn golden_usage_dialog() {
     assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid_n(1)));
 }
 
+/// A reading a few seconds old is read `just now`, never `now ago` — the
+/// age slot's `now` is a slot word, not a duration (T-327).
+#[test]
+fn a_fresh_reading_is_read_just_now() {
+    use mesimon_core::usage::Severity;
+    let mut app = usage_app(14.0, Severity::Normal);
+    if let Some(r) = app.usage.claude.reading.as_mut() {
+        r.read_at_ms = USAGE_NOW - 3_000;
+    }
+    app.mode = Mode::Usage { idx: 0 };
+    let all = render(&app, 120, 30).join("\n");
+    assert!(all.contains("official ∙ read just now"), "{all}");
+    assert!(!all.contains("now ago"), "{all}");
+    assert_eq!(crate::text::age_ago(USAGE_NOW, USAGE_NOW - 120_000), "2m ago");
+}
+
 #[test]
 fn golden_usage_settings() {
     let mut app = app_graphite(fixture(false));
