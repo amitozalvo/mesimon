@@ -1968,9 +1968,9 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
     let needs = v.needs_you.expect("a question stop says what it is");
     assert_eq!(needs.reason, "question");
     assert_eq!(needs.request.as_deref(), Some("toolu_q1"));
-    assert_eq!(needs.questions, Some(1));
+    assert_eq!(needs.questions.len(), 1);
     assert_eq!(needs.answerable, Some(true));
-    let q = needs.question.expect("the one question");
+    let q = &needs.questions[0];
     assert_eq!(q.text, "Which auth provider?");
     assert_eq!(q.options, ["Okta", "Auth0"]);
     assert!(!q.multi_select);
@@ -2004,15 +2004,16 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
     assert!(!asked_touch(&mut c), "a refusal lights nothing");
     assert!(pending_of(&mut c, Some(w)).is_empty(), "and queues nothing");
 
-    // ---- several questions: counted, not answerable, no one question -------
+    // ---- several questions: each listed, and answerable (T-571) -----------
     let two = json!({
         "tool_name": "AskUserQuestion",
         "tool_use_id": "toolu_q2",
         "tool_input": { "questions": [
             { "question": "Which provider?", "header": "Auth",
               "options": [{ "label": "Okta", "description": "" }], "multiSelect": false },
-            { "question": "Which region?", "header": "Region",
-              "options": [{ "label": "eu", "description": "" }], "multiSelect": false }
+            { "question": "Which regions?", "header": "Region",
+              "options": [{ "label": "eu", "description": "" }, { "label": "us", "description": "" }],
+              "multiSelect": true }
         ]}
     });
     hook_send(&hook_sock, &sw.to_string(), "PermissionRequest", &two.to_string());
@@ -2021,8 +2022,13 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
             == Some("toolu_q2")
     });
     let needs = read(&mut c, sa, &kw).unwrap().needs_you.unwrap();
-    assert_eq!((needs.questions, needs.answerable), (Some(2), Some(false)));
-    assert!(needs.question.is_none(), "{needs:?}");
+    assert_eq!(needs.answerable, Some(true), "{needs:?}");
+    let listed: Vec<_> = needs
+        .questions
+        .iter()
+        .map(|q| (q.text.as_str(), q.options.len(), q.multi_select))
+        .collect();
+    assert_eq!(listed, [("Which provider?", 1, false), ("Which regions?", 2, true)]);
 
     // ---- answered: the field is gone and the crown's words go through -------
     hook_send(&hook_sock, &sw.to_string(), "PostToolUse", &two.to_string());
@@ -2126,6 +2132,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
             request: request.into(),
             index,
             text: text.map(str::to_string),
+            answers: None,
         }
     };
     let refused = |c: &mut TestClient, key: &str, request: &str, index, text| {
@@ -2270,7 +2277,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     hook_send(&hook_sock, &ws.to_string(), "PostToolUse", plan);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
 
-    // ---- several questions at once are a person's --------------------------
+    // ---- several questions take one answer each (T-571) ----------------------
     let two = json!({
         "tool_name": "AskUserQuestion",
         "tool_use_id": "toolu_q2",
@@ -2285,7 +2292,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &two);
     c.await_state(ws, "asking two", asking);
     let why = refused(&mut c, &kw, "toolu_q2", Some(0), None);
-    assert!(why.contains("asks 2 questions") && why.contains("a person answers"), "{why}");
+    assert!(why.contains("asks 2 questions at once") && why.contains("answers carries"), "{why}");
     hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &two);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
 
@@ -2295,4 +2302,182 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     c.await_state(ws, "asking", asking);
     let why = refused(&mut c, &kw, "toolu_a3", Some(0), None);
     assert!(why.contains("Crown answers questions is off"), "{why}");
+}
+
+/// The crown answers a batch (T-571). The worker's pane runs a stand-in for
+/// Claude Code's dialog as measured on 2.1.287 (`fake_claude_dialog.py`):
+/// `get_ticket` lists every question, an answer whose count or kind does not
+/// fit is refused in words, and the answer walks the dialog tab by tab — a
+/// choice, two ticks and words — to its review, whose `Submit answers` is
+/// pressed once; the receipt reads `answered` only on the stub's
+/// `PostToolUse`, and the feed and the card carry every answer.
+#[test]
+fn the_crown_answers_a_batch_one_answer_per_question() {
+    use mesimon_core::mesophon::QuestionAnswer as Q;
+    const STUB: &str = include_str!("common/fake_claude_dialog.py");
+    let Some(h) = Harness::boot_bare(
+        "crown_batch",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_batch");
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-571 worker");
+    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(c.request(Command::SetCrownAnswers { on: true }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+
+    // ---- the batch, drawn in W's pane and seen by the hook --------------------
+    let input = json!({ "questions": [
+        { "question": "Which color?", "header": "Color", "multiSelect": false,
+          "options": [{ "label": "Blue", "description": "Calm" },
+                      { "label": "Green", "description": "Go" }] },
+        { "question": "Which toppings?", "header": "Toppings", "multiSelect": true,
+          "options": [{ "label": "Cheese", "description": "Melted" },
+                      { "label": "Olives", "description": "" },
+                      { "label": "Basil", "description": "Fresh" }] },
+        { "question": "Which size?", "header": "Size", "multiSelect": false,
+          "options": [{ "label": "Small", "description": "" },
+                      { "label": "Large", "description": "" }] }
+    ]});
+    std::fs::write(h.dir.join(format!("dialog-{kw}.json")), input.to_string()).unwrap();
+    let frame = json!({
+        "tool_name": "AskUserQuestion", "tool_use_id": "toolu_b1", "tool_input": input
+    })
+    .to_string();
+    let pane = |c: &mut TestClient| match c.request(Command::PaneTail { session: ws, lines: 60 }) {
+        Response::PaneTail { lines, .. } => lines.join("\n"),
+        _ => String::new(),
+    };
+    wait_until(std::time::Duration::from_secs(10), "the batch drawn", || {
+        pane(&mut c).contains("✔ Submit")
+    });
+    hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &frame);
+    c.await_state(ws, "asking", |s| {
+        *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Question }
+    });
+
+    // ---- get_ticket lists every question -------------------------------------
+    let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the batch");
+    assert_eq!(needs.request.as_deref(), Some("toolu_b1"));
+    assert_eq!(needs.answerable, Some(true));
+    let listed: Vec<_> = needs
+        .questions
+        .iter()
+        .map(|q| (q.text.as_str(), q.options.join("/"), q.multi_select))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Which color?", "Blue/Green".to_string(), false),
+            ("Which toppings?", "Cheese/Olives/Basil".to_string(), true),
+            ("Which size?", "Small/Large".to_string(), false),
+        ]
+    );
+
+    // ---- an answer that does not fit is refused in words, no key typed -------
+    let keys = h.dir.join(format!("keys-{kw}"));
+    let typed = || std::fs::read_to_string(&keys).unwrap_or_default();
+    let before = typed();
+    let answer = |c: &mut TestClient, index: Option<usize>, answers: Option<Vec<Q>>| {
+        let v = read(c, sa, &kw).unwrap();
+        Command::AgentAnswerTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            request: "toolu_b1".into(),
+            index,
+            text: None,
+            answers,
+        }
+    };
+    let refused = |c: &mut TestClient, index, answers| {
+        let cmd = answer(c, index, answers);
+        match c.send(Principal::Agent { session: sa }, cmd) {
+            Response::Err { message } => message,
+            other => panic!("answer_agent: {other:?}"),
+        }
+    };
+    let why = refused(&mut c, Some(1), None);
+    assert!(why.contains("asks 3 questions at once"), "{why}");
+    let why =
+        refused(&mut c, None, Some(vec![Q::Choice { index: 1 }, Q::Choices { indices: vec![0] }]));
+    assert!(why.contains("answers carries 2 answers") && why.contains("asks 3 questions"), "{why}");
+    let why = refused(
+        &mut c,
+        None,
+        Some(vec![Q::Choice { index: 1 }, Q::Choice { index: 0 }, Q::Choice { index: 1 }]),
+    );
+    assert!(why.contains("question 2 takes several choices"), "{why}");
+    assert_eq!(typed(), before, "a refusal types nothing");
+
+    // ---- the answer walks the tabs; the receipt waits for the hook edge ------
+    let cmd = answer(
+        &mut c,
+        None,
+        Some(vec![
+            Q::Choice { index: 1 },
+            Q::Choices { indices: vec![0, 2] },
+            Q::Text { text: "Large please".into() },
+        ]),
+    );
+    let sock = h.paths.orch_sock();
+    let call = std::thread::spawn(move || {
+        TestClient::connect(&sock).send(Principal::Agent { session: sa }, cmd)
+    });
+    let answered = h.dir.join(format!("answered-{kw}.json"));
+    wait_until(std::time::Duration::from_secs(30), "the dialog submitted", || answered.exists());
+    let took: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&answered).unwrap()).unwrap();
+    assert_eq!(
+        took,
+        json!({
+            "Which color?": "Green",
+            "Which toppings?": "Cheese, Basil",
+            "Which size?": "Large please"
+        })
+    );
+    let walked = typed()[before.len()..].to_string();
+    assert_eq!(walked.matches("\\r").count(), 4, "three tabs and one Submit: {walked}");
+    assert!(!call.is_finished(), "the receipt waits for the hook edge");
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &frame);
+    match call.join().unwrap() {
+        Response::AgentAnswered { key, outcome, reason, answer, .. } => {
+            assert_eq!((key.as_str(), outcome.as_str(), reason), (kw.as_str(), "answered", None));
+            assert_eq!(answer, "Green; Cheese, Basil; Large please");
+        }
+        other => panic!("answer_agent: {other:?}"),
+    }
+    let feed = std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap();
+    assert!(
+        feed.lines().any(|l| l.contains("\"cmd\":\"answer_agent\"")
+            && l.contains("\"answer\":\"Green; Cheese, Basil; Large please\"")
+            && l.contains("\"outcome\":\"answered\"")),
+        "{feed}"
+    );
+    let detail = c.board().sessions.iter().find(|s| s.id == ws).and_then(|s| s.detail.clone());
+    assert_eq!(
+        detail.as_deref(),
+        Some(format!("answered by {ka}: Green; Cheese, Basil; Large please").as_str())
+    );
 }

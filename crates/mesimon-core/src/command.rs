@@ -990,10 +990,12 @@ pub enum Command {
     /// (T-569): Remote Control's screen-verified dialog road, driven for the
     /// crown. Crown only, behind `Board::crown_answers`, only for an agent
     /// the crown started, only at `RequiresAction{Question}` on the dialog
-    /// `request` names (get_ticket's `needs_you.request`), and only in the
-    /// one-question, one-choice shape the phone answers. `index` picks an
-    /// option; `text` types one in its place. The receipt waits for the
-    /// hook edge (`Response::AgentAnswered`).
+    /// `request` names (get_ticket's `needs_you.request`), and only in a
+    /// shape the phone answers. `index` picks an option of the one
+    /// question; `text` types one in its place; `answers` carries one answer
+    /// per question for a batch or a several-choice question (T-571).
+    /// Exactly one of the three. The receipt waits for the hook edge
+    /// (`Response::AgentAnswered`).
     AgentAnswerTicket {
         key: String,
         #[serde(default)]
@@ -1003,6 +1005,8 @@ pub enum Command {
         index: Option<usize>,
         #[serde(default)]
         text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<Vec<crate::mesophon::QuestionAnswer>>,
     },
     /// Mint a NEW ticket (`create_ticket`). The one agent command that is
     /// not about the caller's own ticket, and the one place the tier makes a
@@ -1884,18 +1888,16 @@ pub struct AgentStateView {
 /// `board::agent_reason_word`'s vocabulary. On a question stop whose dialog
 /// the hook stream carried, the rest is the projection Remote Control
 /// draws: `request` names that dialog (an answer binds to it), `questions`
-/// counts it, `question` is the one question when it asks one, and
-/// `answerable` says whether the board's own answer road takes its shape —
-/// one question, one choice. Absent where the board saw no dialog.
+/// lists every question it asks, in order (T-571; it was a count beside
+/// the one `question`), and `answerable` says whether the board's own
+/// answer road takes its shape. Absent where the board saw no dialog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentNeedsYouView {
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub questions: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub question: Option<AgentQuestionView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<AgentQuestionView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answerable: Option<bool>,
 }

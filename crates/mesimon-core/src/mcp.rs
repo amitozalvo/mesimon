@@ -75,7 +75,8 @@ macro_rules! persons_questions {
          act (deleting, force-pushing, publishing, sending to people), a preference the \
          ticket's brief leaves open, or scope beyond the brief is a person's to answer: \
          raise_hand on the crown's own ticket, naming the worker and the question, puts one \
-         card in front of the person."
+         card in front of the person. A batch of questions is submitted whole, so one person's \
+         question in it makes the whole batch a person's."
     };
 }
 
@@ -546,23 +547,24 @@ pub fn tools() -> Vec<Value> {
         // crown's judgement, described here and in the receipt.
         json!({
             "name": "answer_agent",
-            "description": "Answers a question another ticket's agent stops on (crown \
-                            only, where the board lets it; an agent the crown started): \
-                            request is needs_you.request from get_ticket, index an option, \
-                            text words instead. A person's question: secrets or credentials, \
-                            spend or quota, a destructive or irreversible act (deleting, \
-                            force-pushing, publishing, sending to people), a preference the \
-                            brief leaves open, scope beyond it; there, raise_hand names \
-                            the worker and the question. Outcome: answered, input_sent or \
-                            unknown.",
+            "description": "Answers a question an agent the crown started stops on \
+                            (crown only, if the board lets it): request: needs_you.request; \
+                            index or text, or answers: {index}, {indices} or {text} per \
+                            question. A person's: secrets or credentials, spend or quota, a \
+                            destructive or irreversible act (deleting, force-pushing, \
+                            publishing, sending to people), a preference the brief leaves \
+                            open, scope beyond it, a batch holding one (submitted whole); \
+                            raise_hand names the worker and the question. Outcome: answered, \
+                            input_sent or unknown.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string" },
                     "seen": { "type": "string" },
                     "request": { "type": "string" },
-                    "index": { "type": "integer", "description": "Optional. From 0." },
+                    "index": { "type": "integer" },
                     "text": { "type": "string" },
+                    "answers": { "type": "array" },
                 },
                 "required": ["key", "seen", "request"],
                 "additionalProperties": false,
@@ -650,13 +652,14 @@ pub enum ToolCall {
         seen: String,
         plan: bool,
     },
-    /// Exactly one of `index` and `text` (T-569).
+    /// Exactly one of `index`, `text` (T-569) and `answers` (T-571).
     AnswerAgent {
         key: String,
         seen: String,
         request: String,
         index: Option<usize>,
         text: Option<String>,
+        answers: Option<Vec<crate::mesophon::QuestionAnswer>>,
     },
     CreateTicket {
         title: String,
@@ -701,6 +704,61 @@ fn opt_word(args: &Value, name: &str) -> Result<Option<String>, String> {
 /// A required string argument, trimmed and non-empty.
 fn word(args: &Value, name: &str) -> Result<String, String> {
     opt_word(args, name)?.ok_or_else(|| format!("{name} is required"))
+}
+
+/// `index` and `text` as `answer_agent` takes them (T-569), on the call or
+/// on one of its `answers` (T-571, where `at` names it): a whole number, and
+/// words untrimmed, since they are typed into the dialog as given and the
+/// daemon refuses a newline rather than mending one.
+fn one_answer(args: &Value, at: &str) -> Result<(Option<usize>, Option<String>), String> {
+    let index = match args.get("index") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_u64()
+                .map(|i| i as usize)
+                .ok_or_else(|| format!("{at}index must be a whole number, not {v}"))?,
+        ),
+    };
+    let text = match args.get("text") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(t)) => Some(t.clone()),
+        Some(other) => return Err(format!("{at}text must be a string, not {other}")),
+    };
+    Ok((index, text))
+}
+
+/// One of `answer_agent`'s `answers` (T-571): exactly one of `index`,
+/// `indices` and `text`, and nothing else.
+fn question_answer(item: &Value, n: usize) -> Result<crate::mesophon::QuestionAnswer, String> {
+    use crate::mesophon::QuestionAnswer as Q;
+    let at = format!("answers[{n}].");
+    let Some(fields) = item.as_object() else {
+        return Err(format!("answers[{n}] must be an object: {{index}}, {{indices}} or {{text}}"));
+    };
+    if let Some(other) = fields.keys().find(|k| !["index", "indices", "text"].contains(&k.as_str()))
+    {
+        return Err(format!("answers[{n}] has {other:?}; it takes index, indices or text"));
+    }
+    let (index, text) = one_answer(item, &at)?;
+    let indices = match item.get("indices") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(list)) => Some(
+            list.iter()
+                .map(|v| {
+                    v.as_u64()
+                        .map(|i| i as usize)
+                        .ok_or_else(|| format!("{at}indices must be whole numbers, not {v}"))
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+        ),
+        Some(other) => return Err(format!("{at}indices must be an array, not {other}")),
+    };
+    match (index, indices, text) {
+        (Some(index), None, None) => Ok(Q::Choice { index }),
+        (None, Some(indices), None) => Ok(Q::Choices { indices }),
+        (None, None, Some(text)) => Ok(Q::Text { text }),
+        _ => Err(format!("answers[{n}] takes index, indices or text, exactly one")),
+    }
 }
 
 /// Parse a `tools/call` into a `ToolCall`, or produce the message the agent
@@ -771,27 +829,24 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             plan: flag(args, "plan")?,
         }),
         "answer_agent" => {
-            let index = match args.get("index") {
+            let (index, text) = one_answer(args, "")?;
+            let answers = match args.get("answers") {
                 None | Some(Value::Null) => None,
-                Some(v) => Some(
-                    v.as_u64()
-                        .map(|i| i as usize)
-                        .ok_or_else(|| format!("index must be a whole number, not {v}"))?,
+                Some(Value::Array(items)) => Some(
+                    items
+                        .iter()
+                        .enumerate()
+                        .map(|(n, item)| question_answer(item, n))
+                        .collect::<Result<Vec<_>, String>>()?,
                 ),
+                Some(other) => return Err(format!("answers must be an array, not {other}")),
             };
-            // Untrimmed: the words are typed into the dialog as given, and
-            // the daemon refuses a newline rather than mending one.
-            let text = match args.get("text") {
-                None | Some(Value::Null) => None,
-                Some(Value::String(t)) => Some(t.clone()),
-                Some(other) => return Err(format!("text must be a string, not {other}")),
-            };
-            match (&index, &text) {
-                (Some(_), Some(_)) => {
-                    return Err("answer_agent takes index or text, not both".into())
+            match (&index, &text, &answers) {
+                (None, None, None) => {
+                    return Err("answer_agent needs index, text or answers".into())
                 }
-                (None, None) => return Err("answer_agent needs index or text".into()),
-                _ => {}
+                (Some(_), None, None) | (None, Some(_), None) | (None, None, Some(_)) => {}
+                _ => return Err("answer_agent takes index, text or answers, not two".into()),
             }
             Ok(ToolCall::AnswerAgent {
                 key: word(args, "key")?,
@@ -799,6 +854,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                 request: word(args, "request")?,
                 index,
                 text,
+                answers,
             })
         }
         "read_attachment" => Ok(ToolCall::ReadAttachment {
@@ -1365,6 +1421,7 @@ mod tests {
                     request: "toolu_1".into(),
                     index: Some(0),
                     text: None,
+                    answers: None,
                 },
                 "answer_agent",
             ),
@@ -1472,6 +1529,7 @@ mod tests {
                 request: "toolu_1".into(),
                 index: Some(1),
                 text: None,
+                answers: None,
             })
         );
         assert_eq!(
@@ -1485,17 +1543,54 @@ mod tests {
                 request: "toolu_1".into(),
                 index: None,
                 text: Some(" Purple".into()),
+                answers: None,
             }),
             "the words go in as given"
         );
         let base = json!({ "key": "T-4", "seen": "abc", "request": "toolu_1" });
         assert!(parse_tool_call("answer_agent", &base)
             .unwrap_err()
-            .contains("needs index or text"));
+            .contains("needs index, text or answers"));
         let mut both = base.clone();
         both["index"] = json!(0);
         both["text"] = json!("x");
-        assert!(parse_tool_call("answer_agent", &both).unwrap_err().contains("not both"));
+        assert!(parse_tool_call("answer_agent", &both).unwrap_err().contains("not two"));
+        // T-571: one answer per question, each exactly one of three.
+        use crate::mesophon::QuestionAnswer as Q;
+        let mut batch = base.clone();
+        batch["answers"] = json!([{ "index": 1 }, { "indices": [0, 2] }, { "text": " Mauve" }]);
+        assert_eq!(
+            parse_tool_call("answer_agent", &batch),
+            Ok(ToolCall::AnswerAgent {
+                key: "T-4".into(),
+                seen: "abc".into(),
+                request: "toolu_1".into(),
+                index: None,
+                text: None,
+                answers: Some(vec![
+                    Q::Choice { index: 1 },
+                    Q::Choices { indices: vec![0, 2] },
+                    Q::Text { text: " Mauve".into() },
+                ]),
+            })
+        );
+        let mut two = batch.clone();
+        two["index"] = json!(0);
+        assert!(parse_tool_call("answer_agent", &two).unwrap_err().contains("not two"));
+        for (bad, says) in [
+            (json!([{ "index": 0, "text": "x" }]), "exactly one"),
+            (json!([{}]), "exactly one"),
+            (json!([{ "label": "Okta" }]), "takes index, indices or text"),
+            (json!([{ "indices": [0, -1] }]), "whole numbers"),
+            (json!([{ "indices": 1 }]), "must be an array"),
+            (json!([3]), "must be an object"),
+            (json!({ "index": 0 }), "answers must be an array"),
+        ] {
+            let mut v = base.clone();
+            v["answers"] = bad;
+            let why = parse_tool_call("answer_agent", &v).unwrap_err();
+            assert!(why.contains(says), "{why}");
+        }
         for bad in [json!(-1), json!(1.5), json!("1")] {
             let mut v = base.clone();
             v["index"] = bad;
@@ -1800,6 +1895,8 @@ mod tests {
             ] {
                 assert!(text.contains(case), "{case:?} is named in {text:?}");
             }
+            // T-571: a batch is submitted whole.
+            assert!(text.contains("submitted whole"), "the batch rule is named in {text:?}");
         }
         for words in ["crown only", "an agent the crown started", "needs_you.request"] {
             assert!(description.contains(words), "answer_agent says {words:?}");
@@ -2035,6 +2132,7 @@ mod tests {
                 request: "toolu_1".into(),
                 index: None,
                 text: Some("x".into()),
+                answers: None,
             },
         ];
         for c in &allowed {

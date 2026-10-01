@@ -4471,7 +4471,7 @@ impl Daemon {
             // crown's judgement, described in the tool and the receipt. The
             // receipt waits for the hook edge: this arm queues the walk and
             // the writer parks the call's reply with it (`answer_waits`).
-            Command::AgentAnswerTicket { key, seen, request, index, text } => {
+            Command::AgentAnswerTicket { key, seen, request, index, text, answers } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -4491,8 +4491,18 @@ impl Daemon {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
                 let key = self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key);
-                match self.crown_dialog_answer(ticket, session, target, &key, &request, index, text)
-                {
+                let answer = match (index, text, answers) {
+                    (Some(index), None, None) => mesophon::CrownAnswer::Index(index),
+                    (None, Some(text), None) => mesophon::CrownAnswer::Text(text),
+                    (None, None, Some(answers)) => mesophon::CrownAnswer::Answers(answers),
+                    _ => {
+                        return Response::Err {
+                            message: "answer_agent takes index, text or answers, one of them"
+                                .into(),
+                        }
+                    }
+                };
+                match self.crown_dialog_answer(ticket, session, target, &key, &request, answer) {
                     Ok(id) => {
                         self.answer_waits = Some(id);
                         // What a caller that is not the writer loop reads:
@@ -5550,15 +5560,16 @@ impl Daemon {
         Some(AgentNeedsYouView {
             reason: agent_reason_word(reason).to_string(),
             request: dialog.map(|(request, _)| request.to_string()),
-            questions: dialog.map(|(_, qs)| qs.len()),
-            question: dialog.and_then(|(_, qs)| match qs {
-                [q] => Some(AgentQuestionView {
+            questions: dialog
+                .map(|(_, qs)| qs)
+                .unwrap_or_default()
+                .iter()
+                .map(|q| AgentQuestionView {
                     text: scrub(&q.question),
                     options: q.options.iter().map(|o| scrub(&o.label)).collect(),
                     multi_select: q.multi_select,
-                }),
-                _ => None,
-            }),
+                })
+                .collect(),
             answerable: dialog.map(|(_, qs)| mesophon::dialog_answerable(qs)),
         })
     }

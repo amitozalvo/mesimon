@@ -37,6 +37,8 @@ pub enum DialogKey {
     Up,
     Down,
     Escape,
+    /// Ticks or unticks a several-choice row (T-571).
+    Space,
 }
 
 pub fn tmux_bin() -> PathBuf {
@@ -397,6 +399,7 @@ impl TmuxBackend {
             DialogKey::Up => "Up",
             DialogKey::Down => "Down",
             DialogKey::Escape => "Escape",
+            DialogKey::Space => "Space",
         };
         self.run(&["send-keys", "-t", sid16, key])?;
         Ok(())

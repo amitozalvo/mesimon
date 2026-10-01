@@ -76,7 +76,9 @@ struct DialogDelivery {
     deadline: Instant,
     next: Instant,
     steps: u8,
-    pasted: bool,
+    /// The most keys this answer may take (`walk_budget`).
+    max_steps: u8,
+    walk: Walk,
     /// Set once the last key is in (T-567): until then the answer waits for
     /// the hook edge, and past it the keys were sent and not confirmed.
     confirm: Option<Instant>,
@@ -109,8 +111,12 @@ impl Deliverer {
 }
 /// How long an answer's last key waits for the hook edge (T-567).
 const DIALOG_CONFIRM: Duration = Duration::from_secs(5);
+/// The longest a batch's keys may walk (T-571): `walk_budget`'s ceiling,
+/// and with `DIALOG_CONFIRM` inside the shim's wait for `answer_agent`
+/// (`ANSWER_WAIT_SECS` in the `mesimon` crate's `mcp.rs`).
+const DIALOG_WALK_MAX: Duration = Duration::from_secs(60);
 /// The longest text an answer types into a dialog: Remote Control's cap,
-/// which `dialog_target` enforces for every answer.
+/// which `dialog_plan` enforces for every answer.
 const DIALOG_TEXT_MAX: usize = 1000;
 /// How much of the crown's answer the card's line carries (T-569), inside
 /// `SessionRecord::detail`'s 200.
@@ -609,6 +615,9 @@ impl Daemon {
                     "tag",
                     // Notes read and written from the ticket page (T-532).
                     "notes",
+                    // A batch or several-choice question answered whole,
+                    // `DialogAnswer::Answers` (T-571).
+                    "dialog_multi",
                     // Tickets for an away host wait at the relay (T-497).
                     if self.control.mail { "mailbox" } else { "" },
                 ]
@@ -944,11 +953,12 @@ impl Daemon {
         let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == request) else {
             return Reply::Rejected { message: "dialog changed; check the pane".into() };
         };
-        if dialog_target(dialog, &response).is_none() {
+        if dialog_plan(dialog, &response).is_none() {
             return Reply::Rejected {
                 message: "this dialog shape is not verified; answer in the pane".into(),
             };
         }
+        let (max_steps, walk) = walk_budget(dialog);
         let Ok(ticket) = ulid::Ulid::from_string(ticket) else {
             return Reply::Rejected { message: "invalid ticket".into() };
         };
@@ -959,10 +969,11 @@ impl Daemon {
                 ticket,
                 request: request.into(),
                 response,
-                deadline: Instant::now() + Duration::from_secs(8),
+                deadline: Instant::now() + walk,
                 next: Instant::now(),
                 steps: 0,
-                pasted: false,
+                max_steps,
+                walk: Walk::default(),
                 confirm: None,
             },
         );
@@ -1030,29 +1041,42 @@ impl Daemon {
             let step = match dialog {
                 None => Err("state_changed"),
                 Some(_) if !allowed => Err("state_changed"),
-                Some(_) if Instant::now() >= pending.deadline || pending.steps >= 12 => {
+                Some(_)
+                    if Instant::now() >= pending.deadline || pending.steps >= pending.max_steps =>
+                {
                     Err("deadline")
                 }
                 Some(d) => {
-                    dialog_step(d, &pending.response, &screen, pending.pasted).map_err(Miss::word)
+                    dialog_step(d, &pending.response, &screen, &pending.walk).map_err(Miss::word)
                 }
             };
             let sid = id.simple().to_string()[..16].to_string();
-            // `Ok(true)` is the last key: Enter, or Escape for a refusal.
+            // `Ok(true)` is the last key: Enter, or Escape for a refusal. A
+            // tick is remembered for one key, so the next screen must show it.
+            pending.walk.toggled = None;
             let sent = step.and_then(|step| {
                 match step {
                     DialogStep::Up => self.backend.dialog_key(&sid, DialogKey::Up).map(|_| false),
                     DialogStep::Down => {
                         self.backend.dialog_key(&sid, DialogKey::Down).map(|_| false)
                     }
+                    DialogStep::Toggle { question, row } => {
+                        self.backend.dialog_key(&sid, DialogKey::Space).map(|_| {
+                            pending.walk.toggled = Some((question, row));
+                            false
+                        })
+                    }
                     DialogStep::Reject => {
                         self.backend.dialog_key(&sid, DialogKey::Escape).map(|_| true)
                     }
+                    DialogStep::Next => self.backend.send_enter(&sid).map(|_| false),
                     DialogStep::Submit => self.backend.send_enter(&sid).map(|_| true),
-                    DialogStep::Paste(text) => self.backend.paste_input(&sid, &text).map(|_| {
-                        pending.pasted = true;
-                        false
-                    }),
+                    DialogStep::Paste { question, text } => {
+                        self.backend.paste_input(&sid, &text).map(|_| {
+                            pending.walk.pasted.push(question);
+                            false
+                        })
+                    }
                 }
                 .map_err(|_| "pane_unreachable")
             });
@@ -1189,9 +1213,10 @@ impl Daemon {
     /// runs first (the crown, the crown's own ticket, the stamp, `authorize`):
     /// the board's switch, the agent's provenance, the stop, the dialog, its
     /// shape and the answer, each refused in words, and then Remote
-    /// Control's road with the crown's name on it. `Ok` is the session whose
-    /// dialog the answer walks; the receipt waits for the delivery to settle
-    /// (`control_park_reply`).
+    /// Control's road with the crown's name on it. `answer` is the one
+    /// question's `index` or `text`, or one answer per question (T-571).
+    /// `Ok` is the session whose dialog the answer walks; the receipt waits
+    /// for the delivery to settle (`control_park_reply`).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn crown_dialog_answer(
         &mut self,
@@ -1200,8 +1225,7 @@ impl Daemon {
         target: ulid::Ulid,
         key: &str,
         request: &str,
-        index: Option<usize>,
-        text: Option<String>,
+        answer: CrownAnswer,
     ) -> std::result::Result<uuid::Uuid, String> {
         if !self.board.crown_answers {
             return Err(format!(
@@ -1247,55 +1271,15 @@ impl Daemon {
         let api::DialogContent::Questions { questions } = &dialog.content else {
             return Err(format!("{key}'s dialog is a plan, and a plan is a person's to answer"));
         };
-        if questions.len() != 1 {
-            return Err(format!(
-                "{key}'s dialog asks {} questions at once; the board answers one question with one \
-                 choice, so a person answers this one",
-                questions.len()
-            ));
-        }
-        if questions[0].multi_select {
-            return Err(format!(
-                "{key}'s question takes several choices; the board answers one question with one \
-                 choice, so a person answers this one"
-            ));
-        }
-        let options = &questions[0].options;
-        let (response, answer) = match (index, text) {
-            (Some(i), None) if i < options.len() => {
-                (api::DialogAnswer::Choice { index: i }, options[i].label.clone())
-            }
-            (Some(i), None) => {
-                return Err(format!(
-                    "index {i} is out of range: the question has {} options, 0 to {}",
-                    options.len(),
-                    options.len().saturating_sub(1)
-                ));
-            }
-            (None, Some(t)) => {
-                if t.contains(['\n', '\r']) {
-                    return Err("text is one line; a newline would submit the dialog early".into());
-                }
-                if t.len() > DIALOG_TEXT_MAX {
-                    return Err(format!(
-                        "text is {} bytes; a dialog takes at most {DIALOG_TEXT_MAX}",
-                        t.len()
-                    ));
-                }
-                if mesimon_core::command::sanitize_prompt(&t).as_deref() != Some(t.as_str()) {
-                    return Err("text is blank or carries characters a dialog cannot take; plain \
-                                words only"
-                        .into());
-                }
-                (api::DialogAnswer::Text { text: t.clone() }, t)
-            }
-            _ => return Err("answer_agent takes index or text, one of them".into()),
-        };
-        if dialog_target(dialog, &response).is_none() {
+        let answers = crown_answers(key, questions, answer)?;
+        let answer = answer_words(questions, &answers);
+        let response = api::DialogAnswer::Answers { answers };
+        if dialog_plan(dialog, &response).is_none() {
             return Err(format!(
                 "{key}'s dialog is not a shape the board answers; a person answers it"
             ));
         }
+        let (max_steps, walk) = walk_budget(dialog);
         // Queued words wait behind the answer and do not hold it (T-568).
         if self.control.dialog_deliveries.contains_key(&id) || self.control_input_in_flight(id) {
             return Err(format!("an answer for {key}'s question is already on its way"));
@@ -1307,10 +1291,11 @@ impl Daemon {
                 ticket: target,
                 request: request.into(),
                 response,
-                deadline: Instant::now() + Duration::from_secs(8),
+                deadline: Instant::now() + walk,
                 next: Instant::now(),
                 steps: 0,
-                pasted: false,
+                max_steps,
+                walk: Walk::default(),
                 confirm: None,
             },
         );
@@ -2916,20 +2901,182 @@ fn filed_tags(
     Ok(refs)
 }
 
+/// What the crown's `answer_agent` carries (T-569, T-571): the one
+/// question's `index` or `text`, or one answer per question.
+pub(super) enum CrownAnswer {
+    Index(usize),
+    Text(String),
+    Answers(Vec<api::QuestionAnswer>),
+}
+
+/// The crown's answer as one answer per question, each checked against its
+/// question and refused in words: the count, a one-choice question given
+/// `indices` or a several-choice one given `index`, an option out of range,
+/// and words that are not one plain line.
+fn crown_answers(
+    key: &str,
+    questions: &[api::Question],
+    answer: CrownAnswer,
+) -> std::result::Result<Vec<api::QuestionAnswer>, String> {
+    use api::QuestionAnswer as Q;
+    let n = questions.len();
+    let answers = match answer {
+        CrownAnswer::Answers(answers) if answers.len() != n => {
+            return Err(format!(
+                "answers carries {} answers and {key}'s dialog asks {n} question{}: one answer \
+                 per question, in order",
+                answers.len(),
+                if n == 1 { "" } else { "s" }
+            ));
+        }
+        CrownAnswer::Answers(answers) => answers,
+        _ if n > 1 => {
+            return Err(format!(
+                "{key}'s dialog asks {n} questions at once; answers carries one answer per \
+                 question, in order"
+            ));
+        }
+        CrownAnswer::Index(index) => vec![Q::Choice { index }],
+        CrownAnswer::Text(text) => vec![Q::Text { text }],
+    };
+    for (i, (question, answer)) in questions.iter().zip(&answers).enumerate() {
+        let which = if n == 1 { "the question".to_string() } else { format!("question {}", i + 1) };
+        let options = question.options.len();
+        let range = |index: usize| {
+            format!(
+                "index {index} is out of range: {which} has {options} options, 0 to {}",
+                options.saturating_sub(1)
+            )
+        };
+        match answer {
+            Q::Choice { .. } if question.multi_select => {
+                return Err(format!(
+                    "{which} takes several choices: indices (from 0) or text, in answers"
+                ));
+            }
+            Q::Choice { index } if *index >= options => return Err(range(*index)),
+            Q::Choices { .. } if !question.multi_select => {
+                return Err(format!("{which} takes one choice: index, not indices"));
+            }
+            Q::Choices { indices } if indices.is_empty() => {
+                return Err(format!(
+                    "indices is empty: {which} takes at least one option, or text"
+                ));
+            }
+            Q::Choices { indices } => {
+                if let Some(index) = indices.iter().find(|i| **i >= options) {
+                    return Err(range(*index));
+                }
+                if indices.iter().collect::<HashSet<_>>().len() != indices.len() {
+                    return Err(format!("indices names an option twice for {which}"));
+                }
+            }
+            Q::Text { text } if text.contains(['\n', '\r']) => {
+                return Err("text is one line; a newline would submit the dialog early".into());
+            }
+            Q::Text { text } if text.len() > DIALOG_TEXT_MAX => {
+                return Err(format!(
+                    "text is {} bytes; a dialog takes at most {DIALOG_TEXT_MAX}",
+                    text.len()
+                ));
+            }
+            Q::Text { text } if !dialog_text_ok(text) => {
+                return Err("text is blank or carries characters a dialog cannot take; plain \
+                            words only"
+                    .into());
+            }
+            Q::Choice { .. } | Q::Text { .. } => {}
+        }
+    }
+    Ok(answers)
+}
+
+/// An answer as the feed and the card say it: each question's label, its
+/// labels joined by `, `, or its words, and the questions joined by `; `.
+fn answer_words(questions: &[api::Question], answers: &[api::QuestionAnswer]) -> String {
+    fn label<'a>(q: &'a api::Question, i: &usize) -> &'a str {
+        q.options.get(*i).map_or("", |o| o.label.as_str())
+    }
+    questions
+        .iter()
+        .zip(answers)
+        .map(|(q, a)| match a {
+            api::QuestionAnswer::Choice { index } => label(q, index).to_string(),
+            api::QuestionAnswer::Choices { indices } => {
+                indices.iter().map(|i| label(q, i)).collect::<Vec<_>>().join(", ")
+            }
+            api::QuestionAnswer::Text { text } => text.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum DialogStep {
     Up,
     Down,
+    /// Space on a several-choice row (T-571): it ticks the row or unticks it.
+    Toggle {
+        question: usize,
+        row: usize,
+    },
+    /// Enter that moves the dialog on without ending it (T-571): a choice
+    /// inside a batch, or a several-choice question's `Next` or `Submit` row.
+    Next,
+    /// The last key: Enter on the one question's answer, or on the review's
+    /// `Submit answers`.
     Submit,
     Reject,
-    Paste(String),
+    Paste {
+        question: usize,
+        text: String,
+    },
+}
+
+/// What an answer's earlier keys did that the screen alone does not say
+/// (T-571): the questions whose text row it pasted into, and the row its
+/// last key ticked, so a tick the screen did not take is never sent twice.
+#[derive(Clone, Debug, Default)]
+struct Walk {
+    pasted: Vec<usize>,
+    toggled: Option<(usize, usize)>,
+}
+
+/// How many keys an answer may take and how long its walk may run. The one
+/// question with one choice, and a plan, keep T-567's 12 keys and 8 s. A
+/// batch or a several-choice question (T-571) has room for each tab's rows
+/// crossed twice, a tick on every option, its text, its Enter and the
+/// review's two keys, at the walk's 350 ms a key with margin, up to
+/// `DIALOG_WALK_MAX`.
+fn walk_budget(dialog: &api::Dialog) -> (u8, Duration) {
+    let api::DialogContent::Questions { questions } = &dialog.content else {
+        return (12, Duration::from_secs(8));
+    };
+    if !dialog_batched(questions) {
+        return (12, Duration::from_secs(8));
+    }
+    let keys: usize = questions.iter().map(|q| 3 * q.options.len() + 8).sum::<usize>() + 4;
+    let keys = u8::try_from(keys).unwrap_or(u8::MAX);
+    let walk =
+        Duration::from_millis(450 * u64::from(keys)).clamp(Duration::from_secs(8), DIALOG_WALK_MAX);
+    (keys, walk)
 }
 
 /// The question shapes the board's answer road takes (T-566 says it to the
-/// crown as `answerable`): one question, one choice. Multi-question and
-/// multi-select forms are unmeasured, and answered in the pane.
+/// crown as `answerable`), each measured on Claude Code 2.1.287: one
+/// question with one choice (T-567), a question that takes several, and a
+/// batch of up to four (T-571). The screen tells a batch's questions apart
+/// by their words, so no two may read alike.
 pub(super) fn dialog_answerable(questions: &[api::Question]) -> bool {
-    questions.len() == 1 && !questions[0].multi_select
+    let words: HashSet<String> = questions.iter().map(|q| squeeze(&q.question)).collect();
+    (1..=4).contains(&questions.len()) && words.len() == questions.len() && !words.contains("")
+}
+
+/// Whether the dialog walks tab by tab to a review (T-571): several
+/// questions, or one that takes several choices. One question with one
+/// choice is answered by its own Enter (T-567).
+fn dialog_batched(questions: &[api::Question]) -> bool {
+    questions.len() > 1 || questions.iter().any(|q| q.multi_select)
 }
 
 /// Why no key could be chosen (T-567), in the receipt's words.
@@ -2943,6 +3090,11 @@ enum Miss {
     /// Not the measured dialog: the question, the footer or exactly one
     /// selected row is missing, or the dialog is one only the pane answers.
     ShapeUnrecognised,
+    /// A row the walk ticked did not change its mark (T-571).
+    TickNotTaken,
+    /// The batch's review lists an answer other than the one sent (T-571),
+    /// so `Submit answers` is not pressed.
+    AnswerDiffers,
 }
 impl Miss {
     fn word(self) -> &'static str {
@@ -2950,38 +3102,78 @@ impl Miss {
             Miss::LabelNotFound => "label_not_found",
             Miss::LabelWrapped => "label_wrapped",
             Miss::ShapeUnrecognised => "shape_unrecognised",
+            Miss::TickNotTaken => "tick_not_taken",
+            Miss::AnswerDiffers => "answer_differs",
         }
     }
 }
 
-/// The row an answer selects: its label and, for an option, its
-/// description, which Claude Code draws under the label.
-fn dialog_target(dialog: &api::Dialog, response: &api::DialogAnswer) -> Option<(String, String)> {
-    let row = |label: &str| Some((label.to_string(), String::new()));
-    match (&dialog.content, response) {
-        (api::DialogContent::Questions { questions }, answer) if dialog_answerable(questions) => {
-            match answer {
-                api::DialogAnswer::Choice { index } => questions[0]
-                    .options
-                    .get(*index)
-                    .map(|o| (o.label.clone(), o.description.clone())),
-                api::DialogAnswer::Text { text }
-                    if !text.contains(['\n', '\r'])
-                        && text.len() <= 1000
-                        && mesimon_core::command::sanitize_prompt(text).as_deref()
-                            == Some(text.as_str()) =>
-                {
-                    row("Type something.")
-                }
-                api::DialogAnswer::Reject => row(""),
-                _ => None,
-            }
+/// What an answer asks of a dialog, checked against its projection.
+#[derive(Debug, PartialEq, Eq)]
+enum Plan {
+    /// One question, one choice (T-567): its row, and Enter submits.
+    Single(api::QuestionAnswer),
+    /// A batch or a several-choice question (T-571): each tab's answer, then
+    /// the review's `Submit answers`.
+    Batch(Vec<api::QuestionAnswer>),
+    Accept,
+    Reject,
+}
+
+/// Words a dialog's text row may take: one line, Remote Control's cap, and
+/// nothing `sanitize_prompt` would change.
+fn dialog_text_ok(text: &str) -> bool {
+    !text.contains(['\n', '\r'])
+        && text.len() <= DIALOG_TEXT_MAX
+        && mesimon_core::command::sanitize_prompt(text).as_deref() == Some(text)
+}
+
+/// Whether `answer` is one `question` takes: one option of a one-choice
+/// question, distinct options of a several-choice one, or a line of words.
+fn answer_fits(question: &api::Question, answer: &api::QuestionAnswer) -> bool {
+    let n = question.options.len();
+    match answer {
+        api::QuestionAnswer::Choice { index } => !question.multi_select && *index < n,
+        api::QuestionAnswer::Choices { indices } => {
+            let distinct: HashSet<&usize> = indices.iter().collect();
+            question.multi_select
+                && !indices.is_empty()
+                && distinct.len() == indices.len()
+                && indices.iter().all(|i| *i < n)
         }
-        (api::DialogContent::Plan { .. }, api::DialogAnswer::Accept) => {
-            row("Yes, manually approve edits")
-        }
-        (api::DialogContent::Plan { .. }, api::DialogAnswer::Reject) => row(""),
-        _ => None,
+        api::QuestionAnswer::Text { text } => dialog_text_ok(text),
+    }
+}
+
+/// The plan an answer makes on `dialog`, or `None` when the dialog is not a
+/// measured shape or the answer is not one it takes. The single answer an
+/// older browser sends fits only the one-question, one-choice dialog.
+fn dialog_plan(dialog: &api::Dialog, response: &api::DialogAnswer) -> Option<Plan> {
+    use api::{DialogAnswer as A, QuestionAnswer as Q};
+    let api::DialogContent::Questions { questions } = &dialog.content else {
+        return match response {
+            A::Accept => Some(Plan::Accept),
+            A::Reject => Some(Plan::Reject),
+            _ => None,
+        };
+    };
+    if !dialog_answerable(questions) {
+        return None;
+    }
+    let answers = match response {
+        A::Reject => return Some(Plan::Reject),
+        A::Accept => return None,
+        _ if dialog_batched(questions) && !matches!(response, A::Answers { .. }) => return None,
+        A::Choice { index } => vec![Q::Choice { index: *index }],
+        A::Text { text } => vec![Q::Text { text: text.clone() }],
+        A::Answers { answers } => answers.clone(),
+    };
+    let fits = answers.len() == questions.len()
+        && questions.iter().zip(&answers).all(|(q, a)| answer_fits(q, a));
+    match fits {
+        false => None,
+        true if dialog_batched(questions) => Some(Plan::Batch(answers)),
+        true => answers.into_iter().next().map(Plan::Single),
     }
 }
 
@@ -2991,12 +3183,23 @@ fn squeeze(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
+/// A line without the `│` Claude Code draws down the left of a question
+/// that wraps (measured on 2.1.287, T-571: one question or a batch alike).
+fn unbarred(line: &str) -> &str {
+    let line = line.trim();
+    line.strip_prefix('│').map_or(line, str::trim)
+}
+
 /// Whether `screen` shows the measured native dialog: the question and its
-/// footer, or the plan menu.
+/// footer, the batch's tab bar over one of its questions or its review, or
+/// the plan menu.
 fn dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
-    let screen = squeeze(screen);
     match &dialog.content {
+        api::DialogContent::Questions { questions } if dialog_batched(questions) => {
+            batch_view(questions, screen).is_some()
+        }
         api::DialogContent::Questions { questions } => {
+            let screen: String = screen.lines().map(|l| squeeze(unbarred(l))).collect();
             let question = questions.first().map(|q| squeeze(&q.question)).unwrap_or_default();
             !question.is_empty()
                 && screen.contains(&question)
@@ -3004,6 +3207,7 @@ fn dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
                 && screen.contains("Esctocancel")
         }
         api::DialogContent::Plan { .. } => {
+            let screen = squeeze(screen);
             screen.contains("Wouldyouliketoproceed?")
                 && screen.contains("Yes,manuallyapproveedits")
                 && screen.contains("TellClaudewhattochange")
@@ -3011,17 +3215,32 @@ fn dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
     }
 }
 
-/// One numbered row of a dialog, with the lines under it joined on.
+/// One row of a dialog, with the lines under it joined on.
 struct Row {
-    number: usize,
+    /// `None` for a several-choice question's `Next` or `Submit` row, which
+    /// Claude Code draws unnumbered under the text row (T-571).
+    number: Option<usize>,
     selected: bool,
+    /// A several-choice row's mark: `[✔]` ticked, `[ ]` not (T-571).
+    ticked: Option<bool>,
     text: String,
+}
+
+/// A numbered row's parts: whether the cursor `❯` is on it, its number and
+/// the rest of the line.
+fn numbered(line: &str) -> Option<(bool, usize, &str)> {
+    let line = line.trim();
+    let (selected, rest) = line.strip_prefix('❯').map_or((false, line), |s| (true, s.trim()));
+    let (n, rest) = rest.split_once(". ")?;
+    n.parse::<usize>().ok().map(|n| (selected, n, rest.trim()))
 }
 
 /// The dialog's options (T-567): the numbered rows from its last `1.` down
 /// to the footer, numbered one by one. A line under a row that is neither
 /// numbered, the footer nor a rule is the rest of that row: a wrapped label,
-/// or the description drawn under it. `None` when the numbering skips.
+/// or the description drawn under it. A several-choice row carries its
+/// mark, and the `Next`/`Submit` row under the ticks is a row of its own
+/// (T-571). `None` when the numbering skips.
 fn dialog_rows(screen: &str) -> Option<Vec<Row>> {
     let lines: Vec<&str> = screen.lines().collect();
     let footer = lines.iter().rposition(|l| l.contains("Enter to select")).unwrap_or(lines.len());
@@ -3029,13 +3248,21 @@ fn dialog_rows(screen: &str) -> Option<Vec<Row>> {
     let mut open = false;
     for line in &lines[..footer] {
         let line = line.trim();
-        let (selected, rest) = line.strip_prefix('❯').map_or((false, line), |s| (true, s.trim()));
-        let numbered = rest
-            .split_once(". ")
-            .and_then(|(n, label)| n.parse::<usize>().ok().map(|n| (n, label.trim())));
-        if let Some((number, label)) = numbered {
-            rows.push(Row { number, selected, text: label.to_string() });
+        if let Some((selected, number, label)) = numbered(line) {
+            let (ticked, label) = match (label.strip_prefix("[✔]"), label.strip_prefix("[ ]")) {
+                (Some(rest), _) => (Some(true), rest.trim()),
+                (_, Some(rest)) => (Some(false), rest.trim()),
+                _ => (None, label),
+            };
+            rows.push(Row { number: Some(number), selected, ticked, text: label.to_string() });
             open = true;
+            continue;
+        }
+        let (selected, rest) = line.strip_prefix('❯').map_or((false, line), |s| (true, s.trim()));
+        let ticks = rows.last().is_some_and(|r| r.ticked.is_some());
+        if ticks && matches!(rest, "Next" | "Submit") {
+            rows.push(Row { number: None, selected, ticked: None, text: rest.to_string() });
+            open = false;
         } else if line.chars().all(|c| ('\u{2500}'..='\u{257f}').contains(&c)) {
             open = false;
         } else if let (true, Some(row)) = (open, rows.last_mut()) {
@@ -3043,9 +3270,10 @@ fn dialog_rows(screen: &str) -> Option<Vec<Row>> {
             row.text.push_str(line);
         }
     }
-    let first = rows.iter().rposition(|r| r.number == 1)?;
+    let first = rows.iter().rposition(|r| r.number == Some(1))?;
     let rows = rows.split_off(first);
-    rows.iter().enumerate().all(|(i, r)| r.number == i + 1).then_some(rows)
+    let numbers: Vec<usize> = rows.iter().filter_map(|r| r.number).collect();
+    numbers.iter().enumerate().all(|(i, n)| *n == i + 1).then_some(rows)
 }
 
 /// Why no row reads as `want`: wrapped when a row starts with `want`, or
@@ -3064,55 +3292,305 @@ fn label_miss(rows: &[Row], want: &str) -> Miss {
     }
 }
 
+/// Where the cursor is: the one selected row, or none of the measured shape.
+fn cursor(rows: &[Row]) -> Result<usize, Miss> {
+    let mut selected = rows.iter().enumerate().filter(|(_, r)| r.selected);
+    match (selected.next(), selected.next()) {
+        (Some((at, _)), None) => Ok(at),
+        _ => Err(Miss::ShapeUnrecognised),
+    }
+}
+
+/// The one row reading as an option: its label, or its label then the
+/// description Claude Code draws under it, wrapping aside.
+fn option_row(rows: &[Row], label: &str, description: &str) -> Result<usize, Miss> {
+    let (bare, described) = (squeeze(label), squeeze(&format!("{label}{description}")));
+    let mut found = rows.iter().enumerate().filter(|(_, r)| {
+        let row = squeeze(&r.text);
+        row == bare || (!description.is_empty() && row == described)
+    });
+    match (found.next(), found.next()) {
+        (Some((at, _)), None) => Ok(at),
+        _ => Err(label_miss(rows, label)),
+    }
+}
+
+/// The key that takes the cursor from row `from` toward row `to`, or `here`
+/// once it is there.
+fn toward(from: usize, to: usize, here: DialogStep) -> DialogStep {
+    match from.cmp(&to) {
+        std::cmp::Ordering::Less => DialogStep::Down,
+        std::cmp::Ordering::Greater => DialogStep::Up,
+        std::cmp::Ordering::Equal => here,
+    }
+}
+
+/// What a batch or several-choice dialog shows (T-571).
+enum View {
+    /// One question's tab: which question, and its rows.
+    Question { index: usize, rows: Vec<Row> },
+    /// The review: each question and its answer as drawn, squeezed, and the
+    /// `Submit answers` and `Cancel` rows.
+    Review { answers: Vec<(String, String)>, rows: Vec<Row> },
+}
+
+/// Read the tab a batch or several-choice dialog shows, as measured on
+/// Claude Code 2.1.287 (T-571). Under the tab bar `←  ☐ Color  ☒ Toppings
+/// ✔ Submit  →` is either a question — its words, which must be exactly one
+/// projected question's, then its rows down to the footer — or the review:
+/// `Review your answers`, a `● question` and `→ answer` pair per question,
+/// `Ready to submit your answers?` and its two rows. Anything else is no
+/// view.
+fn batch_view(questions: &[api::Question], screen: &str) -> Option<View> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let bar = lines.iter().rposition(|l| {
+        let l = l.trim();
+        l.starts_with('←') && l.ends_with('→') && l.contains("✔ Submit")
+    })?;
+    let body = &lines[bar + 1..];
+    let first = body.iter().position(|l| !l.trim().is_empty())?;
+    if squeeze(body[first]) == "Reviewyouranswers" {
+        let ready = body.iter().position(|l| squeeze(l) == "Readytosubmityouranswers?")?;
+        let mut answers: Vec<(String, String)> = Vec::new();
+        let mut answering = false;
+        for line in &body[first + 1..ready] {
+            let line = unbarred(line);
+            if let Some(question) = line.strip_prefix('●') {
+                answers.push((squeeze(question), String::new()));
+                answering = false;
+            } else if let Some(answer) = line.strip_prefix('→') {
+                let item = answers.last_mut().filter(|_| !answering)?;
+                item.1 = squeeze(answer);
+                answering = true;
+            } else if let Some(item) = answers.last_mut() {
+                let part = if answering { &mut item.1 } else { &mut item.0 };
+                part.push_str(&squeeze(line));
+            }
+        }
+        let rows = dialog_rows(&body[ready + 1..].join("\n"))?;
+        return Some(View::Review { answers, rows });
+    }
+    let at =
+        first + body[first..].iter().position(|l| numbered(l).is_some_and(|(_, n, _)| n == 1))?;
+    let words: String = body[first..at].iter().map(|l| squeeze(unbarred(l))).collect();
+    let mut asked = questions.iter().enumerate().filter(|(_, q)| squeeze(&q.question) == words);
+    let (Some((index, _)), None) = (asked.next(), asked.next()) else { return None };
+    let tail = body[at..].join("\n");
+    let footer = squeeze(&tail);
+    if !footer.contains("Entertoselect") || !footer.contains("Esctocancel") {
+        return None;
+    }
+    Some(View::Question { index, rows: dialog_rows(&tail)? })
+}
+
+/// Whether the review's `drawn` answer (squeezed) reads as `answer`. The
+/// review lists several choices in the order they were ticked, joined by
+/// `, `, so their order is not compared.
+fn reads_answer(question: &api::Question, answer: &api::QuestionAnswer, drawn: &str) -> bool {
+    fn any_order(drawn: &str, labels: &[String]) -> bool {
+        labels.iter().enumerate().any(|(i, label)| {
+            let Some(rest) = drawn.strip_prefix(label.as_str()) else { return false };
+            let mut others = labels.to_vec();
+            others.remove(i);
+            match others.is_empty() {
+                true => rest.is_empty(),
+                false => rest.strip_prefix(',').is_some_and(|rest| any_order(rest, &others)),
+            }
+        })
+    }
+    let label = |i: &usize| question.options.get(*i).map(|o| squeeze(&o.label));
+    match answer {
+        api::QuestionAnswer::Choice { index } => label(index).is_some_and(|l| l == drawn),
+        api::QuestionAnswer::Text { text } => squeeze(text) == drawn,
+        api::QuestionAnswer::Choices { indices } => {
+            let labels: Option<Vec<String>> = indices.iter().map(label).collect();
+            labels.is_some_and(|labels| !labels.is_empty() && any_order(drawn, &labels))
+        }
+    }
+}
+
 /// Recognize only measured native menus, reading the whole dialog (T-567).
 /// A row reads as an option when, wrapping aside, it is the option's label,
 /// or its label and then its description. Missing, ambiguous or several
-/// selections, multi-select, several questions and MCP forms yield no key.
-/// This never infers success: only the hook edge does.
+/// selections, unmeasured shapes and MCP forms yield no key. A batch or a
+/// several-choice question walks its tabs (T-571). This never infers
+/// success: only the hook edge does.
 fn dialog_step(
     dialog: &api::Dialog,
     response: &api::DialogAnswer,
     screen: &str,
-    pasted: bool,
+    walk: &Walk,
 ) -> Result<DialogStep, Miss> {
-    let (label, description) = dialog_target(dialog, response).ok_or(Miss::ShapeUnrecognised)?;
+    let plan = dialog_plan(dialog, response).ok_or(Miss::ShapeUnrecognised)?;
+    if let api::DialogContent::Questions { questions } = &dialog.content {
+        if dialog_batched(questions) {
+            return batch_step(questions, &plan, screen, walk);
+        }
+    }
+    let (label, description) = match (&dialog.content, &plan) {
+        (api::DialogContent::Questions { questions }, Plan::Single(answer)) => match answer {
+            api::QuestionAnswer::Choice { index } => {
+                let option = &questions[0].options[*index];
+                (option.label.clone(), option.description.clone())
+            }
+            api::QuestionAnswer::Text { .. } => ("Type something.".into(), String::new()),
+            api::QuestionAnswer::Choices { .. } => return Err(Miss::ShapeUnrecognised),
+        },
+        (_, Plan::Accept) => ("Yes, manually approve edits".into(), String::new()),
+        (_, Plan::Reject) => (String::new(), String::new()),
+        _ => return Err(Miss::ShapeUnrecognised),
+    };
     if !dialog_shape(dialog, screen) {
         return Err(Miss::ShapeUnrecognised);
     }
     let rows = dialog_rows(screen).ok_or(Miss::ShapeUnrecognised)?;
-    let mut selected = rows.iter().filter(|r| r.selected);
-    let (Some(current), None) = (selected.next(), selected.next()) else {
-        return Err(Miss::ShapeUnrecognised);
-    };
-    if matches!(response, api::DialogAnswer::Reject) {
+    let current = cursor(&rows)?;
+    if plan == Plan::Reject {
         return Ok(DialogStep::Reject);
     }
-    if let (api::DialogAnswer::Text { text }, true) = (response, pasted) {
-        // Never Enter on a row that does not read the pasted text: on the
-        // empty field it would decline the question instead.
-        return if squeeze(&current.text) == squeeze(text) {
-            Ok(DialogStep::Submit)
-        } else {
-            Err(label_miss(std::slice::from_ref(current), text))
+    if let Plan::Single(api::QuestionAnswer::Text { text }) = &plan {
+        if walk.pasted.contains(&0) {
+            // Never Enter on a row that does not read the pasted text: on the
+            // empty field it would decline the question instead.
+            return if squeeze(&rows[current].text) == squeeze(text) {
+                Ok(DialogStep::Submit)
+            } else {
+                Err(label_miss(&rows[current..=current], text))
+            };
+        }
+        let target = option_row(&rows, &label, "")?;
+        return Ok(toward(current, target, DialogStep::Paste { question: 0, text: text.clone() }));
+    }
+    let target = option_row(&rows, &label, &description)?;
+    Ok(toward(current, target, DialogStep::Submit))
+}
+
+/// One key of a batch or several-choice answer (T-571), off the tab the
+/// screen shows. A one-choice tab is the single road with Enter moving on.
+/// A several-choice tab ticks its options top to bottom until each reads as
+/// the answer, Space once per row (a mark that did not change stops the
+/// walk), types the words into its text row when the answer is words, and
+/// presses its `Next`/`Submit` row. The review is pressed only when every
+/// answer it lists reads as the one sent. A text row a person filled is
+/// never cleared: that is no measured shape.
+fn batch_step(
+    questions: &[api::Question],
+    plan: &Plan,
+    screen: &str,
+    walk: &Walk,
+) -> Result<DialogStep, Miss> {
+    let view = batch_view(questions, screen).ok_or(Miss::ShapeUnrecognised)?;
+    let answers = match plan {
+        Plan::Batch(answers) => answers,
+        Plan::Reject => {
+            let (View::Question { rows, .. } | View::Review { rows, .. }) = &view;
+            return cursor(rows).map(|_| DialogStep::Reject);
+        }
+        _ => return Err(Miss::ShapeUnrecognised),
+    };
+    let (index, rows) = match view {
+        View::Review { answers: drawn, rows } => {
+            if drawn.len() != questions.len()
+                || questions
+                    .iter()
+                    .zip(&drawn)
+                    .any(|(q, (words, _))| squeeze(&q.question) != *words)
+            {
+                return Err(Miss::ShapeUnrecognised);
+            }
+            if questions
+                .iter()
+                .zip(answers)
+                .zip(&drawn)
+                .any(|((q, a), (_, drawn))| !reads_answer(q, a, drawn))
+            {
+                return Err(Miss::AnswerDiffers);
+            }
+            let current = cursor(&rows)?;
+            let submit = rows
+                .iter()
+                .position(|r| r.number == Some(1) && squeeze(&r.text) == "Submitanswers")
+                .ok_or(Miss::ShapeUnrecognised)?;
+            return Ok(toward(current, submit, DialogStep::Submit));
+        }
+        View::Question { index, rows } => (index, rows),
+    };
+    let (question, answer) = (&questions[index], &answers[index]);
+    let current = cursor(&rows)?;
+    let n = question.options.len();
+    let at = |number: usize| rows.iter().position(|r| r.number == Some(number));
+    let text_row = at(n + 1).ok_or(Miss::ShapeUnrecognised)?;
+    if !question.multi_select {
+        if rows.iter().any(|r| r.ticked.is_some() || r.number.is_none()) {
+            return Err(Miss::ShapeUnrecognised);
+        }
+        return match answer {
+            api::QuestionAnswer::Choice { index: i } => {
+                let option = &question.options[*i];
+                let target = option_row(&rows, &option.label, &option.description)?;
+                Ok(toward(current, target, DialogStep::Next))
+            }
+            api::QuestionAnswer::Text { text } if walk.pasted.contains(&index) => {
+                if current == text_row && squeeze(&rows[current].text) == squeeze(text) {
+                    Ok(DialogStep::Next)
+                } else {
+                    Err(label_miss(&rows[text_row..=text_row], text))
+                }
+            }
+            api::QuestionAnswer::Text { text } => {
+                if squeeze(&rows[text_row].text) != "Typesomething." {
+                    return Err(Miss::LabelNotFound);
+                }
+                Ok(toward(
+                    current,
+                    text_row,
+                    DialogStep::Paste { question: index, text: text.clone() },
+                ))
+            }
+            api::QuestionAnswer::Choices { .. } => Err(Miss::ShapeUnrecognised),
         };
     }
-    let (bare, described) = (squeeze(&label), squeeze(&format!("{label}{description}")));
-    let reads = |r: &&Row| {
-        let row = squeeze(&r.text);
-        row == bare || (!description.is_empty() && row == described)
-    };
-    let mut targets = rows.iter().filter(reads);
-    let (Some(target), None) = (targets.next(), targets.next()) else {
-        return Err(label_miss(&rows, &label));
-    };
-    match current.number.cmp(&target.number) {
-        std::cmp::Ordering::Less => Ok(DialogStep::Down),
-        std::cmp::Ordering::Greater => Ok(DialogStep::Up),
-        std::cmp::Ordering::Equal => match response {
-            api::DialogAnswer::Text { text } => Ok(DialogStep::Paste(text.clone())),
-            _ => Ok(DialogStep::Submit),
-        },
+    let button = rows.iter().position(|r| r.number.is_none()).ok_or(Miss::ShapeUnrecognised)?;
+    if rows[text_row].ticked.is_none() {
+        return Err(Miss::ShapeUnrecognised);
     }
+    // Every option row is read before any key: its label, and a mark.
+    let mut marks = Vec::with_capacity(question.options.len());
+    for (i, option) in question.options.iter().enumerate() {
+        let row = at(i + 1).ok_or(Miss::ShapeUnrecognised)?;
+        option_row(&rows[row..=row], &option.label, &option.description)
+            .map_err(|_| label_miss(&rows, &option.label))?;
+        let ticked = rows[row].ticked.ok_or(Miss::ShapeUnrecognised)?;
+        let want =
+            matches!(answer, api::QuestionAnswer::Choices { indices } if indices.contains(&i));
+        marks.push((row, ticked == want));
+    }
+    if let Some(&(row, _)) = marks.iter().find(|(_, right)| !right) {
+        return match (current == row, walk.toggled == Some((index, row))) {
+            (false, _) => Ok(toward(current, row, DialogStep::Up)),
+            (true, true) => Err(Miss::TickNotTaken),
+            (true, false) => Ok(DialogStep::Toggle { question: index, row }),
+        };
+    }
+    let typed = &rows[text_row];
+    match answer {
+        api::QuestionAnswer::Text { text } => {
+            let reads = squeeze(&typed.text) == squeeze(text);
+            if reads && typed.ticked == Some(true) {
+                // The words are in and ticked.
+            } else if walk.pasted.contains(&index) {
+                return Err(label_miss(&rows[text_row..=text_row], text));
+            } else if squeeze(&typed.text) == "Typesomething" && typed.ticked == Some(false) {
+                let paste = DialogStep::Paste { question: index, text: text.clone() };
+                return Ok(toward(current, text_row, paste));
+            } else {
+                return Err(Miss::LabelNotFound);
+            }
+        }
+        _ if typed.ticked == Some(true) => return Err(Miss::ShapeUnrecognised),
+        _ => {}
+    }
+    Ok(toward(current, button, DialogStep::Next))
 }
 
 /// Whether this hook frame ends `dialog` (T-567), and how: its own tool's
@@ -3139,6 +3617,17 @@ fn dialog_edge(frame: &HookFrame, dialog: &api::Dialog) -> Option<DialogEdge> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A dialog's questions, none for a plan.
+    fn questions_of(dialog: &api::Dialog) -> &[api::Question] {
+        match &dialog.content {
+            api::DialogContent::Questions { questions } => questions,
+            api::DialogContent::Plan { .. } => &[],
+        }
+    }
+    /// A walk that has pasted into the first question's text row.
+    fn pasted() -> Walk {
+        Walk { pasted: vec![0], toggled: None }
+    }
     fn question() -> api::Dialog {
         api::Dialog {
             request: "tool-1".into(),
@@ -3161,20 +3650,25 @@ mod tests {
         let dialog = question();
         let screen = "Which color?\n❯ 1. Blue\n  2. Green\n  3. Type something.\nEnter to select · Esc to cancel";
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 1 }, screen, false),
+            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 1 }, screen, &Walk::default()),
             Ok(DialogStep::Down)
         );
         let selected = screen.replace("❯ 1.", "  1.").replace("  2.", "❯ 2.");
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 1 }, &selected, false),
+            dialog_step(
+                &dialog,
+                &api::DialogAnswer::Choice { index: 1 },
+                &selected,
+                &Walk::default()
+            ),
             Ok(DialogStep::Submit)
         );
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 8 }, screen, false),
+            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 8 }, screen, &Walk::default()),
             Err(Miss::ShapeUnrecognised)
         );
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Accept, screen, false),
+            dialog_step(&dialog, &api::DialogAnswer::Accept, screen, &Walk::default()),
             Err(Miss::ShapeUnrecognised)
         );
         for bad in [
@@ -3185,7 +3679,12 @@ mod tests {
             "Which color?\n❯ 1. Blue\n  3. Green\nEnter to select · Esc to cancel",
         ] {
             assert_eq!(
-                dialog_step(&dialog, &api::DialogAnswer::Choice { index: 0 }, bad, false),
+                dialog_step(
+                    &dialog,
+                    &api::DialogAnswer::Choice { index: 0 },
+                    bad,
+                    &Walk::default()
+                ),
                 Err(Miss::ShapeUnrecognised),
                 "{bad}"
             );
@@ -3195,7 +3694,12 @@ mod tests {
             questions[0].multi_select = true;
         }
         assert_eq!(
-            dialog_step(&multiple, &api::DialogAnswer::Choice { index: 0 }, screen, false),
+            dialog_step(
+                &multiple,
+                &api::DialogAnswer::Choice { index: 0 },
+                screen,
+                &Walk::default()
+            ),
             Err(Miss::ShapeUnrecognised)
         );
         let mut several = dialog.clone();
@@ -3203,7 +3707,12 @@ mod tests {
             questions.push(questions[0].clone());
         }
         assert_eq!(
-            dialog_step(&several, &api::DialogAnswer::Choice { index: 0 }, screen, false),
+            dialog_step(
+                &several,
+                &api::DialogAnswer::Choice { index: 0 },
+                screen,
+                &Walk::default()
+            ),
             Err(Miss::ShapeUnrecognised)
         );
     }
@@ -3214,24 +3723,29 @@ mod tests {
         let answer = api::DialogAnswer::Text { text: "Purple".into() };
         let screen = "Which color?\n  1. Blue\n  2. Green\n❯ 3. Type something.\nEnter to select · Esc to cancel";
         assert_eq!(
-            dialog_step(&dialog, &answer, screen, false),
-            Ok(DialogStep::Paste("Purple".into()))
+            dialog_step(&dialog, &answer, screen, &Walk::default()),
+            Ok(DialogStep::Paste { question: 0, text: "Purple".into() })
         );
         assert_eq!(
-            dialog_step(&dialog, &answer, screen, true),
+            dialog_step(&dialog, &answer, screen, &pasted()),
             Err(Miss::LabelNotFound),
             "never Enter on an empty text row"
         );
         assert_eq!(
-            dialog_step(&dialog, &answer, &screen.replace("Type something.", "Purple"), true),
+            dialog_step(&dialog, &answer, &screen.replace("Type something.", "Purple"), &pasted()),
             Ok(DialogStep::Submit)
         );
         assert_eq!(
-            dialog_step(&dialog, &answer, &screen.replace("Type something.", "Purp"), true),
+            dialog_step(&dialog, &answer, &screen.replace("Type something.", "Purp"), &pasted()),
             Err(Miss::LabelWrapped)
         );
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Text { text: "a\nb".into() }, screen, false),
+            dialog_step(
+                &dialog,
+                &api::DialogAnswer::Text { text: "a\nb".into() },
+                screen,
+                &Walk::default()
+            ),
             Err(Miss::ShapeUnrecognised)
         );
         // A long answer wraps in the row it was pasted into, and still reads.
@@ -3241,7 +3755,12 @@ mod tests {
             "a long answer that the pane wraps onto a\n     second row of the dialog",
         );
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Text { text: long.into() }, &wrapped, true),
+            dialog_step(
+                &dialog,
+                &api::DialogAnswer::Text { text: long.into() },
+                &wrapped,
+                &pasted()
+            ),
             Ok(DialogStep::Submit)
         );
     }
@@ -3254,15 +3773,15 @@ mod tests {
         };
         let screen = "1. Read the code\n2. Write the code\nWould you like to\n proceed?\n❯ 1. Yes, auto-accept edits\n  2. Yes, manually approve edits\n  3. Tell Claude what to change";
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Accept, screen, false),
+            dialog_step(&dialog, &api::DialogAnswer::Accept, screen, &Walk::default()),
             Ok(DialogStep::Down)
         );
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Reject, screen, false),
+            dialog_step(&dialog, &api::DialogAnswer::Reject, screen, &Walk::default()),
             Ok(DialogStep::Reject)
         );
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Reject, "❯ composer", false),
+            dialog_step(&dialog, &api::DialogAnswer::Reject, "❯ composer", &Walk::default()),
             Err(Miss::ShapeUnrecognised)
         );
     }
@@ -3308,25 +3827,28 @@ Enter to select · ↑/↓ to navigate · Esc to cancel";
     fn a_wrapped_label_reads_whole_with_or_without_its_description() {
         let (dialog, screen) = wrapped();
         let first = api::DialogAnswer::Choice { index: 0 };
-        assert_eq!(dialog_step(&dialog, &first, screen, false), Ok(DialogStep::Up));
+        assert_eq!(dialog_step(&dialog, &first, screen, &Walk::default()), Ok(DialogStep::Up));
         let on_first = screen.replace("❯ 2.", "  2.").replace("  1. Watch", "❯ 1. Watch");
-        assert_eq!(dialog_step(&dialog, &first, &on_first, false), Ok(DialogStep::Submit));
+        assert_eq!(
+            dialog_step(&dialog, &first, &on_first, &Walk::default()),
+            Ok(DialogStep::Submit)
+        );
         // A word cut where the pane ran out of columns still reads.
         let broken =
             screen.replace("RequiresAction, then\n     reply", "Requires\n     Action, then reply");
-        assert_eq!(dialog_step(&dialog, &first, &broken, false), Ok(DialogStep::Up));
+        assert_eq!(dialog_step(&dialog, &first, &broken, &Walk::default()), Ok(DialogStep::Up));
         // Without the descriptions drawn, the labels alone read.
         let bare = screen
             .lines()
             .filter(|l| !l.contains("The receipt") && !l.contains("Faster"))
             .collect::<Vec<_>>()
             .join("\n");
-        assert_eq!(dialog_step(&dialog, &first, &bare, false), Ok(DialogStep::Up));
+        assert_eq!(dialog_step(&dialog, &first, &bare, &Walk::default()), Ok(DialogStep::Up));
         // A label cut short is named as such, and a missing one as missing.
         let cut = screen.replace("RequiresAction, then\n     reply", "Requi…");
-        assert_eq!(dialog_step(&dialog, &first, &cut, false), Err(Miss::LabelWrapped));
+        assert_eq!(dialog_step(&dialog, &first, &cut, &Walk::default()), Err(Miss::LabelWrapped));
         let gone = screen.replace("Watch the hook edge", "Poll the pane");
-        assert_eq!(dialog_step(&dialog, &first, &gone, false), Err(Miss::LabelNotFound));
+        assert_eq!(dialog_step(&dialog, &first, &gone, &Walk::default()), Err(Miss::LabelNotFound));
     }
 
     #[test]
@@ -3357,11 +3879,21 @@ Enter to select · ↑/↓ to navigate · Esc to cancel";
         screen.push("Enter to select · ↑/↓ to navigate · Esc to cancel".into());
         let screen = screen.join("\n");
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 7 }, &screen, false),
+            dialog_step(
+                &dialog,
+                &api::DialogAnswer::Choice { index: 7 },
+                &screen,
+                &Walk::default()
+            ),
             Ok(DialogStep::Down)
         );
         assert_eq!(
-            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 0 }, &screen, false),
+            dialog_step(
+                &dialog,
+                &api::DialogAnswer::Choice { index: 0 },
+                &screen,
+                &Walk::default()
+            ),
             Ok(DialogStep::Submit)
         );
     }
@@ -3405,6 +3937,690 @@ Enter to select · ↑/↓ to navigate · Esc to cancel";
         assert_eq!(dialog_edge(&frame("PermissionRequest", ask("tool-1")), &dialog), None);
         assert_eq!(dialog_edge(&frame("PostToolUseFailure", ask("tool-1")), &dialog), None);
         assert_eq!(dialog_edge(&frame("Stop", serde_json::json!({})), &dialog), None);
+    }
+
+    // ---- T-571: the shapes measured on Claude Code 2.1.287 -----------------
+    //
+    // Captured from a live Haiku session in a private tmux pane (120x50, and
+    // 80x40 for the long questions), `tmux capture-pane -p`, trailing spaces
+    // trimmed, on 2026-10-02. Each is a whole screen from the rule above the
+    // dialog down; the walks below move the cursor or a tick in them by hand.
+
+    /// The batch's first tab, under the prompt that asked for it: the prompt's own words name every
+    /// question, so a question is read only from under the tab bar.
+    const B_COLOR: &str = r#"❯ Use the AskUserQuestion tool once, with exactly these three questions in this order, then reply with the single word
+  ok. Question 1: header Color, question 'Which color should the button be?', not multi-select, options: Blue
+  (description: Calm and familiar), Green (description: Reads as go), Red (description: Loud). Question 2: header
+  Toppings, question 'Which toppings do you want?', multiSelect true, options: Cheese (description: Melted), Olives
+  (description: Black ones), Basil (description: Fresh), Onion (description: Red onion). Question 3: header Size,
+  question 'Which size?', not multi-select, options: Small (description: 8 inch), Large (description: 14 inch).
+
+  Thought for 2s
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Color  ☐ Toppings  ☐ Size  ✔ Submit  →
+
+Which color should the button be?
+
+❯ 1. Blue
+     Calm and familiar
+  2. Green
+     Reads as go
+  3. Red
+     Loud
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"#;
+    /// Its second tab after `Green` took Enter: a several-choice question, `☒ Color` answered.
+    const B_TOPPINGS: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☐ Toppings  ☐ Size  ✔ Submit  →
+
+Which toppings do you want?
+
+❯ 1. [ ] Cheese
+         Melted
+  2. [ ] Olives
+         Black ones
+  3. [ ] Basil
+         Fresh
+  4. [ ] Onion
+         Red onion
+  5. [ ] Type something
+     Next
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  6. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"#;
+    /// Space on `Cheese`: the row reads `[✔]` and the tab `☒`.
+    const B_TICKED: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Toppings  ☐ Size  ✔ Submit  →
+
+Which toppings do you want?
+
+❯ 1. [✔] Cheese
+         Melted
+  2. [ ] Olives
+         Black ones
+  3. [ ] Basil
+         Fresh
+  4. [ ] Onion
+         Red onion
+  5. [ ] Type something
+     Next
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  6. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"#;
+    /// Words pasted into the text row tick it.
+    const B_TYPED: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Toppings  ☐ Size  ✔ Submit  →
+
+Which toppings do you want?
+
+  1. [✔] Cheese
+         Melted
+  2. [ ] Olives
+         Black ones
+  3. [ ] Basil
+         Fresh
+  4. [ ] Onion
+         Red onion
+❯ 5. [✔] Pineapple slices
+     Next
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  6. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim · Esc to cancel"#;
+    /// The cursor on the unnumbered `Next` row.
+    const B_ON_NEXT: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Toppings  ☐ Size  ✔ Submit  →
+
+Which toppings do you want?
+
+  1. [✔] Cheese
+         Melted
+  2. [ ] Olives
+         Black ones
+  3. [ ] Basil
+         Fresh
+  4. [ ] Onion
+         Red onion
+  5. [✔] Pineapple slices
+❯    Next
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  6. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim · Esc to cancel"#;
+    /// Enter on `Next`: the third tab.
+    const B_SIZE: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Toppings  ☐ Size  ✔ Submit  →
+
+Which size?
+
+❯ 1. Small
+     8 inch
+  2. Large
+     14 inch
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"#;
+    /// Enter on `Large`: the review, no footer.
+    const B_REVIEW: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Toppings  ☒ Size  ✔ Submit  →
+
+Review your answers
+
+ ● Which color should the button be?
+   → Green
+ ● Which toppings do you want?
+   → Cheese, Pineapple slices
+ ● Which size?
+   → Large
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel"#;
+    /// One several-choice question alone: a tab bar, and `Submit` where a batch's middle question
+    /// has `Next`.
+    const M_TOPPINGS: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Toppings  ✔ Submit  →
+
+Which toppings do you want?
+
+❯ 1. [ ] Cheese
+         Melted
+  2. [ ] Olives
+         Black ones
+  3. [ ] Basil
+         Fresh
+  4. [ ] Onion
+         Red onion
+  5. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  6. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel"#;
+    /// `Basil` then `Cheese` ticked, the cursor on `Submit`.
+    const M_ON_SUBMIT: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Toppings  ✔ Submit  →
+
+Which toppings do you want?
+
+  1. [✔] Cheese
+         Melted
+  2. [ ] Olives
+         Black ones
+  3. [✔] Basil
+         Fresh
+  4. [ ] Onion
+         Red onion
+  5. [ ] Type something
+❯    Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  6. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in Vim · Esc to cancel"#;
+    /// Its review lists the ticks in the order they were made.
+    const M_REVIEW: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Toppings  ✔ Submit  →
+
+Review your answers
+
+ ● Which toppings do you want?
+   → Basil, Cheese
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel"#;
+    /// A one-choice question's words pasted into `Type something.`.
+    const C_TYPED: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Color  ☐ Toppings  ✔ Submit  →
+
+Which color should the button be?
+
+  1. Blue
+     Calm and familiar
+  2. Green
+     Reads as go
+❯ 3. Mauve
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim · Esc to cancel"#;
+    /// Enter on the words moved on: the last question's button reads `Submit`.
+    const C_LAST: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☐ Toppings  ✔ Submit  →
+
+Which toppings do you want?
+
+❯ 1. [ ] Cheese
+         Melted
+  2. [ ] Olives
+         Black ones
+  3. [ ] Basil
+         Fresh
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"#;
+    /// The review of the words and one tick.
+    const C_REVIEW: &str = r#"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Toppings  ✔ Submit  →
+
+Review your answers
+
+ ● Which color should the button be?
+   → Mauve
+ ● Which toppings do you want?
+   → Olives
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel"#;
+    /// Four questions at 80 columns: the tab bar fits, and a question that wraps is drawn with `│`
+    /// down its left.
+    const N_LONG: &str = r#"────────────────────────────────────────────────────────────────────────────────
+←  ☐ Background  ☐ Typography  ☐ Persistence  ☐ Deployments  ✔ Submit  →
+
+│ Which background colour should the settings page use when the system theme is
+│ dark?
+
+❯ 1. Charcoal
+     A warm near-black
+  2. Navy
+     A deep blue
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"#;
+    /// One long question alone at 80 columns wears the same `│`.
+    const S_LONG: &str = r#"────────────────────────────────────────────────────────────────────────────────
+ ☐ Background
+
+│ Which background colour should the settings page use when the system theme is
+│ dark?
+
+❯ 1. Charcoal
+     A warm near-black
+  2. Navy
+     A deep blue
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel"#;
+
+    fn ask(question: &str, header: &str, multi: bool, options: &[(&str, &str)]) -> api::Question {
+        api::Question {
+            question: question.into(),
+            header: header.into(),
+            multi_select: multi,
+            options: options
+                .iter()
+                .map(|(label, description)| api::QuestionOption {
+                    label: (*label).into(),
+                    description: (*description).into(),
+                })
+                .collect(),
+        }
+    }
+    fn asked(questions: Vec<api::Question>) -> api::Dialog {
+        api::Dialog {
+            request: "toolu_b".into(),
+            content: api::DialogContent::Questions { questions },
+        }
+    }
+    /// The three questions the `B_` screens draw.
+    fn measured_batch() -> api::Dialog {
+        asked(vec![
+            ask(
+                "Which color should the button be?",
+                "Color",
+                false,
+                &[("Blue", "Calm and familiar"), ("Green", "Reads as go"), ("Red", "Loud")],
+            ),
+            ask(
+                "Which toppings do you want?",
+                "Toppings",
+                true,
+                &[
+                    ("Cheese", "Melted"),
+                    ("Olives", "Black ones"),
+                    ("Basil", "Fresh"),
+                    ("Onion", "Red onion"),
+                ],
+            ),
+            ask("Which size?", "Size", false, &[("Small", "8 inch"), ("Large", "14 inch")]),
+        ])
+    }
+    fn answers(answers: Vec<api::QuestionAnswer>) -> api::DialogAnswer {
+        api::DialogAnswer::Answers { answers }
+    }
+
+    #[test]
+    fn a_batch_walks_each_tab_and_presses_submit_once() {
+        use api::QuestionAnswer as Q;
+        let dialog = measured_batch();
+        let plan = answers(vec![
+            Q::Choice { index: 1 },
+            Q::Choices { indices: vec![0, 2] },
+            Q::Choice { index: 1 },
+        ]);
+        let w = Walk::default();
+        // The first tab: Green is a row down, and its Enter moves on.
+        assert_eq!(dialog_step(&dialog, &plan, B_COLOR, &w), Ok(DialogStep::Down));
+        let on_green =
+            B_COLOR.replace("❯ 1. Blue", "  1. Blue").replace("  2. Green", "❯ 2. Green");
+        assert_eq!(dialog_step(&dialog, &plan, &on_green, &w), Ok(DialogStep::Next));
+        // The second: Cheese is ticked where the cursor stands, then Basil.
+        assert_eq!(
+            dialog_step(&dialog, &plan, B_TOPPINGS, &w),
+            Ok(DialogStep::Toggle { question: 1, row: 0 })
+        );
+        let ticked = Walk { toggled: Some((1, 0)), ..Walk::default() };
+        assert_eq!(dialog_step(&dialog, &plan, B_TICKED, &ticked), Ok(DialogStep::Down));
+        // A tick the screen did not take is never sent twice.
+        assert_eq!(dialog_step(&dialog, &plan, B_TOPPINGS, &ticked), Err(Miss::TickNotTaken));
+        let on_basil = B_TICKED
+            .replace("❯ 1. [✔] Cheese", "  1. [✔] Cheese")
+            .replace("  3. [ ] Basil", "❯ 3. [ ] Basil");
+        assert_eq!(
+            dialog_step(&dialog, &plan, &on_basil, &w),
+            Ok(DialogStep::Toggle { question: 1, row: 2 })
+        );
+        let both = on_basil.replace("❯ 3. [ ] Basil", "❯ 3. [✔] Basil");
+        assert_eq!(dialog_step(&dialog, &plan, &both, &w), Ok(DialogStep::Down), "on to Next");
+        let on_next =
+            both.replace("❯ 3. [✔] Basil", "  3. [✔] Basil").replace("     Next", "❯    Next");
+        assert_eq!(dialog_step(&dialog, &plan, &on_next, &w), Ok(DialogStep::Next));
+        // The third: Large, a row down.
+        assert_eq!(dialog_step(&dialog, &plan, B_SIZE, &w), Ok(DialogStep::Down));
+        let on_large =
+            B_SIZE.replace("❯ 1. Small", "  1. Small").replace("  2. Large", "❯ 2. Large");
+        assert_eq!(dialog_step(&dialog, &plan, &on_large, &w), Ok(DialogStep::Next));
+        // The review is pressed only when it lists the answer sent: the
+        // measured one holds words this answer does not, and lists its ticks
+        // in the order they were made.
+        assert_eq!(dialog_step(&dialog, &plan, B_REVIEW, &w), Err(Miss::AnswerDiffers));
+        let reviewed = B_REVIEW.replace("Cheese, Pineapple slices", "Basil, Cheese");
+        assert_eq!(dialog_step(&dialog, &plan, &reviewed, &w), Ok(DialogStep::Submit));
+        let on_cancel = reviewed
+            .replace("❯ 1. Submit answers", "  1. Submit answers")
+            .replace("  2. Cancel", "❯ 2. Cancel");
+        assert_eq!(dialog_step(&dialog, &plan, &on_cancel, &w), Ok(DialogStep::Up));
+        // The question alone: its button reads Submit, and its review too.
+        let one = asked(vec![questions_of(&measured_batch())[1].clone()]);
+        let plan = answers(vec![Q::Choices { indices: vec![0, 2] }]);
+        assert_eq!(
+            dialog_step(&one, &plan, M_TOPPINGS, &w),
+            Ok(DialogStep::Toggle { question: 0, row: 0 })
+        );
+        assert_eq!(dialog_step(&one, &plan, M_ON_SUBMIT, &w), Ok(DialogStep::Next));
+        assert_eq!(dialog_step(&one, &plan, M_REVIEW, &w), Ok(DialogStep::Submit));
+        let fewer = answers(vec![Q::Choices { indices: vec![2] }]);
+        assert_eq!(dialog_step(&one, &fewer, M_REVIEW, &w), Err(Miss::AnswerDiffers));
+        assert_eq!(
+            dialog_step(&one, &fewer, M_ON_SUBMIT, &w),
+            Ok(DialogStep::Up),
+            "unticks Cheese"
+        );
+    }
+
+    #[test]
+    fn words_go_into_a_question_s_text_row_and_a_person_s_ticked_words_stay() {
+        use api::QuestionAnswer as Q;
+        let w = Walk::default();
+        // One-choice words in a batch: pasted on the row, then Enter moves on.
+        let dialog = asked(vec![
+            ask(
+                "Which color should the button be?",
+                "Color",
+                false,
+                &[("Blue", "Calm and familiar"), ("Green", "Reads as go")],
+            ),
+            ask(
+                "Which toppings do you want?",
+                "Toppings",
+                true,
+                &[("Cheese", "Melted"), ("Olives", "Black ones"), ("Basil", "Fresh")],
+            ),
+        ]);
+        let plan = answers(vec![Q::Text { text: "Mauve".into() }, Q::Choices { indices: vec![1] }]);
+        let at_text = C_TYPED.replace("❯ 3. Mauve", "❯ 3. Type something.");
+        assert_eq!(
+            dialog_step(&dialog, &plan, &at_text, &w),
+            Ok(DialogStep::Paste { question: 0, text: "Mauve".into() })
+        );
+        let typed = Walk { pasted: vec![0], ..Walk::default() };
+        assert_eq!(dialog_step(&dialog, &plan, C_TYPED, &typed), Ok(DialogStep::Next));
+        let cut = C_TYPED.replace("3. Mauve", "3. Mauv");
+        assert_eq!(dialog_step(&dialog, &plan, &cut, &typed), Err(Miss::LabelWrapped));
+        assert_eq!(
+            dialog_step(&dialog, &plan, C_TYPED, &w),
+            Err(Miss::LabelNotFound),
+            "words this walk did not paste are not its to send"
+        );
+        // The last question: Olives, then the row that reads Submit.
+        assert_eq!(dialog_step(&dialog, &plan, C_LAST, &typed), Ok(DialogStep::Down));
+        let on_olives = C_LAST
+            .replace("❯ 1. [ ] Cheese", "  1. [ ] Cheese")
+            .replace("  2. [ ] Olives", "❯ 2. [ ] Olives");
+        assert_eq!(
+            dialog_step(&dialog, &plan, &on_olives, &typed),
+            Ok(DialogStep::Toggle { question: 1, row: 1 })
+        );
+        let olives = on_olives.replace("[ ] Olives", "[✔] Olives");
+        assert_eq!(dialog_step(&dialog, &plan, &olives, &typed), Ok(DialogStep::Down));
+        let on_submit = olives
+            .replace("❯ 2. [✔] Olives", "  2. [✔] Olives")
+            .replace("     Submit", "❯    Submit");
+        assert_eq!(dialog_step(&dialog, &plan, &on_submit, &typed), Ok(DialogStep::Next));
+        assert_eq!(dialog_step(&dialog, &plan, C_REVIEW, &typed), Ok(DialogStep::Submit));
+
+        // Several-choice words: the options unticked, the words pasted on
+        // the text row, which ticks itself.
+        let dialog = measured_batch();
+        let plan = answers(vec![
+            Q::Choice { index: 1 },
+            Q::Text { text: "Pineapple slices".into() },
+            Q::Choice { index: 1 },
+        ]);
+        assert_eq!(dialog_step(&dialog, &plan, B_TOPPINGS, &w), Ok(DialogStep::Down));
+        let at_text = B_TOPPINGS
+            .replace("❯ 1. [ ] Cheese", "  1. [ ] Cheese")
+            .replace("  5. [ ] Type something", "❯ 5. [ ] Type something");
+        assert_eq!(
+            dialog_step(&dialog, &plan, &at_text, &w),
+            Ok(DialogStep::Paste { question: 1, text: "Pineapple slices".into() })
+        );
+        let pasted = Walk { pasted: vec![1], ..Walk::default() };
+        assert_eq!(dialog_step(&dialog, &plan, B_TYPED, &pasted), Ok(DialogStep::Up), "Cheese off");
+        let alone = B_TYPED.replace("[✔] Cheese", "[ ] Cheese");
+        assert_eq!(dialog_step(&dialog, &plan, &alone, &pasted), Ok(DialogStep::Down));
+        let short = alone.replace("Pineapple slices", "Pineapple");
+        assert_eq!(dialog_step(&dialog, &plan, &short, &pasted), Err(Miss::LabelWrapped));
+        // Words a person typed and ticked are never cleared for choices.
+        let plan = answers(vec![
+            Q::Choice { index: 1 },
+            Q::Choices { indices: vec![0] },
+            Q::Choice { index: 1 },
+        ]);
+        assert_eq!(dialog_step(&dialog, &plan, B_ON_NEXT, &w), Err(Miss::ShapeUnrecognised));
+    }
+
+    #[test]
+    fn a_question_that_wraps_is_read_past_its_bar() {
+        use api::QuestionAnswer as Q;
+        let w = Walk::default();
+        let background = ask(
+            "Which background colour should the settings page use when the system theme is dark?",
+            "Background",
+            false,
+            &[("Charcoal", "A warm near-black"), ("Navy", "A deep blue")],
+        );
+        let four = asked(vec![
+            background.clone(),
+            ask("Which font?", "Typography", false, &[("Inter", "Sans"), ("Lora", "Serif")]),
+            ask(
+                "Where should drafts be kept?",
+                "Persistence",
+                true,
+                &[("Disk", "A file"), ("Memory", "Lost on exit")],
+            ),
+            ask(
+                "Which regions?",
+                "Deployments",
+                true,
+                &[("Europe", "Belgium"), ("America", "Iowa")],
+            ),
+        ]);
+        let plan = answers(vec![
+            Q::Choice { index: 1 },
+            Q::Choice { index: 0 },
+            Q::Choices { indices: vec![0] },
+            Q::Choices { indices: vec![1] },
+        ]);
+        assert_eq!(dialog_step(&four, &plan, N_LONG, &w), Ok(DialogStep::Down));
+        assert!(dialog_shape(&four, N_LONG));
+        // One question alone wears the same bar, on the T-567 road.
+        let one = asked(vec![background]);
+        let navy = api::DialogAnswer::Choice { index: 1 };
+        assert_eq!(dialog_step(&one, &navy, S_LONG, &w), Ok(DialogStep::Down));
+        let charcoal = api::DialogAnswer::Choice { index: 0 };
+        assert_eq!(dialog_step(&one, &charcoal, S_LONG, &w), Ok(DialogStep::Submit));
+    }
+
+    #[test]
+    fn a_screen_that_drifts_from_the_batch_stops_the_walk() {
+        use api::QuestionAnswer as Q;
+        let dialog = measured_batch();
+        let plan = answers(vec![
+            Q::Choice { index: 1 },
+            Q::Choices { indices: vec![0] },
+            Q::Choice { index: 1 },
+        ]);
+        let w = Walk::default();
+        let step = |screen: &str| dialog_step(&dialog, &plan, screen, &w);
+        // Another dialog's words under the bar, or the prompt's words only.
+        let mut other = measured_batch();
+        if let api::DialogContent::Questions { questions } = &mut other.content {
+            questions[0].question = "Which colour should the button be?".into();
+        }
+        assert_eq!(dialog_step(&other, &plan, B_COLOR, &w), Err(Miss::ShapeUnrecognised));
+        let no_bar = B_COLOR.replace("←  ☐ Color  ☐ Toppings  ☐ Size  ✔ Submit  →", "");
+        assert_eq!(step(&no_bar), Err(Miss::ShapeUnrecognised));
+        let no_footer =
+            B_COLOR.replace("Enter to select · Tab/Arrow keys to navigate · Esc to cancel", "");
+        assert_eq!(step(&no_footer), Err(Miss::ShapeUnrecognised));
+        let two = B_COLOR.replace("  2. Green", "❯ 2. Green");
+        assert_eq!(step(&two), Err(Miss::ShapeUnrecognised));
+        let none = B_COLOR.replace("❯ 1. Blue", "  1. Blue");
+        assert_eq!(step(&none), Err(Miss::ShapeUnrecognised));
+        let skips = B_COLOR.replace("  3. Red", "  4. Red");
+        assert_eq!(step(&skips), Err(Miss::ShapeUnrecognised));
+        // A mark Claude Code was not measured drawing is no tick.
+        let marked = B_TOPPINGS.replace("[ ] Olives", "[x] Olives");
+        assert_eq!(step(&marked), Err(Miss::LabelNotFound));
+        // A review short of a question, and the composer once it is gone.
+        let short = B_REVIEW.replace(" ● Which size?\n", "").replace("   → Large\n", "");
+        assert_eq!(step(&short), Err(Miss::ShapeUnrecognised));
+        assert_eq!(step("──────\n❯ \n──────\n  ? for shortcuts"), Err(Miss::ShapeUnrecognised));
+        // A refusal is Escape on any tab of the dialog, never on the composer.
+        let reject = api::DialogAnswer::Reject;
+        for screen in [B_COLOR, B_TOPPINGS, B_REVIEW] {
+            assert_eq!(dialog_step(&dialog, &reject, screen, &w), Ok(DialogStep::Reject));
+        }
+        assert_eq!(dialog_step(&dialog, &reject, "❯ composer", &w), Err(Miss::ShapeUnrecognised));
+        assert!(dialog_shape(&dialog, B_COLOR) && dialog_shape(&dialog, B_REVIEW));
+        assert!(!dialog_shape(&dialog, "❯ composer"));
+    }
+
+    #[test]
+    fn the_measured_shapes_are_answerable_and_an_answer_fits_each_question() {
+        use api::QuestionAnswer as Q;
+        let dialog = measured_batch();
+        let questions = questions_of(&dialog).to_vec();
+        assert!(dialog_answerable(&questions));
+        assert!(dialog_answerable(&questions[1..2]), "one several-choice question");
+        let twins = vec![questions[0].clone(), questions[0].clone()];
+        assert!(!dialog_answerable(&twins), "the screen cannot tell twins apart");
+        let five = [&questions[..], &questions[..2]].concat();
+        assert!(!dialog_answerable(&five));
+        assert!(!dialog_answerable(&[]));
+        let fits = |a: Vec<Q>| dialog_plan(&dialog, &answers(a));
+        let good = vec![
+            Q::Choice { index: 2 },
+            Q::Choices { indices: vec![3, 0] },
+            Q::Choice { index: 0 },
+        ];
+        assert_eq!(fits(good.clone()), Some(Plan::Batch(good)));
+        for bad in [
+            vec![Q::Choice { index: 0 }, Q::Choices { indices: vec![0] }],
+            vec![Q::Choice { index: 3 }, Q::Choices { indices: vec![0] }, Q::Choice { index: 0 }],
+            vec![Q::Choice { index: 0 }, Q::Choice { index: 0 }, Q::Choice { index: 0 }],
+            vec![
+                Q::Choices { indices: vec![0] },
+                Q::Choices { indices: vec![0] },
+                Q::Choice { index: 0 },
+            ],
+            vec![Q::Choice { index: 0 }, Q::Choices { indices: vec![] }, Q::Choice { index: 0 }],
+            vec![
+                Q::Choice { index: 0 },
+                Q::Choices { indices: vec![1, 1] },
+                Q::Choice { index: 0 },
+            ],
+            vec![Q::Choice { index: 0 }, Q::Choices { indices: vec![4] }, Q::Choice { index: 0 }],
+            vec![
+                Q::Text { text: "a\nb".into() },
+                Q::Choices { indices: vec![0] },
+                Q::Choice { index: 0 },
+            ],
+        ] {
+            assert_eq!(fits(bad.clone()), None, "{bad:?}");
+        }
+        // An older browser's single answer fits only the one-choice question.
+        assert_eq!(dialog_plan(&dialog, &api::DialogAnswer::Choice { index: 0 }), None);
+        let single = question();
+        assert_eq!(
+            dialog_plan(&single, &answers(vec![Q::Choice { index: 1 }])),
+            Some(Plan::Single(Q::Choice { index: 1 }))
+        );
+        // The walk's room grows with the batch and stays inside its ceiling.
+        assert_eq!(walk_budget(&single), (12, Duration::from_secs(8)));
+        let (keys, walk) = walk_budget(&dialog);
+        assert_eq!(keys, 55);
+        assert!(walk > Duration::from_secs(20) && walk <= DIALOG_WALK_MAX, "{walk:?}");
+        let widest = asked(
+            (0..4)
+                .map(|i| {
+                    let options: Vec<(String, String)> =
+                        (0..8).map(|o| (format!("o{o}"), String::new())).collect();
+                    let options: Vec<(&str, &str)> =
+                        options.iter().map(|(l, d)| (l.as_str(), d.as_str())).collect();
+                    ask(&format!("q{i}?"), "h", true, &options)
+                })
+                .collect(),
+        );
+        let (keys, walk) = walk_budget(&widest);
+        assert!(keys >= 4 * 8 * 3, "{keys}");
+        assert!(walk > Duration::from_secs(50) && walk <= DIALOG_WALK_MAX, "{walk:?}");
+    }
+
+    #[test]
+    fn the_crown_s_answer_is_refused_question_by_question_in_words() {
+        use api::QuestionAnswer as Q;
+        let questions = questions_of(&measured_batch()).to_vec();
+        let refused = |answer: CrownAnswer| crown_answers("T-2", &questions, answer).unwrap_err();
+        assert!(refused(CrownAnswer::Index(0)).contains("asks 3 questions at once"));
+        assert!(refused(CrownAnswer::Answers(vec![Q::Choice { index: 0 }; 2]))
+            .contains("answers carries 2 answers and T-2's dialog asks 3 questions"));
+        let mut three =
+            vec![Q::Choice { index: 1 }, Q::Choices { indices: vec![0] }, Q::Choice { index: 1 }];
+        let mut with = |at: usize, answer: Q| {
+            three[at] = answer;
+            let why = refused(CrownAnswer::Answers(three.clone()));
+            three = vec![
+                Q::Choice { index: 1 },
+                Q::Choices { indices: vec![0] },
+                Q::Choice { index: 1 },
+            ];
+            why
+        };
+        assert!(with(1, Q::Choice { index: 0 }).contains("question 2 takes several choices"));
+        assert!(with(0, Q::Choices { indices: vec![0] }).contains("question 1 takes one choice"));
+        assert!(with(0, Q::Choice { index: 5 })
+            .contains("index 5 is out of range: question 1 has 3 options, 0 to 2"));
+        assert!(with(1, Q::Choices { indices: vec![] }).contains("indices is empty"));
+        assert!(with(1, Q::Choices { indices: vec![0, 0] }).contains("twice"));
+        assert!(with(1, Q::Choices { indices: vec![9] }).contains("index 9 is out of range"));
+        assert!(with(2, Q::Text { text: "a\nb".into() }).contains("one line"));
+        let good = vec![
+            Q::Choice { index: 1 },
+            Q::Choices { indices: vec![0, 2] },
+            Q::Choice { index: 1 },
+        ];
+        assert_eq!(
+            crown_answers("T-2", &questions, CrownAnswer::Answers(good.clone())),
+            Ok(good.clone())
+        );
+        assert_eq!(answer_words(&questions, &good), "Green; Cheese, Basil; Large");
+        // The one question keeps T-569's words.
+        let one = &questions[..1];
+        let why = crown_answers("T-2", one, CrownAnswer::Index(3)).unwrap_err();
+        assert!(why.contains("out of range: the question has 3 options"), "{why}");
+        let several = &questions[1..2];
+        let why = crown_answers("T-2", several, CrownAnswer::Index(0)).unwrap_err();
+        assert!(why.contains("the question takes several choices"), "{why}");
     }
 
     /// A phone sees a ticket's tags in the TUI's tints, and a pickup only on

@@ -565,6 +565,39 @@ mod tests {
         assert!(features.is_empty());
     }
 
+    /// T-571: a batch answer names each question's answer by the same tag
+    /// the single answer uses, and a field the host does not know is refused.
+    #[test]
+    fn a_batch_answer_carries_one_answer_per_question() {
+        let Request::Dialog { response: DialogAnswer::Answers { answers }, .. } =
+            serde_json::from_str(
+                r#"{"op":"dialog","ticket":"t","session":"s","request":"r","response":
+                {"answer":"answers","answers":[{"answer":"choice","index":1},
+                {"answer":"choices","indices":[0,2]},{"answer":"text","text":"Mauve"}]}}"#,
+            )
+            .unwrap()
+        else {
+            panic!("answers")
+        };
+        assert_eq!(
+            answers,
+            [
+                QuestionAnswer::Choice { index: 1 },
+                QuestionAnswer::Choices { indices: vec![0, 2] },
+                QuestionAnswer::Text { text: "Mauve".into() },
+            ]
+        );
+        assert!(serde_json::from_str::<QuestionAnswer>(
+            r#"{"answer":"choice","index":1,"indices":[1]}"#
+        )
+        .is_err());
+        // The single answer an older browser sends still reads.
+        assert!(matches!(
+            serde_json::from_str::<DialogAnswer>(r#"{"answer":"choice","index":0}"#).unwrap(),
+            DialogAnswer::Choice { index: 0 }
+        ));
+    }
+
     #[test]
     fn approval_is_a_one_shot_native_decision_without_rules_or_input_changes() {
         for (decision, word) in
@@ -1059,8 +1092,28 @@ pub struct QuestionOption {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "answer", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DialogAnswer {
-    Choice { index: usize },
-    Text { text: String },
+    Choice {
+        index: usize,
+    },
+    Text {
+        text: String,
+    },
     Accept,
     Reject,
+    /// One answer per question, in order (T-571): a batch, or a question
+    /// that takes several choices. A browser sends it only to a host that
+    /// advertised `dialog_multi`; an older host would drop the peer on it.
+    Answers {
+        answers: Vec<QuestionAnswer>,
+    },
+}
+/// One question's answer inside `DialogAnswer::Answers` (T-571): an option
+/// of a one-choice question, the options of a several-choice one, or words
+/// typed in the question's own text row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "answer", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QuestionAnswer {
+    Choice { index: usize },
+    Choices { indices: Vec<usize> },
+    Text { text: String },
 }

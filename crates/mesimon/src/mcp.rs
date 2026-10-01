@@ -34,9 +34,13 @@ use serde_json::{json, Value};
 
 /// Long enough that a writer thread busy with a provisioning burst still
 /// answers, short enough that a wedged daemon does not hold the agent's turn.
-/// `answer_agent`'s receipt waits for its delivery to settle (T-569): at
-/// most its 8 s key walk and the 5 s hook window, well inside this.
 const READ_TIMEOUT_SECS: u64 = 20;
+
+/// How long `answer_agent`'s receipt is waited for (T-569, T-571): it comes
+/// once the delivery settles, after the key walk (8 s for one question, up
+/// to the daemon's 60 s `DIALOG_WALK_MAX` for a batch) and the 5 s hook
+/// window, so this is that and a margin.
+const ANSWER_WAIT_SECS: u64 = 75;
 
 pub fn run(args: &[String]) -> ! {
     let Some(sock) = val(args, "--sock").map(PathBuf::from) else {
@@ -148,8 +152,8 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::AskAgent { key, text, seen, plan } => {
             Command::AgentAskTicket { key, text, seen: Some(seen), plan }
         }
-        ToolCall::AnswerAgent { key, seen, request, index, text } => {
-            Command::AgentAnswerTicket { key, seen: Some(seen), request, index, text }
+        ToolCall::AnswerAgent { key, seen, request, index, text, answers } => {
+            Command::AgentAnswerTicket { key, seen: Some(seen), request, index, text, answers }
         }
         ToolCall::CreateTicket { title, column, description, tags, idempotency_key } => {
             Command::AgentCreateTicket {
@@ -283,8 +287,12 @@ fn render(resp: Response) -> Value {
 fn ask(sock: &PathBuf, env: &Envelope) -> Result<Response, String> {
     let stream = UnixStream::connect(sock)
         .map_err(|e| format!("mesimon daemon is not reachable ({e}); the board may be closed"))?;
+    let wait = match env.command {
+        Command::AgentAnswerTicket { .. } => ANSWER_WAIT_SECS,
+        _ => READ_TIMEOUT_SECS,
+    };
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(READ_TIMEOUT_SECS)))
+        .set_read_timeout(Some(std::time::Duration::from_secs(wait)))
         .map_err(|e| e.to_string())?;
     let line = serde_json::to_string(env).map_err(|e| e.to_string())?;
     {
