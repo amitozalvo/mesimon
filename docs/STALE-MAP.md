@@ -16344,3 +16344,33 @@ be a better option". Assessed, not built, because it is a design change the auth
 the budget; the shim's `a_start_receipt_says_started_or_waiting_never_false` asserts `wakes`;
 `crown_e2e` asserts `crown` on the crowned own view and its absence on an uncrowned own read
 and on a keyed read of another ticket.
+
+## The header's memory chip lands in its own column (T-540, 2026-10-01, "memory usage not making sense": the simbly board's header read `☕ •0190GiB`)
+
+**The measurement was right; the cells were one column off.** The simbly daemon's panes held
+0.85 GiB by `ps axo pgid=,rss=` at the time, and the chip's format is `{gib:.1}GiB`, which can
+never print `0190`. Read cell by cell, the screenshot is ` ∙ 1.0GiB` drawn one column right of
+where ratatui believed it, with a later `0.9` written at the right columns over it: `0` and `9`
+fresh, `1` and `0` stale.
+
+**Cause: ratatui 0.30's VS16 path and crossterm's consecutive-cell shortcut.** `☕️` carries VS16
+on purpose (2026-09-10: bare `☕` drew as small monochrome text). `BufferDiff` follows a VS16
+emoji with its covered column whenever that column's symbol changed — "some terminals do not
+reliably clear the trailing cell" — and `CrosstermBackend::draw` sends no cursor move for a cell
+one past the last. iTerm2 had already advanced two columns for the coffee, so the blank and every
+changed cell after it in the run landed one right. It fires whenever the coffee lands where text
+was: the ticket count gaining a digit, the git clause changing length, the `☾ ` ⇄ `☕️` swap
+after a layout shift.
+
+**Fix: `quiet::covered_first`.** The board's own backend reorders each draw so a wide glyph's
+covered columns go out before the glyph. Every one of them is then reached by a cursor move; the
+glyph covers them in a terminal that draws it wide and leaves them cleared in one that draws it
+narrow, which is what ratatui emits them for. Dropping the covered cell instead would leave
+stale text in a narrow-drawing terminal; moving the cursor to it after the glyph would erase
+the glyph (a write into either half of a wide character erases both). User text never reaches
+this path — `scrub_cells` strips U+FE0F — so `☕️` is the only VS16 grapheme mesimon draws,
+but the reorder holds for any future one.
+
+**Tests.** `quiet::a_cell_after_an_emoji_lands_in_its_own_column` plays the backend's bytes onto
+a small terminal model (CUP, wide glyphs advance by their width, a write into a wide glyph
+erases it) and fails without the reorder with the header's exact shift.

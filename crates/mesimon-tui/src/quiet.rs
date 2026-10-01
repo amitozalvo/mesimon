@@ -87,6 +87,40 @@ pub(crate) fn draw<W: Write>(
     drawn
 }
 
+/// A wide glyph's covered columns, written before the glyph (T-540).
+///
+/// ratatui follows a VS16 emoji (the header's `☕️`) with its covered column
+/// whenever that column's symbol changed, and crossterm's backend writes a
+/// cell at the column after the last one without moving the cursor. A
+/// terminal that drew the emoji two columns wide is already past that
+/// column, so the blank and every changed cell after it land one column
+/// right — and stay there, mixed with later writes that do move the cursor:
+/// the memory chip read `0190GiB` for `0.9GiB`. Written first, every covered
+/// column is reached by a cursor move; the glyph then covers it in a terminal
+/// that draws it wide and leaves it cleared in one that draws it narrow,
+/// which is what ratatui wrote it for.
+fn covered_first<'a>(
+    cells: impl Iterator<Item = (u16, u16, &'a Cell)>,
+) -> Vec<(u16, u16, &'a Cell)> {
+    use ratatui::buffer::CellWidth;
+    let mut out: Vec<(u16, u16, &Cell)> = Vec::new();
+    // Where in `out` the last wide glyph sits, while its columns may follow.
+    let mut wide: Option<usize> = None;
+    for (x, y, cell) in cells {
+        if let Some(at) = wide {
+            let (wx, wy, glyph) = out[at];
+            if y == wy && x < wx.saturating_add(glyph.cell_width()) {
+                out.insert(at, (x, y, cell));
+                wide = Some(at + 1);
+                continue;
+            }
+        }
+        wide = (cell.cell_width() > 1).then_some(out.len());
+        out.push((x, y, cell));
+    }
+    out
+}
+
 impl<W: Write> Backend for Quiet<W> {
     type Error = io::Error;
 
@@ -100,7 +134,7 @@ impl<W: Write> Backend for Quiet<W> {
         }
         self.begin()?;
         self.at = None;
-        self.inner.draw(content)
+        self.inner.draw(covered_first(content).into_iter())
     }
 
     fn append_lines(&mut self, n: u16) -> io::Result<()> {
@@ -256,6 +290,67 @@ mod tests {
         assert_eq!(tty.take(), format!("{BEGIN}\x1b[?25l{END}"));
         frame(&mut t, "titlE", None);
         assert_eq!(tty.take(), "");
+    }
+
+    /// The tty's bytes played onto a grid as a terminal plays them: `CUP`
+    /// places the cursor, any other CSI is ignored, a glyph fills as many
+    /// columns as it is wide and moves the cursor past all of them, and a
+    /// write into either half of a wide glyph erases the whole of it.
+    fn play(bytes: &str, (width, height): (usize, usize)) -> Vec<String> {
+        use unicode_segmentation::UnicodeSegmentation;
+        // A covered column is "": the row's concatenation is what shows.
+        let mut grid = vec![vec![" ".to_string(); width]; height];
+        let (mut x, mut y) = (0, 0);
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            if let Some(csi) = rest.strip_prefix("\x1b[") {
+                let end = csi.find(|c: char| ('@'..='~').contains(&c)).unwrap();
+                if csi[end..].starts_with('H') {
+                    let mut at = csi[..end].split(';').map(|n| n.parse::<usize>().unwrap_or(1));
+                    y = at.next().unwrap_or(1) - 1;
+                    x = at.next().unwrap_or(1) - 1;
+                }
+                rest = &csi[end + 1..];
+                continue;
+            }
+            let run = rest.find('\x1b').unwrap_or(rest.len());
+            for g in rest[..run].graphemes(true) {
+                let w = unicode_width::UnicodeWidthStr::width(g).max(1);
+                let row = &mut grid[y];
+                if row[x].is_empty() {
+                    row[x - 1] = " ".into();
+                }
+                if row.get(x + w).is_some_and(String::is_empty) {
+                    row[x + w] = " ".into();
+                }
+                row[x] = g.into();
+                for covered in &mut row[x + 1..x + w] {
+                    covered.clear();
+                }
+                x += w;
+            }
+            rest = &rest[run..];
+        }
+        grid.into_iter().map(|row| row.concat()).collect()
+    }
+
+    /// T-540: the header's `☕️` moved onto a column that held text and the
+    /// chip after it read `0190GiB`. ratatui follows a VS16 emoji with its
+    /// covered column whenever that column changed, and crossterm writes a
+    /// cell one past the last without moving the cursor — so the blank and
+    /// every changed cell after it landed one column right.
+    #[test]
+    fn a_cell_after_an_emoji_lands_in_its_own_column() {
+        let (mut t, tty) = term();
+        frame(&mut t, "abcdefghij", None);
+        let mut seen = tty.take();
+        frame(&mut t, "☕️bcdefghi", None);
+        seen += &tty.take();
+        assert_eq!(play(&seen, (12, 2))[0], "☕️bcdefghi  ");
+        // And back: the text that replaces it writes over both columns.
+        frame(&mut t, "xyzdefghi", None);
+        seen += &tty.take();
+        assert_eq!(play(&seen, (12, 2))[0], "xyzdefghi   ");
     }
 
     #[test]
