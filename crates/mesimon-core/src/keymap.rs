@@ -1940,11 +1940,13 @@ static BOARD: &[Binding] = &[
     },
     Binding {
         // The footer names the immediate nudge; the overlay also teaches
-        // the adjacent-column move with a cancellable preview.
+        // the adjacent-column move with a cancellable preview. The hint says
+        // what sets it apart from `HJKL` on the next row: the cursor goes
+        // home, not with the card (T-534). The press count is `MOVE`'s hint.
         keys: &[Key::Char('>'), Key::Char('<')],
         verb: Verb::Grab,
         show: "> <",
-        hint: |_| "move card, twice",
+        hint: |_| "move card, stay on original column",
         // The user's rule: no selection, no move — and no second column to
         // move to means the same thing.
         avail: |c| c.has_ticket && c.multi_column,
@@ -7348,7 +7350,7 @@ mod tests {
         let ctx =
             Ctx { has_ticket: true, multi_column: true, can_nudge: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::Char('>'), &ctx), Some(Verb::Grab));
-        assert_eq!(hint_for(Scope::Board, Verb::Grab, &ctx), Some(("> <", "move card, twice")));
+        assert_eq!(hint_for(Scope::Board, Verb::Grab, &ctx), Some(("> <", "move card, stay on original column")));
         assert_eq!(resolve(Scope::Board, Key::AltLeft, &ctx), Some(Verb::Nudge));
         for k in [Key::Char('H'), Key::Char('J'), Key::Char('K'), Key::Char('L')] {
             assert_eq!(resolve(Scope::Board, k, &ctx), Some(Verb::Nudge), "{k:?}");

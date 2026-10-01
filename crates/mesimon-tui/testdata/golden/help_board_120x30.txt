@@ -5,7 +5,7 @@
     De╭─ KEYS ∙ board ───────────────────────────────────────────────────────────────────────────────────────────╮ >1y
       │ MOVE AROUND                                           TICKETS                                            │
     Ke│   hjkl      move around                                 o         new ticket                             │
-      │   g         top of column                               > <       move card, twice                       │
+      │   g         top of column                               > <       move card, stay on original column     │
       │   G         bottom of column                            HJKL      move card                              │
       │   enter     go to the agent                             O         new column                             │
       │   space     ticket page                                 r         rename                                 │

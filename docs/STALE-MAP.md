@@ -16136,3 +16136,12 @@ desktop, tablet and phone, now asserting that a ticket's card has the same parts
 the Board, its tag in both, the needs-you card's tag and state words, and the ghosts in Now.
 Screenshots of Now and the Board at each size were read by eye. Not run: `browser.test.js`,
 which needs the relay's fixture.
+
+## The `> <` hint says where the cursor goes (T-534, 2026-10-01, "hint \"move card, twice\" doesn't make sense")
+
+The board's `?` overlay read `> < move card, twice`. "twice" described the keystrokes, not the
+result, and the row under it, `HJKL move card`, makes the same move. The hint is now **`move
+card, stay on original column`**, the author's wording: `grab` drops the card and puts the cursor
+back on its home row, where `HJKL` carries the cursor with the card. The press count is still
+taught where it applies: the first press enters `Scope::Move`, whose hint is `repeat to move`.
+One golden moved (`help_board_120x30`).
