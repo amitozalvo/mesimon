@@ -264,10 +264,11 @@ pub struct SessionRecord {
     pub provenance: Provenance,
     /// The crown's ticket when the crown's agent asked for this session
     /// (`start_agent`, T-412); `None` for every seat a person started. The
-    /// spawn budget counts records that carry it while they hold a seat on
-    /// a ticket the board shows (`Board::crown_started`), and a ticket whose
-    /// agent carries it can never be crowned — so the graph of agents that
-    /// start agents is one level deep by construction (D10). Persisted so a
+    /// spawn budget counts records that carry it while they hold a seat
+    /// awake on a ticket the board shows (`Board::crown_started`), and a
+    /// ticket whose agent carries it can never be crowned — so the graph of
+    /// agents that start agents is one level deep by construction (D10).
+    /// Persisted so a
     /// restart keeps the count honest; `#[serde(default)]` is the migration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_by: Option<ulid::Ulid>,
@@ -1568,8 +1569,8 @@ pub struct Board {
     pub park_after_minutes: u32,
     /// The spawn budget (T-412): how many agent seats the crown's agent may
     /// have started at once, counted over `SessionRecord::started_by` while
-    /// each seat is held (a sleeping record holds its seat) on a ticket that
-    /// is not archived. Zero means the crown starts nothing. D10's money
+    /// each seat is held awake (a sleeping record frees it, T-541) on a
+    /// ticket that is not archived. Zero means the crown starts nothing. D10's money
     /// fire — an agent that starts agents — is bounded by this number and
     /// by the one-level rule on `started_by`, never by trust.
     #[serde(default = "default_crown_budget")]
@@ -2440,20 +2441,23 @@ impl Board {
     }
 
     /// The seats the crown's agent started and still holds (T-412): the
-    /// records that carry `started_by` and hold an agent seat — parked or
-    /// not, whoever wears the crown now — on a ticket the board shows. The
+    /// records that carry `started_by` and hold an agent seat AWAKE —
+    /// whoever wears the crown now — on a ticket the board shows. The
     /// budget is counted over these, board-wide: a displaced crown does not
     /// free the seats the last one started, because the money is spent
-    /// either way. An archived ticket's (a snooze's too) is out of the count
-    /// (T-518): the crown can no longer reach it, only a person's restore
-    /// and wake can spend on it again, and a refusal that named it would
-    /// send the person digging in the archive. The record keeps its
-    /// `started_by`, so a restored ticket counts again and still cannot be
-    /// crowned.
+    /// either way. A parked agent is out of the count (T-541): it runs no
+    /// process and spends nothing, so `sleep_agent` (or a person's `x`, or
+    /// the inactivity park) frees its seat, and its wake — always a
+    /// person's: their `c`, or their send of the crown's held ask — takes
+    /// it back. An archived ticket's (a snooze's too) is out of the count
+    /// as well (T-518), a belt now that an archive needs everything asleep.
+    /// The record keeps its `started_by`, so a woken or restored seat counts
+    /// again and its ticket still cannot be crowned.
     pub fn crown_started(&self) -> Vec<&SessionRecord> {
         self.sessions
             .iter()
             .filter(|s| s.started_by.is_some() && s.holds_agent_seat())
+            .filter(|s| s.state != SessionState::Sleeping)
             .filter(|s| self.ticket(s.ticket).is_some_and(|t| !t.is_archived()))
             .collect()
     }
@@ -2607,12 +2611,49 @@ mod tests {
         }
     }
 
-    /// T-518: the author archived the three tickets the crown had started,
-    /// and the crown was still refused on their sleeping agents. A seat on
-    /// an archived ticket — a snooze is one too — is out of the budget's
-    /// count; the record keeps `started_by`, so a restore counts it again.
+    /// T-541: a crown-started agent holds a budget seat only while it is
+    /// awake. The author's crown parked its finished workers and was still
+    /// refused until it archived their tickets; a parked agent spends
+    /// nothing, so the park alone frees the seat and the wake takes it back.
+    /// The record keeps `started_by` throughout.
     #[test]
-    fn an_archived_tickets_sleeping_agent_frees_its_crown_seat() {
+    fn a_sleeping_crown_started_agent_frees_its_seat() {
+        let crown = ulid::Ulid::new();
+        let mut board = Board::default();
+        let states = [
+            SessionState::Running,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Sleeping,
+        ];
+        for (n, state) in (1..=3).zip(states) {
+            let t = ticket(n, "IN PROGRESS", "a");
+            let mut rec = SessionRecord::new(
+                uuid::Uuid::new_v4(),
+                SessionKind::Claude,
+                t.id,
+                vec!["claude".into()],
+                "/repo".into(),
+                state,
+            );
+            rec.started_by = Some(crown);
+            board.tickets.push(t);
+            board.sessions.push(rec);
+        }
+        let held = |b: &Board| b.crown_started().iter().map(|s| s.ticket).collect::<Vec<_>>();
+        assert_eq!(held(&board), vec![ulid::Ulid(1), ulid::Ulid(2)], "awake seats count");
+        assert!(board.live_agent(ulid::Ulid(3)).is_some(), "the parked seat itself stands");
+        assert!(board.sessions[2].started_by.is_some(), "and so does its provenance");
+        board.sessions[2].state = SessionState::Spawning;
+        assert_eq!(board.crown_started().len(), 3, "a wake counts it again");
+    }
+
+    /// T-518: the author archived the three tickets the crown had started,
+    /// and the crown was still refused on them. A seat on an archived
+    /// ticket — a snooze is one too — is out of the budget's count, even
+    /// held awake; the record keeps `started_by`, so a restore counts it
+    /// again.
+    #[test]
+    fn an_archived_tickets_agent_frees_its_crown_seat() {
         let crown = ulid::Ulid::new();
         let mut board = Board::default();
         for n in 1..=3 {
@@ -2623,13 +2664,13 @@ mod tests {
                 t.id,
                 vec!["claude".into()],
                 "/repo".into(),
-                SessionState::Sleeping,
+                SessionState::Idle { stop_reason: StopReason::EndTurn },
             );
             rec.started_by = Some(crown);
             board.tickets.push(t);
             board.sessions.push(rec);
         }
-        assert_eq!(board.crown_started().len(), 3, "a sleeping agent holds its seat");
+        assert_eq!(board.crown_started().len(), 3, "an awake agent holds its seat");
         board.tickets[0].archived =
             Some(Archived { at: "@1".into(), by: "local".into(), until: None, needs_you: false });
         board.tickets[1].archived = Some(Archived {

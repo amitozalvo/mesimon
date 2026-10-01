@@ -525,7 +525,7 @@ pub enum Command {
         minutes: u32,
     },
     /// The crown's spawn budget (`Board::crown_budget`, T-412): how many
-    /// agent seats the crown's agent may have started at once. Zero means
+    /// awake agents the crown's agent may have started at once. Zero means
     /// none. Local only — a tier that could raise its own budget is D10's
     /// money fire with the fuse removed.
     SetCrownBudget {
@@ -905,8 +905,8 @@ pub enum Command {
     /// does — the conversation kept, the pane gone, a person's `c` wakes it.
     /// Crown only, and only an agent the crown started (`started_by`): a
     /// person's agent is the person's to park. Refused on a working agent in
-    /// the words `x` would use, and on the crown's own ticket. The parked
-    /// agent still holds its crown seat until its ticket is archived.
+    /// the words `x` would use, and on the crown's own ticket. The park
+    /// frees its crown seat until a person wakes it (T-541).
     AgentSleepTicket {
         key: String,
         #[serde(default)]

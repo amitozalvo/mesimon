@@ -4476,7 +4476,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             }
         },
         detail: |_| {
-            "start_agent on the crowned ticket ∙ a sleeping seat still counts ∙ enter cycles off / 1 / 2 / 3 / 5 / 8"
+            "start_agent on the crowned ticket ∙ a sleeping agent frees its seat ∙ enter cycles off / 1 / 2 / 3 / 5 / 8"
                 .into()
         },
         avail: always,

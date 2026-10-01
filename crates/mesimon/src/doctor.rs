@@ -574,8 +574,8 @@ fn agents(repo: &Path, verbose: bool) -> Section {
             0 => rec(Level::Note, "crown budget", "0 - a crowned agent starts no agents").advice(
                 "start_agent is refused on this board. Settings > Agents > Crown may start ... sets the cap.",
             ),
-            n => rec(Level::Ok, "crown budget", format!("{n} - the most agents a crowned agent may have started at once"))
-                .advice("Counted over live seats the crown started, sleeping ones included; a crown-started ticket cannot itself be crowned. Settings > Agents > Crown may start ... sets it."),
+            n => rec(Level::Ok, "crown budget", format!("{n} - the most awake agents a crowned agent may have started at once"))
+                .advice("Counted over the awake agents the crown started; a sleeping one frees its seat until it is woken. A crown-started ticket cannot itself be crowned. Settings > Agents > Crown may start ... sets it."),
         });
 
         // The columns and what each one DOES (T-117): every automation is a

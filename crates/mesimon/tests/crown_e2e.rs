@@ -9,7 +9,8 @@
 //! ticket can never be crowned. The crown's ask (T-413) is words HELD on
 //! another ticket's card: nothing reaches the pane until a person's send.
 //! The crown's sleep (T-539) parks an idle agent it started and nobody
-//! else's, so the archive that was refused over the awake seat goes through.
+//! else's, so the archive that was refused over the awake seat goes through,
+//! and the park alone frees that agent's budget seat (T-541).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -442,7 +443,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         }
         other => panic!("the (N+1)th start: {other:?}"),
     }
-    // A seat frees when its agent exits (a sleeping one would still hold it).
+    // A seat frees when its agent exits (or sleeps: the wake test, T-541).
     let s2 = c.board().live_agent(e2).unwrap().id;
     let _ = c.request(Command::KillSession { id: s2 });
     assert!(c.board().live_agent(e2).is_none(), "E2's seat is free");
@@ -922,8 +923,8 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     // person's `z` would; the archive over that awake seat names the road;
     // an idle crown-started worker parks — the record Sleeping, `started_by`
     // kept, the card lit `♛ parked`, the feed line with the agent as actor
-    // — and still holds its seat until the archive, which now goes through
-    // and frees it.
+    // — and the park alone frees its budget seat (T-541): the start the
+    // full budget refused goes through. The archive then goes through too.
     let sleep = |c: &mut TestClient, key: &str, seen: Option<String>| {
         c.send(
             Principal::Agent { session: sa },
@@ -957,6 +958,25 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     }
     assert_eq!(c.board().live_agent(w2).unwrap().state, SessionState::Running, "untouched");
     stop(&mut c, ws2);
+    // A budget of two is spent by W1 and W2, both awake.
+    assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));
+    let w3 = create(&mut c, "mesimon-probe-73 worker");
+    let kw3 = key_of(&mut c, w3);
+    let start_w3 = |c: &mut TestClient| {
+        let v = read(c, sa, &kw3).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket { key: kw3.clone(), seen: v.seen, plan: false },
+        )
+    };
+    match start_w3(&mut c) {
+        Response::Err { message } => {
+            for word in ["2 of 2", &kw1, &kw2, "sleep_agent"] {
+                assert!(message.contains(word), "the refusal names {word}: {message}");
+            }
+        }
+        other => panic!("a start past the budget: {other:?}"),
+    }
     let v2 = read(&mut c, sa, &kw2).unwrap();
     match sleep(&mut c, &kw2, v2.seen) {
         Response::AgentTicket { ticket } => {
@@ -989,8 +1009,13 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         Response::Err { message } => assert!(message.contains("already asleep"), "{message}"),
         other => panic!("sleeping a parked worker: {other:?}"),
     }
-    // Parked is not freed: the seat is held until the ticket leaves the board.
-    assert!(c.board().crown_started().iter().any(|s| s.ticket == w2), "a parked seat counts");
+    // Parked is freed: the seat W2 held takes W3's start, with no archive.
+    assert!(!c.board().crown_started().iter().any(|s| s.ticket == w2), "a parked seat is free");
+    match start_w3(&mut c) {
+        Response::AgentStarted { budget_left, .. } => assert_eq!(budget_left, 0),
+        other => panic!("the start after the park: {other:?}"),
+    }
+    assert_eq!(c.board().live_agent(w3).unwrap().started_by, Some(a));
     let v2 = read(&mut c, sa, &kw2).unwrap();
     match c.send(
         Principal::Agent { session: sa },
@@ -1000,7 +1025,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         other => panic!("archive after the park: {other:?}"),
     }
     assert!(c.board().ticket(w2).unwrap().is_archived());
-    assert!(!c.board().crown_started().iter().any(|s| s.ticket == w2), "the seat is free");
+    assert!(!c.board().crown_started().iter().any(|s| s.ticket == w2), "the seat stays free");
     assert!(
         c.board().sessions.iter().any(|s| s.id == ws2 && s.state == SessionState::Sleeping),
         "archive keeps the sleeping record"

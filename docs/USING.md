@@ -208,12 +208,12 @@ time. Only you can give it, and `ctrl-o` on the crowned card takes it back.
 <sub>The crowned agent files two tickets, moves one back to TODO, tags one and starts an agent
 on another; the moved, tagged and started cards light as they change.</sub>
 
-The crown starts at most three agents at once; **Settings › Agents** changes the number or turns
-starting off. A sleeping agent still holds its seat until its ticket is archived. A ticket the
-crown started can never be crowned itself. The crown may put an agent it started to sleep once
-that agent is idle, the same park as `x` on its card: the conversation is kept and `c` wakes it.
-It may then archive the ticket, which frees the seat and reclaims a merged worktree, so a
-finished worker is cleared without asking you. An agent you started yourself is never slept by
+At most three agents the crown started may be awake at once; **Settings › Agents** changes the
+number or turns starting off. A ticket the crown started can never be crowned itself. The crown
+may put an agent it started to sleep once that agent is idle, the same park as `x` on its card:
+the conversation is kept, `c` wakes it, and while it sleeps its seat is free for another start.
+It may then archive the ticket, which reclaims a merged worktree, so a finished worker is
+cleared without asking you. An agent you started yourself is never slept by
 the crown; it is told to leave that to you. Crowning types nothing into the agent's conversation: the crowned agent learns
 it through its tools. When an agent it started delivers, answers what it asked, or raises its
 hand, one sentence saying so is pasted into the crown's session. So is the merge of that agent's

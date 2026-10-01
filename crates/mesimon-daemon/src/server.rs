@@ -4233,8 +4233,9 @@ impl Daemon {
 
     /// The seats the crown's starts hold right now (T-412): the keys of
     /// every ticket on the board whose agent carries `started_by` and still
-    /// holds its seat (`Board::crown_started`, which skips archived tickets,
-    /// T-518), plus the starts parked behind a worktree provision — those
+    /// holds its seat awake (`Board::crown_started`, which skips a parked
+    /// agent, T-541, and an archived ticket, T-518), plus the starts parked
+    /// behind a worktree provision — those
     /// have no record yet and would otherwise let a burst of worktree
     /// tickets outrun the cap. The second value is how many are parked.
     fn crown_seats(&self) -> (Vec<String>, usize) {
@@ -4273,9 +4274,8 @@ impl Daemon {
         } else {
             format!(
                 "the crown's spawn budget is spent: {budget} of {budget} crown-started agents \
-                 are live ({}). A seat frees when its agent exits or its ticket is archived \
-                 — a sleeping agent still holds it — or the person raises the budget in \
-                 Settings → Agents",
+                 are awake ({}). A seat frees when its agent sleeps (sleep_agent parks an idle \
+                 one) or exits, or the person raises the budget in Settings → Agents",
                 held.join(", ")
             )
         })

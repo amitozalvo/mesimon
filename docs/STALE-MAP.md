@@ -16432,3 +16432,41 @@ worker refused in `still awake` words and the archive over it naming `sleep_agen
 `sessions.json`), a second park "already asleep", the parked seat still counted, and the
 archive going through and freeing it with the record kept. The shim lists fifteen tools and
 requires `seen` on the new one.
+
+## The crown's budget counts awake agents only (T-541, 2026-10-01, "relax crown start ticket limit to non sleeping tickets": "archive will not be needed to clear after this is shipped")
+
+**Seen.** After T-539 the crown could park a finished worker but still had to archive its
+ticket before the budget let it start another: T-412 counted every live seat, sleeping
+included, and only the archive (T-518) took one out of the count.
+
+**Shipped.** `Board::crown_started` skips a `Sleeping` record, so the budget counts the agents
+the crown started that are awake. A park (`sleep_agent`, a person's `x`, the inactivity park)
+frees the seat; a wake takes it back, and the record keeps `started_by` throughout, so a woken
+or restored worker counts again and its ticket still cannot be crowned. The archive filter
+stays as a belt: an archive already needs everything asleep. A retiring Codex runtime
+(`codex_stopping`) still counts, because it is still running.
+
+- **Why the count is the awake set.** T-412's "the money is spent either way" was about a
+  displaced crown, and it still holds for that: seats are counted board-wide over any crown's
+  `started_by`. But a parked agent runs no process and spends nothing until it is woken, so
+  counting it bounded nothing D10 cares about. It only made the archive a second step.
+- **The crown still cannot wake what it parked.** Every wake is a person's: their `c`, or
+  their send of the crown's ask, which is held until a person sends it (T-413). So
+  sleep → start → sleep → start cannot outrun the cap by itself. A person who wakes a parked
+  worker can take the board over the budget, and the next `start_agent` is refused until it
+  falls back under. The cap governs the crown's starts, not a person's wakes. A daemon-side
+  wake on a parked worker (a rebase ask, the train) is the person's rule, and it counts again
+  the moment it is awake.
+- **The words follow.** The refusal now says "are awake (…). A seat frees when its agent
+  sleeps (sleep_agent parks an idle one) or exits". `sleep_agent`'s description and
+  `CROWN_WAKES` say the park frees the seat and the archive afterwards reclaims a merged
+  worktree. The archive is still how the crown tidies a finished worker, but nothing waits on
+  it. The Settings hint, `doctor`'s `crown budget` line and `docs/USING.md` say a sleeping
+  agent frees its seat.
+
+**Tests.** `board`: `a_sleeping_crown_started_agent_frees_its_seat` (Running and Idle count,
+Sleeping does not, a wake to Spawning counts again) and `an_archived_tickets_agent_frees_its_crown_seat`
+(T-518's case on awake records). `crown_e2e`'s wake test: at a budget of two held by W1 and W2,
+W3's start is refused, naming both and `sleep_agent`; after W2 is parked, W2 is out of
+`crown_started` and W3's start goes through with `budget_left` 0, before the archive. The
+settings golden carries the new hint.

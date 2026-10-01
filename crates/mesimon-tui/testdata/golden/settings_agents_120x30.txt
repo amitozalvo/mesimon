@@ -19,7 +19,7 @@
                            │   Sleep idle agents: off                                       │
                            │     this board ∙ after a finished turn ∙ enter cycles off / 1~ │
                            │   Crown may start 3 agents at once                             │
-                           │     start_agent on the crowned ticket ∙ a sleeping seat still~ │
+                           │     start_agent on the crowned ticket ∙ a sleeping agent free~ │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
 
 

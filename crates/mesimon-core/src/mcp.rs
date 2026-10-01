@@ -75,9 +75,9 @@ pub const CROWN_WAKES: &str = "The board wakes this session on its own: when an 
                                polling. A background task or monitor left running makes this \
                                session read as busy, and the wake and every queued word wait \
                                until it ends. A worker whose branch is merged is finished: \
-                               sleep_agent parks it and archive_ticket then takes its ticket \
-                               off the board, which frees its seat in the crown's budget and \
-                               reclaims a merged worktree. That is the crown's to do, not a \
+                               sleep_agent parks it, which frees its seat in the crown's \
+                               budget, and archive_ticket then takes its ticket off the board \
+                               and reclaims a merged worktree. That is the crown's to do, not a \
                                person's to be asked for; a person's own agent is the one the \
                                crown may not park.";
 
@@ -468,10 +468,9 @@ pub fn tools() -> Vec<Value> {
                             card does: the conversation is kept and a person's c wakes it. \
                             Only an agent the crown started, and only once it is idle; a \
                             working agent, a person's agent and this session's own are \
-                            refused in words. A parked agent keeps its crown seat until its \
-                            ticket is archived, so a finished worker is parked and its \
-                            ticket then archived, which frees the seat and reclaims a merged \
-                            worktree.",
+                            refused in words. A parked agent holds no seat in the crown's \
+                            budget until it is woken, so parking a finished worker frees its \
+                            seat; archive_ticket afterwards reclaims a merged worktree.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
