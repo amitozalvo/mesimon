@@ -21,7 +21,7 @@ mod tests;
 mod themes;
 mod ticket;
 
-pub(crate) use card::CrownMark;
+pub(crate) use card::{CrownMark, Land};
 
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
@@ -54,6 +54,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     // This frame's dialog frames, recorded as they are drawn (`dialog::frame`).
     app.frames.borrow_mut().clear();
+    *app.spots.borrow_mut() = Default::default();
     *app.mascot.borrow_mut() = None;
     *app.qr.borrow_mut() = None;
     // And this frame's `Ctx` (`App::frame_ctx`): built on first read.
@@ -157,6 +158,8 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     chrome::draw_header(f, outer[0], app, None);
     board::draw_columns(f, outer[2], app);
+    // The crown's bolts (T-544), over the cards and under every dialog.
+    crate::strike::draw(f, app, outer[2]);
     chrome::draw_advisory(f, outer[3], app);
     chrome::draw_footer(f, outer[4], app);
     // The composer, grown: a dialog over the cards. The column headers stay

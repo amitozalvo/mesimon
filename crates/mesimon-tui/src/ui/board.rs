@@ -36,10 +36,16 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
         match geom.slots[ci] {
             Slot::Expanded { x, width } => {
                 let rect = Rect { x: area.x + x, y: area.y, width, height: area.height };
+                app.spots.borrow_mut().heads.push((
+                    name.clone(),
+                    rect.x + crate::tags::BAR_WIDTH as u16 + 1,
+                    rect.y,
+                ));
                 draw_column(f, rect, app, ci, name);
             }
             Slot::Spine { x } => {
                 let rect = Rect { x: area.x + x, y: area.y, width: 1, height: area.height };
+                app.spots.borrow_mut().heads.push((name.clone(), rect.x, rect.y));
                 draw_spine(f, rect, app, name);
             }
         }
@@ -138,6 +144,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         /// The refusal shake's offset this frame (T-423): the whole card is
         /// drawn this many cells off its place, bar and all. 0 at rest.
         shake: i16,
+        /// The ticket drawn, for the bolts' spots (T-544); `None` for the
+        /// composer's phantom card.
+        id: Option<ulid::Ulid>,
     }
     let mut groups: Vec<Group> = Vec::new();
     let mut push_card = |t: &Ticket, selected: bool, held: bool| {
@@ -154,6 +163,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 waiting,
                 edit_cursor: Some((0, x_off)),
                 shake: 0,
+                id: Some(t.id),
             });
             return;
         }
@@ -229,6 +239,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             waiting,
             edit_cursor,
             shake: app.shake_dx(t.id),
+            id: Some(t.id),
         });
     };
     match ghost {
@@ -249,7 +260,20 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             }
         }
         None => {
-            for (i, t) in rows.iter().enumerate() {
+            // A card the crown just archived burns in its old place (T-544):
+            // drawn among the others by its order, never counted, never the
+            // cursor's — `i` counts the column's own cards only.
+            let mut merged: Vec<(&Ticket, bool)> = rows.iter().map(|t| (*t, false)).collect();
+            for b in app.burning(name) {
+                let at = merged.partition_point(|(t, _)| (&t.order, t.id) < (&b.order, b.id));
+                merged.insert(at, (b, true));
+            }
+            let mut i = 0;
+            for (t, burning) in merged {
+                if burning {
+                    push_card(t, false, false);
+                    continue;
+                }
                 // A prompted card stays the cursor card. Every other text
                 // field drops the selection (the composer's phantom card
                 // becomes the cursor card instead), but this one is anchored
@@ -259,6 +283,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                     && app.cursor_row == Some(i)
                     && (matches!(app.mode, Mode::Normal) || prompt_of(t).is_some());
                 push_card(t, selected, false);
+                i += 1;
             }
         }
     }
@@ -286,6 +311,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 waiting: false,
                 edit_cursor: Some((0, x_off)),
                 shake: 0,
+                id: None,
             });
         }
     }
@@ -294,6 +320,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // card's line range and each card's, for scroll + badges.
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut card_ranges: Vec<(usize, usize, bool)> = Vec::new(); // (start, end, waiting)
+                                                                 // Each card's first flat line, its ticket and, on the holder, the
+                                                                 // crown mark's column: the bolts' spots once the window is known.
+    let mut card_starts: Vec<(usize, ulid::Ulid, Option<u16>)> = Vec::new();
+    let crown_glyph = crate::glyphs::crown(theme.glyph_tier());
     let mut cursor_range: Option<(usize, usize)> = None;
     let mut edit_at: Option<(usize, u16)> = None; // (flat line idx, x offset)
                                                   // The card mid-shake, if any: its flat line range and its offset.
@@ -315,6 +345,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             edit_at = Some((start + off, x));
         }
         card_ranges.push((start, end, g.waiting));
+        if let Some(id) = g.id {
+            let mark = if app.board.is_crowned(id) {
+                g.lines.first().and_then(|l| cell_of(l, crown_glyph))
+            } else {
+                None
+            };
+            card_starts.push((start, id, mark));
+        }
     }
     lines.pop(); // no trailing blank after the last card
 
@@ -591,6 +629,22 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // The hardware cursor sits in the edited title (06 §5.7: visible bar in
     // any text input — never a drawn glyph).
     let top_cue_rows = top.map(|_| 2usize).unwrap_or(0);
+    // Where each card's title row landed on screen, for the crown's bolts
+    // (T-544). A card scrolled out of the window has no spot.
+    {
+        let mut spots = app.spots.borrow_mut();
+        for &(start, id, mark) in &card_starts {
+            if start >= content_start && start < content_end {
+                spots.cards.push(crate::strike::CardSpot {
+                    id,
+                    x: area.x,
+                    y: area.y + head_rows as u16 + (top_cue_rows + start - content_start) as u16,
+                    width: area.width,
+                    mark: mark.map(|m| area.x + m),
+                });
+            }
+        }
+    }
     if let Some((line, x)) = edit_at {
         if line >= content_start && line < content_end {
             f.set_cursor_position((
@@ -624,6 +678,18 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             area.y + header_cursor_y,
         ));
     }
+}
+
+/// The column of the first `glyph` on `line`, in cells from its start.
+fn cell_of(line: &Line<'_>, glyph: &str) -> Option<u16> {
+    let mut at = 0usize;
+    for span in &line.spans {
+        if let Some(i) = span.content.find(glyph) {
+            return u16::try_from(at + span.content[..i].width()).ok();
+        }
+        at += span.content.width();
+    }
+    None
 }
 
 /// A collapsed column (07 §3.1): 1 cell, reads vertically, codepoints

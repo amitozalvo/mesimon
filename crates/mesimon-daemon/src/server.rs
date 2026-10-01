@@ -4473,8 +4473,10 @@ impl Daemon {
         }
         let now = mesimon_core::clock::now_ms();
         self.crown_touches.retain(|_, t| now.saturating_sub(t.at_ms) < CROWN_TOUCH_MS);
-        self.crown_touches
-            .insert(target, CrownTouch { ticket: target, action: action.to_string(), at_ms: now });
+        self.crown_touches.insert(
+            target,
+            CrownTouch { ticket: target, action: action.to_string(), at_ms: now, from: Some(own) },
+        );
         Some(self.seen_token(target))
     }
 
@@ -4663,6 +4665,11 @@ impl Daemon {
             Err(message) => return Response::Err { message },
         };
         self.feed.board(by.actor(), "create_ticket", Some(id));
+        // The crown's filing is one of its touches (T-544), so the board
+        // strikes the new card from the crown's; any other agent's is not.
+        if self.board.is_crowned(from) {
+            self.crown_touched(from, id, "created");
+        }
         let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
         Response::AgentCreated { key, column, board_version: self.board_version, replayed: false }
     }

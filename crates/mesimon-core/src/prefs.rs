@@ -55,10 +55,14 @@ pub enum PrefKey {
     NotifyDockBounce,
     /// The board's reply row (T-365): which rung `p`/`P` left it on.
     Peek,
+    /// The crown's actions strike their tickets with a bolt (T-544). On by
+    /// default; off keeps the board still and the card's word alone says
+    /// what the crown did.
+    CrownLightning,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 26] = [
+    pub const ALL: [PrefKey; 27] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::FollowOs,
@@ -85,6 +89,7 @@ impl PrefKey {
         PrefKey::NotifySoundDone,
         PrefKey::NotifyDockBounce,
         PrefKey::Peek,
+        PrefKey::CrownLightning,
     ];
 
     /// The JSON key in both files.
@@ -116,6 +121,7 @@ impl PrefKey {
             PrefKey::NotifySoundDone => "notify_sound_done",
             PrefKey::NotifyDockBounce => "notify_dock_bounce",
             PrefKey::Peek => "peek",
+            PrefKey::CrownLightning => "crown_lightning",
         }
     }
 
@@ -125,7 +131,9 @@ impl PrefKey {
     /// repo; which day a week starts on, which is about the person; and
     /// the reply row's rung (T-365), which is about how the person reads a
     /// board and has no Settings row to set it per board — `p` and `P` set
-    /// it. The dock bounce is a notification and follows its group.
+    /// it. The dock bounce is a notification and follows its group. The
+    /// crown's lightning (T-544) is motion on the screen, which is about
+    /// the person watching it, so one switch holds for every board.
     pub fn board_overridable(self) -> bool {
         !matches!(
             self,
@@ -140,6 +148,7 @@ impl PrefKey {
                 | PrefKey::TabIcon
                 | PrefKey::WeekStart
                 | PrefKey::Peek
+                | PrefKey::CrownLightning
         )
     }
 
@@ -172,6 +181,7 @@ impl PrefKey {
             PrefKey::NotifySoundDone => "done sound",
             PrefKey::NotifyDockBounce => "dock bounce",
             PrefKey::Peek => "replies",
+            PrefKey::CrownLightning => "crown lightning",
         }
     }
 
@@ -216,7 +226,8 @@ mod tests {
                 PrefKey::TabColor,
                 PrefKey::TabSubtitle,
                 PrefKey::TabIcon,
-                PrefKey::Peek
+                PrefKey::Peek,
+                PrefKey::CrownLightning
             ]
         );
     }

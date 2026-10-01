@@ -16631,3 +16631,74 @@ excluded, Codex included); `test_woken_agent_wears_the_idle_ring` (ui: the ring 
 in `dim2`, and a card with no session stays bare); `the_owed_enter_is_still_launching` now
 expects the ring for the plain idle record. No golden moved: no fixture has an agent at
 `Idle{Unknown}`.
+
+## The crown's actions strike their tickets (T-544, 2026-10-01, "animate crown actions": "lightning when starting initiating from the crown going all the way to the target ticket and ending on the ticket, lighting it's name briefly ∙ also when sleeping an agent, creating, archiving ∙ users will understand whats going on without guessing or going into the crowned agent chat ∙ make the board feel more alive and cool ∙ opt out in settings")
+
+**Seen.** T-411's touch lit the card `♛ moved` for 2 s and left a residue, but it said nothing
+about WHO did it or WHERE from, and a card changing in a column the eye was not on went unseen.
+The crown's `create_ticket` was no touch at all, and `woke` (T-414) was recorded on the crown,
+whose holder mark outranks a touch, so it drew nothing.
+
+**Shipped.** A touch is now a strike: a bolt from the crowned card's `♛` to the card it touched,
+landing on that card's title, on one clock the TUI starts the moment it first sees the touch
+(`strike::Strike.seen`, not the daemon's `at_ms`, so a touch a board sees late is not half
+played). Opt-out: Settings › Appearance › `Crown's actions: lightning / still`, the machine pref
+`crown_lightning` (on by default, machine-only — motion is about the person watching).
+
+- **The bolt** (`tui/src/strike.rs`). Braille dots, 2×4 a cell: a quadratic arc bowed upward (or
+  leftward when vertical), clamped under the columns' top row, each quarter pushed off its line by
+  midpoint displacement, one to three forks leaning down, all seeded by the touch so it holds still
+  frame to frame. A stepped leader reaches the card in `LEADER_MS` = 240 (six jumps, the newest
+  hot, nothing on the first frame); the return stroke burns the channel two dots wide, flickers
+  once, and cools into the ground by `BOLT_MS` = 800. The crown's mark flares through the strokes.
+  The bolt runs from the source card's mark, or the source column's header when that card is
+  scrolled out; no target spot, no bolt (the landing still plays).
+- **It never hides a letter.** Measured on rendered frames: drawn over everything, a bolt crossing a
+  title read as corruption (`Decay t⢀⠤⠃tmen`); drawn in blanks only, it filled the gaps between
+  words (`Wire⠤the⣀relay`) and broke at every text row. So dots go in blank cells that are not a
+  word's gap, never on the struck title's row or the row it leaves from, never on a painted cell
+  (a tag bar, a needs-you row, a chord's flash — any ground but the page's and the cursor's), and
+  every cell the channel crosses takes a GLOW — the crown's tint up to a third into its ground,
+  behind the letters — which is what makes the bolt read unbroken through text
+  (`Theme::bolt_glow`, TrueColor with a ring only). Inks: `Theme::bolt_ink`, the cursor ramp's
+  bright ink hot, `pip(5)` for the channel, cooling into the ground; the value ramp below the ring;
+  nothing in mono, whose glyph tier has no braille. Never `attn`.
+- **The landing** (`Theme::crown_land`, `LandKind::of(action)`), on the crowning's wave
+  (`Theme::wave`, lifted out of `crown_sweep`): a front runs from the title's first letter, where
+  the bolt struck, over `LAND_SWEEP_MS` = 600, and the beat holds to `CROWN_LIT_MS` (2 s, now from
+  the landing, moved to `theme.rs`) and eases back over its last `LAND_FADE_MS` = 400 instead of
+  snapping. `Lit` (moved, started, asked, …) leaves the tint; `Dim` (parked) leaves the quiet ink;
+  `Write` (created, restored) has no letter until the front reaches it; `Burn` (archived) has none
+  once the glow has passed, its letters cooling to `dim3` on the way out. The word (`♛ started`)
+  arrives WITH the bolt: while it is on its way the card is as it was (`Land.ms < 0`).
+  `CrownMark::Touched` grew `{ action, land: Option<Land> }`; `None` is today's still card.
+- **The archived card burns in its place.** The snapshot that carries the touch has already taken
+  it off its column, so `App::burning(column)` puts it back among the column's cards by order for
+  `LAND_SWEEP_MS` + 120 ms — drawn, never counted, never the cursor's (`board.rs` counts the
+  column's own cards for the cursor index) — and then the column closes up.
+- **The worker's news strikes the crown.** `CrownTouch.from: Option<Ulid>` (serde default, skip if
+  none) names whose agent did it — the crown for its own touches, the worker for `woke` — so that
+  bolt runs worker → crown and the holder's title replays the crowning sweep
+  (`CrownMark::Holder { sweep }` takes the strike's landing).
+- **The crown's filing is a touch.** `agent_create_ticket` calls `crown_touched(from, id,
+  "created")` when the caller is crowned; any other agent's filing is not.
+- **Where things are.** `App::spots` (draw-side, cleared by `ui::draw`) records each card's title
+  row, the holder's mark column (`board::cell_of`) and each column's header cell; `strike::draw`
+  runs right after `draw_columns`, so every dialog covers it. `App::animating` asks
+  `Strike::moving` (the bolt, the front, the fade), so the 16 ms frame runs only then.
+- **Kept out.** The ticket page draws no bolt (no board under it); a touch it misses still lights
+  its card if the page is left inside the beat. A move's trail from the old column. The README's
+  `crown.gif` predates the lightning and is not re-recorded here.
+
+**Tests.** `strike`: the bolt joins the crown's cell to the card's, unbroken, in order and
+deterministic, over a shared row rather than along it; the leader only grows and one jump is hot,
+the stroke lights the whole channel, it only cools and is gone at `BOLT_MS`; painted, it is braille
+in blank cells only — words and their gaps, a wide character and skipped cells untouched — never
+`attn`, nothing in mono. `theme`: `crown_land_writes_lights_dims_and_burns_from_the_first_letter`
+(every flavor × TrueColor/256/16, all four kinds, no hole ahead of a writing front or behind a
+burning one) and `the_bolt_runs_hot_to_tint_to_ground_and_never_attn`. `app`:
+`a_fresh_crown_touch_strikes_once_and_the_row_stills_it`. `ui`: the strike's phases on a rendered
+board (leader with the card unchanged, landing with the word and the crown flaring, the lit front,
+held tint, over), still when off and in mono, an archive burning in place then gone, a filing
+written in, a park dimmed and a `woke` bolt sweeping the crown. `crown_e2e`: the touch's `from`, a
+crowned filing touched `created`, an uncrowned one not. The Appearance goldens gained the row.

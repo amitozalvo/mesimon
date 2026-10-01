@@ -279,6 +279,11 @@ pub(crate) struct Prefs {
     /// write is conditional like the week's: a rung this build does not
     /// know survives until a press replaces it.
     pub peek: PeekLevel,
+    /// The crown's actions strike their tickets with a bolt and land on
+    /// their titles (T-544). ON by default: it is how a person follows the
+    /// crowned agent without opening its pane. Per machine — motion on a
+    /// screen is about the person watching it, not about a repo.
+    pub crown_lightning: bool,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -312,6 +317,7 @@ impl Default for Prefs {
             notify_sound_done: Sound::Tink,
             notify_dock_bounce: false,
             peek: PeekLevel::Off,
+            crown_lightning: true,
             doc: Map::new(),
         }
     }
@@ -342,6 +348,7 @@ const NOTIFY_WORDS_KEY: &str = PrefKey::NotifyWords.name();
 const NOTIFY_SOUND_NEEDS_YOU_KEY: &str = PrefKey::NotifySoundNeedsYou.name();
 const NOTIFY_SOUND_DONE_KEY: &str = PrefKey::NotifySoundDone.name();
 const PEEK_KEY: &str = PrefKey::Peek.name();
+const CROWN_LIGHTNING_KEY: &str = PrefKey::CrownLightning.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -465,6 +472,7 @@ impl Prefs {
             PrefKey::NotifySoundDone => self.notify_sound_done.name(),
             PrefKey::NotifyDockBounce => onoff(self.notify_dock_bounce),
             PrefKey::Peek => self.peek.key(),
+            PrefKey::CrownLightning => onoff(self.crown_lightning),
         }
     }
 
@@ -516,6 +524,7 @@ impl Prefs {
         doc.insert(NOTIFY_FOCUSED_KEY.into(), Value::from(self.notify_focused));
         doc.insert(NOTIFY_IN_PANE_KEY.into(), Value::from(self.notify_in_pane));
         doc.insert(NOTIFY_WORDS_KEY.into(), Value::from(self.notify_words));
+        doc.insert(CROWN_LIGHTNING_KEY.into(), Value::from(self.crown_lightning));
         for (key, s) in [
             (NOTIFY_SOUND_NEEDS_YOU_KEY, self.notify_sound_needs_you),
             (NOTIFY_SOUND_DONE_KEY, self.notify_sound_done),
@@ -776,6 +785,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let tab_subtitle = flag(TAB_SUBTITLE_KEY, false);
     let tab_icon = flag(TAB_ICON_KEY, false);
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
+    let crown_lightning = flag(CROWN_LIGHTNING_KEY, true);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
@@ -821,6 +831,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         notify_sound_done,
         notify_dock_bounce,
         peek,
+        crown_lightning,
         doc,
     };
     if schema > SCHEMA {
@@ -1157,6 +1168,25 @@ mod tests {
         assert_eq!(v["merge_train"], true);
         assert_eq!(v["merge_train_notice"], false);
         assert_eq!(v["dark"], "amber");
+    }
+
+    /// The crown's lightning (T-544): absent is on, an off round-trips, and
+    /// a board cannot take it — motion is the person's, not the repo's.
+    #[test]
+    fn crown_lightning_defaults_on_and_round_trips() {
+        let p = scratch("lightning");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.crown_lightning, "absent is the default: on");
+        assert_eq!(l.prefs.word(PrefKey::CrownLightning), "on");
+        l.prefs.crown_lightning = false;
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert!(!l.prefs.crown_lightning);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["crown_lightning"], false);
+        assert!(!PrefKey::CrownLightning.board_overridable());
     }
 
     /// The status line's side (T-264): absent is the bottom (tmux's own

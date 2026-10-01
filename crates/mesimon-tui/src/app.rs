@@ -1283,9 +1283,6 @@ const SHELL_TAIL_EVERY: Duration = Duration::from_millis(1000);
 /// (`scan_spoke`). One `stat` per card a second at rest; peek.rs's module
 /// doc has the busy-session number.
 const SPOKE_EVERY: Duration = Duration::from_secs(1);
-/// How long a card the crown just touched stays lit with the word for what
-/// was done to it (T-411); the residue stays until the cursor rests there.
-const CROWN_LIT_MS: u64 = 2_000;
 /// The refusal shake (T-423): a card a chord refused to act on shakes its
 /// head — one cell left and right, three times — and settles. One step per
 /// entry, `SHAKE_STEP` each; after the last the card is back where it was.
@@ -1369,6 +1366,15 @@ pub struct App {
     /// The crown's last change of hands, for the crowning flash: which
     /// ticket, and when this board saw it.
     pub crowned_at: Option<(ulid::Ulid, u64)>,
+    /// The crown's touches as this board animates them (T-544): one per
+    /// touch first seen fresh, timed from when it was seen, dropped once
+    /// its card's beat is over. Kept whatever `crown_lightning` says, so a
+    /// switch turned on mid-strike picks the clock up where it is.
+    pub strikes: Vec<crate::strike::Strike>,
+    /// Where the last board draw put each card's title row and each
+    /// column's header, for the bolts to join (T-544). Draw-side, like
+    /// `cursor_card`; `ui::draw` clears it.
+    pub spots: std::cell::RefCell<crate::strike::Spots>,
     /// Standing advisories from the daemon — a quarantined state file, a file
     /// a newer mesimon wrote. Refreshed with every snapshot. NOT `status`:
     /// that is cleared by the next keypress, and these stay true until fixed.
@@ -1853,6 +1859,8 @@ impl App {
             machine_tiers: Default::default(),
             crown_residue: std::collections::HashSet::new(),
             crowned_at: None,
+            strikes: Vec::new(),
+            spots: std::cell::RefCell::new(crate::strike::Spots::default()),
             spoke: std::collections::HashMap::new(),
             spoke_polled: None,
             spoke_subject: None,
@@ -1949,13 +1957,47 @@ impl App {
     /// Whether something on screen is mid-motion and wants the next frame
     /// sooner than the spinner's cadence: the composer dialog growing, the
     /// screen's reading zone turning a page, a refused card shaking, the
-    /// layout pause flashing the footer, or the crowning sweeping a title.
+    /// layout pause flashing the footer, the crowning sweeping a title, or
+    /// the crown's lightning striking a card.
     pub fn animating(&self) -> bool {
         matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
             || self.pager().is_some_and(Pager::animating)
             || self.shaking()
             || self.layout_flashing()
             || self.board.crown.is_some_and(|id| self.crowning_ms(id).is_some())
+            || self.striking()
+    }
+
+    /// Does the board draw the crown's lightning (T-544)? The person's
+    /// switch, and a glyph tier with braille: mono holds still, and the
+    /// card's word says what was done there as it does with it off.
+    pub(crate) fn motion(&self) -> bool {
+        self.prefs.crown_lightning && self.theme.glyph_tier() == crate::glyphs::Tier::Unicode
+    }
+
+    /// Is a strike moving on the board right now?
+    fn striking(&self) -> bool {
+        let now = mesimon_core::clock::now_ms();
+        self.motion()
+            && matches!(self.screen, Screen::Board)
+            && self.strikes.iter().any(|s| s.moving(now))
+    }
+
+    /// The archived cards still burning in `column` (T-544): the crown
+    /// archived them a moment ago, and the board keeps each in its place
+    /// until the bolt's landing has burnt its title away, so the card is
+    /// seen to go rather than found gone. Drawn, never navigable.
+    pub(crate) fn burning(&self, column: &str) -> Vec<&Ticket> {
+        if !self.motion() {
+            return Vec::new();
+        }
+        let now = mesimon_core::clock::now_ms();
+        self.strikes
+            .iter()
+            .filter(|s| s.burning(now))
+            .filter_map(|s| self.board.ticket(s.target))
+            .filter(|t| t.is_archived() && t.column == column)
+            .collect()
     }
 
     /// Is the layout pause's flash still running?
@@ -4012,11 +4054,22 @@ impl App {
         crown_was: Option<ulid::Ulid>,
     ) {
         let cursor = self.subject();
+        let now = mesimon_core::clock::now_ms();
         for t in &touches {
-            if cursor != Some(t.ticket) && !self.crown_touches.iter().any(|k| k.at_ms == t.at_ms) {
+            if self.crown_touches.iter().any(|k| k.at_ms == t.at_ms && k.ticket == t.ticket) {
+                continue;
+            }
+            if cursor != Some(t.ticket) {
                 self.crown_residue.insert(t.ticket);
             }
+            // A touch this board sees while it is still fresh strikes
+            // (T-544); one already past its beat when it arrives — a board
+            // opened after it — only leaves its residue.
+            if now.saturating_sub(t.at_ms) < crate::theme::CROWN_LIT_MS {
+                self.strikes.push(crate::strike::Strike::new(t, now));
+            }
         }
+        self.strikes.retain(|s| !s.over(now));
         self.crown_touches = touches;
         if self.board.crown != crown_was {
             self.crowned_at = self.board.crown.map(|id| (id, mesimon_core::clock::now_ms()));
@@ -4024,19 +4077,36 @@ impl App {
     }
 
     /// What the crown has to say on a card (T-411): the holder's mark (with
-    /// its sweep for a beat after crowning), the word for a touch still lit,
-    /// the residue a touch left, or nothing.
+    /// its sweep for a beat after crowning, or after a worker's news woke
+    /// it), the word for a touch still lit — with its bolt's landing while
+    /// the lightning is on (T-544) — the residue a touch left, or nothing.
     pub(crate) fn crown_mark(&self, id: ulid::Ulid) -> crate::ui::CrownMark<'_> {
         use crate::ui::CrownMark;
         let now = mesimon_core::clock::now_ms();
+        let strike = if self.motion() {
+            self.strikes.iter().filter(|s| s.target == id).max_by_key(|s| s.seen)
+        } else {
+            None
+        };
         if self.board.is_crowned(id) {
-            return CrownMark::Holder { sweep: self.crowning_ms(id) };
+            // A worker's news lands on the crown as the crowning's sweep.
+            let woke = strike
+                .map(|s| s.landed(now))
+                .filter(|ms| (0..crate::theme::CROWN_FLASH_MS as i64).contains(ms))
+                .map(|ms| ms as u64);
+            return CrownMark::Holder { sweep: self.crowning_ms(id).or(woke) };
         }
-        if let Some(t) =
+        if let Some(s) = strike {
+            let ms = s.landed(now);
+            if ms < crate::theme::CROWN_LIT_MS as i64 {
+                let land = crate::ui::Land { kind: s.kind(), ms };
+                return CrownMark::Touched { action: &s.action, land: Some(land) };
+            }
+        } else if let Some(t) =
             self.crown_touches.iter().filter(|t| t.ticket == id).max_by_key(|t| t.at_ms)
         {
-            if now.saturating_sub(t.at_ms) < CROWN_LIT_MS {
-                return CrownMark::Touched(&t.action);
+            if now.saturating_sub(t.at_ms) < crate::theme::CROWN_LIT_MS {
+                return CrownMark::Touched { action: &t.action, land: None };
             }
         }
         if self.crown_residue.contains(&id) {
@@ -4309,6 +4379,7 @@ impl App {
             },
             follow_os: self.prefs.follow_os,
             follow_os_barred: self.appearance_barred,
+            crown_lightning: self.prefs.crown_lightning,
             preview_scrolls: self.preview.view.get().max > 0,
             update_ready: self.update_ready(),
             // A binary already waiting on disk outranks a download: reload
@@ -5588,6 +5659,16 @@ impl App {
                     if top { "status line at the top" } else { "status line at the bottom" };
                 self.set_pref(word, |p| p.status_top = top);
                 self.push_status_line();
+            }
+            // T-544. Read on every frame; nothing to push.
+            Verb::CrownLightning => {
+                let on = !self.prefs.crown_lightning;
+                let word = if on {
+                    "the crown's actions strike their tickets"
+                } else {
+                    "the crown's actions hold still ∙ the card still says what was done"
+                };
+                self.set_pref(word, |p| p.crown_lightning = on);
             }
             // T-492. No push either: the BOARD writes to its own stdout,
             // and `lib.rs`'s loop reads every one of these each frame — off
@@ -14458,6 +14539,53 @@ mod tests {
             assert_eq!(app.mode, Mode::Settings { idx });
         }
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownBudget")).count(), 6);
+    }
+
+    /// The crown's lightning (T-544): a touch first seen fresh strikes once,
+    /// however many snapshots carry it, and its card waits for the bolt; a
+    /// touch already past its beat when it arrives only leaves its residue.
+    /// The Appearance row turns the motion off, and with it off the card
+    /// says what was done at once, as it did before the lightning.
+    #[test]
+    fn a_fresh_crown_touch_strikes_once_and_the_row_stills_it() {
+        use crate::ui::CrownMark;
+        use mesimon_core::command::CrownTouch;
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let ids: Vec<ulid::Ulid> = app.board.tickets.iter().map(|t| t.id).collect();
+        let (crown, target, old) = (ids[0], ids[1], ids[2]);
+        app.board.crown = Some(crown);
+        let now = mesimon_core::clock::now_ms();
+        let touch = |ticket, action: &str, at_ms| CrownTouch {
+            ticket,
+            action: action.into(),
+            at_ms,
+            from: Some(crown),
+        };
+        let fresh = touch(target, "moved", now - 50);
+        let stale = touch(old, "tagged", now - 5_000);
+        app.absorb_crown_touches(vec![fresh.clone(), stale.clone()], Some(crown));
+        app.absorb_crown_touches(vec![fresh, stale], Some(crown));
+        assert_eq!(app.strikes.len(), 1, "one strike, for the fresh touch alone");
+        assert_eq!(app.strikes[0].target, target);
+        assert!(app.crown_residue.contains(&old), "the stale touch still leaves its residue");
+        assert!(app.motion() && app.animating());
+        match app.crown_mark(target) {
+            CrownMark::Touched { action: "moved", land: Some(l) } => {
+                assert!(l.ms < 0, "the bolt is still on its way: {l:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+
+        app.settings_section = keymap::SettingsSection::Appearance;
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::CrownLightning) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.prefs.crown_lightning, "{}", app.status);
+        assert!(app.status.contains("hold still"), "{}", app.status);
+        assert!(!app.ctx().crown_lightning);
+        assert!(!app.motion() && !app.animating());
+        assert_eq!(app.crown_mark(target), CrownMark::Touched { action: "moved", land: None });
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.prefs.crown_lightning && app.motion());
     }
 
     /// The Default tier row (T-443) took the Provider row's place: with no

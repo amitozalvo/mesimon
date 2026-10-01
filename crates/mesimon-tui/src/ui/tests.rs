@@ -8536,6 +8536,250 @@ fn the_crowning_sweeps_the_title_on_the_card_and_the_page() {
     }
 }
 
+// ---- the crown's lightning (T-544) -----------------------------------------
+
+/// The fixture crowned on T-3 (IN PROGRESS), on which `from`'s agent just
+/// did `action` to `target`, `ago` ms before the frame — the strike as the
+/// board absorbed it, and the touch the snapshot carried. The cursor rests
+/// on DONE's card, off all of them.
+fn struck(board: Board, from: ulid::Ulid, target: ulid::Ulid, action: &str, ago: u64) -> App {
+    let mut b = board;
+    b.crown = Some(ulid_n(3));
+    let mut app = app_graphite(b);
+    (app.cursor_col, app.cursor_row) = (3, Some(0));
+    let at = mesimon_core::clock::now_ms() - ago;
+    app.crown_touches.push(mesimon_core::command::CrownTouch {
+        ticket: target,
+        action: action.into(),
+        at_ms: at,
+        from: Some(from),
+    });
+    app.strikes.push(crate::strike::Strike {
+        target,
+        from: Some(from),
+        action: action.into(),
+        at_ms: at,
+        seen: at,
+    });
+    app
+}
+
+/// The cells a frame drew in braille that the same board without its
+/// strikes does not: the bolt's (the working spinner is braille too).
+fn bolt_cells(app: &mut App, buf: &ratatui::buffer::Buffer) -> Vec<(u16, u16)> {
+    let strikes = std::mem::take(&mut app.strikes);
+    let still = cells(app, buf.area().width, buf.area().height);
+    app.strikes = strikes;
+    let braille =
+        |s: &str| s.chars().next().is_some_and(|c| (0x2800..=0x28FF).contains(&(c as u32)));
+    let area = buf.area();
+    let mut out = Vec::new();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            if braille(buf[(x, y)].symbol()) && buf[(x, y)].symbol() != still[(x, y)].symbol() {
+                out.push((x, y));
+            }
+        }
+    }
+    out
+}
+
+/// `text`'s cells on the board (above the hover row), or none.
+fn text_cells(buf: &ratatui::buffer::Buffer, text: &str) -> Vec<ratatui::buffer::Cell> {
+    let mut out = Vec::new();
+    for (y, line) in lines_of(buf).iter().enumerate().take(28) {
+        let Some(at) = line.find(text) else { continue };
+        let x0 = line[..at].width() as u16;
+        for x in x0..x0 + text.width() as u16 {
+            out.push(buf[(x, y as u16)].clone());
+        }
+    }
+    out
+}
+
+/// A start, a move — any touch that lights: the bolt leaves the crown's
+/// mark while the card is still as it was, lands with the word, the title
+/// lights from its first letter and holds the crown's tint, and then the
+/// card is itself again. The struck title's row and the crown's mark are
+/// never drawn over, and nothing of it is ever `attn`.
+#[test]
+fn the_crown_strikes_the_card_it_touched() {
+    use crate::strike::LEADER_MS;
+    use crate::theme::CROWN_LIT_MS;
+    let (t1, t3) = (ulid_n(1), ulid_n(3));
+    // The word takes the age's slot and more, so the title is cut there.
+    let title = "Decay treat";
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let tint = theme.pip(5);
+    let frame = |ago: u64| {
+        let app = struck(fixture(false), t3, t1, "started", ago);
+        let buf = cells(&app, 120, 30);
+        (app, buf)
+    };
+    let title_cells = |buf: &ratatui::buffer::Buffer| {
+        let out = text_cells(buf, title);
+        assert!(!out.is_empty(), "the title is on screen: {:#?}", lines_of(buf));
+        out
+    };
+
+    // On its way: the leader, and the card as it was.
+    let (mut app, buf) = frame(LEADER_MS / 2);
+    assert!(app.animating(), "the loop runs fast while it strikes");
+    assert!(!bolt_cells(&mut app, &buf).is_empty(), "the leader is on its way");
+    let lines = lines_of(&buf);
+    assert!(!lines.iter().any(|l| l.contains("♛ started")), "the word arrives with the bolt");
+    assert!(title_cells(&buf).iter().all(|c| c.fg == theme.rest.base));
+
+    // Landed: the whole channel, the word, and the crown flaring.
+    let (mut app, buf) = frame(LEADER_MS + 20);
+    let bolt = bolt_cells(&mut app, &buf);
+    let spots = app.spots.borrow();
+    let to = *spots.cards.iter().find(|c| c.id == t1).expect("the struck card's spot");
+    let crown = *spots.cards.iter().find(|c| c.id == t3).expect("the crown's spot");
+    let mark = crown.mark.expect("the holder's mark is found on its card");
+    assert!(bolt.len() > 10, "the channel: {bolt:?}");
+    assert!(
+        bolt.iter().all(|&(x, y)| !(y == to.y && x >= to.x && x < to.x + to.width)),
+        "the struck title's row is never drawn over"
+    );
+    assert_eq!(buf[(mark, crown.y)].symbol(), "♛", "the crown's mark is not drawn over");
+    assert_eq!(Some(buf[(mark, crown.y)].fg), theme.bolt_ink(2.0, None), "the crown flares");
+    assert!(lines_of(&buf)[to.y as usize].contains("♛ started"));
+    for &(x, y) in &bolt {
+        let c = &buf[(x, y)];
+        assert!(c.fg != theme.attn && c.bg != theme.attn, "attn at {x},{y}");
+    }
+    drop(spots);
+
+    // The landing's front, lit, crossing the title: the letters behind it
+    // in the tint, the last still plain.
+    let (_, buf) = frame(LEADER_MS + 200);
+    let mid = title_cells(&buf);
+    assert!(mid.iter().any(|c| c.bg == tint), "no lit front on the title");
+    assert!(mid.last().is_some_and(|c| c.fg == theme.rest.base), "lit ahead of the front");
+
+    // Held in the tint, the bolt gone, the loop back to its clock.
+    let (mut app, buf) = frame(1_500);
+    assert!(bolt_cells(&mut app, &buf).is_empty(), "the bolt has cooled away");
+    assert!(!app.animating());
+    assert!(title_cells(&buf).iter().all(|c| c.fg == tint && c.bg != tint));
+
+    // Over: the card is itself again.
+    let (_, buf) = frame(LEADER_MS + CROWN_LIT_MS + 50);
+    assert!(!lines_of(&buf).iter().any(|l| l.contains("♛ started")));
+    assert!(title_cells(&buf).iter().all(|c| c.fg == theme.rest.base));
+}
+
+/// Turned off, or in mono, the board holds still: no bolt, no landing,
+/// and the card says what was done the moment the touch arrives.
+#[test]
+fn the_lightning_holds_still_when_turned_off_and_in_mono() {
+    let (t1, t3) = (ulid_n(1), ulid_n(3));
+    let mut off = struck(fixture(false), t3, t1, "moved", 100);
+    off.seed_pref(|p| p.crown_lightning = false);
+    let mut mono = struck(fixture(false), t3, t1, "moved", 100);
+    mono.theme = Theme::new(Flavor::Graphite, Profile::Mono);
+    for mut app in [off, mono] {
+        let buf = cells(&app, 120, 30);
+        assert!(bolt_cells(&mut app, &buf).is_empty(), "no bolt");
+        assert!(!app.animating());
+        let lines = lines_of(&buf);
+        let word = format!("{} moved", crate::glyphs::crown(app.theme.glyph_tier()));
+        assert!(lines.iter().any(|l| l.contains("Decay treat") && l.contains(&word)), "{lines:#?}");
+    }
+}
+
+/// The crown archived a card: it burns in its place — not counted, not the
+/// cursor's — from its first letter, and only then leaves its column.
+#[test]
+fn an_archive_burns_the_card_away() {
+    use crate::strike::LEADER_MS;
+    use crate::theme::LAND_SWEEP_MS;
+    let (t1, t2, t3) = (ulid_n(1), ulid_n(2), ulid_n(3));
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == t2) {
+        t.archived = Some(mesimon_core::board::Archived {
+            at: "@100".into(),
+            by: "agent".into(),
+            until: None,
+            needs_you: false,
+        });
+    }
+    let frame = |ago: u64| {
+        let mut app = struck(b.clone(), t3, t2, "archived", ago);
+        (app.cursor_col, app.cursor_row) = (0, Some(0));
+        let buf = cells(&app, 120, 30);
+        (app, buf)
+    };
+    let (app, buf) = frame(LEADER_MS / 2);
+    let lines = lines_of(&buf);
+    assert!(lines.iter().take(28).any(|l| l.contains("Keymap validator")), "{lines:#?}");
+    // The bolt's shape is the touch's, and may cross the header's blanks.
+    let header: String = lines[2]
+        .chars()
+        .take(32)
+        .map(|c| if (0x2800..=0x28FF).contains(&(c as u32)) { ' ' } else { c })
+        .collect();
+    assert!(header.trim_end().ends_with('1'), "a burning card is not counted: {header}");
+    assert_eq!(app.selected_ticket().map(|t| t.id), Some(t1), "nor the cursor's");
+    // The cursor's own bold ink: the bolt's glow may tint the ground it
+    // crosses, never a letter's ink.
+    let cursor = text_cells(&buf, "Decay treatments");
+    assert!(!cursor.is_empty());
+    assert!(cursor
+        .iter()
+        .all(|c| c.fg == app.theme.sel.base && c.modifier.contains(Modifier::BOLD)));
+
+    // The word takes the age's slot and more: the title reads `Keymap valida~`.
+    let (_, buf) = frame(LEADER_MS + 300);
+    let lines = lines_of(&buf);
+    assert!(lines.iter().take(28).any(|l| l.contains("valida")), "{lines:#?}");
+    assert!(!lines.iter().take(28).any(|l| l.contains("Keymap")), "burnt from its first letter");
+
+    let (_, buf) = frame(LEADER_MS + LAND_SWEEP_MS + 200);
+    assert!(!lines_of(&buf).iter().take(28).any(|l| l.contains("valida")), "gone");
+}
+
+/// The crown filed a card: it is not there until the bolt lands, and the
+/// landing writes its title in from the first letter.
+#[test]
+fn a_created_card_is_written_in() {
+    use crate::strike::LEADER_MS;
+    let (t2, t3) = (ulid_n(2), ulid_n(3));
+    let rows = |ago: u64| {
+        let buf = cells(&struck(fixture(false), t3, t2, "created", ago), 120, 30);
+        lines_of(&buf).into_iter().take(28).collect::<Vec<_>>()
+    };
+    let lines = rows(LEADER_MS / 2);
+    assert!(!lines.iter().any(|l| l.contains("Keym")), "written before the bolt: {lines:#?}");
+    let lines = rows(LEADER_MS + 200);
+    assert!(lines.iter().any(|l| l.contains("Keymap") && l.contains("♛ created")), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("validator")), "written ahead of the front");
+    let lines = rows(LEADER_MS + 700);
+    assert!(lines.iter().any(|l| l.contains("Keymap valida")), "{lines:#?}");
+}
+
+/// The crown parked a card's agent: the landing leaves its title dim for
+/// the beat. A worker's news strikes the crown, whose title sweeps again.
+#[test]
+fn a_park_dims_the_title_and_news_sweeps_the_crown() {
+    use crate::strike::LEADER_MS;
+    let (t1, t3, t5) = (ulid_n(1), ulid_n(3), ulid_n(5));
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let buf = cells(&struck(fixture(false), t3, t1, "parked", 1_000), 120, 30);
+    assert!(lines_of(&buf).iter().any(|l| l.contains("♛ parked")));
+    assert!(text_cells(&buf, "Decay treatments").iter().all(|c| c.fg == theme.rest.dim2));
+
+    let mut app = struck(fixture(false), t5, t3, "woke", LEADER_MS + 300);
+    let buf = cells(&app, 120, 30);
+    assert!(!bolt_cells(&mut app, &buf).is_empty(), "the worker's bolt reaches the crown");
+    assert!(matches!(
+        app.crown_mark(t3),
+        crate::ui::CrownMark::Holder { sweep: Some(ms) } if (250..400).contains(&ms)
+    ));
+    assert!(app.animating());
+}
+
 // ---- agent tiers (T-443) ---------------------------------------------------
 
 fn tier(

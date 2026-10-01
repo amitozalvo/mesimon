@@ -1352,6 +1352,18 @@ const CROWN_GLOW: f32 = 6.0;
 /// Glow strength from which a lit cell's letter is written in ground ink;
 /// below it the letter is bright ink cooling to the look it settles in.
 const CROWN_INK_K: f32 = 0.6;
+/// How long a card the crown just touched stays lit with the word for what
+/// was done to it (T-411). With the lightning on (T-544) the beat counts
+/// from the bolt's landing; the residue stays until the cursor rests there.
+pub(crate) const CROWN_LIT_MS: u64 = 2_000;
+/// The landing's front crosses the struck title in this long (T-544),
+/// whatever the title's length, like the crowning's.
+pub(crate) const LAND_SWEEP_MS: u64 = 600;
+/// The end of the lit beat, over which the title eases back to its own
+/// look rather than snapping there.
+pub(crate) const LAND_FADE_MS: u64 = 400;
+/// Heat under which a cell of the bolt has cooled away.
+const BOLT_GONE: f32 = 0.06;
 
 /// One run of text under the crowning's sweep (T-442): how long ago the
 /// crowning was, the run's width in cells, the look the text wears until the
@@ -1363,6 +1375,46 @@ pub(crate) struct CrownSweep {
     pub cells: usize,
     pub before: Style,
     pub after: Style,
+    pub surface: Option<Color>,
+}
+
+/// What the crown's bolt does to the title it lands on (T-544), by the
+/// word for what the crown did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LandKind {
+    /// Lights it: the front leaves the crown's tint behind it.
+    Lit,
+    /// Puts it to sleep: the front leaves it dim (`parked`).
+    Dim,
+    /// Writes it in: no letter until the front reaches it (`created`,
+    /// `restored` — a card that was not on the board a moment ago).
+    Write,
+    /// Burns it away: no letter once the glow has passed (`archived`).
+    Burn,
+}
+
+impl LandKind {
+    pub(crate) fn of(action: &str) -> Self {
+        match action {
+            "parked" => LandKind::Dim,
+            "created" | "restored" => LandKind::Write,
+            "archived" => LandKind::Burn,
+            _ => LandKind::Lit,
+        }
+    }
+}
+
+/// One title the bolt landed on (T-544): how long ago it landed (negative
+/// while the bolt is still on its way), the run's width in cells, the
+/// title's own look, the look the landing holds it in for the beat, and
+/// the row's ground, which the glow cools into.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Landing {
+    pub kind: LandKind,
+    pub ms: i64,
+    pub cells: usize,
+    pub plain: Style,
+    pub held: Style,
     pub surface: Option<Color>,
 }
 
@@ -1815,18 +1867,48 @@ impl Theme {
         if !self.has_colour() || run.cells == 0 || run.elapsed >= CROWN_FLASH_MS {
             return run.after;
         }
-        let rich = self.paints_tags();
-        let glow = if rich { CROWN_GLOW.min(run.cells as f32 / 2.0).max(2.0) } else { 0.0 };
         let t = run.elapsed as f32 / CROWN_FLASH_MS as f32;
-        // From one cell short of the run to past its end by the glow, so the
-        // first frame lights nothing and the last leaves nothing lit.
-        let front = -1.0 + (run.cells as f32 + glow + 1.0) * ease(t);
+        self.wave(t, run.cells, cell, run.before, run.after, run.surface)
+    }
+
+    /// Cells of glow a wavefront over `cells` trails: none below the ring,
+    /// where the head walks alone.
+    fn wave_glow(&self, cells: usize) -> f32 {
+        if self.paints_tags() {
+            CROWN_GLOW.min(cells as f32 / 2.0).max(2.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// Where the front is at `t` (0..1) over `cells`: from one cell short of
+    /// the run to past its end by the glow, so the first frame lights
+    /// nothing and the last leaves nothing lit.
+    fn wave_front(&self, t: f32, cells: usize) -> f32 {
+        -1.0 + (cells as f32 + self.wave_glow(cells) + 1.0) * ease(t)
+    }
+
+    /// One cell under a wavefront crossing `cells` as `t` runs 0..1: the
+    /// crowning's sweep (T-442) and the bolt's landing (T-544) are both
+    /// this, on their own clocks — `before` ahead of it, `after` behind it.
+    fn wave(
+        &self,
+        t: f32,
+        cells: usize,
+        cell: usize,
+        before: Style,
+        after: Style,
+        surface: Option<Color>,
+    ) -> Style {
+        let rich = self.paints_tags();
+        let glow = self.wave_glow(cells);
+        let front = self.wave_front(t, cells);
         let d = front - cell as f32; // how far behind the front this cell is
-        let plain = if d < 0.0 { run.before } else { run.after };
+        let plain = if d < 0.0 { before } else { after };
         if !rich {
-            return match (run.before.fg, run.surface) {
+            return match (before.fg, surface) {
                 (Some(ink), Some(ground)) if (0.0..1.0).contains(&d) => {
-                    run.after.fg(ground).bg(ink).add_modifier(Modifier::BOLD)
+                    after.fg(ground).bg(ink).add_modifier(Modifier::BOLD)
                 }
                 _ => plain,
             };
@@ -1844,7 +1926,7 @@ impl Theme {
             return plain;
         }
         let tint = self.pip(5); // `crown_text`'s ink
-        let lit = match run.surface {
+        let lit = match surface {
             Some(ground) => plain.bg(mix(tint, ground, k)),
             None if k >= CROWN_INK_K => plain.bg(tint),
             None => plain,
@@ -1854,13 +1936,114 @@ impl Theme {
         } else if d < 0.0 {
             lit // the leading edge: its letter keeps the `before` ink
         } else {
-            lit.fg(mix(self.sel.base, run.after.fg.unwrap_or(tint), k / CROWN_INK_K))
+            lit.fg(mix(self.sel.base, after.fg.unwrap_or(tint), k / CROWN_INK_K))
         };
         if k >= 1.0 {
             lit.add_modifier(Modifier::BOLD)
         } else {
             lit
         }
+    }
+
+    /// The bolt landing on a title (T-544): one cell of it, or `None` where
+    /// no letter stands — one the front has not written yet, or one the
+    /// glow has burnt away. The front runs out of where the bolt struck,
+    /// the title's first letter, in `LAND_SWEEP_MS`, on the crowning's
+    /// wave: a `Lit` title is left in `held` (the crown's tint), a `Dim`
+    /// one in `held` too (the quiet ink a park leaves), a `Write` one has
+    /// no letter ahead of the front, a `Burn` one none behind the glow,
+    /// whose letters cool to the quietest ink as they go. The beat holds
+    /// to `CROWN_LIT_MS` and eases back over its last `LAND_FADE_MS`.
+    ///
+    /// Before the landing every letter is `plain` (a `Write` title is not
+    /// there yet); after the beat every letter is `plain` again (a `Burn`
+    /// title is gone). Below TrueColor the head walks alone and the fade is
+    /// a step; mono holds still. Fg/bg repainted on the frame clock, never
+    /// SGR 5, never `attn`.
+    pub fn crown_land(&self, run: &Landing, cell: usize) -> Option<Style> {
+        let write = run.kind == LandKind::Write;
+        let burn = run.kind == LandKind::Burn;
+        if run.ms < 0 {
+            return (!write).then_some(run.plain);
+        }
+        let ms = run.ms as u64;
+        if burn && ms >= LAND_SWEEP_MS {
+            return None;
+        }
+        if ms >= CROWN_LIT_MS {
+            return Some(run.plain);
+        }
+        if !self.has_colour() || run.cells == 0 {
+            return (!burn).then_some(run.held);
+        }
+        if ms < LAND_SWEEP_MS {
+            let t = ms as f32 / LAND_SWEEP_MS as f32;
+            let d = self.wave_front(t, run.cells) - cell as f32;
+            if write && d <= -1.0 {
+                return None;
+            }
+            if burn && d >= 1.0 + self.wave_glow(run.cells) {
+                return None;
+            }
+            // A burning letter cools to the quietest ink on its way out.
+            let after = if burn { self.dim3() } else { run.held };
+            return Some(self.wave(t, run.cells, cell, run.plain, after, run.surface));
+        }
+        let fade_from = CROWN_LIT_MS - LAND_FADE_MS;
+        if ms < fade_from {
+            return Some(run.held);
+        }
+        let k = ease((ms - fade_from) as f32 / LAND_FADE_MS as f32);
+        Some(match (run.plain.fg, run.held.fg) {
+            (Some(plain), Some(held)) if self.paints_tags() => run.plain.fg(mix(plain, held, k)),
+            _ if k < 0.5 => run.held,
+            _ => run.plain,
+        })
+    }
+
+    /// The crown's bolt (T-544): the ink one cell of it wears at `heat` —
+    /// 2 is the white-hot head of the leader and the return stroke, 1 the
+    /// channel in the crown's tint, below 1 that tint cooling into `ground`
+    /// (the cell's own surface, or the page's). `None` once it has cooled
+    /// away, and always in mono, where no bolt is drawn. Below the ring it
+    /// is the value ramp alone, hottest first. Never `attn`: the crown is
+    /// status, and the one saturated colour stays needs-you's.
+    pub fn bolt_ink(&self, heat: f32, ground: Option<Color>) -> Option<Color> {
+        if !self.has_colour() || heat <= BOLT_GONE {
+            return None;
+        }
+        if self.paints_tags() {
+            let tint = self.pip(5);
+            return Some(if heat >= 1.0 {
+                mix(self.sel.base, tint, (heat - 1.0).min(1.0))
+            } else {
+                mix(tint, ground.unwrap_or_else(|| self.tag_ink()), ease(heat))
+            });
+        }
+        Some(if heat >= 1.5 {
+            self.sel.base
+        } else if heat >= 1.0 {
+            self.rest.base
+        } else if heat >= 0.66 {
+            self.rest.dim1
+        } else if heat >= 0.33 {
+            self.rest.dim2
+        } else {
+            self.rest.dim3
+        })
+    }
+
+    /// The glow behind the bolt (T-544): the ground of a cell its channel
+    /// crosses, the crown's tint a quarter-strength or so into `ground` at
+    /// its hottest and gone as it cools — a halo, not a fill, so a letter
+    /// it passes behind still reads. Only where the ring has a halfway;
+    /// below it the bolt is its dots alone.
+    pub fn bolt_glow(&self, heat: f32, ground: Option<Color>) -> Option<Color> {
+        if !self.paints_tags() {
+            return None;
+        }
+        let k = if heat >= 1.0 { 0.12 + 0.2 * (heat - 1.0).min(1.0) } else { 0.12 * heat * heat };
+        (k >= 0.02).then(|| mix(self.pip(5), ground.unwrap_or_else(|| self.tag_ink()), k))
     }
 
     /// The inverted needs-you title row (06 §2.4b): `attn` ground, `attn_ink`
@@ -2698,6 +2881,97 @@ mod tests {
             // Over: the tint, and nothing turns it back.
             assert_eq!(run(CROWN_FLASH_MS), vec![after; N], "{flavor:?}: not left in the tint");
             assert_eq!(run(CROWN_FLASH_MS * 10), vec![after; N]);
+        }
+    }
+
+    /// The bolt's landing (T-544), every flavor and profile: before it, the
+    /// title is its plain self (a written one is not there yet); the front
+    /// runs out of the first letter and leaves the held look behind it (a
+    /// burnt title nothing); the beat eases back to plain and ends there.
+    /// Never `attn`, never SGR 5.
+    #[test]
+    fn crown_land_writes_lights_dims_and_burns_from_the_first_letter() {
+        const N: usize = 20;
+        for flavor in Flavor::ALL {
+            for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16] {
+                let t = Theme::new(flavor, profile);
+                let plain = Style::default().fg(t.rest.base);
+                for kind in [LandKind::Lit, LandKind::Dim, LandKind::Write, LandKind::Burn] {
+                    let held = if kind == LandKind::Dim { t.dim2() } else { t.crown_text() };
+                    let at = |ms: i64| {
+                        let run = Landing { kind, ms, cells: N, plain, held, surface: t.bg };
+                        (0..N).map(|c| t.crown_land(&run, c)).collect::<Vec<_>>()
+                    };
+                    let tag = format!("{flavor:?}/{profile:?}/{kind:?}");
+                    let before = at(-100);
+                    if kind == LandKind::Write {
+                        assert!(before.iter().all(Option::is_none), "{tag}: written early");
+                    } else {
+                        assert!(before.iter().all(|c| *c == Some(plain)), "{tag}: lit early");
+                    }
+                    for ms in (0..CROWN_LIT_MS as i64).step_by(16) {
+                        let cells = at(ms);
+                        for s in cells.iter().flatten() {
+                            assert_ne!(s.fg, Some(t.attn), "{tag} at {ms}");
+                            assert_ne!(s.bg, Some(t.attn), "{tag} at {ms}");
+                            assert!(!s.add_modifier.contains(Modifier::SLOW_BLINK));
+                        }
+                        // A written title fills from its first letter, a burnt
+                        // one empties from it: never a hole behind or ahead.
+                        let shown: Vec<bool> = cells.iter().map(Option::is_some).collect();
+                        match kind {
+                            LandKind::Write => {
+                                assert!(shown.windows(2).all(|w| w[0] || !w[1]), "{tag} {ms}")
+                            }
+                            LandKind::Burn => {
+                                assert!(shown.windows(2).all(|w| !w[0] || w[1]), "{tag} {ms}")
+                            }
+                            _ => assert!(shown.iter().all(|s| *s), "{tag} {ms}"),
+                        }
+                    }
+                    let swept = at(LAND_SWEEP_MS as i64);
+                    match kind {
+                        LandKind::Burn => assert!(swept.iter().all(Option::is_none), "{tag}"),
+                        _ => assert!(swept.iter().all(|c| *c == Some(held)), "{tag}: {swept:?}"),
+                    }
+                    let over = at(CROWN_LIT_MS as i64);
+                    match kind {
+                        LandKind::Burn => assert!(over.iter().all(Option::is_none), "{tag}"),
+                        _ => assert!(over.iter().all(|c| *c == Some(plain)), "{tag}: {over:?}"),
+                    }
+                }
+            }
+        }
+    }
+
+    /// The bolt's inks (T-544): hottest is the cursor's bright ink, the
+    /// channel the crown's tint, and it cools into the ground and away;
+    /// its glow is a halo only where the ring has a halfway. Mono draws
+    /// none of it, and nothing is ever `attn`.
+    #[test]
+    fn the_bolt_runs_hot_to_tint_to_ground_and_never_attn() {
+        for flavor in Flavor::ALL {
+            for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8] {
+                let t = Theme::new(flavor, profile);
+                let tag = format!("{flavor:?}/{profile:?}");
+                assert_eq!(t.bolt_ink(2.0, t.bg), Some(t.sel.base), "{tag}: hot");
+                assert_eq!(t.bolt_ink(0.01, t.bg), None, "{tag}: cooled away");
+                if t.paints_tags() {
+                    assert_eq!(t.bolt_ink(1.0, t.bg), Some(t.pip(5)), "{tag}: the tint");
+                    assert!(t.bolt_glow(2.0, t.bg).is_some_and(|g| Some(g) != t.bg));
+                    assert_eq!(t.bolt_glow(0.1, t.bg), None, "{tag}: the glow goes first");
+                } else {
+                    assert_eq!(t.bolt_glow(2.0, t.bg), None, "{tag}: no halfway, no glow");
+                }
+                for h in (1..=40).map(|i| i as f32 / 20.0) {
+                    for c in [t.bolt_ink(h, t.bg), t.bolt_glow(h, t.bg)].into_iter().flatten() {
+                        assert_ne!(c, t.attn, "{tag} at heat {h}");
+                    }
+                }
+            }
+            let mono = Theme::new(flavor, Profile::Mono);
+            assert_eq!(mono.bolt_ink(2.0, None), None);
+            assert_eq!(mono.bolt_glow(2.0, None), None);
         }
     }
 

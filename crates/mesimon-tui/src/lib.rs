@@ -31,6 +31,7 @@ mod qr;
 mod quiet;
 mod release;
 mod rich;
+mod strike;
 mod tags;
 mod text;
 mod theme;

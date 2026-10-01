@@ -184,6 +184,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert_eq!(t.len(), 1, "the board is told what the crown touched: {t:?}");
     assert_eq!(t[0].ticket, b);
     assert_eq!(t[0].action, "moved");
+    assert_eq!(t[0].from, Some(a), "the touch names whose agent did it: the bolt's start");
 
     // ---- position is priority: `before` lands above a named ticket ----------
     let dv = read(&mut c, sa, &kd).unwrap();
@@ -614,6 +615,28 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let queue = std::fs::read_to_string(h.paths.queue_file()).unwrap_or_default();
     assert!(!queue.contains("mesimon-probe-6"), "a held ask is never persisted");
 
+    // ---- a crowned filing is a touch the board strikes (T-544) ----------------
+    let filed = |c: &mut TestClient, title: &str| {
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentCreateTicket {
+                title: title.into(),
+                column: None,
+                description: None,
+                tags: Vec::new(),
+                idempotency_key: None,
+            },
+        ) {
+            Response::AgentCreated { .. } => {}
+            other => panic!("create_ticket: {other:?}"),
+        }
+        c.board().tickets.iter().find(|t| t.title == title).expect("filed").id
+    };
+    let crowned_filing = filed(&mut c, "filed by the crown");
+    let touch = touches(&mut c).into_iter().find(|t| t.ticket == crowned_filing);
+    let touch = touch.expect("the crown's filing is a touch");
+    assert_eq!((touch.action.as_str(), touch.from), ("created", Some(a)));
+
     // ---- the shim: fifteen tools, and `get_ticket` with a key -----------------
     let mut shim = Shim::start(&sock, sa);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
@@ -640,6 +663,9 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert!(matches!(c.request(Command::Uncrown), Response::Ok));
     assert!(c.board().crown.is_none());
     assert!(read(&mut c, sa, &kb).is_err(), "uncrowned again");
+    // Any agent may file a ticket; only the crown's filing is a touch.
+    let plain_filing = filed(&mut c, "filed uncrowned");
+    assert!(!touches(&mut c).iter().any(|t| t.ticket == plain_filing), "not the crown's");
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     // Persisted with the board's scalars.
     let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();

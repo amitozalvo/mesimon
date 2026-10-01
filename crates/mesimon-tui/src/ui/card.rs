@@ -23,7 +23,7 @@ use crate::text::{
     age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
     EditBuffer,
 };
-use crate::theme::{BarWeight, CrownSweep, Theme};
+use crate::theme::{BarWeight, CrownSweep, LandKind, Landing, Theme};
 
 pub(super) struct CardCtx<'a> {
     pub theme: &'a Theme,
@@ -311,15 +311,43 @@ fn worktree_mark(
 /// What the crown (T-411) has to say on a card. `Holder` is the one card
 /// wearing it, `sweep` the ms since the crowning while its title still
 /// sweeps (T-442); `Touched` is a card the crown just edited, lit with the
-/// word for what was done;
+/// word for what was done — and `land`, while the board's lightning is on
+/// (T-544), where the bolt's landing is on its title;
 /// `Residue` is the quiet mark that light leaves until the cursor rests on
 /// the card, the unread done mark's rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CrownMark<'a> {
     None,
     Holder { sweep: Option<u64> },
-    Touched(&'a str),
+    Touched { action: &'a str, land: Option<Land> },
     Residue,
+}
+
+/// The bolt's landing on a touched card (T-544): what it does to the
+/// title, and how long ago it landed — negative while the bolt is still on
+/// its way, when the card looks as it did before the touch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Land {
+    pub kind: LandKind,
+    pub ms: i64,
+}
+
+/// A title under the bolt's landing (T-544), one span a grapheme: a letter
+/// the landing has not written, or has burnt away, is a blank of its width
+/// on the row's own ground.
+fn landed_spans(theme: &Theme, run: &Landing, text: &str) -> Vec<Span<'static>> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut at = 0;
+    text.graphemes(true)
+        .map(|g| {
+            let cell = at;
+            at += g.width();
+            match theme.crown_land(run, cell) {
+                Some(style) => Span::styled(g.to_string(), style),
+                None => Span::raw(" ".repeat(g.width())),
+            }
+        })
+        .collect()
 }
 
 /// Text under the crowning's sweep (T-442), one span a grapheme. `first` is
@@ -490,8 +518,15 @@ pub(super) fn render(
     // rested on it. Never the saturated colour: the crown is status, and
     // needs-you is the one demand.
     let crown_glyph = glyphs::crown(tier);
+    // While the bolt is on its way the card is as it was (T-544): the word
+    // arrives with it.
+    let land = match crown {
+        CrownMark::Touched { land, .. } => land,
+        _ => None,
+    };
+    let landed = land.is_none_or(|l| l.ms >= 0);
     let crown_word = match crown {
-        CrownMark::Touched(action) => Some(format!("{crown_glyph} {action}")),
+        CrownMark::Touched { action, .. } if landed => Some(format!("{crown_glyph} {action}")),
         _ => None,
     };
     let holder_cells = match crown {
@@ -568,7 +603,7 @@ pub(super) fn render(
         }
     } else if cursorish {
         Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
-    } else if matches!(crown, CrownMark::Touched(_)) {
+    } else if matches!(crown, CrownMark::Touched { .. }) && landed {
         theme.crown_text()
     } else {
         Style::default().fg(theme.rest.base)
@@ -632,9 +667,38 @@ pub(super) fn render(
             None => spans.push(Span::styled(mark, cs)),
         }
     }
-    match &sweep {
-        Some(run) => spans.extend(swept_spans(theme, run, &title, holder_cells)),
-        None => spans.push(Span::styled(title, title_style)),
+    // The bolt's landing (T-544): a front runs out of the title's first
+    // letter, where the bolt struck, on the row's own ground — under the
+    // cursor too — and leaves the title lit, dimmed, written in or burnt
+    // away by what the crown did. The cursor's ink stays the cursor's.
+    let landing = match land {
+        Some(l) if !(doomed || trail || attn_card || held || snooze.is_some()) => {
+            let plain = if cursorish {
+                Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.rest.base)
+            };
+            let held = match l.kind {
+                LandKind::Dim if cursorish => Style::default().fg(theme.sel.dim2),
+                LandKind::Dim => theme.dim2(),
+                _ if cursorish => plain,
+                _ => theme.crown_text(),
+            };
+            Some(Landing {
+                kind: l.kind,
+                ms: l.ms,
+                cells: title.width(),
+                plain,
+                held,
+                surface: if cursorish { theme.selected_bg } else { theme.bg },
+            })
+        }
+        _ => None,
+    };
+    match (&sweep, &landing) {
+        (Some(run), _) => spans.extend(swept_spans(theme, run, &title, holder_cells)),
+        (None, Some(run)) => spans.extend(landed_spans(theme, run, &title)),
+        (None, None) => spans.push(Span::styled(title, title_style)),
     }
     spans.push(Span::raw(" ".repeat(fill)));
     if let Some((m, tone)) = &wt_mark {

@@ -1743,14 +1743,20 @@ pub struct AgentStateView {
 
 /// One of the crown's recent edits (T-411), for the board to light the
 /// touched card: which ticket, what was done (a WORD — `moved`, `renamed`,
-/// `tagged`, `note`, `workspace`, `archived`, `restored` — so an older
-/// client drops what it cannot read), and when. In memory only, pruned
-/// after ten seconds; the feed is the record.
+/// `tagged`, `note`, `workspace`, `archived`, `restored`, `started`,
+/// `asked`, `parked`, `created`, and `woke` on the crown itself — so an
+/// older client drops what it cannot read), and when. In memory only,
+/// pruned after ten seconds; the feed is the record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CrownTouch {
     pub ticket: ulid::Ulid,
     pub action: String,
     pub at_ms: u64,
+    /// Whose agent did it (T-544): the crown's ticket, or for `woke` the
+    /// worker whose news woke it. The board's bolt runs from this card to
+    /// `ticket`'s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<ulid::Ulid>,
 }
 
 /// One tag as an agent sees it: the name, and the axis it lives on (the

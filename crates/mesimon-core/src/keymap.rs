@@ -467,6 +467,9 @@ pub enum Verb {
     /// Follow the OS's light/dark appearance while the board is open
     /// (T-485): a switch on the same list, off by default.
     FollowOs,
+    /// The crown's actions strike their tickets with a bolt (T-544): a
+    /// switch on the Appearance list, on by default, per machine.
+    CrownLightning,
     // ---- columns (T-117) ----
     /// Open the column settings dialog on the cursor's column: Enter on a
     /// column header, or the menu's row.
@@ -890,9 +893,11 @@ impl SettingsSection {
 
     pub fn for_verb(verb: Verb) -> Self {
         match verb {
-            Verb::ThemePick | Verb::FollowOs | Verb::Notifications | Verb::StatusLine => {
-                Self::Appearance
-            }
+            Verb::ThemePick
+            | Verb::FollowOs
+            | Verb::Notifications
+            | Verb::StatusLine
+            | Verb::CrownLightning => Self::Appearance,
             Verb::TabTitle
             | Verb::TabTitleNeedsYou
             | Verb::TabTitleFocus
@@ -1007,6 +1012,8 @@ pub struct Ctx {
     /// It is on, but the OS gave no answer when asked — the board keeps its
     /// launch ground and the row says so.
     pub follow_os_barred: bool,
+    /// The crown's actions strike their tickets with a bolt (T-544).
+    pub crown_lightning: bool,
     /// The ticket page's preview zone holds more rows than it can show, so
     /// there is somewhere to page to. Measured by the last draw (the zone's
     /// height is a fact of the frame, not of the board), which is also what
@@ -4182,6 +4189,29 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The crown's lightning (T-544). On by default: it is how a person
+    // sees what the crowned agent is doing without opening its pane. Off
+    // is for whoever would rather the board held still; the touched card
+    // keeps its word either way, so nothing is hidden by turning it off.
+    MenuItem {
+        verb: Verb::CrownLightning,
+        label: |c| {
+            if c.crown_lightning {
+                "Crown's actions: lightning".into()
+            } else {
+                "Crown's actions: still".into()
+            }
+        },
+        detail: |c| {
+            if c.crown_lightning {
+                "a bolt to each card the crown touches ∙ enter stills it".into()
+            } else {
+                "the card still says what the crown did ∙ enter turns it on".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // The terminal's own tab (T-492). Everything off by default: the tab
     // is the terminal's, and a board that renames it uninvited is a board
     // that wrote where it was not asked to. Per machine, the status line's
@@ -4892,9 +4922,13 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::SettingsAgents,
             Verb::SettingsTerminal,
         ],
-        SettingsSection::Appearance => {
-            &[Verb::ThemePick, Verb::FollowOs, Verb::Notifications, Verb::StatusLine]
-        }
+        SettingsSection::Appearance => &[
+            Verb::ThemePick,
+            Verb::FollowOs,
+            Verb::Notifications,
+            Verb::StatusLine,
+            Verb::CrownLightning,
+        ],
         SettingsSection::Terminal => &[
             Verb::TabTitle,
             Verb::TabTitleNeedsYou,
@@ -4952,6 +4986,7 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::MergeTrain => PrefKey::MergeTrain,
         Verb::MergeTrainNotice => PrefKey::MergeTrainNotice,
         Verb::StatusLine => PrefKey::StatusTop,
+        Verb::CrownLightning => PrefKey::CrownLightning,
         Verb::TabTitle => PrefKey::TabTitle,
         Verb::TabTitleNeedsYou => PrefKey::TabTitleNeedsYou,
         Verb::TabTitleFocus => PrefKey::TabTitleFocus,
@@ -8540,7 +8575,13 @@ mod tests {
         for (section, expected) in [
             (
                 SettingsSection::Appearance,
-                vec![Verb::ThemePick, Verb::FollowOs, Verb::Notifications, Verb::StatusLine],
+                vec![
+                    Verb::ThemePick,
+                    Verb::FollowOs,
+                    Verb::Notifications,
+                    Verb::StatusLine,
+                    Verb::CrownLightning,
+                ],
             ),
             (
                 SettingsSection::Terminal,
@@ -9174,6 +9215,7 @@ mod tests {
             Verb::ThemePick,
             Verb::FollowOs,
             Verb::StatusLine,
+            Verb::CrownLightning,
             Verb::TabTitle,
             Verb::TabTitleNeedsYou,
             Verb::TabTitleFocus,

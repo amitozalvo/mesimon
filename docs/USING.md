@@ -208,6 +208,14 @@ time. Only you can give it, and `ctrl-o` on the crowned card takes it back.
 <sub>The crowned agent files two tickets, moves one back to TODO, tags one and starts an agent
 on another; the moved, tagged and started cards light as they change.</sub>
 
+You can watch the crown work without opening its session. Each action strikes: a bolt of
+lightning runs from the crowned card's `♛` to the card it acted on, and the word for what was
+done arrives with it. The title lights from where the bolt lands. An agent the crown put to
+sleep dims its title for a moment, a ticket the crown filed writes its title in, and a ticket
+it archived burns away before its column closes up. When an agent it started reports back, a
+bolt runs the other way, from that card to the crown. **Settings › Appearance › Crown's
+actions** turns the lightning off for this machine; the card still says what was done.
+
 At most three agents the crown started may be awake at once; **Settings › Agents** changes the
 number or turns starting off. A ticket the crown started can never be crowned itself. The crown
 may put an agent it started to sleep once that agent is idle, the same park as `x` on its card:
