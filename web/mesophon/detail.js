@@ -218,7 +218,10 @@ export function Detail({ store, bp }) {
   if (ticket && store.reading?.ticket === ticket.id)
     return html`<article id="detail" aria-labelledby="note-title"><${NoteReader} store=${store} ticket=${ticket} /></article>`;
   // The head (T-510): the shin, the title, then one line with the tags and
-  // the column at its left and the key at its right, as the TUI's page.
+  // the column at its left and the key at its right, as the TUI's page. A
+  // start that took sits beside the column (T-547); one still on its way, or
+  // refused, stays under the button it came from.
+  const started = start?.status === "started";
   return html`<article id="detail" aria-labelledby="selection">
     <header class="detail-head">
       <button id="back" type="button" class="icon-btn" aria-label="Back" onClick=${() => store.back()}><${Icon} name="back" size=${22} /></button>
@@ -231,6 +234,7 @@ export function Detail({ store, bp }) {
         <${Title} store=${store} ticket=${ticket} />
         ${ticket && html`<div class="ticket-line">
           <${TicketLine} store=${store} ticket=${ticket} />
+          ${started && html`<${StartReceipt} item=${start} agent=${agent} />`}
           <span class="selection-key">${ticket.key}</span>
         </div>`}
       </div>
@@ -240,7 +244,7 @@ export function Detail({ store, bp }) {
         <p id="agent-state">${seatWords(store, agent)}</p>
         ${store.startsAgents && html`<${StartButton} store=${store} ticket=${ticket} />`}
       </div>`}
-      ${ticket && html`<${StartReceipt} item=${start} agent=${agent} />`}
+      ${ticket && !started && html`<${StartReceipt} item=${start} agent=${agent} />`}
       <${Attention} store=${store} ticket=${ticket} entry=${entry} live=${live} />
       <${NotesCard} store=${store} ticket=${ticket} />
       <${Output} store=${store} ticket=${ticket} entry=${entry} live=${live} />

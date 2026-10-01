@@ -358,7 +358,7 @@ function SentItem({ store, board, item }) {
         <span>→ ${item.column}</span>
         ${item.tags.map((t) => html`<span class=${`tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}>${t.name}</span>`)}
         <span>${clock(item.at)}</span>
-        ${tick && html`<span class="sent-tick"><${Tick} state=${tick} /><span class="sr-only">${item.picked ? "Picked up" : said}</span></span>`}
+        ${tick && html`<span class="sent-tick" title=${item.picked ? "Picked up" : said}><${Tick} state=${tick} /><span class="sr-only">${item.picked ? "Picked up" : said}</span></span>`}
       </p>
     </div>
     ${waiting && html`<div class="sent-waiting" role="group" aria-label=${said}>
@@ -401,7 +401,6 @@ export function SentList({ store, board }) {
     </div>`;
   let day;
   return html`<div class="sent-feed">
-    <p class="sent-legend"><span><${Tick} state="clock" />In this browser</span><span><${Tick} state="one" />At the relay</span><span><${Tick} state="two" />On your board</span><span><${Tick} state="picked" />Picked up</span></p>
     ${items.map((item) => {
       const label = dayOf(item.at);
       const heading = label !== day && html`<h3 class="sent-day" key=${`day-${label}`}>${label}</h3>`;

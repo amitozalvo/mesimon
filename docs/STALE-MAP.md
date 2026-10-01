@@ -16920,3 +16920,21 @@ desktop the button sits within 40px of the sidebar's bottom and opens the dialog
 header's sheet does, and the sheet closes behind it; the dialog shows the theme, alerts, forget
 and three hops; Escape closes it; the pill opens it and Done closes it; the rail still shows the
 button. Screenshots: `<engine>-<size>-settings.png`.
+
+## Remote Control drops its tick legend; a start that took sits by the column (T-547, 2026-10-01, "remove verbose hints in remote control")
+
+**Sent loses its legend.** The row of four ticks under "Tickets from this browser to your board."
+(In this browser, At the relay, On your board, Picked up; T-497) is gone, with `.sent-legend`.
+Each item still names its own state: its `.sent-tick` carries the word as a `title` and in an
+`sr-only` span, a waiting item says where it waits, and a landed one says "Landed as …".
+
+**"Started from this browser · <time>"** moved from the top of `.detail-scroll` into the ticket
+page's `.ticket-line`, after the tags and the column chip, with the key still at the right
+(`margin-left: auto` replaced `space-between`). Only the `started` receipt moved: one still on
+its way (sending, provisioning, starting) or refused stays under the Start button it came from,
+which is where the person is looking. Below 700px the line wraps only when it holds a receipt
+(`:has(.start-receipt)`), and the receipt takes a whole row under the chips (`order: 1`,
+`flex-basis: 100%`), so neither the key nor the time breaks onto a line of its own.
+
+**Tests.** `ux.test.js`'s start run asserts the started receipt sits in `.ticket-line`, every
+engine and size; `<engine>-<size>-start-started.png` shows it.

@@ -1124,6 +1124,8 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator("#toast .tick path").count(), 2, "two ticks");
     await receiptIs("started");
     assert.match(await receipt.textContent(), /Started from this browser · \d/);
+    // A start that took sits beside the tags and the column (T-547).
+    assert.equal(await page.locator("#detail .ticket-line .start-receipt").count(), 1);
     assert.equal(await receipt.locator(".tick path").count(), 2);
     assert.equal(await pageStart.count(), 0, "a ticket with an agent offers no start");
     await shot("start-started");
