@@ -5221,7 +5221,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
             (0, board) => format!("Sleep idle agents: board ({board} min)"),
             (minutes, _) => format!("Sleep idle agents after {minutes} min"),
         },
-        detail: |_| "after a finished turn ∙ enter cycles off / 1 / 5 / 15 / 60 min".into(),
+        detail: |_| "any agent idle at its prompt ∙ enter cycles off / 1 / 5 / 15 / 60 min".into(),
         avail: |c| !c.col_new && !c.claude_unused,
         key: "",
     },

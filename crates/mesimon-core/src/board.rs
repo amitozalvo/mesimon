@@ -468,9 +468,29 @@ impl SessionRecord {
     /// A confirmed finished Claude turn has exceeded an enabled inactivity timeout.
     /// The daemon additionally checks pending work, ownership and resume history.
     pub fn inactivity_park_due(&self, now: u64, timeout_ms: u64) -> bool {
+        self.state == (SessionState::Idle { stop_reason: StopReason::EndTurn })
+            && self.park_clock_due(now, timeout_ms)
+    }
+
+    /// A column's opt-in (T-543) is wider than the board's timer: a Claude
+    /// idle at its prompt counts whether or not a turn finished there — just
+    /// woken, interrupted, or done waiting on background work — because a
+    /// column that asked for its agents to sleep meant every idle one (the
+    /// author's T-534 was woken in DONE and never slept). Background and
+    /// monitoring are still work. A conversation with no history yet is
+    /// the daemon's to refuse, as for the board's timer.
+    pub fn autosleep_due(&self, now: u64, timeout_ms: u64) -> bool {
+        matches!(
+            self.state,
+            SessionState::Idle {
+                stop_reason: StopReason::EndTurn | StopReason::Interrupted | StopReason::Unknown
+            }
+        ) && self.park_clock_due(now, timeout_ms)
+    }
+
+    fn park_clock_due(&self, now: u64, timeout_ms: u64) -> bool {
         timeout_ms > 0
             && self.kind == SessionKind::Claude
-            && self.state == (SessionState::Idle { stop_reason: StopReason::EndTurn })
             && self.confidence == Confidence::High
             && self.state_changed_at.is_some_and(|at| now.saturating_sub(at) >= timeout_ms)
             && !self.argv.is_empty()
@@ -896,11 +916,11 @@ pub struct ColumnSettings {
     pub offers: Option<ColumnOffers>,
     #[serde(default, skip_serializing_if = "TrainReach::is_off")]
     pub train: TrainReach,
-    /// Park a Claude agent here once its finished turn has been idle this
-    /// many minutes (T-543); zero is off. The board's `park_after_minutes`
-    /// still applies everywhere, and the shorter of the two wins
-    /// (`Board::idle_sleep_after`). No schema bump: a build that drops it
-    /// only stops sleeping agents, which narrows nothing.
+    /// Park a Claude agent here once it has been idle at its prompt this
+    /// many minutes (T-543, `SessionRecord::autosleep_due`); zero is off.
+    /// The board's `park_after_minutes` still applies everywhere under its
+    /// own rule (`Board::idle_park_due`). No schema bump: a build that drops
+    /// it only stops sleeping agents, which narrows nothing.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub sleep_after_minutes: u32,
 }
@@ -1867,22 +1887,30 @@ impl Board {
         self.columns.iter().find(|c| c.name == name)
     }
 
-    /// The timer that parks an idle agent on `ticket` (T-543), in minutes,
-    /// with the automation rule that names the park in the feed: the
-    /// shorter of the board's `park_after_minutes` and the ticket's column's
-    /// `sleep_after_minutes`, the column's on a tie. `None` when neither is
-    /// on.
-    pub fn idle_sleep_after(&self, ticket: ulid::Ulid) -> Option<(u32, &'static str)> {
+    /// The idle park that is due for `rec` now (T-543), as the automation
+    /// rule that names it in the feed and its timeout: the ticket's column's
+    /// `sleep_after_minutes` under `autosleep_due`, else the board's
+    /// `park_after_minutes` under `inactivity_park_due`. Each timer is judged
+    /// by its own rule, never the shorter one by the other's: a 15-minute
+    /// board does not narrow a column that sleeps every idle agent after 60.
+    pub fn idle_park_due(
+        &self,
+        rec: &SessionRecord,
+        now: u64,
+        minute_ms: u64,
+    ) -> Option<(&'static str, u64)> {
+        let timeout = |minutes: u32| u64::from(minutes).saturating_mul(minute_ms);
         let column = self
-            .ticket(ticket)
+            .ticket(rec.ticket)
             .and_then(|t| self.column(&t.column))
-            .map_or(0, |c| c.settings.sleep_after_minutes);
-        let board = self.park_after_minutes;
-        match (column, board) {
-            (0, 0) => None,
-            (0, b) => Some((b, "inactivity_park")),
-            (c, b) if b == 0 || c <= b => Some((c, "autosleep")),
-            (_, b) => Some((b, "inactivity_park")),
+            .map_or(0, |c| timeout(c.settings.sleep_after_minutes));
+        let board = timeout(self.park_after_minutes);
+        if rec.autosleep_due(now, column) {
+            Some(("autosleep", column))
+        } else if rec.inactivity_park_due(now, board) {
+            Some(("inactivity_park", board))
+        } else {
+            None
         }
     }
 
@@ -2551,31 +2579,66 @@ mod tests {
         );
     }
 
-    /// T-543: a column opts its tickets into the idle park. The shorter
-    /// timer of the column's and the board's wins and names its rule; a
-    /// ticket in a column that did not opt in keeps only the board's.
+    /// T-543: a column opts its tickets into the idle park, and each timer
+    /// is judged by its own rule. The column takes an agent idle at its
+    /// prompt with no finished turn (woken, interrupted); the board's timer
+    /// waits for a finished one; a ticket in a column that did not opt in
+    /// keeps only the board's.
     #[test]
-    fn a_columns_sleep_timer_races_the_boards() {
+    fn a_columns_sleep_timer_and_the_boards_each_judge_by_their_own_rule() {
         let mut board = Board::default();
         let mut done = Column::new("DONE", "b");
         done.settings.sleep_after_minutes = 5;
         board.columns = vec![Column::new("TODO", "a"), done];
         board.tickets = vec![ticket(1, "TODO", "a"), ticket(2, "DONE", "a")];
-        let (todo, in_done) = (ulid::Ulid(1), ulid::Ulid(2));
-        assert_eq!(board.idle_sleep_after(todo), None, "nothing on");
-        assert_eq!(board.idle_sleep_after(in_done), Some((5, "autosleep")));
-        assert_eq!(board.idle_sleep_after(ulid::Ulid(9)), None, "no such ticket");
-        board.park_after_minutes = 15;
-        assert_eq!(board.idle_sleep_after(todo), Some((15, "inactivity_park")));
-        assert_eq!(board.idle_sleep_after(in_done), Some((5, "autosleep")));
-        board.park_after_minutes = 5;
-        assert_eq!(
-            board.idle_sleep_after(in_done),
-            Some((5, "autosleep")),
-            "a tie is the column's"
-        );
+        let rec = |ticket: u128, stop_reason| {
+            let mut r = SessionRecord::new(
+                uuid::Uuid::new_v4(),
+                SessionKind::Claude,
+                ulid::Ulid(ticket),
+                vec!["claude".into()],
+                "/repo".into(),
+                SessionState::Idle { stop_reason },
+            );
+            r.confidence = Confidence::High;
+            r.state_changed_at = Some(0);
+            r
+        };
+        let minute = 1_000;
+        let (woken, finished) = (rec(2, StopReason::Unknown), rec(2, StopReason::EndTurn));
+        assert_eq!(board.idle_park_due(&woken, 4_999, minute), None, "not yet");
+        assert_eq!(board.idle_park_due(&woken, 5_000, minute), Some(("autosleep", 5_000)));
+        assert_eq!(board.idle_park_due(&finished, 5_000, minute), Some(("autosleep", 5_000)));
+        let interrupted = rec(2, StopReason::Interrupted);
+        assert_eq!(board.idle_park_due(&interrupted, 5_000, minute), Some(("autosleep", 5_000)));
+        for working in [StopReason::Background, StopReason::Monitoring] {
+            assert_eq!(board.idle_park_due(&rec(2, working), 99_000, minute), None, "{working:?}");
+        }
+        let elsewhere = rec(1, StopReason::EndTurn);
+        assert_eq!(board.idle_park_due(&elsewhere, 99_000, minute), None, "nothing on there");
         board.park_after_minutes = 1;
-        assert_eq!(board.idle_sleep_after(in_done), Some((1, "inactivity_park")));
+        assert_eq!(
+            board.idle_park_due(&elsewhere, 1_000, minute),
+            Some(("inactivity_park", 1_000))
+        );
+        assert_eq!(
+            board.idle_park_due(&rec(1, StopReason::Unknown), 99_000, minute),
+            None,
+            "the board's timer waits for a finished turn"
+        );
+        assert_eq!(
+            board.idle_park_due(&finished, 1_000, minute),
+            Some(("inactivity_park", 1_000)),
+            "the board's sooner timer still parks a finished turn in the column"
+        );
+        assert_eq!(
+            board.idle_park_due(&woken, 1_000, minute),
+            None,
+            "and does not lend its minute to the column's wider rule"
+        );
+        let mut low = rec(2, StopReason::Unknown);
+        low.confidence = Confidence::Low;
+        assert_eq!(board.idle_park_due(&low, 99_000, minute), None, "a guess is not idle");
     }
 
     #[test]

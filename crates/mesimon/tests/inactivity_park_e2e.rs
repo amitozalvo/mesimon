@@ -238,4 +238,29 @@ fn a_column_parks_its_idle_agents_and_spares_the_rest() {
             feed.lines().any(|l| l.contains("\"autosleep\"") && l.contains("\"automation\""))
         })
     });
+
+    // The author's T-534: woken in DONE, it sits at its prompt with no
+    // finished turn (`Idle{Unknown}` off the resume's SessionStart). The
+    // board's timer would wait for a turn; the column's sleeps it anyway.
+    assert!(matches!(
+        c.request(Command::WakeSession { id: parked }),
+        Response::Spawned { fresh: false, .. }
+    ));
+    let path = h.dir.join(format!("{conversation}.jsonl"));
+    hook_send(
+        &h.paths.hook_sock(),
+        &parked.to_string(),
+        "SessionStart",
+        &serde_json::json!({
+            "session_id": conversation,
+            "transcript_path": path,
+            "source": "resume",
+        })
+        .to_string(),
+    );
+    c.await_state(parked, "woken at its prompt", |s| {
+        *s == SessionState::Idle { stop_reason: StopReason::Unknown }
+    });
+    c.await_state(parked, "parked again by its column", |s| *s == SessionState::Sleeping);
+    assert!(state(&mut c, kept).has_pane(), "and still only the column's ticket");
 }

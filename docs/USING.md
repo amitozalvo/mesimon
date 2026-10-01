@@ -241,9 +241,11 @@ minutes; `0` disables it.
 
 A column can opt its own tickets in: **Agent behaviour › Sleep idle agents** in the column's
 settings sleeps a Claude agent on a ticket in that column after 1, 5, 15 or 60 minutes idle.
-It is off by default. The same rules apply: only a finished turn counts, and anything running,
-waiting on you or with background work stays awake. A ticket you move into the column whose
-agent finished long ago sleeps within seconds. When both timers are on, the shorter one wins.
+It is off by default. Any agent idle at its prompt counts, including one you woke or
+interrupted that has not finished a turn since; anything running, waiting on you or with
+background work stays awake. A ticket you move into the column whose agent went idle long ago
+sleeps within seconds. When both timers are on, each acts by its own rule, and the board's
+timer counts only a finished turn.
 If you are attached to the agent's pane and have typed in it within the timer, it stays
 awake until you leave or go quiet for that long. On disk this is the column's
 `sleep_after_minutes`, any whole number; `0` disables it.

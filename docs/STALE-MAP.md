@@ -16702,3 +16702,28 @@ board (leader with the card unchanged, landing with the word and the crown flari
 held tint, over), still when off and in mono, an archive burning in place then gone, a filing
 written in, a park dimmed and a `woke` bolt sweeping the crown. `crown_e2e`: the touch's `from`, a
 crowned filing touched `created`, an uncrowned one not. The Appearance goldens gained the row.
+
+## A woken agent sleeps in its column too (T-543 follow-up, 2026-10-01, author: "T-534 is not sleeping even though in DONE and DONE is set to sleep agents after 1 min")
+
+**Seen.** T-534's agent had been asleep, was woken at 12:21:56Z, and sat in DONE at its prompt.
+The resume's `SessionStart` commits `Idle{Unknown}` at High confidence, and T-391's
+`inactivity_park_due`, which the column had reused, takes only `Idle{EndTurn}`. A woken agent
+that is never prompted never finishes a turn, so it was never due.
+
+**Shipped.** The column's rule is its own predicate, `SessionRecord::autosleep_due`: a Claude at
+High confidence in `Idle{EndTurn | Interrupted | Unknown}`, which covers idle at its prompt
+whether or not a turn finished there (woken, interrupted, or done waiting on background work).
+`Background` and `Monitoring` are still work. T-391's board timer keeps `EndTurn` only, as its
+e2e asserts. `Board::idle_park_due` replaces `idle_sleep_after` and judges **each timer by its
+own rule** rather than picking the shorter minute count. Under the old shape, a 15-minute board
+would have stopped a 60-minute column from sleeping a woken agent. The column is asked first,
+so the feed says `autosleep` whenever the column's rule is the one due. A `/clear` or a fresh
+start with no transcript is still refused by the daemon's history check, before any signal. The
+dialog row's detail reads "any agent idle at its prompt".
+
+**Tests.** `board::a_columns_sleep_timer_and_the_boards_each_judge_by_their_own_rule` (woken,
+finished and interrupted due under the column; background and monitoring never; Low confidence
+never; the board's timer refuses `Unknown`, parks a finished turn sooner than the column's, and
+does not lend its minute to the column's wider rule). `a_column_parks_its_idle_agents_and_spares_the_rest`
+now wakes the parked agent, sends the resume's `SessionStart`, sees `Idle{Unknown}` and then
+`Sleeping` again. With the predicate narrowed back to `EndTurn` that step times out: verified.

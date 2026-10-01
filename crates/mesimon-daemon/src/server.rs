@@ -10649,10 +10649,11 @@ impl Daemon {
     }
 
     /// Automatic sleep is deliberately narrower than a user's sleep gesture:
-    /// only a confirmed finished turn, timed from its settled state transition.
-    /// The timer is the ticket's (`Board::idle_sleep_after`): the board's
-    /// `park_after_minutes`, or its column's own `sleep_after_minutes`
-    /// (T-543) when that is sooner.
+    /// a High-confidence idle Claude, timed from its settled state
+    /// transition, by the rule that is due (`Board::idle_park_due`): the
+    /// board's `park_after_minutes` over a finished turn, or the ticket's
+    /// column's own `sleep_after_minutes` over any idle at its prompt
+    /// (T-543).
     fn park_inactive(&mut self, now: u64) -> bool {
         let minute = inactivity_minute_ms();
         let candidates: Vec<_> = self
@@ -10660,12 +10661,11 @@ impl Daemon {
             .sessions
             .iter()
             .filter_map(|rec| {
-                let (minutes, rule) = self.board.idle_sleep_after(rec.ticket)?;
-                Some((rec, u64::from(minutes).saturating_mul(minute), rule))
+                let (rule, timeout) = self.board.idle_park_due(rec, now, minute)?;
+                Some((rec, timeout, rule))
             })
-            .filter(|&(rec, timeout, _)| {
-                rec.inactivity_park_due(now, timeout)
-                    && self.board.ticket(rec.ticket).is_some_and(|t| t.raised.is_none())
+            .filter(|&(rec, _, _)| {
+                self.board.ticket(rec.ticket).is_some_and(|t| t.raised.is_none())
                     && !self.pending_resumes.iter().any(|pending| pending.session == rec.id)
                     && !self.owed_on(rec.ticket)
                     && !self.queued.iter().any(|q| q.ticket == rec.ticket)
