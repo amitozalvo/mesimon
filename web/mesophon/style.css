@@ -1232,6 +1232,9 @@ select {
   font-size: 0.8125rem;
 }
 .need-delivery {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: var(--ink2);
   font-size: 0.8125rem;
 }

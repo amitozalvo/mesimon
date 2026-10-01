@@ -308,7 +308,8 @@ function fixture() {
           };
           if (state.holdAll) return;
           if (request.op === "foreground") answer({ result: "delivery", status: "observed" });
-          if (["permission", "dialog"].includes(request.op)) answer({ result: "delivery", status: "input_sent" });
+          if (request.op === "permission") answer({ result: "delivery", status: "input_sent" });
+          if (request.op === "dialog") answer(state.dialogReply || { result: "delivery", status: "input_sent" });
           if (request.op === "snapshot") answer(state.snapshot());
           if (request.op === "preview")
             answer({ result: "preview", lines: state.lines, cols: 132 });
@@ -2142,6 +2143,27 @@ try {
           });
           await attention("Green").click();
           assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).response), { answer: "choice", index: 1 });
+          // T-567: keys nothing confirmed are one tick, and the question
+          // stays answerable; a reason keeps it answerable too; only the
+          // agent's own hook makes two ticks.
+          const receiptLine = () => page.evaluate(() => ({
+            text: document.querySelector("#delivery").textContent,
+            ticks: document.querySelectorAll("#delivery .tick path").length,
+          }));
+          await until(page, () => document.querySelector("#delivery").textContent.includes("not confirmed"));
+          assert.equal((await receiptLine()).ticks, 1);
+          assert(await attention("Green").isEnabled());
+          await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "unknown", reason: "label_wrapped" }; });
+          await attention("Blue").click();
+          await until(page, () => document.querySelector("#delivery").textContent.includes("Could not answer"));
+          assert.match((await receiptLine()).text, /the option does not read as one row on the screen · try again or answer in the pane/);
+          assert.equal((await receiptLine()).ticks, 0);
+          assert(await attention("Blue").isEnabled());
+          await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "answered" }; });
+          await attention("Blue").click();
+          await until(page, () => document.querySelector("#delivery").textContent.includes("Answered."));
+          assert.equal((await receiptLine()).ticks, 2);
+          await page.evaluate(() => { fixture.dialogReply = undefined; });
           await page.locator("#attention input").fill("Purple");
           await page.evaluate(() => fixture.update());
           assert.equal(await page.locator("#attention input").inputValue(), "Purple");

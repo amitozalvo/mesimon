@@ -1,4 +1,34 @@
 // Drafts, receipts and reading positions never cross board/ticket/session keys.
+
+// A receipt's ticks: a clock while it is on its way, one when it went in and
+// nothing confirmed it, two when the far side said it arrived. A dialog's
+// keys are `input_sent` until the agent's own hook says `answered` (T-567).
+export const receiptTick = (status) =>
+  status === "awaiting_delivery"
+    ? "clock"
+    : ["queued", "input_sent"].includes(status)
+      ? "one"
+      : ["submitted", "decision_sent", "answered"].includes(status)
+        ? "two"
+        : null;
+
+// Why the host could not answer a dialog, in words (T-567). A word this page
+// does not know is shown as it came.
+const reasonWords = {
+  label_not_found: "the option is not on the screen",
+  label_wrapped: "the option does not read as one row on the screen",
+  shape_unrecognised: "the screen does not show this question",
+  deadline: "it took too long",
+  state_changed: "the agent moved on",
+  pane_unreachable: "the pane did not take the keys",
+  "cursor moved": "the selection already moved",
+};
+export const reasonText = (reason) =>
+  String(reason)
+    .split("; ")
+    .map((word) => reasonWords[word] || word.replaceAll("_", " "))
+    .join("; ");
+
 export class Sessions {
   constructor() {
     this.entries = new Map();
@@ -86,7 +116,8 @@ export class Sessions {
         queued: "Queued · waiting for idle.",
         awaiting_delivery: "Sending… Awaiting delivery.",
         decision_sent: "Decision sent. Check the output for the agent’s response.",
-        input_sent: "Answer keys sent. Check the output to confirm the result.",
+        answered: "Answered.",
+        input_sent: "Keys sent, not confirmed · check the pane.",
         submitted:
           "Submitted to the agent. This confirms input delivery, not completion.",
         rejected: reply.message
@@ -94,6 +125,8 @@ export class Sessions {
           : "Prompt rejected. Check the agent before trying again.",
         unknown: "Delivery unknown. Check the agent before sending again.",
       }[status] || "Delivery unknown. Check the agent before sending again.";
+    if (status === "unknown" && reply.reason)
+      entry.delivery = `Could not answer: ${reasonText(reply.reason)} · try again or answer in the pane.`;
     if (
       ["queued", "submitted"].includes(status) &&
       (receipt.op === "prompt" || receipt.restored) &&

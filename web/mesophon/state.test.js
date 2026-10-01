@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Sessions } from "./sessions.js";
+import { Sessions, receiptTick, reasonText } from "./sessions.js";
 import { BoardState, RECENT_MS } from "./board.js";
 const ticket = (id, session) => ({
   id,
@@ -173,6 +173,40 @@ test("dialog and approval receipts preserve drafts and never imply execution", (
   sessions.lost();
   assert.match(entry.delivery, /unknown/);
   assert.equal(entry.draft, "later follow-up");
+});
+
+test("a dialog answer is answered only on the hook's word, and an unknown one says why (T-567)", () => {
+  const sessions = new Sessions();
+  const entry = sessions.get("board-a", ticket("one", "session-a"));
+  sessions.sent(entry, 1, "host", "dialog", "");
+  sessions.reply(entry, { result: "delivery", status: "awaiting_delivery" });
+  assert.equal(entry.receipt.waiting, true, "the card's buttons wait");
+  assert.equal(receiptTick(entry.receipt.status), "clock");
+  // The agent's own hook said the dialog took it: two ticks.
+  sessions.reply(entry, { result: "delivery", status: "answered" });
+  assert.equal(entry.receipt.unresolved, false);
+  assert.equal(entry.delivery, "Answered.");
+  assert.equal(receiptTick(entry.receipt.status), "two");
+  // Keys went in and nothing confirmed them: one tick, and the buttons live.
+  sessions.sent(entry, 2, "host", "dialog", "");
+  sessions.reply(entry, { result: "delivery", status: "input_sent" });
+  assert.equal(entry.receipt.waiting, false);
+  assert.equal(entry.delivery, "Keys sent, not confirmed · check the pane.");
+  assert.equal(receiptTick(entry.receipt.status), "one");
+  // No key could be chosen: no tick, the reason in words, try again.
+  sessions.sent(entry, 3, "host", "dialog", "");
+  sessions.reply(entry, { result: "delivery", status: "unknown", reason: "label_wrapped; cursor moved" });
+  assert.equal(entry.receipt.waiting, false);
+  assert.equal(
+    entry.delivery,
+    "Could not answer: the option does not read as one row on the screen; the selection already moved · try again or answer in the pane.",
+  );
+  assert.equal(receiptTick(entry.receipt.status), null);
+  // An older host names no reason, and a word this page does not know shows as it came.
+  sessions.sent(entry, 4, "host", "dialog", "");
+  sessions.reply(entry, { result: "delivery", status: "unknown" });
+  assert.match(entry.delivery, /Delivery unknown/);
+  assert.equal(reasonText("pane_gone"), "pane gone");
 });
 
 test("Now groups agents by the host's own state word", () => {

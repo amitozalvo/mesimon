@@ -79,6 +79,19 @@ struct DialogDelivery {
     next: Instant,
     steps: u8,
     pasted: bool,
+    /// Set once the last key is in (T-567): until then the answer waits for
+    /// the hook edge, and past it the keys were sent and not confirmed.
+    confirm: Option<Instant>,
+}
+/// How long an answer's last key waits for the hook edge (T-567).
+const DIALOG_CONFIRM: Duration = Duration::from_secs(5);
+/// How a hook frame ended a projected dialog (T-567).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DialogEdge {
+    /// The dialog's own tool finished: it took an answer.
+    Answered,
+    /// The next tool started with no answer taken, the refusal road (T-447).
+    Dismissed,
 }
 struct PermissionWait {
     projection: api::Permission,
@@ -137,6 +150,8 @@ pub(super) struct Control {
     suppress_awareness: bool,
     dialogs: HashMap<uuid::Uuid, api::Dialog>,
     dialog_deliveries: HashMap<uuid::Uuid, DialogDelivery>,
+    /// The last dialog a hook edge ended on each session, and how (T-567).
+    dialog_edges: HashMap<uuid::Uuid, (String, DialogEdge)>,
     incarnation: ObjectId,
     origin: String,
     online: bool,
@@ -178,6 +193,7 @@ impl Control {
             suppress_awareness: false,
             dialogs: HashMap::new(),
             dialog_deliveries: HashMap::new(),
+            dialog_edges: HashMap::new(),
             incarnation: ObjectId::random(),
             origin: String::new(),
             online: false,
@@ -667,7 +683,7 @@ impl Daemon {
                 .get(&grant)
                 .and_then(|r| r.get(&command.id))
                 .cloned()
-                .unwrap_or(Reply::Delivery { status: "unknown".into() });
+                .unwrap_or(Reply::delivery("unknown"));
             self.control.answer(peer, command.id, reply);
             return;
         }
@@ -688,7 +704,7 @@ impl Daemon {
                     if let Some(p) = self.control.peers.get_mut(peer) {
                         p.foreground = ticket.map(|t| (t, Instant::now()));
                     }
-                    Reply::Delivery { status: "observed".into() }
+                    Reply::delivery("observed")
                 }
             }
             api::Request::Dialog { ticket, session, request, response } => self
@@ -732,7 +748,7 @@ impl Daemon {
                 .get(&grant)
                 .and_then(|r| r.get(&command))
                 .cloned()
-                .unwrap_or(Reply::Delivery { status: "unknown".into() }),
+                .unwrap_or(Reply::delivery("unknown")),
             api::Request::Create { title, description, column, tags } => {
                 self.control_create(&by, title, description, column, &tags, None)
             }
@@ -761,6 +777,17 @@ impl Daemon {
     pub(super) fn control_observe_dialog(&mut self, id: uuid::Uuid, frame: &HookFrame) {
         if frame.payload.get("agent_id").is_some() {
             return;
+        }
+        // The hook edge is the only receipt that a dialog took an answer
+        // (T-567), and the dialog is gone once it comes.
+        let edge = self
+            .control
+            .dialogs
+            .get(&id)
+            .and_then(|d| dialog_edge(frame, d).map(|edge| (d.request.clone(), edge)));
+        if let Some(edge) = edge {
+            self.control.dialogs.remove(&id);
+            self.control.dialog_edges.insert(id, edge);
         }
         if matches!(
             frame.event.as_str(),
@@ -894,13 +921,20 @@ impl Daemon {
                 next: Instant::now(),
                 steps: 0,
                 pasted: false,
+                confirm: None,
             },
         );
-        Reply::Delivery { status: "awaiting_delivery".into() }
+        Reply::delivery("awaiting_delivery")
     }
 
+    /// Walk each queued dialog answer one key per pass (T-567). The last key
+    /// waits for the hook edge: `answered` only when it comes, `input_sent`
+    /// past `DIALOG_CONFIRM`, and `unknown` with its reason when no key could
+    /// be chosen. Keys already in are never undone.
     fn control_deliver_dialogs(&mut self) {
         use mesimon_backend_tmux::DialogKey;
+        let board = &self.board;
+        self.control.dialog_edges.retain(|id, _| board.sessions.iter().any(|s| s.id == *id));
         let ready: Vec<_> = self
             .control
             .dialog_deliveries
@@ -910,6 +944,30 @@ impl Daemon {
             .collect();
         for id in ready {
             let Some(mut pending) = self.control.dialog_deliveries.remove(&id) else { continue };
+            if let Some(until) = pending.confirm {
+                let edge = self.control_dialog_edge(id, &pending.request);
+                let reject = matches!(pending.response, api::DialogAnswer::Reject);
+                match edge {
+                    Some(DialogEdge::Answered) => {
+                        self.control_settle_dialog(id, pending, "answered", None, "")
+                    }
+                    Some(DialogEdge::Dismissed) if reject => {
+                        self.control_settle_dialog(id, pending, "answered", None, "")
+                    }
+                    Some(DialogEdge::Dismissed) => {
+                        self.control_settle_dialog(id, pending, "input_sent", None, "")
+                    }
+                    None if Instant::now() >= until => {
+                        let screen = self.dialog_screen(id);
+                        self.control_settle_dialog(id, pending, "input_sent", None, &screen);
+                    }
+                    None => {
+                        pending.next = Instant::now() + Duration::from_millis(250);
+                        self.control.dialog_deliveries.insert(id, pending);
+                    }
+                }
+                continue;
+            }
             let by = Principal::Paired {
                 device: pending.device.to_hex(),
                 grant: pending.grant.to_hex(),
@@ -917,59 +975,118 @@ impl Daemon {
             let allowed = self.control_granted(pending.grant, pending.device)
                 && !authorize(&by, &Action::PromptExisting, &Resource::Session { id }).denied()
                 && self.control_target(&pending.ticket.to_string(), &id.to_string()) == Some(id)
-                && self.board.sessions.iter().any(|s| {
-                    s.id == id
-                        && matches!(
-                            s.state,
-                            SessionState::RequiresAction {
-                                reason: mesimon_core::board::Reason::Question
-                                    | mesimon_core::board::Reason::Plan
-                            }
-                        )
-                });
+                && self.dialog_waiting(id);
             let dialog = self.control.dialogs.get(&id).filter(|d| d.request == pending.request);
-            let screen = match self.pane_tail(id, 50) {
-                Response::PaneTail { lines, .. } => lines.join("\n"),
-                _ => String::new(),
-            };
-            let step = if allowed && Instant::now() < pending.deadline && pending.steps < 12 {
-                dialog.and_then(|d| dialog_step(d, &pending.response, &screen, pending.pasted))
-            } else {
-                None
+            let screen = self.dialog_screen(id);
+            let step = match dialog {
+                None => Err("state_changed"),
+                Some(_) if !allowed => Err("state_changed"),
+                Some(_) if Instant::now() >= pending.deadline || pending.steps >= 12 => {
+                    Err("deadline")
+                }
+                Some(d) => {
+                    dialog_step(d, &pending.response, &screen, pending.pasted).map_err(Miss::word)
+                }
             };
             let sid = id.simple().to_string()[..16].to_string();
-            let outcome = match step {
-                Some(DialogStep::Up) => self.backend.dialog_key(&sid, DialogKey::Up).map(|_| false),
-                Some(DialogStep::Down) => {
-                    self.backend.dialog_key(&sid, DialogKey::Down).map(|_| false)
+            // `Ok(true)` is the last key: Enter, or Escape for a refusal.
+            let sent = step.and_then(|step| {
+                match step {
+                    DialogStep::Up => self.backend.dialog_key(&sid, DialogKey::Up).map(|_| false),
+                    DialogStep::Down => {
+                        self.backend.dialog_key(&sid, DialogKey::Down).map(|_| false)
+                    }
+                    DialogStep::Reject => {
+                        self.backend.dialog_key(&sid, DialogKey::Escape).map(|_| true)
+                    }
+                    DialogStep::Submit => self.backend.send_enter(&sid).map(|_| true),
+                    DialogStep::Paste(text) => self.backend.paste_input(&sid, &text).map(|_| {
+                        pending.pasted = true;
+                        false
+                    }),
                 }
-                Some(DialogStep::Reject) => {
-                    self.backend.dialog_key(&sid, DialogKey::Escape).map(|_| true)
-                }
-                Some(DialogStep::Submit) => self.backend.send_enter(&sid).map(|_| true),
-                Some(DialogStep::Paste(text)) => self.backend.paste_input(&sid, &text).map(|_| {
-                    pending.pasted = true;
-                    false
-                }),
-                None => Err(anyhow::anyhow!("dialog outcome unknown")),
-            };
-            match outcome {
-                Ok(false) => {
+                .map_err(|_| "pane_unreachable")
+            });
+            match sent {
+                Ok(last) => {
                     pending.steps += 1;
-                    pending.next = Instant::now() + Duration::from_millis(350);
+                    let pause = if last { 250 } else { 350 };
+                    pending.next = Instant::now() + Duration::from_millis(pause);
+                    if last {
+                        pending.confirm = Some(Instant::now() + DIALOG_CONFIRM);
+                    }
                     self.control.dialog_deliveries.insert(id, pending);
                 }
-                result => {
-                    self.control.dialogs.remove(&id);
-                    let reply = Reply::Delivery {
-                        status: if result.is_ok() { "input_sent" } else { "unknown" }.into(),
+                Err(reason) => {
+                    let reason = if pending.steps > 0 {
+                        format!("{reason}; cursor moved")
+                    } else {
+                        reason.to_string()
                     };
-                    self.control.remember(pending.grant, pending.command, reply);
-                    self.feed.board(by.actor(), "mesophon_dialog_answer", Some(pending.ticket));
-                    self.control_changed();
+                    self.control_settle_dialog(id, pending, "unknown", Some(reason), &screen);
                 }
             }
         }
+    }
+
+    /// The hook edge that ended `request` on `session`, if one has (T-567):
+    /// the confirmation an answer's keys wait for, whoever sent them.
+    pub(super) fn control_dialog_edge(
+        &self,
+        session: uuid::Uuid,
+        request: &str,
+    ) -> Option<DialogEdge> {
+        self.control.dialog_edges.get(&session).filter(|(r, _)| r == request).map(|(_, e)| *e)
+    }
+
+    /// Whether the session still waits on a question or a plan.
+    fn dialog_waiting(&self, id: uuid::Uuid) -> bool {
+        use mesimon_core::board::Reason;
+        self.board.sessions.iter().any(|s| {
+            s.id == id
+                && matches!(
+                    s.state,
+                    SessionState::RequiresAction { reason: Reason::Question | Reason::Plan }
+                )
+        })
+    }
+
+    /// The pane's whole visible screen: a dialog is the question, up to
+    /// eight options with their descriptions, and the footer (T-567).
+    fn dialog_screen(&self, id: uuid::Uuid) -> String {
+        match self.pane_tail(id, MAX_PANE_TAIL_LINES) {
+            Response::PaneTail { lines, .. } => lines.join("\n"),
+            _ => String::new(),
+        }
+    }
+
+    /// A dialog answer's last word (T-567): its receipt and feed line, and
+    /// the projection kept while the session still waits and `screen` still
+    /// shows the dialog, so the card still offers the question.
+    fn control_settle_dialog(
+        &mut self,
+        id: uuid::Uuid,
+        pending: DialogDelivery,
+        status: &str,
+        reason: Option<String>,
+        screen: &str,
+    ) {
+        let waiting = self.dialog_waiting(id);
+        if let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == pending.request)
+        {
+            if !(waiting && dialog_shape(dialog, screen)) {
+                self.control.dialogs.remove(&id);
+            }
+        }
+        let by =
+            Principal::Paired { device: pending.device.to_hex(), grant: pending.grant.to_hex() };
+        self.control.remember(
+            pending.grant,
+            pending.command,
+            Reply::Delivery { status: status.into(), reason },
+        );
+        self.feed.board_outcome(by.actor(), "mesophon_dialog_answer", Some(pending.ticket), status);
+        self.control_changed();
     }
 
     pub(super) fn control_prompt_edge(&mut self, prompt: bool) {
@@ -1183,7 +1300,7 @@ impl Daemon {
             ulid::Ulid::from_string(ticket).ok(),
         );
         self.control_changed();
-        Reply::Delivery { status: if sent { "decision_sent" } else { "unknown" }.into() }
+        Reply::delivery(if sent { "decision_sent" } else { "unknown" })
     }
 
     /// A ticket filed from the owner's phone (T-497): the composer's mint,
@@ -1326,7 +1443,7 @@ impl Daemon {
         };
         self.feed.board(by.actor(), "mesophon_start_agent", Some(id));
         self.control.starts.insert(id, StartWait { grant, device, command, session });
-        Reply::Delivery { status: status.into() }
+        Reply::delivery(status)
     }
 
     /// Follow each phone's start to its end (T-498): a receipt turns
@@ -1349,7 +1466,7 @@ impl Daemon {
                 BindingStatus::Error { message, .. } => Some(message.clone()),
                 _ => None,
             });
-            let delivery = |status: &str| Reply::Delivery { status: status.into() };
+            let delivery = |status: &str| Reply::delivery(status);
             let (reply, done) = match start_progress(&self.board, session, provisioning, cut_failed)
             {
                 Progress::Provisioning => (delivery("provisioning"), false),
@@ -1590,8 +1707,7 @@ impl Daemon {
         if let Some(f) =
             self.control.stored.as_ref().and_then(|s| s.noted.iter().find(|f| f.envelope == id))
         {
-            return serde_json::from_value(f.answer.clone())
-                .unwrap_or(Reply::Delivery { status: "unknown".into() });
+            return serde_json::from_value(f.answer.clone()).unwrap_or(Reply::delivery("unknown"));
         }
         let by = Principal::Paired { device: grant.device.to_hex(), grant: grant.id.to_hex() };
         let already = self.control_note_body(&note.ticket, note.note.as_deref()).and_then(
@@ -1774,7 +1890,7 @@ impl Daemon {
         match self.note_to_agent(id, note) {
             Response::Ok => {
                 self.feed.board(by.actor(), "mesophon_tell_agent", Some(id));
-                Reply::Delivery { status: "submitted".into() }
+                Reply::delivery("submitted")
             }
             Response::Err { message } => reject(&message),
             other => reject(&format!("unexpected answer: {other:?}")),
@@ -1989,16 +2105,16 @@ impl Daemon {
             self.drain_queue();
             self.broadcast();
             return if self.queued.iter().any(|q| q.ticket == ticket) {
-                Reply::Delivery { status: "queued".into() }
+                Reply::delivery("queued")
             } else if self.parked(id) {
-                Reply::Delivery { status: "awaiting_delivery".into() }
+                Reply::delivery("awaiting_delivery")
             } else {
                 self.control
                     .receipts
                     .get(&grant)
                     .and_then(|r| r.get(&command))
                     .cloned()
-                    .unwrap_or(Reply::Delivery { status: "unknown".into() })
+                    .unwrap_or(Reply::delivery("unknown"))
             };
         }
         match self.paste_to_ticket(ticket, &text, Ack::PROMPT) {
@@ -2030,13 +2146,11 @@ impl Daemon {
                     "mesophon_prompt",
                     Some(ticket),
                 );
-                Reply::Delivery {
-                    status: if waiting { "awaiting_delivery" } else { "submitted" }.into(),
-                }
+                Reply::delivery(if waiting { "awaiting_delivery" } else { "submitted" })
             }
             Err(_) => {
                 self.control_cancel(id);
-                Reply::Delivery { status: "unknown".into() }
+                Reply::delivery("unknown")
             }
         }
     }
@@ -2080,9 +2194,9 @@ impl Daemon {
             }
             match self.send_queued_ask(ticket) {
                 Response::Err { message } => Reply::Rejected { message },
-                _ => Reply::Delivery {
-                    status: if self.parked(id) { "awaiting_delivery" } else { "submitted" }.into(),
-                },
+                _ => {
+                    Reply::delivery(if self.parked(id) { "awaiting_delivery" } else { "submitted" })
+                }
             }
         } else {
             let text = q.text.clone();
@@ -2132,17 +2246,9 @@ impl Daemon {
     pub(super) fn control_submitted(&mut self, id: uuid::Uuid) {
         if let Some(p) = self.control.pending.remove(&id) {
             if let Some((grant, _, command)) = p.send_now_receipt {
-                self.control.remember(
-                    grant,
-                    command,
-                    Reply::Delivery { status: "submitted".into() },
-                );
+                self.control.remember(grant, command, Reply::delivery("submitted"));
             }
-            self.control.remember(
-                p.grant,
-                p.command,
-                Reply::Delivery { status: "submitted".into() },
-            );
+            self.control.remember(p.grant, p.command, Reply::delivery("submitted"));
         }
     }
     pub(super) fn control_cancel(&mut self, id: uuid::Uuid) {
@@ -2154,15 +2260,13 @@ impl Daemon {
                 self.control.remember(
                     grant,
                     command,
-                    Reply::Delivery {
-                        status: if p.pasted { "unknown" } else { "rejected" }.into(),
-                    },
+                    Reply::delivery(if p.pasted { "unknown" } else { "rejected" }),
                 );
             }
             self.control.remember(
                 p.grant,
                 p.command,
-                Reply::Delivery { status: if p.pasted { "unknown" } else { "rejected" }.into() },
+                Reply::delivery(if p.pasted { "unknown" } else { "rejected" }),
             );
         }
     }
@@ -2426,101 +2530,207 @@ pub(super) fn dialog_answerable(questions: &[api::Question]) -> bool {
     questions.len() == 1 && !questions[0].multi_select
 }
 
-fn dialog_target(dialog: &api::Dialog, response: &api::DialogAnswer) -> Option<String> {
+/// Why no key could be chosen (T-567), in the receipt's words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Miss {
+    /// No row of the dialog reads as the answer.
+    LabelNotFound,
+    /// A row starts the answer, or the answer starts a row, and neither
+    /// reads as the other: wrapped or cut in a way the joining cannot mend.
+    LabelWrapped,
+    /// Not the measured dialog: the question, the footer or exactly one
+    /// selected row is missing, or the dialog is one only the pane answers.
+    ShapeUnrecognised,
+}
+impl Miss {
+    fn word(self) -> &'static str {
+        match self {
+            Miss::LabelNotFound => "label_not_found",
+            Miss::LabelWrapped => "label_wrapped",
+            Miss::ShapeUnrecognised => "shape_unrecognised",
+        }
+    }
+}
+
+/// The row an answer selects: its label and, for an option, its
+/// description, which Claude Code draws under the label.
+fn dialog_target(dialog: &api::Dialog, response: &api::DialogAnswer) -> Option<(String, String)> {
+    let row = |label: &str| Some((label.to_string(), String::new()));
     match (&dialog.content, response) {
         (api::DialogContent::Questions { questions }, answer) if dialog_answerable(questions) => {
             match answer {
-                api::DialogAnswer::Choice { index } => {
-                    questions[0].options.get(*index).map(|o| o.label.clone())
-                }
+                api::DialogAnswer::Choice { index } => questions[0]
+                    .options
+                    .get(*index)
+                    .map(|o| (o.label.clone(), o.description.clone())),
                 api::DialogAnswer::Text { text }
                     if !text.contains(['\n', '\r'])
                         && text.len() <= 1000
                         && mesimon_core::command::sanitize_prompt(text).as_deref()
                             == Some(text.as_str()) =>
                 {
-                    Some("Type something.".into())
+                    row("Type something.")
                 }
-                api::DialogAnswer::Reject => Some(String::new()),
+                api::DialogAnswer::Reject => row(""),
                 _ => None,
             }
         }
         (api::DialogContent::Plan { .. }, api::DialogAnswer::Accept) => {
-            Some("Yes, manually approve edits".into())
+            row("Yes, manually approve edits")
         }
-        (api::DialogContent::Plan { .. }, api::DialogAnswer::Reject) => Some(String::new()),
+        (api::DialogContent::Plan { .. }, api::DialogAnswer::Reject) => row(""),
         _ => None,
     }
 }
 
-/// Recognize only measured native menus. Missing/wrapped/ambiguous selection,
-/// multi-question and MCP forms yield no action. This does not infer success.
+/// Text with every whitespace run removed: a label Claude Code wrapped, at a
+/// space or inside a word, reads the same once its rows are joined.
+fn squeeze(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Whether `screen` shows the measured native dialog: the question and its
+/// footer, or the plan menu.
+fn dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
+    let screen = squeeze(screen);
+    match &dialog.content {
+        api::DialogContent::Questions { questions } => {
+            let question = questions.first().map(|q| squeeze(&q.question)).unwrap_or_default();
+            !question.is_empty()
+                && screen.contains(&question)
+                && screen.contains("Entertoselect")
+                && screen.contains("Esctocancel")
+        }
+        api::DialogContent::Plan { .. } => {
+            screen.contains("Wouldyouliketoproceed?")
+                && screen.contains("Yes,manuallyapproveedits")
+                && screen.contains("TellClaudewhattochange")
+        }
+    }
+}
+
+/// One numbered row of a dialog, with the lines under it joined on.
+struct Row {
+    number: usize,
+    selected: bool,
+    text: String,
+}
+
+/// The dialog's options (T-567): the numbered rows from its last `1.` down
+/// to the footer, numbered one by one. A line under a row that is neither
+/// numbered, the footer nor a rule is the rest of that row: a wrapped label,
+/// or the description drawn under it. `None` when the numbering skips.
+fn dialog_rows(screen: &str) -> Option<Vec<Row>> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let footer = lines.iter().rposition(|l| l.contains("Enter to select")).unwrap_or(lines.len());
+    let mut rows: Vec<Row> = Vec::new();
+    let mut open = false;
+    for line in &lines[..footer] {
+        let line = line.trim();
+        let (selected, rest) = line.strip_prefix('❯').map_or((false, line), |s| (true, s.trim()));
+        let numbered = rest
+            .split_once(". ")
+            .and_then(|(n, label)| n.parse::<usize>().ok().map(|n| (n, label.trim())));
+        if let Some((number, label)) = numbered {
+            rows.push(Row { number, selected, text: label.to_string() });
+            open = true;
+        } else if line.chars().all(|c| ('\u{2500}'..='\u{257f}').contains(&c)) {
+            open = false;
+        } else if let (true, Some(row)) = (open, rows.last_mut()) {
+            row.text.push(' ');
+            row.text.push_str(line);
+        }
+    }
+    let first = rows.iter().rposition(|r| r.number == 1)?;
+    let rows = rows.split_off(first);
+    rows.iter().enumerate().all(|(i, r)| r.number == i + 1).then_some(rows)
+}
+
+/// Why no row reads as `want`: wrapped when a row starts with `want`, or
+/// `want` starts with the row up to where the pane cut it (`…`).
+fn label_miss(rows: &[Row], want: &str) -> Miss {
+    let want = squeeze(want);
+    let wrapped = rows.iter().any(|r| {
+        let row = squeeze(&r.text);
+        let head = row.split('…').next().unwrap_or_default();
+        !head.is_empty() && (row.starts_with(&want) || want.starts_with(head))
+    });
+    if wrapped {
+        Miss::LabelWrapped
+    } else {
+        Miss::LabelNotFound
+    }
+}
+
+/// Recognize only measured native menus, reading the whole dialog (T-567).
+/// A row reads as an option when, wrapping aside, it is the option's label,
+/// or its label and then its description. Missing, ambiguous or several
+/// selections, multi-select, several questions and MCP forms yield no key.
+/// This never infers success: only the hook edge does.
 fn dialog_step(
     dialog: &api::Dialog,
     response: &api::DialogAnswer,
     screen: &str,
     pasted: bool,
-) -> Option<DialogStep> {
-    let target = dialog_target(dialog, response)?;
-    let normalized = screen.split_whitespace().collect::<Vec<_>>().join(" ");
-    match &dialog.content {
-        api::DialogContent::Questions { questions } => {
-            let question = questions[0].question.split_whitespace().collect::<Vec<_>>().join(" ");
-            if question.is_empty()
-                || !normalized.contains(&question)
-                || !normalized.contains("Enter to select")
-                || !normalized.contains("Esc to cancel")
-            {
-                return None;
-            }
-        }
-        api::DialogContent::Plan { .. } => {
-            if !normalized.contains("Would you like to proceed?")
-                || !normalized.contains("Yes, manually approve edits")
-                || !normalized.contains("Tell Claude what to change")
-            {
-                return None;
-            }
-        }
+) -> Result<DialogStep, Miss> {
+    let (label, description) = dialog_target(dialog, response).ok_or(Miss::ShapeUnrecognised)?;
+    if !dialog_shape(dialog, screen) {
+        return Err(Miss::ShapeUnrecognised);
     }
-    let mut selected = None;
-    let mut options = Vec::new();
-    for line in screen.lines() {
-        let line = line.trim();
-        let (active, line) = line.strip_prefix('❯').map_or((false, line), |s| (true, s.trim()));
-        let Some((number, label)) = line.split_once(". ") else { continue };
-        let Ok(number) = number.parse::<usize>() else { continue };
-        if active {
-            if selected.is_some() {
-                return None;
-            }
-            selected = Some((number, label.trim()));
-        }
-        options.push((number, label.trim()));
-    }
-    let (current, label) = selected?;
+    let rows = dialog_rows(screen).ok_or(Miss::ShapeUnrecognised)?;
+    let mut selected = rows.iter().filter(|r| r.selected);
+    let (Some(current), None) = (selected.next(), selected.next()) else {
+        return Err(Miss::ShapeUnrecognised);
+    };
     if matches!(response, api::DialogAnswer::Reject) {
-        return Some(DialogStep::Reject);
+        return Ok(DialogStep::Reject);
     }
-    if let api::DialogAnswer::Text { text } = response {
-        if pasted {
-            return (label == text).then_some(DialogStep::Submit);
+    if let (api::DialogAnswer::Text { text }, true) = (response, pasted) {
+        // Never Enter on a row that does not read the pasted text: on the
+        // empty field it would decline the question instead.
+        return if squeeze(&current.text) == squeeze(text) {
+            Ok(DialogStep::Submit)
+        } else {
+            Err(label_miss(std::slice::from_ref(current), text))
+        };
+    }
+    let (bare, described) = (squeeze(&label), squeeze(&format!("{label}{description}")));
+    let reads = |r: &&Row| {
+        let row = squeeze(&r.text);
+        row == bare || (!description.is_empty() && row == described)
+    };
+    let mut targets = rows.iter().filter(reads);
+    let (Some(target), None) = (targets.next(), targets.next()) else {
+        return Err(label_miss(&rows, &label));
+    };
+    match current.number.cmp(&target.number) {
+        std::cmp::Ordering::Less => Ok(DialogStep::Down),
+        std::cmp::Ordering::Greater => Ok(DialogStep::Up),
+        std::cmp::Ordering::Equal => match response {
+            api::DialogAnswer::Text { text } => Ok(DialogStep::Paste(text.clone())),
+            _ => Ok(DialogStep::Submit),
+        },
+    }
+}
+
+/// Whether this hook frame ends `dialog` (T-567), and how: its own tool's
+/// `PostToolUse` says it took an answer; another tool's `PreToolUse` says it
+/// is gone with none taken, the refusal road (T-447). Nothing else does.
+fn dialog_edge(frame: &HookFrame, dialog: &api::Dialog) -> Option<DialogEdge> {
+    let tool = match dialog.content {
+        api::DialogContent::Questions { .. } => "AskUserQuestion",
+        api::DialogContent::Plan { .. } => "ExitPlanMode",
+    };
+    let name = frame.payload["tool_name"].as_str();
+    let call = frame.payload["tool_use_id"].as_str();
+    match frame.event.as_str() {
+        "PostToolUse" if name == Some(tool) && call.is_none_or(|c| c == dialog.request) => {
+            Some(DialogEdge::Answered)
         }
-    }
-    let targets: Vec<_> = options.iter().filter(|(_, label)| *label == target).collect();
-    if targets.len() != 1 {
-        return None;
-    }
-    let (number, _) = targets[0];
-    if current < *number {
-        return Some(DialogStep::Down);
-    }
-    if current > *number {
-        return Some(DialogStep::Up);
-    }
-    match response {
-        api::DialogAnswer::Text { text } => Some(DialogStep::Paste(text.clone())),
-        _ => Some(DialogStep::Submit),
+        "PreToolUse" if name != Some(tool) || call.is_some_and(|c| c != dialog.request) => {
+            Some(DialogEdge::Dismissed)
+        }
+        _ => None,
     }
 }
 
@@ -2550,26 +2760,32 @@ mod tests {
         let screen = "Which color?\n❯ 1. Blue\n  2. Green\n  3. Type something.\nEnter to select · Esc to cancel";
         assert_eq!(
             dialog_step(&dialog, &api::DialogAnswer::Choice { index: 1 }, screen, false),
-            Some(DialogStep::Down)
+            Ok(DialogStep::Down)
         );
         let selected = screen.replace("❯ 1.", "  1.").replace("  2.", "❯ 2.");
         assert_eq!(
             dialog_step(&dialog, &api::DialogAnswer::Choice { index: 1 }, &selected, false),
-            Some(DialogStep::Submit)
+            Ok(DialogStep::Submit)
         );
         assert_eq!(
             dialog_step(&dialog, &api::DialogAnswer::Choice { index: 8 }, screen, false),
-            None
+            Err(Miss::ShapeUnrecognised)
         );
-        assert_eq!(dialog_step(&dialog, &api::DialogAnswer::Accept, screen, false), None);
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Accept, screen, false),
+            Err(Miss::ShapeUnrecognised)
+        );
         for bad in [
             "ordinary composer",
             "Which color?\n❯ 1. Blue\nEnter to select",
             "Which color?\n❯ 1. Blue\n❯ 2. Green\nEnter to select · Esc to cancel",
+            "Which color?\n  1. Blue\n  2. Green\nEnter to select · Esc to cancel",
+            "Which color?\n❯ 1. Blue\n  3. Green\nEnter to select · Esc to cancel",
         ] {
             assert_eq!(
                 dialog_step(&dialog, &api::DialogAnswer::Choice { index: 0 }, bad, false),
-                None
+                Err(Miss::ShapeUnrecognised),
+                "{bad}"
             );
         }
         let mut multiple = dialog.clone();
@@ -2578,7 +2794,15 @@ mod tests {
         }
         assert_eq!(
             dialog_step(&multiple, &api::DialogAnswer::Choice { index: 0 }, screen, false),
-            None
+            Err(Miss::ShapeUnrecognised)
+        );
+        let mut several = dialog.clone();
+        if let api::DialogContent::Questions { questions } = &mut several.content {
+            questions.push(questions[0].clone());
+        }
+        assert_eq!(
+            dialog_step(&several, &api::DialogAnswer::Choice { index: 0 }, screen, false),
+            Err(Miss::ShapeUnrecognised)
         );
     }
 
@@ -2589,20 +2813,34 @@ mod tests {
         let screen = "Which color?\n  1. Blue\n  2. Green\n❯ 3. Type something.\nEnter to select · Esc to cancel";
         assert_eq!(
             dialog_step(&dialog, &answer, screen, false),
-            Some(DialogStep::Paste("Purple".into()))
+            Ok(DialogStep::Paste("Purple".into()))
         );
         assert_eq!(
             dialog_step(&dialog, &answer, screen, true),
-            None,
+            Err(Miss::LabelNotFound),
             "never Enter on an empty text row"
         );
         assert_eq!(
             dialog_step(&dialog, &answer, &screen.replace("Type something.", "Purple"), true),
-            Some(DialogStep::Submit)
+            Ok(DialogStep::Submit)
+        );
+        assert_eq!(
+            dialog_step(&dialog, &answer, &screen.replace("Type something.", "Purp"), true),
+            Err(Miss::LabelWrapped)
         );
         assert_eq!(
             dialog_step(&dialog, &api::DialogAnswer::Text { text: "a\nb".into() }, screen, false),
-            None
+            Err(Miss::ShapeUnrecognised)
+        );
+        // A long answer wraps in the row it was pasted into, and still reads.
+        let long = "a long answer that the pane wraps onto a second row of the dialog";
+        let wrapped = screen.replace(
+            "Type something.",
+            "a long answer that the pane wraps onto a\n     second row of the dialog",
+        );
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Text { text: long.into() }, &wrapped, true),
+            Ok(DialogStep::Submit)
         );
     }
 
@@ -2612,16 +2850,159 @@ mod tests {
             request: "p".into(),
             content: api::DialogContent::Plan { markdown: "plan".into() },
         };
-        let screen = "Would you like to\n proceed?\n❯ 1. Yes, auto-accept edits\n  2. Yes, manually approve edits\n  3. Tell Claude what to change";
+        let screen = "1. Read the code\n2. Write the code\nWould you like to\n proceed?\n❯ 1. Yes, auto-accept edits\n  2. Yes, manually approve edits\n  3. Tell Claude what to change";
         assert_eq!(
             dialog_step(&dialog, &api::DialogAnswer::Accept, screen, false),
-            Some(DialogStep::Down)
+            Ok(DialogStep::Down)
         );
         assert_eq!(
             dialog_step(&dialog, &api::DialogAnswer::Reject, screen, false),
-            Some(DialogStep::Reject)
+            Ok(DialogStep::Reject)
         );
-        assert_eq!(dialog_step(&dialog, &api::DialogAnswer::Reject, "❯ composer", false), None);
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Reject, "❯ composer", false),
+            Err(Miss::ShapeUnrecognised)
+        );
+    }
+
+    /// The friend's dialog (T-567): labels long enough to wrap, each with its
+    /// description under it, a rule and a fourth row, then the footer.
+    fn wrapped() -> (api::Dialog, &'static str) {
+        let option = |label: &str, description: &str| api::QuestionOption {
+            label: label.into(),
+            description: description.into(),
+        };
+        let dialog = api::Dialog {
+            request: "tool-2".into(),
+            content: api::DialogContent::Questions {
+                questions: vec![api::Question {
+                    question: "Which way should the daemon confirm an answer it typed into a dialog for a phone?".into(),
+                    header: "Confirm".into(),
+                    multi_select: false,
+                    options: vec![
+                        option("Watch the hook edge for the record leaving RequiresAction, then reply", "The receipt waits for the agent."),
+                        option("Reply the moment tmux accepts the Enter key", "Faster, and says nothing."),
+                    ],
+                }],
+            },
+        };
+        let screen = "\
+ ☐ Confirm
+Which way should the daemon confirm an answer it typed into a dialog for a
+phone?
+  1. Watch the hook edge for the record leaving RequiresAction, then
+     reply
+     The receipt waits for the agent.
+❯ 2. Reply the moment tmux accepts the Enter key
+     Faster, and says nothing.
+  3. Type something.
+────────────────────────────────────────
+  4. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel";
+        (dialog, screen)
+    }
+
+    #[test]
+    fn a_wrapped_label_reads_whole_with_or_without_its_description() {
+        let (dialog, screen) = wrapped();
+        let first = api::DialogAnswer::Choice { index: 0 };
+        assert_eq!(dialog_step(&dialog, &first, screen, false), Ok(DialogStep::Up));
+        let on_first = screen.replace("❯ 2.", "  2.").replace("  1. Watch", "❯ 1. Watch");
+        assert_eq!(dialog_step(&dialog, &first, &on_first, false), Ok(DialogStep::Submit));
+        // A word cut where the pane ran out of columns still reads.
+        let broken =
+            screen.replace("RequiresAction, then\n     reply", "Requires\n     Action, then reply");
+        assert_eq!(dialog_step(&dialog, &first, &broken, false), Ok(DialogStep::Up));
+        // Without the descriptions drawn, the labels alone read.
+        let bare = screen
+            .lines()
+            .filter(|l| !l.contains("The receipt") && !l.contains("Faster"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(dialog_step(&dialog, &first, &bare, false), Ok(DialogStep::Up));
+        // A label cut short is named as such, and a missing one as missing.
+        let cut = screen.replace("RequiresAction, then\n     reply", "Requi…");
+        assert_eq!(dialog_step(&dialog, &first, &cut, false), Err(Miss::LabelWrapped));
+        let gone = screen.replace("Watch the hook edge", "Poll the pane");
+        assert_eq!(dialog_step(&dialog, &first, &gone, false), Err(Miss::LabelNotFound));
+    }
+
+    #[test]
+    fn a_long_dialog_is_read_from_its_own_first_row_to_its_footer() {
+        let mut dialog = question();
+        let labels = ["Blue", "Green", "Red", "Amber", "Teal", "Violet", "Grey", "Black"];
+        if let api::DialogContent::Questions { questions } = &mut dialog.content {
+            questions[0].options = labels
+                .iter()
+                .map(|l| api::QuestionOption {
+                    label: (*l).into(),
+                    description: format!("{l} paint"),
+                })
+                .collect();
+        }
+        // The agent's own numbered list sits above the dialog with the same
+        // words, and more than fifty lines of its answer before that.
+        let mut screen: Vec<String> = (0..60).map(|i| format!("earlier output {i}")).collect();
+        screen.push("1. Blue".into());
+        screen.push("❯ 2. Black".into());
+        screen.push("Which color?".into());
+        for (i, l) in labels.iter().enumerate() {
+            let mark = if i == 0 { "❯" } else { " " };
+            screen.push(format!("{mark} {}. {l}", i + 1));
+            screen.push(format!("     {l} paint"));
+        }
+        screen.push("  9. Type something.".into());
+        screen.push("Enter to select · ↑/↓ to navigate · Esc to cancel".into());
+        let screen = screen.join("\n");
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 7 }, &screen, false),
+            Ok(DialogStep::Down)
+        );
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 0 }, &screen, false),
+            Ok(DialogStep::Submit)
+        );
+    }
+
+    #[test]
+    fn only_the_dialog_s_own_hook_edge_ends_it() {
+        let dialog = question();
+        let frame = |event: &str, payload: serde_json::Value| HookFrame {
+            session: "s".into(),
+            event: event.into(),
+            reason: None,
+            pane: None,
+            payload,
+        };
+        let ask = |id: &str| serde_json::json!({"tool_name": "AskUserQuestion", "tool_use_id": id});
+        assert_eq!(
+            dialog_edge(&frame("PostToolUse", ask("tool-1")), &dialog),
+            Some(DialogEdge::Answered)
+        );
+        assert_eq!(
+            dialog_edge(
+                &frame("PostToolUse", serde_json::json!({"tool_name": "AskUserQuestion"})),
+                &dialog
+            ),
+            Some(DialogEdge::Answered)
+        );
+        assert_eq!(dialog_edge(&frame("PostToolUse", ask("tool-0")), &dialog), None);
+        assert_eq!(
+            dialog_edge(&frame("PostToolUse", serde_json::json!({"tool_name": "Read"})), &dialog),
+            None
+        );
+        // The next tool says the dialog is gone; the dialog's own repeat does not.
+        assert_eq!(
+            dialog_edge(
+                &frame("PreToolUse", serde_json::json!({"tool_name": "Bash", "tool_use_id": "t"})),
+                &dialog
+            ),
+            Some(DialogEdge::Dismissed)
+        );
+        assert_eq!(dialog_edge(&frame("PreToolUse", ask("tool-1")), &dialog), None);
+        assert_eq!(dialog_edge(&frame("PermissionRequest", ask("tool-1")), &dialog), None);
+        assert_eq!(dialog_edge(&frame("PostToolUseFailure", ask("tool-1")), &dialog), None);
+        assert_eq!(dialog_edge(&frame("Stop", serde_json::json!({})), &dialog), None);
     }
 
     /// A phone sees a ticket's tags in the TUI's tints, and a pickup only on
@@ -2750,7 +3131,7 @@ mod tests {
         control
             .starts
             .insert(ulid::Ulid(1), StartWait { grant, device, command: 5, session: None });
-        control.remember(grant, 5, Reply::Delivery { status: "starting".into() });
+        control.remember(grant, 5, Reply::delivery("starting"));
         for id in 6..400 {
             control.remember(grant, id, Reply::Changed);
         }

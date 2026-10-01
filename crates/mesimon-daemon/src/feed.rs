@@ -129,6 +129,23 @@ impl FeedWriter {
         }));
     }
 
+    /// One board mutation and how it ended, in one word (T-567).
+    pub fn board_outcome(
+        &mut self,
+        actor: &str,
+        cmd: &str,
+        ticket: Option<ulid::Ulid>,
+        outcome: &str,
+    ) {
+        self.push(json!({
+            "kind": "board",
+            "actor": actor,
+            "cmd": cmd,
+            "ticket": ticket,
+            "outcome": outcome,
+        }));
+    }
+
     /// ≤1 `write()` per call; rotates by size afterwards, off the hot path.
     pub fn flush(&mut self) -> Result<()> {
         if self.pending.is_empty() {
@@ -187,6 +204,18 @@ mod tests {
         w.flush().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 2);
+    }
+
+    #[test]
+    fn a_board_line_names_its_outcome() {
+        let path = tmp("outcome");
+        let mut w = FeedWriter::open(&path).unwrap();
+        w.board_outcome("paired", "mesophon_dialog_answer", None, "input_sent");
+        w.flush().unwrap();
+        let v: Value =
+            serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
+        assert_eq!(v["cmd"], "mesophon_dialog_answer");
+        assert_eq!(v["outcome"], "input_sent");
     }
 
     #[test]

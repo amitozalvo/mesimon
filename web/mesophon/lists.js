@@ -7,6 +7,7 @@ import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { answerable, requestSummary } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
+import { receiptTick } from "./sessions.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 export const lastSeen = (board) => (board?.receivedAt ? clock(board.receivedAt) : "");
@@ -150,6 +151,7 @@ function NeedCard({ store, ticket, board, live }) {
   const send = (body) => store.sendInteraction({ ...body, ticket: ticket.id, session }, entry);
   const question = answerable(dialog) ? dialog.questions[0] : undefined;
   const expired = permission && Date.now() >= permission.expires_at;
+  const tick = receiptTick(entry?.receipt?.status);
   return html`<article class="need">
     <button type="button" class="ticket need-open" data-id=${ticket.id} aria-pressed=${String(pressed)}
       onClick=${() => store.select(ticket.id)}>
@@ -182,7 +184,7 @@ function NeedCard({ store, ticket, board, live }) {
         : dialog?.kind === "plan" || (dialog && !question)
           ? html`<div class="need-actions"><button type="button" class="btn btn-attn" onClick=${() => store.select(ticket.id)}>${dialog.kind === "plan" ? "Review plan" : "Answer in the ticket"}</button></div>`
           : null}
-    ${entry?.delivery && html`<p class="need-delivery" role="status">${entry.delivery}</p>`}
+    ${entry?.delivery && html`<p class="need-delivery" role="status">${tick && html`<${Tick} state=${tick} />`}<span>${entry.delivery}</span></p>`}
   </article>`;
 }
 

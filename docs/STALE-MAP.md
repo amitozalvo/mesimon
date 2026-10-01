@@ -17431,3 +17431,69 @@ one question shows its reason, words, options, request and `answerable`, `list_b
 field, `ask_agent` is refused with the words and queues nothing, a two-question
 `PermissionRequest` counts and is not answerable, and after `PostToolUse` the field is gone and
 the ask goes through.
+
+## A phone's question answer is confirmed by the hook edge (T-567, 2026-10-02, "Remote Control's question answer is confirmed by the hook edge, keeps the retry, and reads wrapped labels": "The pane never took the answer; the board stayed at `needs you`; the phone's question card was gone")
+
+**The bug.** A friend answered an `AskUserQuestion` from Remote Control and saw two ticks and
+"Answer keys sent". The pane never took it, the board stayed at needs-you, and the card was
+gone. `control_deliver_dialogs` replied `input_sent` the moment tmux accepted the Enter, and
+removed the projection on every terminal outcome, so a wrong answer looked delivered and a
+failed one could not be tried again.
+
+**`answered` is a receipt only the hook edge gives.** After the last key (Enter, or Escape for a
+refusal) the delivery keeps its `awaiting_delivery` receipt and waits `DIALOG_CONFIRM` (5 s) for
+an edge. `control_observe_dialog` records one per session in `Control::dialog_edges`, and
+`control_dialog_edge(session, request)` is the watcher: it takes a session and a request id and
+nothing about a grant, so the crown's answer can reuse it with `dialog_step`. Two frames end a
+projected dialog (`dialog_edge`): its own tool's `PostToolUse` (`Answered`, matched by
+`tool_use_id` when the frame carries one) and another tool's `PreToolUse` (`Dismissed`, the
+T-447 refusal road), which now also removes the projection. `Answered`, or `Dismissed` after a
+refusal, settles `answered` (two ticks, "Answered."). Anything else past the window settles
+`input_sent` (one tick, "Keys sent, not confirmed · check the pane"). An Escape on a question
+or a plan interrupts the turn and fires no hook, so a refusal usually ends at `input_sent`; that
+is the truth of what the daemon knows.
+
+**`unknown` keeps the retry and names the cause.** `Reply::Delivery` gained an optional
+`reason`: `label_not_found`, `label_wrapped`, `shape_unrecognised`, `deadline`, `state_changed`,
+and `pane_unreachable` for a tmux key that failed, with `; cursor moved` once arrow keys had
+gone in (never undone). `control_settle_dialog` is every outcome's one exit: the receipt, the
+feed line (`mesophon_dialog_answer` now carries `outcome`, via `FeedWriter::board_outcome`), and
+the projection, which stays when the session still waits on a question or plan, the request is
+unchanged and a fresh capture still shows the dialog. A newer dialog's projection is never
+removed by an older delivery's settle (the old code removed whatever was there).
+
+**The matcher reads the whole dialog.** It captures the pane's whole visible screen
+(`MAX_PANE_TAIL_LINES`; `capture_tail_sized` reads no scrollback), and `dialog_rows` takes the
+numbered rows from the last `1.` to the footer, numbered one by one, so an agent's own numbered
+list above the dialog cannot pose as options. A line under a row that is not numbered, the
+footer or a box-drawing rule is the rest of that row. Matching compares with every whitespace
+run removed (`squeeze`), so a label Claude Code wrapped at a space or inside a word reads the
+same, and a row reads as an option when it is the label, or the label then its description,
+which Claude Code draws under the label. `label_wrapped` is a row that starts with the label or
+that the label starts with up to a `…`. The refusals stand: two `❯` or none, multi-select,
+several questions, a pasted text row not reading the text, an unverified shape.
+
+**The browser.** `sessions.js` owns `receiptTick`, which the ticket page and the Now card both
+draw: `answered` is two ticks, `input_sent` is now one (it was two), and `unknown` with a reason
+reads "Could not answer: <words> · try again or answer in the pane" and leaves the buttons
+live. An older page reading `answered` falls back to "Delivery unknown"; `ci/check-relay.sh`
+counts `web/mesophon` as relay input, so the page ships before any host sends the word, and
+nothing new is advertised.
+
+**Refuted: the record's state as the confirmation.** The brief described the record leaving
+`RequiresAction{Question}`; the record leaves only after the 1.5 s settle, and it can leave on
+an inferred signal (transcript tail, pane quiet). The frame is the hook edge itself, with no
+settle and no inference. **Refuted: the screen as the confirmation** (the dialog gone from the
+capture): a person at the desk, a repaint or a scroll clears it as well.
+
+**Tests.** Daemon units: wrapped labels with descriptions, a mid-word break, labels without
+descriptions, a cut label (`label_wrapped`), a missing one (`label_not_found`), a long
+eight-option dialog under sixty lines of output and a decoy numbered list, a wrapped pasted
+answer, every old refusal, and `only_the_dialog_s_own_hook_edge_ends_it`. Relay acceptance
+`a_dialog_answer_is_confirmed_by_the_hook_edge_and_keeps_its_retry` (branch
+`msmn/T-567-remote-control-s-question-answer` in `mesimon-relay`): a Python pane draws the
+question and walks its selection; the answer walks to Green and settles `answered` only after
+the test's `PostToolUse`; an ignored Enter settles `input_sent` with the question still
+projected; a pane without the label settles `unknown`/`label_not_found` with no key typed; the
+retry of that same request then lands. `state.test.js` and `ux.test.js` cover the three
+renderings and the live buttons.

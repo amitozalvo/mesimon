@@ -7,15 +7,7 @@ import { Shin } from "./shin.js";
 import { Attention } from "./dialogs.js";
 import { StartButton, StartReceipt, Tags, stateAge } from "./lists.js";
 import { NotesCard, NoteReader } from "./notepad.js";
-
-const receiptTick = (status) =>
-  status === "awaiting_delivery"
-    ? "clock"
-    : status === "queued"
-      ? "one"
-      : ["submitted", "decision_sent", "input_sent"].includes(status)
-        ? "two"
-        : null;
+import { receiptTick } from "./sessions.js";
 
 // The pane's width in cells, for drawing its lines as the screen they came
 // from (T-506). An older host names none: the longest line stands in, which

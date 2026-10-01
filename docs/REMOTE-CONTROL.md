@@ -153,8 +153,28 @@ before they offer remote approvals.
 Single-choice questions, single-line free-text answers, and plan accept/reject
 use verified native dialog selections. Plans are accepted with manual edit
 approval. Unrecognized, multiple-question, and multi-select forms require a local
-answer; uncertain delivery is never retried automatically. “Decision sent” and
-“Answer keys sent” confirm transport, not tool execution or completion.
+answer. An answer is never retried automatically, and keys already typed are
+never undone.
+
+An answer's receipt says how far it got:
+
+- **A clock, "Sending…"**: your terminal is choosing and typing the keys.
+- **Two ticks, "Answered."**: the agent reported that its dialog took the
+  answer. Only the agent's own report shows two ticks.
+- **One tick, "Keys sent, not confirmed · check the pane."**: the keys went
+  in, and the agent did not report the dialog closing within five seconds.
+  If the question is still on screen, the card still offers it. Declining a
+  question or rejecting a plan presses Escape, which the agent usually does
+  not report, so it usually ends here.
+- **"Could not answer: … · try again or answer in the pane."**: no key could
+  be chosen, and the reason is named: the option is not on the screen, its
+  text does not read as one row, the screen does not show this question, it
+  took too long, the agent moved on, or the pane did not take the keys.
+  "The selection already moved" means some arrow keys went in first. While
+  the question is on screen, its buttons stay live.
+
+"Decision sent" on a permission confirms transport, not tool execution or
+completion.
 
 ## Notes
 

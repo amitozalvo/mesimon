@@ -410,8 +410,18 @@ pub enum Reply {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cols: Option<u16>,
     },
+    /// Where a command stands. A dialog answer (T-567) waits at
+    /// `awaiting_delivery` until it settles as `answered` (the hook edge said
+    /// the dialog took it), `input_sent` (keys went in and nothing confirmed
+    /// them) or `unknown`, which names its `reason`.
     Delivery {
         status: String,
+        /// Why a dialog answer is `unknown`: `label_not_found`,
+        /// `label_wrapped`, `shape_unrecognised`, `deadline`, `state_changed`
+        /// or `pane_unreachable`, and `; cursor moved` when keys had already
+        /// gone in. Absent everywhere else, and from an older host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     Rejected {
         message: String,
@@ -464,6 +474,13 @@ pub enum Reply {
     },
     Changed,
     Revoked,
+}
+
+impl Reply {
+    /// A `Delivery` receipt with no reason.
+    pub fn delivery(status: &str) -> Self {
+        Reply::Delivery { status: status.into(), reason: None }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
