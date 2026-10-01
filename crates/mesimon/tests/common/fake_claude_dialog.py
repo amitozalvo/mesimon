@@ -25,7 +25,9 @@ it is absent the pane paints Claude's composer and appends each line typed or
 pasted into it to `got.txt`, as the shell stubs do. An answer is written to
 `answered-<ticket>.json` as Claude's `tool_response.answers` reads (question
 to answer), a refusal to `declined-<ticket>`, and the dialog file is removed.
-Every chunk of keys read is appended to `keys-<ticket>`.
+Every chunk of keys read is appended to `keys-<ticket>`. A `banner` file next
+to this one, when there is one, is drawn above everything (the relay's tests
+wait for theirs before they go on).
 """
 import json
 import os
@@ -43,6 +45,14 @@ RULE = "─" * 60
 def append(name, text):
     with open(os.path.join(HERE, name), "a") as f:
         f.write(text)
+
+
+def banner():
+    try:
+        with open(os.path.join(HERE, "banner")) as f:
+            return f.read().splitlines()
+    except OSError:
+        return []
 
 
 def load():
@@ -235,10 +245,11 @@ def main():
             dialog, source = None, None
         elif json.dumps(questions) != source:
             dialog, source = Dialog(questions), json.dumps(questions)
+        top = "\x1b[2J\x1b[H" + "".join(line + "\r\n" for line in banner())
         if dialog:
-            screen = "\x1b[2J\x1b[H" + "\r\n".join(dialog.draw())
+            screen = top + "\r\n".join(dialog.draw())
         else:
-            screen = "\x1b[2J\x1b[999;1H\x1b[3A" + "\r\n".join(
+            screen = top + "\x1b[999;1H\x1b[3A" + "\r\n".join(
                 [RULE, "❯ " + typed, RULE, "  ? for shortcuts"])
         if screen != drawn:
             sys.stdout.write(screen)
