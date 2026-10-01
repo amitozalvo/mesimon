@@ -213,7 +213,10 @@ starting off. A sleeping agent still holds its seat until its ticket is archived
 crown started can never be crowned itself. Crowning types nothing into the agent's conversation: the crowned agent learns
 it through its tools. When an agent it started delivers, answers what it asked, or raises its
 hand, one sentence saying so is pasted into the crown's session. So is the merge of that agent's
-worktree branch, whether `m`, the merge train or your own `git merge` made it.
+worktree branch, whether `m`, the merge train or your own `git merge` made it. The crown is told
+this when it reads its own ticket and in every `start_agent` and `ask_agent` receipt, so it has
+nothing to poll: a background monitor it runs makes its session read as busy, and the wake waits
+until the monitor ends.
 
 ## Sleeping idle agents
 

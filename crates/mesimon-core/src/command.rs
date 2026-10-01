@@ -1686,6 +1686,11 @@ pub struct AgentTicketView {
     /// explicitly: an absent key would leave the model guessing.
     #[serde(default)]
     pub crowned: bool,
+    /// On the crowned ticket only (T-537): how the board wakes its agent
+    /// (`mcp::CROWN_WAKES`), so a crown learns it on its first read and not
+    /// from a monitor of its own. Absent everywhere else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crown: Option<String>,
     /// The card's words about the ticket's agent (T-411): the state the
     /// board shows, never the pane. Absent when the ticket has no agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2497,6 +2502,7 @@ mod tests {
             description: None,
             notes: vec![],
             crowned: false,
+            crown: None,
             state: None,
             seen: None,
         };

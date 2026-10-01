@@ -61,6 +61,21 @@ pub const HANDLED_METHODS: [&str; 5] =
 
 // ---------------------------------------------------------------- tool text
 
+/// What a crowned agent is told about the board's wake (T-414, T-537), in
+/// the `start_agent` and `ask_agent` receipts and on its own `get_ticket`
+/// view: transient result data, never tool text, so it may instruct. It is
+/// said where the crown would otherwise go looking — a crown on another
+/// board armed a git monitor to learn what its workers did, not knowing the
+/// board would tell it, and that monitor made it read as busy, which held
+/// the very wake it was waiting for (`session_idle`).
+pub const CROWN_WAKES: &str = "The board wakes this session on its own: when an agent the crown \
+                               started delivers, is merged, answers the crown's ask or raises \
+                               its hand, one sentence naming the ticket and what changed arrives \
+                               as this session's next prompt, once it is idle. Nothing needs \
+                               polling. A background task or monitor left running makes this \
+                               session read as busy, and the wake and every queued word wait \
+                               until it ends.";
+
 /// Words that turn a description into an instruction. Tool text is injected
 /// into every request; it may describe, and it may not tell the model what to
 /// do or address it directly.
@@ -417,19 +432,20 @@ pub fn tools() -> Vec<Value> {
         // behind the board's spawn budget and the one-agent-per-ticket rule.
         json!({
             "name": "start_agent",
-            "description": "Starts the board's agent on another mesimon ticket (crown only), \
-                            as the person's Shift+Enter does: the title and description are \
-                            its first prompt. Refused, as an error, on a ticket that already \
-                            has an agent, on this session's own ticket, and past the board's \
-                            budget for crown-started agents. The receipt's status is started, \
-                            or waiting_for_worktree while its worktree is cut (it then starts \
-                            by itself); budget_left is the starts left.",
+            "description": "Starts the board's agent on another mesimon ticket (crown only): \
+                            the title and description are its first prompt. Refused, as an \
+                            error, on a ticket that has an agent, on this session's own \
+                            ticket, and past the crown's budget. The receipt's status is \
+                            started, or waiting_for_worktree until its worktree is cut; \
+                            budget_left is the starts left. The board then wakes this session \
+                            when that agent delivers, merges, answers or raises its hand, so \
+                            nothing is polled.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The ticket's key, from list_board." },
-                    "seen": { "type": "string", "description": "get_ticket's seen stamp for this ticket." },
-                    "plan": { "type": "boolean", "description": "Optional. True starts it in plan mode." },
+                    "seen": { "type": "string", "description": "get_ticket's seen stamp." },
+                    "plan": { "type": "boolean", "description": "Optional. True: plan mode." },
                 },
                 "required": ["key", "seen"],
                 "additionalProperties": false,
@@ -444,15 +460,16 @@ pub fn tools() -> Vec<Value> {
                             They wait on that ticket's card, marked as this agent's, until \
                             a person sends them (^y) or takes them back (^u); nothing \
                             reaches the agent before that. One ask per ticket: a second \
-                            replaces the first. Refused on a ticket with no agent, and on \
-                            this session's own ticket.",
+                            replaces the first. Refused on a ticket with no agent and on this \
+                            session's own ticket. The turn that takes them wakes this session \
+                            when it ends.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The ticket's key, from list_board." },
-                    "text": { "type": "string", "description": "The words, as a person would type them." },
-                    "seen": { "type": "string", "description": "get_ticket's seen stamp for this ticket." },
-                    "plan": { "type": "boolean", "description": "Optional. True runs the turn in plan mode." },
+                    "text": { "type": "string", "description": "The words, as a person types them." },
+                    "seen": { "type": "string", "description": "get_ticket's seen stamp." },
+                    "plan": { "type": "boolean", "description": "Optional. True: plan mode." },
                 },
                 "required": ["key", "text", "seen"],
                 "additionalProperties": false,
@@ -1530,6 +1547,10 @@ mod tests {
                 "get_ticket",
                 vec!["the column names move_ticket accepts and what each column is for"],
             ),
+            // T-537: a crown that is not told the board wakes it goes
+            // looking on its own, with a monitor that holds the wake.
+            ("start_agent", vec!["The board then wakes this session", "so nothing is polled"]),
+            ("ask_agent", vec!["The turn that takes them wakes this session"]),
         ] {
             let tool = registry.iter().find(|t| t["name"] == name).unwrap();
             let description = tool["description"].as_str().unwrap();

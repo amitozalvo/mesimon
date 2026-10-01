@@ -4912,6 +4912,7 @@ impl Daemon {
                 })
                 .collect(),
             crowned: self.board.is_crowned(id),
+            crown: self.board.is_crowned(id).then(|| mesimon_core::mcp::CROWN_WAKES.to_string()),
             state: self.agent_state_view(id),
             seen: Some(self.seen_token(id)),
         })

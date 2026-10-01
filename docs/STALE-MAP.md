@@ -16296,3 +16296,51 @@ Screenshots read by eye at every size.
 **Not verified:** the relay's acceptance tests (they live in `mesimon-relay`; no relay change
 is needed, and the letters are opaque to it), a physical phone, and the hosted relay, which
 serves the page and needs its `ship.sh`. **Owed:** a CHANGELOG line at the next release.
+
+## The crown is told the board wakes it (T-537, 2026-10-01, "better crown instructions": "crown used a git monitor to realize progress without knowing they will receive notifications when tickets they operate finish")
+
+**Seen on simbly.** A crown started workers and armed a git monitor to learn what became of
+them. Nothing had told it about T-414's wake, and the monitor made its session
+`Idle{Background}`, which `session_idle` reads as busy — so the wake it was waiting for was
+held behind the monitor it armed to wait for it, and so was every queued ask for the crown
+(`queued_target_ready` takes the same predicate).
+
+**Shipped.** `mcp::CROWN_WAKES`, one paragraph of transient result data (never tool text, so
+it may instruct): the board wakes this session when an agent the crown started delivers, is
+merged, answers the crown's ask or raises its hand; nothing needs polling; a background task
+or monitor left running reads as busy and holds the wake and every queued word until it
+ends. It rides the `start_agent` receipt and the `ask_agent` receipt as `wakes`, and the
+crowned ticket's own `get_ticket` view as `crown: Option<String>` (`#[serde(default,
+skip_serializing_if)]`, absent on every other ticket — `crowned` is true only on the crown's
+own view, so the words reach the crown alone). The `start_agent` description gained "The board
+then wakes this session when that agent delivers, merges, answers or raises its hand, so
+nothing is polled." and `ask_agent`'s "The turn that takes them wakes this session when it
+ends."; both were trimmed elsewhere to stay under `MAX_TOOL_BYTES` (the `seen`, `plan` and
+`text` field blurbs shortened, "as the person's Shift+Enter does" dropped).
+`docs/USING.md`'s crown section says it.
+
+**Not changed: the delivery road.** The ticket also asks whether the paste is right — "these
+notifications can be disruptive to users talking with the crown agent; a standard monitor may
+be a better option". Assessed, not built, because it is a design change the author owns:
+
+- The disruption is real and specific. `paste_to_ticket` pastes the sentence into the crown's
+  input box and presses Enter. `crown_wake_blocked` knows the AGENT is idle, not whether a
+  PERSON is typing in that box, so a wake can land inside a half-typed prompt and send it.
+- A Claude Code `Monitor` as the road costs four things this code can measure: a monitor makes
+  the session `Idle{Background}`, which `session_idle` reads as busy, so queued asks and the
+  crown's own automove stop while it runs (T-483's park); a monitor expires after at most
+  30 min and the agent must re-arm it, each expiry a turn; a parked crown monitors nothing, so
+  T-414's wake-a-sleeping-crown road dies; and a Codex crown has no such tool. It also needs
+  the agent's cooperation and a new wire subscription plus a `mesimon watch` subcommand, so the
+  daemon knows a watcher is attached and can choose the road.
+- Recommended instead: hold the paste while a person has the crown's pane open — tmux's
+  `#{session_attached}` on the crown's session is the fact — and paste when they leave. The
+  person in the pane is the only one who could be typing; the card's `crown wakes ∙ …` row
+  already shows the wait. Zero new surface, works for Codex and a parked crown, the T-414
+  e2es (no client attached) hold. Cost: a crown chatted with for an hour hears nothing for an
+  hour. A per-board switch is the fallback. A follow-up ticket, on the author's word.
+
+**Tests.** `mcp::ticket_creation_guidance_is_bounded_and_descriptive` pins the two clauses and
+the budget; the shim's `a_start_receipt_says_started_or_waiting_never_false` asserts `wakes`;
+`crown_e2e` asserts `crown` on the crowned own view and its absence on an uncrowned own read
+and on a keyed read of another ticket.

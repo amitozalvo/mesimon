@@ -206,14 +206,20 @@ fn render(resp: Response) -> Value {
         // or the start waits on the worktree cut, and the seats left. A word,
         // not a bool (T-466): every refusal is `isError`, so a `false` here
         // read as "no" when it meant "not yet".
+        // `wakes` (T-537) says the board will tell the crown what became of
+        // the start, so it arms no monitor of its own — which would hold the
+        // wake.
         Response::AgentStarted { key, session_started, budget_left } => text(&json!({
             "key": key,
             "status": if session_started { "started" } else { "waiting_for_worktree" },
-            "budget_left": budget_left
+            "budget_left": budget_left,
+            "wakes": mcp::CROWN_WAKES
         })),
         // The crown's ask (T-413): held on the card until a person sends it.
         Response::AgentAsked { key, replaced, seen } => {
-            let mut body = json!({ "key": key, "replaced": replaced, "held_for_person": true });
+            let mut body = json!({
+                "key": key, "replaced": replaced, "held_for_person": true, "wakes": mcp::CROWN_WAKES
+            });
             if let Some(seen) = seen {
                 body["seen"] = json!(seen);
             }
@@ -468,6 +474,9 @@ mod tests {
         assert_eq!(now["status"], "started");
         assert_eq!(now["key"], "T-7");
         assert_eq!(now["budget_left"], 0);
+        // T-537: the receipt says the board wakes the crown, so it polls nothing.
+        assert_eq!(now["wakes"], mcp::CROWN_WAKES);
+        assert!(mcp::CROWN_WAKES.contains("Nothing needs polling"));
         let parked = body(false);
         assert_eq!(parked["status"], "waiting_for_worktree");
         assert!(parked.get("session_started").is_none(), "no bool to read as a refusal");

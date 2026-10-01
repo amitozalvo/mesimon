@@ -110,6 +110,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // A session may always address its OWN ticket by key, crown or not.
     let own = read(&mut c, sa, &ka).expect("own key");
     assert!(!own.crowned);
+    assert!(own.crown.is_none(), "an uncrowned ticket carries no wake words");
     assert!(own.seen.is_some(), "every read carries a stamp");
     // An unknown key is an answer, not a crown question.
     let unknown = read(&mut c, sa, "T-999").expect_err("no such ticket");
@@ -125,6 +126,8 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert!(c.board().is_crowned(a));
     let own = read(&mut c, sa, &ka).unwrap();
     assert!(own.crowned, "get_ticket says the caller wears it");
+    // T-537: and how the board wakes it, so it arms no monitor of its own.
+    assert_eq!(own.crown.as_deref(), Some(mesimon_core::mcp::CROWN_WAKES));
     match c.send(Principal::Agent { session: sa }, Command::AgentListBoard) {
         Response::AgentBoard { board } => {
             assert_eq!(board.crown.as_deref(), Some(ka.as_str()));
@@ -140,6 +143,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // ---- read another ticket: the card's words and a stamp ------------------
     let view = read(&mut c, sa, &kb).expect("crowned");
     assert!(!view.crowned);
+    assert!(view.crown.is_none(), "the wake's words ride the crowned ticket alone");
     let seen = view.seen.clone().expect("a stamp");
     let state = view.state.expect("B has an agent");
     assert!(!state.state.is_empty());
