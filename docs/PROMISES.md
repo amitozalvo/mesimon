@@ -49,7 +49,11 @@ the workspace of and start an agent on the other tickets, and put an idle agent 
 to sleep, each edit checked against the ticket as the agent last read it and lit on the card
 as it happens. Starts are capped by a per-board budget (Settings → Agents, three by default),
 a ticket the crown started can never itself be crowned, and an agent you started is yours
-alone to sleep. Only you can crown a ticket; an agent that asks for it is told to ask you. `mesimon doctor --mcp` prints the current tool registry verbatim.
+alone to sleep. Words the crown leaves for another ticket's agent wait on that card until you
+send them, unless you turn on *Settings › Agents › Crown sends its asks* (off by default): then
+words for an agent the crown started reach it once it is idle, and an agent you started still
+waits for you. Only you can crown a ticket; an agent that asks for it is told to ask you.
+`mesimon doctor --mcp` prints the current tool registry verbatim.
 
 And there is one line you can choose to add. The *agent brief* is off until you turn it on:
 a seven-line paragraph in the system prompt of the agent sessions mesimon starts in this repo

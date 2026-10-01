@@ -16905,6 +16905,9 @@ sends to one ticket in M minutes holds the next for a person), the day a runaway
 
 **Promise 3.** `docs/PROMISES.md` and the README line are the author's words and are untouched.
 The sentence naming this consented exception is drafted in a note on T-550, awaiting approval.
+**Approved as written (T-557, 2026-10-01):** §3's second paragraph now carries it, after "an
+agent you started is yours alone to sleep"; the README line is unchanged, since the setting
+changes how a tool's result is delivered, not what is shown.
 
 **Tests.** `store`: the scalar round-trips before the tables. `mcp`: the tier table lists
 `SetCrownSends`; the description fits the cap and names `held_for_person`. `command`:
