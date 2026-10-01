@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+
+    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ⠑ Grapheme truncation >1y     z Painted accent bar >1y
+                                                                  T-544 asks ∙ you send
+    Keymap validator      >1y     ⠋ Adopt drawer import >1y       ^y send ∙ ^u take back
+
+                                                                x Flaky e2e on runner >1y
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ T-5 Grapheme truncation ∙ created >1y ago
+ ^y send ∙ ^u take back ∙ enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe            esc menu ∙ ? keys

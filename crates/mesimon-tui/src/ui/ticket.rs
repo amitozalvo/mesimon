@@ -429,8 +429,12 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     if let Some(row) = app.pending_row(ticket.id) {
         let text = if wt_spans.is_empty() { format!(" {row}") } else { format!(" ∙ {row}") };
         wt_spans.push(Span::styled(text, d2));
-        if app.ticket_queued(ticket.id) {
-            wt_spans.push(Span::styled(" ∙ ^y send now ∙ ^u take back", d2));
+        // The send and the take-back beside the words, in the keymap's own
+        // — `^y send` for a held ask (T-551), `send now` for one the queue
+        // would deliver anyway — and only while the keys are live here.
+        let ctx = app.frame_ctx();
+        for b in super::ask_keys(app, &ctx) {
+            wt_spans.push(Span::styled(format!(" ∙ {} {}", b.show, (b.hint)(&ctx)), d2));
         }
     }
     // Tags, spelled out and in FRONT (T-346): the ticket page is where you

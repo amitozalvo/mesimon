@@ -1185,6 +1185,10 @@ pub struct Ctx {
     /// The subject ticket has an ask waiting (not yet pasted): Shift+Enter
     /// reopens the field on it, and a blank Enter there drops it.
     pub ticket_queued: bool,
+    /// That ask is HELD (`Pending::is_held`, T-551): it waits on a person's
+    /// send — the crown's words, or a follow-up a question stopped — and
+    /// nothing delivers it otherwise, so `^y` says `send`, not `send now`.
+    pub ticket_held: bool,
     /// The subject ticket's agent sits on its plan dialog — `≡` on the card
     /// (T-420): Shift+Enter's field opens at `accept plan`, and a blank
     /// Enter there presses the harness's own default on the dialog.
@@ -1592,6 +1596,20 @@ impl MenuItem {
     }
 }
 
+/// `^y`'s word (T-551). `now` is the contrast with the queue's own
+/// delivery — a person's ask goes by itself when the checkout is quiet, and
+/// the key only hurries it. A HELD ask has no later: nothing sends it but
+/// this key, so `send now` would promise a delivery that never comes, and
+/// the card's row under `you send` is 22 cells, which `^y send ∙ ^u take
+/// back` fills exactly.
+fn send_hint(c: &Ctx) -> &'static str {
+    if c.ticket_held {
+        "send"
+    } else {
+        "send now"
+    }
+}
+
 /// The workspace toggle's word on the board and the ticket page (T-309), and
 /// the one place the two screens can agree. It names the DESTINATION — `t`'s
 /// idiom — because the card's mark and the page's state row already say where
@@ -1736,7 +1754,7 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Ctrl('y')],
         verb: Verb::SendQueuedAsk,
         show: "^y",
-        hint: |_| "send now",
+        hint: send_hint,
         avail: |c| c.ticket_queued,
         class: Class::Plain,
         group: Group::Sessions,
@@ -2503,7 +2521,7 @@ static TICKET: &[Binding] = &[
         keys: &[Key::Ctrl('y')],
         verb: Verb::SendQueuedAsk,
         show: "^y",
-        hint: |_| "send now",
+        hint: send_hint,
         avail: |c| c.ticket_queued,
         class: Class::Plain,
         group: Group::Sessions,
@@ -7024,6 +7042,32 @@ mod tests {
             hint_for(Scope::Board, Verb::Prompt, &onboard),
             Some(("shift+enter", "edit the queued ask"))
         );
+    }
+
+    /// T-551: `^y` / `^u` are live and hinted exactly while an ask waits,
+    /// on the board and the ticket page alike, and a HELD ask's `^y` says
+    /// `send` — nothing else will deliver it, so `now` has no later to
+    /// contrast with. The pair is the card's keys row, and it fits the
+    /// row's 22 cells only in the held words.
+    #[test]
+    fn a_held_ask_is_sent_not_sent_now() {
+        let queued = Ctx { has_ticket: true, ticket_queued: true, ..Ctx::default() };
+        let held = Ctx { ticket_held: true, ..queued.clone() };
+        for scope in [Scope::Board, Scope::Ticket] {
+            assert_eq!(hint_for(scope, Verb::SendQueuedAsk, &queued), Some(("^y", "send now")));
+            assert_eq!(hint_for(scope, Verb::SendQueuedAsk, &held), Some(("^y", "send")));
+            assert_eq!(hint_for(scope, Verb::TakeBackAsk, &held), Some(("^u", "take back")));
+            let quiet = Ctx { has_ticket: true, ..Ctx::default() };
+            assert_eq!(hint_for(scope, Verb::SendQueuedAsk, &quiet), None, "{scope:?}");
+            assert_eq!(hint_for(scope, Verb::TakeBackAsk, &quiet), None, "{scope:?}");
+            assert_eq!(resolve(scope, Key::Ctrl('y'), &quiet), None, "the key is inert unhinted");
+        }
+        let row: Vec<String> = [Verb::SendQueuedAsk, Verb::TakeBackAsk]
+            .iter()
+            .filter_map(|v| hint_for(Scope::Board, *v, &held))
+            .map(|(k, w)| format!("{k} {w}"))
+            .collect();
+        assert_eq!(row.join(" ∙ ").chars().count(), 22, "the card's row budget at 120");
     }
 
     /// T-420: on a card whose agent sits on its plan dialog the same key

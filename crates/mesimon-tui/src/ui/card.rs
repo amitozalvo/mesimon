@@ -390,6 +390,7 @@ pub(super) fn render(
     snooze: Option<&str>,
     owed: bool,
     owed_row: Option<&str>,
+    owed_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
     editor: Option<&str>,
     crown: CrownMark<'_>,
     tier_word: Option<&str>,
@@ -836,6 +837,30 @@ pub(super) fn render(
         if let Some(words) = owed_row.filter(|_| selected) {
             let words = truncate(words, t_cells.saturating_sub(glyph_cells));
             push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, faint)]);
+            // A held ask's keys, under its words (T-551, user: "it's not
+            // obvious that user needs to press ^y … should be next to the
+            // queued message"): the send is the person's, so the card names
+            // the key — the keymap's words through the footer's own span
+            // builder, so a key drawn here is a key that works, and a key
+            // that does not fit is dropped whole rather than cut.
+            if let Some((keys, kctx)) = owed_keys {
+                let mut spans = super::chrome::hint_spans(
+                    keys,
+                    kctx,
+                    ramp,
+                    t_cells.saturating_sub(glyph_cells),
+                );
+                if trail {
+                    for s in &mut spans {
+                        s.style = faint;
+                    }
+                }
+                if !spans.is_empty() {
+                    let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
+                    row.extend(spans);
+                    push(row);
+                }
+            }
         }
         if meta_row {
             let inner = t_cells.saturating_sub(glyph_cells);

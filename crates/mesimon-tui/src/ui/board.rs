@@ -203,6 +203,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // ghost (both `cursorish`, and their ticket is the subject being
         // acked), so the frame between a cursor move and the ack agrees.
         let unseen = !(selected || held) && app.spoke_unseen(t.id);
+        // A held ask's keys ride the cursor card (T-551) — the subject the
+        // frame's `Ctx` was built for, so the keys it names act on THIS card.
+        let keys_ctx = app.frame_ctx();
+        let owed_keys = if selected && app.ticket_held(t.id) {
+            super::ask_keys(app, &keys_ctx)
+        } else {
+            Vec::new()
+        };
         let mut lines = card::render(
             &ctx,
             t,
@@ -222,6 +230,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             app.snooze_row(t.id).as_deref(),
             app.owed(t.id),
             app.pending_row(t.id).as_deref(),
+            (!owed_keys.is_empty()).then_some((owed_keys.as_slice(), &*keys_ctx)),
             app.remote_initials(t.id).as_deref(),
             if left { crate::ui::CrownMark::None } else { app.crown_mark(t.id) },
             app.card_tier_word(t.id).as_deref(),

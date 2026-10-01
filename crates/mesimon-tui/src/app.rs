@@ -3885,6 +3885,12 @@ impl App {
         self.pending_of(ticket).is_some_and(|p| p.is_queued_ask() && !p.in_flight)
     }
 
+    /// The ticket's queued ask waits on a person's send (`Pending::is_held`,
+    /// T-551): the card names `^y` / `^u` beside its row.
+    pub(crate) fn ticket_held(&self, ticket: ulid::Ulid) -> bool {
+        self.pending_of(ticket).is_some_and(|p| p.is_held())
+    }
+
     /// The snapshot's entry for what mesimon owes this ticket, if any.
     pub(crate) fn pending_of(&self, ticket: ulid::Ulid) -> Option<&mesimon_core::command::Pending> {
         self.pending.iter().find(|p| p.ticket == ticket)
@@ -3926,16 +3932,23 @@ impl App {
             [one, rest @ ..] => Some(format!("after {one} +{}", rest.len())),
         };
         use mesimon_core::command::PendingAction as A;
-        // The crown's ask (T-413) waits on a person, not the checkout, and
-        // the row says whose words they are — the person reads them on the
-        // ticket page before ^y puts them in front of the agent.
-        if let Some(by) = p.by.as_deref().filter(|_| p.is_queued_ask() && !p.in_flight) {
-            return Some(format!("queued by {by}'s agent"));
-        }
-        // Held on a question (T-420): the same seat as the crown's ask, a
-        // person's `^y` away, and the row says why it stopped.
-        if let Some(why) = p.held.as_deref().filter(|_| p.is_queued_ask() && !p.in_flight) {
-            return Some(format!("held ∙ {why}"));
+        // A HELD ask (T-551) waits on a person, not the checkout: the row
+        // says who wrote it or why it stopped, then that the send is yours.
+        // `queued by T-411's agent` named the author and never the wait, and
+        // read as one more ask the queue would deliver. The keys ride the
+        // row under it (`^y send ∙ ^u take back`, the keymap's words) on the
+        // cursor card, and the same row on the ticket page.
+        if p.is_held() {
+            // The crown's words (T-413) — the person reads them on the
+            // ticket page before ^y puts them in front of the agent — or a
+            // follow-up a question stopped (T-420), `agent asked`. 22 cells
+            // with a four-digit key: `T-1544 asks ∙ you send`.
+            let lead = match (p.by.as_deref(), p.held.as_deref()) {
+                (Some(by), _) => format!("{by} asks"),
+                (None, Some(why)) => why.to_string(),
+                (None, None) => "held".into(),
+            };
+            return Some(format!("{lead} ∙ you send"));
         }
         // Flagged to accept the plan (T-420): `accepting plan` once the
         // agent is on the dialog and the press is the next tick's, and
@@ -4550,6 +4563,7 @@ impl App {
                 _ => false,
             },
             ticket_queued: subject.is_some_and(|t| self.ticket_queued(t)),
+            ticket_held: subject.is_some_and(|t| self.ticket_held(t)),
             ticket_plan_ready: subject.is_some_and(|t| self.ticket_plan_ready(t)),
             ticket_planning: subject.is_some_and(|t| self.ticket_planning(t)),
             plan_able: match &self.mode {
@@ -16112,7 +16126,7 @@ mod tests {
     /// be planning, so the field opens at `accept plan` too — the ring
     /// then has all three stops — and words sent there queue with the
     /// flag: the card says `queued ∙ accepts plan`. A held ask reads
-    /// `held ∙ agent asked`. A session not launched in plan mode opens at
+    /// `agent asked ∙ you send`. A session not launched in plan mode opens at
     /// the board's default and has no `accept plan` stop.
     #[test]
     fn a_planning_agent_queues_with_the_flag_and_a_held_ask_says_why() {
@@ -16158,8 +16172,9 @@ mod tests {
             held: Some("agent asked".into()),
             plan: false,
         }];
-        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("held ∙ agent asked"));
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("agent asked ∙ you send"));
         assert!(app.ctx().ticket_queued, "a held ask is still edited and sent from the board");
+        assert!(app.ctx().ticket_held, "and its ^y says send (T-551)");
     }
 
     /// A waiting ask written in the room (T-380) has lines, and reopens in
@@ -16284,7 +16299,8 @@ mod tests {
         assert_eq!(row(&mut app, vec!["T-3", &own], false, Ask), "queued ∙ after T-3");
         assert_eq!(row(&mut app, vec!["T-3", "T-4", "T-5"], false, Ask), "queued ∙ after T-3 +2");
         assert_eq!(row(&mut app, vec![], true, Ask), "queued ∙ sending");
-        // The crown's held ask (T-413) names its author and waits on nobody.
+        // The crown's held ask (T-413) names its author and waits on nobody
+        // but the person (T-551) — never the checkout it lists.
         app.pending = vec![mesimon_core::command::Pending {
             ticket: ulid::Ulid(1),
             action: Ask,
@@ -16296,8 +16312,21 @@ mod tests {
             plan: false,
             held: None,
         }];
-        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued by T-411's agent"));
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("T-411 asks ∙ you send"));
         assert!(app.ticket_queued(ulid::Ulid(1)), "^y and ^u apply to it");
+        assert!(app.ticket_held(ulid::Ulid(1)));
+        // Sent and waiting on its ack, it is the queue's again.
+        app.pending[0].in_flight = true;
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued ∙ sending"));
+        assert!(!app.ticket_held(ulid::Ulid(1)));
+        // A four-digit key still fits the card's 22 cells.
+        app.pending[0].in_flight = false;
+        app.pending[0].by = Some("T-1544".into());
+        let words = app.pending_row(ulid::Ulid(1)).unwrap();
+        assert_eq!(words.chars().count(), 22, "{words}");
+        // A person's own ask is not held: the queue delivers it.
+        app.pending[0].by = None;
+        assert!(!app.ticket_held(ulid::Ulid(1)));
         assert_eq!(row(&mut app, vec![], false, Merge), "auto-merge ∙ next");
         assert_eq!(row(&mut app, vec!["T-3"], false, Merge), "auto-merge ∙ after T-3");
         assert_eq!(row(&mut app, vec![], false, Rebase), "rebase ask ∙ next");

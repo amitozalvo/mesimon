@@ -1915,6 +1915,16 @@ impl Pending {
     pub fn is_queued_ask(&self) -> bool {
         matches!(self.action, PendingAction::Ask | PendingAction::Start | PendingAction::Wake)
     }
+
+    /// Is this a queued ask that waits on a PERSON's send — the crown's
+    /// words (T-413, `by`) or a follow-up stopped by the agent's question
+    /// (T-420, `held`)? Nothing delivers it on the queue's own clock, so the
+    /// card says `you send` and names `^y` / `^u` beside it (T-551). The one
+    /// predicate for it: an ask the daemon delivers by itself, attributed or
+    /// not, must answer false here.
+    pub fn is_held(&self) -> bool {
+        self.is_queued_ask() && !self.in_flight && (self.by.is_some() || self.held.is_some())
+    }
 }
 
 /// The merge train as the board sees it (see `Command::SetAutomation`).
@@ -2351,6 +2361,27 @@ mod tests {
                 .unwrap();
         assert_eq!(p.action, Unknown);
         assert!(!p.is_queued_ask());
+    }
+
+    /// HELD is an ask a person must send (T-551): the crown's words or a
+    /// question stop, never in flight, never a train row — and an older
+    /// daemon's snapshot without either field reads as not held.
+    #[test]
+    fn held_is_a_queued_ask_that_waits_on_a_person() {
+        use super::PendingAction::*;
+        let p: super::Pending =
+            serde_json::from_str(r#"{"ticket":"01ARZ3NDEKTSV4RRFFQ69G5FAV","action":"ask"}"#)
+                .unwrap();
+        assert!(!p.is_held(), "a person's ask goes by itself");
+        let crown = super::Pending { by: Some("T-9".into()), ..p.clone() };
+        assert!(crown.is_held());
+        let asked = super::Pending { held: Some("agent asked".into()), ..p.clone() };
+        assert!(asked.is_held());
+        for action in [Start, Wake] {
+            assert!(super::Pending { action, ..crown.clone() }.is_held());
+        }
+        assert!(!super::Pending { in_flight: true, ..crown.clone() }.is_held());
+        assert!(!super::Pending { action: Merge, ..crown }.is_held());
     }
     use super::*;
 

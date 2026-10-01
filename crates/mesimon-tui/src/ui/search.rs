@@ -330,6 +330,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         None,
         app.owed(ticket.id),
         app.pending_row(ticket.id).as_deref(),
+        None,
         app.remote_initials(ticket.id).as_deref(),
         // The holder's mark, never a touch: the preview is a still.
         if app.board.is_crowned(ticket.id) {

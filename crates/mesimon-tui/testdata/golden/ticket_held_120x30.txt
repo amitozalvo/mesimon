@@ -1,0 +1,30 @@
+ TICKET (T-5)   mesimon › kanban-tui
+
+ Grapheme truncation
+ REVIEW for >1y ∙ created >1y ago
+ T-544 asks ∙ you send ∙ ^y send ∙ ^u take back
+
+
+  PREVIEW                                                                                  SESSIONS                  1
+    ▄▄▄         ▄▄▄
+    ▀▀█▀ ▄▀▀▀   ▀▀█▀                                                                      ✓ ✻ claude               >1y
+      ██▀█▀▀     ███   ✦                                                                   x sleep
+    ▄▀█████▀▀▀▀▀▀███▀▄
+  ✦█████▀████████▀████▀
+   ████▀█▀██████▀█▀████
+   █▀▀█████▀▀▀▀█████▀▀█
+   ▀▀▀██████▀▀██████▀▀▀
+      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+    done
+    it left no transcript
+
+
+
+
+
+
+
+
+
+ ^y send ∙ ^u take back ∙ enter focus ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown                              ? keys

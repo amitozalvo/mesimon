@@ -4045,6 +4045,111 @@ fn golden_ticket_queued_120() {
     golden("ticket_queued_120x30", &render(&app, 120, 30));
 }
 
+/// A HELD ask (T-551, user on T-544: "it's not obvious that user needs to
+/// press ^y to accept or that the message is pending on user decision.
+/// should be next to the queued message"): the cursor card's row says whose
+/// words they are and that the send is yours, and the keys sit on the row
+/// directly under it, in the keymap's words. The footer agrees: `^y send`.
+#[test]
+fn golden_held_open_120() {
+    let mut app = app_graphite(fixture(false));
+    app.pending = vec![mesimon_core::command::Pending {
+        by: Some("T-544".into()),
+        ..pending_ask(5, &["T-3"])
+    }];
+    app.cursor_col = 2;
+    app.cursor_row = Some(0);
+    let lines = render(&app, 120, 30);
+    let at = lines.iter().position(|l| l.contains("T-544 asks ∙ you send")).unwrap_or_else(|| {
+        panic!("the row says whose words and that the send is yours:\n{}", lines.join("\n"))
+    });
+    assert!(
+        lines[at + 1].contains("^y send ∙ ^u take back"),
+        "the keys beside the words, not only in the footer:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        lines.last().is_some_and(|l| l.contains("^y send ∙ ^u take back")),
+        "{:?}",
+        lines.last()
+    );
+    golden("board_held_open_120x30", &lines);
+}
+
+/// The keys row is the held ask's, and only while the keys act on this card:
+/// a person's own queued ask goes by itself and keeps its words alone, a
+/// resting card never opens its row, and a field open over the cursor card
+/// owns `^u` — so the row stands down with the key (T-551).
+#[test]
+fn the_held_keys_row_is_gated_as_the_keys_are() {
+    let keys = "^y send ∙ ^u take back";
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.pending = vec![pending_ask(5, &["T-3"])];
+    app.cursor_col = 2;
+    app.cursor_row = Some(0);
+    let lines = render(&app, 120, 30);
+    let at = lines.iter().position(|l| l.contains("queued ∙ after T-3")).expect("queued row");
+    assert!(
+        !lines[at + 1].contains("take back"),
+        "the footer's, not the card's:\n{}",
+        lines.join("\n")
+    );
+    assert!(lines.last().is_some_and(|l| l.contains("^y send now")), "{:?}", lines.last());
+
+    app.pending[0].held = Some("agent asked".into());
+    let lines = render(&app, 120, 30);
+    let at = lines.iter().position(|l| l.contains("agent asked ∙ you send")).expect("held row");
+    assert!(lines[at + 1].contains(keys), "{}", lines.join("\n"));
+
+    // The cursor elsewhere: the card wears the owed mark and no row.
+    app.cursor_col = 0;
+    let lines = render(&app, 120, 30);
+    assert!(
+        !lines.iter().any(|l| l.contains("you send") || l.contains(keys)),
+        "{}",
+        lines.join("\n")
+    );
+
+    // A field open over the held card: `^u` is the field's, so no keys row.
+    app.cursor_col = 2;
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(5)),
+            walk: None,
+            queued: true,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
+    };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("agent asked ∙ you send")), "{}", lines.join("\n"));
+    assert!(!lines.iter().any(|l| l.contains(keys)), "{}", lines.join("\n"));
+}
+
+/// The ticket page says the same: the held row, then the two keys beside it
+/// in the keymap's words — `^y send`, because nothing else will.
+#[test]
+fn golden_ticket_held_120() {
+    let mut app = app_graphite(fixture(false));
+    app.pending = vec![mesimon_core::command::Pending {
+        by: Some("T-544".into()),
+        ..pending_ask(5, &["T-3"])
+    }];
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    let state = lines.iter().position(|l| l.contains("REVIEW")).expect("state row");
+    assert_eq!(
+        lines[state + 1].trim_end(),
+        " T-544 asks ∙ you send ∙ ^y send ∙ ^u take back",
+        "{}",
+        lines.join("\n")
+    );
+    golden("ticket_held_120x30", &lines);
+}
+
 /// The merge train armed (2026-09-04): a REVIEW card it will merge wears
 /// the owed mark and, open, says so and names what it waits on; a card it
 /// will ask to rebase says that. The HEADER says nothing — the train only

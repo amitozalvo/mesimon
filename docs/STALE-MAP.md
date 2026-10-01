@@ -16744,3 +16744,71 @@ never; the board's timer refuses `Unknown`, parks a finished turn sooner than th
 does not lend its minute to the column's wider rule). `a_column_parks_its_idle_agents_and_spares_the_rest`
 now wakes the parked agent, sends the resume's `SessionStart`, sees `Idle{Unknown}` and then
 `Sleeping` again. With the predicate narrowed back to `EndTurn` that step times out: verified.
+
+## A held ask says it waits on you, and names ^y / ^u beside it (T-551, 2026-10-01, user on T-544: "it's not obvious that user needs to press ^y to accept or that the message is pending on user decision. should be next to the queued message")
+
+**Seen.** A crown's `ask_agent` words (T-413) wait on the target ticket until a person sends them.
+The cursor card's owed row said `queued by T-544's agent`. That named the author but not the
+wait, and it read like any ask the queue would deliver by itself. `^y send now ∙ ^u take back`
+were on the ticket page, as a string literal in `ui/ticket.rs`, and in the board's footer, but
+not beside the row. T-420's question stop (`held ∙ agent asked`) uses the same seat and had the
+same gap once the question was answered, so both are fixed together.
+
+**Shipped.**
+- **One predicate.** `Pending::is_held` returns true for a queued ask that is not in flight and
+  carries `by` (the crown's) or `held` (a question stop). Every reader goes through it:
+  `App::ticket_held`, the new `Ctx::ticket_held`, the row and the keys row. When `crown_sends`
+  ships, an ask the daemon delivers itself must answer false here. Changing that one predicate
+  makes the board drop both the words and the keys.
+- **The words.** The row is `<who or why> ∙ you send`: `T-544 asks ∙ you send` and
+  `agent asked ∙ you send`. With a four-digit key both are exactly 22 cells, the card's row at
+  120 columns. The lead says whose words they are; `you send` says the wait is on the person.
+- **The keys sit beside it.** On the cursor card, the row directly under the words is
+  `^y send ∙ ^u take back`. It is drawn by `ui::ask_keys`: `binding_for(app.scope(), …)` over
+  `SendQueuedAsk` and `TakeBackAsk`, through `chrome::hint_spans` (the footer's own span builder).
+  So it goes through `Binding::live` with the key's own `avail`, and it reads the scope that is
+  active now. With a field open over the card, `^u` belongs to the field and the row is not
+  drawn. In a chord tail the same is true. The ticket page's owed row spells the same two
+  bindings and no literal, which closes the one `ui/` hint literal the row had. A person's own
+  queued ask gets no keys row on the card, because the queue delivers it anyway; its keys stay
+  in the footer, as before.
+- **`^y` says `send` for a held ask** (`keymap::send_hint`). `now` contrasts the key with the
+  queue's own delivery. A held ask has no such delivery, so `send now` promised one that never
+  comes. This is also what fits `^y send ∙ ^u take back` into exactly 22 cells. The footer, the
+  `?` overlay and the page all read the word from the binding, so they agree.
+
+**Decided: a held ask is not "needs you".** It waits on a person, but it is not a stall. The
+target agent goes on idling or working, and nothing on the board is blocked until `^y`; the
+crown hears about the worker through its wake (T-414) whether or not the words are sent.
+`Theme::attn` and the header's `!N` mean something is stopped until you answer it: a dialog
+(`attention_queue`), a snooze that asked to be lit, a raised hand. Spending the colour on held
+asks would also:
+1. let one crown light N cards at once by fanning out N asks, which turns the one saturated
+   colour into decoration;
+2. need a notification each, for the banner to agree with the header;
+3. make the colour's meaning depend on a board setting, because `crown_sends` removes the hold
+   for asks to agents the crown started.
+
+A crown that does need the person has `raise_hand`. That is the agent's deliberate road to the
+colour, and it carries a reason. A question stop is already attn while its dialog is up, from
+the session's own state. What stays is the quiet register:
+- the owed mark on every card;
+- the crown's `asked` strike on the target (T-544);
+- the cursor card's row and keys, and the footer.
+
+**Not built.** The resting card's owed mark is the same glyph for a held ask and a queued one.
+Telling them apart without the cursor would need a second mark, and nothing here asked for one.
+`^y` on a pane still sitting on a question is still refused by the daemon with its reason
+(`answer it in the pane first`, T-420), and the key stays hinted there, as it already was in
+the footer.
+
+**Tests.** `command::held_is_a_queued_ask_that_waits_on_a_person` (crown, question, start and
+wake seats, not in flight, not a train row, an older snapshot not held).
+`keymap::a_held_ask_is_sent_not_sent_now` (both scopes, the word by state, inert and unhinted
+with nothing queued, the pair at 22 cells). `app::the_owed_row_names_what_it_waits_on` (the crown's
+row, in flight back to the queue's words, a four-digit key at 22, a person's ask not held).
+`a_planning_agent_queues_with_the_flag_and_a_held_ask_says_why` (`agent asked ∙ you send`,
+`ticket_held`). `ui::the_held_keys_row_is_gated_as_the_keys_are` (a person's ask has no keys
+row, a held one does, a resting card has neither, an open field drops the keys and keeps the
+words). New goldens `board_held_open_120x30` and `ticket_held_120x30` were reviewed by eye. No
+existing golden moved.
