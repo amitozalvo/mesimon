@@ -1,30 +1,30 @@
  BOARD   mesimon › kanban-tui   7 tickets
 
-    TODO                    2    ╭─ KEYS ∙ board ─────────────────────────────────────╮ 2     DONE                   1
-                                 │ MOVE AROUND                                        │
-    Decay treatments      >1y    │   hjkl      move around                            │1y     z Painted accent bar >1y
-                                 │   enter     column settings                        │
-    Keymap validator      >1y    │   /         search                                 │1y
-                                 │                                                    │
-                                 │ TICKETS                                            │
-                                 │   o         new ticket                             │
-                                 │   HJKL      move column                            │
-                                 │   O         new column                             │
-                                 │   r         rename column                          │
-                                 │   d         delete column                          │
-                                 │                                                    │
-                                 │ VIEW                                               │
-                                 │   !         terminal                               │
-                                 │   p         show replies                           │
-                                 │   P         show every reply                       │
-                                 │                                                    │
-                                 │ APP                                                │
-                                 │   esc       menu                                   │
-                                 │   q         quit                                   │
-                                 │   ?         keys                                   │
-                                 │   ^L        redraw                                 │
-                                 │   ^Z        suspend mesimon                        │
-                                 ╰────────────────────────────────────────────────────╯
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+
+    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
+
+    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
+
+                            ╭─ KEYS ∙ board ──────────────────────────────────────────────╮
+                            │ MOVE AROUND                    VIEW                         │
+                            │   hjkl      move around          !         terminal         │
+                            │   enter     column settings      p         show replies     │
+                            │   /         search               P         show every reply │
+                            │                                                             │
+                            │ TICKETS                        APP                          │
+                            │   o         new ticket           esc       menu             │
+                            │   HJKL      move column          q         quit             │
+                            │   O         new column           ?         keys             │
+                            │   r         rename column        ^L        redraw           │
+                            │   d         delete column        ^Z        suspend mesimon  │
+                            ╰─────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
 
 
  enter column settings ∙ o new ticket ∙ O new column ∙ HJKL move column ∙ r rename column             esc menu ∙ ? keys

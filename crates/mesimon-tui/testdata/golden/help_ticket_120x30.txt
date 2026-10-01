@@ -1,30 +1,30 @@
  TICKET (T-3)   mesimon › kanban-tui  !1
 
- Fix OSC-11 detection            ╭─ KEYS ∙ ticket ────────────────────────────────────╮
- IN PROGRESS for >1y ∙ created >1│ MOVE AROUND                                        │
-                                 │   jk        select session                         │
-                                 │   q         board                                  │
-  PREVIEW                        │                                                    │    SESSIONS                  2
-                                 │ TICKETS                                            │
-                       ▀▀▀▄  ▄▄▄ │   ^o        crown                                  │   ⠋ ✻ claude               >1y
-                        ██▀▄▀▀▀▀ │   r         rename                                 │   ◦ $ bash                 >1y
-                       ▄▀███▀▄▄▄▄│   n         describe                               │    x sleep
-                     ▄▀██████████│   N         new note                               │
-                     █████▀██████│   ^t        tags                                   │
-                     █████▀▀▀████│   a         archive                                │
-                     ▀▀▀██████▀▀█│   z         snooze                                 │
-                      ▀▀▀▀▀▀▀▀▀▀▀│   d         delete                                 │
-                                 │                                                    │
-    ● working                    │ SESSIONS                                           │
-    nothing said yet ∙ the first │   enter     focus                                  │
-                                 │   !         terminal                               │
-                                 │   x         sleep                                  │
-                                 │                                                    │
-                                 │ APP                                                │
-                                 │   ?         keys                                   │
-                                 │   ^L        redraw                                 │
-                                 │   ^Z        suspend mesimon                        │
-                                 ╰────────────────────────────────────────────────────╯
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago
+
+
+  PREVIEW                                                                                  SESSIONS                  2
+
+                       ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                   ⠋ ✻ claude               >1y
+                 ╭─ KEYS ∙ ticket ───────────────────────────────────────────────────────────────────╮             >1y
+                 │ MOVE AROUND                   TICKETS                 SESSIONS                    │
+                 │   jk        select session      ^o        crown         enter     focus           │
+                 │   q         board               r         rename        !         terminal        │
+                 │                                 n         describe      x         sleep           │
+                 │                                 N         new note                                │
+                 │                                 ^t        tags        APP                         │
+                 │                                 a         archive       ?         keys            │
+    ● working    │                                 z         snooze        ^L        redraw          │
+    nothing said │                                 d         delete        ^Z        suspend mesimon │
+                 ╰───────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
 
 
  jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown                                   ? keys

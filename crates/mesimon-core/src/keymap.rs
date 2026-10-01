@@ -7350,7 +7350,10 @@ mod tests {
         let ctx =
             Ctx { has_ticket: true, multi_column: true, can_nudge: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::Char('>'), &ctx), Some(Verb::Grab));
-        assert_eq!(hint_for(Scope::Board, Verb::Grab, &ctx), Some(("> <", "move card, stay on original column")));
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Grab, &ctx),
+            Some(("> <", "move card, stay on original column"))
+        );
         assert_eq!(resolve(Scope::Board, Key::AltLeft, &ctx), Some(Verb::Nudge));
         for k in [Key::Char('H'), Key::Char('J'), Key::Char('K'), Key::Char('L')] {
             assert_eq!(resolve(Scope::Board, k, &ctx), Some(Verb::Nudge), "{k:?}");

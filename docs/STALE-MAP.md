@@ -16145,3 +16145,18 @@ card, stay on original column`**, the author's wording: `grab` drops the card an
 back on its home row, where `HJKL` carries the cursor with the card. The press count is still
 taught where it applies: the first press enters `Scope::Move`, whose hint is `repeat to move`.
 One golden moved (`help_board_120x30`).
+
+## The `?` overlay lays its groups side by side (T-535, 2026-10-01, "keys dialog should be split horizontally instead of being a one long column")
+
+The overlay was one 52-cell column until it ran out of rows, and went to two only then, so a
+tall terminal got a ribbon down the middle of the screen (the ticket page's was 21 rows at
+120x30). `help::split` now tries every way to cut the groups into columns, **in their order**,
+so they read down one column and on into the next. It takes the split with the fewest rows whose
+dialog fits the terminal's width, and a tie goes to fewer columns. **A column is sized to its
+widest line** instead of a fixed 52 cells, which is what lets three columns fit at 120: the
+board's overlay is 14 rows where it was 20, the ticket page's 8 where it was 21. The rail stays
+one width for the whole overlay, the gap is three cells, and a cut is still marked `~` when even
+the shortest split is too tall. **At 80 columns the board still gets one column**: the `> <`
+hint (T-534) makes TICKETS 47 cells wide, so no two-column split fits. The ticket page at 80x24
+now fits in two columns; it used to lose its APP group under the `~` (pinned by
+`help_groups_sit_side_by_side_when_they_fit`). Five goldens moved.

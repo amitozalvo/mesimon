@@ -647,6 +647,32 @@ fn golden_help_ticket_120() {
     golden("help_ticket_120x30", &render(&app, 120, 30));
 }
 
+/// T-535: the overlay lays its groups side by side whenever the width allows,
+/// not only once one column runs out of rows. On an 80x24 ticket page one
+/// column was 24 rows and lost its last group under a `~`; side by side, every
+/// group shows and nothing is cut.
+#[test]
+fn help_groups_sit_side_by_side_when_they_fit() {
+    let mut app = app_graphite(fixture(true));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app.help = true;
+    let lines = render(&app, 80, 24);
+    let titles = ["MOVE AROUND", "TICKETS", "SESSIONS", "APP"];
+    for title in titles {
+        assert!(
+            lines.iter().any(|l| l.contains(title)),
+            "{title:?} is missing:\n{}",
+            lines.join("\n")
+        );
+    }
+    assert!(
+        lines.iter().any(|l| titles.iter().filter(|t| l.contains(*t)).count() >= 2),
+        "two groups share a row:\n{}",
+        lines.join("\n")
+    );
+    assert!(!lines.iter().any(|l| l.contains("│   ~")), "nothing is cut:\n{}", lines.join("\n"));
+}
+
 /// The armed archive chord: the footer becomes the chord's own scope and
 /// names the key still to press. The resting hint said only `a`.
 #[test]
