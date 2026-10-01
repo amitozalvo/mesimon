@@ -17550,3 +17550,101 @@ typed during the cooked window); a stub that never paints is `prompt_submit_not_
 to the crown and counted by `!N`; a stub whose box holds stray text gives up, and the resend sends
 one Ctrl+C and then the title and the brief. Every shell stub in `Harness::boot` now paints a
 composer first (`common::claude_stub`); `MESIMON_COMPOSER_WAIT_MS` is the seam.
+
+## The crown answers a worker's question where the person lets it (T-569, 2026-10-02, part C of T-564: "Yes, crown may answer questions but need to take into consideration questions that must be answered by a human")
+
+**Seen.** A worker the crown started stopped on an `AskUserQuestion`. T-566 let the crown read
+the question and refused its `ask_agent` over it; the crown could then only wait for a person,
+so a board run by the crown stalled on every question its own workers asked about the work it
+gave them.
+
+**Shipped.** `Board.crown_answers: bool`, off by default, a `columns.toml` scalar beside
+`crown_sends` with no `COLUMNS_SCHEMA` bump: an older build drops it and leaves every question to
+a person, which only takes authority away. It is its own switch because a person who let the
+crown's words through at idle consented to words, not to answers in a dialog. `SetCrownAnswers
+{ on }` is local only and in the never-tier. Settings → Agents → "Crown answers questions:
+on/off" under the sends row; `mesimon doctor` prints `crown answers` either way.
+
+- **`answer_agent { key, seen, request, index | text }`**, the sixteenth tool, crown only, `Full`
+  rung (seventeen commands in the tier). Refusals, each in words and in this order: uncrowned,
+  own ticket, stamp, `authorize` (`Mutate` on the target ticket, as `ask_agent`; `Resource::
+  Session` stays denied to every agent), the switch (naming the Settings row), no agent, an agent
+  a person started (`started_by` none: the one who started it answers it, T-539's line as
+  `crown_ask_hold` draws it), a stop that is not `RequiresAction{Question}` (secret, elicitation,
+  permission, auth, trust, plan, quota and startup each named and said to be a person's), a
+  `request` that is not the current projection (`dialog changed; read get_ticket again`), several
+  questions or a multi-select, then `index` out of range or `text` with a newline, over 1000
+  bytes, or not surviving `sanitize_prompt`, and an answer already on its way.
+- **One road.** `crown_dialog_answer` queues a `DialogDelivery` on Remote Control's own walk
+  (`control_deliver_dialogs`): the screen is read before every key, `dialog_step` chooses it, and
+  the outcome is T-567's — `answered` only on the dialog's own hook edge, `input_sent` for keys
+  in with no edge inside `DIALOG_CONFIRM`, `unknown { reason }` when no key could be chosen. The
+  delivery now carries a `Deliverer`: `Phone { grant, device, command }` as before, or `Crown {
+  crown, session, answer, reply, prior }`, and every step re-checks the crown's authority
+  (`crown_answer_allowed`: the crown still on its ticket, the switch, the same claude the crown
+  started at a question, `Mutate`) where the phone's re-checks its grant.
+- **The receipt waits.** The shim's call blocks until the delivery settles, as the brief asked:
+  `handle_agent` sets `answer_waits`, and the writer loop parks the request's reply `Sender` in
+  the delivery (`control_park_reply`) instead of sending it; the settle sends
+  `Response::AgentAnswered { key, outcome, reason, answer, seen }`. At most the 8 s walk and the
+  5 s window, inside the shim's 20 s read timeout. A caller that is not the writer loop reads
+  `awaiting_delivery`. The receipt carries `persons_questions`.
+- **Everyone sees it.** Keys in and the dialog not left standing: `♛ answered` on the card (a
+  crown touch, so T-544's bolt runs), the feed's `answer_agent` with actor `agent`, the target,
+  the outcome and the label or text (`FeedWriter::board_answer`: an answer is a decision a person
+  reads, unlike an ask's words, which the feed never carries), and the claude's `detail` reads
+  `answered by T-411: Okta` (`crown_answer_lines`), kept through the question's own leave — the
+  answer landing — and gone at the next state edge. The open card draws a claude's `detail` at
+  `Running`/`Idle` (where `apply_change` clears every other detail; a restart's `Unknown` may
+  still hold a question) on a quiet row under the title, scrubbed. An `unknown` shows nothing
+  but its feed line.
+- **The wake.** The answer's last key marks the turn `TurnAsk::Crown`, so the turn that takes it
+  wakes the crown with `answered your ask` at its end, as a sent ask's does (T-469); keys that went
+  in with the dialog still standing give the turn its earlier mark back. And a question wakes the
+  crown: `WakeCause::Asked` ("asks a question"), ranked above `Raised` — both wait on someone, and
+  the question is a turn frozen on it — for a claude this crown started entering
+  `RequiresAction{Question}` while the switch is on (`crownwake::asks_the_crown`); off, the person
+  is the one to wake and the card's needs-you already does. Never the question's words (T-414's
+  rule); the crown reads them with `get_ticket`. Coalesced with the other causes as any is.
+- **A person's question stays a person's.** mesimon reads no question's words to decide. The
+  structure it enforces is above: only a question, only a worker the crown started, only under
+  the switch, only a shape the phone verifies, always announced. The judgement is the crown's,
+  and `persons_questions!` is its one clause — secrets or credentials, spend or quota, a
+  destructive or irreversible act (deleting, force-pushing, publishing, sending to people), a
+  preference the brief leaves open, scope beyond the brief, and `raise_hand` on the crown's own
+  ticket naming the worker and the question for those — which `CROWN_WAKES` ends on and the
+  receipt carries as `PERSONS_QUESTIONS`; the tool's description says the same in fewer bytes (it
+  sits at the 820 cap). A person's answer always wins: an answer from the pane or the phone ends
+  the projection and refuses the crown's, and a phone's answer to the same request takes over a
+  crown walk that has not reached its last key (`unknown`, `a_person_answered`).
+- `ask_agent`'s refusal over a question now names `answer_agent where the board lets the crown
+  answer`.
+
+**Promise 3.** `docs/PROMISES.md` and the README are the author's words and are untouched. The
+sentence naming this consented exception is drafted in a note on T-569, awaiting approval.
+
+**Not built.** A per-worker fuse on answers (the crown answering the same worker's questions in a
+loop is serialized by the questions themselves, one dialog at a time); answering a plan, a
+multi-select or several questions at once (unmeasured, answered in the pane, as for the phone);
+dropping an owed `asks a question` wake when the question is answered before the crown hears it
+(the crown's `get_ticket` then shows no `needs_you`, and its answer is refused).
+
+**Tests.** `mcp`: sixteen tools and seventeen commands, the tier table, `answer_agent`'s parse
+(exactly one of index and text, a whole-number index, the three required words), the cap, the
+never-tier lists `SetCrownAnswers`, and `the_crown_is_told_which_questions_are_a_person_s` over
+the description, `PERSONS_QUESTIONS` and `CROWN_WAKES`. `store`: the scalar round-trips before
+the tables. `crownwake::a_question_wakes_the_crown_only_under_the_switch` and `Asked > Raised`.
+Shim: `an_answer_receipt_says_what_the_hooks_saw_and_whose_questions_are_whose`. TUI:
+`crown_answers_setting_toggles_through_board_command`; `golden_crown_answered_open_120`
+(`board_crown_answered_open_120x30`, reviewed by eye: the line under the open card's title, none
+on a resting card, none for a stop's or a restart's detail); the Agents goldens gained the row,
+and at 60x20 the list now scrolls, so `golden_settings_groups_fit_short_and_wide_terminals`
+reads every row from the top or the end (`settings_agents_60x20_end`) and the title says `1/9`.
+`crown_e2e::the_crown_answers_a_question_where_the_person_lets_it`, with a stub that paints the
+dialog: off, no wake and the refusal names the row; an agent cannot switch it on; persisted; a
+person's agent refused and no wake; the crown's worker's question wakes the crown without its
+words; a stale `request`, an index out of range, a newline, the own ticket and a stale stamp
+refused, none writing a feed line; the answer's receipt waits until the stub's `PostToolUse` and
+reads `answered`/`Okta`, `♛ answered`, the feed line, `answered by T-1: Okta` through the edge to
+`Running` and gone at `Idle`, and that turn's end wakes the crown with `answered your ask`; a
+plan and a two-question dialog refused; off again, refused.

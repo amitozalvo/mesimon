@@ -777,12 +777,24 @@ pub(super) fn render(
     // the scarcest thing on the board and one open card at a time is what
     // the accordion is for.
     let raised_row = ticket.raised.as_ref().map(|r| r.reason.as_str());
+    // The crown answered this card's question (T-569): `answered by T-411:
+    // Okta`, the claude's `detail` past its stop, which the daemon keeps
+    // until the next state edge. A claude reaches `Running` or `Idle` only
+    // through a commit that clears every other detail; a stop's own words
+    // are the question, said by the needs-you mark, and a restart's
+    // `Unknown` may still hold them.
+    let answered_row = sessions
+        .iter()
+        .filter(|s| s.kind == SessionKind::Claude)
+        .filter(|s| matches!(s.state, SessionState::Running | SessionState::Idle { .. }))
+        .find_map(|s| s.detail.as_deref());
     let accordion = selected
         && (!sessions.is_empty()
             || meta_row
             || snooze.is_some()
             || owed_row.is_some()
-            || raised_row.is_some());
+            || raised_row.is_some()
+            || answered_row.is_some());
     let opened = !selected && meta_row;
     if accordion || opened {
         let acc_style = if doomed {
@@ -841,6 +853,15 @@ pub(super) fn render(
         if let Some(words) = raised_row.filter(|_| selected) {
             let words = truncate(words, t_cells.saturating_sub(glyph_cells));
             push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, dim)]);
+        }
+        // What the crown chose for this card's question (T-569), in the
+        // board's quiet voice: a decision the person reads, not the agent's
+        // own sentence.
+        if let Some(words) = answered_row.filter(|_| selected) {
+            // An option label is an agent's words: scrubbed before it is drawn.
+            let words = mesimon_core::text::scrub_cells(words, false);
+            let words = truncate(&words, t_cells.saturating_sub(glyph_cells));
+            push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, quiet)]);
         }
         // What mesimon will do to this card next, and what it waits on —
         // the same slot, the same voice: `queued ∙ after T-12`.

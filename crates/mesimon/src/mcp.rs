@@ -34,6 +34,8 @@ use serde_json::{json, Value};
 
 /// Long enough that a writer thread busy with a provisioning burst still
 /// answers, short enough that a wedged daemon does not hold the agent's turn.
+/// `answer_agent`'s receipt waits for its delivery to settle (T-569): at
+/// most its 8 s key walk and the 5 s hook window, well inside this.
 const READ_TIMEOUT_SECS: u64 = 20;
 
 pub fn run(args: &[String]) -> ! {
@@ -146,6 +148,9 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::AskAgent { key, text, seen, plan } => {
             Command::AgentAskTicket { key, text, seen: Some(seen), plan }
         }
+        ToolCall::AnswerAgent { key, seen, request, index, text } => {
+            Command::AgentAnswerTicket { key, seen: Some(seen), request, index, text }
+        }
         ToolCall::CreateTicket { title, column, description, tags, idempotency_key } => {
             Command::AgentCreateTicket {
                 title,
@@ -231,6 +236,25 @@ fn render(resp: Response) -> Value {
             }
             if let Some(why) = held_because {
                 body["held_because"] = json!(why);
+            }
+            text(&body)
+        }
+        // The crown's answer (T-569), once its delivery settled: `answered`
+        // only on the dialog's own hook edge, `input_sent` for keys that went
+        // in unconfirmed, `unknown` with its reason when none could. The
+        // receipt repeats which questions stay a person's.
+        Response::AgentAnswered { key, outcome, reason, answer, seen } => {
+            let mut body = json!({
+                "key": key,
+                "outcome": outcome,
+                "answer": answer,
+                "persons_questions": mcp::PERSONS_QUESTIONS,
+            });
+            if let Some(why) = reason {
+                body["reason"] = json!(why);
+            }
+            if let Some(seen) = seen {
+                body["seen"] = json!(seen);
             }
             text(&body)
         }
@@ -489,6 +513,32 @@ mod tests {
         let parked = body(false);
         assert_eq!(parked["status"], "waiting_for_worktree");
         assert!(parked.get("session_started").is_none(), "no bool to read as a refusal");
+    }
+
+    /// The crown's answer (T-569): the outcome the hooks saw, the answer as
+    /// delivered, the reason only when there is one, and the one clause
+    /// naming which questions stay a person's.
+    #[test]
+    fn an_answer_receipt_says_what_the_hooks_saw_and_whose_questions_are_whose() {
+        let body = |outcome: &str, reason: Option<&str>| {
+            let v = render(Response::AgentAnswered {
+                key: "T-5".into(),
+                outcome: outcome.into(),
+                reason: reason.map(str::to_string),
+                answer: "Okta".into(),
+                seen: Some("ab12".into()),
+            });
+            assert_eq!(v["isError"], false);
+            serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        let answered = body("answered", None);
+        assert_eq!(answered["outcome"], "answered");
+        assert_eq!(answered["answer"], "Okta");
+        assert_eq!(answered["seen"], "ab12");
+        assert!(answered.get("reason").is_none());
+        assert_eq!(answered["persons_questions"], mcp::PERSONS_QUESTIONS);
+        let unknown = body("unknown", Some("label_not_found"));
+        assert_eq!(unknown["reason"], "label_not_found");
     }
 
     #[test]

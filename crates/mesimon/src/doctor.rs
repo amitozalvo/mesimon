@@ -592,6 +592,16 @@ fn agents(repo: &Path, verbose: bool) -> Section {
                 .advice("Settings > Agents > Crown sends its asks lets the crown deliver to the agents it started; an agent you started always waits for you.")
         });
 
+        // Whether the crown answers a question in another agent's dialog
+        // (T-569): a decision made for the person, printed either way.
+        records.push(if cols.crown_answers {
+            rec(Level::Note, "crown answers", "on - the crown may answer a one-choice question an agent it started asks")
+                .advice("Such a question wakes the crown, and answer_agent types the answer into the dialog; the feed and the card say what it chose. A question from an agent you started, and every permission, secret, form or plan, still waits for you. Settings > Agents > Crown answers questions turns it off.")
+        } else {
+            rec(Level::Ok, "crown answers", "off - every question an agent asks waits for you")
+                .advice("Settings > Agents > Crown answers questions lets the crown answer the questions the agents it started ask.")
+        });
+
         // The columns and what each one DOES (T-117): every automation is a
         // column setting now, so this line is the whole answer to "why did
         // that card move". A board with no file prints nothing — doctor

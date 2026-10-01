@@ -69,9 +69,7 @@ struct Peer {
     high: u64,
 }
 struct DialogDelivery {
-    grant: BoardId,
-    device: DeviceId,
-    command: u64,
+    by: Deliverer,
     ticket: ulid::Ulid,
     request: String,
     response: api::DialogAnswer,
@@ -83,8 +81,40 @@ struct DialogDelivery {
     /// the hook edge, and past it the keys were sent and not confirmed.
     confirm: Option<Instant>,
 }
+/// Whose answer a dialog delivery carries, and where its receipt goes.
+enum Deliverer {
+    /// A paired phone's: the receipt is its command's (T-567).
+    Phone { grant: BoardId, device: DeviceId, command: u64 },
+    /// The crown's `answer_agent` (T-569). The shim's call waits on `reply`
+    /// until the delivery settles; `answer` is the label or the text, for
+    /// the feed and the card; `prior` is the turn's mark before the answer
+    /// took it, given back when the keys went in and the dialog stood.
+    Crown {
+        crown: ulid::Ulid,
+        session: uuid::Uuid,
+        answer: String,
+        reply: Option<Sender<ClientReply>>,
+        prior: Option<Option<TurnAsk>>,
+    },
+}
+impl Deliverer {
+    fn principal(&self) -> Principal {
+        match self {
+            Deliverer::Phone { grant, device, .. } => {
+                Principal::Paired { device: device.to_hex(), grant: grant.to_hex() }
+            }
+            Deliverer::Crown { session, .. } => Principal::Agent { session: *session },
+        }
+    }
+}
 /// How long an answer's last key waits for the hook edge (T-567).
 const DIALOG_CONFIRM: Duration = Duration::from_secs(5);
+/// The longest text an answer types into a dialog: Remote Control's cap,
+/// which `dialog_target` enforces for every answer.
+const DIALOG_TEXT_MAX: usize = 1000;
+/// How much of the crown's answer the card's line carries (T-569), inside
+/// `SessionRecord::detail`'s 200.
+const CROWN_ANSWER_LINE_BYTES: usize = 160;
 /// How a hook frame ended a projected dialog (T-567).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DialogEdge {
@@ -892,6 +922,22 @@ impl Daemon {
         if authorize(by, &Action::PromptExisting, &Resource::Session { id }).denied() {
             return Reply::Revoked;
         }
+        // A person's answer wins a race with the crown's (T-569): a crown
+        // answer still walking its keys gives way, and the person's walks
+        // from wherever the cursor now is, the screen read at every step.
+        if self.control.dialog_deliveries.get(&id).is_some_and(|d| {
+            matches!(d.by, Deliverer::Crown { .. }) && d.confirm.is_none() && d.request == request
+        }) {
+            if let Some(crown) = self.control.dialog_deliveries.remove(&id) {
+                let reason = if crown.steps > 0 {
+                    "a_person_answered; cursor moved"
+                } else {
+                    "a_person_answered"
+                };
+                let screen = self.dialog_screen(id);
+                self.control_settle_dialog(id, crown, "unknown", Some(reason.into()), &screen);
+            }
+        }
         if self.control.dialog_deliveries.contains_key(&id)
             || self.control.pending.contains_key(&id)
         {
@@ -911,9 +957,7 @@ impl Daemon {
         self.control.dialog_deliveries.insert(
             id,
             DialogDelivery {
-                grant,
-                device,
-                command,
+                by: Deliverer::Phone { grant, device, command },
                 ticket,
                 request: request.into(),
                 response,
@@ -935,6 +979,7 @@ impl Daemon {
         use mesimon_backend_tmux::DialogKey;
         let board = &self.board;
         self.control.dialog_edges.retain(|id, _| board.sessions.iter().any(|s| s.id == *id));
+        self.crown_answer_lines.retain(|id, _| board.sessions.iter().any(|s| s.id == *id));
         let ready: Vec<_> = self
             .control
             .dialog_deliveries
@@ -968,14 +1013,20 @@ impl Daemon {
                 }
                 continue;
             }
-            let by = Principal::Paired {
-                device: pending.device.to_hex(),
-                grant: pending.grant.to_hex(),
+            let allowed = match &pending.by {
+                Deliverer::Phone { grant, device, .. } => {
+                    let by = pending.by.principal();
+                    self.control_granted(*grant, *device)
+                        && !authorize(&by, &Action::PromptExisting, &Resource::Session { id })
+                            .denied()
+                        && self.control_target(&pending.ticket.to_string(), &id.to_string())
+                            == Some(id)
+                        && self.dialog_waiting(id)
+                }
+                Deliverer::Crown { crown, session, .. } => {
+                    self.crown_answer_allowed(*crown, *session, pending.ticket, id)
+                }
             };
-            let allowed = self.control_granted(pending.grant, pending.device)
-                && !authorize(&by, &Action::PromptExisting, &Resource::Session { id }).denied()
-                && self.control_target(&pending.ticket.to_string(), &id.to_string()) == Some(id)
-                && self.dialog_waiting(id);
             let dialog = self.control.dialogs.get(&id).filter(|d| d.request == pending.request);
             let screen = self.dialog_screen(id);
             let step = match dialog {
@@ -1014,6 +1065,13 @@ impl Daemon {
                     pending.next = Instant::now() + Duration::from_millis(pause);
                     if last {
                         pending.confirm = Some(Instant::now() + DIALOG_CONFIRM);
+                        // The crown's answer is the turn's from here (T-569):
+                        // its end wakes the crown with `answered your ask`,
+                        // as the turn that took a sent ask does (T-469).
+                        if let Deliverer::Crown { crown, prior, .. } = &mut pending.by {
+                            *prior = Some(self.turn_asks.get(&pending.ticket).copied());
+                            self.mark_turn(pending.ticket, TurnAsk::Crown(*crown));
+                        }
                     }
                     self.control.dialog_deliveries.insert(id, pending);
                 }
@@ -1072,21 +1130,276 @@ impl Daemon {
         screen: &str,
     ) {
         let waiting = self.dialog_waiting(id);
+        let mut standing = false;
         if let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == pending.request)
         {
-            if !(waiting && dialog_shape(dialog, screen)) {
+            if waiting && dialog_shape(dialog, screen) {
+                standing = true;
+            } else {
                 self.control.dialogs.remove(&id);
             }
         }
-        let by =
-            Principal::Paired { device: pending.device.to_hex(), grant: pending.grant.to_hex() };
-        self.control.remember(
-            pending.grant,
-            pending.command,
-            Reply::Delivery { status: status.into(), reason },
-        );
-        self.feed.board_outcome(by.actor(), "mesophon_dialog_answer", Some(pending.ticket), status);
+        let by = pending.by.principal();
+        match pending.by {
+            Deliverer::Phone { grant, command, .. } => {
+                self.control.remember(
+                    grant,
+                    command,
+                    Reply::Delivery { status: status.into(), reason },
+                );
+                self.feed.board_outcome(
+                    by.actor(),
+                    "mesophon_dialog_answer",
+                    Some(pending.ticket),
+                    status,
+                );
+            }
+            Deliverer::Crown { crown, answer, reply, prior, .. } => {
+                self.crown_answer_settled(
+                    id,
+                    pending.ticket,
+                    crown,
+                    &answer,
+                    status,
+                    standing,
+                    prior,
+                );
+                self.feed.board_answer(
+                    by.actor(),
+                    "answer_agent",
+                    Some(pending.ticket),
+                    status,
+                    &answer,
+                );
+                let key = self.board.ticket(pending.ticket).map(|t| t.short_key.clone());
+                let response = Response::AgentAnswered {
+                    key: key.unwrap_or_default(),
+                    outcome: status.into(),
+                    reason,
+                    answer,
+                    seen: Some(self.seen_token(pending.ticket)),
+                };
+                if let Some(reply) = reply {
+                    let _ = reply.send(ClientReply { response, delivered: None });
+                }
+            }
+        }
         self.control_changed();
+    }
+
+    /// The crown's `answer_agent` (T-569), past the gates `handle_agent`
+    /// runs first (the crown, the crown's own ticket, the stamp, `authorize`):
+    /// the board's switch, the agent's provenance, the stop, the dialog, its
+    /// shape and the answer, each refused in words, and then Remote
+    /// Control's road with the crown's name on it. `Ok` is the session whose
+    /// dialog the answer walks; the receipt waits for the delivery to settle
+    /// (`control_park_reply`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn crown_dialog_answer(
+        &mut self,
+        crown: ulid::Ulid,
+        session: uuid::Uuid,
+        target: ulid::Ulid,
+        key: &str,
+        request: &str,
+        index: Option<usize>,
+        text: Option<String>,
+    ) -> std::result::Result<uuid::Uuid, String> {
+        if !self.board.crown_answers {
+            return Err(format!(
+                "this board leaves {key}'s question to a person (Settings → Agents → Crown answers \
+                 questions is off); raise_hand on the crown's own ticket names the worker and the \
+                 question for them"
+            ));
+        }
+        let Some(rec) = self.board.live_agent(target) else {
+            return Err(format!("{key} has no agent, so no question to answer"));
+        };
+        // T-539's line, as `crown_ask_hold` draws it: the one who started an
+        // agent is the one who answers it.
+        if rec.started_by.is_none() {
+            return Err(format!(
+                "a person started {key}'s agent, and the one who started it answers it, in the \
+                 pane or from Remote Control"
+            ));
+        }
+        let id = rec.id;
+        match rec.state {
+            SessionState::RequiresAction { reason: Reason::Question } => {}
+            SessionState::RequiresAction { reason } => {
+                let word = agent_reason_word(reason);
+                return Err(format!(
+                    "{key}'s agent is stopped on a {word}, not a question; a {word} is never the \
+                     crown's to answer: a person answers it, in the pane or from Remote Control"
+                ));
+            }
+            ref other => {
+                return Err(format!(
+                    "{key}'s agent is not stopped on a question (it is {}); answer_agent answers \
+                     the question get_ticket shows in needs_you",
+                    agent_state_word(other)
+                ));
+            }
+        }
+        // A person's answer always wins: a projection that moved on, or one
+        // a hook edge already ended, refuses the crown's.
+        let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == request) else {
+            return Err("dialog changed; read get_ticket again".into());
+        };
+        let api::DialogContent::Questions { questions } = &dialog.content else {
+            return Err(format!("{key}'s dialog is a plan, and a plan is a person's to answer"));
+        };
+        if questions.len() != 1 {
+            return Err(format!(
+                "{key}'s dialog asks {} questions at once; the board answers one question with one \
+                 choice, so a person answers this one",
+                questions.len()
+            ));
+        }
+        if questions[0].multi_select {
+            return Err(format!(
+                "{key}'s question takes several choices; the board answers one question with one \
+                 choice, so a person answers this one"
+            ));
+        }
+        let options = &questions[0].options;
+        let (response, answer) = match (index, text) {
+            (Some(i), None) if i < options.len() => {
+                (api::DialogAnswer::Choice { index: i }, options[i].label.clone())
+            }
+            (Some(i), None) => {
+                return Err(format!(
+                    "index {i} is out of range: the question has {} options, 0 to {}",
+                    options.len(),
+                    options.len().saturating_sub(1)
+                ));
+            }
+            (None, Some(t)) => {
+                if t.contains(['\n', '\r']) {
+                    return Err("text is one line; a newline would submit the dialog early".into());
+                }
+                if t.len() > DIALOG_TEXT_MAX {
+                    return Err(format!(
+                        "text is {} bytes; a dialog takes at most {DIALOG_TEXT_MAX}",
+                        t.len()
+                    ));
+                }
+                if mesimon_core::command::sanitize_prompt(&t).as_deref() != Some(t.as_str()) {
+                    return Err("text is blank or carries characters a dialog cannot take; plain \
+                                words only"
+                        .into());
+                }
+                (api::DialogAnswer::Text { text: t.clone() }, t)
+            }
+            _ => return Err("answer_agent takes index or text, one of them".into()),
+        };
+        if dialog_target(dialog, &response).is_none() {
+            return Err(format!(
+                "{key}'s dialog is not a shape the board answers; a person answers it"
+            ));
+        }
+        if self.control.dialog_deliveries.contains_key(&id)
+            || self.control.pending.contains_key(&id)
+        {
+            return Err(format!("an answer for {key}'s question is already on its way"));
+        }
+        self.control.dialog_deliveries.insert(
+            id,
+            DialogDelivery {
+                by: Deliverer::Crown { crown, session, answer, reply: None, prior: None },
+                ticket: target,
+                request: request.into(),
+                response,
+                deadline: Instant::now() + Duration::from_secs(8),
+                next: Instant::now(),
+                steps: 0,
+                pasted: false,
+                confirm: None,
+            },
+        );
+        Ok(id)
+    }
+
+    /// The writer's reply for the `answer_agent` call that queued the answer
+    /// for `id` (T-569): kept with the delivery, which answers it when it
+    /// settles. Handed back when there is no such delivery, to be sent now.
+    pub(super) fn control_park_reply(
+        &mut self,
+        id: uuid::Uuid,
+        reply: Sender<ClientReply>,
+    ) -> Option<Sender<ClientReply>> {
+        match self.control.dialog_deliveries.get_mut(&id).map(|d| &mut d.by) {
+            Some(Deliverer::Crown { reply: slot @ None, .. }) => {
+                *slot = Some(reply);
+                None
+            }
+            _ => Some(reply),
+        }
+    }
+
+    /// Whether the crown's answer may take its next key (T-569): what
+    /// allowed it at the call still holds — the crown on its ticket, the
+    /// board's switch, an agent the crown started on that ticket at a
+    /// question, and the crown's `Mutate` on it. Anything else ends the walk
+    /// as `state_changed`, keys already in left where they are.
+    fn crown_answer_allowed(
+        &self,
+        crown: ulid::Ulid,
+        session: uuid::Uuid,
+        ticket: ulid::Ulid,
+        id: uuid::Uuid,
+    ) -> bool {
+        let by = Principal::Agent { session };
+        self.board.is_crowned(crown)
+            && self.board.crown_answers
+            && self.board.live_agent(ticket).is_some_and(|rec| {
+                rec.id == id
+                    && rec.started_by.is_some()
+                    && rec.state == SessionState::RequiresAction { reason: Reason::Question }
+            })
+            && !authorize(&by, &Action::Mutate, &Resource::Ticket { id: ticket }).denied()
+    }
+
+    /// Everyone sees the crown's answer (T-569), once its keys went in and
+    /// the dialog did not stay standing: `♛ answered` on the card, and the
+    /// card's line `answered by T-411: <answer>` until the next state edge
+    /// (`crown_answer_lines`). Keys that went in with the dialog still up
+    /// give the turn its mark back. An answer no key carried shows nothing:
+    /// its feed line is the record.
+    #[allow(clippy::too_many_arguments)]
+    fn crown_answer_settled(
+        &mut self,
+        id: uuid::Uuid,
+        ticket: ulid::Ulid,
+        crown: ulid::Ulid,
+        answer: &str,
+        status: &str,
+        standing: bool,
+        prior: Option<Option<TurnAsk>>,
+    ) {
+        if status == "unknown" {
+            return;
+        }
+        if status == "input_sent" && standing {
+            if let Some(prior) = prior {
+                match prior {
+                    Some(ask) => self.turn_asks.insert(ticket, ask),
+                    None => self.turn_asks.remove(&ticket),
+                };
+            }
+            return;
+        }
+        let by = self.board.ticket(crown).map(|t| t.short_key.clone()).unwrap_or_default();
+        let shown = mesimon_core::text::cap_bytes(answer, CROWN_ANSWER_LINE_BYTES);
+        let tail = if shown.len() < answer.len() { "…" } else { "" };
+        let line = format!("answered by {by}: {shown}{tail}");
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.detail = Some(line.clone());
+            self.crown_answer_lines.insert(id, line);
+            self.persist_sessions();
+        }
+        self.crown_touched(crown, ticket, "answered");
+        self.broadcast();
     }
 
     pub(super) fn control_prompt_edge(&mut self, prompt: bool) {

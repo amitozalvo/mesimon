@@ -227,6 +227,19 @@ started still wait for you, whatever the setting says. Words that would wake a s
 a free seat in the crown's budget and hold it while they wait. Turning the setting off, or taking
 the crown back, holds whatever had not gone yet on its card.
 
+**Settings › Agents › Crown answers questions** (off by default, and separate from sending) lets
+the crown answer a question an agent it started stops on. That question wakes the crown, which
+reads it on the agent's ticket and may pick one of its options, or type a one-line answer in their
+place, through the same screen-checked road as Remote Control's question card. The card lights
+`♛ answered` and reads `answered by T-411: Okta` while the agent works on the answer, and the
+activity feed records the answer as the agent's. Only one question with one choice is answered
+this way: several questions at once, a multi-select, a permission, a secret, a form or a plan wait
+for you, and so does every question from an agent you started. mesimon does not read the question
+to decide. The crown is told that a question about secrets or credentials, spend or quota,
+something destructive or irreversible (deleting, force-pushing, publishing, sending to people), a
+preference its brief leaves open, or anything beyond the brief is yours, and to raise its hand on
+its own card for it. If you answer first, the crown's answer is refused.
+
 At most three agents the crown started may be awake at once; **Settings › Agents** changes the
 number or turns starting off. A ticket the crown started can never be crowned itself. The crown
 may put an agent it started to sleep once that agent is idle, the same park as `x` on its card:
@@ -235,13 +248,15 @@ It may then archive the ticket, which reclaims a merged worktree, so a finished 
 cleared without asking you. An agent you started yourself is never slept by
 the crown; it is told to leave that to you. Crowning types nothing into the agent's conversation: the crowned agent learns
 it through its tools. When an agent it started delivers, answers what it asked, or raises its
-hand, one sentence saying so is pasted into the crown's session. So is the merge of that agent's
+hand, one sentence saying so is pasted into the crown's session, and so is a question, where the
+crown may answer it; the sentence never carries the question's words. So is the merge of that agent's
 worktree branch, whether `m`, the merge train or your own `git merge` made it. The crown is told
 this when it reads its own ticket and in every `start_agent` and `ask_agent` receipt, so it has
 nothing to poll: a background monitor it runs makes its session read as busy, and the wake waits
 until the monitor ends. When an agent stops on a question, the crown reads the question and its
-options on that agent's ticket, and its words for that agent are refused until you answer, in the
-pane or from Remote Control.
+options on that agent's ticket, and its words for that agent are refused until the question is
+answered: by you, in the pane or from Remote Control, or by the crown where the setting above lets
+it.
 
 ## Sleeping idle agents
 

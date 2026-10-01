@@ -795,14 +795,30 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
     ] {
         let mut app = app_graphite(fixture_archived());
         app.settings_section = section;
-        app.mode = Mode::Settings { idx: 0 };
+        let count = mesimon_core::keymap::settings_items(&app.ctx()).len();
         for (w, h) in [(60, 20), (120, 30)] {
+            app.mode = Mode::Settings { idx: 0 };
             let rows = render(&app, w, h);
             assert!(!rows.iter().any(|r| r.contains("agent replies")));
-            for item in mesimon_core::keymap::settings_items(&app.ctx()) {
-                assert!(rows.iter().any(|r| r.contains(&(item.label)(&app.ctx()))), "{rows:?}");
+            // A list taller than the terminal scrolls, and says so in its
+            // title (Agents at 60x20 since T-569's ninth row): every row is
+            // drawn either from the top or with the cursor on the last.
+            app.mode = Mode::Settings { idx: count - 1 };
+            let end = render(&app, w, h);
+            let ctx = app.ctx();
+            let shown = |rows: &[String], label: &str| rows.iter().any(|r| r.contains(label));
+            let scrolls = mesimon_core::keymap::settings_items(&ctx)
+                .iter()
+                .any(|item| !shown(&rows, &(item.label)(&ctx)));
+            for item in mesimon_core::keymap::settings_items(&ctx) {
+                let label = (item.label)(&ctx);
+                assert!(shown(&rows, &label) || shown(&end, &label), "{label}: {rows:?} {end:?}");
             }
             golden(&format!("settings_{name}_{w}x{h}"), &rows);
+            if scrolls {
+                assert!(rows[1].contains(&format!("1/{count}")), "{rows:?}");
+                golden(&format!("settings_{name}_{w}x{h}_end"), &end);
+            }
         }
     }
 }
@@ -4078,6 +4094,46 @@ fn golden_held_open_120() {
         lines.last()
     );
     golden("board_held_open_120x30", &lines);
+}
+
+/// The crown answered this card's question (T-569): the open card says what
+/// it chose, `answered by T-411: Okta`, in the quiet register under the
+/// title, while the claude works on the answer. A resting card stays one
+/// line, and a stop's own words are not drawn as an answer.
+#[test]
+fn golden_crown_answered_open_120() {
+    let mut board = fixture(false);
+    let rec = board.sessions.iter_mut().find(|s| s.ticket == ulid_n(4)).unwrap();
+    rec.detail = Some("answered by T-411: Okta".into());
+    let mut app = app_graphite(board);
+    app.cursor_col = 1;
+    app.cursor_row = Some(1);
+    let lines = render(&app, 120, 30);
+    let at = lines.iter().position(|l| l.contains("Adopt drawer import")).expect("the card");
+    assert!(
+        lines[at + 1].contains("answered by T-411: Okta"),
+        "the line sits under the title:\n{}",
+        lines.join("\n")
+    );
+    golden("board_crown_answered_open_120x30", &lines);
+    app.cursor_row = Some(0);
+    let resting = render(&app, 120, 30);
+    assert!(!resting.iter().any(|l| l.contains("answered by")), "{}", resting.join("\n"));
+    // A stop's detail is its question, which the needs-you mark says, and
+    // a restart's `Unknown` may still hold it: neither is an answer.
+    let mut app = app_graphite(fixture(true));
+    app.cursor_col = 1;
+    app.cursor_row = Some(1);
+    let stopped = render(&app, 120, 30);
+    assert!(!stopped.iter().any(|l| l.contains("rm -rf")), "{}", stopped.join("\n"));
+    let mut board = fixture(true);
+    let rec = board.sessions.iter_mut().find(|s| s.ticket == ulid_n(4)).unwrap();
+    rec.state = SessionState::unknown();
+    let mut app = app_graphite(board);
+    app.cursor_col = 1;
+    app.cursor_row = Some(1);
+    let restarted = render(&app, 120, 30);
+    assert!(!restarted.iter().any(|l| l.contains("rm -rf")), "{}", restarted.join("\n"));
 }
 
 /// The keys row is the held ask's, and only while the keys act on this card:

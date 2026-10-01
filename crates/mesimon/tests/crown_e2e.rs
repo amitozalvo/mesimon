@@ -641,12 +641,14 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let touch = touch.expect("the crown's filing is a touch");
     assert_eq!((touch.action.as_str(), touch.from), ("created", Some(a)));
 
-    // ---- the shim: fifteen tools, and `get_ticket` with a key -----------------
+    // ---- the shim: sixteen tools, and `get_ticket` with a key -----------------
     let mut shim = Shim::start(&sock, sa);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
     let listed = shim.rpc("tools/list", json!({}));
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 15);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 16);
+    let r = shim.call("answer_agent", json!({ "key": kb, "seen": "x", "index": 0 }));
+    assert_eq!(r["isError"], true, "request is required by the tool: {r}");
     let r = shim.call("sleep_agent", json!({ "key": kb }));
     assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
     let r = shim.call("ask_agent", json!({ "key": kb, "text": "x" }));
@@ -1969,6 +1971,8 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
             for words in [
                 opening.as_str(),
                 "a person answers it in the pane or from Remote Control",
+                // T-569: the crown's own road, where the board lets it.
+                "or answer_agent where the board lets the crown answer",
                 "get_ticket (needs_you)",
                 "would wait behind the answer",
             ] {
@@ -2009,4 +2013,266 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
         other => panic!("ask_agent after the answer: {other:?}"),
     }
     assert!(asked_touch(&mut c));
+}
+
+/// The crown answers a worker's question where the person lets it (T-569).
+/// The stub paints Claude Code's one-question dialog on its screen, so the
+/// answer walks Remote Control's own screen-verified road: off by default,
+/// no wake and a refusal naming the row; on, a person's agent is still the
+/// person's; a question from the crown's own worker wakes the crown without
+/// its words; a stale request, a plan and a two-question dialog are refused;
+/// the answer's receipt waits for the stub's `PostToolUse` and says
+/// `answered`, the feed carries the label with actor `agent`, the card says
+/// `♛ answered` and `answered by` until the next edge, and that turn's end
+/// wakes the crown with `answered your ask`.
+#[test]
+fn the_crown_answers_a_question_where_the_person_lets_it() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\n\
+                        printf 'Which auth provider?\\n\\342\\235\\257 1. Okta\\n  2. Auth0\\n  \
+                        3. Type something.\\nEnter to select \\302\\267 Esc to cancel\\n'\n\
+                        while IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) = Harness::boot_with_env(
+        "crown_answer",
+        Some(STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_answer");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let typed = || std::fs::read_to_string(&got).unwrap_or_default();
+    let landed = |probe: &str| typed().contains(probe);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let asking = |s: &SessionState| {
+        *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Question }
+    };
+    let question = |request: &str| {
+        json!({
+            "tool_name": "AskUserQuestion",
+            "tool_use_id": request,
+            "tool_input": { "questions": [{
+                "question": "Which auth provider?",
+                "header": "Auth",
+                "options": [
+                    { "label": "Okta", "description": "" },
+                    { "label": "Auth0", "description": "" }
+                ],
+                "multiSelect": false
+            }]}
+        })
+        .to_string()
+    };
+
+    let a = create(&mut c, "coordinate");
+    let p = create(&mut c, "the person's own");
+    let w = create(&mut c, "mesimon-probe-569 worker");
+    let (ka, kp, kw) = (key_of(&mut c, a), key_of(&mut c, p), key_of(&mut c, w));
+    let sa = spawn(&mut c, a);
+    let sp = spawn(&mut c, p);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    for s in [sa, sp] {
+        start(&mut c, s);
+        stop(&mut c, s);
+    }
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+    let answer_cmd = |c: &mut TestClient, key: &str, request: &str, index, text: Option<&str>| {
+        let v = read(c, sa, key).unwrap();
+        Command::AgentAnswerTicket {
+            key: key.into(),
+            seen: v.seen,
+            request: request.into(),
+            index,
+            text: text.map(str::to_string),
+        }
+    };
+    let refused = |c: &mut TestClient, key: &str, request: &str, index, text| {
+        let cmd = answer_cmd(c, key, request, index, text);
+        match c.send(Principal::Agent { session: sa }, cmd) {
+            Response::Err { message } => message,
+            other => panic!("answer_agent {key} {request}: {other:?}"),
+        }
+    };
+
+    // ---- off, the default: no wake, and the refusal names the row ----------
+    assert!(!c.board().crown_answers, "off by default");
+    hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &question("toolu_a1"));
+    c.await_state(ws, "asking", asking);
+    settle();
+    assert!(!landed("asks a question"), "off, the person is the one to wake");
+    let why = refused(&mut c, &kw, "toolu_a1", Some(0), None);
+    assert!(why.contains("Settings → Agents → Crown answers questions"), "{why}");
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &question("toolu_a1"));
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+
+    // ---- on: an agent may not switch it, a person does, and it is kept -----
+    match c.send(Principal::Agent { session: sa }, Command::SetCrownAnswers { on: true }) {
+        Response::Err { .. } => {}
+        other => panic!("an agent switching it on: {other:?}"),
+    }
+    assert!(!c.board().crown_answers);
+    assert!(matches!(c.request(Command::SetCrownAnswers { on: true }), Response::Ok));
+    let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
+    assert!(file.contains("crown_answers = true"), "{file}");
+    assert!(!file.contains("crown_sends = true"), "a switch of its own: {file}");
+
+    // ---- a person's agent: the one who started it answers it ---------------
+    start(&mut c, sp);
+    hook_send(&hook_sock, &sp.to_string(), "PreToolUse", &question("toolu_p1"));
+    c.await_state(sp, "the person's asking", asking);
+    let why = refused(&mut c, &kp, "toolu_p1", Some(0), None);
+    assert!(why.contains("a person started") && why.contains("answers it"), "{why}");
+    settle();
+    assert!(!landed(&format!("{kp} \"the person's own\" asks")), "nor does it wake the crown");
+    hook_send(&hook_sock, &sp.to_string(), "PostToolUse", &question("toolu_p1"));
+    c.await_state(sp, "running", |s| *s == SessionState::Running);
+    stop(&mut c, sp);
+
+    // ---- the crown's worker asks: the crown wakes, without the words -------
+    hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &question("toolu_a2"));
+    c.await_state(ws, "asking", asking);
+    let wake = format!("{kw} \"mesimon-probe-569 worker\" asks a question");
+    wait_until(std::time::Duration::from_secs(10), "the question's wake on the crown", || {
+        landed(&wake)
+    });
+    assert!(!typed().contains("Which auth provider"), "the question's words never ride a wake");
+    start(&mut c, sa);
+    let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the question");
+    assert_eq!(needs.request.as_deref(), Some("toolu_a2"));
+
+    // ---- refusals in words -------------------------------------------------
+    let why = refused(&mut c, &kw, "toolu_a1", Some(0), None);
+    assert!(why.contains("dialog changed; read get_ticket again"), "{why}");
+    let why = refused(&mut c, &kw, "toolu_a2", Some(5), None);
+    assert!(why.contains("out of range") && why.contains("2 options"), "{why}");
+    let why = refused(&mut c, &kw, "toolu_a2", None, Some("one\ntwo"));
+    assert!(why.contains("one line"), "{why}");
+    let why = refused(&mut c, &ka, "toolu_a2", Some(0), None);
+    assert!(why.contains("own ticket"), "{why}");
+    let mut stale = answer_cmd(&mut c, &kw, "toolu_a2", Some(0), None);
+    if let Command::AgentAnswerTicket { seen, .. } = &mut stale {
+        *seen = Some("0000000000000000".into());
+    }
+    match c.send(Principal::Agent { session: sa }, stale) {
+        Response::Err { message } => assert!(message.contains("changed since it was read")),
+        other => panic!("a stale stamp: {other:?}"),
+    }
+    assert!(
+        !std::fs::read_to_string(&feed_path).unwrap().contains("\"answer_agent\""),
+        "a refusal writes nothing"
+    );
+
+    // ---- answered: the receipt waits for the dialog's own hook edge --------
+    let lines = typed().lines().count();
+    let cmd = answer_cmd(&mut c, &kw, "toolu_a2", Some(0), None);
+    let sock = h.paths.orch_sock();
+    let call = std::thread::spawn(move || {
+        TestClient::connect(&sock).send(Principal::Agent { session: sa }, cmd)
+    });
+    wait_until(std::time::Duration::from_secs(5), "the answer's Enter in W's pane", || {
+        typed().lines().count() > lines
+    });
+    assert!(!call.is_finished(), "the receipt waits for the hook edge");
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &question("toolu_a2"));
+    match call.join().unwrap() {
+        Response::AgentAnswered { key, outcome, reason, answer, seen } => {
+            assert_eq!((key.as_str(), outcome.as_str()), (kw.as_str(), "answered"));
+            assert_eq!((reason, answer.as_str()), (None, "Okta"));
+            assert!(seen.is_some());
+        }
+        other => panic!("answer_agent: {other:?}"),
+    }
+    assert!(
+        touches(&mut c).iter().any(|t| t.ticket == w && t.action == "answered"),
+        "♛ answered on the card"
+    );
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert!(
+        feed.lines().any(|l| l.contains("\"cmd\":\"answer_agent\"")
+            && l.contains("\"actor\":\"agent\"")
+            && l.contains("\"answer\":\"Okta\"")
+            && l.contains("\"outcome\":\"answered\"")),
+        "{feed}"
+    );
+    let line = format!("answered by {ka}: Okta");
+    let detail = |c: &mut TestClient| {
+        c.board().sessions.iter().find(|s| s.id == ws).and_then(|s| s.detail.clone())
+    };
+    assert_eq!(detail(&mut c).as_deref(), Some(line.as_str()));
+    c.await_state(ws, "running on the answer", |s| *s == SessionState::Running);
+    assert_eq!(detail(&mut c).as_deref(), Some(line.as_str()), "kept through its own edge");
+
+    // ---- the turn that took the answer wakes the crown when it ends --------
+    stop(&mut c, sa);
+    stop(&mut c, ws);
+    assert_eq!(detail(&mut c), None, "gone at the next state edge");
+    wait_until(std::time::Duration::from_secs(10), "the answer's turn waking the crown", || {
+        landed(&format!("{kw} \"mesimon-probe-569 worker\" answered your ask"))
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- a plan is a person's ---------------------------------------------
+    start(&mut c, ws);
+    let plan = json!({
+        "tool_name": "ExitPlanMode",
+        "tool_use_id": "toolu_plan",
+        "tool_input": { "plan": "Ship it." }
+    })
+    .to_string();
+    let plan = plan.as_str();
+    hook_send(&hook_sock, &ws.to_string(), "PreToolUse", plan);
+    c.await_state(ws, "on its plan", |s| matches!(s, SessionState::RequiresAction { .. }));
+    let why = refused(&mut c, &kw, "toolu_plan", Some(0), None);
+    assert!(why.contains("stopped on a plan") && why.contains("a person answers it"), "{why}");
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", plan);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+
+    // ---- several questions at once are a person's --------------------------
+    let two = json!({
+        "tool_name": "AskUserQuestion",
+        "tool_use_id": "toolu_q2",
+        "tool_input": { "questions": [
+            { "question": "Which provider?", "header": "Auth",
+              "options": [{ "label": "Okta", "description": "" }], "multiSelect": false },
+            { "question": "Which region?", "header": "Region",
+              "options": [{ "label": "eu", "description": "" }], "multiSelect": false }
+        ]}
+    })
+    .to_string();
+    hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &two);
+    c.await_state(ws, "asking two", asking);
+    let why = refused(&mut c, &kw, "toolu_q2", Some(0), None);
+    assert!(why.contains("asks 2 questions") && why.contains("a person answers"), "{why}");
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &two);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+
+    // ---- off again: the crown's answer is refused once more ----------------
+    assert!(matches!(c.request(Command::SetCrownAnswers { on: false }), Response::Ok));
+    hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &question("toolu_a3"));
+    c.await_state(ws, "asking", asking);
+    let why = refused(&mut c, &kw, "toolu_a3", Some(0), None);
+    assert!(why.contains("Crown answers questions is off"), "{why}");
 }

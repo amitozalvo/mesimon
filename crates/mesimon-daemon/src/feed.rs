@@ -146,6 +146,27 @@ impl FeedWriter {
         }));
     }
 
+    /// A board line that carries the decision itself (T-569): the crown's
+    /// answer to a worker's question is a person-visible decision, unlike
+    /// an ask's words, so the option label or the text rides the line.
+    pub fn board_answer(
+        &mut self,
+        actor: &str,
+        cmd: &str,
+        ticket: Option<ulid::Ulid>,
+        outcome: &str,
+        answer: &str,
+    ) {
+        self.push(json!({
+            "kind": "board",
+            "actor": actor,
+            "cmd": cmd,
+            "ticket": ticket,
+            "outcome": outcome,
+            "answer": answer,
+        }));
+    }
+
     /// ≤1 `write()` per call; rotates by size afterwards, off the hot path.
     pub fn flush(&mut self) -> Result<()> {
         if self.pending.is_empty() {

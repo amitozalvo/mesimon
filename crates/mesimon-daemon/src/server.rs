@@ -615,6 +615,16 @@ pub struct Daemon {
     /// that turn's end: the crown's ask comes back as an answer, a
     /// merge-flow sentence as a merge step the crown is not woken for.
     turn_asks: HashMap<ulid::Ulid, TurnAsk>,
+    /// The session whose dialog the `answer_agent` call in hand queued an
+    /// answer for (T-569): the writer loop parks that call's reply with the
+    /// delivery (`control_park_reply`), which answers it when it settles.
+    answer_waits: Option<uuid::Uuid>,
+    /// The card's line after the crown answered a question (T-569),
+    /// `answered by T-411: Okta`, by the session it rides in `detail`:
+    /// kept through the question's own leave, which is the answer landing,
+    /// and gone at the next state edge (`apply_change`). In memory: a
+    /// restart's first edge would clear it anyway.
+    crown_answer_lines: HashMap<uuid::Uuid, String>,
     /// The machine's agent tiers (T-443), `tiers.toml` as last read — the
     /// layer under `board.tiers`, re-read when another board changes it.
     machine_tiers: tiers::MachineTierCache,
@@ -1045,6 +1055,8 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_heard: HashMap::new(),
         crown_landed: Vec::new(),
         turn_asks: HashMap::new(),
+        answer_waits: None,
+        crown_answer_lines: HashMap::new(),
         machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
         usage: crate::usage::UsageState::new(crate::usage::shared_file()),
         tier_set_at: HashMap::new(),
@@ -1201,17 +1213,27 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Team(done) => d.on_team(done),
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
-                let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
-                let (delivered, receipt) = channel();
-                let _ = reply
-                    .send(ClientReply { response: resp, delivered: shutdown.then_some(delivered) });
-                if shutdown {
-                    // Sending to the connection thread is not delivery: main
-                    // may otherwise exit before that thread writes the final
-                    // newline. A stalled/disconnected client cannot hold the
-                    // daemon indefinitely.
-                    let _ = receipt.recv_timeout(Duration::from_secs(2));
-                    break;
+                // `answer_agent` (T-569) answers when its delivery settles:
+                // the reply waits with it, and the shim's call with the reply.
+                let reply = match d.answer_waits.take() {
+                    Some(id) => d.control_park_reply(id, reply),
+                    None => Some(reply),
+                };
+                if let Some(reply) = reply {
+                    let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
+                    let (delivered, receipt) = channel();
+                    let _ = reply.send(ClientReply {
+                        response: resp,
+                        delivered: shutdown.then_some(delivered),
+                    });
+                    if shutdown {
+                        // Sending to the connection thread is not delivery:
+                        // main may otherwise exit before that thread writes
+                        // the final newline. A stalled/disconnected client
+                        // cannot hold the daemon indefinitely.
+                        let _ = receipt.recv_timeout(Duration::from_secs(2));
+                        break;
+                    }
                 }
             }
         }
@@ -2095,6 +2117,7 @@ impl Daemon {
             Command::SetParkAfterMinutes { minutes } => self.set_park_after_minutes(minutes),
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
             Command::SetCrownSends { on } => self.set_crown_sends(on),
+            Command::SetCrownAnswers { on } => self.set_crown_answers(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetUsageWants { claude, codex } => {
                 if self.usage.set_wants(conn_key(stream), Wants { claude, codex }) {
@@ -2301,6 +2324,7 @@ impl Daemon {
             | Command::AgentStartTicket { .. }
             | Command::AgentSleepTicket { .. }
             | Command::AgentAskTicket { .. }
+            | Command::AgentAnswerTicket { .. }
             | Command::AgentRaiseHand { .. } => {
                 Response::Err { message: "agent commands require an agent principal".into() }
             }
@@ -3861,6 +3885,7 @@ impl Daemon {
         }
         rec.state = change.to.clone();
         rec.confidence = change.confidence;
+        let stop_words = detail.is_some();
         if change.from != change.to {
             rec.state_changed_at = Some(now);
             rec.waiting_since = if attention::is_attention(&change.to) { Some(now) } else { None };
@@ -3874,6 +3899,22 @@ impl Daemon {
                 }
             }
             _ => rec.detail = None,
+        }
+        // The crown's answer reads on the card until the next state edge
+        // (T-569): kept through the question's own leave — the answer
+        // landing — and through a commit that moved nothing, and gone at
+        // any other edge, or under a stop's own words.
+        if let Some(line) = self.crown_answer_lines.get(&id) {
+            let keeps = if change.from == change.to {
+                !stop_words
+            } else {
+                change.from == SessionState::RequiresAction { reason: Reason::Question }
+            };
+            if keeps {
+                rec.detail = Some(line.clone());
+            } else {
+                self.crown_answer_lines.remove(&id);
+            }
         }
         let snapshot = rec.clone();
         self.feed.session_state(&snapshot, &change.from, hook);
@@ -3929,6 +3970,13 @@ impl Daemon {
         // predicate for words queued after the stop (T-565).
         if change.to.question_stop() {
             self.hold_queued_on_question(id);
+        }
+        // A question from a claude the crown started wakes the crown (T-569)
+        // where the board lets it answer; off, the person is the one to
+        // wake, and the card's needs-you already does. Only a question: a
+        // secret, a form, a permission or a plan is never the crown's.
+        if crownwake::asks_the_crown(self.board.crown_answers, snapshot.kind, change) {
+            self.note_crown_wake(snapshot.ticket, WakeCause::Asked, None, None);
         }
         // A turn ended, or a target died: the queued asks look again. The
         // settle that lands `Idle{EndTurn}` comes through here from the
@@ -4342,8 +4390,9 @@ impl Daemon {
                     return Response::Err {
                         message: format!(
                             "{key}'s agent is asking a question; a person answers it in the pane \
-                             or from Remote Control, and the crown reads it with get_ticket \
-                             (needs_you). Words queued now would wait behind the answer."
+                             or from Remote Control, or answer_agent where the board lets the \
+                             crown answer, and the crown reads it with get_ticket (needs_you). \
+                             Words queued now would wait behind the answer."
                         ),
                     };
                 }
@@ -4396,6 +4445,50 @@ impl Daemon {
                     seen: Some(self.seen_token(target)),
                     held_for_person,
                     held_because,
+                }
+            }
+            // The crown's answer (T-569): a question an agent the crown
+            // started stopped on, answered by Remote Control's own
+            // screen-verified road. The structure is enforced here and in
+            // `crown_dialog_answer`; which questions stay a person's is the
+            // crown's judgement, described in the tool and the receipt. The
+            // receipt waits for the hook edge: this arm queues the walk and
+            // the writer parks the call's reply with it (`answer_waits`).
+            Command::AgentAnswerTicket { key, seen, request, index, text } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                if target == ticket {
+                    return Response::Err {
+                        message: format!(
+                            "{key} is this session's own ticket; answer_agent is for another \
+                             ticket's agent"
+                        ),
+                    };
+                }
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                let key = self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key);
+                match self.crown_dialog_answer(ticket, session, target, &key, &request, index, text)
+                {
+                    Ok(id) => {
+                        self.answer_waits = Some(id);
+                        // What a caller that is not the writer loop reads:
+                        // the answer is on its way, nothing yet confirmed.
+                        Response::AgentAnswered {
+                            key,
+                            outcome: "awaiting_delivery".into(),
+                            reason: None,
+                            answer: String::new(),
+                            seen: Some(self.seen_token(target)),
+                        }
+                    }
+                    Err(message) => Response::Err { message },
                 }
             }
             Command::AgentStartTicket { key, seen, plan } => {
@@ -4543,7 +4636,7 @@ impl Daemon {
                 let by = Principal::Agent { session };
                 self.agent_raise_hand(&by, ticket, &reason)
             }
-            // Unreachable: `agent_allows` above admits exactly sixteen commands.
+            // Unreachable: `agent_allows` above admits exactly seventeen commands.
             _ => Response::Err { message: "not available to an agent session".into() },
         }
     }
@@ -9466,6 +9559,22 @@ impl Daemon {
             if !on {
                 self.hold_crown_sends();
             }
+            self.persist_and_notify();
+        }
+        Response::Ok
+    }
+
+    /// `Command::SetCrownAnswers` (T-569): whether the crown may answer a
+    /// question an agent it started stopped on, and is woken by one. Off
+    /// stops an answer still walking its keys at its next step (`state_changed`,
+    /// `crown_answer_allowed`); a wake already owed is still said, and the
+    /// crown's answer is then refused in words naming this row.
+    fn set_crown_answers(&mut self, on: bool) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.crown_answers != on {
+            self.board.crown_answers = on;
             self.persist_and_notify();
         }
         Response::Ok

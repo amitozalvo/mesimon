@@ -1700,6 +1700,15 @@ pub struct Board {
     /// Off by default; a build that drops it only takes authority away.
     #[serde(default)]
     pub crown_sends: bool,
+    /// The crown answers questions (T-569): `answer_agent` may answer the
+    /// one-choice `AskUserQuestion` an agent the crown STARTED stopped on,
+    /// and such a question wakes the crown. Separate from `crown_sends`: a
+    /// person who let the crown's words through at idle has not consented to
+    /// answers in a dialog. A person's agent, and every stop that is not a
+    /// question, stays the person's whatever this says. Off by default; a
+    /// build that drops it only takes authority away.
+    #[serde(default)]
+    pub crown_answers: bool,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
     /// The tag registry: the vocabulary each axis offers, in the order it was
@@ -1872,6 +1881,7 @@ impl Default for Board {
             park_after_minutes: 0,
             crown_budget: DEFAULT_CROWN_BUDGET,
             crown_sends: false,
+            crown_answers: false,
             next_key: 0,
             tags: Vec::new(),
             tags_seeded: false,

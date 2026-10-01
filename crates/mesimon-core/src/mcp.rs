@@ -61,6 +61,27 @@ pub const HANDLED_METHODS: [&str; 5] =
 
 // ---------------------------------------------------------------- tool text
 
+/// The questions that stay a person's (T-569), as one clause: the
+/// `answer_agent` receipt carries it (`PERSONS_QUESTIONS`) and
+/// `CROWN_WAKES` ends on it, so the two cannot drift; the tool's own
+/// description says the same in fewer bytes. mesimon does not classify a
+/// question's words — the structure is the daemon's (only a question, only a
+/// worker the crown started, only under the switch, only a shape the phone
+/// verifies, always announced), and this is the judgement left to the crown,
+/// described.
+macro_rules! persons_questions {
+    () => {
+        "A question about secrets or credentials, spend or quota, a destructive or irreversible \
+         act (deleting, force-pushing, publishing, sending to people), a preference the \
+         ticket's brief leaves open, or scope beyond the brief is a person's to answer: \
+         raise_hand on the crown's own ticket, naming the worker and the question, puts one \
+         card in front of the person."
+    };
+}
+
+/// See `persons_questions!`.
+pub const PERSONS_QUESTIONS: &str = persons_questions!();
+
 /// What a crowned agent is told about the board's wake (T-414, T-537), in
 /// the `start_agent` and `ask_agent` receipts and on its own `get_ticket`
 /// view: transient result data, never tool text, so it may instruct. It is
@@ -69,22 +90,25 @@ pub const HANDLED_METHODS: [&str; 5] =
 /// board would tell it, and that monitor made it read as busy, which held
 /// the very wake it was waiting for (`session_idle`). It also says where a
 /// worker's question is read (T-566): a crown on a friend's board saw only
-/// `needs-you`, guessed, and sent words that could not land.
-pub const CROWN_WAKES: &str = "The board wakes this session on its own: when an agent the crown \
-                               started delivers, is merged, answers the crown's ask or raises \
-                               its hand, one sentence naming the ticket and what changed arrives \
-                               as this session's next prompt, once it is idle. Nothing needs \
-                               polling. A background task or monitor left running makes this \
-                               session read as busy, and the wake and every queued word wait \
-                               until it ends. A worker whose branch is merged is finished: \
-                               sleep_agent parks it, which frees its seat in the crown's \
-                               budget, and archive_ticket then takes its ticket off the board \
-                               and reclaims a merged worktree. That is the crown's to do, not a \
-                               person's to be asked for; a person's own agent is the one the \
-                               crown may not park. A worker stopped on a question reads \
-                               needs-you, and get_ticket on its ticket carries the question \
-                               (needs_you: the reason, the words, the options). The question is \
-                               a person's to answer, and ask_agent is refused while it stands.";
+/// `needs-you`, guessed, and sent words that could not land; and which
+/// questions the crown may answer (T-569).
+pub const CROWN_WAKES: &str = concat!(
+    "The board wakes this session on its own: when an agent the crown started delivers, is \
+     merged, answers the crown's ask or raises its hand, one sentence naming the ticket and \
+     what changed arrives as this session's next prompt, once it is idle. Nothing needs \
+     polling. A background task or monitor left running makes this session read as busy, and \
+     the wake and every queued word wait until it ends. A worker whose branch is merged is \
+     finished: sleep_agent parks it, which frees its seat in the crown's budget, and \
+     archive_ticket then takes its ticket off the board and reclaims a merged worktree. That \
+     is the crown's to do, not a person's to be asked for; a person's own agent is the one the \
+     crown may not park. A worker stopped on a question reads needs-you, and get_ticket on its \
+     ticket carries the question (needs_you: the reason, the words, the options, the \
+     request); ask_agent is refused while it stands. Where the board lets the crown answer \
+     (Settings → Agents → Crown answers questions), a question an agent the crown started \
+     asks wakes this session and answer_agent answers it; every other stop, an agent a person \
+     started, and a question on a board that does not let the crown answer stay a person's. ",
+    persons_questions!()
+);
 
 /// Words that turn a description into an instruction. Tool text is injected
 /// into every request; it may describe, and it may not tell the model what to
@@ -511,6 +535,35 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        // The crown's answer (T-569): Remote Control's screen-verified
+        // dialog road, for a question an agent the crown started asks, on
+        // a board whose person switched `crown_answers` on. The daemon
+        // enforces the structure; which questions stay a person's is the
+        // crown's judgement, described here and in the receipt.
+        json!({
+            "name": "answer_agent",
+            "description": "Answers a question another ticket's agent stops on (crown \
+                            only, where the board lets it; an agent the crown started): \
+                            request is needs_you.request from get_ticket, index an option, \
+                            text words instead. A person's question: secrets or credentials, \
+                            spend or quota, a destructive or irreversible act (deleting, \
+                            force-pushing, publishing, sending to people), a preference the \
+                            brief leaves open, scope beyond it; there, raise_hand names \
+                            the worker and the question. Outcome: answered, input_sent or \
+                            unknown.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string" },
+                    "seen": { "type": "string" },
+                    "request": { "type": "string" },
+                    "index": { "type": "integer", "description": "Optional. From 0." },
+                    "text": { "type": "string" },
+                },
+                "required": ["key", "seen", "request"],
+                "additionalProperties": false,
+            },
+        }),
     ]
 }
 
@@ -592,6 +645,14 @@ pub enum ToolCall {
         text: String,
         seen: String,
         plan: bool,
+    },
+    /// Exactly one of `index` and `text` (T-569).
+    AnswerAgent {
+        key: String,
+        seen: String,
+        request: String,
+        index: Option<usize>,
+        text: Option<String>,
     },
     CreateTicket {
         title: String,
@@ -705,6 +766,37 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             seen: word(args, "seen")?,
             plan: flag(args, "plan")?,
         }),
+        "answer_agent" => {
+            let index = match args.get("index") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    v.as_u64()
+                        .map(|i| i as usize)
+                        .ok_or_else(|| format!("index must be a whole number, not {v}"))?,
+                ),
+            };
+            // Untrimmed: the words are typed into the dialog as given, and
+            // the daemon refuses a newline rather than mending one.
+            let text = match args.get("text") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(t)) => Some(t.clone()),
+                Some(other) => return Err(format!("text must be a string, not {other}")),
+            };
+            match (&index, &text) {
+                (Some(_), Some(_)) => {
+                    return Err("answer_agent takes index or text, not both".into())
+                }
+                (None, None) => return Err("answer_agent needs index or text".into()),
+                _ => {}
+            }
+            Ok(ToolCall::AnswerAgent {
+                key: word(args, "key")?,
+                seen: word(args, "seen")?,
+                request: word(args, "request")?,
+                index,
+                text,
+            })
+        }
         "read_attachment" => Ok(ToolCall::ReadAttachment {
             attachment: args
                 .get("attachment")
@@ -841,7 +933,7 @@ fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Fifteen tools, sixteen commands (`get_ticket` with a
+        // The tier. Sixteen tools, seventeen commands (`get_ticket` with a
         // key is its own command on the wire).
         Command::AgentGetTicket
         | Command::AgentListBoard
@@ -869,6 +961,11 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // a person sends them. `PromptSession` itself stays below: the
         // person's send is the road, and there is no other.
         | Command::AgentAskTicket { .. }
+        // The crown's answer (T-569): one key walk into a dialog an agent
+        // the crown started stopped on, judged by the daemon against the
+        // board's `crown_answers` switch, the agent's provenance and the
+        // dialog's shape. `PromptSession` stays below.
+        | Command::AgentAnswerTicket { .. }
         // T1 ANNOTATE: notes on the caller's OWN ticket. Unlike a tag, a
         // note is what D10 enumerated a tier for, and it is the one channel
         // through which the ticket's description reaches the agent without
@@ -1017,6 +1114,9 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // from between one agent's words and another's turn. Only the
         // person may step out.
         | Command::SetCrownSends { .. }
+        // T-569: the crown answering a worker's question is a decision made
+        // for the person. Only the person may hand that over.
+        | Command::SetCrownAnswers { .. }
         // Where the status line sits over the user's own panes: chrome, and
         // theirs. An agent moving it would be redecorating a screen it is
         // not looking at.
@@ -1110,7 +1210,8 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
         | Command::AgentArchiveTicket { .. }
         | Command::AgentStartTicket { .. }
         | Command::AgentSleepTicket { .. }
-        | Command::AgentAskTicket { .. } => AgentTools::Full,
+        | Command::AgentAskTicket { .. }
+        | Command::AgentAnswerTicket { .. } => AgentTools::Full,
         _ => return None,
     })
 }
@@ -1121,7 +1222,7 @@ pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
         "get_ticket" | "list_board" | "read_note" | "read_attachment" => AgentTools::Read,
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket" | "create_ticket" | "rename_ticket" | "set_workspace" | "archive_ticket"
-        | "start_agent" | "sleep_agent" | "ask_agent" => AgentTools::Full,
+        | "start_agent" | "sleep_agent" | "ask_agent" | "answer_agent" => AgentTools::Full,
         _ => return None,
     })
 }
@@ -1254,6 +1355,16 @@ mod tests {
                 "ask_agent",
             ),
             (
+                Command::AgentAnswerTicket {
+                    key: "T-1".into(),
+                    seen: None,
+                    request: "toolu_1".into(),
+                    index: Some(0),
+                    text: None,
+                },
+                "answer_agent",
+            ),
+            (
                 Command::AgentCreateTicket {
                     title: "x".into(),
                     column: None,
@@ -1314,9 +1425,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_fifteen_tools() {
+    fn exactly_sixteen_tools() {
         let t = tools();
-        assert_eq!(t.len(), 15);
+        assert_eq!(t.len(), 16);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -1335,9 +1446,66 @@ mod tests {
                 "archive_ticket",
                 "start_agent",
                 "sleep_agent",
-                "ask_agent"
+                "ask_agent",
+                "answer_agent"
             ]
         );
+    }
+
+    /// The crown's answer (T-569): key, seen and request are required words,
+    /// exactly one of index and text, and a wrongly shaped argument is an
+    /// answer the model can read.
+    #[test]
+    fn answer_agent_parses_and_refuses() {
+        assert_eq!(
+            parse_tool_call(
+                "answer_agent",
+                &json!({ "key": " T-4 ", "seen": "abc", "request": "toolu_1", "index": 1 })
+            ),
+            Ok(ToolCall::AnswerAgent {
+                key: "T-4".into(),
+                seen: "abc".into(),
+                request: "toolu_1".into(),
+                index: Some(1),
+                text: None,
+            })
+        );
+        assert_eq!(
+            parse_tool_call(
+                "answer_agent",
+                &json!({ "key": "T-4", "seen": "abc", "request": "toolu_1", "text": " Purple" })
+            ),
+            Ok(ToolCall::AnswerAgent {
+                key: "T-4".into(),
+                seen: "abc".into(),
+                request: "toolu_1".into(),
+                index: None,
+                text: Some(" Purple".into()),
+            }),
+            "the words go in as given"
+        );
+        let base = json!({ "key": "T-4", "seen": "abc", "request": "toolu_1" });
+        assert!(parse_tool_call("answer_agent", &base)
+            .unwrap_err()
+            .contains("needs index or text"));
+        let mut both = base.clone();
+        both["index"] = json!(0);
+        both["text"] = json!("x");
+        assert!(parse_tool_call("answer_agent", &both).unwrap_err().contains("not both"));
+        for bad in [json!(-1), json!(1.5), json!("1")] {
+            let mut v = base.clone();
+            v["index"] = bad;
+            assert!(parse_tool_call("answer_agent", &v).unwrap_err().contains("whole number"));
+        }
+        let mut v = base.clone();
+        v["text"] = json!(7);
+        assert!(parse_tool_call("answer_agent", &v).unwrap_err().contains("text must be"));
+        for missing in ["key", "seen", "request"] {
+            let mut v = base.clone();
+            v["index"] = json!(0);
+            v.as_object_mut().unwrap().remove(missing);
+            assert!(parse_tool_call("answer_agent", &v).is_err(), "{missing} is required");
+        }
     }
 
     /// The crown's arguments (T-411): a key is a trimmed word, `seen` is
@@ -1589,10 +1757,53 @@ mod tests {
     /// the tool-text lint says so.
     #[test]
     fn the_crown_is_told_where_a_question_is_read() {
-        for words in ["needs-you", "needs_you", "a person's to answer", "ask_agent is refused"] {
+        for words in [
+            "needs-you",
+            "needs_you",
+            "a person's to answer",
+            "ask_agent is refused",
+            // T-569: where the crown may answer, and what stays a person's.
+            "Crown answers questions",
+            "answer_agent answers it",
+            "an agent a person started",
+        ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
+        assert!(CROWN_WAKES.ends_with(PERSONS_QUESTIONS), "one clause, said once");
         assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
+        assert_eq!(lint_tool_text(PERSONS_QUESTIONS), Ok(()));
+    }
+
+    /// T-569: a person's question stays a person's. mesimon does not read
+    /// the words; the crown is told which questions are not its to answer,
+    /// in the tool, the receipt's clause and the wake words alike, and where
+    /// such a question goes instead.
+    #[test]
+    fn the_crown_is_told_which_questions_are_a_person_s() {
+        let registry = tools();
+        let tool = registry.iter().find(|t| t["name"] == "answer_agent").unwrap();
+        let description = tool["description"].as_str().unwrap();
+        for text in [description, PERSONS_QUESTIONS, CROWN_WAKES] {
+            for case in [
+                "secrets or credentials",
+                "spend or quota",
+                "destructive or irreversible",
+                "deleting, force-pushing, publishing, sending to people",
+                "leaves open",
+                "scope beyond",
+                "raise_hand",
+                "the worker and the question",
+            ] {
+                assert!(text.contains(case), "{case:?} is named in {text:?}");
+            }
+        }
+        for words in ["crown only", "an agent the crown started", "needs_you.request"] {
+            assert!(description.contains(words), "answer_agent says {words:?}");
+        }
+        for outcome in ["answered", "input_sent", "unknown"] {
+            assert!(description.contains(outcome), "answer_agent names {outcome}");
+        }
+        lint_tool_text(description).unwrap();
     }
 
     #[test]
@@ -1764,10 +1975,10 @@ mod tests {
 
     /// Every tool has a command, and every allowed command has a tool. A
     /// command an agent may send that no tool can reach would be a hole nobody
-    /// is looking at. Sixteen commands for fifteen tools: `get_ticket` with
-    /// a key rides its own command (T-411).
+    /// is looking at. Seventeen commands for sixteen tools: `get_ticket`
+    /// with a key rides its own command (T-411).
     #[test]
-    fn the_tier_is_exactly_sixteen_commands() {
+    fn the_tier_is_exactly_seventeen_commands() {
         let allowed = [
             Command::AgentGetTicket,
             Command::AgentReadTicket { key: "T-1".into() },
@@ -1805,6 +2016,13 @@ mod tests {
                 text: "x".into(),
                 seen: None,
                 plan: false,
+            },
+            Command::AgentAnswerTicket {
+                key: "T-1".into(),
+                seen: None,
+                request: "toolu_1".into(),
+                index: None,
+                text: Some("x".into()),
             },
         ];
         for c in &allowed {
@@ -1847,6 +2065,7 @@ mod tests {
             Command::SetParkAfterMinutes { minutes: 30 },
             Command::SetCrownBudget { budget: 3 },
             Command::SetCrownSends { on: true },
+            Command::SetCrownAnswers { on: true },
             Command::SetTicketTier { id: t, tier: Some("claude".into()) },
             Command::SaveTier {
                 scope: crate::tier::TierScope::Machine,

@@ -682,6 +682,10 @@ pub enum Verb {
     /// words for an agent it started go by the queue without a person's
     /// `^y`. Board state like `CrownBudget`; Enter toggles it.
     CrownSends,
+    /// The Settings row under it (T-569): whether the crown may answer a
+    /// question an agent it started stopped on (`answer_agent`), and is
+    /// woken by one. Board state like `CrownSends`; Enter toggles it.
+    CrownAnswers,
     /// The Settings row under it (T-224): whether every claude mesimon
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
@@ -963,6 +967,7 @@ impl SettingsSection {
             | Verb::ParkAfterMinutes
             | Verb::CrownBudget
             | Verb::CrownSends
+            | Verb::CrownAnswers
             | Verb::AgentPrompts => Self::Agents,
             _ => Self::Root,
         }
@@ -989,6 +994,8 @@ pub struct Ctx {
     pub crown_budget: u8,
     /// `Board::crown_sends` (T-550), for the row under it.
     pub crown_sends: bool,
+    /// `Board::crown_answers` (T-569), for the row under that.
+    pub crown_answers: bool,
     pub column_agents: bool,
     pub col_naming: bool,
     pub col_offers_word: &'static str,
@@ -4758,6 +4765,30 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // Whether the crown may answer a question an agent it started asks
+    // (T-569). Off, every question is the person's; on, a one-choice
+    // question from an agent the crown started wakes the crown and it may
+    // answer, announced on the card and in the feed. Every other stop, and
+    // a person's agent, stays the person's.
+    MenuItem {
+        verb: Verb::CrownAnswers,
+        label: |c| {
+            if c.crown_answers {
+                "Crown answers questions: on".into()
+            } else {
+                "Crown answers questions: off".into()
+            }
+        },
+        detail: |c| {
+            if c.crown_answers {
+                "a question from an agent it started wakes it, and it may answer ∙ yours still ask you ∙ enter turns off".into()
+            } else {
+                "every question waits for you ∙ enter lets it answer agents it started".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::McpTools,
         label: |c| {
@@ -5218,6 +5249,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::ParkAfterMinutes,
             Verb::CrownBudget,
             Verb::CrownSends,
+            Verb::CrownAnswers,
         ],
     };
     verbs
@@ -9026,6 +9058,7 @@ mod tests {
                     Verb::ParkAfterMinutes,
                     Verb::CrownBudget,
                     Verb::CrownSends,
+                    Verb::CrownAnswers,
                 ],
             ),
         ] {

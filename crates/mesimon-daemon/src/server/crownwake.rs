@@ -12,7 +12,9 @@
 //!    of, or, in a shared checkout, a HEAD it has not heard of;
 //! 2. **answered your ask** — the turn that took the crown's `ask_agent`
 //!    words ended, whatever it left behind;
-//! 3. **raised its hand** — `raise_hand`, as before;
+//! 3. **raised its hand** — `raise_hand`, as before, and **asks a
+//!    question** — a worker it started stopped on `AskUserQuestion`, where
+//!    the board lets the crown answer (T-569);
 //! 4. **merged** — a worker it started has its branch read `merged` by the
 //!    worktree flags (`hear_merges`), however it got there: `m`, the train,
 //!    or a `git merge` in a terminal. A shared-checkout worker has no branch,
@@ -93,16 +95,18 @@ impl BranchLook {
 }
 
 /// What the crown is woken for, in the precedence two events on one worker
-/// coalesce by: a hand outranks an answer, an answer a delivery, and a
-/// delivery a merge — a merge folded into any other line is said in its
-/// delta (`merge_state merged`), so a delivery and its merge between two
-/// crown turns are one line.
+/// coalesce by: a question outranks a hand (T-569) — both wait on someone,
+/// and the question is a turn frozen on it — a hand an answer, an answer a
+/// delivery, and a delivery a merge — a merge folded into any other line is
+/// said in its delta (`merge_state merged`), so a delivery and its merge
+/// between two crown turns are one line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum WakeCause {
     Merged,
     Delivered,
     Answered,
     Raised,
+    Asked,
 }
 
 impl WakeCause {
@@ -113,6 +117,9 @@ impl WakeCause {
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered your ask",
             WakeCause::Raised => "raised its hand",
+            // Never the question's words (T-414's rule for a hand's
+            // reason): the crown reads them with `get_ticket`.
+            WakeCause::Asked => "asks a question",
         }
     }
 
@@ -123,6 +130,7 @@ impl WakeCause {
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered",
             WakeCause::Raised => "raised",
+            WakeCause::Asked => "asked",
         }
     }
 }
@@ -170,6 +178,18 @@ pub(super) fn verdict(
         return None;
     }
     before.is_none_or(|b| b.tip != now.tip).then_some(WakeCause::Delivered)
+}
+
+/// Whether this state change is a question the crown is woken for
+/// (T-569): a claude entering `RequiresAction{Question}` on a board whose
+/// person let the crown answer. Off, the person is the one to wake, and the
+/// card's needs-you already does. A secret, a form, a permission or a plan
+/// is never the crown's, so none of them wakes it; a codex has no dialog
+/// the board can answer. Whose agent it is — one THIS crown started — is
+/// `note_crown_wake`'s to judge.
+pub(super) fn asks_the_crown(answers: bool, kind: SessionKind, change: &Change) -> bool {
+    let question = SessionState::RequiresAction { reason: Reason::Question };
+    answers && kind == SessionKind::Claude && change.from != change.to && change.to == question
 }
 
 /// What a turn's end does once the merge train is counted (T-554).
@@ -879,8 +899,43 @@ mod tests {
         assert!(!line.contains('\u{1b}'), "{line:?}");
     }
 
+    /// T-569: a question wakes the crown under the switch and not without,
+    /// only on the edge into it, and only a question from a claude.
+    #[test]
+    fn a_question_wakes_the_crown_only_under_the_switch() {
+        let question = SessionState::RequiresAction { reason: Reason::Question };
+        let change = |from: SessionState, to: SessionState| Change {
+            from,
+            to,
+            attention_added: false,
+            confidence: Confidence::High,
+        };
+        let asked = change(SessionState::Running, question.clone());
+        assert!(asks_the_crown(true, SessionKind::Claude, &asked));
+        assert!(!asks_the_crown(false, SessionKind::Claude, &asked), "off: the person's");
+        assert!(!asks_the_crown(true, SessionKind::Codex, &asked), "no dialog to answer");
+        assert!(!asks_the_crown(true, SessionKind::Claude, &change(question.clone(), question)));
+        for reason in [
+            Reason::Secret,
+            Reason::Elicitation,
+            Reason::Permission,
+            Reason::Auth,
+            Reason::Trust,
+            Reason::Plan,
+        ] {
+            let stop = change(SessionState::Running, SessionState::RequiresAction { reason });
+            assert!(!asks_the_crown(true, SessionKind::Claude, &stop), "{reason:?} is a person's");
+        }
+        let answered = change(
+            SessionState::RequiresAction { reason: Reason::Question },
+            SessionState::Running,
+        );
+        assert!(!asks_the_crown(true, SessionKind::Claude, &answered));
+    }
+
     #[test]
     fn coalesced_causes_keep_the_strongest() {
+        assert!(WakeCause::Asked > WakeCause::Raised);
         assert!(WakeCause::Raised > WakeCause::Answered);
         assert!(WakeCause::Answered > WakeCause::Delivered);
         assert!(WakeCause::Delivered > WakeCause::Merged);

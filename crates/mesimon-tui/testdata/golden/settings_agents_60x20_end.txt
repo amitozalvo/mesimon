@@ -1,7 +1,5 @@
- BOARD   mesimon › kanban-tui   7 tickets
-  ╭─ AGENTS ∙ 1/9 ───────────────────────────────────────╮
-  │   Default tier: claude                               │
-  │     this board uses codex (b) ∙ Claude Code ∙ its o~ │
+ BOARD   mesimon › kanban-tui   6 tickets
+  ╭─ AGENTS ∙ 9/9 ───────────────────────────────────────╮
   │   Tiers: none yet                                    │
   │     a name for a launch: provider, model, effort ∙ ~ │
   │   Agent brief: off                                   │
@@ -16,5 +14,7 @@
   │     start_agent on the crowned ticket ∙ a sleeping ~ │
   │   Crown sends its asks: off                          │
   │     its asks wait on the card for ^y ∙ enter lets i~ │
+  │   Crown answers questions: off                       │
+  │     every question waits for you ∙ enter lets it an~ │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
  SETTINGS                                            ? keys

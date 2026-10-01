@@ -3,9 +3,8 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-
-    Keymap validator      >╭─ AGENTS ───────────────────────────────────────────────────────╮
-                           │   Default tier: claude                                         │
+                           ╭─ AGENTS ───────────────────────────────────────────────────────╮
+    Keymap validator      >│   Default tier: claude                                         │
                            │     Claude Code ∙ its own model ∙ what a ticket starts on unl~ │
                            │   Tiers: none yet                                              │
                            │     a name for a launch: provider, model, effort ∙ ^n cycles ~ │
@@ -21,8 +20,9 @@
                            │     start_agent on the crowned ticket ∙ a sleeping agent free~ │
                            │   Crown sends its asks: off                                    │
                            │     its asks wait on the card for ^y ∙ enter lets it send to ~ │
+                           │   Crown answers questions: off                                 │
+                           │     every question waits for you ∙ enter lets it answer agent~ │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
 
 
 

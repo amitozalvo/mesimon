@@ -569,6 +569,13 @@ pub enum Command {
     SetCrownSends {
         on: bool,
     },
+    /// Whether the crown may answer a question an agent it started stopped
+    /// on (`Board::crown_answers`, T-569). Local only, and apart from
+    /// `SetCrownSends`: an answer in a dialog is a decision made for the
+    /// person, and only the person may hand that over.
+    SetCrownAnswers {
+        on: bool,
+    },
     /// Project default for newly accepted agent starts. Existing sessions
     /// retain their provider. Local only: agents cannot choose who runs
     /// subsequent sessions on the board.
@@ -979,6 +986,24 @@ pub enum Command {
         #[serde(default)]
         plan: bool,
     },
+    /// Answer the question another ticket's agent stopped on, by key
+    /// (T-569): Remote Control's screen-verified dialog road, driven for the
+    /// crown. Crown only, behind `Board::crown_answers`, only for an agent
+    /// the crown started, only at `RequiresAction{Question}` on the dialog
+    /// `request` names (get_ticket's `needs_you.request`), and only in the
+    /// one-question, one-choice shape the phone answers. `index` picks an
+    /// option; `text` types one in its place. The receipt waits for the
+    /// hook edge (`Response::AgentAnswered`).
+    AgentAnswerTicket {
+        key: String,
+        #[serde(default)]
+        seen: Option<String>,
+        request: String,
+        #[serde(default)]
+        index: Option<usize>,
+        #[serde(default)]
+        text: Option<String>,
+    },
     /// Mint a NEW ticket (`create_ticket`). The one agent command that is
     /// not about the caller's own ticket, and the one place the tier makes a
     /// second card: an agent that finds work outside its ticket's scope
@@ -1248,6 +1273,7 @@ impl Command {
             | SetParkAfterMinutes { .. }
             | SetCrownBudget { .. }
             | SetCrownSends { .. }
+            | SetCrownAnswers { .. }
             | SetSystemPrompt { .. }
             | SetFollowUpMode { .. }
             | SetDefaultColumn { .. }
@@ -1286,6 +1312,7 @@ impl Command {
             | AgentStartTicket { .. }
             | AgentSleepTicket { .. }
             | AgentAskTicket { .. }
+            | AgentAnswerTicket { .. }
             | AgentRaiseHand { .. } => m(Mutate, false, None),
         }
     }
@@ -1711,6 +1738,21 @@ pub enum Response {
         held_for_person: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         held_because: Option<String>,
+    },
+    /// AgentAnswerTicket's receipt (T-569), sent once the delivery settles:
+    /// `outcome` is `answered` only when the dialog's own hook edge came,
+    /// `input_sent` when the keys went in and no edge followed inside the
+    /// window, `unknown` with `reason` when no key could be chosen — the
+    /// words Remote Control's receipt uses (T-567). `answer` is the option
+    /// label or the text, as delivered; `seen` the target's fresh stamp.
+    AgentAnswered {
+        key: String,
+        outcome: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        answer: String,
+        #[serde(default)]
+        seen: Option<String>,
     },
 }
 

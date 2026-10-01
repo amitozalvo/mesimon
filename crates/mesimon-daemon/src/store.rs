@@ -124,6 +124,12 @@ struct ColumnsFile {
     /// takes authority away.
     #[serde(default)]
     crown_sends: bool,
+    /// The crown answers questions from the agents it started
+    /// (`Board::crown_answers`, T-569). Absent means off, and no bump: a
+    /// build that drops it leaves every question to a person again, which
+    /// only takes authority away.
+    #[serde(default)]
+    crown_answers: bool,
     /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
     /// so it sits here, before the tables. Absent on every file written
     /// before 2026-09-04, which is what makes an existing board's first load
@@ -474,6 +480,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 park_after_minutes: cf.park_after_minutes,
                                 crown_budget: cf.crown_budget,
                                 crown_sends: cf.crown_sends,
+                                crown_answers: cf.crown_answers,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
                                 mcp_tools: cf.mcp_tools,
@@ -676,6 +683,8 @@ pub struct ColumnsScalars {
     pub crown_budget: u8,
     /// `Board::crown_sends` (T-550).
     pub crown_sends: bool,
+    /// `Board::crown_answers` (T-569).
+    pub crown_answers: bool,
     /// `Board::mcp_tools` (T-217).
     pub mcp_tools: bool,
     /// `Board::system_prompt` (T-224).
@@ -700,6 +709,7 @@ impl Default for ColumnsScalars {
             tiers: Vec::new(),
             crown_budget: mesimon_core::board::DEFAULT_CROWN_BUDGET,
             crown_sends: false,
+            crown_answers: false,
             mcp_tools: true,
 
             system_prompt: false,
@@ -732,6 +742,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         tiers: cf.tiers,
         crown_budget: cf.crown_budget,
         crown_sends: cf.crown_sends,
+        crown_answers: cf.crown_answers,
         mcp_tools: cf.mcp_tools,
         system_prompt: cf.system_prompt,
         default_column,
@@ -755,6 +766,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         park_after_minutes: board.park_after_minutes,
         crown_budget: board.crown_budget,
         crown_sends: board.crown_sends,
+        crown_answers: board.crown_answers,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
         claude_md_ignored: board.claude_md_ignored,
@@ -2085,6 +2097,7 @@ order = "a0"
             park_after_minutes: 30,
             crown_budget: 5,
             crown_sends: true,
+            crown_answers: true,
             tags_seeded: true,
             mcp_tools: false,
             claude_md_ignored: true,
@@ -2166,6 +2179,9 @@ order = "a0"
         assert_eq!(back.crown_budget, 5);
         assert!(back.crown_sends, "{text}");
         assert!(text.find("crown_sends").unwrap() < text.find("[[columns]]").unwrap());
+        // T-569: the crown's answers switch is a scalar before the tables too.
+        assert!(back.crown_answers, "{text}");
+        assert!(text.find("crown_answers").unwrap() < text.find("[[columns]]").unwrap());
         assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());
 
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");
