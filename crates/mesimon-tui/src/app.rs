@@ -1983,6 +1983,26 @@ impl App {
             && self.strikes.iter().any(|s| s.moving(now))
     }
 
+    /// The moved cards' ghosts in `column`, each with the order it had there
+    /// (T-544): the crown moved them out a moment ago, and the board keeps
+    /// a trail where each stood for as long as the bolt that runs through
+    /// it. Drawn, never navigable, never counted.
+    pub(crate) fn leaving(&self, column: &str) -> Vec<(&Ticket, &str)> {
+        if !self.motion() {
+            return Vec::new();
+        }
+        let now = mesimon_core::clock::now_ms();
+        self.strikes
+            .iter()
+            .filter(|s| s.trailing(now))
+            .filter_map(|s| {
+                let (col, order) = s.was.as_ref()?;
+                (col == column).then_some(())?;
+                Some((self.board.ticket(s.target)?, order.as_str()))
+            })
+            .collect()
+    }
+
     /// The archived cards still burning in `column` (T-544): the crown
     /// archived them a moment ago, and the board keeps each in its place
     /// until the bolt's landing has burnt its title away, so the card is
@@ -2256,6 +2276,15 @@ impl App {
         let followed = self.selected_ticket().map(|t| t.id);
         let joined_before = self.team.board.as_ref().map(|b| b.role != "owner");
         let crown_was = self.board.crown;
+        // Where each touched card stood before this snapshot (T-544): a
+        // move's trail starts at the place this board last drew it.
+        let placed: std::collections::HashMap<ulid::Ulid, (String, String)> = crown_touches
+            .iter()
+            .filter_map(|t| {
+                let old = self.board.ticket(t.ticket)?;
+                Some((t.ticket, (old.column.clone(), old.order.clone())))
+            })
+            .collect();
         self.board = board;
         self.reindex_columns();
         self.grace = grace;
@@ -2275,7 +2304,7 @@ impl App {
         self.control = mesophon;
         self.terminals = terminals;
         self.machine_tiers = machine_tiers;
-        self.absorb_crown_touches(crown_touches, crown_was);
+        self.absorb_crown_touches(crown_touches, crown_was, &placed);
         self.settle_drawer();
         self.seed_team_drafts();
         self.follow_ticket(followed);
@@ -4052,6 +4081,7 @@ impl App {
         &mut self,
         touches: Vec<mesimon_core::command::CrownTouch>,
         crown_was: Option<ulid::Ulid>,
+        placed: &std::collections::HashMap<ulid::Ulid, (String, String)>,
     ) {
         let cursor = self.subject();
         let now = mesimon_core::clock::now_ms();
@@ -4066,7 +4096,18 @@ impl App {
             // (T-544); one already past its beat when it arrives — a board
             // opened after it — only leaves its residue.
             if now.saturating_sub(t.at_ms) < crate::theme::CROWN_LIT_MS {
-                self.strikes.push(crate::strike::Strike::new(t, now));
+                // A move leaves a trail from where this board last had the
+                // card, when that is somewhere else than where it is now.
+                let was = (t.action == "moved")
+                    .then(|| placed.get(&t.ticket))
+                    .flatten()
+                    .filter(|(column, order)| {
+                        self.board
+                            .ticket(t.ticket)
+                            .is_some_and(|n| (&n.column, &n.order) != (column, order))
+                    })
+                    .cloned();
+                self.strikes.push(crate::strike::Strike::new(t, now, was));
             }
         }
         self.strikes.retain(|s| !s.over(now));
@@ -14563,10 +14604,14 @@ mod tests {
         };
         let fresh = touch(target, "moved", now - 50);
         let stale = touch(old, "tagged", now - 5_000);
-        app.absorb_crown_touches(vec![fresh.clone(), stale.clone()], Some(crown));
-        app.absorb_crown_touches(vec![fresh, stale], Some(crown));
+        // The board last had the moved card in `done`: its trail starts there.
+        let placed: std::collections::HashMap<_, _> =
+            [(target, ("done".to_string(), "z".to_string()))].into();
+        app.absorb_crown_touches(vec![fresh.clone(), stale.clone()], Some(crown), &placed);
+        app.absorb_crown_touches(vec![fresh, stale], Some(crown), &placed);
         assert_eq!(app.strikes.len(), 1, "one strike, for the fresh touch alone");
         assert_eq!(app.strikes[0].target, target);
+        assert_eq!(app.strikes[0].was, Some(("done".into(), "z".into())), "where it was");
         assert!(app.crown_residue.contains(&old), "the stale touch still leaves its residue");
         assert!(app.motion() && app.animating());
         match app.crown_mark(target) {

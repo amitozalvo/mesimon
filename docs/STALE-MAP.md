@@ -16687,8 +16687,25 @@ played). Opt-out: Settings › Appearance › `Crown's actions: lightning / stil
   runs right after `draw_columns`, so every dialog covers it. `App::animating` asks
   `Strike::moving` (the bolt, the front, the fade), so the 16 ms frame runs only then.
 - **Kept out.** The ticket page draws no bolt (no board under it); a touch it misses still lights
-  its card if the page is left inside the beat. A move's trail from the old column. The README's
-  `crown.gif` predates the lightning and is not re-recorded here.
+  its card if the page is left inside the beat. The README's `crown.gif` predates the lightning
+  and is not re-recorded here.
+
+**Follow-up: a move leaves a trail (same day, user: "the bolt trail showing the column it came
+from").** A `moved` strike now carries `was: Option<(column, order)>` — where THIS board last had
+the card, read off the board the snapshot replaces (`placed` in `absorb`), so the wire is
+unchanged and a move the board never saw the old place of simply has no trail. For the bolt's
+life (`Strike::trailing`, `BOLT_MS`) `App::leaving(column)` puts the card back in the column it
+left at its old order, drawn in the move trail's own look (`trail`: `dim3`, the look a person's
+pending move leaves behind — one visual for "this card left here"), with no crown mark, no
+accordion, no field, never counted and never the cursor's; its spot goes in `Spots::trails`. The
+bolt takes stops now (`bolt(seed, &[crown, ghost, card], top)`: each leg arcs and jags on its
+own, `s` runs over the whole path), so it runs crown → where the card was → where it is, and the
+ghost's row is kept clear like the struck title's. Tests: `strike`'s
+`the_bolt_runs_through_the_place_a_card_left`; `ui`'s `a_move_leaves_a_trail_where_the_card_was`
+(the ghost in the column it left, in `dim3`, no `♛`, not counted, its row not drawn on; gone and
+the column closed at `BOLT_MS`); `app`'s absorb test asserts the strike's `was`. Two other tickets
+were filed from this one and started by its crown: T-550 (`crown_sends`) and T-551 (the held
+ask's `^y` hint).
 
 **Tests.** `strike`: the bolt joins the crown's cell to the card's, unbroken, in order and
 deterministic, over a shared row rather than along it; the leader only grows and one jump is hot,

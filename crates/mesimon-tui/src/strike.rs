@@ -25,6 +25,11 @@
 //! glyph tier has no braille, or when the person turned it off
 //! (`Prefs::crown_lightning`).
 //!
+//! A move leaves a trail: for the bolt's life the card is still drawn, as a
+//! ghost in the move trail's own look, in the place it left, and the bolt
+//! runs through it — crown, where the card was, where it is — so the column
+//! it came from is on the screen and not only the one it went to.
+//!
 //! It is status, never a demand: the crown's tint and the bright ink of the
 //! cursor's ramp, never `attn`.
 
@@ -68,16 +73,25 @@ pub(crate) struct Strike {
     pub at_ms: u64,
     /// When this board first saw it, in Unix ms: every phase counts here.
     pub seen: u64,
+    /// Where a moved card was on this board before the move — its column
+    /// and its order there — for the trail it leaves. `None` for any other
+    /// touch, and for a move this board never saw the card's old place of.
+    pub was: Option<(String, String)>,
 }
 
 impl Strike {
-    pub(crate) fn new(touch: &mesimon_core::command::CrownTouch, seen: u64) -> Self {
+    pub(crate) fn new(
+        touch: &mesimon_core::command::CrownTouch,
+        seen: u64,
+        was: Option<(String, String)>,
+    ) -> Self {
         Strike {
             target: touch.ticket,
             from: touch.from,
             action: touch.action.clone(),
             at_ms: touch.at_ms,
             seen,
+            was,
         }
     }
 
@@ -114,6 +128,12 @@ impl Strike {
         self.landed(now) >= CROWN_LIT_MS as i64
     }
 
+    /// A moved card's ghost still standing where it was at `now`: for as
+    /// long as the bolt that runs through it.
+    pub(crate) fn trailing(&self, now: u64) -> bool {
+        self.was.is_some() && now.saturating_sub(self.seen) < BOLT_MS
+    }
+
     /// An archived card still burning in its column at `now`.
     pub(crate) fn burning(&self, now: u64) -> bool {
         self.kind() == LandKind::Burn && self.landed(now) < (LAND_SWEEP_MS + BURN_TAIL_MS) as i64
@@ -134,6 +154,9 @@ pub(crate) struct Spots {
     /// A cell on each drawn column's header row, for a bolt whose card is
     /// scrolled out of its column.
     pub heads: Vec<(String, u16, u16)>,
+    /// The ghosts moved cards left where they were, for the bolt to run
+    /// through: the same ticket also has its card where it went.
+    pub trails: Vec<CardSpot>,
 }
 
 /// One card's title row on screen.
@@ -150,6 +173,10 @@ pub(crate) struct CardSpot {
 impl Spots {
     fn card(&self, id: ulid::Ulid) -> Option<&CardSpot> {
         self.cards.iter().find(|c| c.id == id)
+    }
+
+    fn trail(&self, id: ulid::Ulid) -> Option<&CardSpot> {
+        self.trails.iter().find(|c| c.id == id)
     }
 
     fn head(&self, column: &str) -> Option<(u16, u16)> {
@@ -239,38 +266,45 @@ fn trace(points: &[Pt]) -> Vec<(i32, i32)> {
     out
 }
 
-/// A bolt from cell `from` to cell `to`, as dots. It bows away from the
+/// A bolt through the cells `stops` — the crown, any card it passes on its
+/// way, the card it lands on — as dots. Each leg bows away from its
 /// straight line — upward, or leftward when the line is vertical — never
-/// above dot row `top * 4`, and every step of it is pushed off its line
-/// by the fractal; one to three forks branch off its middle.
-pub(crate) fn bolt(seed: u64, from: (u16, u16), to: (u16, u16), top: u16) -> Vec<Dot> {
+/// above dot row `top * 4`, and every step of it is pushed off its line by
+/// the fractal; one to three forks branch off its middle.
+pub(crate) fn bolt(seed: u64, stops: &[(u16, u16)], top: u16) -> Vec<Dot> {
     let mut rng = Rng(seed);
     let at = |(x, y): (u16, u16)| (f32::from(x) * 2.0 + 0.5, f32::from(y) * 4.0 + 1.5);
-    let (a, b) = (at(from), at(to));
-    let len = dist(a, b).max(1.0);
-    // The arc's control point: the middle, pushed along the normal that
-    // points up (or left, for a vertical line), held under the top row.
-    let (mut nx, mut ny) = ((b.1 - a.1) / len, (a.0 - b.0) / len);
-    if ny > 0.0 || (ny == 0.0 && nx > 0.0) {
-        (nx, ny) = (-nx, -ny);
-    }
-    let bend = len * BEND;
     let ceiling = f32::from(top) * 4.0;
-    let c = ((a.0 + b.0) / 2.0 + nx * bend, ((a.1 + b.1) / 2.0 + ny * bend).max(ceiling));
     // The fractal may push a point past the top row; it rides along it.
     let under = |pts: &mut Vec<Pt>| pts.iter_mut().for_each(|p| p.1 = p.1.max(ceiling));
-    let curve = |t: f32| {
-        let u = 1.0 - t;
-        (
-            u * u * a.0 + 2.0 * u * t * c.0 + t * t * b.0,
-            u * u * a.1 + 2.0 * u * t * c.1 + t * t * b.1,
-        )
-    };
-    let mut points = vec![a];
-    for i in 1..=4 {
-        let prev = *points.last().unwrap_or(&a);
-        jag(&mut points, prev, curve(i as f32 / 4.0), ROUGH, 4, &mut rng);
+    let Some(&first) = stops.first() else { return Vec::new() };
+    let mut points = vec![at(first)];
+    let mut len = 0.0;
+    for leg in stops.windows(2) {
+        let (a, b) = (at(leg[0]), at(leg[1]));
+        let span = dist(a, b).max(1.0);
+        len += span;
+        // The arc's control point: the middle, pushed along the normal that
+        // points up (or left, for a vertical line), held under the top row.
+        let (mut nx, mut ny) = ((b.1 - a.1) / span, (a.0 - b.0) / span);
+        if ny > 0.0 || (ny == 0.0 && nx > 0.0) {
+            (nx, ny) = (-nx, -ny);
+        }
+        let bend = span * BEND;
+        let c = ((a.0 + b.0) / 2.0 + nx * bend, ((a.1 + b.1) / 2.0 + ny * bend).max(ceiling));
+        let curve = |t: f32| {
+            let u = 1.0 - t;
+            (
+                u * u * a.0 + 2.0 * u * t * c.0 + t * t * b.0,
+                u * u * a.1 + 2.0 * u * t * c.1 + t * t * b.1,
+            )
+        };
+        for i in 1..=4 {
+            let prev = *points.last().unwrap_or(&a);
+            jag(&mut points, prev, curve(i as f32 / 4.0), ROUGH, 4, &mut rng);
+        }
     }
+    let len: f32 = len.max(1.0);
     under(&mut points);
     let main = trace(&points);
     let n = main.len().max(2) - 1;
@@ -464,7 +498,14 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
             continue;
         }
         rows.push((to.y, to.x, to.width));
-        bolts.push((bolt(s.seed(), from, hit, area.y), t));
+        // A moved card's ghost is on the way: the bolt runs through it.
+        let mut stops = vec![from];
+        if let Some(ghost) = spots.trail(s.target) {
+            rows.push((ghost.y, ghost.x, ghost.width));
+            stops.push((ghost.x + crate::tags::BAR_WIDTH as u16 + 1, ghost.y));
+        }
+        stops.push(hit);
+        bolts.push((bolt(s.seed(), &stops, area.y), t));
     }
     if bolts.is_empty() {
         return;
@@ -502,7 +543,7 @@ mod tests {
             ((3, 2), (4, 3)),
         ] {
             for seed in 0..40u64 {
-                let dots = bolt(seed, from, to, 0);
+                let dots = bolt(seed, &[from, to], 0);
                 let main: Vec<&Dot> = dots.iter().filter(|d| !d.fork).collect();
                 let (first, last) = (main[0], main[main.len() - 1]);
                 assert_eq!((first.x / 2, first.y / 4), (from.0 as i32, from.1 as i32));
@@ -510,14 +551,28 @@ mod tests {
                 assert!(main.windows(2).all(|w| adjacent(w[0], w[1])), "{from:?} {to:?} {seed}");
                 assert!(main.windows(2).all(|w| w[0].s <= w[1].s), "in order");
                 assert!(dots.iter().all(|d| d.y >= 0), "never above the top row");
-                assert_eq!(bolt(seed, from, to, 0), dots, "deterministic");
+                assert_eq!(bolt(seed, &[from, to], 0), dots, "deterministic");
             }
         }
         // A crown and a card on one row are joined over the row, not along it.
-        let dots = bolt(7, (40, 6), (90, 6), 0);
+        let dots = bolt(7, &[(40, 6), (90, 6)], 0);
         let above = dots.iter().filter(|d| !d.fork && d.y / 4 < 6).count();
         let along = dots.iter().filter(|d| !d.fork && d.y / 4 == 6).count();
         assert!(above > along * 3, "the arc rides over the row: {above} above, {along} on it");
+    }
+
+    /// A bolt with a stop on its way — a moved card's ghost — passes through
+    /// that cell, unbroken, and still lands where it was going.
+    #[test]
+    fn the_bolt_runs_through_the_place_a_card_left() {
+        for seed in 0..40u64 {
+            let dots = bolt(seed, &[(40, 4), (6, 8), (70, 10)], 0);
+            let main: Vec<&Dot> = dots.iter().filter(|d| !d.fork).collect();
+            assert!(main.windows(2).all(|w| adjacent(w[0], w[1])), "{seed}");
+            assert!(main.iter().any(|d| (d.x / 2, d.y / 4) == (6, 8)), "{seed}: not through it");
+            let last = main[main.len() - 1];
+            assert_eq!((last.x / 2, last.y / 4), (70, 10), "{seed}");
+        }
     }
 
     /// The leader reaches further at every jump and only the newest jump
@@ -525,7 +580,7 @@ mod tests {
     /// and is gone at `BOLT_MS`.
     #[test]
     fn the_leader_strikes_then_the_channel_cools_away() {
-        let dots = bolt(3, (5, 3), (70, 12), 0);
+        let dots = bolt(3, &[(5, 3), (70, 12)], 0);
         let lit = |t: u64| dots.iter().filter(|d| !d.fork && heat(d, t) > 0.0).count();
         let hot = |t: u64| dots.iter().filter(|d| !d.fork && heat(d, t) >= 2.0).count();
         let main = dots.iter().filter(|d| !d.fork).count();
@@ -565,7 +620,7 @@ mod tests {
                 buf.set_string(30, 9, "漢字 title", Style::default());
                 // A row of words across the bolt's whole path.
                 buf.set_string(0, 12, "xx ".repeat(33), Style::default());
-                let dots = bolt(11, (5, 3), (70, 20), 0);
+                let dots = bolt(11, &[(5, 3), (70, 20)], 0);
                 let skip = |x: u16, y: u16| y == 20 || (x, y) == (5, 3);
                 paint(&mut buf, area, &theme, &[(dots, LEADER_MS + 10)], &skip);
                 let mut drawn = 0;

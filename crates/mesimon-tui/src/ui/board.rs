@@ -147,15 +147,19 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         /// The ticket drawn, for the bolts' spots (T-544); `None` for the
         /// composer's phantom card.
         id: Option<ulid::Ulid>,
+        /// A moved card's trail where it stood (T-544), not the card.
+        trail: bool,
     }
     let mut groups: Vec<Group> = Vec::new();
-    let mut push_card = |t: &Ticket, selected: bool, held: bool| {
+    // `left`: this is the trail a card the crown moved out left behind
+    // (T-544), drawn in the move trail's look and with no crown mark.
+    let mut push_card = |t: &Ticket, selected: bool, held: bool, left: bool| {
         let sessions = ticket_sessions(app, t.id);
         let waiting = card::needs_you(t, &sessions);
         // The registry lives on the board, so colours resolve here rather
         // than inside the card, which never sees it.
         let painted = crate::tags::painted(&app.board, &t.tags);
-        if let Some(buf) = rename_of(t) {
+        if let Some(buf) = rename_of(t).filter(|_| !left) {
             let (line, x_off) = card::render_edit(&ctx, buf, &painted);
             groups.push(Group {
                 lines: vec![line],
@@ -164,16 +168,17 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 edit_cursor: Some((0, x_off)),
                 shake: 0,
                 id: Some(t.id),
+                trail: false,
             });
             return;
         }
-        let trail = !held && moving == Some(t.id);
+        let trail = left || (!held && moving == Some(t.id));
         let mq = if selected { Some(marquee_ms(t)) } else { None };
         // Is this card open? The `p` preference, or a quick-tag digit still
         // inside its reveal — on the cursor card; `P` opens every card
         // (T-237). The card is open on this alone — the transcript below may
         // or may not exist, and the tag row does not depend on it.
-        let open = app.peek_all || (selected && app.peek_showing(t.id));
+        let open = !left && (app.peek_all || (selected && app.peek_showing(t.id)));
         // Transcript peek: the cursor card's highest-precedence session that
         // has a transcript (bash never does) — read through the draw cache.
         let peek = if open {
@@ -218,28 +223,30 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             app.owed(t.id),
             app.pending_row(t.id).as_deref(),
             app.remote_initials(t.id).as_deref(),
-            app.crown_mark(t.id),
+            if left { crate::ui::CrownMark::None } else { app.crown_mark(t.id) },
             app.card_tier_word(t.id).as_deref(),
         );
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
-        let edit_cursor = prompt_of(t).map(|(buf, queued, accept_plan, plan, tier)| {
-            // The prompt row and its delivery row, shared with the ticket
-            // page (T-476): the cursor is in the first of them.
-            let (rows, x_off) =
-                card::render_ask_field(&ctx, app, t.id, buf, queued, accept_plan, plan, tier);
-            let at = lines.len();
-            lines.extend(rows);
-            (at, x_off)
-        });
+        let edit_cursor =
+            prompt_of(t).filter(|_| !left).map(|(buf, queued, accept_plan, plan, tier)| {
+                // The prompt row and its delivery row, shared with the ticket
+                // page (T-476): the cursor is in the first of them.
+                let (rows, x_off) =
+                    card::render_ask_field(&ctx, app, t.id, buf, queued, accept_plan, plan, tier);
+                let at = lines.len();
+                lines.extend(rows);
+                (at, x_off)
+            });
         groups.push(Group {
             lines,
             cursor: selected || held,
             waiting,
             edit_cursor,
-            shake: app.shake_dx(t.id),
+            shake: if left { 0 } else { app.shake_dx(t.id) },
             id: Some(t.id),
+            trail: left,
         });
     };
     match ghost {
@@ -248,30 +255,43 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             for (i, t) in rows.iter().enumerate() {
                 if i == gidx {
                     if let Some(gt) = ghost_ticket {
-                        push_card(gt, false, true);
+                        push_card(gt, false, true, false);
                     }
                 }
-                push_card(t, false, false);
+                push_card(t, false, false, false);
             }
             if gidx >= rows.len() {
                 if let Some(gt) = ghost_ticket {
-                    push_card(gt, false, true);
+                    push_card(gt, false, true, false);
                 }
             }
         }
         None => {
-            // A card the crown just archived burns in its old place (T-544):
-            // drawn among the others by its order, never counted, never the
-            // cursor's — `i` counts the column's own cards only.
-            let mut merged: Vec<(&Ticket, bool)> = rows.iter().map(|t| (*t, false)).collect();
-            for b in app.burning(name) {
-                let at = merged.partition_point(|(t, _)| (&t.order, t.id) < (&b.order, b.id));
-                merged.insert(at, (b, true));
+            // A card the crown just archived burns in its old place, and one
+            // it moved out leaves a trail in its old place (T-544): drawn
+            // among the others by the order they had here, never counted,
+            // never the cursor's — `i` counts the column's own cards only.
+            #[derive(PartialEq)]
+            enum Place {
+                Own,
+                Burning,
+                Trail,
+            }
+            let mut merged: Vec<(&Ticket, &str, Place)> =
+                rows.iter().map(|t| (*t, t.order.as_str(), Place::Own)).collect();
+            let ghosts = app
+                .burning(name)
+                .into_iter()
+                .map(|b| (b, b.order.as_str(), Place::Burning))
+                .chain(app.leaving(name).into_iter().map(|(t, o)| (t, o, Place::Trail)));
+            for (g, order, place) in ghosts {
+                let at = merged.partition_point(|(t, o, _)| (*o, t.id) < (order, g.id));
+                merged.insert(at, (g, order, place));
             }
             let mut i = 0;
-            for (t, burning) in merged {
-                if burning {
-                    push_card(t, false, false);
+            for (t, _, place) in merged {
+                if place != Place::Own {
+                    push_card(t, false, false, place == Place::Trail);
                     continue;
                 }
                 // A prompted card stays the cursor card. Every other text
@@ -282,7 +302,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 let selected = is_cursor_col
                     && app.cursor_row == Some(i)
                     && (matches!(app.mode, Mode::Normal) || prompt_of(t).is_some());
-                push_card(t, selected, false);
+                push_card(t, selected, false, false);
                 i += 1;
             }
         }
@@ -312,6 +332,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 edit_cursor: Some((0, x_off)),
                 shake: 0,
                 id: None,
+                trail: false,
             });
         }
     }
@@ -320,9 +341,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // card's line range and each card's, for scroll + badges.
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut card_ranges: Vec<(usize, usize, bool)> = Vec::new(); // (start, end, waiting)
-                                                                 // Each card's first flat line, its ticket and, on the holder, the
-                                                                 // crown mark's column: the bolts' spots once the window is known.
-    let mut card_starts: Vec<(usize, ulid::Ulid, Option<u16>)> = Vec::new();
+                                                                 // Each card's first flat line, its ticket, on the holder the crown
+                                                                 // mark's column, and whether it is a trail: the bolts' spots once the
+                                                                 // window is known.
+    let mut card_starts: Vec<(usize, ulid::Ulid, Option<u16>, bool)> = Vec::new();
     let crown_glyph = crate::glyphs::crown(theme.glyph_tier());
     let mut cursor_range: Option<(usize, usize)> = None;
     let mut edit_at: Option<(usize, u16)> = None; // (flat line idx, x offset)
@@ -351,7 +373,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             } else {
                 None
             };
-            card_starts.push((start, id, mark));
+            card_starts.push((start, id, mark, g.trail));
         }
     }
     lines.pop(); // no trailing blank after the last card
@@ -633,15 +655,20 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // (T-544). A card scrolled out of the window has no spot.
     {
         let mut spots = app.spots.borrow_mut();
-        for &(start, id, mark) in &card_starts {
+        for &(start, id, mark, trail) in &card_starts {
             if start >= content_start && start < content_end {
-                spots.cards.push(crate::strike::CardSpot {
+                let spot = crate::strike::CardSpot {
                     id,
                     x: area.x,
                     y: area.y + head_rows as u16 + (top_cue_rows + start - content_start) as u16,
                     width: area.width,
                     mark: mark.map(|m| area.x + m),
-                });
+                };
+                if trail {
+                    spots.trails.push(spot);
+                } else {
+                    spots.cards.push(spot);
+                }
             }
         }
     }

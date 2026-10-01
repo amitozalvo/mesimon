@@ -8560,6 +8560,7 @@ fn struck(board: Board, from: ulid::Ulid, target: ulid::Ulid, action: &str, ago:
         action: action.into(),
         at_ms: at,
         seen: at,
+        was: None,
     });
     app
 }
@@ -8582,6 +8583,15 @@ fn bolt_cells(app: &mut App, buf: &ratatui::buffer::Buffer) -> Vec<(u16, u16)> {
         }
     }
     out
+}
+
+/// The first `cells` of `line` with any bolt dot blanked: a bolt's shape is
+/// its touch's, and it may cross a header's blanks.
+fn unbolted(line: &str, cells: usize) -> String {
+    line.chars()
+        .take(cells)
+        .map(|c| if (0x2800..=0x28FF).contains(&(c as u32)) { ' ' } else { c })
+        .collect()
 }
 
 /// `text`'s cells on the board (above the hover row), or none.
@@ -8689,6 +8699,52 @@ fn the_lightning_holds_still_when_turned_off_and_in_mono() {
     }
 }
 
+/// The crown moved a card to another column: for the bolt's life it is
+/// still drawn where it was, in the move trail's look and not counted, and
+/// the bolt runs through that place on its way to the card; then the column
+/// it left closes up.
+#[test]
+fn a_move_leaves_a_trail_where_the_card_was() {
+    use crate::strike::{BOLT_MS, LEADER_MS};
+    let (t1, t3) = (ulid_n(1), ulid_n(3));
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == t1) {
+        (t.column, t.order) = ("review".into(), "c".into());
+    }
+    let frame = |ago: u64| {
+        let mut app = struck(b.clone(), t3, t1, "moved", ago);
+        app.strikes[0].was = Some(("todo".into(), "a".into()));
+        let buf = cells(&app, 120, 30);
+        (app, buf)
+    };
+    let (mut app, buf) = frame(LEADER_MS + 20);
+    let lines = lines_of(&buf);
+    let todo = app.spots.borrow().heads.iter().find(|h| h.0 == "todo").map(|h| h.1);
+    let trail = *app.spots.borrow().trails.first().expect("the trail is drawn");
+    assert_eq!(trail.id, t1);
+    assert_eq!(Some(trail.x + crate::tags::BAR_WIDTH as u16 + 1), todo, "in the column it left");
+    // The trail's own row, in the column it left.
+    let row = unbolted(&lines[trail.y as usize], (trail.x + trail.width) as usize);
+    assert!(row.contains("Decay treatments"), "the trail is the card: {row}");
+    assert!(!row.contains('♛'), "the trail carries no crown mark: {row}");
+    let header = unbolted(&lines[2], 32);
+    assert!(header.trim_end().ends_with('1'), "the trail is not counted: {header}");
+    let x0 = row.find("Decay").map(|at| row[..at].width() as u16).expect("the title");
+    let ghost: Vec<_> = (x0..x0 + 16).map(|x| buf[(x, trail.y)].fg).collect();
+    assert!(ghost.iter().all(|c| *c == app.theme.rest.dim3), "in the move trail's look");
+    let bolt = bolt_cells(&mut app, &buf);
+    assert!(!bolt.is_empty(), "the bolt runs");
+    let on_trail = |&(x, y): &(u16, u16)| y == trail.y && x >= trail.x && x < trail.x + trail.width;
+    assert!(!bolt.iter().any(on_trail), "the trail's row is not drawn on");
+
+    let (app, buf) = frame(BOLT_MS + 50);
+    assert!(app.spots.borrow().trails.is_empty(), "the trail is gone with the bolt");
+    let lines = lines_of(&buf);
+    let todo = lines.iter().take(28).map(|l| unbolted(l, 32)).collect::<Vec<_>>();
+    assert!(!todo.iter().any(|l| l.contains("Decay")), "the column it left closed up: {todo:#?}");
+    assert!(lines.iter().take(28).any(|l| l.contains("Decay treat") && l.contains("♛ moved")));
+}
+
 /// The crown archived a card: it burns in its place — not counted, not the
 /// cursor's — from its first letter, and only then leaves its column.
 #[test]
@@ -8714,12 +8770,7 @@ fn an_archive_burns_the_card_away() {
     let (app, buf) = frame(LEADER_MS / 2);
     let lines = lines_of(&buf);
     assert!(lines.iter().take(28).any(|l| l.contains("Keymap validator")), "{lines:#?}");
-    // The bolt's shape is the touch's, and may cross the header's blanks.
-    let header: String = lines[2]
-        .chars()
-        .take(32)
-        .map(|c| if (0x2800..=0x28FF).contains(&(c as u32)) { ' ' } else { c })
-        .collect();
+    let header = unbolted(&lines[2], 32);
     assert!(header.trim_end().ends_with('1'), "a burning card is not counted: {header}");
     assert_eq!(app.selected_ticket().map(|t| t.id), Some(t1), "nor the cursor's");
     // The cursor's own bold ink: the bolt's glow may tint the ground it

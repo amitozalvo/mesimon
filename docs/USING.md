@@ -210,7 +210,9 @@ on another; the moved, tagged and started cards light as they change.</sub>
 
 You can watch the crown work without opening its session. Each action strikes: a bolt of
 lightning runs from the crowned card's `♛` to the card it acted on, and the word for what was
-done arrives with it. The title lights from where the bolt lands. An agent the crown put to
+done arrives with it. The title lights from where the bolt lands. A card the crown moved stays
+as a faint ghost in the place it left while the bolt runs through it, so you see the column it
+came from as well as the one it went to. An agent the crown put to
 sleep dims its title for a moment, a ticket the crown filed writes its title in, and a ticket
 it archived burns away before its column closes up. When an agent it started reports back, a
 bolt runs the other way, from that card to the crown. **Settings › Appearance › Crown's
