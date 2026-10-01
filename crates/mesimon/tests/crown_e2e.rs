@@ -531,9 +531,12 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     // The ask: held on B's card, authored by A, delivered to nobody.
     let seen_after = match ask(&mut c, sa, &kb, "mesimon-probe-62 commit it", bv.seen) {
-        Response::AgentAsked { key, replaced, seen } => {
+        Response::AgentAsked { key, replaced, seen, held_for_person, held_because } => {
             assert_eq!(key, kb);
             assert!(!replaced);
+            // T-550: off by default, so the board holds it and says so.
+            assert!(held_for_person);
+            assert!(held_because.is_some_and(|w| w.contains("Crown sends its asks")));
             seen.expect("a fresh stamp rides back")
         }
         other => panic!("the ask: {other:?}"),
@@ -1434,4 +1437,242 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     let lines = lines_with(&worker);
     assert_eq!(lines.len(), 3, "{lines:?}");
     assert!(lines[2].starts_with(&format!("{worker} delivered (merge_state merged")), "{lines:?}");
+}
+
+/// The crown sends its own asks (T-550), where the person lets it: off by
+/// default, so the words wait for `^y` as T-413 built them; on, an ask to an
+/// agent the crown STARTED goes by the queue once that agent is idle — the
+/// feed's actor is the agent, the card lights `♛ sent`, and the turn that
+/// takes the words wakes the crown as a person's send would. An agent a
+/// person started is held whatever the switch says, words that would wake a
+/// parked agent need a free budget seat and hold one while they wait, and
+/// switching off or uncrowning holds what had not gone yet.
+#[test]
+fn the_crown_sends_its_asks_to_the_agents_it_started() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_sends",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_sends");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let landed = |probe: &str| std::fs::read_to_string(&got).unwrap_or_default().contains(probe);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let touch_on = |c: &mut TestClient, t: ulid::Ulid| {
+        touches(c).into_iter().find(|x| x.ticket == t).map(|x| x.action)
+    };
+
+    let a = create(&mut c, "coordinate");
+    let p = create(&mut c, "the person's own");
+    let w = create(&mut c, "mesimon-probe-91 worker");
+    let w2 = create(&mut c, "second worker");
+    let w3 = create(&mut c, "third worker");
+    let (kp, kw, kw2, kw3) =
+        (key_of(&mut c, p), key_of(&mut c, w), key_of(&mut c, w2), key_of(&mut c, w3));
+    let sa = spawn(&mut c, a);
+    let sp = spawn(&mut c, p);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    // The stub emits no `SessionStart`: a turn walked through each pane is
+    // what makes it idle, and an idle checkout is what the queue waits for.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    for s in [sa, sp] {
+        start(&mut c, s);
+        stop(&mut c, s);
+    }
+    let start_agent = |c: &mut TestClient, key: &str| {
+        let v = read(c, sa, key).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket { key: key.into(), seen: v.seen, plan: false },
+        )
+    };
+    assert!(matches!(start_agent(&mut c, &kw), Response::AgentStarted { .. }));
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    let ask = |c: &mut TestClient, key: &str, text: &str| {
+        let v = read(c, sa, key).unwrap();
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: key.into(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+            },
+        ) {
+            Response::AgentAsked { held_for_person, held_because, .. } => {
+                (held_for_person, held_because.unwrap_or_default())
+            }
+            other => panic!("ask_agent {key}: {other:?}"),
+        }
+    };
+    let row = |c: &mut TestClient, t: ulid::Ulid| {
+        pending_of(c, Some(t)).into_iter().find(|p| p.is_queued_ask() && !p.in_flight)
+    };
+
+    // ---- off, the default: held for a person, even on the crown's own worker
+    assert!(!c.board().crown_sends, "off by default");
+    let (held, why) = ask(&mut c, &kw, "mesimon-probe-92 held");
+    assert!(held && why.contains("Crown sends its asks"), "{why}");
+    let r = row(&mut c, w).expect("held on W's card");
+    assert!(!r.sends && r.by.is_some() && r.waits_on.is_empty(), "{r:?}");
+    settle();
+    assert!(!landed("mesimon-probe-92"), "held words do not go on their own");
+    assert!(matches!(
+        c.request(Command::TakeQueuedAsk { ticket: w }),
+        Response::PromptTakenBack { .. }
+    ));
+
+    // ---- on: refused to an agent, persisted, printed ------------------------
+    match c.send(Principal::Agent { session: sa }, Command::SetCrownSends { on: true }) {
+        Response::Err { .. } => {}
+        other => panic!("an agent switching it on: {other:?}"),
+    }
+    assert!(!c.board().crown_sends);
+    assert!(matches!(c.request(Command::SetCrownSends { on: true }), Response::Ok));
+    assert!(c.board().crown_sends);
+    let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
+    assert!(file.contains("crown_sends = true"), "{file}");
+
+    // A person's agent waits for its person whatever the switch says.
+    let (held, why) = ask(&mut c, &kp, "mesimon-probe-93 for the person's");
+    assert!(held && why.contains("a person started"), "{why}");
+    settle();
+    assert!(!landed("mesimon-probe-93"));
+    assert!(matches!(c.request(Command::DropQueuedAsk { ticket: p }), Response::Ok));
+
+    // ---- a working worker takes the crown's words when its turn ends --------
+    start(&mut c, ws);
+    let (held, why) = ask(&mut c, &kw, "mesimon-probe-94 then push");
+    assert!(!held && why.is_empty(), "{why}");
+    let r = row(&mut c, w).expect("queued on W's card");
+    assert!(r.sends && r.by.as_deref() == Some(key_of(&mut c, a).as_str()), "{r:?}");
+    assert_eq!(r.waits_on, vec![kw.clone()], "it waits on W's own turn: {r:?}");
+    assert_eq!(touch_on(&mut c, w).as_deref(), Some("asked"));
+    settle();
+    assert!(!landed("mesimon-probe-94"), "a working agent is not interrupted");
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the crown's words to reach W", || {
+        landed("mesimon-probe-94 then push")
+    });
+    assert_eq!(touch_on(&mut c, w).as_deref(), Some("sent"), "the card says it went");
+    wait_until(std::time::Duration::from_secs(5), "the ask_agent_sent feed line", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines()
+                .any(|l| l.contains("\"ask_agent_sent\"") && l.contains("\"actor\":\"agent\""))
+        })
+    });
+    // The turn that takes them is the crown's answer, as after a `^y`.
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the answer's wake on the crown", || {
+        landed(&format!("{kw} \"mesimon-probe-91 worker\" answered your ask"))
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- an idle worker takes them at once ----------------------------------
+    let (held, _) = ask(&mut c, &kw, "mesimon-probe-95 at once");
+    assert!(!held);
+    wait_until(std::time::Duration::from_secs(10), "the words to reach idle W", || {
+        landed("mesimon-probe-95 at once")
+    });
+    assert!(row(&mut c, w).is_none(), "nothing left waiting");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- a parked worker: the wake is a budget seat -------------------------
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
+    ) {
+        Response::AgentTicket { .. } => {}
+        other => panic!("sleep_agent: {other:?}"),
+    }
+    c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
+    assert!(matches!(c.request(Command::SetCrownBudget { budget: 1 }), Response::Ok));
+    assert!(matches!(start_agent(&mut c, &kw2), Response::AgentStarted { .. }));
+    let ws2 = c.board().live_agent(w2).expect("W2 holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws2);
+    stop(&mut c, ws2);
+    let (held, why) = ask(&mut c, &kw, "mesimon-probe-96 wake for this");
+    assert!(held && why.contains("budget is spent") && why.contains(&kw2), "{why}");
+    settle();
+    assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Sleeping, "nobody woke it");
+    assert!(matches!(
+        c.request(Command::TakeQueuedAsk { ticket: w }),
+        Response::PromptTakenBack { .. }
+    ));
+    // With a seat free, the words go — and while they wait on the checkout
+    // (the crown mid-turn holds it), the wake holds the seat they need.
+    assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));
+    start(&mut c, sa);
+    let (held, why) = ask(&mut c, &kw, "mesimon-probe-97 wake for this");
+    assert!(!held, "{why}");
+    let r = row(&mut c, w).expect("the wake waits on the checkout");
+    assert!(r.sends && r.action == mesimon_core::command::PendingAction::Wake, "{r:?}");
+    match start_agent(&mut c, &kw3) {
+        Response::Err { message } => {
+            assert!(message.contains("budget is spent") && message.contains(&kw), "{message}")
+        }
+        other => panic!("a start over the waking seat: {other:?}"),
+    }
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the crown's ask to wake W", || {
+        c.board().live_agent(w).is_some_and(|s| s.state != SessionState::Sleeping)
+    });
+    assert!(row(&mut c, w).is_none(), "{:?}", pending_of(&mut c, Some(w)));
+    assert_eq!(touch_on(&mut c, w).as_deref(), Some("sent"));
+    hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
+    wait_until(std::time::Duration::from_secs(15), "the parked words to land", || {
+        landed("mesimon-probe-97 wake for this")
+    });
+    start(&mut c, ws);
+    stop(&mut c, ws);
+
+    // ---- off again, or the crown leaving, holds what had not gone -----------
+    start(&mut c, ws);
+    let (held, _) = ask(&mut c, &kw, "mesimon-probe-98 not now");
+    assert!(!held);
+    assert!(matches!(c.request(Command::SetCrownSends { on: false }), Response::Ok));
+    let r = row(&mut c, w).expect("still on the card");
+    assert!(!r.sends && r.waits_on.is_empty(), "held for the person now: {r:?}");
+    stop(&mut c, ws);
+    settle();
+    assert!(!landed("mesimon-probe-98"), "switched off, nothing more goes");
+    assert!(matches!(c.request(Command::DropQueuedAsk { ticket: w }), Response::Ok));
+    assert!(matches!(c.request(Command::SetCrownSends { on: true }), Response::Ok));
+    start(&mut c, ws);
+    let (held, _) = ask(&mut c, &kw, "mesimon-probe-99 not now either");
+    assert!(!held);
+    assert!(matches!(c.request(Command::Uncrown), Response::Ok));
+    assert!(!row(&mut c, w).expect("still on the card").sends, "the crown left");
+    stop(&mut c, ws);
+    settle();
+    assert!(!landed("mesimon-probe-99"), "uncrowned, nothing more goes");
+
+    // The words are in no state file.
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert!(!feed.contains("mesimon-probe-9"), "the feed never carries the words");
+    let queue = std::fs::read_to_string(h.paths.queue_file()).unwrap_or_default();
+    assert!(!queue.contains("mesimon-probe-9"), "a crown's ask is never persisted");
 }

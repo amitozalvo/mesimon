@@ -578,6 +578,17 @@ fn agents(repo: &Path, verbose: bool) -> Section {
                 .advice("Counted over the awake agents the crown started; a sleeping one frees its seat until it is woken. A crown-started ticket cannot itself be crowned. Settings > Agents > Crown may start ... sets it."),
         });
 
+        // Whether the crown's words reach another agent with no person
+        // between them (T-550): printed either way, beside the budget that
+        // bounds what those words can wake.
+        records.push(if cols.crown_sends {
+            rec(Level::Note, "crown sends", "on - the crown's asks go to agents it started once they are idle")
+                .advice("An ask_agent to an agent the crown started is delivered by the queue without your ^y; one to an agent you started still waits for you. Words that would wake a sleeping agent need a free seat in the crown budget. Settings > Agents > Crown sends its asks turns it off.")
+        } else {
+            rec(Level::Ok, "crown sends", "off - every ask_agent waits on its card for your ^y")
+                .advice("Settings > Agents > Crown sends its asks lets the crown deliver to the agents it started; an agent you started always waits for you.")
+        });
+
         // The columns and what each one DOES (T-117): every automation is a
         // column setting now, so this line is the whole answer to "why did
         // that card move". A board with no file prints nothing — doctor

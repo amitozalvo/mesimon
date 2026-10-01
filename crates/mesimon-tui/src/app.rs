@@ -4352,6 +4352,7 @@ impl App {
             agent_provider: self.board.agent_provider,
             park_after_minutes: self.board.park_after_minutes,
             crown_budget: self.board.crown_budget,
+            crown_sends: self.board.crown_sends,
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
             col_offers_word: cs.offers().word(),
@@ -5479,6 +5480,22 @@ impl App {
                 match self.client.request(Command::SetCrownBudget { budget })? {
                     Response::Err { message } => self.status = message,
                     _ => self.refresh()?,
+                }
+            }
+            Verb::CrownSends => {
+                let on = !self.board.crown_sends;
+                match self.client.request(Command::SetCrownSends { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh()?;
+                        // The reach, as the agent-tools row says it: which
+                        // agents take the words, and that a person's never do.
+                        self.status = if on {
+                            "crown sends on ∙ agents it started take its asks once idle".into()
+                        } else {
+                            "crown sends off ∙ its asks wait on the card for ^y".into()
+                        };
+                    }
                 }
             }
             Verb::McpTools => {
@@ -11443,6 +11460,7 @@ pub(crate) mod test_support {
                             text: None,
                             in_flight: false,
                             by: None,
+                            sends: false,
                             accept_plan,
                             held: None,
                             plan,
@@ -11712,6 +11730,10 @@ pub(crate) mod test_support {
                 }
                 Command::SetCrownBudget { budget } => {
                     self.board.crown_budget = budget;
+                    Ok(Response::Ok)
+                }
+                Command::SetCrownSends { on } => {
+                    self.board.crown_sends = on;
                     Ok(Response::Ok)
                 }
                 Command::SetFollowUpMode { mode } => {
@@ -14596,6 +14618,25 @@ mod tests {
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownBudget")).count(), 6);
     }
 
+    /// The crown's send switch (T-550) is off on a fresh board and toggles
+    /// through its board command, saying who takes the words.
+    #[test]
+    fn crown_sends_setting_toggles_through_board_command() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Agents;
+        let idx = app.settings_row(Verb::CrownSends);
+        app.mode = Mode::Settings { idx };
+        assert!(!app.board.crown_sends, "off by default");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.crown_sends && app.ctx().crown_sends);
+        assert!(app.status.contains("agents it started"), "{}", app.status);
+        assert_eq!(app.mode, Mode::Settings { idx });
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.board.crown_sends && !app.ctx().crown_sends);
+        assert!(app.status.contains("^y"), "{}", app.status);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownSends")).count(), 2);
+    }
+
     /// The crown's lightning (T-544): a touch first seen fresh strikes once,
     /// however many snapshots carry it, and its card waits for the bolt; a
     /// touch already past its beat when it arrives only leaves its residue.
@@ -15955,6 +15996,7 @@ mod tests {
                 text: None,
                 in_flight: false,
                 by: None,
+                sends: false,
                 accept_plan: true,
                 plan: false,
                 held: None,
@@ -16168,6 +16210,7 @@ mod tests {
             text: Some("after".into()),
             in_flight: false,
             by: None,
+            sends: false,
             accept_plan: false,
             held: Some("agent asked".into()),
             plan: false,
@@ -16191,6 +16234,7 @@ mod tests {
             text: Some("commit it\nthen push".into()),
             in_flight: false,
             by: None,
+            sends: false,
             accept_plan: false,
             plan: false,
             held: None,
@@ -16225,6 +16269,7 @@ mod tests {
             text: Some("commit it".into()),
             in_flight: false,
             by: None,
+            sends: false,
             accept_plan: false,
             plan: false,
             held: None,
@@ -16287,6 +16332,7 @@ mod tests {
                 text: None,
                 in_flight,
                 by: None,
+                sends: false,
                 accept_plan: false,
                 plan: false,
                 held: None,
@@ -16308,6 +16354,7 @@ mod tests {
             text: Some("commit it".into()),
             in_flight: false,
             by: Some("T-411".into()),
+            sends: false,
             accept_plan: false,
             plan: false,
             held: None,
@@ -16327,6 +16374,13 @@ mod tests {
         // A person's own ask is not held: the queue delivers it.
         app.pending[0].by = None;
         assert!(!app.ticket_held(ulid::Ulid(1)));
+        // One the board lets the crown send (T-550) is the queue's, and
+        // reads as the queue's; `^y` still hurries it and `^u` takes it back.
+        app.pending[0].by = Some("T-411".into());
+        app.pending[0].sends = true;
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued ∙ after T-3"));
+        assert!(app.ticket_queued(ulid::Ulid(1)));
+        assert!(!app.ticket_held(ulid::Ulid(1)));
         assert_eq!(row(&mut app, vec![], false, Merge), "auto-merge ∙ next");
         assert_eq!(row(&mut app, vec!["T-3"], false, Merge), "auto-merge ∙ after T-3");
         assert_eq!(row(&mut app, vec![], false, Rebase), "rebase ask ∙ next");
@@ -16342,6 +16396,7 @@ mod tests {
                 text: Some("uncommitted changes in the main checkout".into()),
                 in_flight: false,
                 by: None,
+                sends: false,
                 accept_plan: false,
                 plan: false,
                 held: None,

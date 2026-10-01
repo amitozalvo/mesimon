@@ -218,6 +218,13 @@ it archived burns away before its column closes up. When an agent it started rep
 bolt runs the other way, from that card to the crown. **Settings › Appearance › Crown's
 actions** turns the lightning off for this machine; the card still says what was done.
 
+**Settings › Agents › Crown sends its asks** (off by default) lets the crown's words go without
+your `^y` to an agent the crown started: the queue delivers them once that agent is idle, the card
+lights `♛ sent`, and the activity feed records the send as the agent's. Words for an agent you
+started still wait for you, whatever the setting says. Words that would wake a sleeping agent need
+a free seat in the crown's budget and hold it while they wait. Turning the setting off, or taking
+the crown back, holds whatever had not gone yet on its card.
+
 At most three agents the crown started may be awake at once; **Settings › Agents** changes the
 number or turns starting off. A ticket the crown started can never be crowned itself. The crown
 may put an agent it started to sleep once that agent is idle, the same park as `x` on its card:

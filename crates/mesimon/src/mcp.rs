@@ -216,13 +216,21 @@ fn render(resp: Response) -> Value {
             "budget_left": budget_left,
             "wakes": mcp::CROWN_WAKES
         })),
-        // The crown's ask (T-413): held on the card until a person sends it.
-        Response::AgentAsked { key, replaced, seen } => {
+        // The crown's ask (T-413): held on the card until a person sends it,
+        // or, where the board lets the crown send (T-550), queued to go once
+        // the agent is idle. `held_because` says why a send was held.
+        Response::AgentAsked { key, replaced, seen, held_for_person, held_because } => {
             let mut body = json!({
-                "key": key, "replaced": replaced, "held_for_person": true, "wakes": mcp::CROWN_WAKES
+                "key": key,
+                "replaced": replaced,
+                "held_for_person": held_for_person,
+                "wakes": mcp::CROWN_WAKES
             });
             if let Some(seen) = seen {
                 body["seen"] = json!(seen);
+            }
+            if let Some(why) = held_because {
+                body["held_because"] = json!(why);
             }
             text(&body)
         }

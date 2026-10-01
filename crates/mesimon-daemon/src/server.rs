@@ -815,6 +815,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 text: e.text,
                 queued_at: e.queued_at,
                 by: None,
+                sends: false,
                 accept_plan: false,
                 send_on_accept: false,
                 held: None,
@@ -1435,11 +1436,17 @@ struct QueuedAsk {
     #[allow(dead_code)]
     queued_at: u64,
     /// The crown ticket whose agent queued these words (T-413). `Some` is a
-    /// HELD ask: `drain_queue` never takes it, only a person's send
-    /// (`SendQueuedAsk`) delivers it and a take-back returns it — the road
-    /// that keeps a person between one session and another's turn. Never
-    /// persisted: it dies with the daemon, and the crown may ask again.
+    /// HELD ask unless `sends`: `drain_queue` never takes it, only a
+    /// person's send (`SendQueuedAsk`) delivers it and a take-back returns
+    /// it — the road that keeps a person between one session and another's
+    /// turn. Never persisted, sending or not: it dies with the daemon, and
+    /// the crown may ask again.
     by: Option<ulid::Ulid>,
+    /// The crown's ask goes by the queue like a person's (T-550): the
+    /// board's `crown_sends` is on and the crown started this agent, so
+    /// `drain_queue` delivers it once the agent is idle. False on every
+    /// person's ask; set by the crown's handler after `park_ask`.
+    sends: bool,
     /// Accept the agent's plan on the way (T-420): when the pane it was
     /// queued at reaches its plan dialog, `service_plan_accepts` presses the
     /// harness's default and clears this. Pane seats only — the flag is
@@ -1465,6 +1472,15 @@ struct QueuedAsk {
     /// woken with it once idle. Rides `queue.json` (schema 2) on the
     /// seats that ride it.
     plan: bool,
+}
+
+impl QueuedAsk {
+    /// Waits for a person's `^y`: the crown's ask the board does not let it
+    /// send (T-413, T-550), or one the daemon held on a question (T-420).
+    /// The queue neither delivers it nor lets it take its checkout's turn.
+    fn held_for_person(&self) -> bool {
+        self.held.is_some() || (self.by.is_some() && !self.sends)
+    }
 }
 
 /// Where a prompt's claude is (`Daemon::seat_of`), and therefore how it is
@@ -1988,6 +2004,7 @@ impl Daemon {
             Command::SetDefaultTier { scope, id } => self.set_default_tier(scope, id),
             Command::SetParkAfterMinutes { minutes } => self.set_park_after_minutes(minutes),
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
+            Command::SetCrownSends { on } => self.set_crown_sends(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetSystemPrompt { on } => self.set_system_prompt(on),
             Command::SetDefaultColumn { column } => self.set_default_column(column.as_deref()),
@@ -4066,17 +4083,33 @@ impl Daemon {
                 if let Some(message) = self.plan_refusal(target, plan) {
                     return Response::Err { message };
                 }
+                // The road (T-550): held for a person's send, unless the
+                // board lets the crown send and the crown started this agent.
+                let held_because = self.crown_ask_hold(target, &seat);
+                let sends = held_because.is_none();
                 let replaced =
                     self.queued.iter().any(|q| q.ticket == target && q.by == Some(ticket));
                 if let Err(message) = self.park_ask(target, seat, text, Some(ticket), false, plan) {
                     return Response::Err { message };
                 }
+                if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == target) {
+                    q.sends = sends;
+                }
+                self.crown_touched(ticket, target, "asked");
+                // An idle agent takes the words now, its touch turning to
+                // `sent`; a busy one when its turn ends, as a person's
+                // queued ask would. The stamp is read after: a wake moves
+                // the agent's state, which the stamp covers.
+                if sends {
+                    self.drain_queue();
+                }
                 self.broadcast();
-                let seen = self.crown_touched(ticket, target, "asked");
                 Response::AgentAsked {
                     key: self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key),
                     replaced,
-                    seen,
+                    seen: Some(self.seen_token(target)),
+                    held_for_person: !sends,
+                    held_because,
                 }
             }
             Command::AgentStartTicket { key, seen, plan } => {
@@ -4237,7 +4270,9 @@ impl Daemon {
     /// agent, T-541, and an archived ticket, T-518), plus the starts parked
     /// behind a worktree provision — those
     /// have no record yet and would otherwise let a burst of worktree
-    /// tickets outrun the cap. The second value is how many are parked.
+    /// tickets outrun the cap — and the parked agents the crown's own ask
+    /// is waiting to wake (T-550). The second value is how many starts are
+    /// parked.
     fn crown_seats(&self) -> (Vec<String>, usize) {
         let mut keys: Vec<String> = self
             .board
@@ -4253,6 +4288,15 @@ impl Daemon {
             .collect();
         let n = parked.len();
         keys.extend(parked);
+        // A wake the crown's own ask will make (T-550): the agent is
+        // asleep and out of `crown_started` until the words go, and a
+        // start behind it must not take the seat they will need.
+        keys.extend(
+            self.queued
+                .iter()
+                .filter(|q| q.sends && matches!(q.seat, QueuedSeat::Wake(_)))
+                .filter_map(|q| self.board.ticket(q.ticket).map(|t| t.short_key.clone())),
+        );
         keys.sort();
         keys.dedup();
         (keys, n)
@@ -4279,6 +4323,45 @@ impl Daemon {
                 held.join(", ")
             )
         })
+    }
+
+    /// Why the crown's ask for `target` waits on a person's send, or `None`
+    /// when the queue delivers it (T-550). In order: the board's switch;
+    /// the agent's provenance — the one who started an agent is the one who
+    /// steers it (T-539), so a person's agent waits for its person whatever
+    /// the switch says; and for a parked agent, the budget. Words to a
+    /// sleeping agent wake it, and a wake on the crown's word spends what a
+    /// start spends, so it needs a free seat and holds one while it waits
+    /// (`crown_seats`). The words are the crown's to relay to the person.
+    fn crown_ask_hold(&self, target: ulid::Ulid, seat: &QueuedSeat) -> Option<String> {
+        if !self.board.crown_sends {
+            return Some(
+                "this board holds the crown's asks for a person to send (Settings → Agents → \
+                 Crown sends its asks)"
+                    .into(),
+            );
+        }
+        if self.board.live_agent(target).is_none_or(|rec| rec.started_by.is_none()) {
+            return Some(
+                "a person started this agent, and a person sends it words (^y on its card)".into(),
+            );
+        }
+        if matches!(seat, QueuedSeat::Wake(_)) {
+            let budget = self.board.crown_budget;
+            let own = self.board.ticket(target).map(|t| t.short_key.as_str());
+            let (held, _) = self.crown_seats();
+            let held: Vec<String> = held.into_iter().filter(|k| Some(k.as_str()) != own).collect();
+            if held.len() >= budget as usize {
+                return Some(format!(
+                    "its agent is asleep and the words would wake it, but the crown's budget is \
+                     spent ({} of {budget} awake{}); a person's send wakes it, or sleep_agent on \
+                     another frees a seat and the ask can be made again",
+                    held.len(),
+                    if held.is_empty() { String::new() } else { format!(": {}", held.join(", ")) },
+                ));
+            }
+        }
+        None
     }
 
     /// The session `sleep_agent` may park on `target` (T-539), or why none:
@@ -4517,8 +4600,10 @@ impl Daemon {
         if self.board.crown == Some(id) {
             return Response::Ok;
         }
-        // A new crown is owed nothing the old one was (T-414).
+        // A new crown is owed nothing the old one was (T-414), and the old
+        // one's words go nowhere on their own (T-550).
         self.drop_crown_wakes();
+        self.hold_crown_sends();
         self.board.crown = Some(id);
         self.persist_columns();
         self.broadcast();
@@ -4533,6 +4618,7 @@ impl Daemon {
             return Response::Err { message: self.barred_message("columns") };
         }
         self.drop_crown_wakes();
+        self.hold_crown_sends();
         self.board.crown = None;
         self.persist_columns();
         self.broadcast();
@@ -4545,9 +4631,20 @@ impl Daemon {
     fn drop_crown_if(&mut self, id: ulid::Ulid) {
         if self.board.crown == Some(id) {
             self.drop_crown_wakes();
+            self.hold_crown_sends();
             self.board.crown = None;
             self.persist_columns();
             self.feed.board("automation", "uncrown", Some(id));
+        }
+    }
+
+    /// The crown's asks still waiting to send are held for the person from
+    /// here (T-550): the switch went off, or the crown left the ticket that
+    /// asked. Its authority to send was the switch AND the crown, so either
+    /// ending ends the road; the words stay on the card for `^y` or `^u`.
+    fn hold_crown_sends(&mut self) {
+        for q in self.queued.iter_mut().filter(|q| q.sends) {
+            q.sends = false;
         }
     }
 
@@ -5447,6 +5544,7 @@ impl Daemon {
                 text: (!q.text.is_empty()).then(|| q.text.clone()),
                 in_flight: false,
                 by: q.by.and_then(|c| self.board.ticket(c)).map(|c| c.short_key.clone()),
+                sends: q.sends,
                 accept_plan: q.accept_plan || q.send_on_accept,
                 held: q.held.map(str::to_string),
                 plan: q.plan,
@@ -5461,6 +5559,7 @@ impl Daemon {
                     text: None,
                     in_flight: true,
                     by: None,
+                    sends: false,
                     accept_plan: false,
                     held: None,
                     plan: false,
@@ -5482,6 +5581,7 @@ impl Daemon {
                 text: Some(self.crown_wake_text()),
                 in_flight: false,
                 by: None,
+                sends: false,
                 accept_plan: false,
                 held: None,
                 plan: false,
@@ -5511,6 +5611,7 @@ impl Daemon {
                     text: self.train.refusal(t, &tip, self.base_tip_of(t)).map(String::from),
                     in_flight: false,
                     by: None,
+                    sends: false,
                     accept_plan: false,
                     held: None,
                     plan: false,
@@ -5524,6 +5625,7 @@ impl Daemon {
                     text: None,
                     in_flight: false,
                     by: None,
+                    sends: false,
                     accept_plan: false,
                     held: None,
                     plan: false,
@@ -5758,7 +5860,8 @@ impl Daemon {
             .iter()
             .filter_map(|q| {
                 // A held ask (T-413) is memory-only, like a pane ask: the
-                // crown's words never wait in a file for a restart to send.
+                // crown's words never wait in a file for a restart to send,
+                // whether a person or the queue would send them (T-550).
                 if q.by.is_some() || q.held.is_some() {
                     return None;
                 }
@@ -7845,9 +7948,10 @@ impl Daemon {
     /// the drain and the receipt.
     ///
     /// `by` is the crown ticket when the words are its agent's (T-413): the
-    /// entry is then HELD for a person's send, and it may replace only the
-    /// crown's own earlier ask — a person's queued words are never
-    /// overwritten by an agent's. A person's ask replaces either.
+    /// entry is then HELD for a person's send — until the crown's handler
+    /// sets `sends` (T-550) — and it may replace only the crown's own
+    /// earlier ask — a person's queued words are never overwritten by an
+    /// agent's. A person's ask replaces either.
     fn park_ask(
         &mut self,
         ticket: ulid::Ulid,
@@ -7914,6 +8018,8 @@ impl Daemon {
             }
             q.cwd = cwd;
             q.by = by;
+            // The crown's road is its handler's to set again (T-550).
+            q.sends = false;
             // Re-queued by hand: the person read the words again, so a
             // hold is answered, and the flag is whatever the field said.
             q.accept_plan = accept_plan;
@@ -7929,6 +8035,7 @@ impl Daemon {
                 text,
                 queued_at: now,
                 by,
+                sends: false,
                 accept_plan,
                 send_on_accept: false,
                 held: None,
@@ -7978,7 +8085,7 @@ impl Daemon {
             return Vec::new();
         };
         // A held ask (T-413, T-420) waits on a person, not the checkout.
-        if q.by.is_some() || q.held.is_some() {
+        if q.held_for_person() {
             return Vec::new();
         }
         // A flagged ask (T-429) waits on the accept's holders — the tickets
@@ -8016,11 +8123,7 @@ impl Daemon {
             if ahead.ticket == ticket {
                 break;
             }
-            if ahead.by.is_none()
-                && ahead.held.is_none()
-                && ahead.cwd == q.cwd
-                && !ids.contains(&ahead.ticket)
-            {
+            if !ahead.held_for_person() && ahead.cwd == q.cwd && !ids.contains(&ahead.ticket) {
                 ids.push(ahead.ticket);
             }
         }
@@ -8071,8 +8174,9 @@ impl Daemon {
         for i in self.queue_order() {
             // A held ask (T-413) is a person's to send; it neither goes nor
             // takes the checkout's turn from the ask behind it. The same
-            // for one the daemon held on a question (T-420).
-            if self.queued[i].by.is_some() || self.queued[i].held.is_some() {
+            // for one the daemon held on a question (T-420). The crown's
+            // ask the board lets it send (T-550) goes like a person's.
+            if self.queued[i].held_for_person() {
                 continue;
             }
             let cwd = self.queued[i].cwd.clone();
@@ -8090,7 +8194,7 @@ impl Daemon {
         take.sort_unstable_by(|a, b| b.cmp(a));
         let mut changed = false;
         for i in take {
-            let QueuedAsk { ticket, seat, text, plan, .. } = self.queued.remove(i);
+            let QueuedAsk { ticket, seat, text, plan, by, .. } = self.queued.remove(i);
             changed = true;
             let word = seat.word();
             if !self.seat_stands(ticket, &seat) {
@@ -8104,13 +8208,14 @@ impl Daemon {
             // and their entry is the user's prompt, so the card shows the
             // launching arc instead. A pane relaunched into plan mode
             // (T-434) is a wake in all but its seat word.
-            match seat {
+            let sent = match seat {
                 seat @ QueuedSeat::Pane(pane) if !plan && !self.tier_owed(pane) => {
                     match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, false) {
-                        Response::Ok => {
-                            self.feed.board("automation", "queued_ask_sent", Some(ticket));
+                        Response::Ok => true,
+                        _ => {
+                            self.feed.board("automation", "queued_ask_failed", Some(ticket));
+                            false
                         }
-                        _ => self.feed.board("automation", "queued_ask_failed", Some(ticket)),
                     }
                 }
                 seat => match self.deliver(ticket, seat, text, Ack::PROMPT, plan) {
@@ -8121,11 +8226,27 @@ impl Daemon {
                             &format!("queued_{word}_failed"),
                             Some(ticket),
                         );
+                        false
                     }
-                    _ => {
-                        self.feed.board("automation", &format!("queued_{word}_sent"), Some(ticket));
-                    }
+                    _ => true,
                 },
+            };
+            if !sent {
+                continue;
+            }
+            match by {
+                // The crown's words, sent on the board's say-so (T-550): the
+                // feed names the crown's agent as the actor, the card lights
+                // `♛ sent`, and the turn that takes them is the crown's
+                // answer (T-469), as after a person's `^y`.
+                Some(crown) => {
+                    self.feed.board("agent", "ask_agent_sent", Some(ticket));
+                    self.tag_owed(ticket, TurnAsk::Crown(crown));
+                    self.crown_touched(crown, ticket, "sent");
+                }
+                None => {
+                    self.feed.board("automation", &format!("queued_{word}_sent"), Some(ticket));
+                }
             }
         }
         if changed {
@@ -8244,13 +8365,13 @@ impl Daemon {
     }
 
     /// The agent of `session` stopped on a question: hold the ask queued at
-    /// its pane (T-420). A crown's ask is held already; an ask in flight has
-    /// left the queue. Idempotent, so a re-asserted state costs nothing.
+    /// its pane (T-420). A crown's held ask is held already, and one it
+    /// sends (T-550) is held like a person's — the answer may change it
+    /// too; an ask in flight has left the queue. Idempotent, so a
+    /// re-asserted state costs nothing.
     fn hold_queued_on_question(&mut self, session: uuid::Uuid) {
         let Some(q) = self.queued.iter_mut().find(|q| {
-            matches!(q.seat, QueuedSeat::Pane(id) if id == session)
-                && q.by.is_none()
-                && q.held.is_none()
+            matches!(q.seat, QueuedSeat::Pane(id) if id == session) && !q.held_for_person()
         }) else {
             return;
         };
@@ -8847,6 +8968,25 @@ impl Daemon {
         }
         if self.board.crown_budget != budget {
             self.board.crown_budget = budget;
+            self.persist_and_notify();
+        }
+        Response::Ok
+    }
+
+    /// `Command::SetCrownSends` (T-550): whether the crown's asks to the
+    /// agents it started go by the queue. Off means nothing more goes out
+    /// on the crown's word: an ask still waiting to send is held for the
+    /// person from here. On releases nothing already held — those words
+    /// were left for the person to read, and the crown may ask again.
+    fn set_crown_sends(&mut self, on: bool) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.crown_sends != on {
+            self.board.crown_sends = on;
+            if !on {
+                self.hold_crown_sends();
+            }
             self.persist_and_notify();
         }
         Response::Ok

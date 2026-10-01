@@ -1622,6 +1622,14 @@ pub struct Board {
     /// by the one-level rule on `started_by`, never by trust.
     #[serde(default = "default_crown_budget")]
     pub crown_budget: u8,
+    /// The crown delivers its own asks (T-550): `ask_agent` words for an
+    /// agent the crown STARTED (`started_by`, any crown's) go by the queue
+    /// when that agent is idle, instead of waiting on a person's `^y`
+    /// (T-413). An agent a person started is held for them whatever this
+    /// says, and a wake on the crown's words is a seat in `crown_budget`.
+    /// Off by default; a build that drops it only takes authority away.
+    #[serde(default)]
+    pub crown_sends: bool,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
     /// The tag registry: the vocabulary each axis offers, in the order it was
@@ -1775,6 +1783,7 @@ impl Default for Board {
             agent_provider: AgentProvider::default(),
             park_after_minutes: 0,
             crown_budget: DEFAULT_CROWN_BUDGET,
+            crown_sends: false,
             next_key: 0,
             tags: Vec::new(),
             tags_seeded: false,
@@ -2521,9 +2530,10 @@ impl Board {
     /// free the seats the last one started, because the money is spent
     /// either way. A parked agent is out of the count (T-541): it runs no
     /// process and spends nothing, so `sleep_agent` (or a person's `x`, or
-    /// the inactivity park) frees its seat, and its wake — always a
-    /// person's: their `c`, or their send of the crown's held ask — takes
-    /// it back. An archived ticket's (a snooze's too) is out of the count
+    /// the inactivity park) frees its seat, and its wake — a person's `c`,
+    /// their send of the crown's held ask, or with `crown_sends` the
+    /// crown's own ask, which the daemon counts as a seat while it waits
+    /// (T-550) — takes it back. An archived ticket's (a snooze's too) is out of the count
     /// as well (T-518), a belt now that an archive needs everything asleep.
     /// The record keeps its `started_by`, so a woken or restored seat counts
     /// again and its ticket still cannot be crowned.

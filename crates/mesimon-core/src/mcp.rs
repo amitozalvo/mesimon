@@ -483,16 +483,17 @@ pub fn tools() -> Vec<Value> {
         }),
         // The crown's ask (T-413): words for another ticket's agent, held on
         // its card until a person sends them. The direct prompt stays in the
-        // never-tier; this is its road through a person.
+        // never-tier; this is its road through a person — or, on a board
+        // whose person switched `crown_sends` on, through the queue to an
+        // agent the crown started (T-550).
         json!({
             "name": "ask_agent",
-            "description": "Queues words for another mesimon ticket's agent (crown only). \
-                            They wait on that ticket's card, marked as this agent's, until \
-                            a person sends them (^y) or takes them back (^u); nothing \
-                            reaches the agent before that. One ask per ticket: a second \
-                            replaces the first. Refused on a ticket with no agent and on this \
-                            session's own ticket. The turn that takes them wakes this session \
-                            when it ends.",
+            "description": "Queues words on another ticket's card for its agent (crown \
+                            only), marked as this agent's. A person sends them (^y) or takes \
+                            them back (^u); with crown sends on, an agent the crown started \
+                            gets them once idle (held_for_person says which). A second ask \
+                            replaces the first. Refused with no agent or on this session's \
+                            ticket. The turn that takes them wakes this session when it ends.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1006,6 +1007,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::SetDefaultTier { .. }
         | Command::SetParkAfterMinutes { .. }
         | Command::SetCrownBudget { .. }
+        // T-550: the crown sending its own asks is the person stepping out
+        // from between one agent's words and another's turn. Only the
+        // person may step out.
+        | Command::SetCrownSends { .. }
         // Where the status line sits over the user's own panes: chrome, and
         // theirs. An agent moving it would be redecorating a screen it is
         // not looking at.
@@ -1601,7 +1606,11 @@ mod tests {
             // T-537: a crown that is not told the board wakes it goes
             // looking on its own, with a monitor that holds the wake.
             ("start_agent", vec!["The board then wakes this session", "so nothing is polled"]),
-            ("ask_agent", vec!["The turn that takes them wakes this session"]),
+            // T-550: which road the words take is the receipt's to say.
+            (
+                "ask_agent",
+                vec!["The turn that takes them wakes this session", "held_for_person says which"],
+            ),
         ] {
             let tool = registry.iter().find(|t| t["name"] == name).unwrap();
             let description = tool["description"].as_str().unwrap();
@@ -1816,6 +1825,7 @@ mod tests {
             Command::SetAgentProvider { provider: crate::board::AgentProvider::Codex },
             Command::SetParkAfterMinutes { minutes: 30 },
             Command::SetCrownBudget { budget: 3 },
+            Command::SetCrownSends { on: true },
             Command::SetTicketTier { id: t, tier: Some("claude".into()) },
             Command::SaveTier {
                 scope: crate::tier::TierScope::Machine,

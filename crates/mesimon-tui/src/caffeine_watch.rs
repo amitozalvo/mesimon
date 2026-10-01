@@ -245,6 +245,7 @@ mod tests {
                     text: None,
                     in_flight: true,
                     by: None,
+                    sends: false,
                     accept_plan: false,
                     held: None,
                     plan: false,

@@ -16812,3 +16812,83 @@ row, in flight back to the queue's words, a four-digit key at 22, a person's ask
 row, a held one does, a resting card has neither, an open field drops the keys and keeps the
 words). New goldens `board_held_open_120x30` and `ticket_held_120x30` were reviewed by eye. No
 existing golden moved.
+
+## The crown sends its asks to the agents it started, where the person lets it (T-550, 2026-10-01, user on T-544: "is it by design that user have to press ^y for crowned queued messages? because it's not good")
+
+**Seen.** Demoing the crown, the user pressed `^y` to send words the crown had queued with
+`ask_agent`. T-413 built that hold on purpose — one agent's words reaching another agent's turn
+with no person between them is what promise 3 and D10 both stop — and reserved the opt-in by
+name. This is it.
+
+**Shipped.** `Board.crown_sends: bool`, off by default, a `columns.toml` scalar beside
+`crown_budget` with no `COLUMNS_SCHEMA` bump: an older build drops it and holds every ask again,
+which only takes authority away. `SetCrownSends { on }` is local only and in the never-tier (an
+agent that could switch it on would lift the person out from between its own words and another's
+turn). Settings → Agents → "Crown sends its asks: on/off" under the budget row; `mesimon doctor`
+prints `crown sends` either way.
+
+- **Decided at the ask, in this order** (`crown_ask_hold`): the switch; the agent's provenance —
+  an agent a person started is held whatever the switch says, T-539's line that the one who
+  started an agent is the one who steers it (`started_by` is any crown's, as the budget is);
+  then, for a parked agent, the budget. A held ask is T-413's unchanged. A sending one is
+  `QueuedAsk.sends`, and `QueuedAsk::held_for_person` is now the one predicate `drain_queue`,
+  `ask_waits_on` and the question hold read, so a sending ask waits on its checkout and goes
+  when the agent is idle exactly as a person's does. It is still memory-only: a restart never
+  sends the crown's words.
+- **A wake is a seat.** Words for a sleeping agent wake it, and a wake on the crown's word spends
+  what a start spends. So it needs a free seat (the count without the target) and HOLDS one while
+  it waits on a busy checkout — `crown_seats` adds the queued sending wakes, as it adds the
+  starts parked behind a worktree, so a `start_agent` behind it cannot take the seat the wake
+  will need. Over budget, the ask is held and `held_because` names the holders and `sleep_agent`.
+  T-541's "the crown cannot wake what it parked" becomes "only into a free seat"; its claim that
+  the crown's own doing never takes the awake set over the cap still holds.
+- **Authority is the switch AND the crown.** Turning the switch off, `Uncrown`, a re-crown and the
+  crowned ticket leaving all run `hold_crown_sends`: what had not gone is held on its card for
+  `^y`/`^u`. Turning it on releases nothing already held — those words were left for a person to
+  read. A sending ask on a pane that stops on a question is held as a person's is (T-420).
+- **The board says it.** The card lights `♛ asked` when the ask is queued and `♛ sent` when the
+  words go (the drain's `crown_touched`, so the bolt runs from the crown at delivery). The feed
+  keeps `ask_agent` at the queue and adds `ask_agent_sent` with actor `agent` at delivery;
+  failures stay the queue's own lines. `Pending.sends` rides the snapshot and
+  `Pending::is_held` — T-551's one predicate, which said this day would come — answers false for
+  a sending ask, so the card drops `you send` and the keys row and reads the queue's own row
+  (`queued ∙ after T-3`): the queue is what will send it, and the touch and the feed say whose
+  words they were. A question stop on it is held again, as T-420 holds any ask. The delivery is tagged
+  `TurnAsk::Crown`, so the turn that takes the words wakes the crown with `answered your ask`,
+  as after a person's `^y` (T-469).
+- **The receipt.** `Response::AgentAsked` gained `held_for_person` (default true, so an older
+  daemon's receipt still reads as held) and `held_because`; the shim had hardcoded `true`. The
+  `ask_agent` description says the road in fewer bytes than it had (the tool was already at the
+  820-byte cap), and the guidance test asserts it names `held_for_person`.
+
+**No cap of its own — the argument.** D10's fire is an agent multiplying spend without a person.
+A send starts no agent (`start_agent` first, so the number of agents is still the budget's); it
+wakes one only into a free seat and holds that seat while it waits; one ask per ticket, delivered
+only to an idle agent in a quiet checkout, is at most one crown-caused turn in flight per worker.
+So the spend RATE is bounded by the budget plus the crown — what a person running that many
+agents pays. What is not bounded is total turns over time: a crown and a worker can go back and
+forth (ask → turn → `answered` wake → ask) for as long as the crown keeps asking. That loop is
+the thing the person switched on, serialized by the wake (the crown hears only after the turn
+ends) and parallel only up to the budget. A count cap would be a quota on what the person opted
+into, failing mid-task at a number nobody can pick; the stops are the Settings row and `^o`, and
+both hold what had not gone. **Reserved, not built:** a per-worker fuse like the move gate's (N
+sends to one ticket in M minutes holds the next for a person), the day a runaway loop is seen.
+
+**Promise 3.** `docs/PROMISES.md` and the README line are the author's words and are untouched.
+The sentence naming this consented exception is drafted in a note on T-550, awaiting approval.
+
+**Tests.** `store`: the scalar round-trips before the tables. `mcp`: the tier table lists
+`SetCrownSends`; the description fits the cap and names `held_for_person`. `command`:
+`held_is_a_queued_ask_that_waits_on_a_person` gained a sending ask (not held) and a question stop
+on it (held). TUI: `crown_sends_setting_toggles_through_board_command`;
+`the_owed_row_names_what_it_waits_on` reads a sending crown ask as the queue's row, not held, with
+`^y`/`^u` still live; the Agents goldens gained the row.
+`crown_e2e`'s held-ask receipt now says `held_for_person` and why, and the new
+`the_crown_sends_its_asks_to_the_agents_it_started`: held when off; refused to an agent,
+persisted when a person turns it on; held for a person-started agent; a working worker's ask
+waits on its own turn with `sends` and `♛ asked`, lands at the `Stop`, lights `♛ sent`, writes
+`ask_agent_sent` with actor `agent`, and the worker's next turn wakes the crown with `answered
+your ask`; an idle worker takes the words at once; a parked worker is held at a full budget naming
+the holder, and at a free seat the wake waits on the crown's turn while a `start_agent` behind it
+is refused naming it, then wakes the worker and its words land; switching off, and uncrowning,
+each hold a sending ask that then never lands; no words in the feed or `queue.json`.

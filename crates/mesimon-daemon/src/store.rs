@@ -118,6 +118,12 @@ struct ColumnsFile {
     /// that same number, and the count it caps is in `sessions.json`.
     #[serde(default = "default_crown_budget")]
     crown_budget: u8,
+    /// The crown delivers its own asks to the agents it started
+    /// (`Board::crown_sends`, T-550). Absent means off, and no bump: a
+    /// build that drops it holds every ask for a person again, which only
+    /// takes authority away.
+    #[serde(default)]
+    crown_sends: bool,
     /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
     /// so it sits here, before the tables. Absent on every file written
     /// before 2026-09-04, which is what makes an existing board's first load
@@ -467,6 +473,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 agent_provider: cf.agent_provider,
                                 park_after_minutes: cf.park_after_minutes,
                                 crown_budget: cf.crown_budget,
+                                crown_sends: cf.crown_sends,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
                                 mcp_tools: cf.mcp_tools,
@@ -667,6 +674,8 @@ pub struct ColumnsScalars {
     pub tiers: Vec<mesimon_core::tier::Tier>,
     /// `Board::crown_budget` (T-412).
     pub crown_budget: u8,
+    /// `Board::crown_sends` (T-550).
+    pub crown_sends: bool,
     /// `Board::mcp_tools` (T-217).
     pub mcp_tools: bool,
     /// `Board::system_prompt` (T-224).
@@ -690,6 +699,7 @@ impl Default for ColumnsScalars {
             default_tier: None,
             tiers: Vec::new(),
             crown_budget: mesimon_core::board::DEFAULT_CROWN_BUDGET,
+            crown_sends: false,
             mcp_tools: true,
 
             system_prompt: false,
@@ -721,6 +731,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         default_tier: cf.default_tier,
         tiers: cf.tiers,
         crown_budget: cf.crown_budget,
+        crown_sends: cf.crown_sends,
         mcp_tools: cf.mcp_tools,
         system_prompt: cf.system_prompt,
         default_column,
@@ -743,6 +754,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         agent_provider: board.agent_provider,
         park_after_minutes: board.park_after_minutes,
         crown_budget: board.crown_budget,
+        crown_sends: board.crown_sends,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
         claude_md_ignored: board.claude_md_ignored,
@@ -2072,6 +2084,7 @@ order = "a0"
             agent_provider: AgentProvider::Codex,
             park_after_minutes: 30,
             crown_budget: 5,
+            crown_sends: true,
             tags_seeded: true,
             mcp_tools: false,
             claude_md_ignored: true,
@@ -2151,6 +2164,8 @@ order = "a0"
         assert!(text.find("default_tier").unwrap() < text.find("[[columns]]").unwrap());
         assert!(text.contains("[[tiers]]") && text.contains("effort = \"xhigh\""), "{text}");
         assert_eq!(back.crown_budget, 5);
+        assert!(back.crown_sends, "{text}");
+        assert!(text.find("crown_sends").unwrap() < text.find("[[columns]]").unwrap());
         assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());
 
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");

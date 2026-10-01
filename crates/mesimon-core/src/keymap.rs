@@ -651,6 +651,10 @@ pub enum Verb {
     /// seats the crowned agent may have started at once. Board state like
     /// `McpTools`, in `columns.toml`; Enter cycles it.
     CrownBudget,
+    /// The Settings row under it (T-550): whether the crown's `ask_agent`
+    /// words for an agent it started go by the queue without a person's
+    /// `^y`. Board state like `CrownBudget`; Enter toggles it.
+    CrownSends,
     /// The Settings row under it (T-224): whether every claude mesimon
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
@@ -919,6 +923,7 @@ impl SettingsSection {
             | Verb::Tiers
             | Verb::ParkAfterMinutes
             | Verb::CrownBudget
+            | Verb::CrownSends
             | Verb::AgentPrompts => Self::Agents,
             _ => Self::Root,
         }
@@ -943,6 +948,8 @@ pub struct Ctx {
     pub park_after_minutes: u32,
     /// `Board::crown_budget` (T-412), for the Settings row's words.
     pub crown_budget: u8,
+    /// `Board::crown_sends` (T-550), for the row under it.
+    pub crown_sends: bool,
     pub column_agents: bool,
     pub col_naming: bool,
     pub col_offers_word: &'static str,
@@ -4534,6 +4541,28 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // Whether the crown's asks wait for a person's ^y (T-550). Off, every
+    // ask_agent is held; on, an agent the crown started takes the words
+    // when it is idle, and a person's agent still waits for its person.
+    MenuItem {
+        verb: Verb::CrownSends,
+        label: |c| {
+            if c.crown_sends {
+                "Crown sends its asks: on".into()
+            } else {
+                "Crown sends its asks: off".into()
+            }
+        },
+        detail: |c| {
+            if c.crown_sends {
+                "agents it started take its words once idle ∙ yours still wait for ^y ∙ enter turns off".into()
+            } else {
+                "its asks wait on the card for ^y ∙ enter lets it send to agents it started".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::McpTools,
         label: |c| {
@@ -4977,6 +5006,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::AgentPrompts,
             Verb::ParkAfterMinutes,
             Verb::CrownBudget,
+            Verb::CrownSends,
         ],
     };
     verbs
@@ -8659,6 +8689,7 @@ mod tests {
                     Verb::AgentPrompts,
                     Verb::ParkAfterMinutes,
                     Verb::CrownBudget,
+                    Verb::CrownSends,
                 ],
             ),
         ] {

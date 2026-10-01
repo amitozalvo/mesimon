@@ -1,5 +1,4 @@
  BOARD   mesimon › kanban-tui   6 tickets
-
   ╭─ AGENTS ─────────────────────────────────────────────╮
   │   Default tier: claude                               │
   │     Claude Code ∙ its own model ∙ what a ticket sta~ │
@@ -15,6 +14,7 @@
   │     this board ∙ after a finished turn ∙ enter cycl~ │
   │   Crown may start 3 agents at once                   │
   │     start_agent on the crowned ticket ∙ a sleeping ~ │
+  │   Crown sends its asks: off                          │
+  │     its asks wait on the card for ^y ∙ enter lets i~ │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
  SETTINGS                                            ? keys

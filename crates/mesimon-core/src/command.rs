@@ -531,6 +531,13 @@ pub enum Command {
     SetCrownBudget {
         budget: u8,
     },
+    /// Whether the crown delivers its own asks to the agents it started
+    /// (`Board::crown_sends`, T-550). Local only for the budget's reason:
+    /// an agent that could switch this on would be lifting the person out
+    /// from between its words and another agent's turn.
+    SetCrownSends {
+        on: bool,
+    },
     /// Project default for newly accepted agent starts. Existing sessions
     /// retain their provider. Local only: agents cannot choose who runs
     /// subsequent sessions on the board.
@@ -1195,6 +1202,7 @@ impl Command {
             | SetDefaultTier { .. }
             | SetParkAfterMinutes { .. }
             | SetCrownBudget { .. }
+            | SetCrownSends { .. }
             | SetSystemPrompt { .. }
             | SetFollowUpMode { .. }
             | SetDefaultColumn { .. }
@@ -1623,13 +1631,21 @@ pub enum Response {
     },
     /// AgentAskTicket's receipt (T-413): which ticket holds the words,
     /// whether they replaced an earlier ask of the crown's, and the
-    /// target's fresh stamp. The words wait for a person's send.
+    /// target's fresh stamp. `held_for_person` is the road: true, the
+    /// words wait for a person's send, and `held_because` says why when
+    /// the board lets the crown send (T-550); false, the queue delivers
+    /// them once the agent is idle. A daemon from before T-550 sends no
+    /// flag and always held, so the flag's default is true.
     AgentAsked {
         key: String,
         #[serde(default)]
         replaced: bool,
         #[serde(default)]
         seen: Option<String>,
+        #[serde(default = "default_true")]
+        held_for_person: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        held_because: Option<String>,
     },
 }
 
@@ -1880,12 +1896,17 @@ pub struct Pending {
     #[serde(default)]
     pub in_flight: bool,
     /// The short key of the crown ticket whose agent queued these words
-    /// (T-413). `Some` is a HELD ask: the daemon never delivers it on its
-    /// own clock, only a person's send does, and the card says who wrote
-    /// it so the person reads the words before they reach a pane. `None`
-    /// is a person's own ask.
+    /// (T-413). `Some` is a HELD ask unless `sends`: the daemon never
+    /// delivers it on its own clock, only a person's send does, and the
+    /// card says who wrote it so the person reads the words before they
+    /// reach a pane. `None` is a person's own ask.
     #[serde(default)]
     pub by: Option<String>,
+    /// The crown's ask goes by the queue like a person's (T-550): the board
+    /// lets the crown send, and the crown started this agent. The row is
+    /// then the queue's own; `by` still names the author.
+    #[serde(default)]
+    pub sends: bool,
     /// The ask will accept the agent's plan on the way (T-420) and has not
     /// yet: the card says `accepts plan` while the agent works and
     /// `accepting plan` once the dialog is up. Spent — false — the moment
@@ -1921,9 +1942,12 @@ impl Pending {
     /// (T-420, `held`)? Nothing delivers it on the queue's own clock, so the
     /// card says `you send` and names `^y` / `^u` beside it (T-551). The one
     /// predicate for it: an ask the daemon delivers by itself, attributed or
-    /// not, must answer false here.
+    /// not, must answer false here — the crown's ask the board lets it send
+    /// (T-550, `sends`) among them.
     pub fn is_held(&self) -> bool {
-        self.is_queued_ask() && !self.in_flight && (self.by.is_some() || self.held.is_some())
+        self.is_queued_ask()
+            && !self.in_flight
+            && ((self.by.is_some() && !self.sends) || self.held.is_some())
     }
 }
 
@@ -2381,6 +2405,11 @@ mod tests {
             assert!(super::Pending { action, ..crown.clone() }.is_held());
         }
         assert!(!super::Pending { in_flight: true, ..crown.clone() }.is_held());
+        // T-550: the crown's words the board lets it send go by the queue,
+        // unless a question stopped them.
+        let sends = super::Pending { sends: true, ..crown.clone() };
+        assert!(!sends.is_held(), "the queue delivers it");
+        assert!(super::Pending { held: Some("agent asked".into()), ..sends }.is_held());
         assert!(!super::Pending { action: Merge, ..crown }.is_held());
     }
     use super::*;
