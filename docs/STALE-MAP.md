@@ -16374,3 +16374,61 @@ but the reorder holds for any future one.
 **Tests.** `quiet::a_cell_after_an_emoji_lands_in_its_own_column` plays the backend's bytes onto
 a small terminal model (CUP, wide glyphs advance by their width, a write into a wide glyph
 erases it) and fails without the reorder with the header's exact shift.
+
+## The crown parks the agents it started (T-539, 2026-10-01, "allow crown to sleep and archive agents they operate": "right now it asks the user to archive")
+
+**Seen.** A crown finished its workers, their branches were merged, and it tried to archive
+their tickets: `archive_ticket` refused with the person's words ("sessions still awake — sleep
+them first") because an idle worker still holds a pane, and the crown had no road to park one.
+So it asked the user to archive, which is the triage queue the crown exists to remove.
+
+**Shipped: `sleep_agent { key, seen }`**, the fifteenth tool (crown only, `Full` rung), the
+wire's `AgentSleepTicket`. It is `x` on another ticket's card, nothing more: `sleep_one` with
+no age floor (a keyed call is as deliberate as a keypress), the conversation kept, the record
+`Sleeping`, a person's `c` the only wake. Three decisions:
+
+- **Scoped to `started_by`, not to every ticket.** T-411 gave the crown every ticket's edits,
+  but a park ends a pane a person may be looking at: an idle person-started agent is one the
+  person is between messages with, and a crown taking its pane out from under them is the one
+  disruption an edit to a card never was. The provenance T-412 already persists is the line —
+  the one who started an agent is the one who stops it — and it is the ticket's own words,
+  "agents they operate". A person's agent is refused by provenance alone, whatever its state,
+  with "x on its card" so the crown relays the right gesture. `started_by` is any crown's, as
+  the budget is: a displaced crown's workers are still crown-started.
+- **Separate from the archive, chained by the refusal.** The snooze sleeps first and the
+  person's archive refuses — "archive means everything is already asleep" — and the crown's
+  archive keeps that gate rather than growing a sleep inside it: one tool, one effect, and a
+  crown may want a worker parked without its ticket leaving the board (REVIEW, waiting on a
+  person). The chain lives in the words instead: the crown's `archive_ticket` over an awake
+  seat now says "sleep_agent parks it, then archive_ticket" for a crown-started agent and
+  "started by a person, who parks it (x on its card)" for any other (`crown_archive_refusal`,
+  judged before the generic gate so the person's instruction never reaches the crown); a
+  working worker is refused in `still_awake`'s words behind its key, as a `z` over it would be;
+  the receipt is the ticket view whole with the fresh stamp, so the archive follows with no
+  second read. Kill stays in the never-tier, and so does the wake: a parked worker is woken by
+  a person's `c`, because a wake spends money (D10) and the budget counts seats, not panes.
+- **The instruction rides `CROWN_WAKES`, not tool text.** The ticket asked how to instruct the
+  crown and why. Tool text describes (the lint); the wake paragraph on the crown's own
+  `get_ticket` view and in the `start_agent`/`ask_agent` receipts is transient result data
+  and may instruct, so it gained: a worker whose branch is merged is finished; `sleep_agent`
+  parks it and `archive_ticket` then takes its ticket off the board, which frees its seat in
+  the budget and reclaims a merged worktree; that is the crown's to do, not a person's to be
+  asked for; a person's own agent is the one it may not park. The why is the two costs the
+  board already carries for a finished worker: the crown seat (T-412, held while sleeping,
+  freed by the archive per T-518) and the landed worktree's `target/` (T-278, T-481), both of
+  which only the archive reclaims.
+
+The feed line is `sleep_agent` with the agent as actor and the target as subject; the card
+lights `♛ parked`. A sleeping seat still counts (T-412's rule, unchanged) — the archive is
+what frees it. `docs/USING.md` and `docs/PROMISES.md` say the crown may sleep what it
+started and never what the person did.
+
+**Tests.** `mcp`: `exactly_fifteen_tools`, `the_tier_is_exactly_sixteen_commands`, the tier
+table, the parse test (`seen` required), the lint and the byte cap over the new text.
+`crown_e2e`: a person's agent refused by provenance with the card's gesture and the archive
+refusal naming no crown road; in the wake test, the crown's own ticket refused, a working
+worker refused in `still awake` words and the archive over it naming `sleep_agent`, the park
+(view `sleeping`, record `Sleeping` with `started_by` kept, `♛ parked`, the feed line,
+`sessions.json`), a second park "already asleep", the parked seat still counted, and the
+archive going through and freeing it with the record kept. The shim lists fifteen tools and
+requires `seen` on the new one.

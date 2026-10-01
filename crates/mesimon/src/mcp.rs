@@ -142,6 +142,7 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::StartAgent { key, seen, plan } => {
             Command::AgentStartTicket { key, seen: Some(seen), plan }
         }
+        ToolCall::SleepAgent { key, seen } => Command::AgentSleepTicket { key, seen: Some(seen) },
         ToolCall::AskAgent { key, text, seen, plan } => {
             Command::AgentAskTicket { key, text, seen: Some(seen), plan }
         }

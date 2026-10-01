@@ -8,6 +8,8 @@
 //! is counted while held, the cap names its holders, and a crown-started
 //! ticket can never be crowned. The crown's ask (T-413) is words HELD on
 //! another ticket's card: nothing reaches the pane until a person's send.
+//! The crown's sleep (T-539) parks an idle agent it started and nobody
+//! else's, so the archive that was refused over the awake seat goes through.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -308,9 +310,29 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Principal::Agent { session: sa },
         Command::AgentArchiveTicket { key: kb.clone(), restore: false, seen: bv.seen },
     ) {
-        Response::Err { message } => assert!(message.contains("awake"), "{message}"),
+        Response::Err { message } => {
+            // The refusal says whose road it is (T-539): B's agent is the
+            // person's, so no tool of the crown's parks it.
+            assert!(message.contains("awake"), "{message}");
+            assert!(message.contains("started by a person"), "{message}");
+            assert!(!message.contains("sleep_agent parks it"), "{message}");
+        }
         other => panic!("an awake ticket cannot be archived: {other:?}"),
     }
+    // And `sleep_agent` itself refuses a person's agent by provenance,
+    // whatever its state.
+    let bv = read(&mut c, sa, &kb).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentSleepTicket { key: kb.clone(), seen: bv.seen },
+    ) {
+        Response::Err { message } => {
+            assert!(message.contains("started by a person"), "{message}");
+            assert!(message.contains("x on its card"), "{message}");
+        }
+        other => panic!("sleeping a person's agent: {other:?}"),
+    }
+    assert!(c.board().live_agent(b).unwrap().state.has_pane(), "B's agent is untouched");
     let dv = read(&mut c, sa, &kd).unwrap();
     match c.send(
         Principal::Agent { session: sa },
@@ -591,12 +613,14 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let queue = std::fs::read_to_string(h.paths.queue_file()).unwrap_or_default();
     assert!(!queue.contains("mesimon-probe-6"), "a held ask is never persisted");
 
-    // ---- the shim: fourteen tools, and `get_ticket` with a key ----------------
+    // ---- the shim: fifteen tools, and `get_ticket` with a key -----------------
     let mut shim = Shim::start(&sock, sa);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
     let listed = shim.rpc("tools/list", json!({}));
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 14);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 15);
+    let r = shim.call("sleep_agent", json!({ "key": kb }));
+    assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
     let r = shim.call("ask_agent", json!({ "key": kb, "text": "x" }));
     assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
     let r = shim.call("start_agent", json!({ "key": k4 }));
@@ -892,6 +916,95 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     wait_until(std::time::Duration::from_secs(10), "the wake after the person's ask", || {
         lines_with(&delivered1) == before + 1
     });
+
+    // ---- sleep_agent: the crown parks what it started, then archives -------
+    // (T-539) Its own ticket is refused; a working worker reads the words a
+    // person's `z` would; the archive over that awake seat names the road;
+    // an idle crown-started worker parks — the record Sleeping, `started_by`
+    // kept, the card lit `♛ parked`, the feed line with the agent as actor
+    // — and still holds its seat until the archive, which now goes through
+    // and frees it.
+    let sleep = |c: &mut TestClient, key: &str, seen: Option<String>| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentSleepTicket { key: key.into(), seen },
+        )
+    };
+    let va = read(&mut c, sa, &ka).unwrap();
+    match sleep(&mut c, &ka, va.seen) {
+        Response::Err { message } => assert!(message.contains("own ticket"), "{message}"),
+        other => panic!("sleeping the crown's own ticket: {other:?}"),
+    }
+    start(&mut c, ws2);
+    let v2 = read(&mut c, sa, &kw2).unwrap();
+    match sleep(&mut c, &kw2, v2.seen) {
+        Response::Err { message } => {
+            assert!(message.contains("still awake"), "{message}");
+            assert!(message.contains("only idle sessions sleep"), "{message}");
+        }
+        other => panic!("sleeping a working worker: {other:?}"),
+    }
+    let v2 = read(&mut c, sa, &kw2).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentArchiveTicket { key: kw2.clone(), restore: false, seen: v2.seen },
+    ) {
+        Response::Err { message } => {
+            assert!(message.contains("sleep_agent parks it, then archive_ticket"), "{message}");
+            assert!(message.contains("working"), "{message}");
+        }
+        other => panic!("archiving over an awake crown-started seat: {other:?}"),
+    }
+    assert_eq!(c.board().live_agent(w2).unwrap().state, SessionState::Running, "untouched");
+    stop(&mut c, ws2);
+    let v2 = read(&mut c, sa, &kw2).unwrap();
+    match sleep(&mut c, &kw2, v2.seen) {
+        Response::AgentTicket { ticket } => {
+            assert_eq!(ticket.key, kw2);
+            assert_eq!(ticket.state.as_ref().map(|s| s.state.as_str()), Some("sleeping"));
+        }
+        other => panic!("sleep_agent: {other:?}"),
+    }
+    let rec = c.board().sessions.iter().find(|s| s.id == ws2).cloned().expect("W2's record");
+    assert_eq!(rec.state, SessionState::Sleeping, "parked, not killed");
+    assert_eq!(rec.started_by, Some(a), "provenance survives the park");
+    assert_eq!(
+        touches(&mut c).iter().find(|t| t.ticket == w2).map(|t| t.action.as_str()),
+        Some("parked"),
+        "the card lights"
+    );
+    wait_until(std::time::Duration::from_secs(5), "the sleep_agent feed line", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| {
+                l.contains("\"cmd\":\"sleep_agent\"")
+                    && l.contains("\"actor\":\"agent\"")
+                    && l.contains(&format!("\"ticket\":\"{w2}\""))
+            })
+        })
+    });
+    let sessions = std::fs::read_to_string(h.paths.state_dir.join("sessions.json")).unwrap();
+    assert!(sessions.contains("\"sleeping\""), "the park is persisted: {sessions}");
+    let v2 = read(&mut c, sa, &kw2).unwrap();
+    match sleep(&mut c, &kw2, v2.seen) {
+        Response::Err { message } => assert!(message.contains("already asleep"), "{message}"),
+        other => panic!("sleeping a parked worker: {other:?}"),
+    }
+    // Parked is not freed: the seat is held until the ticket leaves the board.
+    assert!(c.board().crown_started().iter().any(|s| s.ticket == w2), "a parked seat counts");
+    let v2 = read(&mut c, sa, &kw2).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentArchiveTicket { key: kw2.clone(), restore: false, seen: v2.seen },
+    ) {
+        Response::AgentTicket { .. } => {}
+        other => panic!("archive after the park: {other:?}"),
+    }
+    assert!(c.board().ticket(w2).unwrap().is_archived());
+    assert!(!c.board().crown_started().iter().any(|s| s.ticket == w2), "the seat is free");
+    assert!(
+        c.board().sessions.iter().any(|s| s.id == ws2 && s.state == SessionState::Sleeping),
+        "archive keeps the sleeping record"
+    );
 
     // ---- uncrown drops what was owed; an uncrowned board owes nothing -----
     start(&mut c, sa);

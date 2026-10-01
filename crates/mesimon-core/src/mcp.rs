@@ -74,7 +74,12 @@ pub const CROWN_WAKES: &str = "The board wakes this session on its own: when an 
                                as this session's next prompt, once it is idle. Nothing needs \
                                polling. A background task or monitor left running makes this \
                                session read as busy, and the wake and every queued word wait \
-                               until it ends.";
+                               until it ends. A worker whose branch is merged is finished: \
+                               sleep_agent parks it and archive_ticket then takes its ticket \
+                               off the board, which frees its seat in the crown's budget and \
+                               reclaims a merged worktree. That is the crown's to do, not a \
+                               person's to be asked for; a person's own agent is the one the \
+                               crown may not park.";
 
 /// Words that turn a description into an instruction. Tool text is injected
 /// into every request; it may describe, and it may not tell the model what to
@@ -415,8 +420,9 @@ pub fn tools() -> Vec<Value> {
             "name": "archive_ticket",
             "description": "Archives another mesimon ticket (crown only), or with restore \
                             brings an archived one back to its column. Refused while a \
-                            session on it is awake. Agents cannot delete a ticket; this is \
-                            the reversible form, and the person can restore it too.",
+                            session on it is awake; sleep_agent parks one the crown started. \
+                            Agents cannot delete a ticket; this is the reversible form, and \
+                            the person can restore it too.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -446,6 +452,31 @@ pub fn tools() -> Vec<Value> {
                     "key": { "type": "string", "description": "The ticket's key, from list_board." },
                     "seen": { "type": "string", "description": "get_ticket's seen stamp." },
                     "plan": { "type": "boolean", "description": "Optional. True: plan mode." },
+                },
+                "required": ["key", "seen"],
+                "additionalProperties": false,
+            },
+        }),
+        // The crown's sleep (T-539): `x` on a card the crown started. Kill
+        // stays in the never-tier; a park keeps the conversation and a
+        // person's `c` undoes it. Scoped to `started_by` so a person's own
+        // agent — the one they may be mid-conversation with — is never
+        // parked under them by an agent.
+        json!({
+            "name": "sleep_agent",
+            "description": "Parks another mesimon ticket's agent (crown only), as x on its \
+                            card does: the conversation is kept and a person's c wakes it. \
+                            Only an agent the crown started, and only once it is idle; a \
+                            working agent, a person's agent and this session's own are \
+                            refused in words. A parked agent keeps its crown seat until its \
+                            ticket is archived, so a finished worker is parked and its \
+                            ticket then archived, which frees the seat and reclaims a merged \
+                            worktree.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
+                    "seen": { "type": "string", "description": "get_ticket's seen stamp." },
                 },
                 "required": ["key", "seen"],
                 "additionalProperties": false,
@@ -546,6 +577,10 @@ pub enum ToolCall {
         key: String,
         seen: String,
         plan: bool,
+    },
+    SleepAgent {
+        key: String,
+        seen: String,
     },
     AskAgent {
         key: String,
@@ -652,6 +687,9 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             seen: word(args, "seen")?,
             plan: flag(args, "plan")?,
         }),
+        "sleep_agent" => {
+            Ok(ToolCall::SleepAgent { key: word(args, "key")?, seen: word(args, "seen")? })
+        }
         "ask_agent" => Ok(ToolCall::AskAgent {
             key: word(args, "key")?,
             text: args
@@ -798,7 +836,7 @@ fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Fourteen tools, fifteen commands (`get_ticket` with a
+        // The tier. Fifteen tools, sixteen commands (`get_ticket` with a
         // key is its own command on the wire).
         Command::AgentGetTicket
         | Command::AgentListBoard
@@ -817,6 +855,11 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // stays below, in the never-tier — no agent names a kind, a prompt
         // or a session id.
         | Command::AgentStartTicket { .. }
+        // The crown's sleep (T-539): `x` on an agent the crown started, the
+        // one reversible stop. `KillSession` and `SleepSession` themselves
+        // stay below — no agent names a session id, and a person's agent is
+        // parked by nobody but the person.
+        | Command::AgentSleepTicket { .. }
         // The crown's ask (T-413): words HELD on another ticket's card until
         // a person sends them. `PromptSession` itself stays below: the
         // person's send is the road, and there is no other.
@@ -1052,6 +1095,7 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
         | Command::AgentSetWorkspace { .. }
         | Command::AgentArchiveTicket { .. }
         | Command::AgentStartTicket { .. }
+        | Command::AgentSleepTicket { .. }
         | Command::AgentAskTicket { .. } => AgentTools::Full,
         _ => return None,
     })
@@ -1063,7 +1107,7 @@ pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
         "get_ticket" | "list_board" | "read_note" | "read_attachment" => AgentTools::Read,
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket" | "create_ticket" | "rename_ticket" | "set_workspace" | "archive_ticket"
-        | "start_agent" | "ask_agent" => AgentTools::Full,
+        | "start_agent" | "sleep_agent" | "ask_agent" => AgentTools::Full,
         _ => return None,
     })
 }
@@ -1185,6 +1229,7 @@ mod tests {
                 Command::AgentStartTicket { key: "T-1".into(), seen: None, plan: false },
                 "start_agent",
             ),
+            (Command::AgentSleepTicket { key: "T-1".into(), seen: None }, "sleep_agent"),
             (
                 Command::AgentAskTicket {
                     key: "T-1".into(),
@@ -1255,9 +1300,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_fourteen_tools() {
+    fn exactly_fifteen_tools() {
         let t = tools();
-        assert_eq!(t.len(), 14);
+        assert_eq!(t.len(), 15);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -1275,6 +1320,7 @@ mod tests {
                 "set_workspace",
                 "archive_ticket",
                 "start_agent",
+                "sleep_agent",
                 "ask_agent"
             ]
         );
@@ -1375,6 +1421,12 @@ mod tests {
             })
         );
         assert!(parse_tool_call("ask_agent", &json!({ "key": "T-4", "text": "go" })).is_err());
+        assert_eq!(
+            parse_tool_call("sleep_agent", &json!({ "key": " T-4 ", "seen": "abc" })),
+            Ok(ToolCall::SleepAgent { key: "T-4".into(), seen: "abc".into() })
+        );
+        assert!(parse_tool_call("sleep_agent", &json!({ "key": "T-4" })).is_err());
+        assert!(parse_tool_call("sleep_agent", &json!({ "seen": "abc" })).is_err());
         assert!(parse_tool_call("ask_agent", &json!({ "key": "T-4", "seen": "abc" })).is_err());
         assert!(parse_tool_call("ask_agent", &json!({ "text": "go", "seen": "abc" })).is_err());
         assert_eq!(
@@ -1683,10 +1735,10 @@ mod tests {
 
     /// Every tool has a command, and every allowed command has a tool. A
     /// command an agent may send that no tool can reach would be a hole nobody
-    /// is looking at. Fifteen commands for fourteen tools: `get_ticket` with
+    /// is looking at. Sixteen commands for fifteen tools: `get_ticket` with
     /// a key rides its own command (T-411).
     #[test]
-    fn the_tier_is_exactly_fifteen_commands() {
+    fn the_tier_is_exactly_sixteen_commands() {
         let allowed = [
             Command::AgentGetTicket,
             Command::AgentReadTicket { key: "T-1".into() },
@@ -1718,6 +1770,7 @@ mod tests {
             },
             Command::AgentArchiveTicket { key: "T-1".into(), restore: false, seen: None },
             Command::AgentStartTicket { key: "T-1".into(), seen: None, plan: false },
+            Command::AgentSleepTicket { key: "T-1".into(), seen: None },
             Command::AgentAskTicket {
                 key: "T-1".into(),
                 text: "x".into(),

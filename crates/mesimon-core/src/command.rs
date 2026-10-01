@@ -901,6 +901,17 @@ pub enum Command {
         #[serde(default)]
         plan: bool,
     },
+    /// Park another ticket's agent, by key (T-539): what `x` on its card
+    /// does — the conversation kept, the pane gone, a person's `c` wakes it.
+    /// Crown only, and only an agent the crown started (`started_by`): a
+    /// person's agent is the person's to park. Refused on a working agent in
+    /// the words `x` would use, and on the crown's own ticket. The parked
+    /// agent still holds its crown seat until its ticket is archived.
+    AgentSleepTicket {
+        key: String,
+        #[serde(default)]
+        seen: Option<String>,
+    },
     /// Queue words for another ticket's agent, by key (T-413): the crown's
     /// road into the T-390 follow-up queue. The entry is HELD — never
     /// drained by the daemon's own clock — until a person presses send
@@ -1220,6 +1231,7 @@ impl Command {
             | AgentSetWorkspace { .. }
             | AgentArchiveTicket { .. }
             | AgentStartTicket { .. }
+            | AgentSleepTicket { .. }
             | AgentAskTicket { .. }
             | AgentRaiseHand { .. } => m(Mutate, false, None),
         }

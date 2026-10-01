@@ -2179,6 +2179,7 @@ impl Daemon {
             | Command::AgentSetWorkspace { .. }
             | Command::AgentArchiveTicket { .. }
             | Command::AgentStartTicket { .. }
+            | Command::AgentSleepTicket { .. }
             | Command::AgentAskTicket { .. }
             | Command::AgentRaiseHand { .. } => {
                 Response::Err { message: "agent commands require an agent principal".into() }
@@ -3989,6 +3990,14 @@ impl Daemon {
                 {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
+                // The generic gate says "sleep them first"; the crown's
+                // answer names ITS road (T-539): `sleep_agent` for a seat it
+                // started, a person for any other.
+                if !restore {
+                    if let Some(message) = self.crown_archive_refusal(target, &key) {
+                        return Response::Err { message };
+                    }
+                }
                 let (resp, word) = if restore {
                     (self.unarchive_ticket(target), "restored")
                 } else {
@@ -4126,6 +4135,46 @@ impl Daemon {
                     budget_left: self.board.crown_budget.saturating_sub(held.len() as u8),
                 }
             }
+            // The crown's sleep (T-539): `x` on a card the crown started. The
+            // gate is `sleep_one`'s own — idle only, no age floor, since a
+            // keyed call is as deliberate as a keypress — and the scope is
+            // `started_by`: a person's agent is the person's to park.
+            Command::AgentSleepTicket { key, seen } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                if target == ticket {
+                    return Response::Err {
+                        message: format!(
+                            "{key} is this session's own ticket; sleep_agent is for an agent \
+                             the crown started"
+                        ),
+                    };
+                }
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                let (sid, kind) = match self.crown_sleep_target(target, &key) {
+                    Ok(pair) => pair,
+                    Err(message) => return Response::Err { message },
+                };
+                // A working worker is refused in the words a person's `z`
+                // reads over the same seat (`still_awake`), behind its key.
+                if let Err(why) = self.sleep_one(sid, false) {
+                    return Response::Err {
+                        message: format!("{key}: {}", mesimon_core::quiet::still_awake(kind, &why)),
+                    };
+                }
+                self.persist_sessions();
+                self.feed.board(by.actor(), "sleep_agent", Some(target));
+                self.crown_touched(ticket, target, "parked");
+                self.agent_ticket_view(target)
+                    .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
+            }
             Command::AgentCreateTicket { title, column, description, tags, idempotency_key } => {
                 // Replay first, for the same reason as a move: a retry after
                 // `Connection closed` must not file the same work twice.
@@ -4175,7 +4224,7 @@ impl Daemon {
                 let by = Principal::Agent { session };
                 self.agent_raise_hand(&by, ticket, &reason)
             }
-            // Unreachable: `agent_allows` above admits exactly fourteen commands.
+            // Unreachable: `agent_allows` above admits exactly sixteen commands.
             _ => Response::Err { message: "not available to an agent session".into() },
         }
     }
@@ -4228,6 +4277,53 @@ impl Daemon {
                  — a sleeping agent still holds it — or the person raises the budget in \
                  Settings → Agents",
                 held.join(", ")
+            )
+        })
+    }
+
+    /// The session `sleep_agent` may park on `target` (T-539), or why none:
+    /// the ticket's agent seat, held by a record the crown started, with a
+    /// pane to give up. The idle gate is `sleep_one`'s, judged after this,
+    /// so a working agent reads the same `still awake — …` words a person's
+    /// `z` would. A person's agent is refused by provenance alone, whatever
+    /// its state: the one who started it is the one who parks it.
+    fn crown_sleep_target(
+        &self,
+        target: ulid::Ulid,
+        key: &str,
+    ) -> std::result::Result<(uuid::Uuid, SessionKind), String> {
+        let Some(rec) = self.board.live_agent(target) else {
+            return Err(format!("{key} has no agent to park"));
+        };
+        if rec.started_by.is_none() {
+            return Err(format!(
+                "{key}'s agent was started by a person, and a person parks it (x on its card); \
+                 sleep_agent is for an agent the crown started"
+            ));
+        }
+        if !rec.state.has_pane() {
+            return Err(format!("{key}'s agent is already asleep"));
+        }
+        Ok((rec.id, rec.kind))
+    }
+
+    /// Why the crown's `archive_ticket` is refused over an awake seat, in
+    /// the crown's own words (T-539): the generic gate's "sleep them first"
+    /// is a person's instruction, and the crown has one road for a seat it
+    /// started and none for a person's. `None` when nothing is awake, or a
+    /// shell is — the generic gate then answers as before.
+    fn crown_archive_refusal(&self, target: ulid::Ulid, key: &str) -> Option<String> {
+        let rec = self.board.live_agent(target).filter(|r| r.state.has_pane())?;
+        Some(if rec.started_by.is_some() {
+            format!(
+                "{key}'s agent is still awake ({}); sleep_agent parks it, then archive_ticket",
+                agent_state_word(&rec.state)
+            )
+        } else {
+            format!(
+                "{key}'s agent is still awake ({}) and was started by a person, who parks it \
+                 (x on its card) before the ticket can be archived",
+                agent_state_word(&rec.state)
             )
         })
     }
