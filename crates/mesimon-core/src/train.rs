@@ -33,7 +33,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::board::{Board, Confidence, SessionState, StopReason, TrainReach};
+use crate::board::{Board, Confidence, SessionState, StopReason, Ticket, TrainReach};
 
 /// The `Principal::Automation { rule }` word, and the feed's.
 pub const RULE: &str = "merge_train";
@@ -101,6 +101,57 @@ pub fn seat(board: &Board, ticket: ulid::Ulid) -> Seat {
     }
 }
 
+/// Which of the two lists a ticket is on. A branch is behind its base or it
+/// is not, so never both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lane {
+    Merge,
+    Rebase,
+}
+
+/// One ticket as the train reads it. `plan` builds one per ticket from the
+/// board and the daemon's memory; the crown's wake (T-554) builds one from a
+/// turn's own look, to ask what the train will do with a delivery.
+pub struct Reading<'a> {
+    /// The ticket's column's `train` setting.
+    pub reach: TrainReach,
+    pub flags: &'a WtFlags,
+    pub seat: Seat,
+    /// The ticket's base tip now (`""` with no sample yet).
+    pub base_tip: &'a str,
+    /// The base tip it was last asked to rebase onto.
+    pub asked: Option<&'a str>,
+    pub fused: bool,
+}
+
+/// The list `t` is on, if any: the one predicate `plan` runs per ticket.
+pub fn lane(t: &Ticket, r: &Reading) -> Option<Lane> {
+    let f = r.flags;
+    if !f.attached
+        || f.conflict
+        || f.merged
+        || t.manual_merge
+        || !t.effective_execution_policy().allows_automation()
+        || t.hand_raised()
+    {
+        return None;
+    }
+    if r.reach == TrainReach::Merge
+        && f.ahead > 0
+        && !f.needs_rebase
+        && matches!(r.seat, Seat::Empty | Seat::Idle)
+    {
+        return Some(Lane::Merge);
+    }
+    (matches!(r.reach, TrainReach::Merge | TrainReach::Rebase)
+        && f.needs_rebase
+        && f.ahead > 0
+        && r.seat == Seat::Idle
+        && !r.fused
+        && r.asked.is_none_or(|at| at != r.base_tip))
+    .then_some(Lane::Rebase)
+}
+
 /// Everything the train would do, in board order — column order, then row
 /// order (automove parks at the top, so the last ticket to finish goes
 /// first). Not filtered by who is working: the pass does that, and the
@@ -109,34 +160,19 @@ pub fn plan(input: &Input) -> Plan {
     let mut plan = Plan::default();
     for col in input.board.sorted_columns() {
         for t in input.board.column_tickets(&col.name) {
-            let Some(f) = input.flags.get(&t.id) else { continue };
-            if !f.attached
-                || f.conflict
-                || f.merged
-                || t.manual_merge
-                || !t.effective_execution_policy().allows_automation()
-                || t.hand_raised()
-            {
-                continue;
-            }
-            let seat = seat(input.board, t.id);
-            if col.settings.train == TrainReach::Merge
-                && f.ahead > 0
-                && !f.needs_rebase
-                && matches!(seat, Seat::Empty | Seat::Idle)
-            {
-                plan.merge.push(t.id);
-            }
-            if matches!(col.settings.train, TrainReach::Merge | TrainReach::Rebase)
-                && f.needs_rebase
-                && f.ahead > 0
-                && seat == Seat::Idle
-                && !input.fused.contains(&t.id)
-                && input.asked.get(&t.id).is_none_or(|at| {
-                    at != input.base_tip.get(&t.id).map(String::as_str).unwrap_or("")
-                })
-            {
-                plan.rebase.push(t.id);
+            let Some(flags) = input.flags.get(&t.id) else { continue };
+            let reading = Reading {
+                reach: col.settings.train,
+                flags,
+                seat: seat(input.board, t.id),
+                base_tip: input.base_tip.get(&t.id).map(String::as_str).unwrap_or(""),
+                asked: input.asked.get(&t.id).map(String::as_str),
+                fused: input.fused.contains(&t.id),
+            };
+            match lane(t, &reading) {
+                Some(Lane::Merge) => plan.merge.push(t.id),
+                Some(Lane::Rebase) => plan.rebase.push(t.id),
+                None => {}
             }
         }
     }
@@ -478,6 +514,47 @@ mod tests {
         // One commit on each and both are candidates again.
         let with_work: HashMap<_, _> = (1..=2).map(|n| (ulid::Ulid(n), flags(1, true))).collect();
         assert_eq!(run(&b, &with_work).rebase, vec![ulid::Ulid(1), ulid::Ulid(2)]);
+    }
+
+    fn lane_of(f: &WtFlags, reach: TrainReach, seat: Seat, asked: Option<&str>) -> Option<Lane> {
+        let t = ticket(1, REVIEW, "a");
+        lane(&t, &Reading { reach, flags: f, seat, base_tip: "tip1", asked, fused: false })
+    }
+
+    /// One ticket read alone, as the crown's wake reads a turn's look
+    /// (T-554), is on the list `plan` would put it on. A rebase asked at
+    /// this base tip that left the branch behind is on neither: the train is
+    /// done with it. A branch ready to merge merges only where the column
+    /// reaches that far, and never past a parked seat.
+    #[test]
+    fn one_ticket_is_read_the_way_plan_reads_it() {
+        let behind = flags(1, true);
+        let ready = flags(1, false);
+        assert_eq!(lane_of(&behind, TrainReach::Merge, Seat::Idle, None), Some(Lane::Rebase));
+        assert_eq!(
+            lane_of(&behind, TrainReach::Merge, Seat::Idle, Some("tip0")),
+            Some(Lane::Rebase)
+        );
+        assert_eq!(lane_of(&behind, TrainReach::Merge, Seat::Idle, Some("tip1")), None);
+        assert_eq!(lane_of(&ready, TrainReach::Merge, Seat::Idle, Some("tip1")), Some(Lane::Merge));
+        assert_eq!(lane_of(&ready, TrainReach::Merge, Seat::Empty, None), Some(Lane::Merge));
+        assert_eq!(lane_of(&ready, TrainReach::Merge, Seat::Parked, None), None);
+        assert_eq!(lane_of(&ready, TrainReach::Rebase, Seat::Idle, None), None);
+        assert_eq!(lane_of(&ready, TrainReach::Off, Seat::Idle, None), None);
+        // And `plan` agrees, over the same ticket on the template board.
+        let mut b = board();
+        b.tickets.push(ticket(1, REVIEW, "a"));
+        b.sessions.push(claude(1, idle(), Confidence::High));
+        let flags = HashMap::from([(ulid::Ulid(1), behind)]);
+        let asked = HashMap::from([(ulid::Ulid(1), "tip1".to_string())]);
+        let p = plan(&Input {
+            board: &b,
+            flags: &flags,
+            base_tip: &tips("tip1"),
+            asked: &asked,
+            fused: &HashSet::new(),
+        });
+        assert_eq!(p, Plan::default());
     }
 
     #[test]

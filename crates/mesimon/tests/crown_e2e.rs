@@ -1676,3 +1676,159 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     let queue = std::fs::read_to_string(h.paths.queue_file()).unwrap_or_default();
     assert!(!queue.contains("mesimon-probe-9"), "a crown's ask is never persisted");
 }
+
+/// A delivery the armed merge train will take does not wake the crown
+/// (T-554): the crown hears it once, at the merge, as the delivery with
+/// `merged` in its delta. And when the train will not land it after all —
+/// the rebase it asked for left the branch behind, or the checkout refused
+/// the merge — the held delivery wakes the crown then.
+#[test]
+fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
+    // The flags (and the train) every second rather than every ten.
+    let Some(h) = Harness::boot_with_env(
+        "crown_train",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_train");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let feed_count = |needle: &str| -> usize {
+        std::fs::read_to_string(&feed_path).unwrap_or_default().matches(needle).count()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-92 on the train");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // This connection arms the train and keeps it armed.
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    let worker = format!("{kw} \"mesimon-probe-92 on the train\"");
+    let merged = || {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&h.repo)
+            .args(["merge-base", "--is-ancestor", &branch, "main"])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+
+    // ---- 1. delivered and merged by the train: one line, at the merge -----
+    commit(&path, "one.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(15), "the train to merge it", merged);
+    wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    let lines = lines_with(&worker);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains(&format!("{worker} delivered (merge_state merged")),
+        "the delivery was held for the merge: {lines:?}"
+    );
+    assert_eq!(feed_count("\"crown_wake_deferred\""), 1);
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 2. the rebase the train asked for left it behind: the crown hears
+    std::fs::write(h.repo.join("base1.txt"), "base\n").unwrap();
+    git(&h.repo, &["add", "base1.txt"]);
+    git(&h.repo, &["commit", "-qm", "base1"]);
+    commit(&path, "two.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    let ask = format!("Rebase your current branch {branch} onto main");
+    wait_until(std::time::Duration::from_secs(15), "the train's rebase ask", || {
+        !lines_with(&ask).is_empty()
+    });
+    assert_eq!(lines_with(&worker).len(), 1, "a delivery the train takes is silent");
+    assert_eq!(feed_count("\"crown_wake_deferred\""), 2);
+    // The agent takes the ask and ends its turn still behind.
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the give-up's wake", || {
+        lines_with(&worker).len() == 2
+    });
+    let lines = lines_with(&worker);
+    assert!(
+        lines[1].starts_with(&format!("{worker} delivered (merge_state merged → needs_rebase")),
+        "{lines:?}"
+    );
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 3. the checkout refuses the merge: the crown hears ---------------
+    // In the way: the fast-forward would write this file, and git will not
+    // overwrite one it does not know about.
+    std::fs::write(h.repo.join("two.txt"), "not mine\n").unwrap();
+    start(&mut c, ws);
+    git(&path, &["rebase", "-q", "main"]);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(15), "the refusal", || {
+        feed_count("merge_train_refused:merge") > 0
+    });
+    wait_until(std::time::Duration::from_secs(10), "the refusal's wake", || {
+        lines_with(&worker).len() == 3
+    });
+    assert_eq!(feed_count("\"crown_wake_deferred\""), 3);
+    let lines = lines_with(&worker);
+    assert!(
+        lines[2].starts_with(&format!("{worker} delivered (merge_state needs_rebase → ahead")),
+        "{lines:?}"
+    );
+    assert!(!merged(), "refused");
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(lines_with(&worker).len(), 3, "once");
+}

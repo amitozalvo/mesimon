@@ -2282,6 +2282,7 @@ impl Daemon {
             changed |= stage!("drain_tier_switches", self.drain_tier_switches());
             changed |= stage!("drain_queue", self.drain_queue());
             changed |= stage!("hear_merges", self.hear_merges());
+            changed |= stage!("hear_deferred", self.hear_deferred());
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
             let a = stage!("archive_figures", self.archive_figures());
             if a != self.archive_cache {
@@ -10153,13 +10154,14 @@ impl Daemon {
             changed |= was != Some(a.merged);
             // Unmerged to merged is a landing, whoever made it (T-527). A
             // first reading is one only for a branch the crown was already
-            // told of: the first sample comes a slow bucket after the cut,
-            // and a restart, which forgets what the crown heard, must not
-            // re-hear every branch merged before it.
-            let told = self.crown_heard.get(&t).is_some_and(|h| h.was_told());
+            // told of, or whose delivery is held for the train (T-554): the
+            // first sample comes a slow bucket after the cut, and a restart,
+            // which forgets what the crown heard, must not re-hear every
+            // branch merged before it.
+            let owed = self.crown_heard.get(&t).is_some_and(|h| h.awaits_merge());
             if a.merged
                 && self.board.crown.is_some()
-                && (was == Some(false) || (was.is_none() && told))
+                && (was == Some(false) || (was.is_none() && owed))
             {
                 self.crown_landed.push(t);
             }

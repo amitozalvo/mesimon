@@ -16938,3 +16938,72 @@ which is where the person is looking. Below 700px the line wraps only when it ho
 
 **Tests.** `ux.test.js`'s start run asserts the started receipt sits in `.ticket-line`, every
 engine and size; `<engine>-<size>-start-started.png` shows it.
+
+## A delivery the merge train will take waits for its merge (T-554, 2026-10-01, author on T-544: "the board shouldn't have woken you up because right now the merge train operates that ticket")
+
+**Seen on T-551.** The crown started it with the train armed. Its turn ended `needs_rebase` in
+REVIEW and the crown was woken (`delivered`). Eight seconds later the train asked T-551 to
+rebase. The crown then queued a rebase ask of its own, which was refused only because the
+ticket had changed since it was read. T-469's delivery rule knew nothing of the train, so the
+crown paid a turn and tried to do the train's job.
+
+**Shipped: a held delivery** (`server/crownwake.rs`). The turn probe's verdict now goes
+through `with_train`. A `Delivered` the train will land is held: no wake, `Heard.deferred`
+records the branch as the turn left it, and `told` stays put. When the train merges the
+branch, T-527's `merge_verdict` sees a tip the crown was never told of and says the delivery
+with `merged` in its delta: one line, `delivered (merge_state merged, column REVIEW)`. The
+feed records the hold as `crown_wake_deferred`.
+
+**"Will it", not "has it".** `train_takes` asks the planner's own predicate. `train::plan`'s
+per-ticket body became `train::lane(ticket, &Reading)` (`Lane::Merge` or `Lane::Rebase`), and
+the crown builds that `Reading` from the turn's fresh look (`BranchLook`, which now carries the
+base tip and the duplicate-checkout conflict as well), not from the cached flags, which can be
+one slow bucket old. A merge with a remembered refusal at this tip pair is not taken. A ticket
+whose agent is working, including the rebase turn the train asked for, counts as taken: the end
+of that turn is judged again. A disarmed train, a worktrees bar or a base branch the daemon does
+not know means nothing is taken.
+
+**The train gives up. Settled: there is no single "give up" point in the train.** It stops
+working a ticket when the ticket drops off both lists. So the held delivery is judged again
+in two places, and the first time the train will not take it, the crown is woken with the
+delivery as it was, its delta running from what it was last told:
+- **The next turn's probe.** The train's rebase ask is a merge step and wakes nothing on its
+  own, but a held delivery is judged on what that turn left. Still behind the base tip it was
+  asked at means the planner's `asked` clause excludes it (once per tip), and so does the
+  fuse. The delivery comes due.
+- **`hear_deferred`, a tick stage after `hear_merges`.** This catches what no turn ends on: a
+  merge the checkout refused, a disarm (the arming board closed), a person's `t`, a move out
+  of the train's columns, a raised hand (which folds into the hand's line), or an agent
+  parked or gone. It judges the train's own sample once that sample has reached the held tip.
+  Before that, the sample predates the turn and the held look is the truth. It judges nothing
+  while a probe is out (`Heard.looks`), because the turn that just ended may have moved the
+  branch: a successful rebase would otherwise read, for a moment, as still behind at the asked
+  tip. A held branch that reads merged there was missed by `hear_merges` and comes due the same
+  way. A ticket that left the board drops its hold silently.
+
+**A held delivery stays the crown's.** `hear_merges` and both give-up roads go past
+`started_by_crown` (`owe_crown_wake`): the claim was judged when the delivery was held, and a
+seat lost since must not swallow it. `absorb_worktree_flags` counts a first `merged` reading
+for a held branch as a landing, like one already told (`Heard::awaits_merge`).
+
+**A shared-checkout worker** has no branch for the train. Its look has no `BranchLook`, so
+`with_train` is never asked and the delivery wakes as before.
+
+**Known limits.** A delivery whose agent starts a new turn at once (a person's queued words)
+is held through that turn even when the train would never take it. Its end decides, one turn
+late. A branch moved by hand in a terminal, with no turn, keeps being judged on the last turn's
+look until the train's sample reaches that tip or the branch merges. All of this is in memory,
+like the rest of the crown's wakes: a restart forgets a hold, and the merge after it is said as
+an unheard delivery (T-527's first-reading rule).
+
+**Tests.** `crownwake`: `a_delivery_the_train_will_take_is_held` (held, given up, an answer
+never held, a silent turn never asks the train, the look's line) and
+`a_held_delivery_is_heard_at_its_merge`. `train`: `one_ticket_is_read_the_way_plan_reads_it`.
+`crown_e2e::a_delivery_the_train_will_take_wakes_the_crown_at_its_merge` arms the train and
+runs three cases. A delivery the train merges is one line, `delivered (merge_state merged`.
+A delivery behind main is held while the train asks for the rebase, and the agent ends that
+turn still behind, which wakes `delivered (merge_state merged → needs_rebase`. A rebased
+delivery whose fast-forward is blocked by an untracked file wakes on the refusal, `delivered
+(merge_state needs_rebase → ahead`. Three `crown_wake_deferred` rows, and nothing after.
+With the hold disabled, the first case fails with T-551's two lines (`delivered (merge_state
+ahead…` then `merged`): verified.
