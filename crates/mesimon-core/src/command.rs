@@ -1406,6 +1406,14 @@ pub enum Response {
     Queued {
         #[serde(default)]
         behind: Vec<String>,
+        /// The keys in `behind` whose agent stopped on a question (T-565),
+        /// as `Pending::asking` reads them.
+        #[serde(default)]
+        asking: Vec<String>,
+        /// The ask parked HELD: its agent is on a question, so the words
+        /// wait for a person's send (T-565); the card's word for why.
+        #[serde(default)]
+        held: Option<String>,
     },
     /// ReclaimAll's receipt: how many actually slept, and why others did not.
     Reclaimed {
@@ -1933,6 +1941,13 @@ pub struct Pending {
     /// the board, for the train); may include this ticket's own key.
     #[serde(default)]
     pub waits_on: Vec<String>,
+    /// The keys whose agent stopped on a question (T-565,
+    /// `SessionState::question_stop`) among those this row waits on —
+    /// `waits_on`, or a held ask's own ticket. A question does not end
+    /// with a turn: a person answers it, so the row says whose answer it
+    /// waits on rather than whose turn.
+    #[serde(default)]
+    pub asking: Vec<String>,
     /// The ask's words, so a second Shift+Enter reopens the field on them —
     /// and, on a `merge` row, the reason the checkout REFUSED it (T-289),
     /// which is what makes the row say `blocked` instead of promising a
@@ -2457,7 +2472,18 @@ mod tests {
         // unless a question stopped them.
         let sends = super::Pending { sends: true, ..crown.clone() };
         assert!(!sends.is_held(), "the queue delivers it");
-        assert!(super::Pending { held: Some("agent asked".into()), ..sends }.is_held());
+        assert!(super::Pending { held: Some("agent asked".into()), ..sends.clone() }.is_held());
+        // T-565: parked while the agent was ALREADY on its question — a
+        // person's ask, the phone's, or the crown's the board lets it send
+        // — the ask arrives held, with its own key the one asking.
+        let parked = super::Pending {
+            held: Some("agent asked".into()),
+            asking: vec!["T-3".into()],
+            ..p.clone()
+        };
+        assert!(parked.is_held() && parked.waits_on.is_empty());
+        assert!(super::Pending { by: Some("T-9".into()), sends: true, ..parked }.is_held());
+        assert!(p.asking.is_empty(), "a daemon from before T-565 names no question");
         assert!(!super::Pending { action: Merge, ..crown }.is_held());
     }
     use super::*;

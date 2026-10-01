@@ -188,10 +188,12 @@ starts keep their choice.
 Each ticket has one live agent seat across both providers.
 
 Follow-ups default to **Queue**: they wait for the current turn to end, including
-approval and question stops. Choose **Steer** in **Settings › Behaviour › Follow-ups**
-to send immediately by default, or toggle a composer with Shift+Tab. A queued
-prompt appears on the ticket page; Ctrl+Y sends it now and Ctrl+U takes it back
-for editing. Remote Control defaults to Queue and offers the same two actions.
+approval stops. A question holds them instead: words queued before or while the agent asks one
+wait for your answer and then your Ctrl+Y (`agent asked ∙ you send`), and an ask behind another
+ticket's question says so (`queued ∙ after T-3's answer`). Choose **Steer** in
+**Settings › Behaviour › Follow-ups** to send immediately by default, or toggle a composer with
+Shift+Tab. A queued prompt appears on the ticket page; Ctrl+Y sends it now and Ctrl+U takes it
+back for editing. Remote Control defaults to Queue and offers the same two actions.
 The queue holds one prompt per ticket in memory; daemon restarts discard it.
 
 ## The crown: one agent runs the board

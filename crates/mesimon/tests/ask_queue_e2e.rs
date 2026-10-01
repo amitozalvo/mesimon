@@ -112,7 +112,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         plan: false,
         tier: None,
     }) {
-        Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
+        Response::Queued { behind, .. } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the ask to be parked: {other:?}"),
     }
     let p = pending_of(&mut c, None);
@@ -328,7 +328,7 @@ fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
         plan: false,
         tier: None,
     }) {
-        Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
+        Response::Queued { behind, .. } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the start to be parked: {other:?}"),
     }
     let p = pending_of(&mut c, Some(b));
@@ -632,6 +632,135 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
     });
 }
 
+/// Words queued while an agent is ALREADY on its question (T-565): the
+/// T-420 hold was an edge, so an ask parked after the stop read `queued ∙
+/// after its turn` and waited on a turn only a person's answer could end.
+/// Now the park itself holds it — nothing is pasted, `^y` is refused while
+/// the question is up, and lands after the answer — and an ask in the same
+/// checkout behind the questioned agent says whose answer it waits on.
+#[test]
+fn an_ask_queued_onto_an_open_question_is_held_at_once() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) =
+        Harness::boot_with_env("askedq", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
+    else {
+        return;
+    };
+    let got = h.dir.join("got.txt");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("askedq");
+    let text = || std::fs::read_to_string(&got).unwrap_or_default();
+    for title in ["asker", "behind"] {
+        let _ = c.request(Command::CreateTicket {
+            column: "TODO".into(),
+            title: title.into(),
+            workspace: None,
+            tier: None,
+        });
+    }
+    let board = c.board();
+    let a = board.tickets.iter().find(|t| t.title == "asker").expect("a").id;
+    let b = board.tickets.iter().find(|t| t.title == "behind").expect("b").id;
+    let a_key = board.ticket(a).unwrap().short_key.clone();
+    let spawn = |c: &mut TestClient, ticket| match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let sa = spawn(&mut c, a);
+    let sb = spawn(&mut c, b);
+    std::thread::sleep(Duration::from_millis(800));
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    for sid in [sa, sb] {
+        start(&mut c, sid);
+        stop(&mut c, sid);
+    }
+    let queue = |c: &mut TestClient, ticket, words: &str| {
+        c.request(Command::PromptSession {
+            ticket,
+            text: words.into(),
+            queued: true,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        })
+    };
+
+    // A stops on its question, mid-turn.
+    let question = r#"{"tool_name":"AskUserQuestion"}"#;
+    start(&mut c, sa);
+    hook_send(&hook_sock, &sa.to_string(), "PreToolUse", question);
+    c.await_state(sa, "asking", SessionState::question_stop);
+
+    // B, in the same checkout, waits on A's ANSWER and says so.
+    match queue(&mut c, b, "mesimon-probe-71 behind the question") {
+        Response::Queued { behind, asking, held } => {
+            assert_eq!(behind, vec![a_key.clone()]);
+            assert_eq!(asking, vec![a_key.clone()]);
+            assert_eq!(held, None, "B's own agent asked nothing");
+        }
+        other => panic!("expected B parked: {other:?}"),
+    }
+    // A's own words, queued onto the open question, are held at once.
+    match queue(&mut c, a, "mesimon-probe-72 after your answer") {
+        Response::Queued { behind, asking, held } => {
+            assert!(behind.is_empty(), "a held ask waits on nobody's turn: {behind:?}");
+            assert_eq!(asking, vec![a_key.clone()]);
+            assert_eq!(held.as_deref(), Some("agent asked"));
+        }
+        other => panic!("expected A held: {other:?}"),
+    }
+    let pa = pending_of(&mut c, Some(a));
+    assert!(pa.iter().any(|p| p.is_held() && p.held.as_deref() == Some("agent asked")), "{pa:?}");
+    let pb = pending_of(&mut c, Some(b));
+    assert!(pb.iter().any(|p| p.asking == vec![a_key.clone()] && !p.is_held()), "{pb:?}");
+    // `^y` into the open dialog is refused: a paste there is an answer.
+    match c.request(Command::SendQueuedAsk { ticket: a }) {
+        Response::Err { message } => assert!(message.contains("answer it"), "{message}"),
+        other => panic!("a send into the question: {other:?}"),
+    }
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(!text().contains("mesimon-probe-7"), "nothing is pasted: {:?}", text());
+
+    // The person answers; A's turn runs on, B now waits on its turn.
+    hook_send(&hook_sock, &sa.to_string(), "PostToolUse", question);
+    c.await_state(sa, "answered", |s| *s == SessionState::Running);
+    let pb = pending_of(&mut c, Some(b));
+    assert!(pb.iter().any(|p| p.asking.is_empty() && p.waits_on == vec![a_key.clone()]), "{pb:?}");
+    // A's turn ends: B's words go, A's stay held for the person's send.
+    stop(&mut c, sa);
+    wait_until(Duration::from_secs(10), "B's words after A's turn", || {
+        text().contains("mesimon-probe-71 behind the question")
+    });
+    start(&mut c, sb);
+    stop(&mut c, sb);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(!text().contains("mesimon-probe-72"), "a held ask never goes on its own");
+    let pa = pending_of(&mut c, Some(a));
+    assert!(pa.iter().any(|p| p.is_held() && p.asking.is_empty()), "{pa:?}");
+    assert!(matches!(c.request(Command::SendQueuedAsk { ticket: a }), Response::Ok));
+    wait_until(Duration::from_secs(10), "A's held words, sent by hand", || {
+        text().contains("mesimon-probe-72 after your answer")
+    });
+    assert_eq!(text().matches("mesimon-probe-72").count(), 1);
+    let feed = std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap();
+    assert!(feed.contains("queued_ask_held_question"), "the park's hold is in the feed");
+
+    let _ = c.request(Command::Shutdown);
+}
+
 /// A queued START outlives the daemon (T-418): the column's Shift+Enter
 /// parked twenty starts, the first one's agent rebuilt the daemon and
 /// `pkill`ed it, and the other nineteen vanished with no line in the feed.
@@ -685,7 +814,7 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
         plan: false,
         tier: None,
     }) {
-        Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
+        Response::Queued { behind, .. } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the start to be parked: {other:?}"),
     }
     assert!(matches!(

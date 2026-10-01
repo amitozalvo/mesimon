@@ -101,6 +101,20 @@ impl SessionState {
         SessionState::Unknown { reason: UnknownReason::NoSignal }
     }
 
+    /// The agent stopped on a QUESTION — one whose answer may change what a
+    /// queued follow-up should say, so the queue holds every ask behind it
+    /// for a person's send (T-420, T-565). A permission prompt is not one:
+    /// allowing a tool changes nothing about the follow-up. Nor is a plan
+    /// dialog, which holds only an unflagged ask, the way it always did.
+    pub fn question_stop(&self) -> bool {
+        matches!(
+            self,
+            SessionState::RequiresAction {
+                reason: Reason::Question | Reason::Secret | Reason::Elicitation
+            }
+        )
+    }
+
     /// A prompt has reached this session at least once: it is working, has
     /// worked, or is parked after working. `Spawning`, an `Idle{Unknown}`
     /// fresh off its `SessionStart`, `Unknown` and the dead states say

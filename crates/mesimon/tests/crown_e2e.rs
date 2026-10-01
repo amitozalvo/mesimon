@@ -1598,6 +1598,36 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     start(&mut c, sa);
     stop(&mut c, sa);
 
+    // ---- a worker already on its question holds the words (T-565) ----------
+    // The friend's board: asked while W waits on a person's answer, the
+    // words read `after its turn` for a turn only the answer could end.
+    // They are held at once — the answer may change them — and a person
+    // sends them after it.
+    let question = r#"{"tool_name":"AskUserQuestion"}"#;
+    start(&mut c, ws);
+    hook_send(&hook_sock, &ws.to_string(), "PreToolUse", question);
+    c.await_state(ws, "asking", SessionState::question_stop);
+    let (held, why) = ask(&mut c, &kw, "mesimon-probe-90 after the answer");
+    assert!(held && why.contains("question"), "{why}");
+    let r = row(&mut c, w).expect("held on W's card");
+    assert!(r.is_held() && r.sends && r.held.as_deref() == Some("agent asked"), "{r:?}");
+    assert_eq!(r.asking, vec![kw.clone()], "the card says the answer comes first: {r:?}");
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", question);
+    c.await_state(ws, "answered", |s| *s == SessionState::Running);
+    stop(&mut c, ws);
+    settle();
+    assert!(!landed("mesimon-probe-90"), "held words do not go on the turn's end");
+    let r = row(&mut c, w).expect("still held");
+    assert!(r.is_held() && r.asking.is_empty(), "{r:?}");
+    assert!(matches!(c.request(Command::SendQueuedAsk { ticket: w }), Response::Ok));
+    wait_until(std::time::Duration::from_secs(10), "the held words, sent by hand", || {
+        landed("mesimon-probe-90 after the answer")
+    });
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
     // ---- a parked worker: the wake is a budget seat -------------------------
     let v = read(&mut c, sa, &kw).unwrap();
     match c.send(

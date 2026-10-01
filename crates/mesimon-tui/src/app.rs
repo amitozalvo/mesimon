@@ -4052,16 +4052,10 @@ impl App {
             return off.then(|| "auto-merge ∙ off".to_string());
         };
         let own = self.board.ticket(ticket).map(|t| t.short_key.as_str()).unwrap_or("");
-        let others: Vec<&str> =
-            p.waits_on.iter().map(String::as_str).filter(|k| *k != own).collect();
+        let others = p.waits_on.iter().any(|k| k != own);
         // One grammar for every action — `<what> ∙ after <who>` — because a
         // card row is 22 cells and the ticket page reads the same words.
-        let after = match others.as_slice() {
-            [] if p.waits_on.is_empty() => None,
-            [] => Some("after its turn".to_string()),
-            [one] => Some(format!("after {one}")),
-            [one, rest @ ..] => Some(format!("after {one} +{}", rest.len())),
-        };
+        let after = after_words(&p.waits_on, &p.asking, own);
         use mesimon_core::command::PendingAction as A;
         // A HELD ask (T-551) waits on a person, not the checkout: the row
         // says who wrote it or why it stopped, then that the send is yours.
@@ -4079,7 +4073,13 @@ impl App {
                 (None, Some(why)) => why.to_string(),
                 (None, None) => "held".into(),
             };
-            return Some(format!("{lead} ∙ you send"));
+            // The crown's words before an open question (T-565): the lead
+            // names the author, not the stop, and `^y` is refused until
+            // the answer — so the row says the answer comes first. A
+            // person's own held ask already leads with `agent asked`.
+            let asking = p.by.is_some() && p.asking.iter().any(|k| k == own);
+            let tail = if asking { "you answer first" } else { "you send" };
+            return Some(format!("{lead} ∙ {tail}"));
         }
         // Flagged to accept the plan (T-420): `accepting plan` once the
         // agent is on the dialog and the press is the next tick's, and
@@ -4090,7 +4090,7 @@ impl App {
         // `accepting plan` is only ever the press that goes next.
         if p.accept_plan && p.action == A::Ask && !p.in_flight {
             return Some(match (self.ticket_plan_ready(ticket), after) {
-                (true, Some(a)) if !others.is_empty() => format!("accepts plan ∙ {a}"),
+                (true, Some(a)) if others => format!("accepts plan ∙ {a}"),
                 (true, _) => "accepting plan".into(),
                 (false, _) => "queued ∙ accepts plan".into(),
             });
@@ -10620,6 +10620,12 @@ impl App {
             // the daemon did, and the status says so.
             Response::Ok if !queued && had => "asked ∙ queued ask dropped".into(),
             Response::Ok => "asked".into(),
+            // Parked HELD (T-565): its agent is on a question, so the words,
+            // and any accept they carry, wait for the answer and a person's
+            // send.
+            Response::Queued { held: Some(why), .. } => {
+                format!("queued ∙ held ∙ {why} ∙ answer it, then you send")
+            }
             Response::Queued { .. } if accept_plan && blank && accept_now => {
                 "accepting plan".into()
             }
@@ -10629,7 +10635,9 @@ impl App {
             Response::Queued { .. } if accept_now => "accepting plan ∙ then asks".into(),
             Response::Queued { .. } if accept_plan => "accepts plan ∙ then asks".into(),
             // Parked: name what it waits on, the way the card does.
-            Response::Queued { behind } => queued_status(&lead, &first, &behind, &own),
+            Response::Queued { behind, asking, .. } => {
+                queued_status(&lead, &first, &behind, &asking, &own)
+            }
             // A parked claude: the daemon woke it and holds the
             // words until the pane reads (2026-09-04). `fresh` is
             // the wake road's own word — no conversation was left to
@@ -11358,14 +11366,41 @@ fn window_word(which: &str, on: bool) -> &'static str {
 /// uses (`App::pending_row`): `lead` is what mesimon will do — `queued`,
 /// `claude starts`, `claude wakes` — and `first` is how that reads with
 /// nothing ahead of it, which is the one case with its own grammar.
-fn queued_status(lead: &str, first: &str, behind: &[String], own: &str) -> String {
-    let others: Vec<&str> = behind.iter().map(String::as_str).filter(|k| *k != own).collect();
-    match others.as_slice() {
-        [] if behind.is_empty() => first.to_string(),
-        [] => format!("{lead} ∙ after its turn"),
-        [one] => format!("{lead} ∙ after {one}"),
-        [one, rest @ ..] => format!("{lead} ∙ after {one} +{}", rest.len()),
+fn queued_status(
+    lead: &str,
+    first: &str,
+    behind: &[String],
+    asking: &[String],
+    own: &str,
+) -> String {
+    match after_words(behind, asking, own) {
+        None => first.to_string(),
+        Some(after) => format!("{lead} ∙ {after}"),
     }
+}
+
+/// What a queued row waits on, as the card and the status line both say it
+/// (`App::pending_row`, `queued_status`): `after T-3`, `after T-3 +1`, or
+/// `after its turn` when only its own agent is working. A question is not a
+/// turn that ends by itself (T-565): a key whose agent is asking reads
+/// `after T-3's answer`, or `after your answer` for its own, and it is the
+/// one named first, since it waits on a person and the rest do not. `None`
+/// when it waits on nothing.
+fn after_words(waits_on: &[String], asking: &[String], own: &str) -> Option<String> {
+    let asks = |k: &str| asking.iter().any(|a| a == k);
+    let mut others: Vec<&str> = waits_on.iter().map(String::as_str).filter(|k| *k != own).collect();
+    if let Some(i) = others.iter().position(|k| asks(k)) {
+        let first = others.remove(i);
+        others.insert(0, first);
+    }
+    let name = |k: &str| if asks(k) { format!("{k}'s answer") } else { k.to_string() };
+    Some(match others.as_slice() {
+        [] if waits_on.is_empty() => return None,
+        [] if asks(own) => "after your answer".into(),
+        [] => "after its turn".into(),
+        [one] => format!("after {}", name(one)),
+        [one, rest @ ..] => format!("after {} +{}", name(one), rest.len()),
+    })
 }
 
 fn fetch(client: &mut dyn Transport) -> Result<Snapshot> {
@@ -11700,21 +11735,33 @@ pub(crate) mod test_support {
                     if queued {
                         // The fake's checkout has one holder, T-9 — which
                         // a dialog is not (T-429): an accept waits on
-                        // nothing here and presses next.
-                        let waits_on = if accept_plan { vec![] } else { vec!["T-9".into()] };
+                        // nothing here and presses next. A pane on a
+                        // question parks the words held (T-565), waiting
+                        // on nobody's turn.
+                        let asked = self
+                            .board
+                            .pane_target(ticket)
+                            .filter(|s| s.state.question_stop())
+                            .and_then(|_| self.board.ticket(ticket))
+                            .map(|t| t.short_key.clone());
+                        let held = asked.as_ref().map(|_| "agent asked".to_string());
+                        let asking: Vec<String> = asked.into_iter().collect();
+                        let waits_on =
+                            if accept_plan || held.is_some() { vec![] } else { vec!["T-9".into()] };
                         self.pending.push(mesimon_core::command::Pending {
                             ticket,
                             action: seat,
-                            waits_on,
+                            waits_on: waits_on.clone(),
+                            asking: asking.clone(),
                             text: None,
                             in_flight: false,
                             by: None,
                             sends: false,
                             accept_plan,
-                            held: None,
+                            held: held.clone(),
                             plan,
                         });
-                        return Ok(Response::Queued { behind: vec!["T-9".into()] });
+                        return Ok(Response::Queued { behind: waits_on, asking, held });
                     }
                     // A pane in plan mode (T-434) is parked and woken: the
                     // record comes back Spawning with the flag in its argv.
@@ -16391,6 +16438,7 @@ mod tests {
                 ticket: ulid::Ulid(1),
                 action: mesimon_core::command::PendingAction::Ask,
                 waits_on,
+                asking: Vec::new(),
                 text: None,
                 in_flight: false,
                 by: None,
@@ -16605,6 +16653,7 @@ mod tests {
             ticket: ulid::Ulid(1),
             action: mesimon_core::command::PendingAction::Ask,
             waits_on: vec![],
+            asking: Vec::new(),
             text: Some("after".into()),
             in_flight: false,
             by: None,
@@ -16629,6 +16678,7 @@ mod tests {
             ticket: ulid::Ulid(1),
             action: mesimon_core::command::PendingAction::Ask,
             waits_on: vec!["T-3".into()],
+            asking: Vec::new(),
             text: Some("commit it\nthen push".into()),
             in_flight: false,
             by: None,
@@ -16664,6 +16714,7 @@ mod tests {
             ticket: ulid::Ulid(1),
             action: mesimon_core::command::PendingAction::Ask,
             waits_on: vec!["T-3".into()],
+            asking: Vec::new(),
             text: Some("commit it".into()),
             in_flight: false,
             by: None,
@@ -16717,6 +16768,48 @@ mod tests {
         assert_eq!(app.status, "asked ∙ queued ask dropped");
     }
 
+    /// T-565: words queued while the agent is ALREADY on its question are
+    /// held at once, and the receipt says the answer comes before the send;
+    /// the card's row is the held ask's. A queued receipt that waits on a
+    /// question names whose answer.
+    #[test]
+    fn an_ask_queued_onto_a_question_says_it_is_held() {
+        let question =
+            SessionState::RequiresAction { reason: mesimon_core::board::Reason::Question };
+        let (mut app, sent, _) = app_with_claude(question, false);
+        app.rich_keys = true;
+        app.client
+            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Queue })
+            .unwrap();
+        app.refresh().unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued);
+        for c in "then commit".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "queued: true"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "queued ∙ held ∙ agent asked ∙ answer it, then you send");
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("agent asked ∙ you send"));
+        assert!(app.ctx().ticket_held, "its ^y is the person's send");
+
+        let own = "T-1";
+        let t3 = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            queued_status("queued", "queued ∙ sends next", &t3(&["T-3"]), &t3(&["T-3"]), own),
+            "queued ∙ after T-3's answer"
+        );
+        assert_eq!(
+            queued_status("queued", "queued ∙ sends next", &t3(&[own]), &t3(&[own]), own),
+            "queued ∙ after your answer"
+        );
+        assert_eq!(
+            queued_status("claude wakes", "-", &t3(&["T-4", "T-3"]), &t3(&["T-3"]), own),
+            "claude wakes ∙ after T-3's answer +1"
+        );
+        assert_eq!(queued_status("queued", "next", &[], &[], own), "next");
+    }
+
     /// The owed row's words, and the in-flight form.
     #[test]
     fn the_owed_row_names_what_it_waits_on() {
@@ -16727,6 +16820,7 @@ mod tests {
                 ticket: ulid::Ulid(1),
                 action,
                 waits_on: waits_on.into_iter().map(String::from).collect(),
+                asking: Vec::new(),
                 text: None,
                 in_flight,
                 by: None,
@@ -16743,12 +16837,39 @@ mod tests {
         assert_eq!(row(&mut app, vec!["T-3", &own], false, Ask), "queued ∙ after T-3");
         assert_eq!(row(&mut app, vec!["T-3", "T-4", "T-5"], false, Ask), "queued ∙ after T-3 +2");
         assert_eq!(row(&mut app, vec![], true, Ask), "queued ∙ sending");
+        // A question is not a turn that ends by itself (T-565): the row
+        // says whose ANSWER it waits on, and names that one first.
+        let asked = |app: &mut App, waits_on: Vec<&str>, asking: Vec<&str>| {
+            app.pending = vec![mesimon_core::command::Pending {
+                ticket: ulid::Ulid(1),
+                action: Ask,
+                waits_on: waits_on.into_iter().map(String::from).collect(),
+                asking: asking.into_iter().map(String::from).collect(),
+                text: None,
+                in_flight: false,
+                by: None,
+                sends: false,
+                accept_plan: false,
+                plan: false,
+                held: None,
+            }];
+            app.pending_row(ulid::Ulid(1)).unwrap()
+        };
+        assert_eq!(asked(&mut app, vec![&own], vec![&own]), "queued ∙ after your answer");
+        assert_eq!(asked(&mut app, vec!["T-3", &own], vec!["T-3"]), "queued ∙ after T-3's answer");
+        assert_eq!(
+            asked(&mut app, vec!["T-5", "T-3", "T-4"], vec!["T-3"]),
+            "queued ∙ after T-3's answer +2",
+            "the question is named over the turns, which end by themselves"
+        );
+        assert_eq!(asked(&mut app, vec!["T-3", &own], vec![&own]), "queued ∙ after T-3");
         // The crown's held ask (T-413) names its author and waits on nobody
         // but the person (T-551) — never the checkout it lists.
         app.pending = vec![mesimon_core::command::Pending {
             ticket: ulid::Ulid(1),
             action: Ask,
             waits_on: vec!["T-3".into()],
+            asking: Vec::new(),
             text: Some("commit it".into()),
             in_flight: false,
             by: Some("T-411".into()),
@@ -16779,6 +16900,23 @@ mod tests {
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued ∙ after T-3"));
         assert!(app.ticket_queued(ulid::Ulid(1)));
         assert!(!app.ticket_held(ulid::Ulid(1)));
+        // Parked while its agent was on a question (T-565), the same ask
+        // is held: the person answers before anything is sent, and the row
+        // says so while the question is up — then that the send is theirs.
+        app.pending[0].held = Some("agent asked".into());
+        app.pending[0].waits_on = Vec::new();
+        app.pending[0].asking = vec![own.clone()];
+        assert!(app.ticket_held(ulid::Ulid(1)));
+        assert_eq!(
+            app.pending_row(ulid::Ulid(1)).as_deref(),
+            Some("T-411 asks ∙ you answer first")
+        );
+        app.pending[0].asking = Vec::new();
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("T-411 asks ∙ you send"));
+        // A person's own held ask leads with the stop already.
+        app.pending[0].by = None;
+        app.pending[0].asking = vec![own.clone()];
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("agent asked ∙ you send"));
         assert_eq!(row(&mut app, vec![], false, Merge), "auto-merge ∙ next");
         assert_eq!(row(&mut app, vec!["T-3"], false, Merge), "auto-merge ∙ after T-3");
         assert_eq!(row(&mut app, vec![], false, Rebase), "rebase ask ∙ next");
@@ -16791,6 +16929,7 @@ mod tests {
                 ticket: ulid::Ulid(1),
                 action,
                 waits_on: waits_on.into_iter().map(String::from).collect(),
+                asking: Vec::new(),
                 text: Some("uncommitted changes in the main checkout".into()),
                 in_flight: false,
                 by: None,

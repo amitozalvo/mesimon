@@ -72,6 +72,19 @@ pub fn is_attention(s: &SessionState) -> bool {
     rank(s) <= 8
 }
 
+/// Is a session on a question (T-565): its record says so
+/// (`SessionState::question_stop`), or it reads `Unknown` only because the
+/// stale clock demoted a question nothing has been heard of since
+/// (`Machine::stale_wait`). Fifteen quiet minutes do not close a dialog, and
+/// a paste into one is an answer. `machine` is the session's own, if any.
+pub fn on_question(state: &SessionState, machine: Option<&Machine>) -> bool {
+    state.question_stop()
+        || (matches!(state, SessionState::Unknown { .. })
+            && machine
+                .and_then(Machine::stale_wait)
+                .is_some_and(|reason| SessionState::RequiresAction { reason }.question_stop()))
+}
+
 /// The card's state word: the reason replaces it, uppercase (06 §3).
 pub fn reason_word(r: Reason) -> &'static str {
     match r {
@@ -447,6 +460,12 @@ pub struct Machine {
     /// monitoring again, as every background shell did before.
     park_fallback: StopReason,
     manual_compact_prior: Option<(SessionState, Confidence)>,
+    /// The wait the stale clock demoted, while the machine still sits in
+    /// that demote (T-565). Fifteen quiet minutes say the wait went
+    /// unaffirmed, not that its dialog closed: a person who has not
+    /// answered leaves it open, and a paste there is an answer. Any commit
+    /// clears it.
+    stale_wait: Option<Reason>,
 }
 
 impl Machine {
@@ -489,6 +508,7 @@ impl Machine {
             background_at: now,
             park_fallback: StopReason::EndTurn,
             manual_compact_prior: None,
+            stale_wait: None,
         }
     }
 
@@ -498,6 +518,13 @@ impl Machine {
 
     pub fn confidence(&self) -> Confidence {
         self.confidence
+    }
+
+    /// The dialog this session was last stated to be on, when nothing has
+    /// been heard since but the stale clock (`stale_wait`): the record reads
+    /// `Unknown`, and the pane may still be showing it.
+    pub fn stale_wait(&self) -> Option<Reason> {
+        self.stale_wait
     }
 
     pub fn view(&self) -> MachineView {
@@ -699,8 +726,14 @@ impl Machine {
         // Stale demotion: never latch red (11 §11.7.4) — but never drop a
         // wait the evidence keeps affirming either (T-363).
         if is_attention(&self.state) && now.saturating_sub(self.affirmed_at) >= STALE_DEMOTE_MS {
+            let wait = match self.state {
+                SessionState::RequiresAction { reason } => Some(reason),
+                _ => None,
+            };
             let to = SessionState::Unknown { reason: UnknownReason::NoSignal };
-            return Some(self.commit(to, Confidence::Stale, now));
+            let change = self.commit(to, Confidence::Stale, now);
+            self.stale_wait = wait;
+            return Some(change);
         }
         // Park demotion: a park nothing has proved in PARK_STALE_MS falls back
         // to what the `Stop` that made it plainly said (`park_fallback`) — the
@@ -732,6 +765,7 @@ impl Machine {
     }
 
     fn commit(&mut self, to: SessionState, confidence: Confidence, now: u64) -> Change {
+        self.stale_wait = None;
         let from = std::mem::replace(&mut self.state, to.clone());
         if let SessionState::RequiresAction { reason } = &from {
             self.recent_left = Some((*reason, now));
@@ -2247,6 +2281,53 @@ mod tests {
         assert_eq!(c.to, SessionState::unknown());
         assert_eq!(c.confidence, Confidence::Stale);
         assert!(!c.attention_added);
+    }
+
+    /// T-565: the demote keeps the dialog it demoted, until anything else
+    /// is heard — the queue's `^y` refuses a paste into a question nobody
+    /// answered, fifteen minutes on or not.
+    #[test]
+    fn the_stale_demote_remembers_its_dialog_until_a_signal() {
+        let mut asked = m(SessionState::Running);
+        asked.apply(&Signal::PreToolUse { tool: AttentionTool::AskUserQuestion }, 1000).unwrap();
+        assert_eq!(asked.stale_wait(), None, "a stated wait is not a stale one");
+        asked.tick(1000 + STALE_DEMOTE_MS).expect("demoted");
+        assert_eq!(asked.state(), &SessionState::unknown());
+        assert_eq!(asked.stale_wait(), Some(Reason::Question));
+        asked.apply(&Signal::UserPromptSubmit, 1000 + STALE_DEMOTE_MS + 5).expect("a turn");
+        assert_eq!(asked.stale_wait(), None, "anything heard since clears it");
+        // A machine that was never on a dialog has none to remember.
+        let mut quiet = m(SessionState::unknown());
+        assert!(quiet.tick(STALE_DEMOTE_MS * 2).is_none());
+        assert_eq!(quiet.stale_wait(), None);
+    }
+
+    /// The queue's guard (T-565): a question stated, or demoted by nothing
+    /// but the clock, is a question; a permission prompt never is, stale
+    /// or not, and a record with no machine is what it says.
+    #[test]
+    fn a_stale_question_is_still_a_question() {
+        let at = |s: &SessionState, machine: &Machine| on_question(s, Some(machine));
+        let mut asked = m(SessionState::Running);
+        asked.apply(&Signal::PreToolUse { tool: AttentionTool::AskUserQuestion }, 1000).unwrap();
+        assert!(at(&asked.state().clone(), &asked));
+        asked.tick(1000 + STALE_DEMOTE_MS).expect("demoted");
+        assert!(at(&asked.state().clone(), &asked), "fifteen quiet minutes close no dialog");
+        assert!(!on_question(asked.state(), None), "no machine, no memory");
+        asked.apply(&Signal::UserPromptSubmit, 1000 + STALE_DEMOTE_MS + 5).expect("a turn");
+        assert!(!at(&asked.state().clone(), &asked), "answered and working again");
+
+        let mut perm = m(SessionState::Running);
+        perm.apply(&Signal::PermissionRequest, 1000).unwrap();
+        assert!(!at(&perm.state().clone(), &perm), "a permission prompt is not a question");
+        perm.tick(1000 + STALE_DEMOTE_MS).expect("demoted");
+        assert!(!at(&perm.state().clone(), &perm));
+        // The record is the daemon's to say; a machine remembering a
+        // question does not make a working record ask.
+        let mut stale = m(SessionState::Running);
+        stale.apply(&Signal::PreToolUse { tool: AttentionTool::AskUserQuestion }, 1000).unwrap();
+        stale.tick(1000 + STALE_DEMOTE_MS).expect("demoted");
+        assert!(!at(&SessionState::Running, &stale));
     }
 
     /// T-363: a plan dialog left open for an hour is still a plan dialog.

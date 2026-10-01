@@ -244,6 +244,7 @@ mod tests {
                     ticket: ulid::Ulid(1),
                     action: mesimon_core::command::PendingAction::Ask,
                     waits_on: vec![],
+                    asking: Vec::new(),
                     text: None,
                     in_flight: true,
                     by: None,

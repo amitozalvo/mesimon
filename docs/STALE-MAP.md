@@ -17331,3 +17331,58 @@ was seen: it is "the board as it was then", so it lists what was recent then. An
 **Tests.** `state.test.js` covers the cut per group, the missing `since`, the count, a search
 and a remembered board; `ux.test.js`'s Now run puts a 40-minute idle agent under "Recently
 idle" and a 2-hour one on the Board only, every engine and size.
+
+## A question holds every ask behind it, at park time too (T-565, 2026-10-02, part A of T-564: "the row names what blocks it")
+
+**The bug, on a friend's board.** A worker the crown started stopped on an `AskUserQuestion`,
+and words were then queued for it (the crown's `ask_agent` with Crown sends on; the phone's
+Queue and the TUI's queued field are the same road). The card read `queued ∙ after its turn` and
+stayed there: `RequiresAction{Question}` counts as a turn (`quiet::is_working`), and only a
+person's answer ends it. `^y` was refused with "answer it in the pane first", and nothing on the
+board said the question was the blocker. The T-420 hold was an EDGE — `apply_change` held the
+asks already queued when the stop arrived — and `park_ask` always wrote `held: None`, so words
+parked after the stop were never held.
+
+**One predicate, read at both ends.** `SessionState::question_stop` (Question, Secret,
+Elicitation; not Permission, not Plan, as `apply_change` argued) is what `apply_change` holds on
+and what `park_ask` reads: parked onto a `QueuedSeat::Pane` whose agent is on a question, the
+ask is `held = "agent asked"` at once, with the same `queued_ask_held_question` feed line. Every
+road parks there. A re-queue by hand while the question is still up stays held; T-420's "the
+person read the words again" did not survive a question whose answer has not come yet. The
+crown's handler sets `sends` after `park_ask`; `held_for_person` reads `held` first, so a
+sending ask stays held, and the receipt now reports `held_for_person: true` with
+`held_because` naming the question.
+
+**The row names the blocker.** `Pending.asking` (`#[serde(default)]`) lists the keys among
+`waits_on` whose agent is on a question, and for a held ask its own key while its own agent asks.
+`after_words` (tui) is the one grammar for the card and the status line: `after T-3's answer`,
+`after your answer`, an asking key named first since the turns end by themselves and it does
+not. A crown's held ask reads `T-411 asks ∙ you answer first` while its agent asks and `… ∙ you
+send` after; a person's reads `agent asked ∙ you send` throughout. `Response::Queued` carries
+`asking` and `held` so the receipt says `queued ∙ held ∙ agent asked ∙ answer it, then you send`
+rather than `sends next`.
+
+**The stale edge.** After `STALE_DEMOTE_MS` the record reads `Unknown{NoSignal}` and `^y`'s
+`RequiresAction` guard passed, pasting into a dialog still open. `Machine::stale_wait` keeps the
+reason the stale clock demoted, cleared by any commit, and `attention::on_question` reads it:
+`^y` is refused on a stale question with the same words, and a park onto one is held. Scoped to
+questions as the brief said: a permission prompt Esc'd by hand fires no hook either, and widening
+the guard would refuse a send into a pane that is really back at its prompt.
+
+**Refuted: keying "you answer first" on the held reason.** `held` is sticky until `^y`, so the
+words would outlive the answer; and a crown ask queued before the question and held by the
+sends switch carries no `held` reason, so it would read `you send` while `^y` is refused. The
+row reads `asking`, which is live.
+
+**Tests.** Core: `the_stale_demote_remembers_its_dialog_until_a_signal`,
+`a_stale_question_is_still_a_question`, and `held_is_a_queued_ask_that_waits_on_a_person`'s
+park-time case. TUI: `the_owed_row_names_what_it_waits_on` (`after your answer`, `after T-3's
+answer +2`, the crown's two tails) and `an_ask_queued_onto_a_question_says_it_is_held`. E2e:
+`an_ask_queued_onto_an_open_question_is_held_at_once` (two claudes in one checkout: B's receipt
+names A's answer, A's own words are held, `^y` refused, nothing pasted, B goes on A's turn end,
+A's goes by hand), and a segment of `the_crown_sends_its_asks_to_the_agents_it_started` that is
+the friend's board.
+
+**Out of scope (T-564's other parts).** The crown learning or answering the question, Remote
+Control's receipt (`Reply::Delivery{queued}` for a held park) and its prompt/answer collision,
+the phone naming who queued.

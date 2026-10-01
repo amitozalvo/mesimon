@@ -3754,16 +3754,10 @@ impl Daemon {
         }
         // The agent stopped on a question (T-420): the answer may change
         // what a queued follow-up should say, so the words wait for a
-        // person's `^y` rather than going after the turn. A permission
-        // prompt is not this — allowing a tool changes nothing about the
-        // follow-up — and a plan dialog holds only an unflagged ask, the
-        // way it always did (`queued_target_ready`).
-        if matches!(
-            change.to,
-            SessionState::RequiresAction {
-                reason: Reason::Question | Reason::Secret | Reason::Elicitation
-            }
-        ) {
+        // person's `^y` rather than going after the turn. Which stops are
+        // questions is `question_stop`'s, and `park_ask` reads the same
+        // predicate for words queued after the stop (T-565).
+        if change.to.question_stop() {
             self.hold_queued_on_question(id);
         }
         // A turn ended, or a target died: the queued asks look again. The
@@ -4190,15 +4184,27 @@ impl Daemon {
                 if let Err(message) = self.park_ask(target, seat, text, Some(ticket), false, plan) {
                     return Response::Err { message };
                 }
+                let mut held_for_person = !sends;
                 if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == target) {
                     q.sends = sends;
+                    // Its agent is on a question (T-565): `park_ask` held
+                    // the words, and the send stays a person's — after the
+                    // answer, which may change them.
+                    held_for_person = q.held_for_person();
                 }
+                let held_because = held_because.or_else(|| {
+                    held_for_person.then(|| {
+                        "its agent stopped on a question; a person answers it, then sends the \
+                         words (^y on its card)"
+                            .to_string()
+                    })
+                });
                 self.crown_touched(ticket, target, "asked");
                 // An idle agent takes the words now, its touch turning to
                 // `sent`; a busy one when its turn ends, as a person's
                 // queued ask would. The stamp is read after: a wake moves
                 // the agent's state, which the stamp covers.
-                if sends {
+                if !held_for_person {
                     self.drain_queue();
                 }
                 self.broadcast();
@@ -4206,7 +4212,7 @@ impl Daemon {
                     key: self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key),
                     replaced,
                     seen: Some(self.seen_token(target)),
-                    held_for_person: !sends,
+                    held_for_person,
                     held_because,
                 }
             }
@@ -5684,6 +5690,7 @@ impl Daemon {
                 // START rather than that words are queued (T-294).
                 action: q.seat.action(),
                 waits_on: self.ask_waits_on(q.ticket),
+                asking: self.ask_asking(q.ticket),
                 text: (!q.text.is_empty()).then(|| q.text.clone()),
                 in_flight: false,
                 by: q.by.and_then(|c| self.board.ticket(c)).map(|c| c.short_key.clone()),
@@ -5699,6 +5706,7 @@ impl Daemon {
                     ticket: o.ticket,
                     action: PendingAction::Ask,
                     waits_on: Vec::new(),
+                    asking: Vec::new(),
                     text: None,
                     in_flight: true,
                     by: None,
@@ -5721,6 +5729,7 @@ impl Daemon {
                 ticket: crown,
                 action: PendingAction::CrownWake,
                 waits_on,
+                asking: Vec::new(),
                 text: Some(self.crown_wake_text()),
                 in_flight: false,
                 by: None,
@@ -5751,6 +5760,7 @@ impl Daemon {
                     ticket: t,
                     action: PendingAction::Merge,
                     waits_on: waits_on.clone(),
+                    asking: Vec::new(),
                     text: self.train.refusal(t, &tip, self.base_tip_of(t)).map(String::from),
                     in_flight: false,
                     by: None,
@@ -5765,6 +5775,7 @@ impl Daemon {
                     ticket: t,
                     action: PendingAction::Rebase,
                     waits_on: rebase_waits_on.clone(),
+                    asking: Vec::new(),
                     text: None,
                     in_flight: false,
                     by: None,
@@ -8113,9 +8124,13 @@ impl Daemon {
         }
         self.drain_queue();
         self.broadcast();
-        if self.queued.iter().any(|q| q.ticket == ticket) {
-            let behind = self.ask_waits_on(ticket);
-            Response::Queued { behind }
+        if let Some(q) = self.queued.iter().find(|q| q.ticket == ticket) {
+            let held = q.held.map(str::to_string);
+            Response::Queued {
+                behind: self.ask_waits_on(ticket),
+                asking: self.ask_asking(ticket),
+                held,
+            }
         } else if self.ask_in_flight(ticket) {
             Response::Ok
         } else if word != "ask" || plan {
@@ -8194,6 +8209,15 @@ impl Daemon {
         }
         let now = now_ms();
         let word = seat.word();
+        // Parked while its agent is ALREADY on a question (T-565): the hold
+        // `apply_change` puts on words queued before the stop, at once —
+        // the stop has no edge left to come. Every road parks here: the
+        // field, the column, the phone's Queue and the crown's ask, whose
+        // handler may then set `sends` (T-550); `held` outranks it.
+        let held = match seat {
+            QueuedSeat::Pane(id) if self.session_asking(id) => Some("agent asked"),
+            _ => None,
+        };
         // The feed names the author and never the words: a person's ask is
         // `queued_ask`, the crown's is `ask_agent` with actor `agent`.
         let (actor, fresh, replaced) = match by {
@@ -8212,10 +8236,12 @@ impl Daemon {
             // The crown's road is its handler's to set again (T-550).
             q.sends = false;
             // Re-queued by hand: the person read the words again, so a
-            // hold is answered, and the flag is whatever the field said.
+            // hold is answered — unless the question is still up, whose
+            // answer may change them yet — and the flag is whatever the
+            // field said.
             q.accept_plan = accept_plan;
             q.send_on_accept = false;
-            q.held = None;
+            q.held = held;
             q.plan = plan && !accept_plan;
             self.feed.board(actor, replaced, Some(ticket));
         } else {
@@ -8229,10 +8255,13 @@ impl Daemon {
                 sends: false,
                 accept_plan,
                 send_on_accept: false,
-                held: None,
+                held,
                 plan: plan && !accept_plan,
             });
             self.feed.board(actor, &fresh, Some(ticket));
+        }
+        if held.is_some() {
+            self.feed.board("automation", "queued_ask_held_question", Some(ticket));
         }
         self.persist_queue();
         Ok(())
@@ -8272,6 +8301,11 @@ impl Daemon {
     /// so the card reads `queued ∙ after T-3 +1` and a card moved up its
     /// column watches the count fall. Empty for a ticket with no ask.
     fn ask_waits_on(&self, ticket: ulid::Ulid) -> Vec<String> {
+        self.keys_of(&self.ask_waits_on_ids(ticket))
+    }
+
+    /// `ask_waits_on`, as the tickets themselves.
+    fn ask_waits_on_ids(&self, ticket: ulid::Ulid) -> Vec<ulid::Ulid> {
         let Some(q) = self.queued.iter().find(|q| q.ticket == ticket) else {
             return Vec::new();
         };
@@ -8303,7 +8337,7 @@ impl Daemon {
                     ids.push(ahead.ticket);
                 }
             }
-            return self.keys_of(&ids);
+            return ids;
         }
         let mut ids = self.checkout_holders(&q.cwd);
         if !self.queued_target_ready(q) && !ids.contains(&ticket) {
@@ -8318,7 +8352,46 @@ impl Daemon {
                 ids.push(ahead.ticket);
             }
         }
+        ids
+    }
+
+    /// The keys among what the ask waits on whose agent is on a question
+    /// (T-565) — a turn that ends only when a person answers, so the card
+    /// says `after T-3's answer` rather than `after T-3`. A held ask waits
+    /// on nobody's turn; its own key is listed while its own agent asks,
+    /// so the card can say the answer comes before the send.
+    fn ask_asking(&self, ticket: ulid::Ulid) -> Vec<String> {
+        let Some(q) = self.queued.iter().find(|q| q.ticket == ticket) else {
+            return Vec::new();
+        };
+        let ids: Vec<ulid::Ulid> = if q.held_for_person() {
+            match q.seat {
+                QueuedSeat::Pane(id) if self.session_asking(id) => vec![ticket],
+                _ => Vec::new(),
+            }
+        } else {
+            self.ask_waits_on_ids(ticket).into_iter().filter(|t| self.ticket_asking(*t)).collect()
+        };
         self.keys_of(&ids)
+    }
+
+    /// Is this session's agent on a question (T-565,
+    /// `attention::on_question`): stated so, or stated so last and demoted
+    /// by nothing but the stale clock.
+    fn session_asking(&self, id: uuid::Uuid) -> bool {
+        self.board.sessions.iter().find(|s| s.id == id).is_some_and(|s| self.rec_asking(s))
+    }
+
+    fn rec_asking(&self, rec: &SessionRecord) -> bool {
+        attention::on_question(&rec.state, self.machines.get(&rec.id))
+    }
+
+    /// Is any agent of this ticket on a question (`session_asking`)?
+    fn ticket_asking(&self, ticket: ulid::Ulid) -> bool {
+        self.board
+            .sessions
+            .iter()
+            .any(|s| s.ticket == ticket && s.kind.is_agent() && self.rec_asking(s))
     }
 
     /// Paste the TOPMOST waiting ask of every QUIET checkout — one per
@@ -8759,13 +8832,15 @@ impl Daemon {
         };
         // A pane on a dialog takes a paste as an ANSWER (T-420): the words
         // would land in the question, or the plan's revise row. The person
-        // answers in the pane first; the ask keeps waiting.
+        // answers in the pane first; the ask keeps waiting. A question the
+        // stale clock demoted to `Unknown` is still up (T-565).
         if let QueuedSeat::Pane(id) = self.queued[i].seat {
-            if self
-                .board
-                .sessions
-                .iter()
-                .any(|s| s.id == id && matches!(s.state, SessionState::RequiresAction { .. }))
+            if self.session_asking(id)
+                || self
+                    .board
+                    .sessions
+                    .iter()
+                    .any(|s| s.id == id && matches!(s.state, SessionState::RequiresAction { .. }))
             {
                 return Response::Err {
                     message: "the agent is waiting on you ∙ answer it in the pane first".into(),
