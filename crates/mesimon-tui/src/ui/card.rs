@@ -756,7 +756,7 @@ pub(super) fn render(
     // the id was one focus away on every card; with `p` on, the cursor card
     // names its own, and `P` names every card's.
     // The ticket's agent tier (T-443) is one of its own facts, and rides
-    // the same row where it is not the default.
+    // the same row once a person has made tiers (`App::card_tier_word`).
     let meta_row = open && (ctx.names_key || !tags.is_empty() || tier_word.is_some());
     // The cursor card's accordion, or — under `P` (T-237) — a resting card
     // open on its own ground: the tag row and the reply, on the resting ramp,

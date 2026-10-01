@@ -17124,6 +17124,16 @@ read it. The built-ins stay reachable through the Default tier row, whose ring i
 A Codex seat with no Codex tier of one's own has an empty ring, so `^n` is inert there. Before,
 it offered `codex` alone and was inert anyway.
 
+**The open card names the default too (same day, user: "^n doesn't show coder").** `^n` did
+land on the default tier. But `App::card_tier_word` hid the name when the ticket was on the
+default, so on the board that stop looked blank, and the user read it as skipped.
+`card_tier_word` now follows the rule `tier_clause` and `seat_tier_clause` already used on the
+ticket page: once a person has made tiers, the open card always names its tier. Before that,
+it names it only when the ticket has left the default. The word rides only an OPEN card's meta
+row (peek on), so a resting board does not change. Test: the end of
+`golden_the_ticket_and_the_card_wear_the_tier` (a card on the default, open, says `quick`). It
+fails on the old rule.
+
 **Tests.** `tier::a_layer_reorders_only_the_tiers_it_owns`,
 `keymap::the_tiers_list_moves_a_tier_on_the_boards_keys`,
 `app::the_tiers_list_moves_a_tier_on_the_boards_keys` (machine scope, edge press, `+ new tier`,

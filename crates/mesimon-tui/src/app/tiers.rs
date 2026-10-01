@@ -193,12 +193,14 @@ impl App {
         !self.tiers().custom().is_empty()
     }
 
-    /// The open card's tier word, beside its key: only where the ticket's
-    /// tier is not the default, which is what every card without one runs.
+    /// The open card's tier word, beside its key — on the ticket page's
+    /// rule: once a person has made tiers, always, so `^n` landing on the
+    /// default names it like every other stop (T-562, user: "^n doesn't
+    /// show coder"); before that, only where the ticket left the default.
     pub(crate) fn card_tier_word(&self, ticket: ulid::Ulid) -> Option<String> {
         let book = self.tiers();
         let want = book.of_ticket(ticket);
-        (want.id != book.default_tier().id).then_some(want.name)
+        (self.tiers_in_use() || want.id != book.default_tier().id).then_some(want.name)
     }
 
     /// The card's "what mesimon does next" row while a switch is owed.
