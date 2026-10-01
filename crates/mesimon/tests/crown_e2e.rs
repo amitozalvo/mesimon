@@ -2046,7 +2046,8 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
 /// answer walks Remote Control's own screen-verified road: off by default,
 /// no wake and a refusal naming the row; on, a person's agent is still the
 /// person's; a question from the crown's own worker wakes the crown without
-/// its words; a stale request, a plan and a two-question dialog are refused;
+/// its words; a stale request and a plan are refused, and so is the one
+/// question's answer on a two-question dialog, which takes one each (T-571);
 /// the answer's receipt waits for the stub's `PostToolUse` and says
 /// `answered`, the feed carries the label with actor `agent`, the card says
 /// `♛ answered` and `answered by` until the next edge, and that turn's end

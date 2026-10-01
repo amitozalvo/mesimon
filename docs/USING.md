@@ -229,16 +229,18 @@ the crown back, holds whatever had not gone yet on its card.
 
 **Settings › Agents › Crown answers questions** (off by default, and separate from sending) lets
 the crown answer a question an agent it started stops on. That question wakes the crown, which
-reads it on the agent's ticket and may pick one of its options, or type a one-line answer in their
-place, through the same screen-checked road as Remote Control's question card. The card lights
-`♛ answered` and reads `answered by T-411: Okta` while the agent works on the answer, and the
-activity feed records the answer as the agent's. Only one question with one choice is answered
-this way: several questions at once, a multi-select, a permission, a secret, a form or a plan wait
-for you, and so does every question from an agent you started. mesimon does not read the question
-to decide. The crown is told that a question about secrets or credentials, spend or quota,
-something destructive or irreversible (deleting, force-pushing, publishing, sending to people), a
-preference its brief leaves open, or anything beyond the brief is yours, and to raise its hand on
-its own card for it. If you answer first, the crown's answer is refused.
+reads it on the agent's ticket and may pick one of its options, tick several where the question
+takes several, or type a one-line answer in their place, through the same screen-checked road as
+Remote Control's question card. A dialog that asks several questions at once is answered whole,
+one answer per question, because Claude Code submits them together. The card lights
+`♛ answered` and reads `answered by T-411: Okta` while the agent works on the answer (several
+answers are joined by `;`), and the activity feed records the answer as the agent's. A
+permission, a secret, a form or a plan waits for you, and so does every question from an agent
+you started. mesimon does not read the question to decide. The crown is told that a question
+about secrets or credentials, spend or quota, something destructive or irreversible (deleting,
+force-pushing, publishing, sending to people), a preference its brief leaves open, or anything
+beyond the brief is yours, and that one such question in a batch makes the whole batch yours, and
+to raise its hand on its own card for it. If you answer first, the crown's answer is refused.
 
 At most three agents the crown started may be awake at once; **Settings › Agents** changes the
 number or turns starting off. A ticket the crown started can never be crowned itself. The crown

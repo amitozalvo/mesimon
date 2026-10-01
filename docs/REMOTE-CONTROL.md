@@ -176,11 +176,19 @@ before they offer remote approvals.
 
 ## Questions and plans
 
-Single-choice questions, single-line free-text answers, and plan accept/reject
-use verified native dialog selections. Plans are accepted with manual edit
-approval. Unrecognized, multiple-question, and multi-select forms require a local
-answer. An answer is never retried automatically, and keys already typed are
-never undone.
+Questions, single-line free-text answers, and plan accept/reject use verified
+native dialog selections. Plans are accepted with manual edit approval.
+
+A question that takes one choice is answered by tapping it, on the ticket or
+on its Now card. A question that takes several choices, or a dialog that asks
+up to four questions at once, is answered on the ticket: tick the options
+(or pick one, for a one-choice question), or type your own words in place of
+them, then press one Submit. Your terminal walks the dialog question by
+question, ticking each option and checking the mark, and presses the dialog's
+own Submit only after its review lists exactly the answers you sent. If your
+terminal runs an older mesimon, the ticket says the dialog needs a local
+answer. Unrecognized forms require a local answer too. An answer is never
+retried automatically, and keys already typed are never undone.
 
 An answer's receipt says how far it got:
 
@@ -194,8 +202,10 @@ An answer's receipt says how far it got:
   not report, so it usually ends here.
 - **"Could not answer: … · try again or answer in the pane."**: no key could
   be chosen, and the reason is named: the option is not on the screen, its
-  text does not read as one row, the screen does not show this question, it
-  took too long, the agent moved on, or the pane did not take the keys.
+  text does not read as one row, the screen does not show this question, an
+  option did not take its tick, the dialog's review lists other answers than
+  yours (so its Submit was not pressed), it took too long, the agent moved
+  on, or the pane did not take the keys.
   "The selection already moved" means some arrow keys went in first. While
   the question is on screen, its buttons stay live.
 

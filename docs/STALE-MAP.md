@@ -17719,3 +17719,99 @@ replaced (`you`), the crown's (its key, and its `asked`), held ones (`held`); th
 now refused with no key typed; the answer going while the words wait; the held words sent after
 the turn. `ux.test.js`'s fake host answers a permission `decision_sent`, as the real one does,
 and `browser.test.js` clicks the card rather than the rename title that wears the same words.
+
+## A batch or a several-choice question is answered whole (T-571, 2026-10-02, part F of T-564: "what about multi choice questions and what about batch questions?")
+
+**Before.** T-395 measured one shape, one question with one choice, and T-567 and T-569 built
+the phone's and the crown's answers on it. `control_observe_dialog` already projected up to
+four questions of up to eight options and the `multiSelect` flag, but the phone drew anything
+else read-only ("needs a local answer in the pane") and `answer_agent` refused it, because no
+key may be sent against a screen nobody measured.
+
+**Measured first, on Claude Code 2.1.287** (Haiku, a private tmux pane at 120x50 and 80x40,
+`capture-pane -p`, hooks logged by a capturing command hook; the screens are the `B_`, `M_`,
+`C_`, `N_` and `S_` fixtures in `server/mesophon.rs`'s tests):
+
+- **A several-choice question** draws `N. [ ] label` rows with the description under the label,
+  the text row `N. [ ] Type something` (no period, unlike a one-choice question's `Type
+  something.`), an unnumbered `Next` row under it (`Submit` on the last question), a rule, and
+  `N. Chat about this`, numbered right after the text row. **Space ticks and unticks** an option
+  row (`[✔]`), and so does Enter; on the text row Enter ticks and unticks and a pasted line both
+  fills and ticks it. The cursor on the button is `❯    Next`. The footer gains `ctrl+g to edit
+  in Vim` once the cursor has crossed the text row, and keeps it.
+- **A batch, or one several-choice question alone,** draws a tab bar `←  ☐ Color  ☐ Toppings
+  ✔ Submit  →`; a tab turns `☒` once it holds an answer. The current tab is marked by colour
+  only, so the question's own words under the bar say which one shows. Enter on a one-choice
+  row, or on pasted words, answers it and moves to the next tab. After the last question comes
+  the review: `Review your answers`, a `● question` / `→ answer` pair per question (ticks
+  joined by `, ` **in the order they were made**, not the options' order), `Ready to submit your
+  answers?`, `❯ 1. Submit answers` and `2. Cancel`, and no footer. Enter on `Submit answers`
+  sends the tool once: one `PostToolUse` whose `tool_response.answers` maps each question's words
+  to its answer. Escape on any tab or on the review declines the whole tool with no hook. Every
+  question tab has `Chat about this`.
+- **A question that wraps is drawn with a `│` down its left**, one question or a batch alike.
+  T-567's matcher compared the squeezed screen with the squeezed question and missed it; it now
+  reads a line without the bar (`unbarred`).
+
+**The walk.** `DialogAnswer::Answers { answers }` carries one `QuestionAnswer` per question,
+in order: `Choice { index }`, `Choices { indices }` or `Text { text }`; the old single answer
+fits only the one-question, one-choice dialog, so an older browser's answer means what it
+meant. `dialog_plan` checks an answer against the projection (count, kind, range, distinct
+ticks, one plain line). `dialog_step` keeps T-567's road for one question with one choice and
+walks any other measured shape tab by tab with `batch_view`: the tab bar, then either one
+question whose words are exactly one projected question's (the prompt that asked for the dialog
+names every question too, so words above the bar never count) or the review. A one-choice tab is
+T-567's row match with Enter moving on. A several-choice tab reads every option row's label and
+mark before any key, then ticks rows top to bottom with Space until each reads as the answer; a
+mark the screen did not change after its Space stops the walk (`Walk::toggled`,
+`tick_not_taken`); words go on the text row only while it reads `Type something`, and a person's
+ticked words are never cleared for choices. The review is pressed only when every answer it lists
+reads as the one sent, ticks compared in any order (`answer_differs` otherwise). Every T-567
+refusal stands, and the projection stays while the dialog still shows. The confirmation is
+unchanged: one hook edge for the tool, `answered` only on it. A batch's walk gets room for every
+row crossed twice, its ticks and the review (`walk_budget`, at most `DIALOG_WALK_MAX` 60 s), and
+the shim waits `ANSWER_WAIT_SECS` (75 s) for `answer_agent`'s receipt instead of its 20 s.
+`dialog_answerable` is now true for one to four questions no two of which read alike.
+
+**The wire.** The host advertises `dialog_multi`; the page sends `answers` only to a host that
+did, since an older one would drop the peer on a frame it cannot parse. Reasons gained
+`tick_not_taken` and `answer_differs`, with words on the page.
+
+**The phone.** The ticket's card draws every question: round marks for one choice, square ones
+for ticks (`.option-pick`, `role` radio or checkbox), a words field each that replaces that
+question's picks, and one Submit that waits until every question has an answer. The form keeps
+its picks through a retry; offline it is drawn disabled, and a live older host leaves the dialog
+to the pane. The needs-you card still answers one single-choice question in place and opens the
+ticket for the rest.
+
+**The crown.** `answer_agent` takes `answers` (each `{index}`, `{indices}` or `{text}`) beside
+the one question's `index` and `text`, and is refused in words for a count that does not match
+(`answers carries 2 answers and T-2's dialog asks 3 questions`), the one-question form on a
+batch, `index` on a several-choice question and `indices` on a one-choice one, a range, an empty
+or repeated tick, and words that are not one plain line. A batch is submitted whole, so one
+person's question in it makes the batch a person's: the tool's description says so and
+`PERSONS_QUESTIONS` (which `CROWN_WAKES` ends on) ends on it. The description was rewritten to
+fit the new field inside the 820-byte cap and keeps every doctrine phrase the tests name.
+`get_ticket.needs_you.questions` lists every question (`text`, `options`, `multi_select`) in
+place of T-566's count and the one `question`. The feed and the card join a batch's answers with
+`; ` and a question's ticks with `, `.
+
+**Not built.** Ticks and words together on one several-choice question (measured, `Cheese,
+Pineapple slices`, but outside the per-question answer the brief set); unticking a person's
+typed words; a batch whose tab bar does not fit the pane (not measured, so refused as
+`shape_unrecognised`).
+
+**Tests.** Daemon units on the captured screens: a three-question batch walked tab by tab
+(two ticks, a tick not taken, the review's answers in tick order, a review with other answers),
+one several-choice question alone, words in a one-choice tab and on a several-choice text row, a
+person's ticked words kept, the `│` question in a batch and alone, a screen that drifts (another
+question's words, no bar, no footer, two cursors or none, a numbering skip, an unmeasured mark,
+a short review, the composer), Escape on every tab, `dialog_plan`'s fits, `walk_budget`, and the
+crown's refusals in words. `crown_e2e::the_crown_answers_a_batch_one_answer_per_question` drives
+`tests/common/fake_claude_dialog.py`, a stand-in for the measured dialog, through a choice, two
+ticks and words; the receipt waits for `PostToolUse`, and the pane submitted exactly four
+Enters. Relay acceptance `a_batch_is_answered_whole_and_confirmed_by_the_hook_edge` (branch
+`msmn/T-571-multi-select-and-multi-question` in `mesimon-relay`) uses the same stand-in through
+the real relay. `state.test.js` covers the form's answers and words; `ux.test.js`'s `batchFlow`
+the radios and ticks, Submit, the receipts, words, Decline, one several-choice question and an
+older host, on Chromium and WebKit at three sizes.
