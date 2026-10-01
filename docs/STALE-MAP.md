@@ -17134,6 +17134,16 @@ row (peek on), so a resting board does not change. Test: the end of
 `golden_the_ticket_and_the_card_wear_the_tier` (a card on the default, open, says `quick`). It
 fails on the old rule.
 
+**...then only for a second (same day, user: "show default for a second after clicking ^n, so
+it won't be verbose when not needed").** The always-on rule above is replaced.
+`card_tier_word` again names the default only while `^n`'s reveal is up. `App::tier_flash`
+copies `tag_flash`'s shape: `cycle_tier` stamps the ticket and the instant, `peek_showing` opens
+that card for `TIER_FLASH` (1 s, re-armed by every press), and the card names whatever tier the
+press landed on, the default included. A tier other than the default is still named whenever
+the card is open. The TUI redraws every 100 ms, so the name clears without a key. Test: the end
+of `golden_the_ticket_and_the_card_wear_the_tier` (quiet at rest with peek on, named during the
+flash with peek off, quiet after it) and `ctrl_n_picks_a_tickets_tier_and_rides_the_composers_mint`.
+
 **Tests.** `tier::a_layer_reorders_only_the_tiers_it_owns`,
 `keymap::the_tiers_list_moves_a_tier_on_the_boards_keys`,
 `app::the_tiers_list_moves_a_tier_on_the_boards_keys` (machine scope, edge press, `+ new tier`,

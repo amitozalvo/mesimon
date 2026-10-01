@@ -1307,6 +1307,11 @@ const SHELL_TAIL_LINES: u16 = 60;
 /// keeps the card open for the whole walk instead of blinking once per press.
 const TAG_FLASH: Duration = Duration::from_millis(1500);
 
+/// How long `^n` holds the card open on the tier it landed on (T-562): the
+/// card names the default only for this long, so a stop on it is seen and a
+/// card at rest stays quiet. Every press re-arms it, as the tag flash's does.
+pub(crate) const TIER_FLASH: Duration = Duration::from_millis(1000);
+
 /// A field's byte limit as the status line says it: the round ones in KB
 /// (`2 KB`, `4 KB`), a tag's `24 bytes`. Bytes, honestly — the cap is a byte
 /// cap at the daemon, and a character count would be wrong in Hebrew.
@@ -1518,6 +1523,10 @@ pub struct App {
     /// then lets go. Keyed to the TICKET: moving the cursor ends the reveal,
     /// because a flash is about the card you just tagged and no other.
     pub tag_flash: Option<(ulid::Ulid, Instant)>,
+    /// `^n`'s reveal (T-562), the tag flash's shape: the ticket whose tier
+    /// it just picked, and when. The card opens and names the tier — the
+    /// default included — for `TIER_FLASH`, then lets go.
+    pub tier_flash: Option<(ulid::Ulid, Instant)>,
     /// The last card a chord refused to act on, and when (T-423): the card
     /// shakes for `SHAKE_OFFSETS` from that instant. Board-side and per
     /// board, like `tag_flash` — a refusal is about the card you pressed on.
@@ -1850,6 +1859,7 @@ impl App {
             peek_cache: crate::peek::PeekCache::default(),
             searcher: std::cell::RefCell::new(None),
             tag_flash: None,
+            tier_flash: None,
             refused: None,
             layout_pause: None,
             layout_flash: None,
@@ -9372,11 +9382,14 @@ impl App {
     }
 
     /// Is the cursor card open for `ticket` — the `p` preference, or a
-    /// quick-tag digit still inside its reveal? Only the board asks, and only
-    /// of the card under the cursor: the flash is keyed to the ticket, so the
-    /// first `j` closes it and no second card ever opens behind it.
+    /// quick-tag digit or a `^n` still inside its reveal? Only the board
+    /// asks, and only of the card under the cursor: the flash is keyed to the
+    /// ticket, so the first `j` closes it and no second card ever opens
+    /// behind it.
     pub(crate) fn peek_showing(&self, ticket: ulid::Ulid) -> bool {
-        self.peek || self.tag_flash.is_some_and(|(id, at)| id == ticket && at.elapsed() < TAG_FLASH)
+        self.peek
+            || self.tag_flash.is_some_and(|(id, at)| id == ticket && at.elapsed() < TAG_FLASH)
+            || self.tier_flashing(ticket)
     }
 
     /// Finish naming: create a new tag, or rename the one under the cursor.
@@ -14785,6 +14798,14 @@ mod tests {
         ctrl_n(&mut app);
         assert_eq!(pick(&app), None, "back to the default, stored as inherit");
         assert!(!sent_contains(&sent, "\"codex\""), "the built-in codex is not in the cycle");
+        // The press opens the card on the tier it landed on — the default
+        // too — for a moment, and the card at rest says nothing of it.
+        let one = ulid::Ulid(1);
+        assert!(app.peek_showing(one) && !app.peek, "opened, the preference untouched");
+        assert_eq!(app.card_tier_word(one).as_deref(), Some("claude"));
+        app.tier_flash = Some((one, Instant::now() - TIER_FLASH));
+        assert!(!app.peek_showing(one));
+        assert_eq!(app.card_tier_word(one), None, "the default is quiet at rest");
         app.mode = Mode::Input {
             purpose: InputPurpose::Create {
                 workspace: None,

@@ -9052,14 +9052,22 @@ fn golden_the_ticket_and_the_card_wear_the_tier() {
     assert!(rows.iter().any(|r| r.contains("switches to coder")), "{rows:?}");
     assert!(rows.iter().any(|r| r.contains("coder")), "{rows:?}");
     golden("board_tier_owed_120x30", &rows);
-    // A card on the default names it too (T-562, user: "^n doesn't show
-    // coder"): once a person has made tiers, `^n` landing on the default is
-    // a stop like any other, and the open card says which.
+    // A card on the default says nothing at rest, open or not; `^n` landing
+    // there opens it and names the tier for a moment (T-562, user: "show
+    // default for a second after clicking ^n, so it won't be verbose when not
+    // needed").
     app.cursor_col = 0;
     app.cursor_row = Some(1);
     let open = app.selected_ticket().map(|t| t.id).expect("a card in TODO");
     assert_eq!(app.board.ticket(open).and_then(|t| t.tier.clone()), None, "on the default");
     app.peek_all = true;
     let rows = render(&app, 120, 30);
-    assert!(rows.iter().any(|r| r.contains("quick")), "{rows:?}");
+    assert!(!rows.iter().any(|r| r.contains("quick")), "quiet at rest: {rows:?}");
+    app.peek_all = false;
+    app.tier_flash = Some((open, std::time::Instant::now()));
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("quick")), "named during the flash: {rows:?}");
+    app.tier_flash = Some((open, std::time::Instant::now() - crate::app::TIER_FLASH));
+    let rows = render(&app, 120, 30);
+    assert!(!rows.iter().any(|r| r.contains("quick")), "and lets go: {rows:?}");
 }
