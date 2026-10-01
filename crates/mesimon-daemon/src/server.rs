@@ -309,6 +309,18 @@ enum Msg {
     /// started under: a synchronous refresh in the meantime (a merge, a
     /// teardown) makes it stale, and it is dropped.
     WorktreeFlags(u64, Vec<worktree::RepoSample>),
+    /// A worktree's teardown finished on a worker (T-561): `worktree remove
+    /// --force` walks and unlinks the whole tree, `target/` included, and
+    /// an `archive_all` queued a dozen of them for one tick, so the board
+    /// hung 5–13 s while the writer did the unlinking. `archived` is the
+    /// road that asked (the binding stays `Evicted` when the branch
+    /// survived `branch -d`), `took` the number the journal keeps.
+    TornDown {
+        ticket: ulid::Ulid,
+        archived: bool,
+        branch_kept: bool,
+        took: Duration,
+    },
     /// A look at a worker's work at its turn's end (T-469): what decides
     /// whether the crown hears of it. Off-thread because it forks git.
     TurnProbed(TurnProbe),
@@ -514,6 +526,11 @@ pub struct Daemon {
     /// expired, an archived ticket's once its work landed (T-278) — each
     /// waiting for the reaper (never remove a live cwd).
     pending_teardown: Vec<Teardown>,
+    /// Worktrees a worker is removing right now (T-561), from the moment
+    /// `process_teardowns` hands one over until its `Msg::TornDown` lands.
+    /// Memory only: a daemon that stops mid-flight finds the tree gone or
+    /// standing at start, and reads the binding off the disk either way.
+    tearing_down: std::collections::HashSet<ulid::Ulid>,
     /// Writer-thread sender, cloned into provisioning threads.
     tx: Sender<Msg>,
     /// Board sharing (T-215): identity, this board's sharing state, and the
@@ -976,6 +993,7 @@ pub fn run(paths: Paths) -> Result<()> {
         base_branch: None,
         upstreams: HashMap::new(),
         pending_teardown: Vec::new(),
+        tearing_down: Default::default(),
         tx: tx.clone(),
         team: teamglue::TeamCtx::new(tx.clone()),
         control: mesophon::Control::new(tx.clone()),
@@ -1104,6 +1122,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(..) => "git sampled".into(),
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
+            Msg::TornDown { .. } => "torn down".into(),
             Msg::TurnProbed(..) => "turn probed".into(),
             Msg::Team(_) => "team".into(),
             Msg::Control(..) => "mesophon".into(),
@@ -1136,6 +1155,9 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
+            Msg::TornDown { ticket, archived, branch_kept, took } => {
+                d.on_torn_down(ticket, archived, branch_kept, took)
+            }
             Msg::TurnProbed(probe) => d.on_turn_probed(probe),
             Msg::Team(done) => d.on_team(done),
             Msg::Request(env, reply, stream) => {
@@ -8752,7 +8774,7 @@ impl Daemon {
         if !worktree::reclaim_on_archive(b, merged, awake, self.worktrees_barred) {
             return;
         }
-        if self.pending_teardown.iter().any(|t| t.ticket == id) {
+        if self.pending_teardown.iter().any(|t| t.ticket == id) || self.tearing_down.contains(&id) {
             return;
         }
         self.pending_teardown.push(Teardown {
@@ -9394,6 +9416,10 @@ impl Daemon {
             .filter(|(_, t)| {
                 !t.sids.iter().any(|s| self.reaping.contains_key(s))
                     && !self.board.sessions.iter().any(|s| s.ticket == t.ticket && s.codex_stopping)
+                    // One flight per tree: a second ask (a delete after an
+                    // archive) waits for the first to land and is judged
+                    // against what is left.
+                    && !self.tearing_down.contains(&t.ticket)
             })
             .map(|(i, _)| i)
             .collect();
@@ -9425,36 +9451,75 @@ impl Daemon {
                 // never saw it. Killed here, first — never remove a live cwd.
                 let _ = self.backend.kill_session(&terminal_name(Some(ticket)));
             }
-            // Every leg, then the container (T-368): a merged leg's branch
-            // goes with `-d`, a discard's with `-D`; unmerged without
-            // discard keeps the branch (commits survive). On a workspace
-            // each leg is judged on its own, so a landed leg's branch goes
-            // while an unmerged sibling's stays.
+            // The gates are judged here, on the writer, with the board in
+            // hand; the removal itself goes to a worker (T-561). `worktree
+            // remove --force` unlinks every file of the tree — a `target/`
+            // of a few GB is seconds — and `archive_all` queues one per
+            // ticket for the same tick, so done here it was the whole
+            // board waiting on a snapshot for 5–13 s (the journal's
+            // `process_teardowns` lines). Every leg, then the container
+            // (T-368): a merged leg's branch goes with `-d`, a discard's
+            // with `-D`; unmerged without discard keeps the branch (commits
+            // survive). On a workspace each leg is judged on its own, so a
+            // landed leg's branch goes while an unmerged sibling's stays.
             let discard = matches!(why, TeardownWhy::Deleted { discard: true });
             let workspace = b.is_workspace();
             let branch = b.branch.clone();
-            let branch_kept = worktree::teardown(&self.paths.repo_root, &b, &|leg| {
-                let leg_merged = if workspace {
-                    !leg.base.is_empty() && worktree::is_merged(&leg.repo, &branch, &leg.base)
-                } else {
-                    merged
-                };
-                if leg_merged {
-                    Some(false)
-                } else if discard {
-                    Some(true)
-                } else {
-                    None
-                }
+            let repo_root = self.paths.repo_root.clone();
+            let tx = self.tx.clone();
+            self.tearing_down.insert(ticket);
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let branch_kept = worktree::teardown(&repo_root, &b, &|leg| {
+                    let leg_merged = if workspace {
+                        !leg.base.is_empty() && worktree::is_merged(&leg.repo, &branch, &leg.base)
+                    } else {
+                        merged
+                    };
+                    if leg_merged {
+                        Some(false)
+                    } else if discard {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                });
+                let _ = tx.send(Msg::TornDown {
+                    ticket,
+                    archived,
+                    branch_kept,
+                    took: started.elapsed(),
+                });
             });
-            if archived && branch_kept {
-                if let Some(b) = self.worktrees.get_mut(&ticket) {
-                    b.status = BindingStatus::Evicted;
-                    b.locked = false;
-                }
-                self.feed.board("automation", "worktree_torn_down:branch_kept", Some(ticket));
-                continue;
+        }
+    }
+
+    /// A worker finished removing a tree (T-561): the bookkeeping the
+    /// teardown turn used to do after `worktree::teardown` returned. An
+    /// archived ticket whose branch `branch -d` refused (squash-merged)
+    /// keeps its binding as `Evicted`, so a restore replays the same
+    /// branch; a branch that went takes the binding with it. A spawn or a
+    /// wake that arrived while the tree was going parked behind it
+    /// (`resolve_spawn_cwd`), and provisions now — the replay is
+    /// `on_provisioned`'s, as for any other provision. The flags take the
+    /// worker road, as `on_provisioned`'s do.
+    fn on_torn_down(
+        &mut self,
+        ticket: ulid::Ulid,
+        archived: bool,
+        branch_kept: bool,
+        took: Duration,
+    ) {
+        self.tearing_down.remove(&ticket);
+        let key = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+        self.journal.line(&format!("torn down {key}: {} ms", took.as_millis()));
+        if archived && branch_kept {
+            if let Some(b) = self.worktrees.get_mut(&ticket) {
+                b.status = BindingStatus::Evicted;
+                b.locked = false;
             }
+            self.feed.board("automation", "worktree_torn_down:branch_kept", Some(ticket));
+        } else {
             if archived {
                 self.feed.board("automation", "worktree_torn_down", Some(ticket));
             }
@@ -9470,7 +9535,12 @@ impl Daemon {
             self.wt_progress.remove(&ticket);
         }
         self.persist_worktrees();
-        self.refresh_worktree_flags();
+        if self.pending_spawns.iter().any(|s| s.ticket == ticket)
+            || self.pending_resumes.iter().any(|r| r.ticket == ticket)
+        {
+            self.queue_provision(ticket);
+        }
+        self.queue_worktree_flags();
         self.broadcast();
     }
 
@@ -9685,13 +9755,24 @@ impl Daemon {
         match strategy {
             WorkspaceStrategy::SharedCheckout => Ok(Some(self.paths.repo_root.clone())),
             WorkspaceStrategy::AdoptExisting => match self.worktrees.get(&ticket) {
-                Some(b) if b.status == BindingStatus::Attached => Ok(Some(b.path.clone())),
+                Some(b)
+                    if b.status == BindingStatus::Attached
+                        && !self.tearing_down.contains(&ticket) =>
+                {
+                    Ok(Some(b.path.clone()))
+                }
                 _ => Err("no worktree bound to this ticket — adopt one first".into()),
             },
             WorkspaceStrategy::Worktree => {
                 // On a workspace root (repositories nested one level under
                 // it) the provision cuts one worktree per nested repo
                 // (T-368, `queue_provision` asks the census).
+                if self.tearing_down.contains(&ticket) {
+                    // The tree is being removed on a worker (T-561): the
+                    // binding still reads `Attached`, but its directory is
+                    // going. Park; `on_torn_down` provisions afresh.
+                    return Ok(None);
+                }
                 match self.worktrees.get(&ticket).map(|b| b.status.clone()) {
                     Some(BindingStatus::Attached) => Ok(Some(self.worktrees[&ticket].path.clone())),
                     Some(BindingStatus::Queued) | Some(BindingStatus::Provisioning) => Ok(None),
@@ -9931,8 +10012,12 @@ impl Daemon {
     ) -> Vec<worktree::RepoQuery> {
         let base = self.base_branch.clone().unwrap_or_default();
         let mut queries: Vec<worktree::RepoQuery> = Vec::new();
-        let tickets: Vec<ulid::Ulid> =
-            self.worktrees.keys().copied().filter(|t| only.is_none_or(|o| o == *t)).collect();
+        let tickets: Vec<ulid::Ulid> = self
+            .worktrees
+            .keys()
+            .copied()
+            .filter(|t| only.is_none_or(|o| o == *t) && !self.tearing_down.contains(t))
+            .collect();
         for t in tickets {
             let b = &self.worktrees[&t];
             if b.branch.is_empty() {

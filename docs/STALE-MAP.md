@@ -17039,3 +17039,51 @@ delivery whose fast-forward is blocked by an untracked file wakes on the refusal
 (merge_state needs_rebase → ahead`. Three `crown_wake_deferred` rows, and nothing after.
 With the hold disabled, the first case fails with T-551's two lines (`delivered (merge_state
 ahead…` then `merged`): verified.
+
+## A worktree is torn down on a worker, never on the writer (T-561, 2026-10-01, "archive sometimes hangs the board")
+
+**What hung.** The archive's reclaim (T-278, T-481) ran `worktree::teardown` on the writer
+thread, inside `process_teardowns`, the tick stage that drains every ready teardown at once.
+`git worktree remove --force` unlinks every file of the tree, a `target/` of a few GB included,
+and the offer's X (`archive_all`) queues one teardown per landed ticket for the same tick, so
+the board waited on its snapshot for the whole batch: the journal's `slow turn … slowest stage
+process_teardowns` lines read 4.3–13.5 s against `archive_all` rows of 6–13 tickets in the
+feed (one `worktree_torn_down` every 0.3–1.6 s), 6.2 s for the 49 trees a `set_automation`
+sweep queued, and 1.5 s for a single agent archive. Under 10 s the TUI showed nothing and
+queued keys (`Conn::request` is a blocking `recv_timeout(10 s)` on the UI thread); past it the
+request timed out and the status line said "daemon unreachable ∙ reconnecting" of a daemon
+that was merely busy. The synchronous `refresh_worktree_flags` at the stage's end (the `2 + n`
+forks, 1–3.4 s on their own by the journal) was the rest.
+
+**What changed.** `process_teardowns` keeps every judgement on the writer (the reaper and
+`codex_stopping` waits, `worktrees_barred`, the archive's still-archived and still-merged
+re-check, the `!` terminal's kill) and hands the removal itself to a thread: `worktree::teardown`
+with the same per-leg verdict closure, which lands as `Msg::TornDown { ticket, archived,
+branch_kept, took }`. `on_torn_down` does the bookkeeping that followed the call before: the
+`Evicted` binding when the archive's `branch -d` refused a squash-merged branch, otherwise the
+binding and every `wt_*` entry gone, the feed row, `persist_worktrees`, and the flags through
+`queue_worktree_flags` (the worker road `on_provisioned` already takes) instead of the
+synchronous refresh. The journal keeps `torn down <key>: <ms> ms` beside the provisioned line.
+
+**The flight is one set, `Daemon::tearing_down`,** memory only. While a ticket is in it:
+`process_teardowns` leaves a second ask for the same tree queued (a delete after an archive
+runs once the first lands, against what is left); `reclaim_on_archive` does not re-queue it
+(a flags sample landing mid-flight would otherwise push a duplicate, and the branch-kept feed
+row would land twice); `wt_queries` skips it (its branch is being deleted under the sampler);
+and `resolve_spawn_cwd` answers `Ok(None)` for its worktree, and no cwd for its adopted tree,
+so a spawn or a wake that arrives in the window parks exactly as behind a provision. `on_torn_down`
+calls `queue_provision` when a parked spawn or resume waits on the ticket, and
+`on_provisioned`'s replay finishes it: a restore-then-`c` inside the second the tree takes to go
+gets a fresh tree (or the `Evicted` replay when the branch survived), never the directory being
+unlinked.
+
+**A daemon that stops mid-flight** loses nothing it did not lose before: the git child finishes
+on its own, the bindings file still names the tree, and start-up's `whole` check reads a gone
+directory as `Evicted` (T-368) with the branch standing, the same shape as `branch -d` refusing.
+The `TornDown` message itself is dropped with the channel.
+
+**Verified.** `archive_reclaim_e2e` (six cases, including the offer's batch and the restart
+sweep), `worktree_e2e::m4_worktree_lifecycle` (the delete road's `-d` and `-D`), and
+`workspace_e2e` (per-leg verdicts on a workspace) pass unchanged: every one waits on the feed row
+or the binding's status, which now land from the worker. No new golden; the snapshot does not
+spell the flight — a tree being removed reads as it did until it is gone.
