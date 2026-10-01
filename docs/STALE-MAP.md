@@ -17113,8 +17113,23 @@ Alt. The board's and the picker's entries still carry all four. This is the thir
 argued with the same two clauses: it moves the thing under the cursor one step, and its
 legacy-floor spelling is in its own key list.
 
+**`^n` cycles only the tiers a person made (same day, user: "^n doesn't reflect this order").**
+`^n` already followed the list. But the ring began with `claude` and `codex`, which the list does
+not show, so they turned up between the last tier and the first. Asked to choose, the user
+picked "skip built-ins in ^n". `Book::cycle(seat)` is now the one ring: the tiers a person made,
+in the list's order, filtered to a held seat's provider. The default is added at the front when
+it is a built-in, so a ticket's pick can always come back to inherit. While nobody has made a
+tier, the two built-ins are the whole ring. `Book::ring(ticket)` and the composer's `^n` both
+read it. The built-ins stay reachable through the Default tier row, whose ring is unchanged.
+A Codex seat with no Codex tier of one's own has an empty ring, so `^n` is inert there. Before,
+it offered `codex` alone and was inert anyway.
+
 **Tests.** `tier::a_layer_reorders_only_the_tiers_it_owns`,
 `keymap::the_tiers_list_moves_a_tier_on_the_boards_keys`,
 `app::the_tiers_list_moves_a_tier_on_the_boards_keys` (machine scope, edge press, `+ new tier`,
 board scope on a machine row and on its own two), and `tier_e2e` (`tiers.toml` reordered on
-disk and back, board scope refused on an override). Golden: `tiers_machine_120x30`.
+disk and back, board scope refused on an override). Golden: `tiers_machine_120x30`. The cycle:
+`tier::a_seat_keeps_its_provider_in_the_ring_and_at_launch` (a built-in default rides, a default
+of one's own leaves both out, no tiers means both built-ins) and
+`app::ctrl_n_picks_a_tickets_tier_and_rides_the_composers_mint` (no `codex` on the card or in the
+composer).

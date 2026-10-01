@@ -339,10 +339,30 @@ impl<'a> Book<'a> {
     /// The tiers the ticket may cycle to. A ticket holding a seat (live,
     /// parked or still stopping) keeps its provider — a conversation cannot
     /// move between CLIs — so only that provider's tiers are offered; an
-    /// empty seat offers every tier.
+    /// empty seat offers every tier [`Self::cycle`] holds.
     pub fn ring(&self, ticket: ulid::Ulid) -> Vec<Tier> {
-        let seat = self.board.live_agent(ticket).and_then(|s| s.kind.provider());
-        self.all().into_iter().filter(|t| seat.is_none_or(|p| t.provider == p)).collect()
+        self.cycle(self.board.live_agent(ticket).and_then(|s| s.kind.provider()))
+    }
+
+    /// What `^n` steps through, for a seat of `seat`'s provider or none: the
+    /// tiers a person made, in the tiers list's order. The built-ins ride
+    /// only where they must (T-562, user: "skip built-ins in ^n") — the
+    /// default when it is one, so a pick can always come back to it, and
+    /// both while nobody has made a tier.
+    pub fn cycle(&self, seat: Option<AgentProvider>) -> Vec<Tier> {
+        let custom: Vec<Tier> = self.custom().into_iter().map(|(t, _)| t).collect();
+        let tiers = if custom.is_empty() {
+            self.all()
+        } else {
+            let default = self.default_tier();
+            let mut out = Vec::new();
+            if default.is_builtin() {
+                out.push(default);
+            }
+            out.extend(custom);
+            out
+        };
+        tiers.into_iter().filter(|t| seat.is_none_or(|p| t.provider == p)).collect()
     }
 
     /// The tier after `from` on the ticket's ring, wrapping; `None` when the
@@ -621,7 +641,9 @@ mod tests {
         let ring = |b: &Board| -> Vec<String> {
             Book::new(&machine, b).ring(t).into_iter().map(|t| t.id).collect()
         };
-        assert_eq!(ring(&board), ["claude", "codex", "A", "C"], "an empty seat offers everything");
+        // The built-ins are not in the cycle once a person made tiers — but
+        // the default is, while it is one, so a pick can come back to it.
+        assert_eq!(ring(&board), ["claude", "A", "C"], "an empty seat offers every provider");
         board.sessions.push(SessionRecord::new(
             uuid::Uuid::new_v4(),
             SessionKind::Claude,
@@ -634,6 +656,26 @@ mod tests {
         let book = Book::new(&machine, &board);
         assert_eq!(book.next_after(t, CLAUDE).unwrap().id, "A");
         assert_eq!(book.next_after(t, "A").unwrap().id, CLAUDE, "wraps");
+        // A default of one's own leaves the built-ins out altogether, and the
+        // cycle is the tiers list's order.
+        let mut ours = machine.clone();
+        ours.default_tier = Some("A".into());
+        ours.tiers.insert(0, tier("B", "deep", claude_code(), "opus", Effort::Max));
+        let ids = |b: &Board| -> Vec<String> {
+            Book::new(&ours, b).ring(t).into_iter().map(|t| t.id).collect()
+        };
+        assert_eq!(ids(&board), ["B", "A"], "a parked claude: its provider's, in order");
+        assert_eq!(ids(&Board { sessions: vec![], ..board.clone() }), ["B", "A", "C"]);
+        // Nobody made a tier: the two built-ins are the whole cycle.
+        let none = MachineTiers::default();
+        assert_eq!(
+            Book::new(&none, &Board::default())
+                .cycle(None)
+                .into_iter()
+                .map(|t| t.id)
+                .collect::<Vec<_>>(),
+            [CLAUDE, CODEX]
+        );
         // A pick of another provider's tier (edited since) launches on the
         // seat's own built-in, never on a model that CLI does not know.
         board.tickets[0].tier = Some("C".into());

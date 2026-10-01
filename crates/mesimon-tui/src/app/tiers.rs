@@ -97,7 +97,7 @@ impl App {
         match &self.mode {
             Mode::Input { purpose: InputPurpose::Create { .. }, .. }
             | Mode::Editor(Editor { purpose: EditorPurpose::Compose { .. }, .. }) => {
-                book.all().len() > 1
+                book.cycle(None).len() > 1
             }
             Mode::Input {
                 purpose: InputPurpose::Prompt { target: AskTarget::Ticket(t), .. },
@@ -159,7 +159,7 @@ impl App {
         let book = self.tiers();
         let (ring, base) = match ticket {
             Some(t) => (book.ring(t), book.of_ticket(t).id),
-            None => (book.all(), book.default_tier().id),
+            None => (book.cycle(None), book.default_tier().id),
         };
         if ring.len() < 2 {
             return;

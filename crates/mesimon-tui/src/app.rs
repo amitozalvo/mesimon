@@ -14757,9 +14757,9 @@ mod tests {
     }
 
     /// `^n` (T-443): on a card it picks the ticket's next tier at once —
-    /// the ring is the two built-ins, then the tiers a person made, and the
-    /// default comes back as inherit — and in the composer it is a pick
-    /// that rides the mint.
+    /// the ring is the tiers a person made, plus the default where it is a
+    /// built-in (T-562: `codex` is not in it), and the default comes back
+    /// as inherit — and in the composer it is a pick that rides the mint.
     #[test]
     fn ctrl_n_picks_a_tickets_tier_and_rides_the_composers_mint() {
         use mesimon_core::board::AgentProvider;
@@ -14780,12 +14780,11 @@ mod tests {
         let pick = |app: &App| app.board.ticket(ulid::Ulid(1)).unwrap().tier.clone();
         ctrl_n(&mut app);
         assert!(sent_contains(&sent, "SetTicketTier"));
-        assert_eq!(pick(&app).as_deref(), Some("codex"));
-        assert!(app.status.contains("codex") && app.status.contains("starts on"), "{}", app.status);
-        ctrl_n(&mut app);
         assert_eq!(pick(&app).as_deref(), Some("01QUICK"));
+        assert!(app.status.contains("quick") && app.status.contains("starts on"), "{}", app.status);
         ctrl_n(&mut app);
         assert_eq!(pick(&app), None, "back to the default, stored as inherit");
+        assert!(!sent_contains(&sent, "\"codex\""), "the built-in codex is not in the cycle");
         app.mode = Mode::Input {
             purpose: InputPurpose::Create {
                 workspace: None,
@@ -14797,7 +14796,6 @@ mod tests {
             },
             buffer: EditBuffer::from_text("new work".into(), mesimon_core::board::TITLE_MAX_BYTES),
         };
-        ctrl_n(&mut app);
         ctrl_n(&mut app);
         assert!(
             matches!(
@@ -14814,7 +14812,6 @@ mod tests {
             &app.mode,
             Mode::Input { purpose: InputPurpose::Create { tier: None, .. }, .. }
         ));
-        ctrl_n(&mut app);
         ctrl_n(&mut app);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
