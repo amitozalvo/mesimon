@@ -53,6 +53,7 @@ pub const DAEMON_SEAMS: &[&str] = &[
     "MESIMON_ARCHIVE_SUGGEST_MS",
     "MESIMON_CLAUDE_BIN",
     "MESIMON_CLAUDE_HOME",
+    "MESIMON_COMPOSER_WAIT_MS",
     "MESIMON_DAEMON_BIN",
     "MESIMON_DETACHED",
     "MESIMON_FAKE_BUILD",
@@ -420,12 +421,50 @@ pub struct Harness {
     fixture: TestFixture,
 }
 
+/// The feed rows naming `ticket` whose command is exactly `cmd`.
+pub fn feed_count(h: &Harness, cmd: &str, ticket: ulid::Ulid) -> usize {
+    let needle = format!("\"cmd\":\"{cmd}\"");
+    let id = ticket.to_string();
+    std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(&needle) && l.contains(&id))
+        .count()
+}
+
+/// Claude Code's composer as a stub paints it (T-570): a rule, the `❯ `
+/// row, a rule, and a footer, at the bottom of the pane — then the cursor
+/// goes home, so whatever the stub echoes or prints starts on row 0 as it
+/// did before. The daemon pastes a launch's words only into a pane showing
+/// one (`agents::claude::composer`), so every stand-in for Claude paints it.
+pub const COMPOSER: &str = "printf '\\033[999;1H\\033[3A────────────────────\\n❯ \\n\
+                            ────────────────────\\n  ? for shortcuts\\033[H'\n";
+
+/// A shell stub for Claude that paints [`COMPOSER`] before its own body.
+/// A stub in another language is left as written: it paints its own, or
+/// takes no launch road that needs one.
+pub fn claude_stub(body: &str) -> String {
+    match body.split_once('\n') {
+        Some((shebang, rest)) if shebang.starts_with("#!") && shebang.ends_with("sh") => {
+            format!("{shebang}\n{COMPOSER}{rest}")
+        }
+        _ => body.to_string(),
+    }
+}
+
 impl Harness {
     pub fn boot(name: &str, stub: Option<&str>) -> Option<Self> {
         Self::boot_with_env(name, stub, &[])
     }
 
+    /// The stub paints Claude's composer first ([`claude_stub`]).
     pub fn boot_with_env(name: &str, stub: Option<&str>, env: &[(&str, &str)]) -> Option<Self> {
+        Self::boot_bare(name, stub.map(claude_stub).as_deref(), env)
+    }
+
+    /// The stub exactly as written: one that paints its own composer, or
+    /// none (T-570).
+    pub fn boot_bare(name: &str, stub: Option<&str>, env: &[(&str, &str)]) -> Option<Self> {
         if !require_tmux() {
             return None;
         }

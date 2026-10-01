@@ -1,5 +1,6 @@
 //! Claude Code flags, settings and exact conversation selection.
 
+pub mod composer;
 mod history;
 pub mod hooks;
 mod recovery;

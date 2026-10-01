@@ -104,7 +104,8 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             queued: false,
             accept_plan: true,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));
@@ -131,7 +132,8 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             queued: true,
             accept_plan: true,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));
@@ -169,7 +171,8 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             queued: false,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Ok
     ));
@@ -184,7 +187,8 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
             queued: true,
             accept_plan: true,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));
@@ -292,7 +296,8 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
                 queued: false,
                 accept_plan: true,
                 plan: false,
-                tier: None
+                tier: None,
+                resend: false,
             }),
             Response::Queued { .. }
         ));

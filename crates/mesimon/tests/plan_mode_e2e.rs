@@ -85,6 +85,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
         accept_plan: false,
         plan: true,
         tier: None,
+        resend: false,
     }) {
         Response::Err { message } => assert!(message.contains("mid-turn"), "{message}"),
         other => panic!("a working pane took a plan ask: {other:?}"),
@@ -104,6 +105,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
             accept_plan: false,
             plan: true,
             tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));
@@ -149,6 +151,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
         accept_plan: false,
         plan: true,
         tier: None,
+        resend: false,
     }) {
         Response::Spawned { id, .. } => assert_eq!(id, s2),
         other => panic!("wake: {other:?}"),
@@ -189,6 +192,7 @@ fn plan_mode_rides_the_start_the_wake_and_an_idle_panes_relaunch() {
             accept_plan: false,
             plan: true,
             tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));

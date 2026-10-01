@@ -91,6 +91,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         accept_plan: false,
         plan: false,
         tier: None,
+        resend: false,
     }) {
         Response::Err { message } => assert!(message.contains("nothing to send"), "{message}"),
         other => panic!("a blank prompt must refuse: {other:?}"),
@@ -103,7 +104,8 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
             queued: false,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Ok
     ));
@@ -144,7 +146,8 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
             queued: false,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Ok
     ));
@@ -189,6 +192,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         accept_plan: false,
         plan: false,
         tier: None,
+        resend: false,
     }) {
         Response::Spawned { id, fresh } => {
             assert_eq!(id, sid, "the wake re-enters the record — never a second claude");
@@ -248,6 +252,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         accept_plan: false,
         plan: false,
         tier: None,
+        resend: false,
     }) {
         Response::Spawned { id, .. } => {
             assert_ne!(id, sid, "a new session, never the corpse");

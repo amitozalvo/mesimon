@@ -243,6 +243,7 @@ mod tests {
             tier: String::new(),
             tier_owed: false,
             tier_wake: false,
+            unsent: None,
         }
     }
 

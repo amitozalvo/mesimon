@@ -177,6 +177,13 @@ const TAIL_POLL_TICKS: u64 = 8;
 /// startup — well past the ~1 s at which a fresh pane starts reading.
 const SUBMIT_RETRY_MS: u64 = 500;
 const SUBMIT_ATTEMPTS: u8 = 10;
+/// How long words parked for a Claude pane wait for its composer to paint
+/// (T-570), from the `SessionStart` edge or a resend. The presses start
+/// counting only once the paste is in, so this is the startup's own budget:
+/// a fresh Claude paints well inside a second, three of them beside a cargo
+/// build took several, and a pane that has shown none by now is a failed
+/// start the card says out loud.
+const COMPOSER_WAIT_MS: u64 = 30_000;
 /// How long a plan-dialog Enter of ours (T-420) has to be confirmed by the
 /// harness's own hooks before the feed calls it unconfirmed.
 const PLAN_ACCEPT_CONFIRM_MS: u64 = 8_000;
@@ -1385,10 +1392,14 @@ struct PendingSpawn {
 /// Words waiting for a pane that reads (`Owed::parked`). `brief` marks the
 /// composed spawn's paste of the ticket description (T-224): it is what
 /// stamps `ticket_read` on the record when it lands, where the board's ask
-/// at a sleeping claude — the user's own words — stamps nothing.
+/// at a sleeping claude — the user's own words — stamps nothing. `title`
+/// leads the paste with the ticket's title: a resend (T-570), whose Ctrl+C
+/// cleared the one the spawn typed.
+#[derive(Clone)]
 struct Parked {
     text: String,
     brief: bool,
+    title: bool,
 }
 
 /// The feed line an owed paste earns on its ack: who is credited, and the
@@ -1439,6 +1450,17 @@ struct Owed {
     /// for Codex (the record's hold is: `pending_submit` keeps the checkout
     /// until a new turn is observed, and nothing here may expire under it).
     expires: Option<u64>,
+    /// The composer wait (T-570), epoch ms: words still parked go into a
+    /// Claude pane only once `composer::read` finds its composer, and one
+    /// that has shown none by then is a failed start. Set with the first
+    /// press; the presses count down only after the paste.
+    ready_by: Option<u64>,
+    /// What was pasted, kept until the ack so a give-up can say what never
+    /// reached the agent (`SessionRecord.unsent`).
+    sent: Option<Parked>,
+    /// A resend (T-570): one Ctrl+C into a composer holding stray text
+    /// before the paste, never a second — two exit Claude.
+    clear_first: bool,
     ack: Ack,
     /// Why these words were sent, when that matters to the crown (T-469):
     /// its ack marks the turn that took them (`Daemon::turn_asks`).
@@ -1454,6 +1476,9 @@ impl Owed {
             presses: SUBMIT_ATTEMPTS,
             next_press: None,
             expires: None,
+            ready_by: None,
+            sent: None,
+            clear_first: false,
             ack,
             asked: None,
         }
@@ -1467,6 +1492,9 @@ impl Owed {
             presses: 0,
             next_press: None,
             expires: Some(now + INFLIGHT_MS),
+            ready_by: None,
+            sent: None,
+            clear_first: false,
             ack,
             asked: None,
         }
@@ -1990,9 +2018,16 @@ impl Daemon {
             Command::MergeToAgent { id, request } => {
                 self.merge_to_agent(id, request, &Principal::Local, Ack::PROMPT)
             }
-            Command::PromptSession { ticket, text, queued, accept_plan, plan, tier } => {
-                self.prompt_session(ticket, text, queued, accept_plan, plan, tier)
-            }
+            Command::PromptSession { ticket, resend: true, .. } => self.resend_unsent(ticket),
+            Command::PromptSession {
+                ticket,
+                text,
+                queued,
+                accept_plan,
+                plan,
+                tier,
+                resend: false,
+            } => self.prompt_session(ticket, text, queued, accept_plan, plan, tier),
             Command::PromptColumn { column, text, queued, accept_plan } => {
                 self.prompt_column(&column, text, queued, accept_plan)
             }
@@ -3431,6 +3466,71 @@ impl Daemon {
         self.owed.values().any(|o| o.ticket == ticket && o.ack.word == Ack::QUEUED.word)
     }
 
+    /// Keep what a launch road could not deliver on its Claude seat (T-570),
+    /// for the card, the crown and the seat's Shift+Enter (`resend_unsent`).
+    /// A seat with no pane has nothing to resend into and says so in its
+    /// own state.
+    fn mark_unsent(&mut self, id: uuid::Uuid, words: Option<Parked>) -> bool {
+        let Some(Parked { text, brief, .. }) = words else { return false };
+        let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
+        if rec.kind != SessionKind::Claude || !rec.state.has_pane() {
+            return false;
+        }
+        rec.unsent = Some(mesimon_core::board::Unsent { text, brief });
+        true
+    }
+
+    /// The seat's Shift+Enter over unsent words (T-570): park them again on
+    /// the owed road, armed now — the pane is long past `SessionStart` — with
+    /// the composer wait and one Ctrl+C owed for a box holding what the
+    /// failed start left. A brief is the ticket's title and description read
+    /// anew, as the first paste read them (T-117). The mark stays until the
+    /// ack, so a resend that fails again still says so.
+    fn resend_unsent(&mut self, ticket: ulid::Ulid) -> Response {
+        let Some(rec) = self.board.pane_target(ticket) else {
+            return Response::Err {
+                message: "no live agent session on this ticket — start or wake one first".into(),
+            };
+        };
+        let Some(unsent) = rec.unsent_words().cloned() else {
+            return Response::Err { message: "nothing unsent on this seat".into() };
+        };
+        // A dialog's Enter is an answer (`SessionRecord::pressable`): the
+        // person answers it in the pane, then resends.
+        if !matches!(
+            rec.state,
+            SessionState::Spawning | SessionState::Idle { .. } | SessionState::Running
+        ) {
+            return Response::Err {
+                message: format!(
+                    "{} is waiting on a dialog ∙ answer it in the pane, then resend",
+                    mesimon_core::keymap::AGENT_WORD
+                ),
+            };
+        }
+        let id = rec.id;
+        if self.owed.contains_key(&id) {
+            return Response::Err {
+                message: "a prompt is already waiting for this session".into(),
+            };
+        }
+        let now = now_ms();
+        let parked = Parked { text: unsent.text, brief: unsent.brief, title: unsent.brief };
+        let mut owed = Owed::launch(ticket, parked, Ack::PROMPT);
+        owed.next_press = Some(now);
+        owed.ready_by = Some(now + composer_wait_ms());
+        owed.clear_first = true;
+        self.owed.insert(id, owed);
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.pending_submit = true;
+        }
+        self.feed.board("local", "prompt_resent", Some(ticket));
+        self.persist_and_notify();
+        Response::Ok
+    }
+
     /// Take the entry back and drop the record's owed mark with it.
     fn drop_owed(&mut self, id: uuid::Uuid) -> Option<Owed> {
         let owed = self.owed.remove(&id);
@@ -3445,10 +3545,13 @@ impl Daemon {
     /// drops the ask: they talked to the agent ahead of it, and the parked
     /// words may now be moot. The one settling site for every road (T-244).
     fn ack_owed(&mut self, id: uuid::Uuid) -> bool {
-        let Some(ticket) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) else {
+        let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
-        let mut changed = false;
+        let ticket = rec.ticket;
+        // Words a launch could not deliver (T-570) are moot once the agent
+        // takes a prompt, whoever typed it.
+        let mut changed = rec.unsent.take().is_some();
         if let Some(owed) = self.drop_owed(id) {
             self.feed.board(owed.ack.by, owed.ack.word, Some(ticket));
             if let Some(ask) = owed.asked {
@@ -3477,12 +3580,15 @@ impl Daemon {
     /// have not been typed yet, so there is nothing to press Enter on: the
     /// edge only starts the clock, and the first tick pastes — a lost Enter
     /// is re-pressed for free where a lost paste is the user's words gone.
+    /// And a Claude pane's first tick pastes only into a painted composer
+    /// (T-570): the edge also starts the composer wait.
     fn arm_owed(&mut self, id: uuid::Uuid, now: u64) -> bool {
         let Some(owed) = self.owed.get_mut(&id) else { return false };
         if owed.presses == 0 || owed.next_press.is_some() {
             return false;
         }
         owed.next_press = Some(now + SUBMIT_RETRY_MS);
+        owed.ready_by = Some(now + composer_wait_ms());
         if owed.parked.is_none() {
             if let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) {
                 let _ = self.backend.send_enter(&rec.sid16());
@@ -3494,9 +3600,16 @@ impl Daemon {
     /// The tick's pass over the ledger: expire the pastes whose ack never
     /// came, and press again where an Enter is due — on cadence, until
     /// `UserPromptSubmit` settles the entry or the attempts run out. Giving
-    /// up leaves the words in the box, which is exactly what an ordinary
-    /// spawn leaves behind, so the worst case is the old behaviour; the
-    /// checkout stops counting as busy for them either way.
+    /// up leaves the words in the box, and the checkout stops counting as
+    /// busy for them either way — but never silently (T-570): a Claude seat
+    /// keeps what it never took as `unsent`, which lights its card and
+    /// which its Shift+Enter resends.
+    ///
+    /// Words still parked for a Claude pane wait for its composer
+    /// (`composer::read`): a paste before Claude has asked for bracketed
+    /// paste goes in as plain bytes, echoed and cut by the cooked tty
+    /// (T-566). Until the composer paints, the cadence runs and nothing is
+    /// typed or pressed; past `COMPOSER_WAIT_MS` the start has failed.
     fn settle_owed(&mut self, now: u64) -> bool {
         if self.owed.is_empty() {
             return false;
@@ -3530,22 +3643,68 @@ impl Daemon {
             // and mesimon does not answer dialogs on the user's behalf.
             if !rec.pressable() {
                 let ticket = rec.ticket;
-                self.drop_owed(id);
+                let claude = rec.kind == SessionKind::Claude;
+                let words = self.drop_owed(id).and_then(|o| o.sent.or(o.parked));
+                // A Claude seat stopped by a startup modal still has a pane
+                // to resend into once the dialog is answered (T-570).
+                if claude {
+                    self.mark_unsent(id, words);
+                }
                 self.feed.board("daemon", "prompt_submit_abandoned", Some(ticket));
                 changed = true;
                 continue;
             }
             let sid16 = rec.sid16();
             let ticket = rec.ticket;
+            let claude = rec.kind == SessionKind::Claude;
+            let parked = self.owed.get(&id).is_some_and(|o| o.parked.is_some());
+            if claude && parked {
+                use crate::agents::claude::composer::{self, Composer};
+                let composer = self
+                    .backend
+                    .capture_input_screen(&sid16)
+                    .map_or(Composer::Absent, |screen| composer::read(&screen));
+                let Some(owed) = self.owed.get_mut(&id) else { continue };
+                let ready_by = *owed.ready_by.get_or_insert(now + composer_wait_ms());
+                match composer {
+                    Composer::Absent if ready_by <= now => {
+                        let words = owed.parked.take();
+                        self.drop_owed(id);
+                        self.mark_unsent(id, words);
+                        self.feed.board("daemon", "prompt_submit_not_ready", Some(ticket));
+                        changed = true;
+                        continue;
+                    }
+                    Composer::Absent => {
+                        owed.next_press = Some(now + SUBMIT_RETRY_MS);
+                        continue;
+                    }
+                    // The resend's one Ctrl+C (T-570): the box holds what
+                    // the failed start left in it. The paste waits a cadence
+                    // for the cleared box, and a box that still reads as
+                    // holding then is pasted into as it is — never a second
+                    // press, which exits Claude.
+                    Composer::Holding if owed.clear_first => {
+                        owed.clear_first = false;
+                        let _ = self.backend.clear_input(&sid16);
+                        owed.next_press = Some(now + SUBMIT_RETRY_MS);
+                        continue;
+                    }
+                    Composer::Holding | Composer::Empty => {}
+                }
+            }
             let Some(owed) = self.owed.get_mut(&id) else { continue };
             let left = owed.presses;
-            // The board's ask at a sleeping claude, delivered: the pane has
-            // been up a cadence past its `SessionStart`, so the parked words
-            // go in the way a live pane takes them — bracketed paste, then a
-            // separate Enter (`paste_text`, the T-5 shape). The presses that
-            // follow are the ordinary retries; a paste is made once.
+            // The parked words, delivered: the pane has been up a cadence
+            // past its `SessionStart` and, for Claude, shows its composer, so
+            // they go in the way a live pane takes them — bracketed paste,
+            // then a separate Enter (`paste_text`, the T-5 shape). The presses
+            // that follow are the ordinary retries; a paste is made once.
+            if let Some(parked) = &owed.parked {
+                owed.sent = Some(parked.clone());
+            }
             match owed.parked.take() {
-                Some(Parked { text, brief }) => {
+                Some(Parked { text, brief, title }) => {
                     // A brief is the ticket's description as it stands NOW
                     // (T-117): a ticket described after its spawn still gets
                     // it. No description means the title alone, the plain
@@ -3564,6 +3723,14 @@ impl Daemon {
                             (true, false) => format!("\n\n{text}"),
                             (false, false) => format!("{brief}\n\n{text}"),
                         }
+                    } else {
+                        text
+                    };
+                    // A resend leads with the title the Ctrl+C cleared; the
+                    // spawn's own paste goes under the one it typed.
+                    let text = if title {
+                        let lead = self.board.ticket(ticket).map_or("", |t| t.title.trim());
+                        format!("{lead}{text}").trim_start().to_string()
                     } else {
                         text
                     };
@@ -3587,7 +3754,10 @@ impl Daemon {
                 }
             }
             if left <= 1 {
-                self.drop_owed(id);
+                let words = self.drop_owed(id).and_then(|o| o.sent.or(o.parked));
+                if claude {
+                    self.mark_unsent(id, words);
+                }
                 self.feed.board("daemon", "prompt_submit_gave_up", Some(ticket));
                 changed = true;
             } else if let Some(owed) = self.owed.get_mut(&id) {
@@ -4251,7 +4421,7 @@ impl Daemon {
                     return Response::Err {
                         message: format!(
                             "{key} already has an agent ({}); one agent per ticket",
-                            agent_state_word(&held.state)
+                            held.state_word()
                         ),
                     };
                 }
@@ -4618,7 +4788,7 @@ impl Daemon {
             t.is_archived().hash(&mut h);
             t.raised.as_ref().map(|r| r.reason.as_str()).hash(&mut h);
             if let Some(s) = self.board.live_agent(id) {
-                agent_state_word(&s.state).hash(&mut h);
+                s.state_word().hash(&mut h);
                 s.state_changed_at.hash(&mut h);
             }
         }
@@ -4652,7 +4822,7 @@ impl Daemon {
         let s = self.board.live_agent(id)?;
         let now = mesimon_core::clock::now_ms();
         Some(AgentStateView {
-            state: agent_state_word(&s.state).to_string(),
+            state: s.state_word().to_string(),
             since_secs: s.state_changed_at.map(|at| now.saturating_sub(at) / 1000),
             raised: t.raised.as_ref().map(|r| r.reason.clone()),
         })
@@ -5291,7 +5461,7 @@ impl Daemon {
                     title: t.title.clone(),
                     column: t.column.clone(),
                     by: Self::filed_by(t),
-                    state: self.board.live_agent(t.id).map(|s| agent_state_word(&s.state).into()),
+                    state: self.board.live_agent(t.id).map(|s| s.state_word().into()),
                 })
             })
             .collect();
@@ -7388,7 +7558,12 @@ impl Daemon {
             if rec.pending_submit || self.parked(id) {
                 return Err("a prompt is already waiting for this session".into());
             }
-            self.park(id, ticket, Parked { text: text.to_string(), brief: false }, ack);
+            self.park(
+                id,
+                ticket,
+                Parked { text: text.to_string(), brief: false, title: false },
+                ack,
+            );
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.observation_hold = true;
             }
@@ -8948,7 +9123,7 @@ impl Daemon {
         let resp = self.resume_session_in(id, false, plan);
         match &resp {
             Response::Spawned { .. } => {
-                self.park(id, ticket, Parked { text, brief: false }, Ack::PROMPT)
+                self.park(id, ticket, Parked { text, brief: false, title: false }, Ack::PROMPT)
             }
             // The worktree is being rebuilt under the wake (T-278): the
             // words ride the parked resume and land when it replays.
@@ -10006,7 +10181,11 @@ impl Daemon {
                         let text = prompt.unwrap_or_default();
                         self.owed.insert(
                             id,
-                            Owed::launch(ticket, Parked { text, brief: true }, Ack::PROMPT),
+                            Owed::launch(
+                                ticket,
+                                Parked { text, brief: true, title: false },
+                                Ack::PROMPT,
+                            ),
                         );
                     }
                 }
@@ -10202,7 +10381,7 @@ impl Daemon {
                                 self.park(
                                     r.session,
                                     r.ticket,
-                                    Parked { text, brief: false },
+                                    Parked { text, brief: false, title: false },
                                     Ack::PROMPT,
                                 );
                             }
@@ -12085,6 +12264,14 @@ fn sleep_min_age_ms() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(SLEEP_MIN_AGE_MS)
+}
+
+/// Test seam only — e2e cannot wait out the real 30 s composer wait.
+fn composer_wait_ms() -> u64 {
+    std::env::var("MESIMON_COMPOSER_WAIT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(COMPOSER_WAIT_MS)
 }
 
 /// Test seam only — e2e cannot wait out the real hour.

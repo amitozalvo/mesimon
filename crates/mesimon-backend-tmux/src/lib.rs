@@ -383,6 +383,15 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// One Ctrl+C into a session's pane: Claude Code clears a composer that
+    /// holds text on it (T-570). The caller sends exactly one, and only into
+    /// a composer it has seen holding text — a second press, or one into an
+    /// empty box followed by another, exits Claude.
+    pub fn clear_input(&self, sid16: &str) -> Result<()> {
+        self.run(&["send-keys", "-t", sid16, "C-c"])?;
+        Ok(())
+    }
+
     pub fn dialog_key(&self, sid16: &str, key: DialogKey) -> Result<()> {
         let key = match key {
             DialogKey::Up => "Up",

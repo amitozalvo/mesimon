@@ -41,18 +41,19 @@ pub(crate) fn spans_width(spans: &[ratatui::text::Span<'_>]) -> usize {
 
 /// The queued ask's two keys, `^y` and `^u`, as the scope the keys are read
 /// in right now binds them — the cursor card's row under a held ask (T-551)
-/// and the ticket page's owed row both spell these and nothing else. Empty
-/// where neither is live: a field open over the card owns `^u`, and a chord
-/// tail owns every key.
+/// and the ticket page's owed row both spell these and nothing else — or,
+/// on a seat whose first prompt never went (T-570), its Shift+Enter resend.
+/// Empty where none is live: a field open over the card owns `^u`, and a
+/// chord tail owns every key.
 pub(super) fn ask_keys(
     app: &App,
     ctx: &mesimon_core::keymap::Ctx,
 ) -> Vec<&'static mesimon_core::keymap::Binding> {
     use mesimon_core::keymap::{binding_for, Verb};
-    [Verb::SendQueuedAsk, Verb::TakeBackAsk]
-        .iter()
-        .filter_map(|v| binding_for(app.scope(), *v, ctx))
-        .collect()
+    // A seat whose first prompt never went (T-570) has one key: the resend.
+    let verbs: &[Verb] =
+        if ctx.ticket_unsent { &[Verb::Prompt] } else { &[Verb::SendQueuedAsk, Verb::TakeBackAsk] };
+    verbs.iter().filter_map(|v| binding_for(app.scope(), *v, ctx)).collect()
 }
 
 /// One rendered markdown document, kept across frames (`ticket::rendered`).

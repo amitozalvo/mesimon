@@ -411,9 +411,64 @@ pub struct SessionRecord {
     /// wake cannot acknowledge unverified cleanup). Cleared by every launch.
     #[serde(default, skip_serializing_if = "is_false")]
     pub tier_wake: bool,
+    /// Words a launch road could not deliver (T-570): the composer never
+    /// painted inside the wait, or the Enters ran out before the agent took
+    /// them, or a startup modal stopped the pressing. The card wears the
+    /// needs-you mark for it, the crown reads `unsent`, and the seat's
+    /// Shift+Enter resends (`PromptSession.resend`). Cleared by the
+    /// agent's next prompt, whoever typed it. Persisted, so a restart still
+    /// says the brief never went; an older build drops it and goes back to
+    /// saying nothing, which widens nothing, so no schema bump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsent: Option<Unsent>,
+}
+
+/// What a launch road meant to submit and did not (T-570). The ticket's
+/// brief is read again at resend time, the way the first paste read it
+/// (T-117), so only the person's own words are kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unsent {
+    /// The words that rode with it: the ask under a brief, or the whole
+    /// ask on a wake. Empty for the plain composed spawn.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    /// The ticket's title and description were the prompt (the composed
+    /// spawn, T-224).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub brief: bool,
+}
+
+impl Unsent {
+    /// What the card, the ticket page and a banner say about it.
+    pub fn word(&self) -> &'static str {
+        if self.brief {
+            "brief not sent"
+        } else {
+            "prompt not sent"
+        }
+    }
 }
 
 impl SessionRecord {
+    /// Words that never reached this seat's agent (T-570), while there is a
+    /// pane to resend them into. A parked or dead seat has nothing to type
+    /// at, and its card says so in its own words.
+    pub fn unsent_words(&self) -> Option<&Unsent> {
+        self.unsent.as_ref().filter(|_| self.state.has_pane())
+    }
+
+    /// The seat as ONE WORD for an agent reading another ticket (T-411):
+    /// `agent_state_word`, except that a seat whose first prompt never went
+    /// is `unsent` — an `idle` there reads as a turn that ended, and none
+    /// began (T-570).
+    pub fn state_word(&self) -> &'static str {
+        if self.unsent_words().is_some() {
+            "unsent"
+        } else {
+            agent_state_word(&self.state)
+        }
+    }
+
     /// Still owed the deferred Enter of a Shift+Enter spawn, in a state where
     /// pressing it is safe. A pane that died, or one showing a startup
     /// modal, is not a pane to keep pressing Enter into — the modal's Enter
@@ -476,6 +531,7 @@ impl SessionRecord {
             tier: String::new(),
             tier_owed: false,
             tier_wake: false,
+            unsent: None,
         }
     }
 
@@ -2508,18 +2564,33 @@ impl Board {
         self.tickets.iter().filter(|t| t.hand_raised() && !t.is_archived()).collect()
     }
 
-    /// Every ticket that needs the user, by any of the three roads: an
-    /// attention-set session on it, a snooze that woke it (T-74), or an
-    /// agent's raised hand (T-107). A SET, because the roads overlap — a
-    /// woken ticket whose claude is also at a permission prompt is one
-    /// ticket needing one person, and counting it twice made `!N` a number
-    /// nothing on screen could be matched against.
+    /// Tickets whose agent never got its first prompt (T-570): a seat with
+    /// a pane and `unsent` words. `woke_tickets`' rule: an archived one
+    /// never counts.
+    pub fn unsent_tickets(&self) -> Vec<&Ticket> {
+        self.tickets
+            .iter()
+            .filter(|t| {
+                !t.is_archived()
+                    && self.sessions.iter().any(|s| s.ticket == t.id && s.unsent_words().is_some())
+            })
+            .collect()
+    }
+
+    /// Every ticket that needs the user, by any of the four roads: an
+    /// attention-set session on it, a snooze that woke it (T-74), an
+    /// agent's raised hand (T-107), or words a launch could not deliver
+    /// (T-570). A SET, because the roads overlap — a woken ticket whose
+    /// claude is also at a permission prompt is one ticket needing one
+    /// person, and counting it twice made `!N` a number nothing on screen
+    /// could be matched against.
     pub fn needs_you_tickets(&self) -> std::collections::HashSet<ulid::Ulid> {
         crate::attention::attention_queue(self)
             .iter()
             .map(|s| s.ticket)
             .chain(self.woke_tickets().iter().map(|t| t.id))
             .chain(self.raised_tickets().iter().map(|t| t.id))
+            .chain(self.unsent_tickets().iter().map(|t| t.id))
             .collect()
     }
 
@@ -2592,6 +2663,50 @@ impl Board {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T-570: words a launch never delivered make the seat `unsent` to the
+    /// crown and needs-you to the header, while it has a pane to resend
+    /// into — and ride `sessions.json` with no trace on a record without.
+    #[test]
+    fn an_unsent_seat_reads_unsent_and_needs_you_while_it_has_a_pane() {
+        let ticket = ulid::Ulid::new();
+        let mut board = Board::default();
+        board.tickets.push(
+            serde_json::from_value(serde_json::json!({
+                "id": ticket.to_string(),
+                "short_key": "T-1",
+                "title": "t",
+                "column": "TODO",
+                "order": "1",
+                "created_at": "@0",
+            }))
+            .unwrap(),
+        );
+        let mut rec = SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Claude,
+            ticket,
+            Vec::new(),
+            "/repo".into(),
+            SessionState::Idle { stop_reason: StopReason::Unknown },
+        );
+        let bare = serde_json::to_value(&rec).unwrap();
+        assert!(bare.get("unsent").is_none(), "absent until something went unsent");
+        assert_eq!(rec.state_word(), "idle");
+        rec.unsent = Some(Unsent { text: String::new(), brief: true });
+        assert_eq!(rec.state_word(), "unsent");
+        assert_eq!(rec.unsent_words().map(Unsent::word), Some("brief not sent"));
+        let wire = serde_json::to_value(&rec).unwrap();
+        assert_eq!(wire["unsent"], serde_json::json!({ "brief": true }));
+        let back: SessionRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.unsent, rec.unsent);
+        board.sessions.push(rec);
+        assert_eq!(board.needs_you_count(), 1);
+        assert_eq!(board.unsent_tickets().len(), 1);
+        board.sessions[0].state = SessionState::Sleeping;
+        assert_eq!(board.sessions[0].state_word(), "sleeping", "no pane, no resend");
+        assert_eq!(board.needs_you_count(), 0);
+    }
 
     #[test]
     fn project_provider_defaults_without_reinterpreting_sessions() {

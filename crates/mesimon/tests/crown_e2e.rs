@@ -570,6 +570,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         accept_plan: false,
         plan: false,
         tier: None,
+        resend: false,
     }) {
         Response::Queued { .. } | Response::Ok => {}
         other => panic!("the person's queued ask: {other:?}"),
@@ -920,6 +921,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         accept_plan: false,
         plan: false,
         tier: None,
+        resend: false,
     }) {
         Response::Queued { .. } => {}
         other => panic!("queue a person's ask: {other:?}"),

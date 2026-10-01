@@ -225,6 +225,7 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
         accept_plan: false,
         plan: false,
         tier: Some("01CODER".into()),
+        resend: false,
     }) {
         Response::Queued { .. } => {}
         other => panic!("a working pane owed a switch must queue the words: {other:?}"),

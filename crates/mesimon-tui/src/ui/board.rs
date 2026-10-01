@@ -206,7 +206,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // A held ask's keys ride the cursor card (T-551) — the subject the
         // frame's `Ctx` was built for, so the keys it names act on THIS card.
         let keys_ctx = app.frame_ctx();
-        let owed_keys = if selected && app.ticket_held(t.id) {
+        let owed_keys = if selected && (app.ticket_held(t.id) || app.unsent_of(t.id).is_some()) {
             super::ask_keys(app, &keys_ctx)
         } else {
             Vec::new()

@@ -216,9 +216,10 @@ an animation. The notification PNGs and the installer's welcome are the engine's
 
 **An e2e test** (`crates/mesimon/tests/<name>_e2e.rs`): `mod common; use common::*;`, then
 `let Some(h) = Harness::boot("name", Some(STUB)) else { return };` — the daemon, the private
-tmux, the seams and the teardown are the harness's; `h.client("name")` speaks the wire,
-`hook_send` runs the real hook binary, `wait_until` polls. Any other `MESIMON_*` seam rides
-`Harness::boot_with_env`. `prompt_e2e.rs` is the exemplar.
+tmux, the seams and the teardown are the harness's; a shell stub paints Claude's composer
+first (`claude_stub`; `Harness::boot_bare` keeps it as written); `h.client("name")` speaks the
+wire, `hook_send` runs the real hook binary, `wait_until` polls. Any other `MESIMON_*` seam
+rides `Harness::boot_with_env`. `prompt_e2e.rs` is the exemplar.
 
 **Text from a user or an agent** crosses one of two functions in `core/src/text.rs` at the
 boundary it crosses: `scrub_cells` before it is drawn, `scrub_text` before it leaves for
@@ -451,6 +452,11 @@ will not show up in our tests until they break something.
 - **`SessionStart` fires *during* startup**, so a single Enter on that edge loses a race it lost
   in the first real use. The press repeats every 500 ms until the `UserPromptSubmit` ack, and
   stops outside `Spawning`/`Idle`/`Running` so a startup modal is never answered for the user.
+- **…and before Claude asks for raw mode or bracketed paste.** tmux's `paste-buffer -p` brackets
+  only for an application that asked, and has no format that says whether it did, so a paste on
+  that edge is echoed and cut by the cooked tty (T-570). Launch words go only into a composer
+  `agents::claude::composer` reads off the screen. **Exactly one Ctrl+C clears a composer that
+  holds text; a second exits Claude** — the resend sends one, only into a box seen holding text.
 - **A pty in canonical mode keeps only 1 KiB of a line**, which is why long prompts are pasted
   rather than typed.
 - **macOS caps unix datagrams at 2 KB**, which is why the hook transport is SOCK_STREAM one-shot.
@@ -546,7 +552,8 @@ a runner without tmux otherwise reports a green suite that ran almost nothing), 
 (relaxes two wall-clock budgets in `hook_e2e`), `MESIMON_NO_DAEMON_RESTART`, `MESIMON_FAKE_BUILD`
 (manufacture a stale or newer build in `Hello`), `MESIMON_DAEMON_BIN` (what `spawn_detached`
 respawns; required by `restart_skew_e2e`, the only test driving the real `Client::connect`),
-`MESIMON_CLAUDE_HOME` (census root for fabricated `~/.claude` trees), `MESIMON_SLEEP_MIN_AGE_MS`,
+`MESIMON_CLAUDE_HOME` (census root for fabricated `~/.claude` trees), `MESIMON_COMPOSER_WAIT_MS`
+(how long launch words wait for Claude's composer), `MESIMON_SLEEP_MIN_AGE_MS`,
 `MESIMON_CODEX_CLEANUP_STALE_MS` (how long an unconfirmed Codex cleanup may own a live ticket's
 checkout before the sweep goes looking for its runtime),
 `MESIMON_PANE_QUIET_MS`, `MESIMON_NO_UPDATE_CHECK`, `MESIMON_UPDATE_CHECK`,

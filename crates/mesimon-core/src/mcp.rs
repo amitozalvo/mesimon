@@ -1957,6 +1957,7 @@ mod tests {
                 accept_plan: false,
                 plan: false,
                 tier: None,
+                resend: false,
             },
             Command::PromptColumn {
                 column: "TODO".into(),

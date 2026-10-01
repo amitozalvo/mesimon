@@ -90,7 +90,8 @@ fn asking_again_after_parking_by_hand_moves_the_card_to_in_progress() {
             queued: false,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Ok
     ));

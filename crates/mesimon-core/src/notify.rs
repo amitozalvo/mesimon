@@ -40,11 +40,12 @@ pub const KEY_PRESENCE_MS: u64 = 30_000;
 /// The two things worth interrupting somebody for.
 ///
 /// `NeedsYou` is every road to the saturated colour: an attention-set session
-/// (`attention::is_attention`, ranks 0–8), a snooze that woke a ticket (T-74)
-/// and an agent's raised hand (T-107) — the same three
-/// `Board::needs_you_tickets` collects, so a banner and the `!N` chip can
-/// never disagree about what needs you. `TurnDone` is a session reaching
-/// `Idle{EndTurn}`, the state automove reads to move a card to REVIEW.
+/// (`attention::is_attention`, ranks 0–8), a snooze that woke a ticket (T-74),
+/// an agent's raised hand (T-107) and a launch's words that never reached the
+/// agent (T-570) — the same four `Board::needs_you_tickets` collects, so a
+/// banner and the `!N` chip can never disagree about what needs you.
+/// `TurnDone` is a session reaching `Idle{EndTurn}`, the state automove reads
+/// to move a card to REVIEW.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     /// The louder one, and the one that sorts first in a mixed batch.
@@ -507,6 +508,8 @@ pub struct Differ {
     /// already-woken ticket is news — it arrives with words.
     woke: std::collections::HashSet<Ulid>,
     raised: std::collections::HashSet<Ulid>,
+    /// Tickets whose agent never got its first prompt (T-570).
+    unsent: std::collections::HashSet<Ulid>,
     primed: bool,
 }
 
@@ -520,10 +523,11 @@ enum Mark {
 impl Differ {
     /// The edges in `next` worth interrupting somebody for.
     ///
-    /// **needs-you** is all three roads to the saturated colour:
+    /// **needs-you** is all four roads to the saturated colour:
     /// `attention::attention_queue` (the rank 0–8 set at usable confidence),
-    /// `Board::woke_tickets` (T-74) and `Board::raised_tickets` (T-107).
-    /// Those are the three `Board::needs_you_tickets` collects, so a banner
+    /// `Board::woke_tickets` (T-74), `Board::raised_tickets` (T-107) and
+    /// `Board::unsent_tickets` (T-570).
+    /// Those are the four `Board::needs_you_tickets` collects, so a banner
     /// and the `!N` chip cannot disagree about what needs you. **A turn
     /// finished** is `Idle{EndTurn}`, the state automove reads to move a card
     /// to REVIEW, so the ding and the card move say the same thing.
@@ -587,9 +591,25 @@ impl Differ {
                 events.push(Event::raised(t.id, t.short_key.clone(), why));
             }
         }
+        // A launch whose words never reached the agent (T-570): mesimon's
+        // own words, the ones the card prints, never the person's.
+        let mut unsent: std::collections::HashSet<Ulid> = Default::default();
+        for t in next.unsent_tickets() {
+            unsent.insert(t.id);
+            if !self.unsent.contains(&t.id) {
+                let why = next
+                    .sessions
+                    .iter()
+                    .filter(|s| s.ticket == t.id)
+                    .find_map(|s| s.unsent_words())
+                    .map_or("", |u| u.word());
+                events.push(Event::needs_you(t.id, t.short_key.clone(), why));
+            }
+        }
         self.seen = marks;
         self.woke = woke;
         self.raised = raised;
+        self.unsent = unsent;
         if !self.primed {
             self.primed = true;
             return Vec::new();
@@ -1414,6 +1434,24 @@ mod tests {
             d.scan(&b, true),
             vec![Event::raised(Ulid(1), "T-1", "the migration needs a decision")]
         );
+    }
+
+    /// T-570's producer: a launch whose words never reached the agent. The
+    /// banner says mesimon's word for it, the card's, and says it once; a
+    /// seat with no pane has nothing to resend into and is not announced.
+    #[test]
+    fn an_unsent_brief_is_announced_once() {
+        let (mut d, mut b) = seeded(SessionState::Idle { stop_reason: StopReason::Unknown });
+        b.sessions[0].unsent = Some(crate::board::Unsent { text: String::new(), brief: true });
+        assert_eq!(d.scan(&b, true), vec![Event::needs_you(Ulid(1), "T-1", "brief not sent")]);
+        assert!(d.scan(&b, true).is_empty(), "still unsent is not unsent again");
+        assert_eq!(b.needs_you_count(), 1, "the header counts it");
+        b.sessions[0].unsent = None;
+        assert!(d.scan(&b, true).is_empty(), "taken says nothing");
+        b.sessions[0].state = SessionState::Sleeping;
+        b.sessions[0].unsent = Some(crate::board::Unsent { text: "go".into(), brief: false });
+        assert!(d.scan(&b, true).is_empty(), "a parked seat has no box to resend into");
+        assert_eq!(b.needs_you_count(), 0);
     }
 
     /// Every road to the saturated colour is a road to a notification: what

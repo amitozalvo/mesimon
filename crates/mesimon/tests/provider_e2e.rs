@@ -290,7 +290,8 @@ fn starts_with_any_status_line(footer: &str) {
             queued: true,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));
@@ -380,7 +381,8 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
             queued: true,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));
@@ -392,7 +394,8 @@ fn queued_start_keeps_first_provider_even_when_its_words_are_replaced() {
             queued: true,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));
@@ -514,7 +517,8 @@ fn lost_codex_observation_holds_the_checkout_and_recovers_without_duplicate_subm
             queued: true,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));
@@ -555,7 +559,8 @@ fn sleeping_codex_holds_checkout_and_refuses_wake_until_worker_stops() {
             queued: true,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));
@@ -782,7 +787,8 @@ fn daemon_handover_keeps_sent_codex_prompt_held_without_pressing_enter_again() {
             queued: false,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Ok
     ));
@@ -821,7 +827,8 @@ fn daemon_handover_abandons_unpasted_volatile_words_without_submitting_partial_i
             queued: false,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Ok
     ));
@@ -912,7 +919,8 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
             queued: true,
             accept_plan: false,
             plan: false,
-            tier: None
+            tier: None,
+            resend: false,
         }),
         Response::Queued { .. }
     ));

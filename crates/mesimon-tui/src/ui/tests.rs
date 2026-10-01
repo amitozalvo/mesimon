@@ -4154,6 +4154,58 @@ fn golden_ticket_held_120() {
     golden("ticket_held_120x30", &lines);
 }
 
+/// A seat whose first prompt never went (T-570): T-1's claude sits at an
+/// empty prompt. The card wears the needs-you mark, the cursor card's row
+/// says what never went, and the resend key sits under it in the keymap's
+/// words. The `!N` chip counts it.
+fn unsent_app() -> App {
+    let mut b = fixture(false);
+    let mut rec = session_record(
+        11,
+        ulid_n(1),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Unknown },
+    );
+    rec.unsent = Some(mesimon_core::board::Unsent { text: String::new(), brief: true });
+    b.sessions.push(rec);
+    let mut app = app_graphite(b);
+    app.rich_keys = true;
+    app
+}
+
+#[test]
+fn golden_unsent_open_120() {
+    let mut app = unsent_app();
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    let lines = render(&app, 120, 30);
+    let at = lines
+        .iter()
+        .position(|l| l.contains("brief not sent"))
+        .unwrap_or_else(|| panic!("the row says the brief never went:\n{}", lines.join("\n")));
+    assert!(
+        lines[at + 1].contains("shift+enter resend"),
+        "the resend key under the words:\n{}",
+        lines.join("\n")
+    );
+    assert_eq!(app.board.needs_you_count(), 1, "the header counts it");
+    golden("board_unsent_open_120x30", &lines);
+}
+
+/// The ticket page says the same on its owed row, the key beside it.
+#[test]
+fn golden_ticket_unsent_120() {
+    let mut app = unsent_app();
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("brief not sent ∙ shift+enter resend")),
+        "{}",
+        lines.join("\n")
+    );
+    golden("ticket_unsent_120x30", &lines);
+}
+
 /// The merge train armed (2026-09-04): a REVIEW card it will merge wears
 /// the owed mark and, open, says so and names what it waits on; a card it
 /// will ask to rebase says that. The HEADER says nothing — the train only

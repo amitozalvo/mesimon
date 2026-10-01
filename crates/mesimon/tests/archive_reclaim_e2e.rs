@@ -93,17 +93,6 @@ fn merge(c: &mut TestClient, id: ulid::Ulid) {
     }
 }
 
-/// The feed rows naming `ticket` whose command is exactly `cmd`.
-fn feed_rows(h: &Harness, cmd: &str, ticket: ulid::Ulid) -> usize {
-    let needle = format!("\"cmd\":\"{cmd}\"");
-    let id = ticket.to_string();
-    std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl"))
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| l.contains(&needle) && l.contains(&id))
-        .count()
-}
-
 /// Merged into main by `m`, archived: the directory goes, the branch goes
 /// (`-d` on an ancestor), the binding goes — and a restore + spawn builds a
 /// fresh worktree on a fresh branch of the same name.
@@ -266,11 +255,11 @@ fn the_offer_reclaims_like_a_single_archive() {
     assert!(branch_exists(&repo, &open_branch));
     assert_eq!(wt_of(&mut c, open).expect("its binding stands").status, "attached");
     wait_until(Duration::from_secs(5), "a feed row per archived ticket", || {
-        feed_rows(&h, "archive_all", landed) == 1
-            && feed_rows(&h, "archive_all", open) == 1
-            && feed_rows(&h, "worktree_torn_down", landed) == 1
+        feed_count(&h, "archive_all", landed) == 1
+            && feed_count(&h, "archive_all", open) == 1
+            && feed_count(&h, "worktree_torn_down", landed) == 1
     });
-    assert_eq!(feed_rows(&h, "worktree_torn_down", open), 0);
+    assert_eq!(feed_count(&h, "worktree_torn_down", open), 0);
 }
 
 /// Work that lands after its ticket was archived — a PR merged later, a
@@ -298,7 +287,7 @@ fn the_sweep_reclaims_an_archived_tree_whose_work_landed_later() {
         !path.exists() && !branch_exists(&repo, &branch) && wt_of(&mut c, id).is_none()
     });
     wait_until(Duration::from_secs(5), "the sweep's teardown in the feed", || {
-        feed_rows(&h, "worktree_torn_down", id) == 1
+        feed_count(&h, "worktree_torn_down", id) == 1
     });
     assert!(c.board().ticket(id).unwrap().is_archived(), "archived, not deleted");
 }
@@ -331,6 +320,6 @@ fn a_restart_reclaims_a_tree_whose_archived_work_landed_meanwhile() {
         !path.exists() && !branch_exists(&repo, &branch) && wt_of(&mut c, id).is_none()
     });
     wait_until(Duration::from_secs(5), "the teardown in the feed", || {
-        feed_rows(&h, "worktree_torn_down", id) == 1
+        feed_count(&h, "worktree_torn_down", id) == 1
     });
 }

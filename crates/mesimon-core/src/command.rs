@@ -294,6 +294,14 @@ pub enum Command {
         /// from an older client = no change.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier: Option<String>,
+        /// Send again what a launch could not deliver (T-570): the seat's
+        /// `SessionRecord.unsent` — the ticket's brief read anew, and any
+        /// words that rode with it — through the owed road, `text` unused.
+        /// The composer is cleared first when it holds stray text. A seat
+        /// with nothing unsent refuses. Absent from an older client = no
+        /// resend.
+        #[serde(default)]
+        resend: bool,
     },
     /// Atomically remove a waiting prompt and return its words for editing.
     TakeQueuedAsk {
@@ -1313,6 +1321,7 @@ mod meta_tests {
             accept_plan: false,
             plan: false,
             tier: None,
+            resend: false,
         }
         .meta();
         assert_eq!(m, Meta { action: Action::Mutate, logged: true, subject: Some(id) });

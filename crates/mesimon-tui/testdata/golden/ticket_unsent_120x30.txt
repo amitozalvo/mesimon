@@ -1,0 +1,30 @@
+ TICKET (T-1)   mesimon › kanban-tui  !1
+
+ Decay treatments
+ TODO for >1y ∙ created >1y ago
+ brief not sent ∙ shift+enter resend
+
+
+  PREVIEW                                                                                  SESSIONS                  1
+
+            ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                              ◦ ✻ claude
+             ▀▀▀▄▀█▀▀    ███                                                               x sleep
+             ▄▀███▀▄▄▄▄▄▄▀█▀▄
+           ▄▀████████████████▀▄
+           ████▀████████▀██████
+           ████▀▀▀██████▀▀▀████
+           ▀▀▀█████▀▀▀▀█████▀▀▀
+            ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+    waiting for you
+    the ticket title is in its box, unsent
+
+
+
+
+
+
+
+
+
+ enter focus ∙ shift+enter resend ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown                                  ? keys

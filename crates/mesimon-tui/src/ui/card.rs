@@ -426,7 +426,9 @@ pub(super) fn render(
     // hand therefore covers the spinner while its agent works on, which is
     // right — the question is owed whatever the pane is doing, and the
     // ticket page still says what the session is at.
-    let glyph = if ticket.is_woke() || ticket.hand_raised() {
+    // Words a launch never delivered (T-570) are the third: the agent sits
+    // at an empty prompt and the person is the only way forward.
+    let glyph = if ticket.is_woke() || ticket.hand_raised() || is_unsent(sessions) {
         Some(('!', Register::Attn))
     } else {
         glyphs::card_glyph(sessions, terminal_busy, tier, ctx.spin).or_else(|| {
@@ -990,12 +992,18 @@ pub(super) fn render(
 }
 
 /// Does this card need you — a usable-confidence attention session, the
-/// ticket itself back from a snooze that asked to be seen (T-74), or an
-/// agent's raised hand (T-107)? The one predicate the off-screen `!N` badge
-/// and the collapsed spine read, and it agrees with `Board::needs_you_count`
-/// term for term.
+/// ticket itself back from a snooze that asked to be seen (T-74), an
+/// agent's raised hand (T-107), or a launch's words its agent never got
+/// (T-570)? The one predicate the off-screen `!N` badge and the collapsed
+/// spine read, and it agrees with `Board::needs_you_count` term for term.
 pub(super) fn needs_you(ticket: &Ticket, sessions: &[&SessionRecord]) -> bool {
-    ticket.is_woke() || ticket.hand_raised() || is_waiting(sessions)
+    ticket.is_woke() || ticket.hand_raised() || is_waiting(sessions) || is_unsent(sessions)
+}
+
+/// Does a seat of this ticket hold words its launch never delivered
+/// (T-570, `Board::unsent_tickets`' term)?
+pub(super) fn is_unsent(sessions: &[&SessionRecord]) -> bool {
+    sessions.iter().any(|s| s.unsent_words().is_some())
 }
 
 /// Does this ticket currently hold a usable-confidence attention session?

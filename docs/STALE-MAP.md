@@ -17497,3 +17497,56 @@ the test's `PostToolUse`; an ignored Enter settles `input_sent` with the questio
 projected; a pane without the label settles `unknown`/`label_not_found` with no key typed; the
 retry of that same request then lands. `state.test.js` and `ux.test.js` cover the three
 renderings and the live buttons.
+
+## A launch's words wait for Claude's composer (T-570, 2026-10-02, found by the crown on T-564: "A spawn's brief can beat Claude Code's raw mode")
+
+**What happened.** Three workers started within 350 ms; T-566's brief never submitted. The
+first owed press pasted it "a cadence past `SessionStart`", but that hook fires during startup,
+before Claude Code puts the tty in raw mode or asks for bracketed paste. tmux's `paste-buffer -p`
+brackets only for an application that asked, so the brief went in as plain bytes: the cooked tty
+echoed its first lines above the banner, its line discipline kept 1 KiB of a line, and the rest
+reached Claude as keystrokes. Ten Enters landed while that burst was still being read and were
+swallowed. The feed said `prompt_submit_gave_up`; the card said `idle`.
+
+**Paste only into a painted composer.** tmux has no format for the bracketed-paste mode (it has
+the cursor, keypad and mouse modes), so the screen is the signal. `agents::claude::composer`
+reads the bottom-most `❯` row with a `─` rule directly above it and a rule below it, measured on a
+live Claude Code 2.1 pane; a trust or plan dialog's `❯ 1.` row has no rule above it. Words parked
+for a Claude pane (`Owed::parked`) wait on the cadence, typing and pressing nothing, until the
+composer reads; the presses count down only after the paste. Past `COMPOSER_WAIT_MS` (30 s from
+the edge) the start has failed: `prompt_submit_not_ready`. The footer is not required: its words
+change with the box's contents and the person's settings, and the composed spawn's box always
+holds the typed title. The typed title itself still goes in at spawn: it is short, has no
+newline, and has been delivered that way since T-224.
+
+**A give-up is never silent.** `SessionRecord.unsent` keeps what a Claude seat never took — on
+`prompt_submit_not_ready`, on `prompt_submit_gave_up`, and on `prompt_submit_abandoned` (a
+startup modal stopped the pressing) — as `Unsent { text, brief }`: the person's own words, with
+the brief read anew at resend time (T-117). While the seat has a pane it is the fourth road to
+needs-you (`Board::unsent_tickets` in `needs_you_tickets`, `card::needs_you`, the notifier's
+`Differ`): the card wears `!`, the cursor card and the ticket page say `brief not sent` (or
+`prompt not sent`) with the resend key under it, and the crown reads `unsent` where it read
+`idle` (`SessionRecord::state_word`). The agent's next `UserPromptSubmit`, whoever typed it,
+clears it. Persisted; an older build drops it and says nothing, which widens nothing, so no
+schema bump.
+
+**The resend.** Shift+Enter on that seat sends `PromptSession { resend: true }`, with no field:
+the words were decided when the agent was started. The daemon parks them again on the owed road,
+armed at once, with `title` set so the paste leads with the ticket's title. A composer holding
+text gets exactly one Ctrl+C first (`TmuxBackend::clear_input`) and the paste waits a cadence; a
+box that still reads as holding is pasted into as it is, because a second Ctrl+C exits Claude. A
+placeholder is not text: it is drawn with the cursor parked before it. The mark stays until the
+ack, so a resend that fails again still says so.
+
+**Refuted: the presses as the readiness clock.** Ten presses covered ~5 s of startup; under three
+starts and a cargo build that window is not enough, and a paste that lands early is not fixed by
+pressing longer. **Refuted: a fixed delay after `SessionStart`.** It moves the race, it does not
+end it.
+
+**Tests.** `composer`'s unit tests are the measured screen, a placeholder, wrapped text, the trust
+and plan dialogs and a half-painted frame. `spawn_ready_e2e`: a stub cooked for 3 s gets the brief
+whole, inside the brackets only a painted composer gets (without the gate it arrives unbracketed,
+typed during the cooked window); a stub that never paints is `prompt_submit_not_ready`, `unsent`
+to the crown and counted by `!N`; a stub whose box holds stray text gives up, and the resend sends
+one Ctrl+C and then the title and the brief. Every shell stub in `Harness::boot` now paints a
+composer first (`common::claude_stub`); `MESIMON_COMPOSER_WAIT_MS` is the seam.

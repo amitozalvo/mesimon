@@ -1235,6 +1235,10 @@ pub struct Ctx {
     /// send — the crown's words, or a follow-up a question stopped — and
     /// nothing delivers it otherwise, so `^y` says `send`, not `send now`.
     pub ticket_held: bool,
+    /// The subject ticket's agent never got its first prompt (T-570,
+    /// `SessionRecord::unsent_words`): Shift+Enter resends it, with no
+    /// field — the words are the brief and what rode with it.
+    pub ticket_unsent: bool,
     /// The subject ticket's agent sits on its plan dialog — `≡` on the card
     /// (T-420): Shift+Enter's field opens at `accept plan`, and a blank
     /// Enter there presses the harness's own default on the dialog.
@@ -1694,7 +1698,11 @@ fn send_hint(c: &Ctx) -> &'static str {
 /// on sleeping agent auto wakes it for the user"); the hint says the extra
 /// thing it does. Live but paneless is exactly Sleeping.
 fn ask_hint(c: &Ctx) -> &'static str {
-    if c.ticket_queued {
+    if c.ticket_unsent {
+        // The launch's words never reached the agent (T-570): the press
+        // sends them again rather than opening a field.
+        "resend"
+    } else if c.ticket_queued {
         "edit the queued ask"
     } else if c.ticket_plan_ready {
         // The agent is on its plan dialog (T-420): the field opens at

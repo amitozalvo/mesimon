@@ -4022,6 +4022,12 @@ impl App {
         self.pending_of(ticket).is_some_and(|p| p.is_held())
     }
 
+    /// What the ticket's agent never got (T-570): the words of a launch
+    /// that gave up, while its seat has a pane to resend them into.
+    pub(crate) fn unsent_of(&self, ticket: ulid::Ulid) -> Option<&mesimon_core::board::Unsent> {
+        self.board.pane_target(ticket).and_then(|s| s.unsent_words())
+    }
+
     /// The snapshot's entry for what mesimon owes this ticket, if any.
     pub(crate) fn pending_of(&self, ticket: ulid::Ulid) -> Option<&mesimon_core::command::Pending> {
         self.pending.iter().find(|p| p.ticket == ticket)
@@ -4041,6 +4047,11 @@ impl App {
     /// reopens, and a closed door with no sign is a ticket that silently
     /// never merges.
     pub(crate) fn pending_row(&self, ticket: ulid::Ulid) -> Option<String> {
+        // The first prompt never went (T-570): nothing else waits on this
+        // seat until it does, and the resend key rides under the words.
+        if let Some(unsent) = self.unsent_of(ticket) {
+            return Some(unsent.word().to_string());
+        }
         // A tier switch the seat owes (T-443) is what happens next, whatever
         // else waits: it carries a queued ask with it.
         if let Some(row) = self.tier_owed_row(ticket) {
@@ -4697,6 +4708,7 @@ impl App {
             },
             ticket_queued: subject.is_some_and(|t| self.ticket_queued(t)),
             ticket_held: subject.is_some_and(|t| self.ticket_held(t)),
+            ticket_unsent: subject.is_some_and(|t| self.unsent_of(t).is_some()),
             ticket_plan_ready: subject.is_some_and(|t| self.ticket_plan_ready(t)),
             ticket_planning: subject.is_some_and(|t| self.ticket_planning(t)),
             plan_able: match &self.mode {
@@ -6130,6 +6142,9 @@ impl App {
                         };
                     }
                 } else if let Some(id) = self.subject() {
+                    if ctx.ticket_unsent {
+                        return self.resend_unsent(id);
+                    }
                     if ctx.ticket_queued {
                         // An ask is waiting: the field reopens on its words,
                         // at `queued`. Enter re-queues, a blank Enter drops.
@@ -10567,6 +10582,33 @@ impl App {
     /// Blank words are legal on an EMPTY seat alone: there the prompt is the
     /// ticket's own title and brief, which is what the press does with no
     /// field at all on a quiet checkout.
+    /// Shift+Enter on a seat whose first prompt never went (T-570): the
+    /// daemon sends it again — the brief read anew and what rode with it —
+    /// clearing a composer the failed start left text in. No field: the
+    /// words were decided when the agent was started.
+    fn resend_unsent(&mut self, ticket: ulid::Ulid) -> Result<()> {
+        let answer = self.req(Command::PromptSession {
+            ticket,
+            text: String::new(),
+            queued: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: true,
+        });
+        self.status = match answer {
+            // What is true is that the words are on their way to the box;
+            // the card says when the agent takes them.
+            Response::Ok => "resending".into(),
+            Response::Err { message } => {
+                self.shake(ticket);
+                message
+            }
+            _ => String::new(),
+        };
+        self.refresh()
+    }
+
     fn commit_prompt(&mut self, purpose: InputPurpose, text: String) -> Result<()> {
         let InputPurpose::Prompt { target, queued, accept_plan, plan, tier, .. } = purpose else {
             return Ok(());
@@ -10607,8 +10649,15 @@ impl App {
         // The field's `^n` pick (T-443) rides every receipt: the words go
         // to the agent on that tier.
         let on_tier = tier.as_deref().map(|t| format!(" ∙ on {}", self.tier_name(t)));
-        let answer =
-            self.req(Command::PromptSession { ticket, text, queued, accept_plan, plan, tier });
+        let answer = self.req(Command::PromptSession {
+            ticket,
+            text,
+            queued,
+            accept_plan,
+            plan,
+            tier,
+            resend: false,
+        });
         let refused = matches!(answer, Response::Err { .. });
         self.status = match answer {
             // Deliberately not "sent to the agent": what is provably
@@ -11718,6 +11767,21 @@ pub(crate) mod test_support {
                         failed: 0,
                         accepts,
                     });
+                }
+                // A resend (T-570) owes the Enter again; the mark stays
+                // until the agent takes the words. The daemon refuses a seat
+                // with nothing unsent; the fake's board is its own copy.
+                Command::PromptSession { ticket, resend: true, .. } => {
+                    let Some(rec) = self
+                        .board
+                        .sessions
+                        .iter_mut()
+                        .find(|s| s.ticket == ticket && s.state.has_pane())
+                    else {
+                        return Ok(Response::Err { message: "no live agent session".into() });
+                    };
+                    rec.pending_submit = true;
+                    return Ok(Response::Ok);
                 }
                 Command::PromptSession { ticket, queued, accept_plan, plan, .. } => {
                     // An accept (T-420) is always a queued entry, its flag
@@ -16608,6 +16672,31 @@ mod tests {
         assert!(codex.ctx().composing && !codex.ctx().plan_able);
         codex.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
         assert!(!codex.ctx().plan_armed);
+    }
+
+    /// A seat whose first prompt never went (T-570): the card's row says
+    /// so, the hint says `resend`, and Shift+Enter sends the resend — no
+    /// field, because the words were decided when the agent was started.
+    #[test]
+    fn shift_enter_on_an_unsent_seat_resends_without_a_field() {
+        let (mut app, sent, _) = app_with_claude(
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Unknown },
+            false,
+        );
+        app.rich_keys = true;
+        assert!(!app.ctx().ticket_unsent);
+        app.board.sessions[0].unsent =
+            Some(mesimon_core::board::Unsent { text: String::new(), brief: true });
+        assert!(app.ctx().ticket_unsent);
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("brief not sent"));
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
+            Some(("shift+enter", "resend"))
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(matches!(app.mode, Mode::Normal), "no field opens");
+        assert!(sent_contains(&sent, "resend: true"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "resending");
     }
 
     /// T-420: an agent launched in plan mode and still working is KNOWN to

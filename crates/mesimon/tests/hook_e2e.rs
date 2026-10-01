@@ -49,7 +49,7 @@ fn m2_attention_headless() {
     fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
     // Child configuration must be complete before launch, not changed mid-test.
     let stub = dir.join("claude-stub.sh");
-    std::fs::write(&stub, "#!/bin/sh\nexec sleep 120\n").unwrap();
+    std::fs::write(&stub, claude_stub("#!/bin/sh\nexec sleep 120\n")).unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
 
