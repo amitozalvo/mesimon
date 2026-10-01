@@ -1799,7 +1799,8 @@ pub struct App {
     pub board_prefs_write_barred: bool,
     /// The Settings dialog's scope (T-361): false is the machine's
     /// preferences, true is this board's overrides. Reset when the dialog
-    /// opens; `b` flips it.
+    /// or a section opens and when a section closes (T-559), so it is true
+    /// only under a list that offers `b`; `b` flips it.
     pub settings_board_scope: bool,
     /// The flavor query's reply, when it comes back after the query gave up
     /// on it, arrives as keystrokes; this recognises and discards it ahead
@@ -5211,6 +5212,10 @@ impl App {
             | Verb::SettingsAgents
             | Verb::SettingsTerminal
             | Verb::SettingsUsage => {
+                // Every section opens on the machine's, as the dialog does
+                // (T-559): the scope is the list's that `b` flipped it in,
+                // and Terminal and Usage have no row a board can set.
+                self.settings_board_scope = false;
                 self.settings_section = match verb {
                     Verb::SettingsAppearance => keymap::SettingsSection::Appearance,
                     Verb::SettingsBehaviour => keymap::SettingsSection::Behaviour,
@@ -6967,6 +6972,8 @@ impl App {
                     self.settings_board_scope = false;
                     self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) };
                 } else {
+                    // The root offers no `b`, so it never says THIS BOARD.
+                    self.settings_board_scope = false;
                     let opener = self.settings_section.opener();
                     self.settings_section = keymap::SettingsSection::Root;
                     self.mode = Mode::Settings { idx: self.settings_row(opener) };
@@ -20561,6 +20568,40 @@ mod tests {
         let ctx = app.ctx();
         app.dispatch(Verb::SettingsAgents, Key::Enter, Scope::Settings, &ctx).unwrap();
         assert!(app.ctx().pref_scope_offered, "the tier rows have two scopes");
+    }
+
+    /// The scope is the list's that `b` flipped it in (T-559): back at the
+    /// root it is the machine's again, so Terminal opens on rows Enter
+    /// sets — not on `(machine)` rows that are inert with no `b` to leave.
+    #[test]
+    fn leaving_a_section_drops_the_board_scope() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let (machine, board) = pref_scratch("leave");
+        app.prefs_path = Some(machine.clone());
+        app.board_prefs_path = Some(board.clone());
+        app.settings_section = keymap::SettingsSection::Appearance;
+        app.mode = Mode::Settings { idx: 0 };
+        app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE).unwrap();
+        assert!(app.settings_board_scope);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.settings_section, keymap::SettingsSection::Root);
+        assert!(!app.settings_board_scope, "the root offers no b");
+        let ctx = app.ctx();
+        app.dispatch(Verb::SettingsTerminal, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(!app.ctx().pref_scope_board);
+        let before = app.prefs.tab_title;
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTitle) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_ne!(app.prefs.tab_title, before, "the row acts");
+        assert!(machine.exists() && !board.exists());
+        // `s` in the usage dialog opens a section straight from the menu:
+        // a scope left over from anywhere does not follow it in.
+        app.settings_board_scope = true;
+        app.mode = Mode::Usage { idx: 0 };
+        let ctx = app.ctx();
+        app.dispatch(Verb::SettingsUsage, Key::Char('s'), Scope::Usage, &ctx).unwrap();
+        assert_eq!(app.settings_section, keymap::SettingsSection::Usage);
+        assert!(!app.settings_board_scope);
     }
     fn queued_picture(
         app: &mut App,

@@ -17282,3 +17282,29 @@ its board section, selection and Enter.
 transcripts hold; a conversation a record forgot before the ledger existed is gone. A rewritten
 transcript is counted again. The dollar figure is the API's list price, not a plan's bill, and
 a 1.1× US-only inference multiplier or a negotiated discount is not applied.
+
+## The board scope belongs to the list it was flipped in (T-559, 2026-10-02, "settings \"this board\" stays even for unsupported menus")
+
+**The bug.** `settings_board_scope` was reset only when the dialog opened. `b` in Appearance,
+Behaviour or Agents set it, and Esc back to the root kept it: the root's title read
+`SETTINGS ∙ THIS BOARD`, and Terminal and Usage opened in board scope. Every row there is
+machine-only, so each read `(machine)` and Enter was inert (`board_scope_takes` cycles a
+machine-only key into a refusal), and neither list offers `b` to leave. The only way out was
+to close the whole dialog.
+
+**The fix.** The flag is true only under a list that offers `b`. Esc from a section to the
+root clears it, and every section verb (`Verb::Settings{Appearance,…,Usage}`) clears it on
+entry, which also covers `s` in the usage dialog jumping straight to Usage with a scope left
+over from an earlier visit. The scope's children keep it: the theme picker and Notifications
+return to Appearance, and Tiers and a tier's page return to Agents, all through
+`return_to_settings`. No reader changed: the title, the picker's inherit row, the tiers and
+`Ctx::pref_scope_board` all still read the one flag.
+
+**Refuted: an effective scope** (`flag && offered here`, the flag surviving across sections).
+It would bring board scope back in Behaviour after a visit to Terminal with nothing on screen
+saying it was still held, and every reader (the picker, `app/tiers.rs`, the titles) would have
+to learn where "here" is. A section opening on the machine's, as the dialog does, costs one `b`.
+
+**Test.** `leaving_a_section_drops_the_board_scope`: `b` in Appearance, Esc to the root, then
+Terminal's tab-title row acts and writes the machine file; `s` from the usage dialog with a
+stale flag lands in machine scope.
