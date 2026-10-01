@@ -428,12 +428,13 @@ no inline style or script: styling is classes in `style.css`, and Preact/htm are
 modules with no bare imports (`vendor/README.md`). Its view subscribes to `store.js` in a layout
 effect, never after paint, or a fast boot's emit is lost and the page freezes at "Starting…".
 A paired phone's writes are `Action::FileTicket` into a column, `Action::StartAgent` on a ticket
-(T-498, under `authorize_execution`) and the card edits `MoveTicket`/`RenameTicket`/`TagTicket`
+(T-498, under `authorize_execution`), the card edits `MoveTicket`/`RenameTicket`/`TagTicket`
 (T-530; each is `Mutate` for every other principal, so `place_ticket` asks `MoveTicket` of every
-mover): never widen `Paired` to `Mutate`, which also reaches `PromptColumn`, merges and deletes,
-and a filed ticket starts nothing by itself. Every side of the
-control socket drops a peer on a frame it cannot parse, so mail frames go only where they were
-asked for: a host sends `Collect` after `ControlMail` answered, and the relay sends `Mail` only then.
+mover) and `Annotate` on a ticket's notes (T-532): never widen `Paired` to `Mutate`, which also
+reaches `PromptColumn`, merges and deletes, and a filed ticket starts nothing by itself. Every
+side of the control socket drops a peer on a frame it cannot parse, so mail frames go only where
+they were asked for: a host sends `Collect` after `ControlMail` answered, and the relay sends
+`Mail` only then.
 
 ## Traps that were measured
 

@@ -80,8 +80,8 @@ export class BoardState {
   landing() {
     return this.columns.includes(this.defaultColumn) ? this.defaultColumn : this.columns[0] || "";
   }
-  // What this browser may remember: keys, titles, columns, tags and agent
-  // states. No queued text, tool input, dialogs, or the agent's step and
+  // What this browser may remember: keys, titles, columns, tags, note counts
+  // and agent states. No queued text, tool input, dialogs, or the agent's step and
   // reply line (T-497): those are output, shown live and never kept.
   snapshot() {
     return {
@@ -90,12 +90,16 @@ export class BoardState {
       default_column: this.defaultColumn,
       column_descriptions: this.columnDescriptions,
       allowed_tags: this.allowedTags.map(({ group, name, tint }) => ({ group, name, tint })),
-      tickets: this.tickets.map(({ id, key, title, column, agent, tags }) => ({
+      tickets: this.tickets.map(({ id, key, title, column, agent, tags, notes, noted }) => ({
         id,
         key,
         title,
         column,
         tags: (tags || []).map(({ group, name, tint }) => ({ group, name, tint })),
+        // How many notes, and their digest (T-532): the notes this browser
+        // read are kept apart, in `notes:<grant>`.
+        notes: Number.isInteger(notes) ? notes : 0,
+        noted: typeof noted === "string" ? noted : "",
         agent: agent && {
           session: agent.session,
           provider: agent.provider,

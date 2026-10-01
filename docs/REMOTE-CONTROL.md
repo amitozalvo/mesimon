@@ -2,7 +2,8 @@
 
 Remote Control (Mesophon) lets your own browser **view tickets, preview an agent’s
 output, send a prompt, answer supported Claude dialogs, file new tickets, move, rename
-and tag tickets, and start an agent on a ticket**. It works on desktop and phone.
+and tag tickets, start an agent on a ticket, and read and edit a ticket's notes**. It works on
+desktop and phone.
 Debug builds include Remote Control automatically. In release builds, set
 `MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Sharing → Remote Control**, sign in to
 your relay, and enable this board.
@@ -29,7 +30,7 @@ code works once, within ten minutes. The QR appears when the terminal has room f
 Each board requires explicit enablement and pairing, including private boards.
 Enabling Remote Control does not share a board with teammates. The host must stay awake
 and its board daemon must be running. This preview does not yet provide editing a
-ticket's details or notes, stopping agents, interactive terminals, or starting stopped
+ticket's other details, stopping agents, interactive terminals, or starting stopped
 daemons.
 For a browser on this Mac, set the relay’s `WEB_ORIGIN=http://localhost:8444`
 and publish port 8444 on loopback only. Run `mesimon mesophon setup` to check the
@@ -155,6 +156,21 @@ approval. Unrecognized, multiple-question, and multi-select forms require a loca
 answer; uncertain delivery is never retried automatically. “Decision sent” and
 “Answer keys sent” confirm transport, not tool execution or completion.
 
+## Notes
+
+A ticket's page shows its description under the title, then its other notes as rows. A row
+opens the note; **Previous** and **Next** walk the ticket's notes in order. **Edit** opens the
+whole note in a sheet; **+ Note** adds one; **Delete** removes a note (never the
+description) after a second press. A save names the version of the note it was opened at: if
+the note changed at your terminal since, nothing is written, your words stay, and the note
+offers **Keep theirs** or **Save mine**. After a save, **Tell claude** (or codex) points an
+awake agent at the note with the same sentence the desk's second `^s` sends.
+
+Notes you have opened stay readable in this browser while your terminal is out of reach,
+marked with when they were read. An edit made then waits at the relay, sealed, with one tick,
+and lands when the terminal is back; until then **Unsend** takes it back. Pictures in a note
+are named, not shown.
+
 ## Alerts
 
 Connected-browser alerts carry encrypted per-ticket phase changes. They never
@@ -176,20 +192,23 @@ boards; revoke on the host to remove the corresponding grants too.
 
 The daemon stores `mesophon.json` (mode 0600) in its existing per-board state
 directory, containing the opaque board identity, the device grants and the ids of the
-tickets it filed most recently from the relay, with their keys. A ticket filed from the
+tickets it filed most recently from the relay, with their keys, and of the note edits it
+answered most recently, with their answers. A ticket filed from the
 relay also records that id in its own `ticket.toml`, and, once it is picked up, when and
 how (`[picked]`: opened at the desk or an agent started). Pairing
 secrets and delivery receipts live in memory. The browser stores device keys,
-credentials, remembered grants and, per grant, the last board it saw and the tickets
-it sent, in IndexedDB. The remembered board holds ticket keys, titles, columns (with
+credentials, remembered grants and, per grant, the last board it saw, the tickets
+it sent, and the notes it read and the note edits it sent, in IndexedDB. The remembered board holds ticket keys, titles, columns (with
 their descriptions), tags, the board’s tag names, agent states and when each agent
 entered its state; never output, an agent’s step or reply line, prompt or queued text,
 tool input or dialog content. The Sent list keeps every ticket still on its way (sealed,
 while it is only in this browser) and up to 50 settled ones: title, column, tags, key,
 status and when it was picked up, and the details only of a ticket that has not landed.
-Revocation and **Forget this browser** delete both. The page’s service worker keeps a
+The notes kept are those of the 40 tickets whose notes were read most recently: each note's
+name, author and time, and the bodies read; a note edit is kept, with its words, until the
+terminal answers it. Revocation and **Forget this browser** delete all three. The page’s service worker keeps a
 copy of the page’s own files (HTML, scripts, styles, fonts, icons and the Wasm module)
 in the browser’s Cache Storage, and nothing of the board. Output and unsent prompts remain in memory. The relay routes encrypted content and stores routing metadata for
-Mesophon, plus the tickets that wait for an away terminal and the terminal’s answers:
+Mesophon, plus the tickets and note edits that wait for an away terminal and the terminal’s answers:
 sealed, with the board, device and ticket ids, deleted after 30 days. Browser assets are served by the relay, so the relay’s web
 deployment is part of the browser client’s trust boundary.

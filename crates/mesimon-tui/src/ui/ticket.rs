@@ -66,6 +66,9 @@ pub(super) fn author_word(by: &str, _app: &App) -> String {
     } else if let Some(name) = by.strip_prefix("member:") {
         // A teammate, by the name they signed in with (T-335).
         name.to_string()
+    } else if by.starts_with("device:") {
+        // The owner's paired browser (T-532).
+        "phone".to_string()
     } else {
         "you".to_string()
     }

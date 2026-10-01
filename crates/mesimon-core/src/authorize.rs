@@ -32,6 +32,11 @@ pub enum Action {
     MoveTicket,
     RenameTicket,
     TagTicket,
+    /// Write, add or delete one note on one ticket (T-532): the owner's
+    /// paired phone edits notes without `Mutate` on the ticket, which would
+    /// also move, rename and merge it. An agent's `write_note` stays a
+    /// `Mutate` on its own ticket.
+    Annotate,
 }
 
 /// What it is being attempted on.
@@ -86,7 +91,7 @@ impl Decision {
 /// `StartAgent` is its one start, on a ticket; `authorize_execution` is the
 /// floor under it. `MoveTicket`, `RenameTicket` and `TagTicket` are its card
 /// edits, on the ticket (and a move's destination column); for everyone
-/// else they are `Mutate`.
+/// else they are `Mutate`. `Annotate` is its note edit, on a ticket (T-532).
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
     if matches!(action, Action::MoveTicket | Action::RenameTicket | Action::TagTicket) {
@@ -130,13 +135,21 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             _ => deny("starting an agent requires an authenticated owner and a ticket"),
         };
     }
+    if *action == Action::Annotate {
+        return match (principal, resource) {
+            (Principal::Local | Principal::Paired { .. }, Resource::Ticket { .. }) => {
+                Decision::Allow
+            }
+            _ => deny("writing a note this way requires an authenticated owner and a ticket"),
+        };
+    }
     match principal {
         Principal::Local | Principal::Automation { .. } => Decision::Allow,
         Principal::Paired { .. } => match action {
             Action::Read => Decision::Allow,
             _ => deny(
                 "paired devices only read, prompt, answer existing permissions, file tickets, \
-                 start agents and move, rename and tag tickets",
+                 start agents, move, rename and tag tickets and write notes",
             ),
         },
         Principal::Agent { .. } => match (action, resource) {
@@ -153,7 +166,8 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 | Action::PromptExisting
                 | Action::ApproveExisting
                 | Action::FileTicket
-                | Action::StartAgent,
+                | Action::StartAgent
+                | Action::Annotate,
                 _,
             ) => deny("an agent cannot import external content"),
             // Answered as `Mutate` at the top.
@@ -177,7 +191,8 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 | Action::PromptExisting
                 | Action::ApproveExisting
                 | Action::FileTicket
-                | Action::StartAgent,
+                | Action::StartAgent
+                | Action::Annotate,
                 _,
             ) => deny("a teammate cannot import external content"),
             // Answered as `Mutate` at the top.
@@ -277,6 +292,28 @@ mod tests {
         assert!(authorize(&paired, &Action::Mutate, &ticket).denied());
         assert_eq!(authorize_execution(&paired, LocalAutomation), Decision::Allow);
         assert!(authorize_execution(&paired, OwnerOnly).denied());
+    }
+
+    /// The phone writes a ticket's notes (T-532) and gains nothing a ticket
+    /// `Mutate` would carry: no move, no rename, no merge.
+    #[test]
+    fn writing_a_note_is_the_owners_and_only_on_a_ticket() {
+        let paired = Principal::Paired { device: "device".into(), grant: "grant".into() };
+        let ticket = Resource::Ticket { id: ulid::Ulid::nil() };
+        for owner in [&Principal::Local, &paired] {
+            assert_eq!(authorize(owner, &Action::Annotate, &ticket), Decision::Allow);
+            for elsewhere in [
+                Resource::Board,
+                Resource::Column { name: "TODO".into() },
+                Resource::Session { id: uuid::Uuid::nil() },
+            ] {
+                assert!(authorize(owner, &Action::Annotate, &elsewhere).denied());
+            }
+        }
+        for by in [agent(), remote(), automation()] {
+            assert!(authorize(&by, &Action::Annotate, &ticket).denied());
+        }
+        assert!(authorize(&paired, &Action::Mutate, &ticket).denied());
     }
 
     /// The phone files a ticket into a column (T-497) and gains nothing a

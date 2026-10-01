@@ -102,14 +102,59 @@ function fixture() {
       this.saveMail();
     },
     file(id, m) {
-      const n = Object.values(this.mail).filter((x) => x.answer).length + 1;
       const body = m.envelope.body;
+      // A note's letter (T-532) is written to the note, not filed.
+      if (body.kind === "note") {
+        this.noteWrites.push(body);
+        m.answer = this.writeNote(body);
+        m.sent = true;
+        for (const socket of this.mailboxes())
+          socket.message({ kind: "receipt", board: "board-a", receipt: { id, sealed: true, answer: m.answer } });
+        return;
+      }
+      const n = Object.values(this.mail).filter((x) => x.answer && x.answer.result === "created").length + 1;
       const ticket = { id: `mailed-${n}`, key: `T-${199 + n}`, title: body.title, column: body.column || "TODO", agent: null };
       this.tickets.push(ticket);
       m.answer = { result: "created", ticket: ticket.id, key: ticket.key, column: ticket.column };
       m.sent = true;
       const receipt = { id, sealed: true, answer: m.answer };
       for (const socket of this.mailboxes()) socket.message({ kind: "receipt", board: "board-a", receipt });
+    },
+    // A ticket's notes (T-532), by ticket id, each with its body; what the
+    // page wrote, and what it told an agent.
+    notes: {},
+    noteWrites: [],
+    told: [],
+    noteRow(n) {
+      return { id: n.id, name: n.name, by: n.by, at: n.at, rev: n.rev };
+    },
+    stampNotes() {
+      for (const t of this.tickets) {
+        const list = this.notes[t.id] || [];
+        t.notes = list.length;
+        t.noted = list.map((n) => `${n.id}.${n.rev}`).join(",");
+      }
+    },
+    // The host's write_note: a stale revision is answered with the note.
+    writeNote(r, by = "My browser") {
+      const list = (this.notes[r.ticket] ||= []);
+      const note = r.note && list.find((n) => n.id === r.note);
+      const blank = !r.text.trim();
+      if (r.note && !note)
+        return blank ? { result: "note_written", ticket: r.ticket, rev: 0 } : { result: "rejected", message: "the note is gone" };
+      if (note && r.rev !== undefined && r.rev !== note.rev)
+        return { result: "note_stale", ticket: r.ticket, note: this.noteRow(note) };
+      if (note && blank) {
+        list.splice(list.indexOf(note), 1);
+        this.stampNotes();
+        return { result: "note_written", ticket: r.ticket, rev: 0 };
+      }
+      let target = note;
+      if (!target) list.push((target = { id: `note-${Date.now()}-${list.length}`, rev: 0 }));
+      const name = r.text.split("\n").map((l) => l.replace(/^#+\s*/, "").trim()).find(Boolean) || "";
+      Object.assign(target, { name, by, at: Date.now(), rev: target.rev + 1, text: r.text });
+      this.stampNotes();
+      return { result: "note_written", ticket: r.ticket, note: target.id, rev: target.rev };
     },
     lines: Array.from(
       { length: 50 },
@@ -337,6 +382,24 @@ function fixture() {
               state.applyEdit(request);
               answer({ result: "edited", ticket: request.ticket });
             }
+          }
+          if (request.op === "notes") {
+            const list = state.notes[request.ticket] || [];
+            answer({ result: "notes", ticket: request.ticket, notes: list.map((n) => state.noteRow(n)),
+              ...(list[0] ? { description: list[0].text } : {}) });
+          }
+          if (request.op === "note") {
+            const n = (state.notes[request.ticket] || []).find((x) => x.id === request.note);
+            answer(n ? { result: "note", ticket: request.ticket, note: state.noteRow(n), text: n.text }
+              : { result: "rejected", message: "the note is gone" });
+          }
+          if (request.op === "write_note") {
+            state.noteWrites.push(request);
+            answer(state.writeNote(request));
+          }
+          if (request.op === "tell_agent") {
+            state.told.push(request);
+            answer({ result: "delivery", status: "submitted" });
           }
           if (request.op === "status")
             answer(
@@ -729,6 +792,216 @@ async function ticketFlow(browser, engineName, size, viewport) {
 // starts one and two ticks once it runs; a parked agent woken with words; a
 // refusal; a lost answer asked after, never sent again; the terminal away;
 // an older host, which offers none. Then the board picker under the brand.
+// Notes on the ticket page (T-532): the description under the title, a note
+// read and walked, an edit saved through the mailbox with Tell, a stale save
+// and Save mine, a new note and its delete, the description's own sheet, an
+// edit written while the terminal is away, and the notes read kept for then.
+async function notesFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => {
+    if (localStorage.getItem("fixture-notes")) {
+      window.fixture.notes = JSON.parse(localStorage.getItem("fixture-notes"));
+    } else {
+      const hour = 3_600_000;
+      window.fixture.notes = {
+        "ticket-0": [
+          { id: "desc-0", name: "Make it comfortable", by: "you", at: Date.now() - 2 * hour, rev: 1,
+            text: "# Make it comfortable\n\nThe page should read well on a phone.\n\n- one\n- two\n- three\n\n```\n<script>never</script>\n```" },
+          { id: "plan-0", name: "Plan: retry the train", by: "agent", at: Date.now() - 14 * 60000, rev: 2,
+            text: "# Plan: retry the train\n\n1. Re-read the tip.\n2. Requeue.\n\n![shot](mesimon-attachment:01J)" },
+        ],
+      };
+    }
+    window.fixture.features.push("notes");
+    window.fixture.stampNotes();
+    addEventListener("beforeunload", () => localStorage.setItem("fixture-notes", JSON.stringify(window.fixture.notes)));
+  });
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const toast = (text) => until(page, (text) => document.querySelector("#toast").textContent.includes(text), text);
+  const sheet = page.locator("#note-sheet");
+  const reader = page.locator("#note-reader");
+  const notes = page.locator("#notes");
+  const shot = (name) =>
+    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+  const open = async (id) => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+    await page.locator(`.ticket[data-id="${id}"]`).click();
+  };
+  const save = async (text) => {
+    await sheet.waitFor({ state: "visible" });
+    await page.locator("#note-text").fill(text);
+    await page.locator("#save-note").click();
+    await sheet.waitFor({ state: "hidden" });
+  };
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await open("ticket-0");
+
+    // The description under the title, clamped while the agent works, and
+    // the note as a row; nothing in a body becomes markup.
+    await notes.locator(".notes-description").waitFor();
+    assert.match(await notes.locator(".notes-description").textContent(), /read well on a phone/);
+    assert.equal(await notes.locator("script").count(), 0);
+    assert.equal(await notes.getAttribute("data-awake"), "true");
+    assert(await notes.getByRole("button", { name: "Show all" }).isVisible());
+    const row = notes.locator(".note-row").filter({ hasText: "Plan: retry the train" });
+    assert.match(await row.textContent(), /agent · 14m/);
+    if (size === "phone") {
+      const short = await notes.evaluate((node) =>
+        [...node.querySelectorAll("button")]
+          .filter((n) => n.getClientRects().length && n.getBoundingClientRect().height < 44)
+          .map((n) => n.id || n.textContent),
+      );
+      assert.deepEqual(short, []);
+    }
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await shot("notes-ticket");
+
+    // A note read in place of the output, walked like the desk's Tab.
+    await row.click();
+    await reader.waitFor();
+    assert.match(await reader.locator(".markdown").textContent(), /Re-read the tip/);
+    assert.match(await reader.locator(".markdown-picture").textContent(), /open it at your desk/);
+    assert.match(await reader.locator(".label").first().textContent(), /Note 1 of 1 · agent/);
+    await page.locator("#note-next").click();
+    await until(page, () => /Description/.test(document.querySelector("#note-reader .label").textContent));
+    await page.locator("#note-prev").click();
+    await until(page, () => /Note 1 of 1/.test(document.querySelector("#note-reader .label").textContent));
+    await shot("notes-reader");
+
+    // Edited and saved through the mailbox, with the revision it opened;
+    // the agent awake on the ticket can be told.
+    await page.locator("#edit-note").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.match(await page.locator("#note-text").inputValue(), /Re-read the tip/);
+    assert.equal(await page.locator("#note-heading").textContent(), "Edit note · T-0");
+    await shot("notes-sheet");
+    await save("# Plan: retry the train\n\n1. Re-read the tip first.");
+    await toast("Saved");
+    const sent = await page.evaluate(() => fixture.noteWrites.at(-1));
+    assert.deepEqual([sent.kind, sent.note, sent.rev], ["note", "plan-0", 2]);
+    await page.locator("#toast-action").click();
+    await until(page, () => fixture.told.length === 1);
+    assert.deepEqual(await page.evaluate(() => fixture.told[0]), { op: "tell_agent", ticket: "ticket-0", note: "plan-0" });
+    await until(page, () => /tip first/.test(document.querySelector("#note-reader .markdown").textContent));
+
+    // Changed at the terminal while the sheet was open: refused as stale,
+    // the words kept, and Save mine writes them over.
+    await page.locator("#edit-note").click();
+    await sheet.waitFor({ state: "visible" });
+    await page.evaluate(() => {
+      const note = fixture.notes["ticket-0"][1];
+      Object.assign(note, { rev: note.rev + 1, text: "# Plan: retry the train\n\nTheirs.", by: "agent" });
+      fixture.stampNotes();
+    });
+    await save("# Plan: retry the train\n\nMine.");
+    await toast("Not saved: agent changed it");
+    await reader.locator(".note-strip-conflict").waitFor();
+    assert.match(await reader.locator(".markdown").textContent(), /Mine\./);
+    await page.locator("#save-mine").click();
+    await toast("Saved");
+    assert.match(await page.evaluate(() => fixture.notes["ticket-0"][1].text), /Mine\./);
+    await reader.locator(".note-strip-conflict").waitFor({ state: "detached" });
+
+    // A new note, then deleted: the delete asks once more.
+    await page.locator("#note-back").click();
+    await notes.waitFor();
+    await page.locator("#add-note").click();
+    assert.equal(await page.locator("#note-heading").textContent(), "New note · T-0");
+    await save("Second thoughts\n\nmore");
+    await toast("Saved");
+    const fresh = notes.locator(".note-row").filter({ hasText: "Second thoughts" });
+    await fresh.waitFor();
+    await fresh.click();
+    await page.locator("#edit-note").click();
+    await sheet.waitFor({ state: "visible" });
+    await page.locator("#delete-note").click();
+    assert.match(await page.locator("#delete-note").textContent(), /Delete for good/);
+    await page.locator("#delete-note").click();
+    await sheet.waitFor({ state: "hidden" });
+    await toast("Deleted");
+    await notes.waitFor();
+    await fresh.waitFor({ state: "detached" });
+    assert.equal(await page.evaluate(() => fixture.notes["ticket-0"].length), 2);
+
+    // The description's own sheet has no delete.
+    await page.locator("#edit-description").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.equal(await page.locator("#note-heading").textContent(), "Description · T-0");
+    assert.equal(await page.locator("#delete-note").count(), 0);
+    await sheet.getByRole("button", { name: "Cancel" }).click();
+    await sheet.waitFor({ state: "hidden" });
+
+    // A ticket without notes offers a description.
+    await open("ticket-4");
+    await page.locator("#add-description").waitFor();
+    assert.equal(await notes.locator(".note-row").count(), 0);
+
+    // The terminal away: the notes read stay readable, as of when, and an
+    // edit waits at the relay with one tick until it is back.
+    await open("ticket-0");
+    await notes.locator(".notes-description").waitFor();
+    await page.evaluate(() => {
+      fixture.refuse = true;
+      fixture.channel().close();
+    });
+    await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
+    await until(page, () => /as of/.test(document.querySelector("#notes .label").textContent));
+    await notes.locator(".note-row").first().click();
+    await page.locator("#edit-note").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.match(await sheet.locator(".compose-dest").textContent(), /Saves when your terminal is back/);
+    await save("# Plan: retry the train\n\nWritten away.");
+    await reader.locator(".note-strip").filter({ hasText: "Waits for your terminal" }).waitFor();
+    assert.match(await reader.locator(".markdown").textContent(), /Written away/);
+    await shot("notes-away");
+    // A reload keeps the notes read and the edit on its way; the page
+    // reopens the ticket it was on.
+    await page.reload();
+    await notes.locator(".notes-description").waitFor();
+    assert.match(await notes.locator(".notes-description").textContent(), /read well on a phone/);
+    await notes.locator(".note-row .tick").waitFor();
+    await page.evaluate(() => {
+      fixture.refuse = false;
+      fixture.collect();
+    });
+    await until(page, () => document.querySelectorAll("#notes .note-row .tick").length === 0);
+    assert.match(await page.evaluate(() => fixture.notes["ticket-0"][1].text), /Written away/);
+
+    // A host that keeps no mail takes the edit over the live channel.
+    await page.evaluate(() => {
+      fixture.features = fixture.features.filter((f) => f !== "mailbox");
+      fixture.channel().close();
+    });
+    await until(page, () => document.querySelector("#connection").textContent !== "Connected");
+    await until(page, () => document.querySelector("#connection").textContent === "Connected");
+    await notes.locator(".note-row").first().click();
+    await page.locator("#edit-note").click();
+    await save("# Plan: retry the train\n\nLive op.");
+    await toast("Saved");
+    const live = await page.evaluate(() => fixture.noteWrites.at(-1));
+    assert.deepEqual([live.op, live.note, live.text.includes("Live op.")], ["write_note", "plan-0", true]);
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: notes read, walked, edited, told, stale, added, deleted, away, kept and live passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-notes-failure.png`) });
+    throw error;
+  } finally {
+    await page.evaluate(() => localStorage.clear()).catch(() => {});
+    await context.close();
+  }
+}
+
 async function startFlow(browser, engineName, size, viewport) {
   const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
   await context.addInitScript(fixture);
@@ -1922,6 +2195,7 @@ try {
         await ticketFlow(browser, engineName, size, viewport);
         await startFlow(browser, engineName, size, viewport);
         await editFlow(browser, engineName, size, viewport);
+        await notesFlow(browser, engineName, size, viewport);
       }
       await pairLinkFlow(browser, engineName);
       await keptFlow(browser, engineName);

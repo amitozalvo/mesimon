@@ -432,3 +432,93 @@ test("a card edit is worn until the host answers, in its slot, and never crosses
   edits.lost();
   assert.equal(edits.items.size, 0);
 });
+test("a ticket's notes keep the bodies read at their revision, and only those", async () => {
+  const { NoteBook, KEEP_TICKETS } = await import("./notes.js");
+  const book = new NoteBook();
+  const row = (id, rev) => ({ id, name: `note ${id}`, by: "you", at: 5, rev });
+  book.listed("t", { notes: [row("d", 1), row("n", 2)], description: "the brief" }, "s1");
+  assert.equal(book.body("t", "d"), "the brief", "the list carries the description");
+  assert.equal(book.body("t", "n"), undefined, "another note is read alone");
+  assert.equal(book.current("t", "s1"), true);
+  assert.equal(book.current("t", "s2"), false, "a moved digest asks again");
+  book.read("t", { note: row("n", 2), text: "second" });
+  assert.equal(book.body("t", "n"), "second");
+  // Rewritten elsewhere: the old body is not the note any more.
+  book.listed("t", { notes: [row("d", 1), row("n", 3)] }, "s2");
+  assert.equal(book.body("t", "d"), "the brief", "an unchanged body stays");
+  assert.equal(book.body("t", "n"), undefined, "a rewritten one goes");
+  // This browser's own write landed, then a delete.
+  book.written("t", "n", { result: "note_written", note: "n", rev: 4 }, "mine", "mine");
+  assert.equal(book.body("t", "n"), "mine");
+  book.written("t", "n", { result: "note_written", rev: 0 }, "", "");
+  assert.deepEqual(book.entry("t").rows.map((r) => r.id), ["d"]);
+  // Kept across a reload, newest first and bounded; a malformed entry is dropped.
+  book.entry("t").at = 1;
+  for (let i = 0; i < KEEP_TICKETS + 5; i++) book.listed(`x${i}`, { notes: [row("a", 1)], description: "x" }, "s", 100 + i);
+  const stored = JSON.parse(JSON.stringify(book.stored()));
+  assert.equal(stored.length, KEEP_TICKETS);
+  assert.equal(stored.some((s) => s.ticket === "t"), false, "the one read longest ago went");
+  const back = new NoteBook();
+  back.restore([...stored, { ticket: "bad", rows: [{ id: 1 }] }, null]);
+  assert.equal(back.body(`x${KEEP_TICKETS + 4}`, "a"), "x");
+  assert.deepEqual(back.entry("bad").rows, []);
+});
+test("a note edit settles once on the host's word and keeps its words until then", async () => {
+  const { NoteMail } = await import("./notes.js");
+  const mail = new NoteMail();
+  const words = { ticket: "t", key: "T-1", note: "n", name: "n", rev: 2, text: "mine" };
+  const sealed = mail.add("board", words, 1, { id: "env-1" });
+  assert.equal(sealed.status, "local");
+  assert.equal(mail.pending("board", "t", "n"), sealed);
+  assert.equal(mail.pending("other", "t", "n"), undefined, "never across boards");
+  mail.deposited(sealed);
+  assert.equal(sealed.status, "relay");
+  assert.equal(sealed.envelope, undefined, "the relay holds the sealed copy now");
+  const stale = { id: "n", name: "n", by: "agent", at: 9, rev: 3 };
+  assert.equal(mail.reply(sealed, { result: "note_stale", ticket: "t", note: stale }), "stale");
+  assert.equal(mail.reply(sealed, { result: "note_written", note: "n", rev: 4 }), "stale", "settled once");
+  assert.deepEqual(sealed.stale, stale);
+  assert.equal(sealed.text, "mine", "the words stay for Save mine");
+  const live = mail.add("board", { ...words, note: undefined, rev: undefined, text: "fresh" });
+  mail.sent(live, 7, "inc");
+  assert.deepEqual(mail.unresolved("board"), [live]);
+  assert.deepEqual(mail.fresh("board", "t"), [live]);
+  assert.equal(mail.reply(live, { result: "note_written", note: "new", rev: 1 }), "landed");
+  assert.equal(live.note, "new");
+  // A delete lands with no note id; the id it deleted is the caller's.
+  const gone = mail.add("board", { ...words, text: "" });
+  mail.sent(gone, 8, "inc");
+  assert.equal(mail.reply(gone, { result: "note_written", rev: 0 }), "landed");
+  assert.equal(gone.note, "n");
+  // A reload keeps what is unsettled, and a local edit without its seal is unknown.
+  const local = mail.add("board", words, 2, { id: "env-2" });
+  const stored = JSON.parse(JSON.stringify(mail.stored("board")));
+  assert.deepEqual(stored.map((s) => s.id).sort(), ["env-1", "env-2"]);
+  const back = new NoteMail();
+  back.restore("board", [...stored.map((s) => (s.id === local.id ? { ...s, envelope: undefined } : s)), { id: 5 }]);
+  assert.equal(back.get("env-2").status, "unknown");
+  assert.equal(back.get("env-1").status, "stale");
+  assert.equal(back.items.length, 2);
+});
+test("notes read as text: fences, pictures and markers never become markup", async () => {
+  const { blocks } = await import("./markdown.js");
+  const out = blocks("# Plan\n\n- one\n- two\n\n```\n<script>x</script>\n```\n![shot](mesimon-attachment:01J)\n> quoted <b>");
+  assert.deepEqual(out, [
+    { heading: "Plan" },
+    { ordered: false, items: ["one", "two"] },
+    { code: true, lines: ["<script>x</script>"] },
+    { picture: true },
+    { text: "quoted <b>" },
+  ]);
+  const { nameOf, ago } = await import("./notes.js");
+  assert.equal(nameOf("\n\n## Plan: retry\nmore"), "Plan: retry");
+  assert.equal(ago(0), "");
+  assert.equal(ago(1000, 1000 + 30_000), "now");
+  assert.equal(ago(1000, 1000 + 3 * 3_600_000), "3h");
+});
+test("a remembered board keeps each ticket's note count and digest", () => {
+  const board = new BoardState();
+  board.update({ title: "B", columns: ["TODO"], tickets: [{ ...ticket("one"), notes: 2, noted: "abc" }, ticket("two")] });
+  const [one, two] = JSON.parse(JSON.stringify(board.snapshot())).tickets;
+  assert.deepEqual([one.notes, one.noted, two.notes, two.noted], [2, "abc", 0, ""]);
+});

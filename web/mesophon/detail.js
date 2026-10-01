@@ -6,6 +6,7 @@ import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { Attention } from "./dialogs.js";
 import { StartButton, StartReceipt, Tags, stateAge } from "./lists.js";
+import { NotesCard, NoteReader } from "./notepad.js";
 
 const receiptTick = (status) =>
   status === "awaiting_delivery"
@@ -213,6 +214,9 @@ export function Detail({ store, bp }) {
   const start = store.startOf(ticket);
   // The seat a start reaches (T-510): empty, or a parked agent it wakes.
   const seatOpen = !!ticket && (!agent || asleep);
+  // A note open for reading takes the page (T-532); Back returns to it.
+  if (ticket && store.reading?.ticket === ticket.id)
+    return html`<article id="detail" aria-labelledby="note-title"><${NoteReader} store=${store} ticket=${ticket} /></article>`;
   // The head (T-510): the shin, the title, then one line with the tags and
   // the column at its left and the key at its right, as the TUI's page.
   return html`<article id="detail" aria-labelledby="selection">
@@ -238,6 +242,7 @@ export function Detail({ store, bp }) {
       </div>`}
       ${ticket && html`<${StartReceipt} item=${start} agent=${agent} />`}
       <${Attention} store=${store} ticket=${ticket} entry=${entry} live=${live} />
+      <${NotesCard} store=${store} ticket=${ticket} />
       <${Output} store=${store} ticket=${ticket} entry=${entry} live=${live} />
       ${!ticket && html`<div class="detail-empty"><${Shin} size="medium" scale=${4} /><p>Pick a ticket to read its agent’s output and send it a prompt.</p></div>`}
     </div>

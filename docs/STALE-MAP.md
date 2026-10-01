@@ -16225,3 +16225,74 @@ engines. **Not verified:** Firefox, which has historically refused to start a dr
 which live in `mesimon-relay` and were not run.
 
 **Owed:** a CHANGELOG line at the next release, and the relay's `ship.sh` after it merges.
+
+## Remote Control reads and edits a ticket's notes (T-532, 2026-10-01, "remote control view / edit notes of tickets ∙ design first, think where most appropriate to show and edit")
+
+**Designed first, then decided.** The proposal is a design canvas (the owner's private artifact,
+linked from the ticket's note): A, the description and the note rows on the ticket page under
+the title; B, Agent | Notes tabs; C, a notes chip opening a sheet. The owner chose **A**, and
+three more answers: notes this browser opened stay readable while the terminal is away; an edit
+written then goes through the relay's mailbox; and a phone may edit, add, delete and tell the
+agent. Rejected: B hides the brief behind a tab and the composer has to vanish on it; C is easy
+to miss, and the brief is the first thing a phone reader wants. **Superseded: T-317's "the
+browser projection excludes notes".**
+
+**Built: the wire.** A `notes` feature. The board projection gains a note count and
+`notes_stamp`, an FNV-1a digest of the notes' ids and revisions, so the page asks for a
+ticket's notes again only when it moves, not on every two-second board. `Request::Notes`
+answers the rows (`NoteRow`: id, name, author word, ms, rev) and the description's body,
+which a ticket with very many notes goes without (the page then asks for it alone);
+`Request::Note` answers one body. `Request::WriteNote { note?, text, rev? }` is the desk's
+`WriteNote` with one rule more: a note whose revision moved since the browser opened it is
+answered `NoteStale` with the note as it stands, and nothing is written. Deleting a note
+already gone answers written. `Request::TellAgent` is the desk's second `^s`
+(`note_to_agent`), authorized as `PromptExisting` on the ticket's prompt target, since the
+phone may already prompt it. Bodies leave through `sanitize_note`. The author word is the
+host's: `you`, `agent`, the paired browser's name, a teammate's, `mesimon`; the desk's note
+rail says `phone` for a `device:` author.
+
+**Decided: a new `Action::Annotate`, not `Mutate` on a ticket**, the same argument as
+`StartAgent`: a ticket `Mutate` would also move, rename and merge it. `Local | Paired` on a
+`Resource::Ticket`, nothing else. A viewer's copy refuses (`team_viewer_refusal`).
+**Decided: the description is not emptied from a phone**: deleting `notes[0]` would make the
+next note the description (`note_gate`, unit-tested with the stale and gone cases).
+
+**Built: edits through the mailbox.** The sealed letter's body is JSON, so a note edit is a
+letter saying `"kind": "note"` (`mesophon::read_letter`): no crypto, Wasm or relay change.
+An older host reads it as a ticket with no title and refuses it, and the page sends one only
+to a host whose last handshake said `notes` and `mailbox`. As tickets do, an edit goes through
+the mailbox whenever the host collects mail, live or away, and over the live op only when it
+does not. **Exactly once**: `Stored.noted` (in `mesophon.json`, 256 newest) keeps each note
+letter's answer, so a replay is answered again and writes nothing; an edit whose words the note
+already holds is answered written (the crash between the write and that save). Not covered:
+a *new* note's letter replayed across that same crash window files a second note. A
+`NoteMeta.envelope` would close it, at the cost of touching every `NoteMeta` literal and the
+team projection's bytes; not taken.
+
+**Built: the page.** `notes.js` (`NoteBook`, what this browser read per ticket, kept at
+`notes:<grant>` beside `board:` and `sent:`, the 40 tickets read most recently; `NoteMail`,
+the edits on their way, Sent's statuses), `notepad.js` (the card, the reader, the sheet) and
+`markdown.js` (the plan reader's renderer moved out of `dialogs.js`, now with fences, `**`
+and pictures named, never fetched). The card sits after the dialog waiting on you and before
+the output; the description clamps to 3 lines while an agent is awake, 8 otherwise, with Show
+all. A note opens in place of the page, Previous/Next walk the ring the desk's Tab walks, and
+Edit opens the New ticket sheet's frame; Delete asks once more in place. A stale answer keeps
+the words on the note: **Keep theirs** or **Save mine** (which sends again at the revision the
+answer named). A landed save's toast carries **Tell claude** for 6 s when the agent is awake.
+
+**Trap, found by the phone run:** a delete closed the reader twice, on Save and on the host's
+answer, before the first `history.back()` had landed, so the second popped the ticket too.
+`closeNote` clears the reader at once.
+
+Verified: core and daemon units (the wire shapes, the letter's kind, the stamp, `Annotate`,
+`note_gate`), `cargo ut`, the full nextest (1882, rebased on T-530) and the release clippy; 25
+browser state and packaging tests (`NoteBook`, `NoteMail`, `blocks`, the remembered counts, the
+three new modules staged); the UX suite in
+Chromium and WebKit at desktop, tablet and phone with a new notes flow (read and walk, edit
+through the mailbox and Tell, stale and Save mine, add and delete, the description's sheet,
+the terminal away with a reload, and a host without the mailbox taking the live op).
+Screenshots read by eye at every size.
+
+**Not verified:** the relay's acceptance tests (they live in `mesimon-relay`; no relay change
+is needed, and the letters are opaque to it), a physical phone, and the hosted relay, which
+serves the page and needs its `ship.sh`. **Owed:** a CHANGELOG line at the next release.

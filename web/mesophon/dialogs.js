@@ -2,42 +2,7 @@
 // nodes, never HTML. Native outcomes remain the host's to observe.
 import { html } from "./html.js";
 import { Icon } from "./icons.js";
-
-// A tiny markdown reading for plans: headings, lists and code spans become
-// elements whose children are plain text. Anything else is a paragraph.
-function Markdown({ text }) {
-  const blocks = [];
-  let list;
-  for (const raw of text.split("\n")) {
-    const line = raw.trimEnd();
-    const item = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/);
-    if (item) {
-      const ordered = /^\s*\d/.test(line);
-      if (!list || list.ordered !== ordered) blocks.push((list = { ordered, items: [] }));
-      list.items.push(item[1]);
-      continue;
-    }
-    list = undefined;
-    const heading = line.match(/^#{1,6}\s+(.*)$/);
-    if (heading) blocks.push({ heading: heading[1] });
-    else if (line.trim()) blocks.push({ text: line });
-  }
-  const inline = (text) =>
-    text.split(/(`[^`]+`)/).map((part) =>
-      part.length > 2 && part.startsWith("`") && part.endsWith("`")
-        ? html`<code>${part.slice(1, -1)}</code>`
-        : part,
-    );
-  return html`<div class="markdown">${blocks.map((b) =>
-    b.heading !== undefined
-      ? html`<h4>${inline(b.heading)}</h4>`
-      : b.items
-        ? b.ordered
-          ? html`<ol>${b.items.map((i) => html`<li>${inline(i)}</li>`)}</ol>`
-          : html`<ul>${b.items.map((i) => html`<li>${inline(i)}</li>`)}</ul>`
-        : html`<p>${inline(b.text)}</p>`,
-  )}</div>`;
-}
+import { Markdown } from "./markdown.js";
 
 // The single-choice question the host can answer by keys; anything else is
 // answered in the pane.

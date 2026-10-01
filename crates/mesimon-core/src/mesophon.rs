@@ -142,6 +142,33 @@ pub enum Request {
         #[serde(default)]
         name: Option<String>,
     },
+    /// A ticket's notes (T-532): every note's row, the description first,
+    /// and the description's body, which the ticket page shows.
+    Notes {
+        ticket: String,
+    },
+    /// One note's whole body (T-532).
+    Note {
+        ticket: String,
+        note: String,
+    },
+    /// Create (no `note`), replace, or with blank text delete one note
+    /// (T-532), as the desk's note editor does. `rev` is the revision the
+    /// browser opened: a note that moved on since is refused as stale.
+    WriteNote {
+        ticket: String,
+        #[serde(default)]
+        note: Option<String>,
+        text: String,
+        #[serde(default)]
+        rev: Option<u64>,
+    },
+    /// Point the ticket's awake agent at a note (T-532): the desk's second
+    /// `^s`, mesimon's own sentence naming the note.
+    TellAgent {
+        ticket: String,
+        note: String,
+    },
 }
 
 /// A ticket a paired browser sealed for the host's mailbox (T-497): the
@@ -159,6 +186,83 @@ pub struct MailTicket {
     /// When it was written, in the browser's clock; shown, never trusted.
     #[serde(default)]
     pub written_at: u64,
+}
+
+/// A note edit a paired browser sealed while its terminal was away (T-532):
+/// `WriteNote`'s fields and when it was written. The letter says
+/// `"kind": "note"`; a ticket's letter has no kind, as phase 3's page wrote it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MailNote {
+    pub ticket: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    pub text: String,
+    #[serde(default)]
+    pub rev: Option<u64>,
+    #[serde(default)]
+    pub written_at: u64,
+}
+
+/// What a sealed letter carries.
+#[derive(Clone, Debug)]
+pub enum Letter {
+    Ticket(MailTicket),
+    Note(MailNote),
+}
+
+/// Read an opened letter: a note edit when it says so, else a ticket. An
+/// older host reads a note's letter as a ticket with no title and refuses
+/// it, so it never files one as the other.
+pub fn read_letter(body: serde_json::Value) -> Option<Letter> {
+    if body.get("kind").and_then(serde_json::Value::as_str) == Some("note") {
+        serde_json::from_value(body).ok().map(Letter::Note)
+    } else {
+        serde_json::from_value(body).ok().map(Letter::Ticket)
+    }
+}
+
+/// One note as the ticket page lists it (T-532).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteRow {
+    pub id: String,
+    /// The body's first line, as the desk names it.
+    pub name: String,
+    /// Who wrote it last, in the page's words: `you`, `agent`, a paired
+    /// browser's name, or a teammate's.
+    pub by: String,
+    /// When, in milliseconds since the epoch, the host's clock.
+    pub at: u64,
+    pub rev: u64,
+}
+
+impl NoteRow {
+    pub fn of(meta: &crate::board::NoteMeta, by: String) -> Self {
+        Self {
+            id: meta.id.to_string(),
+            name: meta.name.clone(),
+            by,
+            at: crate::board::stamp_secs(&meta.edited_at).unwrap_or(0) * 1000,
+            rev: meta.rev,
+        }
+    }
+}
+
+/// A short digest of a ticket's notes, ids and revisions in order (T-532):
+/// a page asks for them again only when it changes. Empty for no notes.
+pub fn notes_stamp(notes: &[crate::board::NoteMeta]) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    // FNV-1a: stable across builds and platforms, which a page comparing
+    // two answers needs, and no secret is kept by it.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for n in notes {
+        for byte in n.id.to_bytes().into_iter().chain(n.rev.to_le_bytes()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    format!("{hash:016x}")
 }
 
 /// A tag a new ticket wears, spelled as the board's vocabulary spells it.
@@ -202,6 +306,17 @@ pub struct Ticket {
     /// (T-497): the browser that filed it turns its ticks teal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picked: Option<Picked>,
+    /// How many notes the ticket has, the description included (T-532).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub notes: u32,
+    /// `notes_stamp` of them: the page asks for the notes again only when
+    /// it changes.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub noted: String,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// How a phone's ticket was picked up, and when: `by` is `desk` (its page was
@@ -314,6 +429,34 @@ pub enum Reply {
     Edited {
         ticket: String,
     },
+    /// A ticket's notes (T-532), and the description's body when it has one.
+    Notes {
+        ticket: String,
+        notes: Vec<NoteRow>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    /// One note's body (T-532).
+    Note {
+        ticket: String,
+        note: NoteRow,
+        text: String,
+    },
+    /// A note was written (T-532): its id and revision now, or with no
+    /// `note`, deleted.
+    NoteWritten {
+        ticket: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default)]
+        rev: u64,
+    },
+    /// The note moved on since the browser opened it (T-532): nothing was
+    /// written, and this is the note as it stands.
+    NoteStale {
+        ticket: String,
+        note: NoteRow,
+    },
     Awareness {
         ticket: String,
         awareness: Awareness,
@@ -417,6 +560,70 @@ mod tests {
         }
     }
 
+    /// A note write names its ticket and words; a fresh note has no id or
+    /// revision, and a field the host does not know is refused.
+    #[test]
+    fn a_note_write_needs_a_ticket_and_text_and_defaults_the_rest() {
+        let Request::WriteNote { ticket, note, text, rev } =
+            serde_json::from_str(r#"{"op":"write_note","ticket":"01J","text":"hi"}"#).unwrap()
+        else {
+            panic!("write_note")
+        };
+        assert_eq!((ticket.as_str(), note, text.as_str(), rev), ("01J", None, "hi", None));
+        for bad in [
+            r#"{"op":"write_note","ticket":"01J"}"#,
+            r#"{"op":"write_note","text":"hi"}"#,
+            r#"{"op":"write_note","ticket":"01J","text":"hi","force":true}"#,
+            r#"{"op":"tell_agent","ticket":"01J"}"#,
+        ] {
+            assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// A letter is a note edit only when it says so: phase 3's tickets have
+    /// no kind, and a note's letter is never read as a ticket.
+    #[test]
+    fn a_letter_is_a_note_only_when_it_says_so() {
+        let ticket = serde_json::json!({"title": "Fix it", "written_at": 5});
+        assert!(matches!(read_letter(ticket), Some(Letter::Ticket(t)) if t.title == "Fix it"));
+        let note = serde_json::json!({"kind": "note", "ticket": "01J", "note": "01K",
+            "text": "new words", "rev": 3, "written_at": 5});
+        let Some(Letter::Note(n)) = read_letter(note) else { panic!("note") };
+        assert_eq!(
+            (n.note.as_deref(), n.rev, n.text.as_str()),
+            (Some("01K"), Some(3), "new words")
+        );
+        assert!(read_letter(serde_json::json!({"kind": "note", "text": "no ticket"})).is_none());
+        // What an older host does with a note's letter: no title, no ticket.
+        let body = serde_json::json!({"kind": "note", "ticket": "01J", "text": "x"});
+        assert!(serde_json::from_value::<MailTicket>(body).is_err());
+    }
+
+    /// The stamp moves with any note's revision, an added or a removed one,
+    /// and is empty with none, so a board without notes says nothing.
+    #[test]
+    fn the_notes_stamp_moves_with_every_write() {
+        let meta = |rev| crate::board::NoteMeta {
+            id: ulid::Ulid::from_parts(1, 1),
+            name: "n".into(),
+            rev,
+            created_at: "@1".into(),
+            created_by: "local".into(),
+            edited_at: "@1790845550".into(),
+            edited_by: "local".into(),
+        };
+        let one = notes_stamp(&[meta(1)]);
+        assert_eq!(one.len(), 16);
+        assert_eq!(one, notes_stamp(&[meta(1)]));
+        assert_ne!(one, notes_stamp(&[meta(2)]));
+        let mut other = meta(1);
+        other.id = ulid::Ulid::from_parts(2, 2);
+        assert_ne!(one, notes_stamp(&[meta(1), other]));
+        assert_eq!(notes_stamp(&[]), "");
+        let row = NoteRow::of(&meta(4), "you".into());
+        assert_eq!((row.at, row.rev, row.by.as_str()), (1_790_845_550_000, 4, "you"));
+    }
+
     /// The sheet's facts ride the board reply beside what an older browser
     /// already reads, and a board without them still parses.
     #[test]
@@ -476,6 +683,8 @@ mod tests {
             }),
             tags: vec![],
             picked: None,
+            notes: 0,
+            noted: String::new(),
         };
         let json = serde_json::to_value(&bare).unwrap();
         assert_eq!(
@@ -487,6 +696,8 @@ mod tests {
         let full = Ticket {
             tags: vec![TagOption { group: 1, name: "BUG".into(), tint: 3 }],
             picked: Some(Picked { by: "desk".into(), at: 1_790_000_000_000 }),
+            notes: 2,
+            noted: "00ff00ff00ff00ff".into(),
             agent: bare.agent.clone().map(|a| Agent {
                 since: Some(1_790_000_000_000),
                 doing: Some("Bash(cargo test)".into()),
@@ -498,6 +709,7 @@ mod tests {
         let back: Ticket = serde_json::from_value(serde_json::to_value(&full).unwrap()).unwrap();
         assert_eq!(back.tags, full.tags);
         assert_eq!(back.picked, full.picked);
+        assert_eq!((back.notes, back.noted.as_str()), (2, "00ff00ff00ff00ff"));
         let agent = back.agent.unwrap();
         assert_eq!(
             (agent.since, agent.doing.as_deref(), agent.said.as_deref()),

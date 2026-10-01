@@ -34,6 +34,17 @@ struct Stored {
     /// bring it back. An older build drops it on its next save, harmlessly.
     #[serde(default)]
     filed: Vec<Filed>,
+    /// The note letters answered most recently, newest last (T-532), with
+    /// their answers: a replayed letter is answered again and writes nothing.
+    #[serde(default)]
+    noted: Vec<NoteFiled>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct NoteFiled {
+    envelope: ObjectId,
+    /// Kept as JSON, read back when asked: an answer a later build cannot
+    /// read is unknown, never a state file that does not open.
+    answer: serde_json::Value,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Filed {
@@ -295,6 +306,7 @@ impl Daemon {
                         host: keys.id(),
                         grants: Vec::new(),
                         filed: Vec::new(),
+                        noted: Vec::new(),
                     };
                     if self.control_save(&s).is_err() {
                         return fail("could not save Mesophon state");
@@ -549,6 +561,8 @@ impl Daemon {
                     "rename",
                     "move",
                     "tag",
+                    // Notes read and written from the ticket page (T-532).
+                    "notes",
                     // Tickets for an away host wait at the relay (T-497).
                     if self.control.mail { "mailbox" } else { "" },
                 ]
@@ -731,6 +745,14 @@ impl Daemon {
             }
             api::Request::Tag { ticket, group, name } => {
                 self.control_tag(&by, &ticket, group, name)
+            }
+            api::Request::Notes { ticket } => self.control_notes(&by, &ticket),
+            api::Request::Note { ticket, note } => self.control_note(&by, &ticket, &note),
+            api::Request::WriteNote { ticket, note, text, rev } => {
+                self.control_write_note(&by, &ticket, note.as_deref(), text, rev)
+            }
+            api::Request::TellAgent { ticket, note } => {
+                self.control_tell_agent(&by, &ticket, &note)
             }
         };
         self.control.remember(grant, command.id, reply.clone());
@@ -1491,6 +1513,10 @@ impl Daemon {
     /// while its browser was away, it lands where it can: a column the board
     /// has since lost becomes the default one, and a tag it lost is dropped.
     fn control_filed(&mut self, grant: &Grant, id: ObjectId, body: serde_json::Value) -> Reply {
+        let letter = api::read_letter(body);
+        if let Some(api::Letter::Note(note)) = letter {
+            return self.control_filed_note(grant, id, note);
+        }
         let hex = id.to_hex();
         if let Some(t) = self.board.tickets.iter().find(|t| t.envelope.as_deref() == Some(&hex)) {
             return Reply::Created {
@@ -1508,7 +1534,7 @@ impl Daemon {
                 column: f.column.clone(),
             };
         }
-        let Ok(ticket) = serde_json::from_value::<api::MailTicket>(body) else {
+        let Some(api::Letter::Ticket(ticket)) = letter else {
             return Reply::Rejected { message: "the ticket did not read".into() };
         };
         let column = ticket.column.filter(|c| self.board.column(c).is_some());
@@ -1537,6 +1563,206 @@ impl Daemon {
             }
         }
         reply
+    }
+
+    // ---- notes (T-532) ----------------------------------------------------
+
+    /// A note edit written while the terminal was away, applied once. A
+    /// replayed letter gets the answer it had; an edit whose words the note
+    /// already holds was this letter, written before a crash cut its answer.
+    fn control_filed_note(&mut self, grant: &Grant, id: ObjectId, note: api::MailNote) -> Reply {
+        if let Some(f) =
+            self.control.stored.as_ref().and_then(|s| s.noted.iter().find(|f| f.envelope == id))
+        {
+            return serde_json::from_value(f.answer.clone())
+                .unwrap_or(Reply::Delivery { status: "unknown".into() });
+        }
+        let by = Principal::Paired { device: grant.device.to_hex(), grant: grant.id.to_hex() };
+        let already = self.control_note_body(&note.ticket, note.note.as_deref()).and_then(
+            |(ticket, meta, text)| {
+                (text == mesimon_core::board::sanitize_note(&note.text)).then(|| {
+                    Reply::NoteWritten {
+                        ticket: ticket.to_string(),
+                        note: Some(meta.id.to_string()),
+                        rev: meta.rev,
+                    }
+                })
+            },
+        );
+        let answer = already.unwrap_or_else(|| {
+            self.control_write_note(&by, &note.ticket, note.note.as_deref(), note.text, note.rev)
+        });
+        if let Some(mut s) = self.control.stored.clone() {
+            let kept = serde_json::to_value(&answer).unwrap_or_default();
+            s.noted.push(NoteFiled { envelope: id, answer: kept });
+            let excess = s.noted.len().saturating_sub(FILED_KEEP);
+            s.noted.drain(..excess);
+            // A failed save costs the replay guard only: an edit is answered
+            // again by its words, a delete by the note being gone.
+            let _ = self.control_save(&s);
+            self.control.stored = Some(s);
+        }
+        answer
+    }
+
+    /// A ticket a phone reads or writes notes on: on the board, not archived.
+    fn control_note_ticket(&self, ticket: &str) -> Option<ulid::Ulid> {
+        ulid::Ulid::from_string(ticket)
+            .ok()
+            .filter(|id| self.board.ticket(*id).is_some_and(|t| !t.is_archived()))
+    }
+
+    /// One note's metadata and body as they stand, or `None`.
+    fn control_note_body(
+        &self,
+        ticket: &str,
+        note: Option<&str>,
+    ) -> Option<(ulid::Ulid, mesimon_core::board::NoteMeta, String)> {
+        let id = self.control_note_ticket(ticket)?;
+        let note = ulid::Ulid::from_string(note?).ok()?;
+        match self.read_note(id, note) {
+            Response::Note { text, meta } => {
+                Some((id, meta, mesimon_core::board::sanitize_note(&text)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Who wrote a note last, in the page's words: `you` at the desk, `agent`,
+    /// a paired browser by the name it paired with, a teammate by theirs.
+    fn control_author(&self, meta: &mesimon_core::board::NoteMeta) -> String {
+        let by = if meta.edited_by.is_empty() { &meta.created_by } else { &meta.edited_by };
+        if by.starts_with("agent:") {
+            mesimon_core::keymap::AGENT_WORD.into()
+        } else if let Some(device) = by.strip_prefix("device:") {
+            self.control
+                .stored
+                .as_ref()
+                .and_then(|s| s.grants.iter().find(|g| g.device.to_hex() == device))
+                .map_or_else(|| "phone".into(), |g| g.name.clone())
+        } else if let Some(name) = by.strip_prefix("member:") {
+            name.into()
+        } else if by.starts_with("automation:") {
+            "mesimon".into()
+        } else {
+            "you".into()
+        }
+    }
+
+    fn control_notes(&self, by: &Principal, ticket: &str) -> Reply {
+        let Some(id) = self.control_note_ticket(ticket) else {
+            return Reply::Rejected { message: "ticket unavailable".into() };
+        };
+        if authorize(by, &Action::Read, &Resource::Ticket { id }).denied() {
+            return Reply::Revoked;
+        }
+        let Some(t) = self.board.ticket(id) else {
+            return Reply::Rejected { message: "ticket unavailable".into() };
+        };
+        let notes: Vec<_> =
+            t.notes.iter().map(|n| api::NoteRow::of(n, self.control_author(n))).collect();
+        let description = t.description().and_then(|meta| match self.read_note(id, meta.id) {
+            Response::Note { text, .. } => Some(mesimon_core::board::sanitize_note(&text)),
+            _ => None,
+        });
+        let reply = Reply::Notes { ticket: ticket.into(), notes, description };
+        // A ticket with very many notes goes without the description's
+        // body, which the page then asks for alone, as any other note.
+        if serde_json::to_vec(&reply).is_ok_and(|v| v.len() > BOARD_WORDS_BUDGET) {
+            if let Reply::Notes { ticket, notes, .. } = reply {
+                return Reply::Notes { ticket, notes, description: None };
+            }
+        }
+        reply
+    }
+
+    fn control_note(&self, by: &Principal, ticket: &str, note: &str) -> Reply {
+        let Some(id) = self.control_note_ticket(ticket) else {
+            return Reply::Rejected { message: "ticket unavailable".into() };
+        };
+        if authorize(by, &Action::Read, &Resource::Ticket { id }).denied() {
+            return Reply::Revoked;
+        }
+        match self.control_note_body(ticket, Some(note)) {
+            Some((_, meta, text)) => Reply::Note {
+                ticket: ticket.into(),
+                note: api::NoteRow::of(&meta, self.control_author(&meta)),
+                text,
+            },
+            None => Reply::Rejected { message: "the note is gone".into() },
+        }
+    }
+
+    /// The desk's note editor from a phone (T-532), with one rule more: an
+    /// edit names the revision it was opened at, and a note that moved on
+    /// since is answered with itself and left alone. The description stays:
+    /// emptying it would make the next note the description.
+    fn control_write_note(
+        &mut self,
+        by: &Principal,
+        ticket: &str,
+        note: Option<&str>,
+        text: String,
+        rev: Option<u64>,
+    ) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_note_ticket(ticket) else {
+            return reject("ticket unavailable");
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::Annotate, &Resource::Ticket { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
+        let note = match note_gate(t, note, text.trim().is_empty(), rev) {
+            Ok(note) => note,
+            Err(gate) => return gate.reply(ticket, |meta| self.control_author(meta)),
+        };
+        match self.write_note(id, note, text, by) {
+            Response::NoteWritten { note } => {
+                self.feed.board(by.actor(), "mesophon_write_note", Some(id));
+                let rev = note
+                    .and_then(|n| self.board.ticket(id).and_then(|t| t.note(n)))
+                    .map_or(0, |m| m.rev);
+                Reply::NoteWritten { ticket: ticket.into(), note: note.map(|n| n.to_string()), rev }
+            }
+            Response::Err { message } => reject(&message),
+            other => reject(&format!("unexpected note answer: {other:?}")),
+        }
+    }
+
+    /// The desk's second `^s` (T-532): mesimon's own sentence, naming the
+    /// note, pasted to the ticket's awake agent. A prompt into a session the
+    /// phone may already send, so it is authorized as one.
+    fn control_tell_agent(&mut self, by: &Principal, ticket: &str, note: &str) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_note_ticket(ticket) else {
+            return reject("ticket unavailable");
+        };
+        let Some(note) = ulid::Ulid::from_string(note)
+            .ok()
+            .filter(|n| self.board.ticket(id).is_some_and(|t| t.note(*n).is_some()))
+        else {
+            return reject("the note is gone");
+        };
+        let Some(session) = self.prompt_target(id) else {
+            return reject("no agent is awake on this ticket");
+        };
+        if authorize(by, &Action::PromptExisting, &Resource::Session { id: session }).denied() {
+            return Reply::Revoked;
+        }
+        match self.note_to_agent(id, note) {
+            Response::Ok => {
+                self.feed.board(by.actor(), "mesophon_tell_agent", Some(id));
+                Reply::Delivery { status: "submitted".into() }
+            }
+            Response::Err { message } => reject(&message),
+            other => reject(&format!("unexpected answer: {other:?}")),
+        }
     }
 
     fn control_board(&self) -> Reply {
@@ -1575,6 +1801,8 @@ impl Daemon {
                     column: t.column.clone(),
                     tags: projected_tags(&self.board, t),
                     picked: projected_pickup(t),
+                    notes: u32::try_from(t.notes.len()).unwrap_or(u32::MAX),
+                    noted: api::notes_stamp(&t.notes),
                     agent: self.board.live_agent(t.id).map(|s| {
                         let (doing, said) = self.control_words(s);
                         self.control_agent(t, s, doing, said)
@@ -2050,6 +2278,58 @@ fn start_progress(
 /// the board lacks means that view is stale, and a phone never adds a tag.
 /// One tag per group is `mint_full`'s rule and is judged there.
 /// A ticket's tags as a phone draws them, each with the TUI's tint.
+/// Why a phone's note write stops before it is written (T-532).
+#[derive(Debug, PartialEq)]
+enum NoteGate<'a> {
+    /// Deleting a note that is already gone: done, nothing to write.
+    Gone,
+    /// The note named does not exist.
+    Missing,
+    /// The note moved on since the browser opened it.
+    Stale(&'a mesimon_core::board::NoteMeta),
+    /// Emptying the description would make the next note the description.
+    Description,
+}
+impl NoteGate<'_> {
+    fn reply(
+        &self,
+        ticket: &str,
+        author: impl Fn(&mesimon_core::board::NoteMeta) -> String,
+    ) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        match self {
+            NoteGate::Gone => Reply::NoteWritten { ticket: ticket.into(), note: None, rev: 0 },
+            NoteGate::Missing => reject("the note is gone"),
+            NoteGate::Stale(meta) => Reply::NoteStale {
+                ticket: ticket.into(),
+                note: api::NoteRow::of(meta, author(meta)),
+            },
+            NoteGate::Description => reject("the description cannot be emptied from here"),
+        }
+    }
+}
+
+/// The note a phone's write lands on, `None` for a fresh one, or why it
+/// stops. `rev` is the revision the browser opened; none skips the check.
+fn note_gate<'a>(
+    t: &'a Ticket,
+    note: Option<&str>,
+    blank: bool,
+    rev: Option<u64>,
+) -> Result<Option<ulid::Ulid>, NoteGate<'a>> {
+    let Some(note) = note else { return Ok(None) };
+    let Some(meta) = ulid::Ulid::from_string(note).ok().and_then(|n| t.note(n)) else {
+        return Err(if blank { NoteGate::Gone } else { NoteGate::Missing });
+    };
+    if rev.is_some_and(|r| r != meta.rev) {
+        return Err(NoteGate::Stale(meta));
+    }
+    if blank && t.description().is_some_and(|d| d.id == meta.id) {
+        return Err(NoteGate::Description);
+    }
+    Ok(Some(meta.id))
+}
+
 fn projected_tags(board: &Board, t: &Ticket) -> Vec<api::TagOption> {
     t.tags
         .iter()
@@ -2458,6 +2738,69 @@ mod tests {
         control.starts.clear();
         control.remember(grant, 400, Reply::Changed);
         assert!(!control.receipts[&grant].contains_key(&5));
+    }
+
+    /// A phone's write lands on the note it names at the revision it
+    /// opened, or stops: a moved note answers with itself, a gone one is
+    /// gone (and deleting it again is done), and the description stays.
+    #[test]
+    fn a_phone_s_note_write_names_its_revision_and_keeps_the_description() {
+        use mesimon_core::board::NoteMeta;
+        let meta = |n: u64, rev| NoteMeta {
+            id: ulid::Ulid::from_parts(n, 1),
+            name: format!("note {n}"),
+            rev,
+            created_at: "@1".into(),
+            created_by: "local".into(),
+            edited_at: "@2".into(),
+            edited_by: "agent:00000000-0000-0000-0000-000000000000".into(),
+        };
+        let t = Ticket {
+            id: ulid::Ulid(1),
+            short_key: "T-1".into(),
+            title: "t".into(),
+            column: "TODO".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
+            entered_at: None,
+            woke_at: None,
+            manual_merge: false,
+            execution_policy: Default::default(),
+            tier: None,
+            envelope: None,
+            workspace: None,
+            import_origin: None,
+            raised: None,
+            previous_column: None,
+            picked: None,
+            tags: Vec::new(),
+            notes: vec![meta(1, 1), meta(2, 3)],
+            archived: None,
+        };
+        let (description, other) = (t.notes[0].id.to_string(), t.notes[1].id.to_string());
+        assert_eq!(note_gate(&t, None, false, None), Ok(None));
+        assert_eq!(note_gate(&t, Some(&other), false, Some(3)), Ok(Some(t.notes[1].id)));
+        assert_eq!(note_gate(&t, Some(&other), true, Some(3)), Ok(Some(t.notes[1].id)));
+        assert_eq!(note_gate(&t, Some(&other), false, None), Ok(Some(t.notes[1].id)));
+        assert_eq!(note_gate(&t, Some(&other), false, Some(2)), Err(NoteGate::Stale(&t.notes[1])));
+        assert_eq!(note_gate(&t, Some(&description), true, Some(1)), Err(NoteGate::Description));
+        assert_eq!(note_gate(&t, Some(&description), false, Some(1)), Ok(Some(t.notes[0].id)));
+        let gone = ulid::Ulid::from_parts(9, 9).to_string();
+        assert_eq!(note_gate(&t, Some(&gone), true, Some(1)), Err(NoteGate::Gone));
+        assert_eq!(note_gate(&t, Some(&gone), false, Some(1)), Err(NoteGate::Missing));
+        assert_eq!(note_gate(&t, Some("not a ulid"), false, None), Err(NoteGate::Missing));
+        let Reply::NoteStale { note, .. } =
+            NoteGate::Stale(&t.notes[1]).reply("T", |_| "agent".into())
+        else {
+            panic!("stale")
+        };
+        assert_eq!((note.rev, note.by.as_str(), note.at), (3, "agent", 2000));
+        assert!(matches!(
+            NoteGate::Gone.reply("T", |_| String::new()),
+            Reply::NoteWritten { note: None, .. }
+        ));
     }
 
     #[test]

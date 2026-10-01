@@ -6,6 +6,7 @@ import { Shin } from "./shin.js";
 import { NowList, BoardList, SentList, ColumnTabs, lastSeen } from "./lists.js";
 import { Detail } from "./detail.js";
 import { NewTicket, QuickNew, StartSheet, CardSheet } from "./compose.js";
+import { NoteSheet } from "./notepad.js";
 
 // Subscribe during the commit, not after paint: a fast boot can emit before
 // a deferred effect runs, and that change would never reach the page.
@@ -137,7 +138,8 @@ function NewTicketButton({ store, board, id, cls, column }) {
 function Toast({ store }) {
   const toast = store.toast;
   return html`<div id="toast" class="toast" role="status" aria-live="polite">${toast &&
-    html`<p class="toast-body" key=${toast.id}>${toast.tick && html`<${Tick} state=${toast.tick} />`}<span>${toast.text}</span></p>`}</div>`;
+    html`<p class="toast-body" key=${toast.id}>${toast.tick && html`<${Tick} state=${toast.tick} />`}<span>${toast.text}</span>${toast.action &&
+      html`<button id="toast-action" type="button" class="btn toast-action" onClick=${() => store.toastAction()}>${toast.action.label}</button>`}</p>`}</div>`;
 }
 
 function Hop({ icon, name, state, ok }) {
@@ -330,6 +332,8 @@ export function App({ store }) {
     const target =
       want === "selection"
         ? document.getElementById("selection")
+        : want === "note"
+          ? document.getElementById("note-title")
         : want === "row"
           ? document.querySelector('#tickets .ticket[aria-pressed="true"]')
           : document.getElementById(
@@ -343,5 +347,6 @@ export function App({ store }) {
     <${NewTicket} store=${store} />
     <${StartSheet} store=${store} />
     <${CardSheet} store=${store} />
+    <${NoteSheet} store=${store} />
     <${Toast} store=${store} />`;
 }

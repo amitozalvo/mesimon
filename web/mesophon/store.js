@@ -8,6 +8,7 @@ import { Sent } from "./sent.js";
 import { Mailbox } from "./mailbox.js";
 import { Starts, startWaiting } from "./starts.js";
 import { Edits } from "./edits.js";
+import { NoteBook, NoteMail, NOTE_MAX_BYTES, nameOf } from "./notes.js";
 import { showAlert, clearAlerts } from "./awareness.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
@@ -20,6 +21,7 @@ export const PROMPT_MAX_BYTES = 4096;
 const MAIL_BYTES = 128 * 1024;
 const sentContext = (item) => `sent:${item.id}`;
 const startContext = (ticket) => `start:${ticket}`;
+const noteContext = (item) => `notew:${item.id}`;
 // How often a page opened from the kept copy asks whether the relay is back.
 const PROBE_MS = 5000;
 // Opened from the home screen, not a browser tab.
@@ -81,6 +83,13 @@ export class Store {
     this.renaming = undefined;
     this.cardSheet = undefined;
     this.editError = "";
+    // Notes (T-532): what this browser read, per board, and the edits it
+    // sent; the note open for reading ({ ticket, note }) and the edit sheet.
+    this.noteBooks = new Map();
+    this.noteMail = new NoteMail();
+    this.notesLoaded = new Set(); // boards whose stored notes are read
+    this.reading = undefined;
+    this.noteDraft = undefined;
     this.toast = undefined;
     this.depositing = new Set(); // ids handed to the mailbox socket, unanswered
     // True when this page came from the service worker's kept copy (T-497):
@@ -161,6 +170,11 @@ export class Store {
     this.remembered.delete(board);
     this.sent.purge(board);
     this.sentLoaded.delete(board);
+    this.noteBooks.delete(board);
+    this.noteMail.purge(board);
+    this.notesLoaded.delete(board);
+    if (this.noteDraft?.board === board) this.noteDraft = undefined;
+    this.reading = undefined;
     return this.storage?.dropBoards(board).catch(() => {});
   }
   async restoreSent(board) {
@@ -186,6 +200,37 @@ export class Store {
     });
   }
 
+  noteBook(board = this.active?.pin.board) {
+    let book = this.noteBooks.get(board);
+    if (!book) this.noteBooks.set(board, (book = new NoteBook()));
+    return book;
+  }
+  async restoreNotes(board) {
+    if (!board || this.notesLoaded.has(board)) return;
+    this.notesLoaded.add(board);
+    let saved;
+    try {
+      saved = await this.storage.readNotes(board);
+    } catch {
+      return;
+    }
+    if (!this.notesLoaded.has(board)) return;
+    this.noteBook(board).restore(saved?.tickets);
+    this.noteMail.restore(board, saved?.outbox);
+    if (this.active?.pin.board === board && this.connection?.online) this.receipts();
+    if (this.active?.pin.board === board && this.mailbox?.ready) this.mailReady();
+    this.emit();
+  }
+  persistNotes(board = this.active?.pin.board) {
+    if (!board || !this.storage) return;
+    this.storage
+      .saveNotes(board, { tickets: this.noteBook(board).stored(), outbox: this.noteMail.stored(board) })
+      .catch(() => {
+        this.status = "Could not save notes in this browser. They may be lost on reload.";
+        this.emit();
+      });
+  }
+
   // ---- navigation --------------------------------------------------------
   detail(open, push = false) {
     if (open && !this.detailOpen) this.outputKey = undefined;
@@ -196,6 +241,7 @@ export class Store {
   select(id) {
     if (!this.board) return;
     if (this.board.selected !== id) this.renaming = undefined;
+    this.reading = undefined;
     this.board.selected = id;
     this.active.selected = id;
     this.persist();
@@ -204,8 +250,10 @@ export class Store {
     this.sync();
     this.preview();
     this.foreground();
+    this.loadNotes();
   }
   back() {
+    this.reading = undefined;
     if (history.state?.detail) history.back();
     else this.detail(false);
     this.focus = "row";
@@ -213,6 +261,7 @@ export class Store {
   }
   popstate(state) {
     this.detail(!!state?.detail);
+    if (!state?.note) this.reading = undefined;
     this.sync();
   }
   setMode(mode) {
@@ -306,6 +355,13 @@ export class Store {
         this.onSentReply(item.id, { result: "delivery", status: "unknown" });
       else if (![...c.pending.values()].some((p) => p.context === sentContext(item)))
         c.request({ op: "status", command: item.command }, sentContext(item));
+    }
+    // A note saved over the live channel before a drop or a reload (T-532).
+    for (const item of this.noteMail.unresolved(this.active?.pin.board)) {
+      if (item.incarnation !== c.incarnation)
+        this.onNoteReply(item.id, { result: "delivery", status: "unknown" });
+      else if (![...c.pending.values()].some((p) => p.context === noteContext(item)))
+        c.request({ op: "status", command: item.command }, noteContext(item));
     }
     // A start is followed until its session runs: the host's receipt moves
     // on its own, so it is asked after on every tick until it settles.
@@ -675,12 +731,18 @@ export class Store {
     this.depositing.clear();
     const board = this.active?.pin.board;
     if (!board || !this.sent) return;
-    const asked = this.sent.forBoard(board).filter((i) => i.status === "relay").map((i) => i.id).slice(-128);
+    const asked = [...this.sent.forBoard(board), ...this.noteMail.forBoard(board)]
+      .filter((i) => i.status === "relay")
+      .map((i) => i.id)
+      .slice(-128);
     this.mailbox.send({ kind: "sync", board, ids: asked });
     for (const item of this.sent.waiting(board)) this.deposit(item);
+    for (const item of this.noteMail.waiting(board)) this.deposit(item);
     this.emit();
   }
   onMail(wire) {
+    const note = wire.id && this.noteMail.get(wire.id);
+    if (note) return this.onNoteMail(wire, note);
     const item = wire.id && this.sent.get(wire.id);
     if (wire.kind === "deposited" && item) {
       this.depositing.delete(item.id);
@@ -714,16 +776,19 @@ export class Store {
       } else this.say("Too late to take back: your terminal has it.");
     } else if (wire.kind === "mailbox" && wire.board === this.active?.pin.board) {
       for (const state of wire.items || []) {
-        const mine = this.sent.get(state.id);
+        const mine = this.sent.get(state.id) || this.noteMail.get(state.id);
         if (!mine) continue;
         if (state.stage === "answered" && state.receipt) this.onReceipt(mine, state.receipt);
-        else if (state.stage === "gone") {
+        else if (state.stage === "gone" && this.noteMail.get(mine.id)) {
+          this.noteMail.gone(mine);
+          this.persistNotes(mine.board);
+        } else if (state.stage === "gone") {
           this.sent.gone(mine);
           this.persistSent(mine.board);
         }
       }
     } else if (wire.kind === "receipt" && wire.board === this.active?.pin.board) {
-      const mine = wire.receipt?.id && this.sent.get(wire.receipt.id);
+      const mine = wire.receipt?.id && (this.sent.get(wire.receipt.id) || this.noteMail.get(wire.receipt.id));
       if (mine) this.onReceipt(mine, wire.receipt);
     }
     this.emit();
@@ -737,7 +802,8 @@ export class Store {
     } catch {
       return;
     }
-    this.onSentReply(item.id, body);
+    if (this.noteMail.get(item.id)) this.onNoteReply(item.id, body);
+    else this.onSentReply(item.id, body);
   }
   // Take a ticket back before the host has it: in this browser at once, at
   // the relay on its word.
@@ -809,16 +875,327 @@ export class Store {
   }
   // A toast says what became of a ticket; Sent shows it in the feed itself.
   // The caller emits.
-  say(text, tick) {
-    if (this.board?.mode === "sent") return;
+  say(text, tick, action) {
+    if (this.board?.mode === "sent" && !action) return;
     clearTimeout(this.toastTimer);
-    const toast = (this.toast = { id: (this.toast?.id || 0) + 1, text, tick });
+    const toast = (this.toast = { id: (this.toast?.id || 0) + 1, text, tick, action });
     this.toastTimer = setTimeout(() => {
       if (this.toast === toast) {
         this.toast = undefined;
         this.emit();
       }
-    }, 2800);
+    }, action ? 6000 : 2800);
+  }
+  // The toast's button, once.
+  toastAction() {
+    const action = this.toast?.action;
+    this.toast = undefined;
+    this.emit();
+    action?.run();
+  }
+
+  // ---- notes (T-532) ---------------------------------------------------------
+  // Whether this board's host has notes, as it said when last live.
+  get notesHere() {
+    return !!this.active?.notes;
+  }
+  // An edit goes through the mailbox when the host collects mail, live or
+  // away, as a ticket does; else over the live channel, while it is live.
+  get canWriteNotes() {
+    return this.notesHere && (this.collects || (this.live && !!this.connection?.features?.includes("notes")));
+  }
+  // The notes of the ticket on screen, asked for again only when the board's
+  // digest of them moved; then the body the page shows and does not hold.
+  loadNotes() {
+    const c = this.connection;
+    const ticket = this.board?.current;
+    if (!ticket || !this.live || this.board.cached || !c?.features?.includes("notes")) return;
+    if (narrow() && !this.detailOpen) return;
+    const book = this.noteBook();
+    const stamp = ticket.noted || "";
+    if (!ticket.notes) {
+      if (!book.current(ticket.id, "")) book.listed(ticket.id, { notes: [] }, "");
+    } else if (!book.current(ticket.id, stamp) && !c.has("notes"))
+      c.request({ op: "notes", ticket: ticket.id }, `notes:${ticket.id}:${stamp}`);
+    const rows = book.entry(ticket.id)?.rows || [];
+    const wanted = this.reading?.ticket === ticket.id ? this.reading.note : rows[0]?.id;
+    if (wanted && rows.some((r) => r.id === wanted) && book.body(ticket.id, wanted) === undefined && !c.has("note"))
+      c.request({ op: "note", ticket: ticket.id, note: wanted }, `note:${ticket.id}`);
+  }
+  onNotes(context, reply) {
+    const [, ticket, stamp = ""] = context.split(":");
+    if (reply.result === "notes") {
+      this.noteBook().listed(ticket, reply, stamp);
+      this.persistNotes();
+      this.loadNotes();
+    }
+    this.emit();
+  }
+  onNote(context, reply) {
+    const ticket = context.slice("note:".length);
+    if (reply.result === "note") {
+      this.noteBook().read(ticket, reply);
+      this.persistNotes();
+    } else if (reply.result === "rejected") {
+      // Gone since the list was read: read the list again.
+      const entry = this.noteBook().entry(ticket);
+      if (entry) entry.stamp = undefined;
+    }
+    this.emit();
+  }
+  openNote(ticket, note) {
+    this.reading = { ticket, note };
+    if (narrow() && !history.state?.note) history.pushState({ detail: true, note: true }, "");
+    this.focus = "note";
+    this.loadNotes();
+    this.emit();
+  }
+  // Closed at once: `history.back` lands later, and a second close before it
+  // would pop the ticket too.
+  closeNote() {
+    if (!this.reading) return;
+    this.reading = undefined;
+    if (history.state?.note) history.back();
+    this.emit();
+  }
+  // Prev and Next walk the ticket's notes in order, the description first,
+  // and come round again, as the desk's Tab does in its note editor.
+  walkNote(step) {
+    const rows = this.noteBook().entry(this.reading?.ticket)?.rows || [];
+    const at = rows.findIndex((r) => r.id === this.reading?.note);
+    if (at < 0 || rows.length < 2) return;
+    this.reading = { ticket: this.reading.ticket, note: rows[(at + step + rows.length) % rows.length].id };
+    this.loadNotes();
+    this.emit();
+  }
+  // The edit sheet, on the words the note has, or on an edit of this
+  // browser's that did not land. One still on its way is taken back first.
+  editNote(ticket, note) {
+    const board = this.active?.pin.board;
+    const t = this.board?.tickets.find((x) => x.id === ticket);
+    if (!board || !t || !this.canWriteNotes) return;
+    const pending = note ? this.noteMail.pending(board, ticket, note) : undefined;
+    if (pending && ["local", "relay"].includes(pending.status)) return this.retractNote(pending.id, true);
+    if (pending?.status === "sending") return;
+    const book = this.noteBook();
+    const rows = book.entry(ticket)?.rows || [];
+    const row = rows.find((r) => r.id === note);
+    let text = "";
+    if (pending) text = pending.text;
+    else if (note) {
+      text = book.body(ticket, note);
+      if (text === undefined) return;
+    }
+    this.noteDraft = {
+      board,
+      ticket,
+      key: t.key,
+      note,
+      rev: pending?.stale?.rev ?? row?.rev ?? pending?.rev,
+      text,
+      error: "",
+      confirmDelete: false,
+      description: !!note && rows[0]?.id === note,
+      replaces: pending?.id,
+    };
+    this.emit();
+  }
+  closeNoteSheet() {
+    if (!this.noteDraft) return;
+    this.noteDraft = undefined;
+    this.emit();
+  }
+  setNoteText(text) {
+    if (!this.noteDraft) return;
+    Object.assign(this.noteDraft, { text, error: "", confirmDelete: false });
+    this.emit();
+  }
+  // Delete asks once more, in place.
+  deleteNote() {
+    const draft = this.noteDraft;
+    if (!draft?.note || draft.description) return;
+    if (!draft.confirmDelete) {
+      draft.confirmDelete = true;
+      this.emit();
+      return;
+    }
+    this.saveNote(true);
+  }
+  saveNote(deleting = false) {
+    const draft = this.noteDraft;
+    if (!draft) return;
+    const text = deleting ? "" : draft.text;
+    const fail = (error) => {
+      draft.error = error;
+      this.emit();
+    };
+    if (!deleting && !text.trim()) return fail(draft.note ? "Empty. Delete the note instead." : "Nothing to save.");
+    if (new TextEncoder().encode(text).length > NOTE_MAX_BYTES) return fail("Notes must fit in 32 KiB.");
+    if (!this.canWriteNotes) return fail("Saving needs your terminal.");
+    const error = this.sendNote(draft.board, {
+      ticket: draft.ticket,
+      key: draft.key,
+      note: draft.note,
+      name: nameOf(text),
+      rev: draft.rev,
+      text,
+    });
+    if (error) return fail(error);
+    if (draft.replaces) this.noteMail.remove(draft.replaces);
+    this.noteDraft = undefined;
+    if (deleting && this.reading?.note === draft.note) this.closeNote();
+    this.persistNotes(draft.board);
+    this.emit();
+  }
+  // Sealed for the mailbox, or over the live channel: an error, or nothing.
+  sendNote(board, words) {
+    if (this.collects) {
+      let envelope;
+      try {
+        const body = { kind: "note", ticket: words.ticket, note: words.note, text: words.text, rev: words.rev,
+          written_at: Date.now() };
+        envelope = JSON.parse(this.crypto.mail(JSON.stringify(this.active.pin), JSON.stringify(body)));
+      } catch {
+        return "Could not seal the note in this browser.";
+      }
+      if (JSON.stringify(envelope).length > MAIL_BYTES) return "Too long to wait at the relay.";
+      const item = this.noteMail.add(board, words, Date.now(), envelope);
+      if (this.deposit(item)) this.say("Saving…", "clock");
+      else this.say("Saved in this browser. It goes out when you’re back online.", "clock");
+      return "";
+    }
+    const c = this.connection;
+    const item = this.noteMail.add(board, words);
+    const id = c.request(
+      { op: "write_note", ticket: words.ticket, note: words.note, text: words.text, rev: words.rev },
+      noteContext(item),
+    );
+    if (id === undefined) {
+      this.noteMail.remove(item.id);
+      return "Not saved: the connection dropped.";
+    }
+    this.noteMail.sent(item, id, c.incarnation);
+    this.say("Saving…", "clock");
+    return "";
+  }
+  onNoteReply(id, reply) {
+    const item = this.noteMail.get(id);
+    if (!item) return;
+    const before = item.status;
+    const deleted = item.note;
+    const status = this.noteMail.reply(item, reply);
+    if (status === before) return this.emit();
+    const book = this.noteBook(item.board);
+    if (status === "landed") {
+      this.noteMail.remove(item.id);
+      book.written(item.ticket, deleted, reply, item.text, item.name);
+      if (!reply.note && this.reading?.note === deleted) this.closeNote();
+      const agent = this.board?.tickets.find((t) => t.id === item.ticket)?.agent;
+      const awake = this.live && agent?.promptable && agent.state !== "sleeping";
+      if (reply.note && awake)
+        this.say("Saved", "two", { label: `Tell ${agent.provider}`, run: () => this.tellAgent(item.ticket, reply.note) });
+      else this.say(reply.note ? "Saved" : "Deleted", "two");
+      this.refresh();
+    } else if (status === "stale") {
+      const entry = book.entry(item.ticket);
+      const at = entry?.rows.findIndex((r) => r.id === item.stale.id) ?? -1;
+      if (at >= 0) entry.rows[at] = item.stale;
+      this.say(`Not saved: ${item.stale.by} changed it`);
+      this.loadNotes();
+    } else if (status === "rejected") this.say(`Not saved: ${item.message || "the terminal refused it"}`);
+    else if (status === "unknown") this.say("Save unknown. Check the note before saving again.");
+    this.persistNotes(item.board);
+    this.emit();
+  }
+  // A stale edit (T-532): keep the words the note has now, or save these
+  // over them. A refused or unknown one is let go the same way.
+  dropNote(id) {
+    const item = this.noteMail.get(id);
+    if (!item || ["sending", "local", "relay"].includes(item.status)) return;
+    this.noteMail.remove(id);
+    this.persistNotes(item.board);
+    this.loadNotes();
+    this.emit();
+  }
+  saveMine(id) {
+    const item = this.noteMail.get(id);
+    if (item?.status !== "stale" || !this.canWriteNotes) return;
+    const { ticket, key, note, name, text } = item;
+    const error = this.sendNote(item.board, { ticket, key, note, name, text, rev: item.stale.rev });
+    if (error) this.say(error);
+    else this.noteMail.remove(id);
+    this.persistNotes(item.board);
+    this.emit();
+  }
+  // Take back an edit still on its way: here at once, at the relay on its
+  // word. With `edit`, its words go back to the sheet.
+  retractNote(id, edit = false) {
+    const item = this.noteMail.get(id);
+    if (!item) return;
+    if (item.status === "local") {
+      this.noteMail.remove(id);
+      this.persistNotes(item.board);
+      if (edit) this.reopenNote(item);
+      else this.say("Unsent.");
+      this.emit();
+    } else if (item.status === "relay") {
+      if (this.mailbox?.send({ kind: "withdraw", board: this.active.pin.board, id })) item.editing = edit;
+      else this.say("Taking it back needs the relay.");
+      this.emit();
+    }
+  }
+  reopenNote(item) {
+    const rows = this.noteBook(item.board).entry(item.ticket)?.rows || [];
+    this.noteDraft = {
+      board: item.board,
+      ticket: item.ticket,
+      key: item.key,
+      note: item.note,
+      rev: item.rev,
+      text: item.text,
+      error: "",
+      confirmDelete: false,
+      description: !!item.note && rows[0]?.id === item.note,
+      replaces: undefined,
+    };
+  }
+  onNoteMail(wire, item) {
+    if (wire.kind === "deposited") {
+      this.depositing.delete(item.id);
+      const before = item.status;
+      this.noteMail.deposited(item);
+      if (before !== item.status) {
+        this.persistNotes(item.board);
+        if (!this.live) this.say("Waits at the relay for your terminal.", "one");
+      }
+    } else if (wire.kind === "refused") {
+      this.depositing.delete(item.id);
+      if (wire.code === "unavailable") return;
+      this.noteMail.reply(item, { result: "rejected", message: "the relay did not keep it" });
+      this.persistNotes(item.board);
+      this.say("Not sent: the relay did not keep it.");
+    } else if (wire.kind === "withdrawn") {
+      const edit = item.editing;
+      item.editing = false;
+      if (wire.removed) {
+        this.noteMail.remove(item.id);
+        this.persistNotes(item.board);
+        if (edit) this.reopenNote(item);
+        else this.say("Unsent.");
+      } else this.say("Too late: your terminal has it.");
+    }
+    this.emit();
+  }
+  tellAgent(ticket, note) {
+    const c = this.connection;
+    if (!this.live || c?.request({ op: "tell_agent", ticket, note }, `tell:${ticket}`) === undefined)
+      this.say("Not sent: your terminal is out of reach.");
+    this.emit();
+  }
+  onTold(reply) {
+    if (reply.result === "delivery") this.say("Told", "two");
+    else if (reply.result === "rejected") this.say(`Not told: ${reply.message}`);
+    this.emit();
   }
 
   // ---- pairing and boards ------------------------------------------------
@@ -897,6 +1274,9 @@ export class Store {
     this.detail(!!chosen.selected);
     if (!this.board) this.restoreBoard(chosen);
     this.restoreSent(chosen.pin.board);
+    this.restoreNotes(chosen.pin.board);
+    this.reading = undefined;
+    this.noteDraft = undefined;
     this.sync();
     if (this.kept) return;
     this.connection.connect(chosen);
@@ -914,6 +1294,10 @@ export class Store {
     this.starts = new Starts();
     this.edits = new Edits();
     this.renaming = this.cardSheet = undefined;
+    this.noteBooks.clear();
+    this.noteMail = new NoteMail();
+    this.notesLoaded.clear();
+    this.reading = this.noteDraft = undefined;
     this.composer = emptyDraft(undefined);
     this.active = this.board = this.entry = this.returnBoard = undefined;
     clearAlerts();
@@ -978,9 +1362,11 @@ export class Store {
     // What the host said about itself, kept for when it is away (T-497).
     const collects = !!this.connection.features?.includes("mailbox");
     const starts = !!this.connection.features?.includes("start");
-    if (!!chosen.collects !== collects || !!chosen.starts !== starts) {
+    const notes = !!this.connection.features?.includes("notes");
+    if (!!chosen.collects !== collects || !!chosen.starts !== starts || !!chosen.notes !== notes) {
       chosen.collects = collects;
       chosen.starts = starts;
+      chosen.notes = notes;
       this.persist();
     }
     this.board = this.boards.get(chosen.pin.board);
@@ -989,6 +1375,7 @@ export class Store {
     this.screen = "shell";
     if (!this.board) this.restoreBoard(chosen);
     this.restoreSent(chosen.pin.board);
+    this.restoreNotes(chosen.pin.board);
     this.sync();
     this.refresh();
     this.receipts();
@@ -1016,6 +1403,11 @@ export class Store {
       this.onEditReply(id, reply);
       return;
     }
+    const context = typeof original?.context === "string" ? original.context : "";
+    if (context.startsWith("notes:")) return this.onNotes(context, reply);
+    if (context.startsWith("note:")) return this.onNote(context, reply);
+    if (context.startsWith("notew:")) return this.onNoteReply(context.slice("notew:".length), reply);
+    if (context.startsWith("tell:")) return this.onTold(reply);
     if (reply.result === "awareness") {
       const originBoard = this.active?.pin.board;
       showAlert(reply, this.visibleTicket(), (ticket) => this.navigateTicket(originBoard, ticket));
@@ -1046,6 +1438,7 @@ export class Store {
       this.sync();
       this.preview();
       this.foreground();
+      this.loadNotes();
     } else if (reply.result === "preview" && original?.body.op === "preview") {
       const session = this.sessions.entries.get(original.context);
       if (session) {
@@ -1228,6 +1621,7 @@ export class Store {
       this.refresh();
       this.preview();
       this.receipts();
+      this.loadNotes();
     }
   }
   setOnline(online) {
@@ -1240,10 +1634,10 @@ export class Store {
   // while a ticket is being written, whose words live only in this page.
   watchForRelay() {
     const probe = async () => {
-      if (this.composer.open) return;
+      if (this.composer.open || this.noteDraft) return;
       try {
         const response = await fetch("./manifest.webmanifest", { cache: "no-store" });
-        if (response.ok && !this.composer.open) location.reload();
+        if (response.ok && !this.composer.open && !this.noteDraft) location.reload();
       } catch {
         /* Still out of reach. */
       }
