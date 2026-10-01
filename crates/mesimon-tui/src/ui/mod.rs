@@ -20,6 +20,7 @@ mod tagpicker;
 mod tests;
 mod themes;
 mod ticket;
+pub(crate) mod usage;
 
 pub(crate) use card::{CrownMark, Land};
 
@@ -210,6 +211,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if let Mode::Notifications { idx } = &app.mode {
         menu::draw_notify(f, app, *idx);
+    }
+    if matches!(app.mode, Mode::Usage) {
+        usage::draw(f, app);
     }
     if matches!(app.mode, Mode::Prompts { .. }) {
         menu::draw_prompts(f, app);

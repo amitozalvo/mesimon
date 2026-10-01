@@ -39,6 +39,7 @@ pub mod team;
 pub mod text;
 pub mod tier;
 pub mod train;
+pub mod usage;
 pub mod verdict;
 pub mod workspace;
 

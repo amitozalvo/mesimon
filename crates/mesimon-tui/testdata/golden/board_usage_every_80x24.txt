@@ -1,0 +1,24 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+
+    TODO                          2     IN PROGRESS                  2   2   1
+
+    Decay treatments            >1y     ⠋ Fix OSC-11 detection     >1y   R   D
+                                                                         E   O
+    Keymap validator            >1y     ⠋ Adopt drawer import      >1y   V   N
+                                                                         I   E
+                                                                         E
+                                                                         W
+
+
+
+
+
+
+
+
+
+
+
+
+ T-1 Decay treatments         claude 5h 91% resets 17:50 ∙ week 63% ∙ Fable 64%
+ enter ticket page ∙ o new ticket ∙ HJKL move card            esc menu ∙ ? keys

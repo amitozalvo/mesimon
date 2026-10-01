@@ -9071,3 +9071,142 @@ fn golden_the_ticket_and_the_card_wear_the_tier() {
     let rows = render(&app, 120, 30);
     assert!(!rows.iter().any(|r| r.contains("quick")), "and lets go: {rows:?}");
 }
+
+/// The author's own reading on 2026-10-01 (T-327), drawn against its own
+/// moment so no golden reads the wall clock: the week and Fable calm, the
+/// five-hour window at `five` with the server's `sev`. Codex's sign-in is
+/// expired, as it was.
+const USAGE_NOW: u64 = 1_790_870_640_000; // 2026-10-01T16:04:00Z
+
+fn usage_fixture(five: f64, sev: mesimon_core::usage::Severity) -> mesimon_core::usage::Usage {
+    use mesimon_core::usage::{Problem, Reading, Severity, Usage, Wants, Window, WindowKind};
+    let window = |kind: WindowKind, label: &str, long: &str, percent: f64, resets: u64| Window {
+        kind,
+        label: label.into(),
+        long: long.into(),
+        percent,
+        resets_at_ms: Some(resets),
+        severity: Severity::Normal,
+        headline: false,
+        length_mins: Some(if kind == WindowKind::Session { 300 } else { 10_080 }),
+    };
+    let mut session = window(WindowKind::Session, "5h", "5-hour", five, 1_790_877_000_000);
+    session.severity = sev;
+    session.headline = sev != Severity::Normal;
+    let week = window(WindowKind::Weekly, "week", "week, all models", 63.0, 1_791_014_400_000);
+    let mut fable = window(WindowKind::Model, "Fable", "week, Fable", 64.0, 1_791_014_400_000);
+    fable.headline = sev == Severity::Normal;
+    let mut u = Usage::default();
+    u.claude.read(Reading {
+        read_at_ms: USAGE_NOW - 120_000,
+        plan: Some("max".into()),
+        windows: vec![session, week, fable],
+    });
+    u.codex.failed(Problem::SignedOut, USAGE_NOW - 60_000);
+    u.wants = Wants { claude: true, codex: true };
+    u
+}
+
+fn usage_app(five: f64, sev: mesimon_core::usage::Severity) -> App {
+    let mut app = app_graphite(fixture(false));
+    app.usage = usage_fixture(five, sev);
+    app.now = || USAGE_NOW;
+    app
+}
+
+fn advisory(app: &App, w: u16) -> String {
+    render(app, w, 30)[28].clone()
+}
+
+/// Near a limit, the default (T-327): silent while every window is calm,
+/// and when the server warns the window steps forward with its reset — on
+/// the right of the row the cursor card's name holds on the left.
+#[test]
+fn golden_usage_line_speaks_near_a_limit() {
+    use mesimon_core::usage::Severity;
+    let calm = usage_app(14.0, Severity::Normal);
+    assert!(!advisory(&calm, 120).contains("claude"), "{:?}", advisory(&calm, 120));
+    let app = usage_app(86.0, Severity::Warning);
+    let row = advisory(&app, 120);
+    assert!(row.ends_with("claude 5h 86% resets 17:50"), "{row:?}");
+    assert!(row.starts_with(" T-"), "the hover row keeps its place: {row:?}");
+    golden("board_usage_near_120x30", &render(&app, 120, 30));
+}
+
+/// Every window, then the room running out: the calm windows go first,
+/// then the headline stands alone, then the line stands aside.
+#[test]
+fn usage_line_gives_up_its_parts_in_order() {
+    use mesimon_core::usage::Severity;
+    let mut app = usage_app(14.0, Severity::Normal);
+    app.seed_pref(|p| p.usage_line = crate::prefs::UsageLine::Every);
+    app.cursor_row = None;
+    assert!(advisory(&app, 120).ends_with("claude 5h 14% ∙ week 63% ∙ Fable 64%"));
+    app.seed_pref(|p| p.usage_resets = crate::prefs::UsageResets::Always);
+    let always = advisory(&app, 120);
+    assert!(always.contains("5h 14% resets 17:50 ∙ week 63% resets Sat 08:00"), "{always:?}");
+    // A notice keeps the row; the line takes what is left.
+    app.notices = vec![mesimon_core::command::Notice::new(
+        "shell_env",
+        "could not read the login shell: zsh exited 1 after 2s, panes are on a fallback",
+    )];
+    let tight = advisory(&app, 100);
+    assert!(tight.ends_with("claude Fable 64%"), "the headline alone: {tight:?}");
+    let gone = advisory(&app, 80);
+    assert!(!gone.contains("claude"), "no room, no line: {gone:?}");
+    // The settings name the windows: a window that is off never shows.
+    app.notices.clear();
+    app.seed_pref(|p| {
+        p.usage_model = false;
+        p.usage_resets = crate::prefs::UsageResets::Near;
+    });
+    assert!(advisory(&app, 120).ends_with("claude 5h 14% ∙ week 63%"));
+    app.seed_pref(|p| p.usage_claude = false);
+    assert!(!advisory(&app, 120).contains("claude"));
+    golden("board_usage_every_80x24", &{
+        let mut app = usage_app(91.0, Severity::Critical);
+        app.seed_pref(|p| p.usage_line = crate::prefs::UsageLine::Every);
+        render(&app, 80, 24)
+    });
+}
+
+/// A window whose reset has passed since it was read is about a window that
+/// is gone: it leaves the line until the next read.
+#[test]
+fn usage_line_drops_a_window_that_rolled_over() {
+    use mesimon_core::usage::Severity;
+    let mut app = usage_app(97.0, Severity::Critical);
+    assert!(advisory(&app, 120).contains("claude 5h 97% resets 17:50"));
+    app.now = || 1_790_877_000_001;
+    assert!(!advisory(&app, 120).contains("claude"), "{:?}", advisory(&app, 120));
+}
+
+/// The Usage dialog: the provider's numbers with their age and resets, the
+/// experimental pace row said to be one, and why codex has none.
+#[test]
+fn golden_usage_dialog() {
+    use mesimon_core::usage::Severity;
+    let mut app = usage_app(14.0, Severity::Normal);
+    app.mode = Mode::Usage;
+    let rows = render(&app, 120, 30);
+    let all = rows.join("\n");
+    assert!(all.contains("claude ∙ max"), "{all}");
+    assert!(all.contains("official ∙ read 2m ago"), "{all}");
+    assert!(all.contains("week, Fable        64%   resets Sat 08:00"), "{all}");
+    assert!(all.contains("experimental"), "{all}");
+    assert!(all.contains("sign-in expired ∙ run codex login in a shell, then r"), "{all}");
+    assert!(all.contains("r read now ∙ s settings ∙ esc back"), "{all}");
+    golden("usage_dialog_120x30", &rows);
+    // The menu row answers before it is opened.
+    assert_eq!(crate::ui::usage::summary(&app), "claude Fable 64% ∙ codex signed out");
+}
+
+#[test]
+fn golden_usage_settings() {
+    let mut app = app_graphite(fixture(false));
+    app.settings_section = mesimon_core::keymap::SettingsSection::Usage;
+    app.mode = Mode::Settings { idx: 0 };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("Show: near a limit")), "{rows:?}");
+    golden("settings_usage_120x30", &rows);
+}

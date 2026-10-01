@@ -1016,6 +1016,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // theirs. An agent moving it would be redecorating a screen it is
         // not looking at.
         | Command::SetStatusLine { .. }
+        // A quota probe launches the user's own CLI under their sign-in
+        // (T-327): the person's board asks for it, never an agent.
+        | Command::SetUsageWants { .. }
+        | Command::RefreshUsage { .. }
         // Writes a file the user tracks in git, and stamps a board-wide
         // "never ask again". The dialog that shows the bytes is a person's;
         // this is not a road an agent gets a share of.

@@ -5,7 +5,6 @@
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
 
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
-
                            ╭─ MENU ─────────────────────────────────────────────────────────╮
                            │   External sessions                                            │
                            │     agent sessions in this repo that mesimon did not start     │
@@ -13,6 +12,8 @@
                            │     off the board, still here                                  │
                            │   Sharing: not signed in                                       │
                            │     sign in to a relay to share this board or join one         │
+                           │   Usage                                                        │
+                           │     your plan's quota windows, and when each resets            │
                            │   Settings                                                     │
                            │     appearance & notifications, behaviour, agents              │
                            │   Release notes                                                │
@@ -20,7 +21,6 @@
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
-
 
 
 

@@ -354,22 +354,55 @@ fn suggestion_chip(app: &App, budget: usize) -> Vec<Span<'static>> {
 /// carries up to five optional `∙` clauses and a sixth pushes the update chip
 /// off a 100-column terminal.
 pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
+    let width = area.width as usize;
+    // The subscription quota (T-327) takes the row's right side, one cell in
+    // from the edge like the footer's own cluster: after a grace or a notice
+    // in what they leave, before the hover row, which gives way to it.
+    let compose = |left: Option<Line<'static>>, quota: Vec<Span<'static>>| {
+        let mut spans: Vec<Span<'static>> = left.map(|l| l.spans).unwrap_or_default();
+        let used: usize = super::spans_width(&spans);
+        let qw: usize = super::spans_width(&quota);
+        if qw > 0 {
+            spans.push(Span::raw(" ".repeat(width.saturating_sub(used + qw + 1))));
+            spans.extend(quota);
+        }
+        Line::from(spans)
+    };
+    let quota_after = |left: &Line<'static>| {
+        let used: usize = super::spans_width(&left.spans);
+        super::usage::line(app, width.saturating_sub(used + 3 + 1))
+    };
     let Some(g) = app.grace.last() else {
         if let Some(n) = app.notices.first() {
             let more = app.notices.len();
             let tail = if more > 1 { format!(" ∙ +{} more", more - 1) } else { String::new() };
             // One cell in from each edge, the footer's inset, and the tail
             // is counted so a long notice never pushes it off the row.
-            let room = (area.width as usize).saturating_sub(2 + tail.width());
+            let room = width.saturating_sub(2 + tail.width());
             // The value step, not the accent: this is a warning, and the one
             // saturated colour stays reserved for needs-you (L3).
             let line = Line::from(Span::styled(
                 format!(" {}{tail}", truncate(&n.text, room)),
                 app.theme.base(),
             ));
-            f.render_widget(Paragraph::new(line), area);
-        } else if let Some(line) = hover_line(app, area.width as usize) {
-            f.render_widget(Paragraph::new(line), area);
+            let quota = quota_after(&line);
+            f.render_widget(Paragraph::new(compose(Some(line), quota)), area);
+            return;
+        }
+        // The hover row is fitted second: the quota line is the scarcer
+        // news, so it is fitted against what the row needs to name a card
+        // at all, and the card's title takes what is left.
+        let hover = hover_line(app, width);
+        let reserve = if hover.is_some() { HOVER_ROW_FLOOR + 3 } else { 1 };
+        let quota = super::usage::line(app, width.saturating_sub(reserve + 1));
+        let qw: usize = super::spans_width(&quota);
+        let hover = if qw > 0 && hover.is_some() {
+            hover_line(app, width.saturating_sub(qw + 3))
+        } else {
+            hover
+        };
+        if hover.is_some() || qw > 0 {
+            f.render_widget(Paragraph::new(compose(hover, quota)), area);
         }
         return;
     };
@@ -387,8 +420,13 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
         ),
         app.theme.dim1(),
     ));
-    f.render_widget(Paragraph::new(line), area);
+    let quota = quota_after(&line);
+    f.render_widget(Paragraph::new(compose(Some(line), quota)), area);
 }
+
+/// The fewest cells the hover row keeps beside the quota line: a key and a
+/// title's floor.
+const HOVER_ROW_FLOOR: usize = 8 + HOVER_TITLE_FLOOR;
 
 /// What the hover row's title keeps before the created clause gives way.
 const HOVER_TITLE_FLOOR: usize = 16;
@@ -471,6 +509,7 @@ fn dialog_open(app: &App) -> bool {
             Mode::Menu { .. }
                 | Mode::Settings { .. }
                 | Mode::Notifications { .. }
+                | Mode::Usage
                 | Mode::Theme { .. }
                 | Mode::Archived { .. }
                 | Mode::External { .. }

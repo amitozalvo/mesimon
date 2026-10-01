@@ -511,6 +511,29 @@ pub enum Command {
     SetStatusLine {
         top: bool,
     },
+    /// Which providers' subscription quota this board wants read (T-327) —
+    /// the Usage settings' provider switches, while the line is on. Held per
+    /// CONNECTION like the merge train: the daemon reads for the union of the
+    /// boards attached and stops when the last one goes, so a daemon with no
+    /// board open never launches a probe. The TUI pushes it at start and
+    /// whenever a snapshot reads the daemon wanting something else (a
+    /// restart forgets it). Local only: a probe is a launch of the user's
+    /// own CLI, nothing an agent may start.
+    SetUsageWants {
+        #[serde(default)]
+        claude: bool,
+        #[serde(default)]
+        codex: bool,
+    },
+    /// Read these providers' quota now (T-327): the Usage dialog's `r`, or
+    /// its opening on a stale reading. At most every ten seconds a provider,
+    /// whether or not the line wants it.
+    RefreshUsage {
+        #[serde(default)]
+        claude: bool,
+        #[serde(default)]
+        codex: bool,
+    },
     /// Turn the agent tool surface on or off for this board (T-217).
     ///
     /// Per repo, persisted in `columns.toml`, and read at every spawn: off
@@ -1175,6 +1198,9 @@ impl Command {
             // Chrome over the panes, not the board's history: the feed says
             // what the board did, and where the status line sits is neither.
             SetStatusLine { .. } => m(Mutate, false, None),
+            // The daemon's reading schedule, never board state: a viewer of a
+            // shared board reads their own quota like anyone (T-327).
+            SetUsageWants { .. } | RefreshUsage { .. } => m(Read, false, None),
             // The ticket, never the text: the feed records that the user
             // asked, not what they asked.
             PromptSession { ticket, .. }
@@ -1496,6 +1522,11 @@ pub enum Response {
         /// daemon parses as none, which resolves every ticket to `claude`.
         #[serde(default)]
         machine_tiers: MachineTiers,
+        /// Subscription quota per provider (T-327), the machine's one reading
+        /// as this daemon holds it. Absent from an older daemon parses as
+        /// nothing read and nothing wanted, which draws no line.
+        #[serde(default)]
+        usage: crate::usage::Usage,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the

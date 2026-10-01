@@ -34,6 +34,12 @@ pub(crate) fn local_of(secs: u64) -> Option<LocalTime> {
     })
 }
 
+/// A moment in unix seconds, broken down locally — the board's clock for a
+/// quota's reset time (T-327), handed to `App::clock` by `lib.rs::run`.
+pub(crate) fn at(secs: u64) -> Option<LocalTime> {
+    local_of(secs)
+}
+
 /// Now, broken down locally.
 pub(crate) fn now_local() -> Option<LocalTime> {
     local_of(epoch_now())

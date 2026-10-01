@@ -806,6 +806,8 @@ impl Observation {
                 plan: None,
                 plan_key: None,
                 stopped: false,
+                rate_limits: None,
+                rate_limits_at_ms: 0,
             },
             ledger: None,
             retired: BTreeMap::new(),
@@ -894,6 +896,7 @@ impl Observation {
     }
 
     fn incoming(&mut self, config: &RuntimeConfig, frame: Value) -> Result<()> {
+        self.note_rate_limits(&frame);
         if frame.get("method").is_none() {
             if let Some(id) = frame.get("id") {
                 self.native_requests.remove(&id.to_string());
@@ -981,6 +984,27 @@ impl Observation {
             self.buffered.push(frame);
         }
         Ok(())
+    }
+
+    /// The account's quota as this app-server last told it (T-327): the
+    /// `account/rateLimits/updated` notification after a turn, or the answer
+    /// to a client's own `account/rateLimits/read`. Not a thread's — every
+    /// report is the sign-in's — so it is taken before any thread is chosen,
+    /// and bounded like every other carried value.
+    fn note_rate_limits(&mut self, frame: &Value) {
+        let limits = if frame["method"] == "account/rateLimits/updated" {
+            &frame["params"]
+        } else if frame.get("method").is_none() && frame["result"]["rateLimits"].is_object() {
+            &frame["result"]
+        } else {
+            return;
+        };
+        if limits.is_object() && limits.to_string().len() <= 8192 {
+            self.snapshot.rate_limits = Some(limits.clone());
+            self.snapshot.rate_limits_at_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        }
     }
 
     fn observe(&mut self, config: &RuntimeConfig, frame: &Value) {
@@ -1402,6 +1426,30 @@ mod tests {
                 .map(|id| ((*id).into(), json!({"id":id,"status":{"type":"idle"},"turns":[]})))
                 .collect(),
         }
+    }
+
+    /// The quota report rides the snapshot from before a thread is chosen
+    /// (T-327): the notification's params, or a client's own read's answer.
+    #[test]
+    fn rate_limit_reports_are_carried_whichever_road_they_came() {
+        let mut observer = Observation::new(&config());
+        let limits = json!({"rateLimits":{"limitId":"codex",
+            "primary":{"usedPercent":38,"windowDurationMins":300,"resetsAt":1_790_880_000}}});
+        observer
+            .incoming(&config(), json!({"method":"account/rateLimits/updated","params":limits}))
+            .unwrap();
+        assert_eq!(observer.snapshot.rate_limits.as_ref(), Some(&limits));
+        assert!(observer.snapshot.rate_limits_at_ms > 0);
+        let read = json!({"rateLimits":{"limitId":"codex"},"rateLimitsByLimitId":{}});
+        observer.incoming(&config(), json!({"id":9,"result":read})).unwrap();
+        assert_eq!(observer.snapshot.rate_limits.as_ref(), Some(&read));
+        observer.incoming(&config(), json!({"method":"thread/started","params":{}})).unwrap();
+        assert_eq!(observer.snapshot.rate_limits.as_ref(), Some(&read), "nothing else moves it");
+        let huge = json!({"rateLimits":{"pad":"x".repeat(9000)}});
+        observer
+            .incoming(&config(), json!({"method":"account/rateLimits/updated","params":huge}))
+            .unwrap();
+        assert_eq!(observer.snapshot.rate_limits.as_ref(), Some(&read), "bounded");
     }
 
     #[test]

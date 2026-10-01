@@ -17153,3 +17153,81 @@ disk and back, board scope refused on an override). Golden: `tiers_machine_120x3
 of one's own leaves both out, no tiers means both built-ins) and
 `app::ctrl_n_picks_a_tickets_tier_and_rides_the_composers_mint` (no `codex` on the card or in the
 composer).
+
+## The board says what is left of the plan (T-327, 2026-10-01, "subscription quota in board": "maybe one line above the hintline on the right side ∙ per provider ∙ keep in mind claude and codex has weekly, 5h and per model quotas. users should be able to configure what they see")
+
+**Shipped (phase 1).** A quota line on the right of the advisory row, Esc › Usage (every window,
+its reset, the reading's age, why a provider has none, an experimental pace row), Settings ›
+Usage (seven machine prefs), `mesimon doctor`'s `usage` line, and one reading per machine in
+`~/.local/state/mesimon/usage.json` (with `usage.lock` beside it, both now in PROMISES.md's
+table). Per-ticket cost is phase 2 of the same ticket.
+
+**Decisions (author, on the proposal artifact).** The line's default is *near a limit*: silent
+until a provider warns (every window, the headline and off are the other rungs). The Claude
+probe is on by default. `$` on the board will cycle the card corner between age and cost
+(phase 2); the Usage dialog opens from the menu, not from `$`. The pace row is included and
+says it is experimental. Cost on cards is off by default.
+
+**One rule for every number.** A percentage is the provider's, carried as sent; a dollar figure
+is mesimon's estimate (phase 2); a projection is experimental and lives only in the dialog.
+Claude's `limits[]` rows carry the server's own `severity` and headline pick (`is_active`), and
+its schema says a client never grades a row itself, so `core::usage::parse_claude` does not.
+Codex sends neither: `grade` reads 80% as a warning and 95% as critical, and the fullest window
+is its headline. A severity is the value step (dim2 → base) plus the reset time, never `attn`.
+
+**Where the numbers come from (measured 2026-10-01, Claude Code 2.1.286, Codex 0.156.1).**
+- Claude: `claude -p --input-format stream-json --output-format stream-json --verbose
+  --no-session-persistence --strict-mcp-config --mcp-config '{"mcpServers":{}}' --settings
+  '{"disableAllHooks":true}'`, then the SDK control request `get_usage` (`skip_behaviors:
+  true`) on stdin. The answer has the rows `/usage` draws: `session`, `weekly_all`,
+  `weekly_scoped` (scope `{model: {display_name: "Fable"}}`), plus `subscription_type` and
+  `rate_limits_available` (false for an API key or a cloud provider). 1.5–1.9 s, no prompt, no
+  tokens, no transcript; Claude Code still bumps its own `~/.claude.json` and plugin-sync
+  markers as any launch does. `--bare` cannot stand in: it never reads OAuth.
+- Codex: `account/rateLimits/read` on a short-lived `codex app-server` (stdio JSON-RPC), and
+  `account/rateLimits/updated` after every turn on the app-server a mesimon Codex session
+  already runs. The runtime copies the latter (or a client's own read's answer) into its
+  observation snapshot (`Snapshot::rate_limits`, bounded at 8 KiB), so a working Codex session
+  never needs a probe. The shape is `RateLimitSnapshot {limitId, limitName, primary,
+  secondary: {usedPercent, windowDurationMins, resetsAt (unix s)}, planType,
+  rateLimitReachedType}`, per bucket under `rateLimitsByLimitId` (`codex`, and
+  `codex_bengalfox` = "GPT-5.3-Codex-Spark"); a rollout's `token_count.rate_limits` is the
+  same in snake_case. A window's kind comes from its minutes (300, 10080, 43200), never from
+  primary/secondary: on a `prolite` plan `primary` is the week.
+
+**Set aside.** Reading the OAuth token from the keychain and calling the usage endpoint: mesimon
+would hold the credential and could not refresh it. A `statusLine` command in the sessions'
+`--settings`: it would replace the user's own, and its JSON carries only `five_hour` and
+`seven_day`. Estimating quota from local token counts: plan limits are unpublished and usage
+elsewhere is invisible.
+
+**When it reads (`core::usage::Cadence`, `daemon/src/usage.rs`).** Only for what an attached
+board asked: `SetUsageWants` is held per connection like the merge train, so a daemon with no
+board open never probes, and a restarted daemon wants nothing until the TUI's reconcile says
+again. `RefreshUsage` is the dialog's `r` (at most every 10 s) and its opening on an account
+older than three minutes. Otherwise: a turn's `Stop` and an older-than-3-minutes reading; a
+`StopFailure` `rate_limit` at once; a window whose reset passed since the read; and every 15
+minutes, with a one-minute floor under all of it. Failures back off 5 → 60 minutes, and a
+lasting problem (signed out, no plan) waits the hour. The shared file is merged per provider
+by the later attempt, and the lock means one daemon probes while the rest read its answer from
+the file (`Outcome::Busy`). A file from a newer mesimon is neither read nor written.
+
+**The row (T-471's hover row shares it).** A grace or a notice keeps its place and the line
+takes what is left; at rest the line is fitted first against the hover row's floor (a key and
+16 cells of title) and the card's name takes the rest. The line gives up parts in a fixed
+order: reset times on calm windows, calm windows but each provider's headline, the headline
+alone, its reset, then whole providers, calmest first — and below that it stands aside rather
+than cut. A window whose reset has passed leaves the line until the next read. Reset times are
+the board's local clock (`App::clock`, UTC in tests; `App::now` pins the moment in goldens).
+
+**Tests.** `core::usage` (parsers on the author's real answer, both Codex shapes, grades, pace,
+the cadence, dates), `daemon::usage` (stub CLIs as shell scripts: a reading, an expired sign-in,
+a missing and an old CLI, a held lock, two daemons sharing the file, a newer file left alone),
+the runtime's capture test, `app.rs`'s wants-and-dialog test, the line's fitting tests and five
+goldens (`board_usage_near_120x30`, `board_usage_every_80x24`, `usage_dialog_120x30`,
+`settings_usage_120x30`, and the menu/settings goldens that gained a row), and `usage_e2e`.
+
+**Known limits.** The Claude probe is a CLI launch, so a cold one costs a second or two of CPU.
+The plan word is the provider's (`max`, `prolite`). A Claude Code older than `get_usage` reads
+as "needs an update", and Codex's per-model buckets are named by the last segment of their
+label (`Spark`). The dialog has no rows to select yet; phase 2 adds this board's tickets.

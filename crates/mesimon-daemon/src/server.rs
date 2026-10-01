@@ -27,6 +27,7 @@ use mesimon_core::command::{
 };
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
+use mesimon_core::usage::{Provider, Wants};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
 
 use crate::agents::claude::user_default_mode;
@@ -328,6 +329,8 @@ enum Msg {
     /// here, on the writer, in `teamglue`.
     Team(crate::team::sync::Done),
     Control(u64, crate::team::control_io::Event, Sender<()>),
+    /// A quota probe came back (T-327): whose, and what it said.
+    UsageRead(Provider, crate::usage::Outcome),
 }
 
 pub struct Daemon {
@@ -593,6 +596,9 @@ pub struct Daemon {
     /// The machine's agent tiers (T-443), `tiers.toml` as last read — the
     /// layer under `board.tiers`, re-read when another board changes it.
     machine_tiers: tiers::MachineTierCache,
+    /// Subscription quota (T-327): the machine's one reading as this daemon
+    /// holds it, each provider's schedule, and what each board asked for.
+    usage: crate::usage::UsageState,
     /// When each ticket's tier was last picked, so a seat is relaunched on
     /// the pick a person stopped at rather than on every `^n` on the way
     /// (`tiers::TIER_SETTLE_MS`). In memory: a restart settles at once.
@@ -1012,6 +1018,7 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_landed: Vec::new(),
         turn_asks: HashMap::new(),
         machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
+        usage: crate::usage::UsageState::new(crate::usage::shared_file()),
         tier_set_at: HashMap::new(),
         shell_env: crate::shellenv::ShellEnv::default(),
         shell_env_capturing: false,
@@ -1119,6 +1126,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ProvisionProgress(..) => "provision progress".into(),
             Msg::ShellEnvCaptured(_) => "shell env captured".into(),
             Msg::ExternalScanned(_) => "external scanned".into(),
+            Msg::UsageRead(p, _) => format!("usage read {}", p.word()).into(),
             Msg::GitSampled(..) => "git sampled".into(),
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
@@ -1152,6 +1160,7 @@ pub fn run(paths: Paths) -> Result<()> {
             }
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
             Msg::ExternalScanned(items) => d.on_external_scanned(items),
+            Msg::UsageRead(p, outcome) => d.on_usage_read(p, outcome),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
@@ -2029,6 +2038,19 @@ impl Daemon {
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
             Command::SetCrownSends { on } => self.set_crown_sends(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
+            Command::SetUsageWants { claude, codex } => {
+                if self.usage.set_wants(conn_key(stream), Wants { claude, codex }) {
+                    self.broadcast();
+                }
+                Response::Ok
+            }
+            Command::RefreshUsage { claude, codex } => {
+                self.usage.ask(Wants { claude, codex });
+                if self.drive_usage(now_ms()) {
+                    self.broadcast();
+                }
+                Response::Ok
+            }
             Command::SetSystemPrompt { on } => self.set_system_prompt(on),
             Command::SetDefaultColumn { column } => self.set_default_column(column.as_deref()),
             Command::SetFollowUpMode { mode } => {
@@ -2307,6 +2329,7 @@ impl Daemon {
             changed |= stage!("hear_merges", self.hear_merges());
             changed |= stage!("hear_deferred", self.hear_deferred());
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
+            changed |= stage!("drive_usage", self.drive_usage(now));
             let a = stage!("archive_figures", self.archive_figures());
             if a != self.archive_cache {
                 self.archive_cache = a;
@@ -2722,6 +2745,7 @@ impl Daemon {
         let mut dirty = false;
         let mut plans = Vec::new();
         let mut stopped = Vec::new();
+        let mut quota = Vec::new();
         for (id, snapshot) in snapshots {
             let principal = Principal::Automation { rule: "codex_observer".into() };
             if matches!(
@@ -2769,6 +2793,10 @@ impl Daemon {
             };
             if snapshot.sequence < rec.codex_observed_seq {
                 continue;
+            }
+            // The session's own quota report (T-327), taken after the loop.
+            if let Some(limits) = snapshot.rate_limits.take() {
+                quota.push((snapshot.rate_limits_at_ms, limits));
             }
             if snapshot.thread_id.is_some() && snapshot.thread_id != rec.codex_thread_id {
                 dirty |= rec.title.is_some();
@@ -2916,8 +2944,16 @@ impl Daemon {
                 dirty = true;
             }
         }
+        let mut quota_moved = false;
+        for (at, limits) in quota {
+            if let Some(reading) = mesimon_core::usage::parse_codex(&limits, at) {
+                quota_moved |= self.usage.passive(Provider::Codex, reading);
+            }
+        }
         if dirty {
             self.persist_and_notify();
+        } else if quota_moved {
+            self.broadcast();
         }
     }
 
@@ -3210,6 +3246,15 @@ impl Daemon {
             // pane. The person's own last move on the ticket stops being one
             // the no-undo rule protects, BEFORE the `Running` edge below asks
             // automove to reverse it (T-186). An agent's move keeps its guard.
+            // The quota moves at a turn's end, and a rate-limit stop means a
+            // window is full (T-327). A Claude hook is Claude's quota.
+            match &sig {
+                Signal::Stop { .. } => self.usage.turn_ended(Provider::Claude),
+                Signal::StopFailure { class: attention::StopFailureClass::RateLimit } => {
+                    self.usage.limited(Provider::Claude)
+                }
+                _ => {}
+            }
             if matches!(sig, Signal::UserPromptSubmit) {
                 if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
                     self.moves.asked_by_hand(t);
@@ -5536,6 +5581,50 @@ impl Daemon {
             status_top: self.backend.status_top(),
             crown_touches: self.recent_crown_touches(),
             machine_tiers: self.machine_tiers.tiers.clone(),
+            usage: self.usage.view(),
+        }
+    }
+
+    /// Start the quota reads that are due (T-327), each on a worker under the
+    /// machine's lock and launched the way a pane is — the same CLI, the same
+    /// sign-in. True when the view moved: another board's daemon wrote the
+    /// shared file, or a read started (the dialog says `reading`).
+    fn drive_usage(&mut self, now: u64) -> bool {
+        let mut changed = self.usage.poll_file(now);
+        // The launcher applies the captured shell environment; a first
+        // capture still running would hand the probe the daemon's own.
+        if self.shell_env_capturing && !self.paths.shell_env_file().exists() {
+            return changed;
+        }
+        for p in self.usage.due(now) {
+            let (bin, args) = match p {
+                Provider::Claude => (
+                    std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into()),
+                    crate::usage::claude_args(),
+                ),
+                Provider::Codex => (
+                    std::env::var("MESIMON_CODEX_BIN").unwrap_or_else(|_| "codex".into()),
+                    crate::usage::codex_args(),
+                ),
+            };
+            let mut argv = vec![bin];
+            argv.extend(args);
+            let argv = self.launch(&argv, &[]);
+            let cwd = self.paths.state_dir.clone();
+            let lock = crate::usage::shared_file().map(|f| f.with_extension("lock"));
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let outcome = crate::usage::probe(p, &argv, &cwd, lock.as_deref(), now_ms());
+                let _ = tx.send(Msg::UsageRead(p, outcome));
+            });
+            changed = true;
+        }
+        changed
+    }
+
+    fn on_usage_read(&mut self, p: Provider, outcome: crate::usage::Outcome) {
+        if self.usage.landed(p, outcome, now_ms()) {
+            self.broadcast();
         }
     }
 
@@ -7213,6 +7302,8 @@ impl Daemon {
     fn on_client_gone(&mut self, stream: &Arc<Mutex<UnixStream>>) {
         self.subscribers.retain(|s| !Arc::ptr_eq(s, stream));
         self.clients.remove(&conn_key(stream));
+        // What this board asked to be read goes with it (T-327).
+        self.usage.drop_conn(conn_key(stream));
         // The board that was inside the pane is gone, however it went: give
         // the focus token back. Nothing else ever would — `FocusEnd` comes
         // after a handover this board will not return from.

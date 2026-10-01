@@ -110,6 +110,9 @@ pub use prefs::status_line_doctor_line as status_line_status;
 /// What `mesimon doctor` says about the terminal's own tab (T-492).
 pub use prefs::tab_title_doctor_line as terminal_status;
 pub use prefs::train_doctor_line as train_status;
+/// What `mesimon doctor` says about the subscription quota (T-327): what the
+/// line shows, and each provider's last reading from the machine's file.
+pub use prefs::usage_doctor_line as usage_status;
 /// What `mesimon doctor` says about release checks — whether they are on, and
 /// when they last answered. Exported because the checker lives here, beside
 /// the offer it raises, and the doctor must not carry a second copy of the
@@ -212,6 +215,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.editor_word = external::word();
     // What `^k` opens a URL with — same rule, same reason.
     app.opener = opener::find();
+    // The zone a quota's reset time is told in (T-327) — same rule: a test
+    // app tells it in UTC, so no golden reads a developer's clock.
+    app.clock = localtime::at;
     // Whether a ticket may grow its own shell (T-300) — same rule again.
     app.ticket_shells = ticket_shells();
     // Board sharing (T-335): a development build offers it; a release build

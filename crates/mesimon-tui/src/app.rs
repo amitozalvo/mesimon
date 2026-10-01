@@ -397,6 +397,10 @@ pub enum Mode {
     Notifications {
         idx: usize,
     },
+    /// The Usage dialog (T-327), from the menu's Usage row: each provider's
+    /// every window, its reset and how old the reading is. Esc returns to
+    /// the menu on that row.
+    Usage,
     /// The agent-prompt list, one level under Settings > Agents (T-353): the
     /// three sentences mesimon types into an agent's box. `idx` is the cursor
     /// over `keymap::prompt_items`; the list STAYS when a row is chosen, the
@@ -1365,6 +1369,18 @@ pub struct App {
     /// The machine's agent tiers (T-443), off the snapshot: the layer under
     /// `board.tiers`. Read through `App::tiers()`, never alone.
     pub machine_tiers: mesimon_core::tier::MachineTiers,
+    /// Subscription quota (T-327), off the snapshot: each provider's reading,
+    /// what the daemon reads for, and what is in flight.
+    pub usage: mesimon_core::usage::Usage,
+    /// When `SetUsageWants` was last pushed, and what it said — the
+    /// reconcile's back-off, and what a settings change compares against.
+    usage_pushed: Option<(Instant, mesimon_core::usage::Wants)>,
+    /// The wall clock a reset time is told in (T-327): UTC until
+    /// `lib.rs::run` hands it the machine's zone, so no golden reads one.
+    pub clock: fn(u64) -> Option<mesimon_core::snooze::LocalTime>,
+    /// The moment the quota is drawn against — a reading's age, a window
+    /// that rolled over. The system clock; a golden pins it.
+    pub now: fn() -> u64,
     /// Cards the crown touched that the cursor has not rested on since —
     /// the residue the light leaves, on the unread done mark's rule.
     pub crown_residue: std::collections::HashSet<ulid::Ulid>,
@@ -1867,6 +1883,10 @@ impl App {
             terminals: Vec::new(),
             crown_touches: Vec::new(),
             machine_tiers: Default::default(),
+            usage: Default::default(),
+            usage_pushed: None,
+            clock: |secs| Some(mesimon_core::usage::utc_of(secs)),
+            now: mesimon_core::clock::now_ms,
             crown_residue: std::collections::HashSet::new(),
             crowned_at: None,
             strikes: Vec::new(),
@@ -2145,6 +2165,7 @@ impl App {
                 self.absorb(snap);
                 self.reconcile_train();
                 self.reconcile_status_line();
+                self.reconcile_usage_wants();
                 if self.daemon_down {
                     self.daemon_down = false;
                     self.status = "daemon back ∙ board refreshed".into();
@@ -2278,6 +2299,7 @@ impl App {
             terminals,
             crown_touches,
             machine_tiers,
+            usage,
         } = snap;
         let was = self.cursor_column().map(|c| c.name.clone());
         // The cursor holds its TICKET across the pass (T-335): a card that
@@ -2314,6 +2336,7 @@ impl App {
         self.control = mesophon;
         self.terminals = terminals;
         self.machine_tiers = machine_tiers;
+        self.usage = usage;
         self.absorb_crown_touches(crown_touches, crown_was, &placed);
         self.settle_drawer();
         self.seed_team_drafts();
@@ -3604,6 +3627,11 @@ impl App {
             self.header_focus = self.header_focus && self.git.sampled;
         }
         self.push_observer_prefs();
+        // A Usage row moved what this board wants read: say so now, not at
+        // the next snapshot. Before the first push the reconcile says it.
+        if self.usage_pushed.is_some_and(|(_, w)| w != self.prefs.usage_wants()) {
+            self.push_usage_wants();
+        }
     }
 
     fn save_prefs(&self, what: &str) -> Result<(), String> {
@@ -3701,6 +3729,56 @@ impl App {
             && self.status_pushed_at.is_none_or(|t| t.elapsed() >= STATUS_PUSH_BACKOFF)
         {
             self.push_status_line();
+        }
+    }
+
+    /// Tell the daemon which providers' quota this board wants read
+    /// (T-327): on every Usage settings change, and from
+    /// `reconcile_usage_wants` when a snapshot reads the daemon wanting
+    /// something else — a restarted daemon wants nothing until told. Held
+    /// per connection there, so it ends with this board.
+    fn push_usage_wants(&mut self) {
+        let w = self.prefs.usage_wants();
+        self.usage_pushed = Some((Instant::now(), w));
+        let _ = self.req(Command::SetUsageWants { claude: w.claude, codex: w.codex });
+    }
+
+    /// Daemon and preference disagree, back-off passed: push. An older
+    /// daemon refuses the command and keeps reading `none`; the back-off is
+    /// what keeps that from being a push a frame.
+    pub(crate) fn reconcile_usage_wants(&mut self) {
+        if self.prefs.usage_wants() != self.usage.wants
+            && self.usage_pushed.is_none_or(|(t, _)| t.elapsed() >= STATUS_PUSH_BACKOFF)
+        {
+            self.push_usage_wants();
+        }
+    }
+
+    /// Ask the daemon to read now (T-327) — every provider the settings
+    /// name, whether or not the line is showing it. `quiet` is the dialog
+    /// opening, which asks only of a reading older than the turn-end floor.
+    fn refresh_usage(&mut self, quiet: bool) {
+        let p = &self.prefs;
+        let (claude, codex) = (p.usage_claude, p.usage_codex);
+        if !claude && !codex {
+            if !quiet {
+                self.status = "both providers are off in Settings › Usage".into();
+            }
+            return;
+        }
+        if quiet {
+            let now = mesimon_core::clock::now_ms();
+            let fresh = |u: &mesimon_core::usage::ProviderUsage| {
+                now.saturating_sub(u.tried_at_ms) < mesimon_core::usage::AFTER_TURN_MS
+            };
+            if (!claude || fresh(&self.usage.claude)) && (!codex || fresh(&self.usage.codex)) {
+                return;
+            }
+        }
+        if let Response::Err { message } = self.req(Command::RefreshUsage { claude, codex }) {
+            self.status = format!("reading the quota needs the new daemon ∙ U reloads ∙ {message}");
+        } else if !quiet {
+            self.status = "reading the quota".into();
         }
     }
 
@@ -4287,6 +4365,7 @@ impl App {
             Mode::Theme { .. } => Scope::Theme,
             Mode::Settings { .. } => Scope::Settings,
             Mode::Notifications { .. } => Scope::Notifications,
+            Mode::Usage => Scope::Usage,
             // Editing a template IS a text field, the Name row's rule.
             Mode::Prompts { editing: Some(_), .. } => Scope::Input,
             Mode::Prompts { .. } => Scope::Prompts,
@@ -4621,6 +4700,15 @@ impl App {
             tab_color_word: self.prefs.tab_color.name(),
             tab_subtitle: self.prefs.tab_subtitle,
             tab_icon: self.prefs.tab_icon,
+            usage_line_word: self.prefs.usage_line.name(),
+            usage_5h: self.prefs.usage_5h,
+            usage_week: self.prefs.usage_week,
+            usage_model: self.prefs.usage_model,
+            usage_resets_word: self.prefs.usage_resets.name(),
+            usage_claude: self.prefs.usage_claude,
+            usage_codex: self.prefs.usage_codex,
+            usage_summary: crate::ui::usage::summary(self),
+            usage_reading: !self.usage.reading.is_empty(),
             iterm2: matches!(self.terminal, crate::title::Terminal::ITerm2 { .. }),
             iterm2_status: self.terminal == crate::title::Terminal::ITerm2 { status: true },
             notify_dock_bounce: self.prefs.notify_dock_bounce,
@@ -5077,14 +5165,58 @@ impl App {
             Verb::SettingsAppearance
             | Verb::SettingsBehaviour
             | Verb::SettingsAgents
-            | Verb::SettingsTerminal => {
+            | Verb::SettingsTerminal
+            | Verb::SettingsUsage => {
                 self.settings_section = match verb {
                     Verb::SettingsAppearance => keymap::SettingsSection::Appearance,
                     Verb::SettingsBehaviour => keymap::SettingsSection::Behaviour,
                     Verb::SettingsTerminal => keymap::SettingsSection::Terminal,
+                    Verb::SettingsUsage => keymap::SettingsSection::Usage,
                     _ => keymap::SettingsSection::Agents,
                 };
                 self.mode = Mode::Settings { idx: 0 };
+            }
+            // The quota (T-327): the dialog reads again on opening when the
+            // reading is older than a turn's worth, and `r` asks outright.
+            Verb::Usage => {
+                self.mode = Mode::Usage;
+                self.refresh_usage(true);
+            }
+            Verb::UsageRefresh => self.refresh_usage(false),
+            Verb::UsageShow => {
+                let v = self.prefs.usage_line.next();
+                let word = match v {
+                    crate::prefs::UsageLine::Off => "the usage line is off".to_string(),
+                    v => format!("the usage line shows {}", v.name()),
+                };
+                self.set_pref(&word, |p| p.usage_line = v);
+            }
+            Verb::UsageFiveHour => {
+                let on = !self.prefs.usage_5h;
+                self.set_pref(window_word("5-hour", on), |p| p.usage_5h = on);
+            }
+            Verb::UsageWeekly => {
+                let on = !self.prefs.usage_week;
+                self.set_pref(window_word("weekly", on), |p| p.usage_week = on);
+            }
+            Verb::UsageModel => {
+                let on = !self.prefs.usage_model;
+                self.set_pref(window_word("per-model", on), |p| p.usage_model = on);
+            }
+            Verb::UsageResets => {
+                let v = self.prefs.usage_resets.next();
+                let word = format!("reset times: {}", v.name());
+                self.set_pref(&word, |p| p.usage_resets = v);
+            }
+            Verb::UsageClaude => {
+                let on = !self.prefs.usage_claude;
+                let word = if on { "claude's quota is read" } else { "claude's quota is not read" };
+                self.set_pref(word, |p| p.usage_claude = on);
+            }
+            Verb::UsageCodex => {
+                let on = !self.prefs.usage_codex;
+                let word = if on { "codex's quota is read" } else { "codex's quota is not read" };
+                self.set_pref(word, |p| p.usage_codex = on);
             }
             Verb::ColumnAgentBehaviour => {
                 self.column_agents = true;
@@ -6767,6 +6899,7 @@ impl App {
                 }
             }
             Scope::Notifications => self.return_to_settings(Verb::Notifications),
+            Scope::Usage => self.mode = Mode::Menu { idx: self.menu_row(Verb::Usage) },
             Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
             Scope::Tiers => self.return_to_settings(Verb::Tiers),
             // Back to the list, on the tier the page was about.
@@ -11070,6 +11203,7 @@ struct Snapshot {
     /// The crown's recent edits (T-411): the cards to light.
     crown_touches: Vec<mesimon_core::command::CrownTouch>,
     machine_tiers: mesimon_core::tier::MachineTiers,
+    usage: mesimon_core::usage::Usage,
 }
 
 impl Snapshot {
@@ -11095,6 +11229,7 @@ impl Snapshot {
                 terminals,
                 crown_touches,
                 machine_tiers,
+                usage,
             } => Some(Self {
                 board,
                 grace,
@@ -11115,9 +11250,22 @@ impl Snapshot {
                 terminals,
                 crown_touches,
                 machine_tiers,
+                usage,
             }),
             _ => None,
         }
+    }
+}
+
+/// A usage window row's status: `the line shows the weekly window`.
+fn window_word(which: &str, on: bool) -> &'static str {
+    match (which, on) {
+        ("5-hour", true) => "the usage line may show the 5-hour window",
+        ("5-hour", false) => "the usage line leaves out the 5-hour window",
+        ("weekly", true) => "the usage line may show the weekly window",
+        ("weekly", false) => "the usage line leaves out the weekly window",
+        (_, true) => "the usage line may show the per-model windows",
+        (_, false) => "the usage line leaves out the per-model windows",
     }
 }
 
@@ -11184,6 +11332,8 @@ pub(crate) mod test_support {
         pub terminals: Vec<mesimon_core::command::TerminalItem>,
         /// The machine's tiers the fake daemon reports (T-443).
         pub machine_tiers: mesimon_core::tier::MachineTiers,
+        /// The fake daemon's quota account (T-327), wants included.
+        pub usage: mesimon_core::usage::Usage,
     }
 
     /// The fake daemon's fresh ticket: always `T-999` at the bottom of the
@@ -11570,6 +11720,7 @@ pub(crate) mod test_support {
                     terminals: self.terminals.clone(),
                     crown_touches: Vec::new(),
                     machine_tiers: self.machine_tiers.clone(),
+                    usage: self.usage.clone(),
                 }),
                 // The column lifecycle (T-117), as the daemon does it — the
                 // refusals included, so the status a test reads is the
@@ -11869,6 +12020,10 @@ pub(crate) mod test_support {
                         None => Ok(Response::Err { message: "no such ticket".into() }),
                     }
                 }
+                Command::SetUsageWants { claude, codex } => {
+                    self.usage.wants = mesimon_core::usage::Wants { claude, codex };
+                    Ok(Response::Ok)
+                }
                 _ => Ok(Response::Ok),
             }
         }
@@ -11916,6 +12071,7 @@ pub(crate) mod test_support {
                 notes: std::collections::HashMap::new(),
                 terminals: Vec::new(),
                 machine_tiers: Default::default(),
+                usage: Default::default(),
             };
             let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
                 .expect("fake transport snapshot");
@@ -12130,6 +12286,7 @@ mod tests {
             notes: std::collections::HashMap::new(),
             terminals: Vec::new(),
             machine_tiers: Default::default(),
+            usage: Default::default(),
         };
         App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot")
@@ -12426,6 +12583,7 @@ mod tests {
             notes,
             terminals: Vec::new(),
             machine_tiers: Default::default(),
+            usage: Default::default(),
         };
         let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot");
@@ -12488,6 +12646,7 @@ mod tests {
             notes,
             terminals: Vec::new(),
             machine_tiers: Default::default(),
+            usage: Default::default(),
         };
         let app = App::new(Box::new(fake), dir.clone(), theme()).expect("fake transport snapshot");
         (app, sent, dir)
@@ -15487,6 +15646,67 @@ mod tests {
         assert_eq!(pushes(&sent), 4);
     }
 
+    /// The quota (T-327): the board tells the daemon what to read on its
+    /// first snapshot, and again only when a Usage row moves it. The dialog
+    /// opens from the menu and reads a stale account on the way in, `r`
+    /// asks outright, and Esc goes back to the menu on the Usage row.
+    #[test]
+    fn usage_wants_follow_the_settings_and_the_dialog_reads() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        let wants = |sent: &std::cell::RefCell<Vec<String>>| {
+            sent.borrow().iter().filter(|c| c.contains("SetUsageWants")).count()
+        };
+        app.refresh().unwrap();
+        assert!(sent_contains(&sent, "SetUsageWants { claude: true, codex: true }"));
+        let first = wants(&sent);
+        // The fake now holds what was asked: agreement pushes nothing.
+        app.refresh().unwrap();
+        assert_eq!(wants(&sent), first);
+        // A provider row that moves the wants says so at once.
+        let ctx = app.ctx();
+        app.dispatch(Verb::UsageCodex, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(!app.prefs.usage_codex);
+        assert!(sent_contains(&sent, "SetUsageWants { claude: true, codex: false }"));
+        // A window row moves nothing the daemon reads: no push.
+        let n = wants(&sent);
+        let ctx = app.ctx();
+        app.dispatch(Verb::UsageWeekly, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(!app.prefs.usage_week);
+        assert_eq!(wants(&sent), n);
+        // The line off reads nothing at all.
+        for _ in 0..3 {
+            let ctx = app.ctx();
+            app.dispatch(Verb::UsageShow, Key::Enter, Scope::Settings, &ctx).unwrap();
+        }
+        assert_eq!(app.prefs.usage_line, crate::prefs::UsageLine::Off);
+        assert!(sent_contains(&sent, "SetUsageWants { claude: false, codex: false }"));
+        // The dialog: nothing read yet, so opening it asks.
+        let ctx = app.ctx();
+        app.dispatch(Verb::Usage, Key::Enter, Scope::Menu, &ctx).unwrap();
+        assert!(matches!(app.mode, Mode::Usage));
+        assert_eq!(app.scope(), Scope::Usage);
+        assert!(sent_contains(&sent, "RefreshUsage { claude: true, codex: false }"));
+        let asks = || sent.borrow().iter().filter(|c| c.contains("RefreshUsage")).count();
+        let before = asks();
+        let ctx = app.ctx();
+        app.dispatch(Verb::UsageRefresh, Key::Char('r'), Scope::Usage, &ctx).unwrap();
+        assert_eq!(asks(), before + 1);
+        assert_eq!(app.status, "reading the quota");
+        // A fresh account is not asked again on the way in.
+        app.usage.claude.tried_at_ms = mesimon_core::clock::now_ms();
+        let ctx = app.ctx();
+        app.dispatch(Verb::Back, Key::Esc, Scope::Usage, &ctx).unwrap();
+        assert!(matches!(app.mode, Mode::Menu { idx } if idx == app.menu_row(Verb::Usage)));
+        let ctx = app.ctx();
+        app.dispatch(Verb::Usage, Key::Enter, Scope::Menu, &ctx).unwrap();
+        assert_eq!(asks(), before + 1);
+        // `s` is the line's settings.
+        let ctx = app.ctx();
+        app.dispatch(Verb::SettingsUsage, Key::Char('s'), Scope::Usage, &ctx).unwrap();
+        assert_eq!(app.settings_section, keymap::SettingsSection::Usage);
+        assert!(matches!(app.mode, Mode::Settings { .. }));
+    }
+
     /// The status line row (T-264) writes the preference AND tells the
     /// daemon; a snapshot that reads the daemon on the other side pushes
     /// again, once per back-off; agreement pushes nothing — in EITHER
@@ -16994,6 +17214,7 @@ mod tests {
             notes: std::collections::HashMap::new(),
             terminals: Vec::new(),
             machine_tiers: Default::default(),
+            usage: Default::default(),
         };
         let mut app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot");
@@ -19971,6 +20192,7 @@ mod tests {
             notes,
             terminals: Vec::new(),
             machine_tiers: Default::default(),
+            usage: Default::default(),
         };
         let mut app = App::new(Box::new(fake), dir.clone(), theme()).unwrap();
         let mut team = super::joined_team_fixture();

@@ -165,6 +165,104 @@ impl TabColor {
     }
 }
 
+/// What the subscription quota line above the board's keys shows (T-327).
+/// Near a limit by default: the line is silent until a provider warns, which
+/// is when it is worth a glance — and every window is one row away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UsageLine {
+    #[default]
+    Near,
+    Every,
+    Headline,
+    Off,
+}
+
+impl UsageLine {
+    pub const fn key(self) -> &'static str {
+        match self {
+            UsageLine::Near => "near",
+            UsageLine::Every => "every",
+            UsageLine::Headline => "headline",
+            UsageLine::Off => "off",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "near" => Some(UsageLine::Near),
+            "every" => Some(UsageLine::Every),
+            "headline" => Some(UsageLine::Headline),
+            "off" => Some(UsageLine::Off),
+            _ => None,
+        }
+    }
+
+    /// The row's word for it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            UsageLine::Near => "near a limit",
+            UsageLine::Every => "every window",
+            UsageLine::Headline => "the headline",
+            UsageLine::Off => "off",
+        }
+    }
+
+    /// The ring Enter cycles.
+    pub const fn next(self) -> Self {
+        match self {
+            UsageLine::Near => UsageLine::Every,
+            UsageLine::Every => UsageLine::Headline,
+            UsageLine::Headline => UsageLine::Off,
+            UsageLine::Off => UsageLine::Near,
+        }
+    }
+}
+
+/// When the quota line names a window's reset time (T-327).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UsageResets {
+    /// Beside a window the provider warns about.
+    #[default]
+    Near,
+    Always,
+    Never,
+}
+
+impl UsageResets {
+    pub const fn key(self) -> &'static str {
+        match self {
+            UsageResets::Near => "near",
+            UsageResets::Always => "always",
+            UsageResets::Never => "never",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "near" => Some(UsageResets::Near),
+            "always" => Some(UsageResets::Always),
+            "never" => Some(UsageResets::Never),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            UsageResets::Near => "near a limit",
+            UsageResets::Always => "always",
+            UsageResets::Never => "never",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            UsageResets::Near => UsageResets::Always,
+            UsageResets::Always => UsageResets::Never,
+            UsageResets::Never => UsageResets::Near,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Prefs {
     pub dark: Flavor,
@@ -284,6 +382,18 @@ pub(crate) struct Prefs {
     /// crowned agent without opening its pane. Per machine — motion on a
     /// screen is about the person watching it, not about a repo.
     pub crown_lightning: bool,
+    /// The subscription quota line above the board's keys (T-327) and what it
+    /// may use: silent until a provider warns by default, every window and
+    /// both providers on, a reset time beside a warning. Per machine — a
+    /// quota is one sign-in's, whichever board shows it. Nothing is read for
+    /// a provider that is off, or while the line is.
+    pub usage_line: UsageLine,
+    pub usage_5h: bool,
+    pub usage_week: bool,
+    pub usage_model: bool,
+    pub usage_resets: UsageResets,
+    pub usage_claude: bool,
+    pub usage_codex: bool,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -318,6 +428,13 @@ impl Default for Prefs {
             notify_dock_bounce: false,
             peek: PeekLevel::Off,
             crown_lightning: true,
+            usage_line: UsageLine::Near,
+            usage_5h: true,
+            usage_week: true,
+            usage_model: true,
+            usage_resets: UsageResets::Near,
+            usage_claude: true,
+            usage_codex: true,
             doc: Map::new(),
         }
     }
@@ -349,6 +466,13 @@ const NOTIFY_SOUND_NEEDS_YOU_KEY: &str = PrefKey::NotifySoundNeedsYou.name();
 const NOTIFY_SOUND_DONE_KEY: &str = PrefKey::NotifySoundDone.name();
 const PEEK_KEY: &str = PrefKey::Peek.name();
 const CROWN_LIGHTNING_KEY: &str = PrefKey::CrownLightning.name();
+const USAGE_LINE_KEY: &str = PrefKey::UsageLine.name();
+const USAGE_5H_KEY: &str = PrefKey::UsageFiveHour.name();
+const USAGE_WEEK_KEY: &str = PrefKey::UsageWeekly.name();
+const USAGE_MODEL_KEY: &str = PrefKey::UsageModel.name();
+const USAGE_RESETS_KEY: &str = PrefKey::UsageResets.name();
+const USAGE_CLAUDE_KEY: &str = PrefKey::UsageClaude.name();
+const USAGE_CODEX_KEY: &str = PrefKey::UsageCodex.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -377,6 +501,16 @@ impl Prefs {
     pub(crate) fn set_peek(&mut self, level: PeekLevel) {
         self.peek = level;
         self.doc.insert(PEEK_KEY.into(), Value::from(level.key()));
+    }
+
+    /// Which providers the daemon should read for this board (T-327): the
+    /// provider switches, while the line is on at all.
+    pub(crate) fn usage_wants(&self) -> mesimon_core::usage::Wants {
+        let on = self.usage_line != UsageLine::Off;
+        mesimon_core::usage::Wants {
+            claude: on && self.usage_claude,
+            codex: on && self.usage_codex,
+        }
     }
 
     pub(crate) fn for_ground(&self, g: Ground) -> Flavor {
@@ -473,6 +607,13 @@ impl Prefs {
             PrefKey::NotifyDockBounce => onoff(self.notify_dock_bounce),
             PrefKey::Peek => self.peek.key(),
             PrefKey::CrownLightning => onoff(self.crown_lightning),
+            PrefKey::UsageLine => self.usage_line.key(),
+            PrefKey::UsageFiveHour => onoff(self.usage_5h),
+            PrefKey::UsageWeekly => onoff(self.usage_week),
+            PrefKey::UsageModel => onoff(self.usage_model),
+            PrefKey::UsageResets => self.usage_resets.key(),
+            PrefKey::UsageClaude => onoff(self.usage_claude),
+            PrefKey::UsageCodex => onoff(self.usage_codex),
         }
     }
 
@@ -525,6 +666,31 @@ impl Prefs {
         doc.insert(NOTIFY_IN_PANE_KEY.into(), Value::from(self.notify_in_pane));
         doc.insert(NOTIFY_WORDS_KEY.into(), Value::from(self.notify_words));
         doc.insert(CROWN_LIGHTNING_KEY.into(), Value::from(self.crown_lightning));
+        for (key, v) in [
+            (USAGE_5H_KEY, self.usage_5h),
+            (USAGE_WEEK_KEY, self.usage_week),
+            (USAGE_MODEL_KEY, self.usage_model),
+            (USAGE_CLAUDE_KEY, self.usage_claude),
+            (USAGE_CODEX_KEY, self.usage_codex),
+        ] {
+            doc.insert(key.into(), Value::from(v));
+        }
+        // The two named usage words keep a newer build's word, as a foreign
+        // theme name is kept.
+        if !doc
+            .get(USAGE_LINE_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| UsageLine::from_key(v).is_none())
+        {
+            doc.insert(USAGE_LINE_KEY.into(), Value::from(self.usage_line.key()));
+        }
+        if !doc
+            .get(USAGE_RESETS_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| UsageResets::from_key(v).is_none())
+        {
+            doc.insert(USAGE_RESETS_KEY.into(), Value::from(self.usage_resets.key()));
+        }
         for (key, s) in [
             (NOTIFY_SOUND_NEEDS_YOU_KEY, self.notify_sound_needs_you),
             (NOTIFY_SOUND_DONE_KEY, self.notify_sound_done),
@@ -619,7 +785,14 @@ impl BoardPrefs {
             | PrefKey::TabColor
             | PrefKey::TabSubtitle
             | PrefKey::TabIcon
-            | PrefKey::Peek => false,
+            | PrefKey::Peek
+            | PrefKey::UsageLine
+            | PrefKey::UsageFiveHour
+            | PrefKey::UsageWeekly
+            | PrefKey::UsageModel
+            | PrefKey::UsageResets
+            | PrefKey::UsageClaude
+            | PrefKey::UsageCodex => false,
             _ => self.bool(key).is_some(),
         }
     }
@@ -804,6 +977,21 @@ pub(crate) fn load(path: &Path) -> Loaded {
         .unwrap_or_default();
     let peek =
         doc.get(PEEK_KEY).and_then(Value::as_str).and_then(PeekLevel::from_key).unwrap_or_default();
+    let usage_line = doc
+        .get(USAGE_LINE_KEY)
+        .and_then(Value::as_str)
+        .and_then(UsageLine::from_key)
+        .unwrap_or_default();
+    let usage_resets = doc
+        .get(USAGE_RESETS_KEY)
+        .and_then(Value::as_str)
+        .and_then(UsageResets::from_key)
+        .unwrap_or_default();
+    let usage_5h = flag(USAGE_5H_KEY, true);
+    let usage_week = flag(USAGE_WEEK_KEY, true);
+    let usage_model = flag(USAGE_MODEL_KEY, true);
+    let usage_claude = flag(USAGE_CLAUDE_KEY, true);
+    let usage_codex = flag(USAGE_CODEX_KEY, true);
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
@@ -832,6 +1020,13 @@ pub(crate) fn load(path: &Path) -> Loaded {
         notify_dock_bounce,
         peek,
         crown_lightning,
+        usage_line,
+        usage_5h,
+        usage_week,
+        usage_model,
+        usage_resets,
+        usage_claude,
+        usage_codex,
         doc,
     };
     if schema > SCHEMA {
@@ -973,6 +1168,40 @@ pub fn peek_doctor_line() -> String {
         PeekLevel::Cursor => "under the cursor card ∙ P widens it to every card, p hides it".into(),
         PeekLevel::All => "under every card ∙ P narrows it to the cursor card, p hides it".into(),
     }
+}
+
+/// `mesimon doctor`'s `usage` line (T-327): what the quota line shows, and
+/// each provider's last reading as the machine's shared file holds it — no
+/// daemon needed, and no probe run.
+pub fn usage_doctor_line() -> String {
+    let prefs = load_home().prefs;
+    let usage = mesimon_daemon::usage::read_shared();
+    let now = mesimon_core::clock::now_ms();
+    let mut parts = vec![format!("line: {}", prefs.usage_line.name())];
+    for (p, on) in [
+        (mesimon_core::usage::Provider::Claude, prefs.usage_claude),
+        (mesimon_core::usage::Provider::Codex, prefs.usage_codex),
+    ] {
+        let account = usage.get(p);
+        let said = if !on {
+            "off".to_string()
+        } else if let Some(problem) = &account.problem {
+            problem.short().to_string()
+        } else if let Some(r) = &account.reading {
+            let windows: Vec<String> =
+                r.windows.iter().map(|w| format!("{} {}", w.label, w.percent_word())).collect();
+            let plan = r.plan.as_deref().map(|p| format!("{p}: ")).unwrap_or_default();
+            format!(
+                "{plan}{} (read {} ago)",
+                if windows.is_empty() { "no windows reported".into() } else { windows.join(", ") },
+                crate::text::age_slot(now, r.read_at_ms, false)
+            )
+        } else {
+            "not read yet (a board reads it while open)".to_string()
+        };
+        parts.push(format!("{} {said}", p.word()));
+    }
+    parts.join(" ∙ ")
 }
 
 pub fn snooze_doctor_line() -> String {

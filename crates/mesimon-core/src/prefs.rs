@@ -59,10 +59,22 @@ pub enum PrefKey {
     /// default; off keeps the board still and the card's word alone says
     /// what the crown did.
     CrownLightning,
+    /// The subscription quota line above the board's keys (T-327): a named
+    /// value — `near` (only while a provider warns, the default), `every`
+    /// window, the `headline` alone, or `off`. The six after it say which
+    /// windows and which providers it may use, and when it names a reset.
+    UsageLine,
+    UsageFiveHour,
+    UsageWeekly,
+    UsageModel,
+    /// `near` (with a warning), `always` or `never`.
+    UsageResets,
+    UsageClaude,
+    UsageCodex,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 27] = [
+    pub const ALL: [PrefKey; 34] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::FollowOs,
@@ -90,6 +102,13 @@ impl PrefKey {
         PrefKey::NotifyDockBounce,
         PrefKey::Peek,
         PrefKey::CrownLightning,
+        PrefKey::UsageLine,
+        PrefKey::UsageFiveHour,
+        PrefKey::UsageWeekly,
+        PrefKey::UsageModel,
+        PrefKey::UsageResets,
+        PrefKey::UsageClaude,
+        PrefKey::UsageCodex,
     ];
 
     /// The JSON key in both files.
@@ -122,6 +141,13 @@ impl PrefKey {
             PrefKey::NotifyDockBounce => "notify_dock_bounce",
             PrefKey::Peek => "peek",
             PrefKey::CrownLightning => "crown_lightning",
+            PrefKey::UsageLine => "usage_line",
+            PrefKey::UsageFiveHour => "usage_5h",
+            PrefKey::UsageWeekly => "usage_week",
+            PrefKey::UsageModel => "usage_model",
+            PrefKey::UsageResets => "usage_resets",
+            PrefKey::UsageClaude => "usage_claude",
+            PrefKey::UsageCodex => "usage_codex",
         }
     }
 
@@ -133,7 +159,9 @@ impl PrefKey {
     /// board and has no Settings row to set it per board — `p` and `P` set
     /// it. The dock bounce is a notification and follows its group. The
     /// crown's lightning (T-544) is motion on the screen, which is about
-    /// the person watching it, so one switch holds for every board.
+    /// the person watching it, so one switch holds for every board. The
+    /// usage line's seven (T-327) are about the person's subscription,
+    /// which is one sign-in whichever board shows it.
     pub fn board_overridable(self) -> bool {
         !matches!(
             self,
@@ -149,6 +177,13 @@ impl PrefKey {
                 | PrefKey::WeekStart
                 | PrefKey::Peek
                 | PrefKey::CrownLightning
+                | PrefKey::UsageLine
+                | PrefKey::UsageFiveHour
+                | PrefKey::UsageWeekly
+                | PrefKey::UsageModel
+                | PrefKey::UsageResets
+                | PrefKey::UsageClaude
+                | PrefKey::UsageCodex
         )
     }
 
@@ -182,6 +217,13 @@ impl PrefKey {
             PrefKey::NotifyDockBounce => "dock bounce",
             PrefKey::Peek => "replies",
             PrefKey::CrownLightning => "crown lightning",
+            PrefKey::UsageLine => "usage line",
+            PrefKey::UsageFiveHour => "usage line's 5-hour window",
+            PrefKey::UsageWeekly => "usage line's weekly window",
+            PrefKey::UsageModel => "usage line's per-model windows",
+            PrefKey::UsageResets => "usage line's reset times",
+            PrefKey::UsageClaude => "usage line's claude",
+            PrefKey::UsageCodex => "usage line's codex",
         }
     }
 
@@ -197,6 +239,8 @@ impl PrefKey {
                 | PrefKey::NotifySoundNeedsYou
                 | PrefKey::NotifySoundDone
                 | PrefKey::Peek
+                | PrefKey::UsageLine
+                | PrefKey::UsageResets
         )
     }
 }
@@ -227,7 +271,14 @@ mod tests {
                 PrefKey::TabSubtitle,
                 PrefKey::TabIcon,
                 PrefKey::Peek,
-                PrefKey::CrownLightning
+                PrefKey::CrownLightning,
+                PrefKey::UsageLine,
+                PrefKey::UsageFiveHour,
+                PrefKey::UsageWeekly,
+                PrefKey::UsageModel,
+                PrefKey::UsageResets,
+                PrefKey::UsageClaude,
+                PrefKey::UsageCodex,
             ]
         );
     }

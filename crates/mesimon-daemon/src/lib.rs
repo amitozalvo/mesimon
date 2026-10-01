@@ -28,6 +28,7 @@ pub(crate) mod testrepo;
 // Compatibility path; native transcript recovery belongs to the Claude adapter.
 pub use agents::claude::tail;
 pub mod train;
+pub mod usage;
 pub mod worktree;
 
 use std::path::Path;

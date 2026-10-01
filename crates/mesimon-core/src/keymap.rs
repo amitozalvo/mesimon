@@ -253,13 +253,18 @@ pub enum Scope {
     /// One tier's page (T-443): name, provider, model, effort, delete. The
     /// column dialog's shapes — `h`/`l` step the provider and the effort.
     TierEdit,
+    /// The Usage dialog (T-327), from the menu's Usage row: each provider's
+    /// every quota window with its reset, how old the reading is, and why a
+    /// provider has none. `r` reads again now, `s` opens the line's
+    /// settings, Esc goes back to the menu.
+    Usage,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 30] = [
+    pub const ALL: [Scope; 31] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -290,6 +295,7 @@ impl Scope {
         Scope::MergeChord,
         Scope::Tiers,
         Scope::TierEdit,
+        Scope::Usage,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -312,7 +318,8 @@ impl Scope {
             | Scope::Header
             | Scope::Sharing
             | Scope::Tiers
-            | Scope::TierEdit => Some(Scope::Global),
+            | Scope::TierEdit
+            | Scope::Usage => Some(Scope::Global),
             Scope::Global
             | Scope::Move
             | Scope::DiffView
@@ -352,6 +359,7 @@ impl Scope {
             Scope::Sharing => "SHARING",
             Scope::Tiers => "TIERS",
             Scope::TierEdit => "TIER",
+            Scope::Usage => "USAGE",
             Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
@@ -567,6 +575,22 @@ pub enum Verb {
     NotifyDockBounce,
     /// The Settings door to the Terminal rows.
     SettingsTerminal,
+    /// The subscription quota (T-327). `Usage` is the menu row that opens
+    /// the dialog; `UsageRefresh` its `r`, which reads every provider the
+    /// settings name now; `SettingsUsage` the Settings door to the line's
+    /// rows, and the dialog's `s`. The seven after it are those rows, each a
+    /// `prefs.json` key, per machine: what the line shows, its three
+    /// windows, when it names a reset, and its two providers.
+    Usage,
+    UsageRefresh,
+    SettingsUsage,
+    UsageShow,
+    UsageFiveHour,
+    UsageWeekly,
+    UsageModel,
+    UsageResets,
+    UsageClaude,
+    UsageCodex,
     /// `t` — take the ticket off the merge train, or put it back (T-227).
     /// Flips `Ticket::manual_merge` through `Command::SetManualMerge`.
     ManualMerge,
@@ -872,6 +896,8 @@ pub enum SettingsSection {
     Agents,
     /// What the board does to the terminal's own tab (T-492).
     Terminal,
+    /// The subscription quota line above the board's keys (T-327).
+    Usage,
 }
 
 impl SettingsSection {
@@ -882,6 +908,7 @@ impl SettingsSection {
             Self::Behaviour => "BEHAVIOUR",
             Self::Agents => "AGENTS",
             Self::Terminal => "TERMINAL",
+            Self::Usage => "USAGE",
         }
     }
 
@@ -892,6 +919,7 @@ impl SettingsSection {
             Self::Behaviour => Verb::SettingsBehaviour,
             Self::Agents => Verb::SettingsAgents,
             Self::Terminal => Verb::SettingsTerminal,
+            Self::Usage => Verb::SettingsUsage,
         }
     }
 
@@ -910,6 +938,13 @@ impl SettingsSection {
             | Verb::TabColor
             | Verb::TabSubtitle
             | Verb::TabIcon => Self::Terminal,
+            Verb::UsageShow
+            | Verb::UsageFiveHour
+            | Verb::UsageWeekly
+            | Verb::UsageModel
+            | Verb::UsageResets
+            | Verb::UsageClaude
+            | Verb::UsageCodex => Self::Usage,
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
@@ -1297,6 +1332,20 @@ pub struct Ctx {
     pub tab_color_word: &'static str,
     pub tab_subtitle: bool,
     pub tab_icon: bool,
+    /// The usage line's settings (T-327), as the rows label themselves: what
+    /// it shows, its windows, when it names a reset, its providers.
+    pub usage_line_word: &'static str,
+    pub usage_5h: bool,
+    pub usage_week: bool,
+    pub usage_model: bool,
+    pub usage_resets_word: &'static str,
+    pub usage_claude: bool,
+    pub usage_codex: bool,
+    /// The menu row's own words for the quota: each provider's headline, or
+    /// why it has none (`claude Fable 64% ∙ codex signed out`).
+    pub usage_summary: String,
+    /// A read is in flight: `r` would only start a second.
+    pub usage_reading: bool,
     /// The board runs in iTerm2, directly (no outer tmux): the rows that
     /// only iTerm2 answers say so when it is not.
     pub iterm2: bool,
@@ -4035,6 +4084,22 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| c.teams || c.mesophon,
         key: "",
     },
+    // The subscription quota (T-327): the row names each provider's
+    // headline, so the menu answers "how much is left" before it is opened;
+    // the dialog behind it has every window and its reset.
+    MenuItem {
+        verb: Verb::Usage,
+        label: |c| {
+            if c.usage_summary.is_empty() {
+                "Usage".into()
+            } else {
+                format!("Usage: {}", c.usage_summary)
+            }
+        },
+        detail: |_| "your plan's quota windows, and when each resets".into(),
+        avail: always,
+        key: "",
+    },
     // The door to the preferences. Never a suggestion — a setting is not
     // something worth doing right now — and it names what is behind it, so
     // nobody opens it to find out.
@@ -4114,6 +4179,13 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         verb: Verb::SettingsTerminal,
         label: |_| "Terminal".into(),
         detail: |_| "the tab's title, progress ring, colour, subtitle and icon".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::SettingsUsage,
+        label: |c| format!("Usage line: {}", or(c.usage_line_word, "near a limit")),
+        detail: |_| "quota above the keys ∙ windows, providers, resets".into(),
         avail: always,
         key: "",
     },
@@ -4397,6 +4469,65 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 "iTerm2 only ∙ this terminal is not iTerm2, so the row is inert".into()
             }
         },
+        avail: always,
+        key: "",
+    },
+    // The usage line (T-327): what it shows, then what it may use. Every row
+    // is a switch or a ring, and nothing is read for a provider that is off.
+    MenuItem {
+        verb: Verb::UsageShow,
+        label: |c| format!("Show: {}", or(c.usage_line_word, "near a limit")),
+        detail: |c| match or(c.usage_line_word, "near a limit") {
+            "near a limit" => "silent until a provider warns ∙ enter cycles".into(),
+            "every window" => "each provider's windows, above the keys ∙ enter cycles".into(),
+            "the headline" => "one number a provider, the one it picks ∙ enter cycles".into(),
+            _ => "nothing above the keys, and nothing read ∙ the menu's Usage still reads".into(),
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::UsageFiveHour,
+        label: |c| on_off("5-hour window", c.usage_5h),
+        detail: |_| "the rolling session window, 5h on the line".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::UsageWeekly,
+        label: |c| on_off("Weekly window", c.usage_week),
+        detail: |_| "the week over every model".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::UsageModel,
+        label: |c| on_off("Per-model windows", c.usage_model),
+        detail: |_| "a week scoped to one model, named as the provider names it".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::UsageResets,
+        label: |c| format!("Reset times: {}", or(c.usage_resets_word, "near a limit")),
+        detail: |c| match or(c.usage_resets_word, "near a limit") {
+            "near a limit" => "beside a window the provider warns about ∙ enter cycles".into(),
+            _ => "enter cycles: near a limit, always, never".into(),
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::UsageClaude,
+        label: |c| on_off("Claude", c.usage_claude),
+        detail: |_| "a quiet claude -p asks /usage ∙ no prompt, no tokens".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::UsageCodex,
+        label: |c| on_off("Codex", c.usage_codex),
+        detail: |_| "a session's own reports, else a quiet app-server".into(),
         avail: always,
         key: "",
     },
@@ -4886,6 +5017,11 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
 /// number, and `1 tickets` in the header would be the first thing seen.
 use crate::text::plural;
 
+/// A switch's row label: `5-hour window: on`.
+fn on_off(label: &str, on: bool) -> String {
+    format!("{label}: {}", if on { "on" } else { "off" })
+}
+
 /// Whole GiB, or None below a tenth of one — a payoff that rounds to
 /// `~0.0GiB` is not a payoff, so the detail says it in words instead.
 fn gib(bytes: u64) -> Option<f64> {
@@ -4988,6 +5124,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::SettingsBehaviour,
             Verb::SettingsAgents,
             Verb::SettingsTerminal,
+            Verb::SettingsUsage,
         ],
         SettingsSection::Appearance => &[
             Verb::ThemePick,
@@ -5005,6 +5142,15 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::TabColor,
             Verb::TabSubtitle,
             Verb::TabIcon,
+        ],
+        SettingsSection::Usage => &[
+            Verb::UsageShow,
+            Verb::UsageFiveHour,
+            Verb::UsageWeekly,
+            Verb::UsageModel,
+            Verb::UsageResets,
+            Verb::UsageClaude,
+            Verb::UsageCodex,
         ],
         SettingsSection::Behaviour => &[
             Verb::MergeTrain,
@@ -5072,6 +5218,13 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::NotifyWords => PrefKey::NotifyWords,
         Verb::NotifySoundNeedsYou => PrefKey::NotifySoundNeedsYou,
         Verb::NotifySoundDone => PrefKey::NotifySoundDone,
+        Verb::UsageShow => PrefKey::UsageLine,
+        Verb::UsageFiveHour => PrefKey::UsageFiveHour,
+        Verb::UsageWeekly => PrefKey::UsageWeekly,
+        Verb::UsageModel => PrefKey::UsageModel,
+        Verb::UsageResets => PrefKey::UsageResets,
+        Verb::UsageClaude => PrefKey::UsageClaude,
+        Verb::UsageCodex => PrefKey::UsageCodex,
         _ => return None,
     })
 }
@@ -5473,6 +5626,45 @@ static ARCHIVED: &[Binding] = &[
 /// `^k` as a second spelling of `Back` so the key that opened it closes it
 /// (the drawer's `e`, the archived list's `V`). `Act` does not mutate:
 /// nothing the daemon owns changes when a link opens.
+/// The Usage dialog (T-327): no rows to choose yet, so no `jk`; `r` reads
+/// every provider the settings name again now, `s` opens the line's
+/// settings, Esc goes back to the menu that opened it.
+static USAGE: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('r')],
+        verb: Verb::UsageRefresh,
+        show: "r",
+        hint: |c| if c.usage_reading { "reading" } else { "read now" },
+        avail: |c| !c.usage_reading,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('s')],
+        verb: Verb::SettingsUsage,
+        show: "s",
+        hint: |_| "settings",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The column settings dialog (T-117): the Settings list's shapes on one
 /// column — `jk` selects, Enter does the row (a toggle advances, the sort
 /// runs, the delete arms then sends), Esc goes back — plus `h`/`l` on the
@@ -6518,6 +6710,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Sharing => SHARING,
         Scope::Tiers => TIERS,
         Scope::TierEdit => TIER_EDIT,
+        Scope::Usage => USAGE,
         Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
@@ -6855,6 +7048,7 @@ mod tests {
                 Scope::MergeChord => 27,
                 Scope::Tiers => 28,
                 Scope::TierEdit => 29,
+                Scope::Usage => 30,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -8699,6 +8893,7 @@ mod tests {
             Verb::SleepAllDone,
             Verb::ArchiveAllDone,
             Verb::Sharing,
+            Verb::Usage,
             Verb::Settings,
             Verb::ReleaseNotes,
             Verb::Quit,
@@ -8714,7 +8909,8 @@ mod tests {
                 Verb::SettingsAppearance,
                 Verb::SettingsBehaviour,
                 Verb::SettingsAgents,
-                Verb::SettingsTerminal
+                Verb::SettingsTerminal,
+                Verb::SettingsUsage
             ]
         );
         for (section, expected) in [
@@ -9375,6 +9571,13 @@ mod tests {
             Verb::WeekStart,
             Verb::MergeTrain,
             Verb::MergeTrainNotice,
+            Verb::UsageShow,
+            Verb::UsageFiveHour,
+            Verb::UsageWeekly,
+            Verb::UsageModel,
+            Verb::UsageResets,
+            Verb::UsageClaude,
+            Verb::UsageCodex,
         ];
         for item in SETTINGS_ITEMS {
             let expect = prefs.contains(&item.verb);

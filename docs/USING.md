@@ -259,6 +259,30 @@ If you are attached to the agent's pane and have typed in it within the timer, i
 awake until you leave or go quiet for that long. On disk this is the column's
 `sleep_after_minutes`, any whole number; `0` disables it.
 
+## Your plan's quota
+
+When Claude Code or Codex says a quota window is close to its limit, the board says so on the
+right of the row above the keys: `claude 5h 86% resets 17:50`. The numbers are the provider's
+own, the same ones Claude Code's `/usage` and Codex's `/status` show, and the line stays grey;
+it is silent while every window is calm. **Esc › Usage** shows every window with its reset
+time, how old the reading is, and why a provider has none (signed out, an API key with no plan
+limits, a CLI too old to say). Its pace row is mesimon's own straight-line guess at where the
+week ends up, and it is labelled experimental. `r` reads again now.
+
+**Settings › Usage** decides what the line shows: near a limit (the default), every window,
+each provider's headline, or nothing. It also picks which windows it may use (the 5-hour
+window, the week, per-model weeks such as Fable or Codex-Spark), when it names a reset time,
+and whether Claude and Codex are read at all.
+
+The board reads only while it is open. For Claude it runs `claude -p` once, asks for the
+`/usage` numbers over Claude Code's own SDK protocol, and closes it: no prompt, no tokens, no
+saved session, none of your hooks or MCP servers. Claude Code still records the launch in its
+own `~/.claude.json`, as it does for every session. A Codex session the board started reports
+its quota after every turn; otherwise a short-lived `codex app-server` answers. A turn ending,
+a rate-limit stop and a window resetting each prompt a fresh read, at most once a minute;
+with nothing happening, every 15 minutes. One reading serves every board on the machine.
+`mesimon doctor`'s `usage` line shows the last one without starting anything.
+
 ## Light and dark themes
 
 The board has two theme slots, one for a dark terminal and one for a light one. At launch it

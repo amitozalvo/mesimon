@@ -531,6 +531,8 @@ mod tests {
             plan: None,
             plan_key: None,
             stopped: false,
+            rate_limits: None,
+            rate_limits_at_ms: 0,
         };
         (paths, record, config, snapshot)
     }

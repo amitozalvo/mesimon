@@ -331,6 +331,13 @@ pub struct Snapshot {
     /// Durable evidence that this generation and its owned server have stopped.
     #[serde(default)]
     pub stopped: bool,
+    /// The app-server's latest `account/rateLimits/updated` params (T-327),
+    /// verbatim and bounded, and when they arrived: the session's own quota
+    /// report, which spares the daemon a probe while Codex is working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limits: Option<serde_json::Value>,
+    #[serde(default)]
+    pub rate_limits_at_ms: u64,
 }
 
 #[cfg(test)]

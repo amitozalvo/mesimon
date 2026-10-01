@@ -254,6 +254,9 @@ fn environment(repo: &std::path::Path, verbose: bool) -> Section {
     records.push(rec(Level::Note, "status line", mesimon_tui::status_line_status()));
     // What the board does to the terminal's own tab (T-492).
     records.push(rec(Level::Note, "terminal", mesimon_tui::terminal_status()));
+    // The subscription quota (T-327): what the line shows, and the last
+    // reading each provider gave, from the machine's file — no probe here.
+    records.push(rec(Level::Note, "usage", mesimon_tui::usage_status()));
     // What the board says outside its own window (T-282): whether it is on,
     // and which rung of each ladder would answer if it were.
     records.push(rec(Level::Note, "notifications", mesimon_tui::notify_status()));
