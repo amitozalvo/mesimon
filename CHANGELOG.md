@@ -6,6 +6,51 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.36 — 2026-10-01
+
+### Added
+
+- **The board shows your plan's quota when a window nears its limit.** The
+  row above the keys reads, for example, `claude 5h 86% resets 17:50`, using
+  the numbers Claude Code's `/usage` and Codex's `/status` report; it stays
+  grey and is silent while every window is calm. `Esc › Usage` shows every
+  window, its reset time, the reading's age and why a provider has none; `r`
+  reads again. `Settings › Usage` chooses near a limit (default), every
+  window, each provider's headline, or nothing, plus which windows, when to
+  name a reset and which providers to read. For Claude the board runs a
+  short `claude -p` that sends no prompt, spends no tokens and saves no
+  session. Readings happen only while a board is open, at most once a minute
+  after a turn ends or a limit is hit, otherwise every 15 minutes, and are
+  shared by every board in `~/.local/state/mesimon/usage.json`.
+  `mesimon doctor` prints the last reading.
+- **Each ticket shows an estimate of what its agents cost at API prices.**
+  The ticket page's facts line reads `∙ $4.20 at API prices`; subagents
+  count toward their ticket. A plan subscriber does not pay this amount; it
+  is what the same tokens would cost on the API. `$` on the board switches
+  every card's corner between its age and its cost (also `Settings › Usage`).
+  `Esc › Usage` lists the board's last 24 hours, 7 days and 30 days and its
+  costliest tickets; Enter opens one. Codex tickets show tokens instead of a
+  price. Counting starts with this version: an older ticket counts only what
+  its current sessions' transcripts hold.
+- **Tiers can be reordered in Settings.** In the tiers list, `J`/`K` (or
+  `Alt+Up`/`Alt+Down`) move the tier under the cursor. A board's own tiers
+  are saved in the board; your machine's tiers in `tiers.toml`.
+
+### Changed
+
+- **`Ctrl+N` cycles only the tiers you made, in list order.** Once you have
+  tiers, the built-in `claude` and `codex` no longer appear between them; the
+  default stays in the ring when it is a built-in, so you can return to it.
+  With no tiers of your own, the ring is still `claude` and `codex`. The
+  open card names the default tier for a second after `Ctrl+N` lands on it;
+  any other tier is named whenever the card is open.
+
+### Fixed
+
+- **Archiving many tickets no longer freezes the board.** Removing their
+  worktrees took 4 to 13 seconds and could time out the board's requests; it
+  now runs in the background.
+
 ## v0.1.0-alpha.35 — 2026-10-01
 
 ### Added
