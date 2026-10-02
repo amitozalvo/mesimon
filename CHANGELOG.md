@@ -6,6 +6,108 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.37 — 2026-10-03
+
+### Changed
+
+- **On Claude Code 2.1.287 or newer, mesimon talks to Claude through a
+  plugin it loads for each session, instead of typing into the pane.**
+  Prompts, briefs, the board's asks, Remote Control prompts and the crown's
+  asks reach Claude whole, as your own words, the moment they are sent; a
+  prompt sent while a turn runs waits and runs as its own turn. A question's
+  answer from the phone or the crown goes straight into Claude's dialog,
+  with no screen read and no keys sent. A brief is no longer wrapped as
+  pasted content. Nothing is installed: mesimon lays the plugin in its state
+  directory and passes it with `--plugin-dir`, after `claude plugin
+  validate` accepts it. There is no setting; `mesimon doctor`'s `claude
+  road` line says which way the last launch went and why.
+- **Claude Code older than 2.1.287, and Codex, work exactly as before.** If
+  the plugin stops validating after a Claude Code update, launches go back
+  to the old way on their own; the feed says `claude_road_fallback` and
+  `mesimon doctor` warns.
+- **On that road a session carries no generated `--settings`, MCP server or
+  `--allowedTools`.** The plugin reports the session's events, refuses
+  writes to `.mesimon` and mesimon's state directory in the same words as
+  before (also with the board's daemon stopped), passes permission dialogs
+  to Remote Control, and registers the board's tools itself. Claude Code
+  asks no permission before a board tool runs, in any mode, plan mode
+  included; mesimon's own check of the agent's tier and ticket is the only
+  gate.
+- **Limits of that road.** A slash command (text starting with `/`) is still
+  typed. A plan is still accepted by pressing Enter on its first row, because
+  Claude Code has no call for "Yes, auto-accept edits". A phone's refusal of
+  a question is still Escape. A session whose plugin has not checked in
+  shortly after launch gets its words typed instead (feed `mod_silent`).
+  Sessions started by an earlier build keep the old way until their next
+  sleep and wake.
+- **A ticket's cost on that road comes from Claude Code's own count of each
+  turn**, subagents included; the transcript is still read beside it, and no
+  turn is counted twice. The quota line's 5-hour and weekly windows are also
+  refreshed at the end of every turn; per-model weeks and the plan name still
+  come from the `claude -p` read, on its usual schedule. A new `costs` line in
+  `mesimon doctor` says how many tickets were counted this way and where the
+  two counts disagree.
+- **The crown answers questions and accepts plans by default**, including on
+  existing boards. `accept_plan` is a new crown tool; a worker stopping on a
+  plan wakes the crown, and its card reads `♛ accepted plan`. Turn both off
+  in `Settings › Agents › Crown answers questions`. The crown never answers
+  for an agent a person started, or a secret, permission or sign-in prompt;
+  a person who answers first wins.
+- **The crown can no longer archive tickets unless you allow it.** New row
+  `Settings › Agents › Crown archives tickets`, off by default; while off,
+  the crown moves finished tickets to DONE and a merged worktree stays until
+  you archive it. `mesimon doctor` prints a `crown archives` line.
+- **The crown chooses each ticket's workspace and tier on purpose.**
+  `start_agent` and `create_ticket` require `worktree` or
+  `shared_checkout`, and the crown is refused the shared checkout while
+  another ticket's agent holds it. `start_agent` also wakes an agent the
+  crown parked (`♛ woken`). Tiers gain a `Description:` field (`Settings ›
+  Agents › Tiers`, up to 300 bytes) that the crown reads to pick a tier for
+  each ticket it files or starts; a ticket a person started keeps its tier.
+- **The crown is woken when a worker finishes a turn with nothing to
+  merge**, and, after a merge, only once the worker's merged-notice turn has
+  ended.
+- **The ticket page shows its cost only while the cards show cost** (`$`),
+  as `∙ $4.20`, without "at API prices".
+- **Remote Control's Now page lists a stopped agent for an hour**, under
+  "Recently idle"; older ones are on Board.
+
+### Added
+
+- **The crown can answer a worker's question** with the new `answer_agent`
+  tool, including a batch of up to four questions and questions with several
+  choices. The card shows `♛ answered`. The crown's `get_ticket` says what a
+  worker stopped on (question, permission, secret, plan) and gives a
+  question's words and options.
+- **Remote Control answers a batch of questions, or a several-choice
+  question, from the ticket's card**: every question is drawn, and one
+  Submit sends them all. A question with ticks and typed words together is
+  still answered in the pane.
+
+### Fixed
+
+- **A new agent's brief is pasted only once Claude's input box is on
+  screen.** Several agents started at once could receive a garbled or unsent
+  brief. If the box does not appear within 30 s, the card shows `brief not
+  sent` and needs you; Shift+Enter on the ticket sends it again.
+- **Words queued for an agent stopped on a question are held**, and the card
+  says what holds them (`agent asked ∙ you send`, `queued ∙ after T-3's
+  answer`). `^y` no longer sends them into the question.
+- **A phone's question answer reads "Answered." only once Claude confirms
+  it**; otherwise it says the keys were sent but not confirmed, and a failed
+  answer keeps its buttons for a retry. Options whose labels wrap are read
+  correctly.
+- **A queued phone prompt no longer blocks answering that agent's
+  question**, Steer and Send now are refused while the agent waits on a
+  dialog, and the queued row says who queued it and what holds it.
+- **A question asked alongside other tool calls stays answerable** until
+  its own call ends; before, the first sibling tool to finish removed it
+  from Remote Control and the crown.
+- **The write guard also refuses `NotebookEdit`** under `.mesimon` and the
+  state directory.
+- **Settings' "this board" scope (`b`) no longer carries into Terminal and
+  Usage**, where every row is machine-only.
+
 ## v0.1.0-alpha.36 — 2026-10-01
 
 ### Added
