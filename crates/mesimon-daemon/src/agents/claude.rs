@@ -64,6 +64,11 @@ fn flags(context: &LaunchContext<'_>) -> Vec<String> {
     if let Some(mode) = mode {
         argv.extend(["--permission-mode".into(), mode]);
     }
+    // T-573's research seam: a mod of function hooks, by flag alone (promise
+    // 1: no config is written for it). A wake re-reads the seam like a tier.
+    if let Some(dir) = &context.mod_dir {
+        argv.extend(["--plugin-dir".into(), dir.display().to_string()]);
+    }
     // The ticket's tier (T-443). Only a Claude tier's words reach here —
     // `Book::launch` hands another provider's pick this provider's built-in,
     // which passes nothing — and only words the tier's own checks accept.
@@ -198,6 +203,7 @@ impl AgentAdapter for Claude {
             // a switch lands and a replayed argv never carries two.
             "--model",
             "--effort",
+            "--plugin-dir",
         ];
         let mut argv = Vec::with_capacity(record.argv.len() + 2);
         let mut previous = record.argv.iter();
@@ -236,6 +242,7 @@ mod tier_tests {
             column: ColumnSettings::default(),
             plan: false,
             tier,
+            mod_dir: None,
         }
     }
 
@@ -289,6 +296,43 @@ mod tier_tests {
         let codex = Tier { provider: AgentProvider::Codex, ..tier("gpt-6-astra", Effort::Ultra) };
         let argv = flags(&context(&paths, codex));
         assert!(!argv.iter().any(|a| a == "--model" || a == "--effort"), "{argv:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-573: the research seam rides argv only while it is set, and a wake
+    /// drops a stale `--plugin-dir` pair the way it drops a stale tier.
+    #[test]
+    fn the_mod_seam_is_off_by_default_and_re_read_on_a_wake() {
+        let dir = std::env::temp_dir().join(format!("msmn-claude-mod-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = crate::paths::Paths::for_repo(&dir).unwrap();
+        let builtin = || Tier::builtin(AgentProvider::ClaudeCode);
+        let off = flags(&context(&paths, builtin()));
+        assert!(!off.iter().any(|a| a == "--plugin-dir"), "{off:?}");
+        let on = flags(&LaunchContext {
+            mod_dir: Some("/state/mod".into()),
+            ..context(&paths, builtin())
+        });
+        assert_eq!(pair(&on, "--plugin-dir"), ["/state/mod"]);
+
+        let rec = SessionRecord::new(
+            uuid::Uuid::from_u128(1),
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            ["claude", "--settings", "/s.json", "--plugin-dir", "/old/mod"]
+                .into_iter()
+                .map(String::from)
+                .chain(["--session-id".to_string(), uuid::Uuid::from_u128(1).to_string()])
+                .collect(),
+            "/".into(),
+            SessionState::Sleeping,
+        );
+        let woke = Claude.resume(&context(&paths, builtin()), &rec).unwrap();
+        assert!(
+            !woke.argv.iter().any(|a| a == "--plugin-dir" || a == "/old/mod"),
+            "{:?}",
+            woke.argv
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

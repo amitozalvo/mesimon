@@ -88,6 +88,11 @@ pub struct LaunchContext<'a> {
     /// session's provider (`tier::Book::launch`): its model and effort ride
     /// argv, a built-in passes nothing.
     pub tier: mesimon_core::tier::Tier,
+    /// T-573's research seam: a Claude Code plugin folder (a mod of function
+    /// hooks) loaded with `--plugin-dir` for this launch, `MESIMON_MOD_DIR`.
+    /// Off by default and read by the Claude adapter alone; Codex has no
+    /// mods. Nothing is written for it: the flag is the whole installation.
+    pub mod_dir: Option<std::path::PathBuf>,
 }
 
 pub struct LaunchSpec {

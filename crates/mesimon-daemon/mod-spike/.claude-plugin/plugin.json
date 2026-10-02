@@ -1,0 +1,5 @@
+{
+  "name": "mesimon-spike",
+  "version": "0.1.0",
+  "description": "T-573 research spike: measures Claude Code function hooks against mesimon's hook set, paste road and dialog scraping. Loaded only by MESIMON_MOD_DIR; never shipped."
+}

@@ -17827,3 +17827,153 @@ Usage row's detail) and in Esc › Usage.
 
 **Tests.** `golden_ticket_page_says_what_it_cost` renders the page under the age corner (no
 cost) and the cost corner (`∙ $12.10`, no "API prices"); `ticket_cost_120x30` reminted.
+
+## A mod in place of the hook set, the paste road and the dialog scraping (T-573, 2026-10-02, research spike filed by the crown on T-564: "research Claude Mods … it might be beneficial and remove ad hocs we invented to integrate mesimon and claude code")
+
+**What was asked.** Claude Code 2.1.287 (2026-10-01) ships *mods*: a plugin of function hooks
+that runs in-process, loaded for one session by `claude --plugin-dir <folder>` with no config
+written. Eight ad hocs mesimon built to live beside Claude Code were each to be proven or
+refuted against the real build. Nothing ships: the spike mod is `crates/mesimon-daemon/mod-spike/`
+(its README says how to run it again), loaded only by the seam `MESIMON_MOD_DIR`, off by default,
+and the measurements below are the deliverable. **Go**, staged; the plan is a note on T-573.
+
+**Measured on** Claude Code 2.1.287 (built 2026-10-01T16:02:06Z), Haiku 4.5, `--setting-sources
+""`, a scratch cwd whose trust dialog the driver answers by key, one private tmux server per
+session (tmux 3.6a, 120x50), prompts delivered the way mesimon delivers them (bracketed paste,
+then a separate Enter); 13 sessions over 3 runs, cents. The mod logs every event it sees to one
+JSON file each (`MESIMON_MOD_LOG`), a command-hook settings file ran beside it for parity, and
+the driver reads the transcript afterwards. `claude plugin validate` and `claude plugin test`
+pass; `tsc -p` against the declarations the engine lays beside the folder is clean.
+
+**Row 1, the 32-entry hook set and `mesimon hook`: proven.** Every settings-hook event is an
+in-process event `classic.<Event>` (33 names in the declarations, `TeammateIdle`, `StopFailure`,
+`Elicitation` and `PostToolUseFailure` among them), and it fires **whether or not a settings hook
+is configured**. 26 command-hook frames were paired with their `classic.*` twins: every payload
+**byte-identical**, except `classic.PreToolUse`, whose `e` is the tool envelope `{ tool,
+tool_use_id, ...arguments }` and not the stdin JSON (documented); the mod saw each 40–116 ms
+*before* the command hook ran, the cost of an exec. Relaying through the real binary
+(`$.process.run(["mesimon", "hook", "--sock", …], { stdin })`) put every frame on a stand-in
+`hook.sock` 6–60 ms after the event, with the pane key `<server pid>:%<pane>` in the header: the
+daemon's ingest needs no change to read it. The engine's own events add what the hook set has no
+name for: `turn.complete` 60 ms after every `Stop`, with `usage` and `reason` (`answer | aborted
+| refusal | error`) and, for a subagent, its `agentId`, but **no background tasks** (`classic.Stop`
+keeps `background_tasks`); `agent.spawn` resolves to the `agentId` before `SubagentStart`; a
+background command's completion arrives as `prompt.submit` with `origin.kind:
+'task-notification'`; `/compact` is one `session.compact` around `PreCompact`,
+`SessionStart(compact)` and `PostCompact`, with `tokensBefore/After`. Two findings that are not
+new but are now written: a `SubagentStop` with an empty `agent_type` fires after many turns and
+twice during a compaction (the engine's own helper loops; the command hook sees them too), and
+the `classic.*` wildcard also delivers `MessageDisplay` and `PostToolBatch`, the verbose tier
+mesimon never registers, so the real mod hooks names. **Partial:** the one long-lived
+up-channel the ticket drew does not exist in 2.1.287. `$.process.spawn` takes `input` as one
+string and closes stdin ("a later form may take the text in pieces"); its stdout streams to the
+mod, so a spawned `mesimon mod-bridge` is the **daemon→mod** road, and mod→daemon is one
+`$.process.run` per event (as today's road, minus the settings file, the 500 ms self-abort and
+the EOF framing) or `$.mcp.call` on a server the mod's manifest lists (not measured).
+
+**Row 2, the paste road: proven, and promise 3 holds.** `$.prompt.submit({ text, asUser: true })`
+at `session.start` put a 10,380-character brief in as the first turn in 33 ms: no composer, no
+tty, no press, no `SessionStart` race (`session.start` fires once the session is ready, after the
+trust dialog). `turn.start.text` and the transcript row's content equal the brief **byte for
+byte**. Three sessions started at once under six CPU burners each took theirs in 42–84 ms,
+verbatim (T-570's case has no tty to be cooked). A prompt submitted **while a turn runs** is held
+and runs as a turn of its own 20 ms after the running one ends, never folded in and never typed
+into the box; the call resolves at that `turn.start` (held 9.5 s here); while it waits the screen
+draws it under `› Prompt from the mesimon-spike plugin`. Without `asUser` the model reads `The
+mesimon-spike plugin sent a message:` and an explanatory paragraph before the words, so `asUser`
+is mandatory. What the plugin's name still rides: the transcript row's `origin` **metadata**
+(`{ kind: 'plugin', name, asUser: true }`, no token of content) and that queued-prompt label on
+screen. The mod's own `prompt.submit` hook cannot rewrite the origin (pinned, "no hook may set
+one") and does not even fire for its own submission ("every hook but the calling one"); the
+daemon's ack stays `UserPromptSubmit`, which fires as today.
+
+**Row 3, the dialog scraping: proven.** A `tool.call` hook on `AskUserQuestion` calls `next(e)`
+without awaiting it, which draws the native dialog, and races it against the daemon's answer.
+Returning `{ result: { questions, answers } }` 1.7 s later **closed the dialog cleanly**, drew
+`User answered Claude's questions`, and the model read `Your questions have been answered:
+"Which color?"="Blue". You can now continue…`: the tool's own text, the same the native path
+produces (the result went through the tool's output schema and mapper; the transcript's
+`toolUseResult` is `{ questions, answers }`, the native one adds `annotations: {}`). The aborted
+native `next` resolved afterwards with the tool's rejection error, which the hook ignores. When
+the person answered first, the native result won and a late answer found nothing held. A batch
+with a several-choice question was answered whole, `"Cheese, Ham"` comma-joined, with no screen
+read, no Space, no tab walk. **The edge moves:** when the mod answers, **no `PostToolUse` fires**
+for the AskUserQuestion (the engine's own path was aborted), so T-567's hook-edge confirmation
+must come from the mod's own report; `PermissionRequest` for AskUserQuestion still fires before
+the dialog as today.
+
+**Row 4, the permission bridge: partial.** `tool.check` fires after `classic.PreToolUse` with
+the engine's verdict: `{ decision: 'allow', rule: 'Bash' }` under an allow rule, `{ decision:
+'ask', reason: "touch in '…' needs approval …" }` otherwise, and `allow` with no dialog for a
+command its own classifier holds read-only (`printf hi`). The `permission_suggestions`
+(`addDirectories`, `setMode acceptEdits`) are **not on `tool.check`**: they ride the
+`classic.PermissionRequest` that follows 12 ms later. A hook's `{ decision: 'allow' }` skipped
+the dialog; `deny` reached the model as `Permission to use Bash denied by plugin mesimon-spike:
+<reason>`, the plugin's name in the model's text. There is no race with the dialog, because the
+dialog opens only after `tool.check` resolved `ask`: a one-shot allow decided at `tool.check`
+time is clean, but holding `tool.check` for a phone would delay the dialog for everyone. **Not
+measured:** answering `classic.PermissionRequest` from the mod (the in-process twin of `mesimon
+approve`, same classic result shape), which is the road a one-shot allow beside an open dialog
+would take.
+
+**Row 5, `mesimon gate`: proven.** `tool.call` on `Write|Edit|NotebookEdit` returning `{ deny }`
+for a path under the board dir, **with no daemon anywhere** (the scenario ran none), refused the
+write: the model read `<tool_use_error>mesimon: … is board state under .mesimon; …
+</tool_use_error>`, the file was not created, a Write elsewhere passed. A deny at `tool.call`
+precedes `classic.PreToolUse` and `tool.check`, so neither fires for the refused call. Covered
+by `claude plugin test` (two tests).
+
+**Row 6, the plan accept: `{ result }` refuted, `tool.check` partial.** Answering `ExitPlanMode`
+yourself with `{ result: { plan, isAgent: false, filePath } }` draws `User approved Claude's
+plan` and hands the model `User has approved your plan. You can now start coding…`, **but the
+session stays in plan mode**: the next Write asked `Cannot write to … while in plan mode` and the
+transcript's `permission-mode` row stayed `plan`. `tool.check → allow` on `ExitPlanMode` runs the
+tool natively, fires `PostModelSwitch`, and leaves plan mode into `default` (the transcript's row
+turned `default`; the next Write asked the ordinary way): the dialog's **"Yes, manually approve
+edits"**. The row T-420's Enter lands on, **"Yes, auto-accept edits", has no API equivalent**:
+the declarations carry no permission-mode setter (`PermissionMode` is read-only there, and
+`setMode` is a `PermissionRequest` suggestion, not a call). The plan rides `e.plan` and
+`e.planFilePath` on `tool.call` and `tool_response.plan` on `PostToolUse`, as 2.1.259 put it.
+
+**Row 7, the MCP shim: proven, with a finding.** `$.tool.register` at `session.start` listed
+`mcp__mesimon-spike__spike_ping` by turn one; the model found it through `ToolSearch` (deferred
+like the MCP tools in this build) and called it; the hook served it in-process. **No
+`tool.check` and no dialog ran for it, in default and in plan mode alike**, with no allow rule
+and no `readOnlyHint`: a registered tool is trusted as the plugin's own. So `--allowedTools`,
+T-362's hint pair and the inline `--mcp-config` all go, and the daemon's server-side tier check
+(already the only real gate) is the gate. Not measured: a description budget (`ToolSpec` states
+none; the 820-byte cap was the shim's).
+
+**Row 8, attention and cost: proven.** `turn.complete.usage` carries the four API counts and the
+model, summed over the turn's requests; `turn.step` carries each request's; `$.session.usage()`
+answers `cost.usd`, the context window and the rate-limit windows (`five_hour 9 %`, `seven_day
+74 %`, each with `resetsAt`): the figures `usage.json` is scraped for. `turn.complete` is the
+turn's edge for the stale clock; an idle session raises `Notification idle_prompt` after 60 s.
+
+**Facts about the runtime that bind the design.** The hooks module has no Node and no timers;
+`$.fs` reads, writes, lists and stats but neither appends nor deletes; `$.env.get` takes string
+literals only; a function `$` is passed to must be declared at the top of the file (the
+validator refuses a closure); `$.plugin.root` is the folder. **Every load writes
+`.claude-plugin/types/` and a `tsconfig.json` into the plugin folder**, so the daemon must lay the
+mod under the state dir (promise 1 allows it) and never point `--plugin-dir` into a checkout;
+`CLAUDE_CODE_PLUGIN_DIR_WATCH=0` must ride the pane. The declaration file's header reads
+`EARLY ACCESS: this surface may change between releases without notice` while the docs
+(https://code.claude.com/docs/en/plugins/mods/overview.md) say mods "require Claude Code
+v2.1.287 or later, and they're on by default" and create.md says "The events and methods can
+change between releases, so trust these files over any page". Version floor **2.1.287**,
+feature-detected at launch (`claude --version`, then `claude plugin validate` on the laid mod);
+`hooks` is the fallback and the kill switch; Codex has no mods and keeps every road.
+
+**The never-list** (what the mod could do and mesimon must not, promise 3): `$.session.append`
+(a row the model reads), `context` on `prompt.submit` or `tool.call` (hidden blocks the model
+reads), `prompt.compose`/`prompt.context`/`prompt.section` (the system prompt), rewriting
+`e.text` at `prompt.submit`, a submit without `asUser`, `tool.call` rewrites of the model's
+arguments, `tool.check → allow` beyond the consented one-shot, `$.model.*` on the person's
+credential, `$.session.send`. The two consented exceptions stay the tool definitions and the
+opt-in brief.
+
+**Built.** `crates/mesimon-daemon/mod-spike/` (the mod, `bridge.py`, `drive.py` with twelve
+scenarios, `report.py`, five `claude plugin test` tests); `LaunchContext.mod_dir` filled from
+`MESIMON_MOD_DIR`, `--plugin-dir` in `agents::claude::flags` and its wake-owned pair list, and
+the pane env (`CLAUDE_CODE_PLUGIN_DIR_WATCH=0`, `MESIMON_MOD_LOG`, `MESIMON_MOD_GATE_BOARD`)
+under the seam only; a unit test that the seam is off by default and re-read on a wake.

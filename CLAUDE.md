@@ -559,7 +559,9 @@ checkout before the sweep goes looking for its runtime),
 `MESIMON_PANE_QUIET_MS`, `MESIMON_NO_UPDATE_CHECK`, `MESIMON_UPDATE_CHECK`,
 `MESIMON_SERVER_GUARD_TICKS`, `MESIMON_WT_REFRESH_TICKS` (the slow bucket: worktree flags, merge
 train, CLAUDE.md sample, checkout git sample), `MESIMON_NO_TAG_SEED`,
-`MESIMON_TICKET_SHELLS`, `MESIMON_UPDATE_GOLDEN`.
+`MESIMON_TICKET_SHELLS`, `MESIMON_UPDATE_GOLDEN`, `MESIMON_MOD_DIR` (T-573's research seam: a Claude
+Code mod folder loaded with `--plugin-dir`; the spike mod and its driver live in
+`crates/mesimon-daemon/mod-spike/`, measured in STALE-MAP, shipped to nobody).
 
 The e2e pattern is an in-process daemon thread + real tmux + the real built binary via
 `env!("CARGO_BIN_EXE_mesimon")`, which is only available in `crates/mesimon/tests/`.

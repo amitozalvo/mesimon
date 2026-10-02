@@ -1274,11 +1274,20 @@ impl Daemon {
         let Some(key) = self.board.ticket(ticket).map(|t| t.short_key.clone()) else {
             return Vec::new();
         };
-        let mut env = vec![("MESIMON_TICKET".to_string(), key)];
+        let mut env = vec![("MESIMON_TICKET".to_string(), key.clone())];
         if let Some(b) = self.worktrees.get(&ticket) {
             if b.status == BindingStatus::Attached && b.path == cwd {
                 env.push(("MESIMON_WORKTREE_BRANCH".into(), b.branch.clone()));
             }
+        }
+        // T-573's research seam: the spike mod observes into a log under the
+        // state dir and must never hot-reload (the daemon writes that dir).
+        if mod_dir().is_some() {
+            let log = self.paths.state_dir.join("mod-log").join(&key);
+            let _ = std::fs::create_dir_all(&log);
+            env.push(("CLAUDE_CODE_PLUGIN_DIR_WATCH".into(), "0".into()));
+            env.push(("MESIMON_MOD_LOG".into(), log.display().to_string()));
+            env.push(("MESIMON_MOD_GATE_BOARD".into(), self.paths.board_dir.display().to_string()));
         }
         env
     }
@@ -11142,6 +11151,7 @@ impl Daemon {
                 .and_then(|t| self.board.column(&t.column))
                 .map(|c| c.settings.clone())
                 .unwrap_or_default(),
+            mod_dir: mod_dir(),
         }
     }
 
@@ -12510,6 +12520,12 @@ const AGENT_DESCRIPTION_MAX_BYTES: usize = 4096;
 fn now_iso() -> String {
     // Seconds precision is enough for created_at; avoid a chrono dependency.
     format!("@{}", now_secs())
+}
+
+/// T-573's research seam: the plugin folder a Claude launch loads with
+/// `--plugin-dir`, or nothing. Off by default; a spike, not a feature.
+fn mod_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("MESIMON_MOD_DIR").filter(|v| !v.is_empty()).map(std::path::PathBuf::from)
 }
 
 #[cfg(test)]

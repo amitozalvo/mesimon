@@ -1,0 +1,326 @@
+// T-573 research spike. A throwaway mod that OBSERVES every event mesimon's
+// generated hook set observes today, and tries each replacement the ticket
+// names, so each can be proven or refuted on the real Claude Code. It holds
+// no policy and ships to nobody: `MESIMON_MOD_DIR` loads it, nothing else.
+//
+// Doctrine it keeps even as a spike (README promise 3): it never calls
+// `$.session.append`, never attaches `context` on `prompt.submit`, never
+// hooks `prompt.compose`/`prompt.context`, and never rewrites a prompt's
+// words. Every prompt it submits is `asUser: true`.
+//
+// Environment (set by the driver or by the daemon's seam):
+//   MESIMON_MOD_LOG         a directory: one JSON file per event (the record)
+//   MESIMON_MOD_SPOOL       a directory `bridge.py` tails: commands down
+//   MESIMON_MOD_BRIEF_FILE  a file submitted `asUser` at session.start (row 2)
+//   MESIMON_MOD_GATE_BOARD  the board dir the gate refuses writes under (row 5)
+//   MESIMON_MOD_RELAY_SOCK  + MESIMON_MOD_RELAY_BIN + MESIMON_MOD_SESSION:
+//                           relay every classic event through the real
+//                           `mesimon hook` binary (row 1's shadow road)
+import type { Register } from 'claude-code'
+
+type Answer = { answers: Record<string, string>; response?: string }
+type Decision = 'allow' | 'ask' | 'deny'
+type Command =
+  | { kind: 'submit'; text: string; asUser?: boolean }
+  | { kind: 'answer'; answers: Record<string, string>; response?: string }
+  | { kind: 'plan'; mode: 'native' | 'result' | 'allow' }
+  | { kind: 'check'; tool: string; decision: Decision | null }
+  | { kind: 'usage' }
+  | { kind: 'tools' }
+  | { kind: 'ask'; question: string; options: string[] }
+
+const LONG = 4000
+
+/** Strings past LONG are cut; the record keeps their length. */
+const trim = (_key: string, value: unknown) =>
+  typeof value === 'string' && value.length > LONG
+    ? `${value.slice(0, LONG)}…[${value.length} chars]`
+    : value
+
+let seq = 0
+let logDir: Promise<string | undefined> | undefined
+const holds = new Map<string, (a: Answer) => void>()
+const checks = new Map<string, Decision>()
+let planMode: 'native' | 'result' | 'allow' = 'native'
+let cwd = ''
+
+async function log($: any, event: string, data: unknown) {
+  logDir ??= $.env.get('MESIMON_MOD_LOG')
+  const dir = await logDir
+  if (!dir) return
+  const n = ++seq
+  const t = await $.clock.now()
+  const name = `${dir}/${String(n).padStart(5, '0')}-${event.replace(/[^A-Za-z0-9._-]/g, '_')}.json`
+  try {
+    await $.fs.write(name, JSON.stringify({ seq: n, t, event, data }, trim, 1))
+  } catch {
+    // Nowhere to say so.
+  }
+}
+
+async function submit($: any, text: string, asUser: boolean, why: string) {
+  const t0 = await $.clock.now()
+  await log($, 'prompt.submit.call', { why, asUser, chars: text.length })
+  try {
+    const r = await $.prompt.submit(asUser ? { text, asUser: true } : { text })
+    await log($, 'prompt.submit.resolved', { why, ms: (await $.clock.now()) - t0, origin: r.origin, drop: r.drop, chars: r.text?.length })
+  } catch (err) {
+    await log($, 'prompt.submit.rejected', { why, error: String(err) })
+  }
+}
+
+async function handle($: any, line: string) {
+  let cmd: Command
+  try {
+    cmd = JSON.parse(line)
+  } catch {
+    await log($, 'bridge.bad_line', line)
+    return
+  }
+  await log($, 'bridge.command', cmd)
+  switch (cmd.kind) {
+    case 'submit':
+      void submit($, cmd.text, cmd.asUser !== false, 'spool')
+      break
+    case 'answer': {
+      const first = holds.entries().next()
+      if (first.done) {
+        await log($, 'answer.nothing_held', cmd)
+      } else {
+        first.value[1]({ answers: cmd.answers, response: cmd.response })
+      }
+      break
+    }
+    case 'plan':
+      planMode = cmd.mode
+      break
+    case 'check':
+      if (cmd.decision) checks.set(cmd.tool, cmd.decision)
+      else checks.delete(cmd.tool)
+      break
+    case 'usage':
+      await log($, 'session.usage', await $.session.usage())
+      break
+    case 'tools':
+      await log($, 'tool.list', (await $.tool.list()).map((t: any) => t.name))
+      break
+    case 'ask':
+      try {
+        await log($, 'ui.ask.answer', await $.ui.ask(cmd.question, cmd.options))
+      } catch (err) {
+        await log($, 'ui.ask.rejected', String(err))
+      }
+      break
+  }
+}
+
+async function runBridge($: any, spool: string, root: string) {
+  const bridge = $.process.spawn({ argv: ['python3', `${root}/bridge.py`, spool] })
+  await log($, 'bridge.spawned', { spool })
+  let buf = ''
+  try {
+    for await (const { stream, text } of bridge) {
+      if (stream !== 'stdout') {
+        await log($, 'bridge.stderr', text)
+        continue
+      }
+      buf += text
+      let nl: number
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl)
+        buf = buf.slice(nl + 1)
+        if (line.trim()) void handle($, line)
+      }
+    }
+    await log($, 'bridge.ended', await bridge.result)
+  } catch (err) {
+    await log($, 'bridge.failed', String(err))
+  }
+}
+
+export const register: Register = on => {
+  // ---- Row 1: every classic event, in-process, relayed through the real
+  // hook binary when asked (one `$.process.run` per event: `$.process.spawn`
+  // takes stdin as one string and closes it, so a long-lived up-channel does
+  // not exist in 2.1.287; see the block).
+  on('classic.*', async ($, e, next) => {
+    const name = next.event
+    const t0 = await $.clock.now()
+    await log($, name, e)
+    const sock = await $.env.get('MESIMON_MOD_RELAY_SOCK')
+    if (sock) {
+      const bin = (await $.env.get('MESIMON_MOD_RELAY_BIN')) ?? 'mesimon'
+      const session = (await $.env.get('MESIMON_MOD_SESSION')) ?? ''
+      const event = name.slice('classic.'.length)
+      const input: any = e
+      const reason =
+        event === 'SessionStart' ? input.source
+        : event === 'SessionEnd' ? input.reason
+        : event === 'StopFailure' ? input.error
+        : undefined
+      const argv = [bin, 'hook', '--sock', sock, '--session', session, '--event', event]
+      if (typeof reason === 'string') argv.push('--reason', reason)
+      void $.process
+        .run(argv, { stdin: JSON.stringify(e), timeoutMs: 5000 })
+        .then(
+          async r => log($, 'relay.done', { event, ms: (await $.clock.now()) - t0, exitCode: r.exitCode, stderr: r.stderr }),
+          async err => log($, 'relay.failed', { event, error: String(err) }),
+        )
+    }
+    return next(e)
+  })
+
+  // ---- Engine events the hook set has no name for.
+  on('session.start', async ($, e, next) => {
+    cwd = e.cwd
+    let version: unknown
+    try {
+      version = await $.session.version()
+    } catch (err) {
+      version = String(err)
+    }
+    await log($, 'session.start', { e, version, root: $.plugin.root })
+    // Row 7: a tool registered in-process, no MCP shim.
+    try {
+      const reg = await $.tool.register({
+        name: 'spike_ping',
+        description: 'Answers pong with the note given. A spike tool, nothing more.',
+        inputSchema: { type: 'object', properties: { note: { type: 'string' } } },
+      })
+      await log($, 'tool.register', reg)
+    } catch (err) {
+      await log($, 'tool.register.failed', String(err))
+    }
+    const started = await next(e)
+    // Row 2: the launch brief, submitted as the person's words, no tty.
+    const brief = await $.env.get('MESIMON_MOD_BRIEF_FILE')
+    if (brief) {
+      const text = await $.fs.read(brief)
+      void submit($, text, true, 'launch')
+    }
+    const spool = await $.env.get('MESIMON_MOD_SPOOL')
+    if (spool) void runBridge($, spool, $.plugin.root)
+    return started
+  })
+  on('session.end', async ($, e, next) => {
+    await log($, 'session.end', e)
+    return next(e)
+  })
+  on('session.compact', async ($, e, next) => {
+    await log($, 'session.compact', { trigger: e.trigger, agentId: e.agentId, messages: e.messages.length, instructions: e.instructions })
+    const r = await next(e)
+    await log($, 'session.compact.result', { skip: (r as any).skip, messages: (r as any).messages?.length, tokensBefore: (r as any).tokensBefore, tokensAfter: (r as any).tokensAfter })
+    return r
+  })
+  on('agent.spawn', async ($, e, next) => {
+    await log($, 'agent.spawn', e)
+    const r = await next(e)
+    await log($, 'agent.spawn.result', r)
+    return r
+  })
+  on('turn.start', async ($, e, next) => {
+    await log($, 'turn.start', e)
+    return next(e)
+  })
+  on('turn.complete', async ($, e, next) => {
+    await log($, 'turn.complete', e)
+    return next(e)
+  })
+  // Row 8: what each request cost, as the API reported it.
+  on('turn.step', async function* ($, e, next) {
+    const r = yield* next(e)
+    await log($, 'turn.step', { turnId: e.turnId, index: e.index, model: e.model, agentId: e.agentId, usage: r.usage, stopReason: r.stopReason, tools: r.toolUses.map(t => t.name) })
+    return r
+  })
+  on('prompt.submit', async ($, e, next) => {
+    await log($, 'prompt.submit', { origin: e.origin, turnId: e.turnId, wait: e.wait, chars: e.text.length, head: e.text.slice(0, 80), context: e.context, attachments: e.attachments })
+    const r = await next(e)
+    await log($, 'prompt.submit.result', { origin: r.origin, drop: r.drop, chars: r.text?.length, context: r.context })
+    return r
+  })
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    await log($, 'ui.render.UserMessage', { requestId: e.requestId, origin: (e.props as any).origin, from: (e.props as any).from, text: String((e.props as any).text).slice(0, 160) })
+    return next(e)
+  })
+  on('ui.render', { component: 'AskUserQuestion' }, async ($, e, next) => {
+    await log($, 'ui.render.AskUserQuestion', { requestId: e.requestId, surface: e.surface, props: e.props })
+    return next(e)
+  })
+
+  // ---- Row 4: the permission verdict.
+  on('tool.check', async ($, e, next) => {
+    const core = await next(e)
+    const want = checks.get(e.tool) ?? (e.tool === 'ExitPlanMode' && planMode === 'allow' ? 'allow' : undefined)
+    await log($, 'tool.check', { tool: e.tool, input: e.input, tool_use_id: e.tool_use_id, core, override: want, origin: next.origin })
+    return want ? { decision: want, reason: `mesimon spike said ${want}` } : core
+  })
+
+  // ---- Row 3: the question, held until the daemon (here: the spool) or the
+  // person answers, whichever is first.
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    const t0 = await $.clock.now()
+    const id = e.tool_use_id
+    await log($, 'ask.call', { tool_use_id: id, agentId: e.agentId, questions: e.questions })
+    let settle: (a: Answer) => void = () => {}
+    const remote = new Promise<Answer>(resolve => { settle = resolve })
+    holds.set(id, settle)
+    const native = next(e).then(
+      r => ({ who: 'native' as const, r }),
+      err => ({ who: 'native_rejected' as const, err: String(err) }),
+    )
+    const spool = remote.then(a => ({ who: 'spool' as const, a }))
+    const first = await Promise.race([native, spool])
+    holds.delete(id)
+    const ms = (await $.clock.now()) - t0
+    if (first.who === 'spool') {
+      const result: any = { questions: e.questions, answers: first.a.answers }
+      if (first.a.response) result.response = first.a.response
+      await log($, 'ask.answered_by_spool', { ms, result })
+      void native.then(n => log($, 'ask.native_after_spool', n))
+      return { result }
+    }
+    if (first.who === 'native') {
+      await log($, 'ask.native', { ms, r: first.r })
+      return first.r
+    }
+    await log($, 'ask.native_rejected', { ms, err: first.err })
+    throw new Error(first.err)
+  })
+
+  // ---- Row 5: the gate, local and static. No daemon is asked.
+  on('tool.call', { tool: ['Write', 'Edit', 'NotebookEdit'] }, async ($, e, next) => {
+    const tool = e.tool
+    const input: any = e
+    const path: unknown = input.file_path ?? input.notebook_path
+    // The guarded root is given, as `mesimon gate` gets `--deny-board`;
+    // the cwd's `.mesimon` stands in while nothing names one.
+    const board = (await $.env.get('MESIMON_MOD_GATE_BOARD')) ?? `${cwd}/.mesimon`
+    const root = board.endsWith('/') ? board : `${board}/`
+    if (typeof path === 'string' && (path.startsWith(root) || path === root.slice(0, -1))) {
+      await log($, 'gate.deny', { tool, path })
+      return { deny: `mesimon: ${path} is board state under .mesimon; the board writes it, an agent does not.` }
+    }
+    return next(e)
+  })
+
+  // ---- Row 6: the plan dialog.
+  on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {
+    await log($, 'plan.call', { mode: planMode, e })
+    if (planMode === 'result') {
+      const input: any = e
+      const r = { result: { plan: input.plan ?? null, isAgent: false, filePath: input.planFilePath } }
+      await log($, 'plan.answered_by_mod', r)
+      return r as any
+    }
+    const r = await next(e)
+    await log($, 'plan.native', r)
+    return r
+  })
+
+  // ---- Row 7: serving the registered tool.
+  on('tool.call', { tool: 'mcp__mesimon-spike__spike_ping' }, async ($, e, next) => {
+    await log($, 'spike_ping.call', e)
+    return { result: `pong ${(e as any).note ?? ''}`.trim() } as any
+  })
+
+}
