@@ -3906,6 +3906,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel";
             event: event.into(),
             reason: None,
             pane: None,
+            road: mesimon_core::road::Road::Hooks,
+            accepted_ms: 0,
             payload,
         };
         let ask = |id: &str| serde_json::json!({"tool_name": "AskUserQuestion", "tool_use_id": id});

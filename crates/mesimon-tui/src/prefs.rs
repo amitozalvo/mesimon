@@ -25,6 +25,7 @@ use serde_json::{Map, Value};
 
 use mesimon_core::notify::Sound;
 use mesimon_core::prefs::PrefKey;
+use mesimon_core::road::RoadPref;
 use mesimon_core::snooze::Weekday;
 
 use crate::theme::{Flavor, Ground};
@@ -429,6 +430,10 @@ pub(crate) struct Prefs {
     pub usage_codex: bool,
     /// What the cards' corner says: age by default, cost on `$` (T-327).
     pub card_corner: CardCorner,
+    /// How Claude sessions report to the board (T-574): `hooks` by default,
+    /// `mod` or `auto`. The DAEMON reads this key from the files itself at
+    /// every launch — no push — so the kill switch holds with no board open.
+    pub claude_road: RoadPref,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -471,6 +476,7 @@ impl Default for Prefs {
             usage_claude: true,
             usage_codex: true,
             card_corner: CardCorner::Age,
+            claude_road: RoadPref::Hooks,
             doc: Map::new(),
         }
     }
@@ -510,6 +516,7 @@ const USAGE_RESETS_KEY: &str = PrefKey::UsageResets.name();
 const USAGE_CLAUDE_KEY: &str = PrefKey::UsageClaude.name();
 const USAGE_CODEX_KEY: &str = PrefKey::UsageCodex.name();
 const CARD_CORNER_KEY: &str = PrefKey::CardCorner.name();
+const CLAUDE_ROAD_KEY: &str = PrefKey::ClaudeRoad.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -602,6 +609,9 @@ impl Prefs {
         if let Some(v) = board.sound(PrefKey::NotifySoundDone) {
             p.notify_sound_done = v;
         }
+        if let Some(v) = board.claude_road() {
+            p.claude_road = v;
+        }
         p
     }
 
@@ -652,6 +662,7 @@ impl Prefs {
             PrefKey::UsageClaude => onoff(self.usage_claude),
             PrefKey::UsageCodex => onoff(self.usage_codex),
             PrefKey::CardCorner => self.card_corner.key(),
+            PrefKey::ClaudeRoad => self.claude_road.word(),
         }
     }
 
@@ -736,6 +747,13 @@ impl Prefs {
         {
             doc.insert(CARD_CORNER_KEY.into(), Value::from(self.card_corner.key()));
         }
+        if !doc
+            .get(CLAUDE_ROAD_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| RoadPref::from_word(v).is_none())
+        {
+            doc.insert(CLAUDE_ROAD_KEY.into(), Value::from(self.claude_road.word()));
+        }
         for (key, s) in [
             (NOTIFY_SOUND_NEEDS_YOU_KEY, self.notify_sound_needs_you),
             (NOTIFY_SOUND_DONE_KEY, self.notify_sound_done),
@@ -814,12 +832,22 @@ impl BoardPrefs {
         self.doc.get(g.word()).and_then(Value::as_str).and_then(Flavor::from_name)
     }
 
+    /// This board's Claude road (T-574), when it sets one this build reads.
+    pub(crate) fn claude_road(&self) -> Option<RoadPref> {
+        self.doc.get(CLAUDE_ROAD_KEY).and_then(Value::as_str).and_then(RoadPref::from_word)
+    }
+
+    pub(crate) fn set_claude_road(&mut self, v: RoadPref) {
+        self.doc.insert(CLAUDE_ROAD_KEY.into(), Value::from(v.word()));
+    }
+
     /// Present AND readable by this build — what "set for this board" means.
     pub(crate) fn is_set(&self, key: PrefKey) -> bool {
         match key {
             PrefKey::Dark => self.flavor(Ground::Dark).is_some(),
             PrefKey::Light => self.flavor(Ground::Light).is_some(),
             PrefKey::NotifySoundNeedsYou | PrefKey::NotifySoundDone => self.sound(key).is_some(),
+            PrefKey::ClaudeRoad => self.claude_road().is_some(),
             PrefKey::WeekStart
             | PrefKey::StatusTop
             | PrefKey::TabTitle
@@ -1043,6 +1071,11 @@ pub(crate) fn load(path: &Path) -> Loaded {
         .and_then(Value::as_str)
         .and_then(CardCorner::from_key)
         .unwrap_or_default();
+    let claude_road = doc
+        .get(CLAUDE_ROAD_KEY)
+        .and_then(Value::as_str)
+        .and_then(RoadPref::from_word)
+        .unwrap_or_default();
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
@@ -1079,6 +1112,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         usage_claude,
         usage_codex,
         card_corner,
+        claude_road,
         doc,
     };
     if schema > SCHEMA {
@@ -1708,6 +1742,46 @@ mod tests {
         assert_eq!(v["dark"], "sepia", "not written over");
         assert_eq!(v["notify_sound_done"], "Klaxon");
         assert_eq!(v["notify"], true);
+    }
+
+    /// The Claude road (T-574): `hooks` when absent, a word round-trips in
+    /// both files, a newer build's word is kept on either, and a board's
+    /// word overlays the machine's — the files the daemon reads.
+    #[test]
+    fn the_claude_road_defaults_to_hooks_round_trips_and_a_board_overrides_it() {
+        use mesimon_core::road::RoadPref;
+        let p = scratch("claude-road");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1}"#).unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.claude_road, RoadPref::Hooks, "absent is hooks");
+        l.prefs.claude_road = RoadPref::Auto;
+        save(&p, &l.prefs).unwrap();
+        assert_eq!(load(&p).prefs.claude_road, RoadPref::Auto);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["claude_integration"], "auto");
+        std::fs::write(&p, r#"{"schema_version":1,"claude_integration":"socket"}"#).unwrap();
+        let l = load(&p);
+        assert_eq!(l.prefs.claude_road, RoadPref::Hooks, "a foreign word reads as the default");
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["claude_integration"], "socket", "and is not written over");
+
+        let b = scratch("claude-road-board");
+        std::fs::create_dir_all(b.parent().unwrap()).unwrap();
+        std::fs::write(&b, r#"{"schema_version":1}"#).unwrap();
+        let mut board = load_board(&b).prefs;
+        assert!(!board.is_set(PrefKey::ClaudeRoad));
+        let machine = Prefs { claude_road: RoadPref::Auto, ..Prefs::default() };
+        assert_eq!(machine.overlay(&board).claude_road, RoadPref::Auto, "inherited");
+        board.set_claude_road(RoadPref::Mod);
+        assert!(board.is_set(PrefKey::ClaudeRoad));
+        assert_eq!(machine.overlay(&board).claude_road, RoadPref::Mod);
+        save_board(&b, &board).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&b).unwrap()).unwrap();
+        assert_eq!(v["claude_integration"], "mod");
+        board.clear(PrefKey::ClaudeRoad);
+        assert_eq!(machine.overlay(&board).claude_road, RoadPref::Auto);
     }
 
     #[test]

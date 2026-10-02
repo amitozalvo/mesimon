@@ -61,13 +61,7 @@ fn forward(args: &[String]) {
     let Ok(mut stream) = UnixStream::connect(sock) else { return };
     let _ = stream.set_write_timeout(Some(Duration::from_millis(WRITE_TIMEOUT_MS)));
 
-    let header = serde_json::json!({
-        "v": 1u32,
-        "session": session,
-        "event": event,
-        "reason": reason,
-        "pane": pane,
-    });
+    let header = header(session, event, reason, pane.as_deref(), val(args, "--road"));
     let Ok(mut buf) = serde_json::to_vec(&header) else { return };
     buf.push(b'\n');
     buf.extend_from_slice(&body);
@@ -75,9 +69,32 @@ fn forward(args: &[String]) {
     let _ = stream.write_all(&buf);
 }
 
+/// The frame's header line. `road` says which road the frame came by
+/// (T-574): absent for the hook set, `mod` when the mod mesimon laid relays
+/// the same event, so the daemon can pair the two and ingest only one.
+fn header(
+    session: &str,
+    event: &str,
+    reason: Option<&str>,
+    pane: Option<&str>,
+    road: Option<&str>,
+) -> serde_json::Value {
+    let mut header = serde_json::json!({
+        "v": 1u32,
+        "session": session,
+        "event": event,
+        "reason": reason,
+        "pane": pane,
+    });
+    if let Some(road) = road {
+        header["road"] = road.into();
+    }
+    header
+}
+
 /// `<server pid>:<pane id>` from the environment tmux gives a pane's process,
 /// or `None` outside one (and the daemon then trusts the frame as before).
-fn pane_key_from_env() -> Option<String> {
+pub(crate) fn pane_key_from_env() -> Option<String> {
     let tmux = std::env::var("TMUX").ok()?;
     let server_pid = tmux.split(',').nth(1).filter(|p| !p.is_empty())?;
     let pane = std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty())?;
@@ -86,4 +103,20 @@ fn pane_key_from_env() -> Option<String> {
 
 fn val<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
     args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).map(String::as_str)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_hook_set_sends_no_road_and_the_mod_names_its_own() {
+        let h = header("s", "Stop", None, Some("1:%0"), None);
+        assert!(h.get("road").is_none(), "{h}");
+        assert_eq!(h["pane"], "1:%0");
+        let m = header("s", "SessionStart", Some("startup"), None, Some("mod"));
+        assert_eq!(m["road"], "mod");
+        assert_eq!(m["reason"], "startup");
+        assert_eq!(m["v"], 1);
+    }
 }

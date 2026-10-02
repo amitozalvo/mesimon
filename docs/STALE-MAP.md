@@ -17982,3 +17982,127 @@ thirteen scenarios, `report.py`, five `claude plugin test` tests); `LaunchContex
 `MESIMON_MOD_DIR`, `--plugin-dir` in `agents::claude::flags` and its wake-owned pair list, and
 the pane env (`CLAUDE_CODE_PLUGIN_DIR_WATCH=0`, `MESIMON_MOD_LOG`, `MESIMON_MOD_GATE_BOARD`)
 under the seam only; a unit test that the seam is off by default and re-read on a wake.
+
+## The mod road, phase 1: the bridge, the road setting and the parity harness (T-574, 2026-10-02)
+
+**What shipped.** The foundation every later phase of T-573's plan rides, with nothing the
+daemon believes changed. A Claude launch on the mod road carries `--plugin-dir <state>/mod/
+<version>-<digest8>/` (the mod, compiled in from `crates/mesimon-daemon/mod/` and laid on
+demand, dirs 0700 and files 0600) and five pane variables (`CLAUDE_CODE_PLUGIN_DIR_WATCH=0`,
+`MESIMON_MOD_BIN`, `MESIMON_MOD_HOOK_SOCK`, `MESIMON_MOD_ORCH_SOCK`, `MESIMON_MOD_SESSION`);
+`--settings` stays. The mod relays every hook-set event through `mesimon hook --road mod`; the
+daemon routes a `road: mod` frame to the shadow (`Msg::ShadowHook`), never to ingest, and
+writes `road_disagree:<event>` when the two roads disagree. Down the other way, `mesimon
+mod-bridge` (spawned by the mod at `session.start`) polls the frames the daemon addressed to
+its session and prints them as NDJSON; phase 1's one frame is `ping`, answered by a `ModPong`
+relay, so `mesimon state ping <KEY>` times the whole road. The road is a setting: the seam
+`MESIMON_CLAUDE_ROAD`, then the board's `prefs.json`, then the machine's, then `hooks`; the
+Agents settings row "Claude integration" cycles `hooks → auto → mod`. `SessionRecord.road`
+records what each launch got (a wake re-decides). Codex ignores all of it.
+
+**Decided by the author (2026-10-02).** (1) **The default is `hooks` until phase 4**, not the
+ticket's `auto`: nobody's Claude loads the mod unless they pick `mod` or `auto`, and the soak
+is the author's board. (2) **The daemon reads the two prefs files itself**, at every Claude
+launch, instead of the machine-pref recipe's push: every other pref is pushed by a TUI and held
+in memory, so after a restart with no board open (a queued wake, the crown's start, a phone)
+the daemon would have read `auto` and `hooks` would not have been a kill switch. The TUI writes
+the key as any pref; no wire command carries it.
+
+**Down: a long poll, not a push.** The writer thread's `broadcast` writes subscribers with a
+blocking write; a bridge whose mod stopped reading (Claude on Ctrl+Z) would have wedged every
+board behind it, and an ack arriving while the writer flushed would have deadlocked. So the
+bridge sends `ModNext { ack, pane }` (an agent command, not a tool: admitted before the tier
+check, authorized as a read of its own ticket) and the daemon answers at once with every queued
+frame or parks the reply (`Daemon::mod_park`, generalising `answer_waits`); the connection's
+thread writes. A frame stays queued until the next poll acks it — at least once; the mod drops
+a repeat by id. **A frame belongs to the pane it was queued for**: the tick drops frames and a
+parked poll once the record has no pane or a new `pane_key`. The ledger is memory-only, as a
+queued pane ask is: a restart loses nothing a person asked for, because nothing in phase 1 asks.
+A poll naming another pane is refused (`not this session's pane`), a newer poll supersedes the
+parked one, and the bridge exits 3 on any refusal (the mod does not respawn it), 0 when its
+stdout closes, and when its parent changes (nothing else kills a `$.process.spawn` child when
+Claude Code is SIGKILLed). A daemon restart is waited out with backoff (100 ms doubling to 2 s);
+`mod_bridge_e2e` measures a ping sent at once after a restart arriving exactly once.
+
+**Up: the shadow.** The mod hooks the hook set's 17 event names (`core::road::PAIRED_EVENTS`,
+held to `hook_settings` and to `register.ts`'s lists by a unit test), never `classic.*`, with
+the hook set's own matchers: `SessionStart` sources, `SessionEnd` reasons and `StopFailure`
+classes from the same lists (the reason is the matched word), `PreToolUse` only for
+`AskUserQuestion|ExitPlanMode` and rebuilt from the envelope as `{hook_event_name, tool_name,
+tool_use_id, tool_input}`. Relays are not awaited except `SessionEnd`'s, where the process may
+be gone first. A frame is stamped when hook.sock accepted it and the tick carries the time it
+was sent (`Msg::Tick(u64)`), so a writer stall (T-561) cannot make a twin look late. Pairs match
+on (session, event, reason) and the sha256 of the sorted-key payload (the three fields for
+`PreToolUse`, on both roads); after 2 s an unmatched frame is `no_mod_twin` or `no_hooks_twin`,
+and one frame of each road for the same key is `differs`. One line per session, event and
+outcome per minute, carrying the count: a mod that never loaded must not fill the feed. Only a
+record with `road == Mod` is paired, so a mod that never loads reads as `no_mod_twin`, not as
+silence. `mesimon doctor` counts the lines; **zero is the bar for phase 4**.
+
+**`auto`.** Probed lazily (only when a launch resolves to `auto`), off the writer thread after
+the shell env is captured, through the pane launcher: `claude --version` against the 2.1.287
+floor, then `claude plugin validate <laid folder>` (exit 1 on a refusal, measured). Cached in
+`<state>/mod/probe.json` by the binary's canonical path, mtime and length and the mod's digest;
+every `auto` launch re-stats the binary, so a Claude Code that updated itself launches on
+`hooks` until its probe passes. A fail after a pass writes `claude_road_fallback` and flags
+`<state>/mod/road.json`, the verdict file doctor reads because the daemon's seam is not in
+doctor's environment. A board that never left `hooks` lays nothing, probes nothing and writes
+no verdict.
+
+**The parity harness.** `MESIMON_TEST_ROAD=mod` in the test process (allowlisted, read by
+`TestFixture`, which always sets `MESIMON_CLAUDE_ROAD` — `hooks` by default, so no stub is ever
+probed as Claude Code) runs every daemon's Claude panes under the mod road: `TestFixture::spawn`
+wraps the stub in a launcher that starts `tests/common/fake_claude_mod.py` beside it (the real
+`mesimon mod-bridge`, the seen-id set, `ModPong` through the real hook binary, respawn with the
+mod's backoff), and `hook_send` sends each paired event's mod twin first through the real hook
+binary, then the hook set's frame. **The relay half lives in `hook_send`, not the Python
+engine** (the ticket put both there): the events are the test's own, and sending the twin from
+the test keeps each test's order its own; the engine is the bridge half, which phase 2's
+`submit` will drive. `ci/test-run.py` follows a full-workspace suite with the `mesimon` crate's
+integration tests under the mod road (`--one-road` skips it) and stamps `roads: ["hooks",
+"mod"]`, which `ci/release.sh` now requires; the release also runs `mod_plugin` (`claude plugin
+validate` and `claude plugin test` on the laid folder) with `MESIMON_REQUIRE_CLAUDE=1`.
+
+**Measured on 2.1.287 while building it.** `claude plugin validate` refuses a module that
+assigns `$` (`host = $`: "$ is always spelled $.noun.event(...) at the call site"), so the
+bridge's respawn loop is a top-level function handed `$` and sleeping with `$.clock.sleep`, not
+a stored host and `$.clock.after`. Validate writes nothing under `~/.claude` (the folder's
+`types/` and `tsconfig.json` come from a load, not from validate). In `claude plugin test`, a
+test's hook beneath a `$` call (`process.run`, `process.spawn`) answers `{ value }`, and
+`session.start` beneath must return `{ cwd }`.
+
+**The `Signal` list and its mod-road source** (`agents/claude/hooks.rs::signal_of`, which
+`ingest.rs` re-exports). In phase 1 every one is still ingested from the hook set; the column is
+what phase 4 will read instead.
+
+| Signal | Hook event | Mod-road source |
+|---|---|---|
+| `SessionStart{source}` | `SessionStart` (reason = source) | `classic.SessionStart`, its `source` matched against the five |
+| `SessionEnd{kind}` | `SessionEnd` | `classic.SessionEnd`, the reason matched, relay awaited |
+| `UserPromptSubmit` | `UserPromptSubmit` | `classic.UserPromptSubmit` (a mod `submit` from phase 2 fires it too, T-573 row 2) |
+| `PreCompact`/`PostCompact{manual}` | same | `classic.PreCompact`/`PostCompact`; `session.compact` frames both |
+| `Stop{…}` / `BackgroundChanged` | `Stop` | `classic.Stop`, which keeps `background_tasks` (`turn.complete` does not) |
+| `SubagentStop` / `BackgroundChanged` | `SubagentStop` | `classic.SubagentStop`, empty-`agent_type` helper stops included on both roads |
+| `TeammateIdle{name}` | `TeammateIdle` | `classic.TeammateIdle` — declared, not exercised by the spike |
+| `StopFailure{class}` | `StopFailure` (reason = class) | `classic.StopFailure`, `error` matched against the ten — declared, not exercised |
+| `PermissionRequest`, or `PreToolUse{tool}` for the pair | `PermissionRequest` | `classic.PermissionRequest` (the observer's twin; `mesimon approve`'s entry is not relayed) |
+| `PermissionDenied` | `PermissionDenied` | `classic.PermissionDenied` |
+| `PreToolUse{tool}` | `PreToolUse` (the pair only) | `classic.PreToolUse`'s envelope, rebuilt; **it carries no `agent_id`**, so a subagent's dialog is not told from the lead's on this road |
+| `PostToolUse{tool}` / `TeammateMessaged` / `ToolCompleted` | `PostToolUse` (`*`) | `classic.PostToolUse`, byte-identical (T-573) |
+| `Notification{kind}` | `Notification` | `classic.Notification` |
+| `Elicitation` / `ElicitationResult` | same | `classic.Elicitation`/`ElicitationResult` — declared, not exercised |
+| `PaneDied{status}` | tmux's `pane-died` hook | none: the mod dies with the process; tmux stays the only exit signal |
+| (none) | `SubagentStart` | relayed and paired, no signal |
+| (none) | `GateDenied`, `RemotePermission` | none: `mesimon gate`'s and `mesimon approve`'s own frames |
+| (none) | `PostToolUseFailure` | none: not in the hook set; `classic.PostToolUseFailure` exists and neither road registers it |
+
+**Left for later phases, written down.** The mod's relays are not ordered among themselves
+(each is its own `$.process.run`); phase 4, when the mod carries the frames, orders them or
+proves the attention machine does not care. The plugin and the inline MCP server are both
+named `mesimon`, so phase 5's `$.tool.register` names land on the same `mcp__mesimon__*` as the
+shim's — intended, and to be measured. `$.http.fetch` takes `{ socketPath }` (a unix socket):
+an unmeasured process-free road. **T-553** ("does Claude Code advertise turn progress?") can be
+answered by the mod's `turn.step` (each request's usage, `stopReason`, tool names) and the
+verbose tier's `classic.MessageDisplay`; noted, not built. Not yet measured: the shadow on a
+live session — the author's soak (`Claude integration: mod`, `mesimon state ping <KEY>`,
+`mesimon doctor`).

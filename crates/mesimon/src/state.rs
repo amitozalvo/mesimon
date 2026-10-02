@@ -1,4 +1,5 @@
-//! Explicit, read-only diagnostics and offline replay. Never starts a daemon.
+//! Explicit diagnostics and offline replay. Never starts a daemon. All but
+//! `ping` are read-only; `ping` queues one frame for a session's mod.
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -28,11 +29,12 @@ pub fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("explain") => explain(&args[1..]),
+        Some("ping") => ping(&args[1..]),
         Some("compatibility") => {
             println!("{}", serde_json::to_string_pretty(&compatibility(&args[1..])?)?);
             Ok(())
         }
-        _ => bail!("usage: mesimon state replay <files...> | explain [session-prefix] [--repo path] | compatibility [claude|codex] <version>"),
+        _ => bail!("usage: mesimon state replay <files...> | explain [session-prefix] [--repo path] | ping <KEY|session-prefix> [--repo path] | compatibility [claude|codex] <version>"),
     }
 }
 
@@ -154,6 +156,63 @@ fn request(stream: &mut BufReader<UnixStream>, command: Command) -> Result<Respo
     let mut line = String::new();
     stream.read_line(&mut line)?;
     Ok(serde_json::from_str(&line)?)
+}
+
+/// `mesimon state ping <KEY|session-prefix>` (T-574): the whole mod road
+/// for one session, daemon → bridge → mod → `mesimon hook` → daemon, timed.
+/// The soak's probe: a session on the mod road answers in milliseconds.
+fn ping(args: &[String]) -> Result<()> {
+    let mut repo = std::env::current_dir()?;
+    let mut target = None;
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--repo" {
+            index += 1;
+            repo = args.get(index).context("--repo needs a path")?.into();
+        } else {
+            anyhow::ensure!(target.is_none(), "only one ticket or session is accepted");
+            target = Some(args[index].as_str());
+        }
+        index += 1;
+    }
+    let target = target.context("usage: mesimon state ping <KEY|session-prefix> [--repo path]")?;
+    let paths = mesimon_daemon::Paths::for_repo(&repo)?;
+    let socket = UnixStream::connect(paths.orch_sock())
+        .context("no reachable daemon for this repository; ping does not start one")?;
+    // The daemon answers within its five-second ping timeout.
+    socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+    socket.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut stream = BufReader::new(socket);
+    request(
+        &mut stream,
+        Command::Hello { version: PROTOCOL_VERSION, client: "state-ping".into() },
+    )?;
+    let Response::Board { board, .. } = request(&mut stream, Command::Snapshot)? else {
+        bail!("daemon did not return a board")
+    };
+    let ticket = board.tickets.iter().find(|t| t.short_key.eq_ignore_ascii_case(target));
+    let candidates: Vec<&SessionRecord> = board
+        .sessions
+        .iter()
+        .filter(|s| s.kind == SessionKind::Claude && s.state.has_pane())
+        .filter(|s| match ticket {
+            Some(t) => s.ticket == t.id,
+            None => s.id.to_string().starts_with(target) || s.sid16().starts_with(target),
+        })
+        .collect();
+    let session = match candidates.as_slice() {
+        [one] => *one,
+        [] => bail!("no live Claude session matches {target}"),
+        _ => bail!("{target} matches more than one live Claude session"),
+    };
+    match request(&mut stream, Command::ModPing { session: session.id })? {
+        Response::ModPonged { ms } => {
+            println!("pong in {ms} ms ∙ {} ∙ the mod road answers", session.sid16());
+            Ok(())
+        }
+        Response::Err { message } => bail!("{message}"),
+        other => bail!("unexpected answer: {other:?}"),
+    }
 }
 
 fn explain(args: &[String]) -> Result<()> {

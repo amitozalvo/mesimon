@@ -222,6 +222,7 @@ mod tests {
             provenance: Provenance::Spawned,
             claude_session_id: None,
             pane_key: None,
+            road: crate::road::Road::Hooks,
             codex_thread_id: None,
             codex_generation: None,
             codex_observed_seq: 0,

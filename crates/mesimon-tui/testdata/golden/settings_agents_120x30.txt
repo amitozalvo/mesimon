@@ -2,10 +2,9 @@
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
-    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-                           ╭─ AGENTS ───────────────────────────────────────────────────────╮
-    Keymap validator      >│   Default tier: claude                                         │
-                           │     Claude Code ∙ its own model ∙ what a ticket starts on unl~ │
+    Decay treatments      >╭─ AGENTS ───────────────────────────────────────────────────────╮
+                           │   Default tier: claude                                         │
+    Keymap validator      >│     Claude Code ∙ its own model ∙ what a ticket starts on unl~ │
                            │   Tiers: none yet                                              │
                            │     a name for a launch: provider, model, effort ∙ ^n cycles ~ │
                            │   Agent brief: off                                             │
@@ -22,8 +21,9 @@
                            │     its asks wait on the card for ^y ∙ enter lets it send to ~ │
                            │   Crown answers questions: off                                 │
                            │     every question waits for you ∙ enter lets it answer agent~ │
+                           │   Claude integration: hooks                                    │
+                           │     the hook set mesimon generates ∙ enter: auto, from the ne~ │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
 
 
 

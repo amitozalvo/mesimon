@@ -1,7 +1,5 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ AGENTS ∙ 9/9 ───────────────────────────────────────╮
-  │   Tiers: none yet                                    │
-  │     a name for a launch: provider, model, effort ∙ ~ │
+  ╭─ AGENTS ∙ 10/10 ─────────────────────────────────────╮
   │   Agent brief: off                                   │
   │     one line: read the ticket first ∙ enter shows i~ │
   │   Agent tools: on                                    │
@@ -16,5 +14,7 @@
   │     its asks wait on the card for ^y ∙ enter lets i~ │
   │   Crown answers questions: off                       │
   │     every question waits for you ∙ enter lets it an~ │
+  │   Claude integration: hooks                          │
+  │     the hook set mesimon generates ∙ enter: auto, f~ │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
  SETTINGS                                            ? keys

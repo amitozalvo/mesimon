@@ -33,6 +33,7 @@ pub mod prompts;
 pub mod quiet;
 pub mod reconcile;
 pub mod relnotes;
+pub mod road;
 pub mod search;
 pub mod shellenv;
 pub mod snooze;

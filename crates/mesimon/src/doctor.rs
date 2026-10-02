@@ -506,6 +506,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
     // The agent tool surface, and whether the repo tells a session to use it
     // (T-217). Both read the board's own files; neither writes one.
     if let Some(paths) = paths {
+        records.push(claude_road(&paths));
         let on = cols.mcp_tools;
         if on {
             records.push(rec(Level::Ok, "agent tools", "on for this repo"));
@@ -665,6 +666,51 @@ fn agents(repo: &Path, verbose: bool) -> Section {
     }
 
     Section { name: "agents", records }
+}
+
+/// How Claude sessions report to this board (T-574): what the daemon decided
+/// at its last Claude launch (`<state>/mod/road.json`, because the daemon's
+/// seam is not in doctor's environment), and how often the shadow found the
+/// two roads disagreeing — zero is the bar the mod must hold before it
+/// carries the frames alone.
+fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
+    use mesimon_daemon::modroad::{read_setting, read_verdict, Source};
+    let source_word = |s: Source| match s {
+        Source::Seam => "MESIMON_CLAUDE_ROAD",
+        Source::Board => "this board",
+        Source::Machine => "this machine",
+        Source::Default => "the default",
+    };
+    let disagreements = std::fs::read_to_string(paths.activity_log())
+        .map(|log| log.lines().filter(|l| l.contains("\"kind\":\"road_disagree\"")).count())
+        .unwrap_or(0);
+    let advice = "Settings > Agents > Claude integration: hooks is the hook set mesimon generates; mod also loads mesimon's mod and checks its reports against the hook set's (road_disagree lines in the feed); auto takes the mod where this Claude Code validates it. A launch reads it; `mesimon state ping <KEY>` times one session's mod.";
+    let Some(v) = read_verdict(paths) else {
+        let setting = read_setting(paths);
+        let mut value = format!("{} ∙ set by {}", setting.pref.word(), source_word(setting.source));
+        if setting.pref != mesimon_core::road::RoadPref::Hooks {
+            value.push_str(" ∙ no launch has read it yet");
+        }
+        return rec(Level::Note, "claude road", value).advice(advice);
+    };
+    let mut value = format!("{} ∙ {} set by {}", v.road.word(), v.setting, source_word(v.source));
+    if let Some(probe) = &v.probe {
+        value.push_str(&format!(" ∙ {probe}"));
+    }
+    if v.road == mesimon_core::road::Road::Mod || disagreements > 0 {
+        value.push_str(&format!(" ∙ {disagreements} disagreements in the feed"));
+    }
+    if let Some(e) = &v.lay_error {
+        return rec(Level::Warn, "claude road", value)
+            .advice(format!("The mod could not be laid, so launches take the hook set: {e}"));
+    }
+    let level = if v.fallback || disagreements > 0 { Level::Warn } else { Level::Ok };
+    let advice = if v.fallback {
+        format!("auto fell back to the hook set after a Claude Code update. {advice}")
+    } else {
+        advice.into()
+    };
+    rec(level, "claude road", value).advice(advice)
 }
 
 fn git_section(repo: &Path, verbose: bool) -> Section {
@@ -1055,6 +1101,10 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
 
     println!("files mesimon writes for any of this");
     println!("  {}/<session>.json   the hook settings (0600)", paths.hooks_dir().display());
+    println!(
+        "  {}/   mesimon's mod under the mod road (0700/0600; Claude Code adds types/ and tsconfig.json there), its probe.json and road.json",
+        paths.mod_root().display()
+    );
     println!(
         "  {}/<session>.codex.json   Codex runtime configuration (0600)",
         paths.hooks_dir().display()

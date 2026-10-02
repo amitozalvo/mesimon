@@ -53,6 +53,7 @@ pub const DAEMON_SEAMS: &[&str] = &[
     "MESIMON_ARCHIVE_SUGGEST_MS",
     "MESIMON_CLAUDE_BIN",
     "MESIMON_CLAUDE_HOME",
+    "MESIMON_CLAUDE_ROAD",
     "MESIMON_COMPOSER_WAIT_MS",
     "MESIMON_DAEMON_BIN",
     "MESIMON_DETACHED",
@@ -67,6 +68,22 @@ pub const DAEMON_SEAMS: &[&str] = &[
     "MESIMON_INACTIVITY_MINUTE_MS",
     "MESIMON_WT_REFRESH_TICKS",
 ];
+
+/// The road this run's daemons launch Claude on (T-574): `MESIMON_TEST_ROAD`
+/// in the TEST process, `hooks` unless it says `mod`. The suite's second pass
+/// sets it; the daemon gets `MESIMON_CLAUDE_ROAD` from `TestFixture`, never
+/// `auto` (a stub must never be probed as Claude Code), and under `mod`
+/// every stub is wrapped so the stand-in engine runs beside it and every
+/// `hook_send` sends the mod's twin first.
+pub fn test_road() -> &'static str {
+    match std::env::var("MESIMON_TEST_ROAD").as_deref() {
+        Ok("mod") => "mod",
+        _ => "hooks",
+    }
+}
+
+/// The in-pane half of the stand-in engine for the mod road (T-574).
+pub const FAKE_CLAUDE_MOD: &str = include_str!("fake_claude_mod.py");
 
 /// Test configuration is per child, never process-global. In particular a
 /// missing stub must not launch the developer's installed, authenticated agent.
@@ -110,6 +127,7 @@ impl TestFixture {
         fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
         fixture.set_env("MESIMON_CLAUDE_HOME", fixture.dir.join("claude-home"));
         fixture.set_env("CODEX_HOME", fixture.dir.join("codex-home"));
+        fixture.set_env("MESIMON_CLAUDE_ROAD", test_road());
         fixture
     }
 
@@ -138,7 +156,46 @@ impl TestFixture {
     }
 
     pub fn spawn(&self, argv: Vec<String>) -> support::TestProcess {
-        self.owner.spawn(argv, self.env.borrow().clone())
+        let mut env = self.env.borrow().clone();
+        // Under the mod road a daemon's Claude panes run the stand-in engine
+        // beside the stub (T-574). Wrapped on this spawn's copy of the env,
+        // so a restart wraps the original once, never a wrapper.
+        if argv.get(1).map(String::as_str) == Some("daemon")
+            && env.get("MESIMON_CLAUDE_ROAD").map(String::as_str) == Some("mod")
+        {
+            if let Some(stub) = env.get("MESIMON_CLAUDE_BIN").cloned() {
+                env.insert("MESIMON_CLAUDE_BIN".into(), self.wrap_for_mod(&stub));
+            }
+        }
+        self.owner.spawn(argv, env)
+    }
+
+    /// A launcher that starts `fake_claude_mod.py` in the background, its
+    /// output to a file (never the pane, where it would cover the composer),
+    /// and then execs the stub as the pane's process, so the engine's parent
+    /// is the stand-in for Claude Code.
+    fn wrap_for_mod(&self, stub: &str) -> String {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let engine = self.dir.join("fake_claude_mod.py");
+        if !engine.exists() {
+            std::fs::write(&engine, FAKE_CLAUDE_MOD).unwrap();
+        }
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let wrap = self.dir.join(format!("claude-mod-wrap-{n}.sh"));
+        let quote = |p: &str| format!("'{}'", p.replace('\'', "'\\''"));
+        std::fs::write(
+            &wrap,
+            format!(
+                "#!/bin/sh\npython3 {} >>{} 2>&1 </dev/null &\nexec {} \"$@\"\n",
+                quote(&engine.display().to_string()),
+                quote(&self.dir.join("fake-mod.log").display().to_string()),
+                quote(stub),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrap, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        wrap.display().to_string()
     }
 
     pub fn remove_env(&self, key: &str) {
@@ -349,6 +406,43 @@ pub fn hook_send_from_pane(
     pane: Option<&str>,
     body: &str,
 ) {
+    // Under the mod road (T-574) the mod sees every hook-set event before the
+    // command hook does, and relays it: the stand-in engine's relay half.
+    if test_road() == "mod" && mesimon_core::road::PAIRED_EVENTS.contains(&event) {
+        let twin = mod_body(event, body);
+        hook_send_road(sock, session, event, reason, pane, &twin, Some("mod"));
+    }
+    hook_send_road(sock, session, event, reason, pane, body, None);
+}
+
+/// What the mod relays for `body`: the payload itself, except `PreToolUse`,
+/// which the mod rebuilds from the tool envelope (`register.ts`'s
+/// `preToolUseBody`) and the shadow compares through the same three fields.
+pub fn mod_body(event: &str, body: &str) -> String {
+    if event != "PreToolUse" {
+        return body.to_string();
+    }
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": v.get("tool_name"),
+        "tool_use_id": v.get("tool_use_id"),
+        "tool_input": v.get("tool_input"),
+    })
+    .to_string()
+}
+
+/// One frame through the real hook binary, on one road (`None` is the hook
+/// set's), and nothing else: no twin.
+pub fn hook_send_road(
+    sock: &Path,
+    session: &str,
+    event: &str,
+    reason: Option<&str>,
+    pane: Option<&str>,
+    body: &str,
+    road: Option<&str>,
+) {
     let mut cmd = Proc::new(mesimon_binary());
     cmd.args(["hook", "--sock"]).arg(sock).args(["--session", session, "--event", event]);
     if let Some(r) = reason {
@@ -356,6 +450,9 @@ pub fn hook_send_from_pane(
     }
     if let Some(p) = pane {
         cmd.args(["--pane", p]);
+    }
+    if let Some(r) = road {
+        cmd.args(["--road", r]);
     }
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -529,6 +626,17 @@ impl Drop for Harness {
             let _ = c.write.set_write_timeout(Some(Duration::from_millis(200)));
             let env = Envelope { principal: Principal::Local, command: Command::Shutdown };
             let _ = writeln!(c.write, "{}", serde_json::to_string(&env).unwrap());
+        }
+        // The shadow's verdict on this test (T-574): every disagreement the
+        // daemon wrote, said where a failing test's output will show it.
+        let disagreed: Vec<String> = std::fs::read_to_string(self.paths.activity_log())
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"road_disagree\""))
+            .map(str::to_string)
+            .collect();
+        if !disagreed.is_empty() {
+            eprintln!("road_disagree in {}:\n{}", self.dir.display(), disagreed.join("\n"));
         }
         // The supervisor owns bounded termination and checked resource removal.
         // It remains responsible if this process panics or is forcibly killed.

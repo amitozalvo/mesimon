@@ -1,5 +1,5 @@
  BOARD   mesimon › kanban-tui   7 tickets
-  ╭─ AGENTS ∙ 1/9 ───────────────────────────────────────╮
+  ╭─ AGENTS ∙ 1/10 ──────────────────────────────────────╮
   │   Default tier: claude                               │
   │     this board uses codex (b) ∙ Claude Code ∙ its o~ │
   │   Tiers: none yet                                    │

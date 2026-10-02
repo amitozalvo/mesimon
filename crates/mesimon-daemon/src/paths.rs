@@ -94,6 +94,12 @@ impl Paths {
     pub fn prefs_file(&self) -> PathBuf {
         self.state_dir.join("prefs.json")
     }
+    /// The mod mesimon lays for Claude Code (T-574), its probe cache and the
+    /// road verdict `doctor` reads. Never under `hooks/`, whose files are
+    /// read as minted session ids (`started.rs`).
+    pub fn mod_root(&self) -> PathBuf {
+        self.state_dir.join("mod")
+    }
     pub fn gate_file(&self) -> PathBuf {
         self.state_dir.join("gate-passed")
     }

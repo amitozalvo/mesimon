@@ -35,6 +35,20 @@ fn later_hook_connection_cannot_overtake_a_partial_earlier_frame() {
     let Some(h) = Harness::boot_with_env("state-order", Some(STUB), &[]) else { return };
     let mut client = h.client("state-order");
     let sid = spawn(&mut client, "Ordered hooks");
+    // The frame below is written by hand, so on the mod road (T-574) its
+    // twin is too: the mod relays the event the moment it fires.
+    if test_road() == "mod" {
+        let body = r#"{"source":"startup"}"#;
+        hook_send_road(
+            &h.paths.hook_sock(),
+            &sid.to_string(),
+            "SessionStart",
+            None,
+            None,
+            body,
+            Some("mod"),
+        );
+    }
     let mut first = UnixStream::connect(h.paths.hook_sock()).unwrap();
     write!(
         first,

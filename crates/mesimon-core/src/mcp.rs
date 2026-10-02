@@ -1052,6 +1052,15 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // for (`LowerHand`, below), which is what keeps `!N` a number the
         // user can trust.
         | Command::AgentRaiseHand { .. } => true,
+        // The mod's bridge (T-574), not a tool: `mesimon mod-bridge`, which
+        // the mod mesimon laid spawns inside the session, polling for the
+        // frames the daemon addressed to that session. It reads nothing of
+        // the board and moves nothing; the session comes from the
+        // principal, like every command here, so it cannot poll another's.
+        Command::ModNext { .. } => true,
+        // Asking a session's mod for a pong is a person's diagnostic. An
+        // agent pinging mods would be addressing other sessions by id.
+        Command::ModPing { .. } => false,
 
         // Everything below is the never-tier. An agent may not spawn or kill a
         // session, delete or archive or rename a ticket, change a workspace,
@@ -2141,6 +2150,17 @@ mod tests {
         assert_eq!(allowed.len(), tools().len() + 1);
     }
 
+    /// The mod's bridge polls as the session (T-574) and is admitted at every
+    /// tier, `off` included, because it is not a tool: no rung, no name in
+    /// `tools/list`, and the daemon answers it before the tier check.
+    #[test]
+    fn the_bridge_poll_is_admitted_and_is_no_tool() {
+        let poll = Command::ModNext { ack: None, pane: None };
+        assert!(agent_allows(&poll));
+        assert_eq!(tier_needed_by(&poll), None);
+        assert!(tools().iter().all(|t| t["name"] != "mod_next"));
+    }
+
     /// The never-tier, named one command at a time. This is the list a reader
     /// checks when they ask "can an agent do X".
     #[test]
@@ -2268,6 +2288,7 @@ mod tests {
             Command::GateStatus,
             Command::GatePassed,
             Command::Shutdown,
+            Command::ModPing { session: s },
             Command::DiffList { target: crate::command::DiffTarget::Ticket { id: t } },
             Command::DiffFile {
                 target: crate::command::DiffTarget::Checkout,

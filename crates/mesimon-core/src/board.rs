@@ -301,6 +301,12 @@ pub struct SessionRecord {
     /// frame is then trusted as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_key: Option<String>,
+    /// The road this record's process reports on (T-574): `mod` when its
+    /// launch was handed the mod mesimon lays, so the shadow expects every
+    /// hook-set frame twice. Re-decided at every launch and wake, like the
+    /// tier; absent means the hook set alone.
+    #[serde(default, skip_serializing_if = "crate::road::Road::is_hooks")]
+    pub road: crate::road::Road,
     /// Codex's exact resumable thread, independent of Mesimon's record UUID.
     /// Opaque: a provider may change its identifier format without changing
     /// board identity. Never replace this with a thread-tree session ID.
@@ -510,6 +516,7 @@ impl SessionRecord {
             provenance: Provenance::default(),
             claude_session_id: None,
             pane_key: None,
+            road: crate::road::Road::Hooks,
             codex_thread_id: None,
             codex_generation: None,
             codex_observed_seq: 0,

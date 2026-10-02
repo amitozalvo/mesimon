@@ -16,6 +16,21 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 
+class RoadPassTests(unittest.TestCase):
+    def test_a_full_workspace_suite_is_followed_by_the_mod_road(self):
+        self.assertEqual(runner.road_pass(["cargo", "nextest", "run", "--workspace"], None),
+                         ["cargo", "nextest", "run", "-p", "mesimon", "-E", "kind(test)"])
+        self.assertEqual(runner.road_pass(["cargo", "nextest", "run", "--workspace"], 4)[-2:],
+                         ["--test-threads", "4"])
+        self.assertEqual(runner.road_pass(["cargo", "test", "--workspace"], None),
+                         ["cargo", "test", "-p", "mesimon", "--tests"])
+
+    def test_anything_narrower_runs_once(self):
+        for command in (["cargo", "test", "-p", "mesimon", "--test", "hook_e2e"],
+                        ["cargo", "clippy", "--workspace"], ["echo", "hello"]):
+            self.assertIsNone(runner.road_pass(command, None), command)
+
+
 class DiskBudgetTests(unittest.TestCase):
     def test_nonexistent_output_uses_existing_volume_and_checks_it_once(self):
         with tempfile.TemporaryDirectory() as root:

@@ -686,6 +686,10 @@ pub enum Verb {
     /// question an agent it started stopped on (`answer_agent`), and is
     /// woken by one. Board state like `CrownSends`; Enter toggles it.
     CrownAnswers,
+    /// The Agents settings' "Claude integration" row (T-574): how Claude
+    /// sessions report to the board — `hooks`, `auto` or `mod` — a
+    /// `prefs.json` key a board may override. The daemon reads it.
+    ClaudeRoad,
     /// The Settings row under it (T-224): whether every claude mesimon
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
@@ -968,6 +972,7 @@ impl SettingsSection {
             | Verb::CrownBudget
             | Verb::CrownSends
             | Verb::CrownAnswers
+            | Verb::ClaudeRoad
             | Verb::AgentPrompts => Self::Agents,
             _ => Self::Root,
         }
@@ -996,6 +1001,9 @@ pub struct Ctx {
     pub crown_sends: bool,
     /// `Board::crown_answers` (T-569), for the row under that.
     pub crown_answers: bool,
+    /// The "Claude integration" setting's word (T-574): `hooks`, `auto` or
+    /// `mod`. Empty in a bare `Ctx`; `App::ctx` always sets it.
+    pub claude_road_word: &'static str,
     pub column_agents: bool,
     pub col_naming: bool,
     pub col_offers_word: &'static str,
@@ -4789,6 +4797,23 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // How Claude sessions report to the board (T-574). The daemon reads
+    // the files at every launch, so the row needs no push and `hooks`
+    // holds with no board open.
+    MenuItem {
+        verb: Verb::ClaudeRoad,
+        label: |c| format!("Claude integration: {}", or(c.claude_road_word, "hooks")),
+        detail: |c| match or(c.claude_road_word, "hooks") {
+            "mod" => "mesimon's mod reports beside the hook set, checked against it ∙ enter: hooks"
+                .into(),
+            "auto" => {
+                "the mod where this Claude Code validates it, else the hook set ∙ enter: mod".into()
+            }
+            _ => "the hook set mesimon generates ∙ enter: auto, from the next launch".into(),
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::McpTools,
         label: |c| {
@@ -5250,6 +5275,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::CrownBudget,
             Verb::CrownSends,
             Verb::CrownAnswers,
+            Verb::ClaudeRoad,
         ],
     };
     verbs
@@ -5303,6 +5329,7 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::UsageClaude => PrefKey::UsageClaude,
         Verb::UsageCodex => PrefKey::UsageCodex,
         Verb::CardCorner => PrefKey::CardCorner,
+        Verb::ClaudeRoad => PrefKey::ClaudeRoad,
         _ => return None,
     })
 }
@@ -9059,6 +9086,7 @@ mod tests {
                     Verb::CrownBudget,
                     Verb::CrownSends,
                     Verb::CrownAnswers,
+                    Verb::ClaudeRoad,
                 ],
             ),
         ] {
@@ -9681,6 +9709,7 @@ mod tests {
             Verb::UsageClaude,
             Verb::UsageCodex,
             Verb::CardCorner,
+            Verb::ClaudeRoad,
         ];
         for item in SETTINGS_ITEMS {
             let expect = prefs.contains(&item.verb);

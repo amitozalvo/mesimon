@@ -2,7 +2,10 @@
 """One bounded local/CI verification command, with a checked fixture audit.
 
 Default: cargo nextest run --workspace (cargo's own parallelism; --jobs N caps
-build jobs and test threads together).
+build jobs and test threads together). A full-workspace suite is followed by
+the mod road's pass (T-574): the `mesimon` crate's integration tests again
+under MESIMON_TEST_ROAD=mod, the stand-in engine beside every stub; a stamp
+needs both. --one-road skips it.
 Other gates: python3 ci/test-run.py -- cargo test -p mesimon --test hook_e2e.
 Requires 5 GiB free on build and fixture/state volumes, checked every second;
 low space stops this workload through its cleanup supervisor. --min-free-gib
@@ -78,7 +81,26 @@ def check_disk_space(paths, minimum_gib):
                 "Free unused build output before retrying. No build caches were deleted.")
 
 
-def stamp_pass(command, env):
+def road_pass(command, jobs):
+    """The mod road's pass after a full-workspace suite (T-574), or None.
+
+    The e2e suite again with every Claude launch on the mod road: the stub
+    wrapped so the stand-in engine and the real `mesimon mod-bridge` run
+    beside it, and every hook frame sent with its mod twin first, so the
+    shadow pairs the whole suite's frames."""
+    if command[:1] != ["cargo"] or "--workspace" not in command:
+        return None
+    if command[1:3] == ["nextest", "run"]:
+        mod = ["cargo", "nextest", "run", "-p", "mesimon", "-E", "kind(test)"]
+        if jobs:
+            mod += ["--test-threads", str(jobs)]
+        return mod
+    if command[1:2] == ["test"]:
+        return ["cargo", "test", "-p", "mesimon", "--tests"]
+    return None
+
+
+def stamp_pass(command, env, roads):
     """Record a clean FULL-workspace run so ci/release.sh can accept it as its
     gate instead of running the same suite a second time, serially, paying
     macOS's first-exec hold on every freshly linked e2e binary (~25 s each,
@@ -108,7 +130,8 @@ def stamp_pass(command, env):
     # Linux mounts the checkout read-only and builds in CARGO_TARGET_DIR.
     stamp = Path(env.get("CARGO_TARGET_DIR") or "target") / "suite-passed.json"
     stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text(json.dumps(dict(sha=sha, tmux=tmux, tmux_sha256=digest, at=int(time.time())), indent=2) + "\n")
+    stamp.write_text(json.dumps(dict(sha=sha, tmux=tmux, tmux_sha256=digest, roads=roads,
+                                     at=int(time.time())), indent=2) + "\n")
     print(f"Suite passed at {sha[:7]} against {tmux}; stamped {stamp}.", flush=True)
 
 
@@ -118,6 +141,8 @@ def main():
     parser.add_argument("--jobs", type=int, help="cap cargo build jobs and test threads (default: cargo's own)")
     parser.add_argument("--min-free-gib", type=int, default=5,
                         help="stop below this free disk reserve (default: 5 GiB; 0 disables)")
+    parser.add_argument("--one-road", action="store_true",
+                        help="skip the mod road's pass after a full-workspace suite (T-574)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.timeout < 1:
@@ -133,6 +158,10 @@ def main():
         command = ["cargo", "nextest", "run", "--workspace"]
         if args.jobs:
             command += ["--test-threads", str(args.jobs)]
+    passes = [(command, {})]
+    mod = None if args.one_road else road_pass(command, args.jobs)
+    if mod:
+        passes.append((mod, {"MESIMON_TEST_ROAD": "mod"}))
     try:
         watched_paths = disk_paths(command, os.environ) if args.min_free_gib else []
         check_disk_space(watched_paths, args.min_free_gib)
@@ -186,24 +215,37 @@ def main():
     log = None
     try:
         root = Path(json.loads(guard.stdout.readline())["ok"])
-        pid = request(dict(op="spawn", argv=command, env=env))
-        log = open(root / "child-0.log")
         workers = f", {args.jobs} build/test workers" if args.jobs else ""
         print(f"Bounded check ({args.timeout}s deadline{workers}); audit: {run}", flush=True)
         last_disk_check = time.monotonic()
-        while not interrupted:
+        # One supervisor and one deadline for every pass; a failing pass ends
+        # the run.
+        for index, (argv, extra) in enumerate(passes):
+            if index:
+                print(f"\n== the mod road's pass (T-574): {' '.join(argv)}", flush=True)
+            pid = request(dict(op="spawn", argv=argv, env=dict(env, **extra)))
+            if log:
+                log.close()
+            log = open(root / f"child-{index}.log")
+            code = None
+            while not interrupted:
+                output = log.read()
+                if output:
+                    print(output, end="", flush=True)
+                code = request(dict(op="poll", pid=pid))
+                if code is not None:
+                    result = 0 if code == 0 else 1
+                    check_disk_space(watched_paths, args.min_free_gib)
+                    break
+                if time.monotonic() - last_disk_check >= 1:
+                    check_disk_space(watched_paths, args.min_free_gib)
+                    last_disk_check = time.monotonic()
+                time.sleep(0.2)
+            if interrupted or result:
+                break
             output = log.read()
             if output:
                 print(output, end="", flush=True)
-            code = request(dict(op="poll", pid=pid))
-            if code is not None:
-                result = 0 if code == 0 else 1
-                check_disk_space(watched_paths, args.min_free_gib)
-                break
-            if time.monotonic() - last_disk_check >= 1:
-                check_disk_space(watched_paths, args.min_free_gib)
-                last_disk_check = time.monotonic()
-            time.sleep(0.2)
         if interrupted:
             result = 128 + interrupted[0]
     except (RuntimeError, ValueError, OSError) as exc:
@@ -250,7 +292,7 @@ def main():
             # Evidence is for a failure; a clean pass leaves nothing in /tmp.
             shutil.rmtree(run, ignore_errors=True)
             print(f"Fixture audit clean ({len(manifests)} owners).", flush=True)
-            stamp_pass(command, env)
+            stamp_pass(command, env, ["hooks", "mod"] if len(passes) > 1 else ["hooks"])
         # Every relink leaves its split-debuginfo objects behind and cargo
         # collects none of them; a week of that made deps/ 879k entries and
         # every fresh binary's first exec a 25 s Gatekeeper walk. Pruned

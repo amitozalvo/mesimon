@@ -837,6 +837,14 @@ pub enum Command {
     /// answer for a pane nobody is in. A read, and denied to agents like
     /// every other session read.
     FocusQuiet,
+    /// Ask one session's mod for a pong (T-574): queues a `ping` for the
+    /// session's bridge and answers [`Response::ModPonged`] when the mod's
+    /// `ModPong` frame comes back up through `mesimon hook`, or an error
+    /// after five seconds. `mesimon state ping` and the parity harness send
+    /// it; it proves the whole road, daemon to mod and back.
+    ModPing {
+        session: uuid::Uuid,
+    },
 
     // ------------------------------------------------------------------
     // The agent tier (T-84). Seven commands now, reachable only by
@@ -1070,6 +1078,19 @@ pub enum Command {
         /// ticket to learn anything at all.
         reason: String,
     },
+    /// `mesimon mod-bridge`'s long poll (T-574), not a tool: the commands
+    /// the daemon addressed to the caller's session, answered at once when
+    /// some wait and parked until one is queued when none does. `ack` is the
+    /// id of the last frame the bridge printed — every frame up to it is
+    /// dropped, the rest come again — and `pane` is the bridge's tmux pane
+    /// (`<server pid>:<pane id>`), refused when it is not the session's own,
+    /// so a straggler from an older pane never takes the seat.
+    ModNext {
+        #[serde(default)]
+        ack: Option<String>,
+        #[serde(default)]
+        pane: Option<String>,
+    },
 }
 
 fn default_true() -> bool {
@@ -1198,7 +1219,11 @@ impl Command {
             | AgentReadAttachment { .. }
             | ReadAttachment { .. }
             | AgentReadNote { .. }
-            | AgentListBoard => m(Read, false, None),
+            | AgentListBoard
+            // The bridge's poll: a delivery ledger, never board state.
+            | ModNext { .. } => m(Read, false, None),
+            // A queued frame and a parked reply; nothing the board keeps.
+            ModPing { .. } => m(Mutate, false, None),
             // The crown (T-411): a person's gesture the feed answers "who
             // crowned T-12" with.
             CrownTicket { id } => m(Mutate, true, Some(*id)),
@@ -1717,6 +1742,17 @@ pub enum Response {
         reason: String,
         #[serde(default)]
         board_version: u64,
+    },
+    /// ModNext's answer (T-574): every frame queued for the session, oldest
+    /// first, as plain JSON — the bridge prints them without reading them,
+    /// so an older bridge carries a kind a newer daemon added.
+    ModFrames {
+        frames: Vec<serde_json::Value>,
+    },
+    /// ModPing's answer: the mod's pong came back, `ms` after the ping was
+    /// queued.
+    ModPonged {
+        ms: u64,
     },
     /// AgentStartTicket's receipt (T-412): which ticket, whether a session
     /// is running now (`false` while a worktree provisions — the start is

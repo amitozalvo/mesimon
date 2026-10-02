@@ -72,7 +72,7 @@ cargo nextest run --workspace                         # everything, e2es in PARA
 cargo clippy --workspace --all-targets -- -D warnings # the release gate's exact clippy
 cargo run                                             # TUI for cwd; `-- daemon --repo <p>` runs the daemon
 MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui     # remint goldens after a deliberate visual change
-python3 -B ci/test-run.py                             # bounded runner: 20-min deadline, lock, fixture audit
+python3 -B ci/test-run.py                             # bounded runner: 20-min deadline, lock, fixture audit, + the mod road pass
 ci/test-linux.sh                                      # whole suite on Debian 12 in Docker (~90 s warm)
 ci/sandbox.sh [up|tui|pair|build|relay]               # Docker sandbox: this tree's daemon + relay + Remote Control page
 ci/build-linux.sh                                     # the two Linux release binaries, cross-linked here
@@ -200,7 +200,9 @@ goldens are colourless.
    place in `settings_items`; the `Verb` and its arm through `set_pref`. `keymap::pref_key`
    names the row's key, and board scope then cycles it with no further code.
 4. The push, if anything outside the TUI consumes it: a `push_*`/`reconcile_*` pair for the
-   daemon, `From<&Prefs>` in `notifier.rs` for the notifier, `drive_caffeine` for power.
+   daemon, `From<&Prefs>` in `notifier.rs` for the notifier, `drive_caffeine` for power. A value
+   that must hold with no board open (a kill switch) is read by the daemon from both files
+   instead, at the moment it decides (`modroad::read_setting`, T-574).
 5. A `doctor` line via `load_home()`.
 **`App::prefs` is the resolved view** (machine under this board's overrides): a test seeds it
 with `seed_pref`, never by assignment, and `save_prefs` writes `machine_prefs`.
@@ -248,7 +250,7 @@ quiet. The feed is what the board did; the journal is what the process did.
 ## Architecture
 
 Five crates: `mesimon` (the single binary; subcommand dispatch is a hand-rolled match in
-`main.rs` — `hook`, `gate` and `mcp` first because they run inside an agent's turn),
+`main.rs` — `hook`, `gate`, `mcp` and `mod-bridge` first because they run inside an agent's turn),
 `mesimon-core` (pure logic, no I/O), `mesimon-daemon`, `mesimon-backend-tmux`, `mesimon-tui`.
 
 **Single-writer daemon (D22).** One mpsc channel; the main thread is the only mutator of board
@@ -339,6 +341,13 @@ the session uuid, never the pane, so a death frame from another pane is dropped
 (`straggler_death`) and no tmux is asked. A frame or record without a key is trusted. After a daemon restart our sessions sit at
 `Unknown{DaemonRestarted}` and re-derive from the transcript tail at Low confidence until a hook
 re-asserts; reconcile never trusts stale claims.
+
+**The mod road (T-574) runs in shadow.** Under "Claude integration" `mod` (default `hooks`), a
+Claude launch also loads the mod laid at `<state>/mod/<version>-<digest8>/`, which relays the
+same events through `mesimon hook --road mod`; a mod frame goes to the shadow
+(`Msg::ShadowHook`), never to ingest, and a disagreement is a `road_disagree` feed line. The
+daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`), never a push
+from the writer thread. The mod spells nothing on promise 3's never-list (a unit test scans it).
 
 **The one deciding hook is `mesimon gate`**, a separate subcommand precisely so `mesimon hook`'s
 never-writes-stdout invariant stays literally true. It is the 32nd entry — `PreToolUse` matcher
@@ -560,8 +569,13 @@ checkout before the sweep goes looking for its runtime),
 `MESIMON_SERVER_GUARD_TICKS`, `MESIMON_WT_REFRESH_TICKS` (the slow bucket: worktree flags, merge
 train, CLAUDE.md sample, checkout git sample), `MESIMON_NO_TAG_SEED`,
 `MESIMON_TICKET_SHELLS`, `MESIMON_UPDATE_GOLDEN`, `MESIMON_MOD_DIR` (T-573's research seam: a Claude
-Code mod folder loaded with `--plugin-dir`; the spike mod and its driver live in
-`crates/mesimon-daemon/mod-spike/`, measured in STALE-MAP, shipped to nobody).
+Code mod folder loaded with `--plugin-dir` in place of the laid one; the spike mod and its driver
+live in `crates/mesimon-daemon/mod-spike/`, measured in STALE-MAP, shipped to nobody),
+`MESIMON_CLAUDE_ROAD` (`hooks|mod|auto`, over the "Claude integration" pref; `TestFixture` always
+sets it, `hooks` unless the test process has `MESIMON_TEST_ROAD=mod`, the mod road's pass that
+wraps every stub with `tests/common/fake_claude_mod.py` and twins every `hook_send`),
+`MESIMON_REQUIRE_CLAUDE` (turns `mod_plugin`'s skip without `claude` into a failure; the release
+sets it).
 
 The e2e pattern is an in-process daemon thread + real tmux + the real built binary via
 `env!("CARGO_BIN_EXE_mesimon")`, which is only available in `crates/mesimon/tests/`.

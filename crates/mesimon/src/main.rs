@@ -8,6 +8,7 @@ mod hook;
 mod join;
 mod mcp;
 mod mesophon;
+mod mod_bridge;
 mod state;
 
 use std::path::PathBuf;
@@ -26,6 +27,9 @@ fn main() -> Result<()> {
         Some("gate") => gate::run(&args[1..]),
         Some("approve") => approve::run(&args[1..]),
         Some("mcp") => mcp::run(&args[1..]),
+        // The mod's bridge (T-574): spawned by the mod mesimon laid, inside
+        // the session, to carry the daemon's commands to it.
+        Some("mod-bridge") => mod_bridge::run(&args[1..]),
         // Separate opt-in context handler: the observer remains silent and
         // the write gate remains deny-only. Native Codex owns hook trust.
         Some("agent-brief") => {

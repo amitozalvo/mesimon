@@ -152,7 +152,9 @@ if [ "${MESIMON_RELEASE_RETEST:-0}" != "1" ] && [ -r "$stamp" ]; then
   if python3 -c '
 import json, sys
 s = json.load(open(sys.argv[1]))
-sys.exit(0 if (s.get("sha"), s.get("tmux"), s.get("tmux_sha256")) == tuple(sys.argv[2:5]) else 1)
+# Both roads (T-574): a stamp from before the mod road pass is not the gate.
+same = (s.get("sha"), s.get("tmux"), s.get("tmux_sha256")) == tuple(sys.argv[2:5])
+sys.exit(0 if same and s.get("roads") == ["hooks", "mod"] else 1)
 ' "$stamp" "$want_sha" "$want_tmux" "$want_hash"; then
     suite_done=1
   fi
@@ -183,6 +185,13 @@ step "tests (driven by the bundled tmux)"
 # room stays because a regrown deps/ would otherwise fail a green gate.
 MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --timeout 2400 -- cargo test --workspace
 fi
+
+step "the mod against this machine's Claude Code"
+# `claude plugin validate` and `claude plugin test` on the mod exactly as the
+# daemon lays it (T-574). Elsewhere the test says SKIPPED without `claude`;
+# a release is cut where it exists, so here a skip is a failure. Seconds,
+# and no model is asked anything.
+MESIMON_REQUIRE_CLAUDE=1 cargo test -p mesimon --test mod_plugin
 
 step "tests on Linux (Docker, the distro's own tmux)"
 # The same suite on the platform the Linux artifacts are for, driven by the

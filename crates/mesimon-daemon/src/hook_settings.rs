@@ -296,6 +296,81 @@ pub fn mcp_config_json(
 mod tests {
     use super::*;
 
+    /// A `const NAME = [ 'a', 'b' ]` list out of the mod's source.
+    fn ts_list(name: &str) -> Vec<String> {
+        let src = crate::modroad::FILES[2].1;
+        let at = src.find(&format!("const {name} = [")).unwrap_or_else(|| panic!("{name}"));
+        let body = &src[at..];
+        let body = &body[body.find('[').unwrap() + 1..body.find(']').unwrap()];
+        body.split(',')
+            .map(|w| w.trim().trim_matches('\'').to_string())
+            .filter(|w| !w.is_empty())
+            .collect()
+    }
+
+    /// The mod relays the hook set's events by the hook set's names and
+    /// matchers (T-574), or the shadow reports a twin that was never going to
+    /// come. One list in each language, held together here.
+    #[test]
+    fn the_mod_relays_exactly_what_the_hook_set_reports() {
+        let words = |list: &[&str]| list.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert_eq!(ts_list("SESSION_START_SOURCES"), words(&SESSION_START_SOURCES));
+        assert_eq!(ts_list("SESSION_END_REASONS"), words(&SESSION_END_REASONS));
+        assert_eq!(ts_list("STOP_FAILURE_MATCHERS"), words(&STOP_FAILURE_MATCHERS));
+        assert_eq!(ts_list("PRE_TOOL_USE_TOOLS").join(","), "AskUserQuestion,ExitPlanMode");
+        let rendered = rendered();
+        let mut events: Vec<&str> =
+            rendered["hooks"].as_object().unwrap().keys().map(String::as_str).collect();
+        events.sort_unstable();
+        let mut paired = mesimon_core::road::PAIRED_EVENTS.to_vec();
+        paired.sort_unstable();
+        assert_eq!(events, paired);
+        let src = crate::modroad::FILES[2].1;
+        for event in mesimon_core::road::PAIRED_EVENTS {
+            assert!(src.contains(&format!("on('classic.{event}',")), "{event} is not relayed");
+        }
+        assert!(!src.contains("on('classic.*'"), "the wildcard carries the verbose tier");
+        assert!(src.contains(&format!(
+            "const BRIDGE_REFUSED_EXIT = {}",
+            mesimon_core::road::BRIDGE_REFUSED_EXIT
+        )));
+        // The pane variables the daemon sets are the ones the mod reads.
+        for var in [
+            "MESIMON_MOD_BIN",
+            "MESIMON_MOD_HOOK_SOCK",
+            "MESIMON_MOD_ORCH_SOCK",
+            "MESIMON_MOD_SESSION",
+        ] {
+            assert!(src.contains(&format!("$.env.get('{var}')")), "{var}");
+        }
+    }
+
+    /// README promise 3, as far as a source scan can hold it: the mod never
+    /// reaches for what puts words in front of the model.
+    #[test]
+    fn the_mod_spells_nothing_on_the_never_list() {
+        let src = crate::modroad::FILES[2].1;
+        let code: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in [
+            "$.session.append",
+            "$.session.send",
+            "$.model.",
+            "$.prompt.",
+            "'prompt.compose'",
+            "'prompt.context'",
+            "'prompt.section'",
+            "'prompt.submit'",
+            "'tool.check'",
+            "context:",
+        ] {
+            assert!(!code.contains(banned), "the mod spells {banned}");
+        }
+    }
+
     fn rendered() -> Value {
         render_settings(
             Path::new("/abs/mesimon"),

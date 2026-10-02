@@ -119,6 +119,28 @@ impl FeedWriter {
         }));
     }
 
+    /// The two roads disagreed about one session's event (T-574's shadow):
+    /// `outcome` says how (`differs`, `no_mod_twin`, `no_hooks_twin`) and
+    /// `count` how many such frames since the last line. Names only, never
+    /// either payload (D11).
+    pub fn road_disagree(
+        &mut self,
+        session: uuid::Uuid,
+        ticket: Option<ulid::Ulid>,
+        event: &str,
+        outcome: &str,
+        count: u32,
+    ) {
+        self.push(json!({
+            "kind": "road_disagree",
+            "cmd": format!("road_disagree:{event}"),
+            "session": session,
+            "ticket": ticket,
+            "outcome": outcome,
+            "count": count,
+        }));
+    }
+
     /// One board mutation.
     pub fn board(&mut self, actor: &str, cmd: &str, ticket: Option<ulid::Ulid>) {
         self.push(json!({

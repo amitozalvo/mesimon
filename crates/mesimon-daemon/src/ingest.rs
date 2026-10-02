@@ -15,6 +15,13 @@ pub struct HookFrame {
     /// inherits. Absent from a hook binary older than T-245 or a frame sent
     /// from outside a pane.
     pub pane: Option<String>,
+    /// Which road the frame came by (T-574): the hook set's, or the mod's
+    /// relay of the same event. A mod frame is shadow-paired, never ingested.
+    pub road: mesimon_core::road::Road,
+    /// When the hook socket accepted it, epoch ms (0 until the reader thread
+    /// stamps it): the shadow's 2 s window runs from here, so a writer stall
+    /// cannot make a twin look late.
+    pub accepted_ms: u64,
     pub payload: Value,
 }
 
@@ -27,12 +34,13 @@ pub fn parse_frame(bytes: &[u8]) -> Option<HookFrame> {
     let reason = header.get("reason").and_then(Value::as_str).map(str::to_string);
     let pane =
         header.get("pane").and_then(Value::as_str).filter(|p| !p.is_empty()).map(str::to_string);
+    let road = mesimon_core::road::Road::from_header(header.get("road").and_then(Value::as_str))?;
     let payload = bytes
         .get(nl + 1..)
         .filter(|rest| !rest.is_empty())
         .and_then(|rest| serde_json::from_slice(rest).ok())
         .unwrap_or(Value::Null);
-    Some(HookFrame { session, event, reason, pane, payload })
+    Some(HookFrame { session, event, reason, pane, road, accepted_ms: 0, payload })
 }
 
 /// A whole-frame deadline (not a fresh timeout per byte) bounds how long a
@@ -138,5 +146,16 @@ mod transport_tests {
         writer.write_all(b"{\"session\":\"s\",\"event\":\"Stop\"}\n{}").unwrap();
         drop(writer);
         assert_eq!(read_hook_frame(reader, Duration::from_millis(100)).unwrap().event, "Stop");
+    }
+
+    #[test]
+    fn a_frame_names_its_road_and_a_foreign_road_is_dropped() {
+        use mesimon_core::road::Road;
+        let hooks = parse_frame(b"{\"session\":\"s\",\"event\":\"Stop\"}\n{}").unwrap();
+        assert_eq!(hooks.road, Road::Hooks);
+        let modded =
+            parse_frame(b"{\"session\":\"s\",\"event\":\"Stop\",\"road\":\"mod\"}\n{}").unwrap();
+        assert_eq!(modded.road, Road::Mod);
+        assert!(parse_frame(b"{\"session\":\"s\",\"event\":\"Stop\",\"road\":\"x\"}\n{}").is_none());
     }
 }

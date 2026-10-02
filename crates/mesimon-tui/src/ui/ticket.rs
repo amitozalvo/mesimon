@@ -282,9 +282,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // only while the cards wear their cost instead of their age (T-572) — the
     // person who chose `$` is the one who reads it. A model with no published
     // price here is counted in tokens instead.
-    let cost = app
-        .cost_of(ticket.id)
-        .filter(|_| app.prefs.card_corner == crate::prefs::CardCorner::Cost);
+    let cost =
+        app.cost_of(ticket.id).filter(|_| app.prefs.card_corner == crate::prefs::CardCorner::Cost);
     if let Some(c) = cost {
         use mesimon_core::cost::{tokens_word, usd_word};
         let words = match (c.usd > 0.0, c.unpriced > 0) {

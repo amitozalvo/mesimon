@@ -94,6 +94,7 @@ impl Mint {
 }
 
 mod attachments;
+mod bridge;
 mod crownwake;
 mod mesophon;
 mod teamglue;
@@ -288,13 +289,20 @@ struct ClientReply {
 enum Msg {
     Request(Envelope, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
     Hook(HookFrame),
+    /// A frame the mod relayed (`road: mod`, T-574): shadow-paired against
+    /// the hook set's, never ingested.
+    ShadowHook(HookFrame),
+    /// The `auto` road's probe of the Claude Code on PATH came back.
+    RoadProbed(crate::modroad::Probe),
     RemotePermission(HookFrame, UnixStream),
     CodexSnapshots(Vec<(uuid::Uuid, Option<crate::agents::codex::Snapshot>)>),
     /// The known-owner checks for orphaned Codex cleanup records came back
     /// (T-357): per record, its generation and whether every known native
     /// owner is provably gone. Off-thread because it forks `ps`.
     CodexOrphansChecked(Vec<(uuid::Uuid, Option<u64>, std::result::Result<(), String>)>),
-    Tick,
+    /// The wheel, with the time it was sent: the shadow sweeps against that
+    /// rather than the time a stalled writer got to it.
+    Tick(u64),
     /// A provisioning thread finished (M4): the binding, or the failing
     /// stage, and how long it took — the number the journal keeps (T-368).
     Provisioned(ulid::Ulid, std::result::Result<Binding, (String, String)>, Duration),
@@ -624,6 +632,12 @@ pub struct Daemon {
     /// answer for (T-569): the writer loop parks that call's reply with the
     /// delivery (`control_park_reply`), which answers it when it settles.
     answer_waits: Option<uuid::Uuid>,
+    /// The mod road (T-574): the road decision's cache, the commands queued
+    /// for each session's mod and the polls parked for them, and the shadow.
+    modroad: bridge::ModRoad,
+    /// What the request in hand asked the writer to park (a bridge's poll, a
+    /// ping), like `answer_waits`.
+    mod_park: Option<bridge::Park>,
     /// The card's line after the crown answered a question (T-569),
     /// `answered by T-411: Okta`, by the session it rides in `detail`:
     /// kept through the question's own leave, which is the answer landing,
@@ -819,7 +833,7 @@ pub fn run(paths: Paths) -> Result<()> {
     let tick_tx = tx.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(TICK_MS));
-        if tick_tx.send(Msg::Tick).is_err() {
+        if tick_tx.send(Msg::Tick(now_ms())).is_err() {
             break;
         }
     });
@@ -930,6 +944,8 @@ pub fn run(paths: Paths) -> Result<()> {
                     let (frame, reply): (HookFrame, UnixStream) = frame;
                     let message = if frame.event == "RemotePermission" {
                         Msg::RemotePermission(frame, reply)
+                    } else if frame.road == mesimon_core::road::Road::Mod {
+                        Msg::ShadowHook(frame)
                     } else {
                         Msg::Hook(frame)
                     };
@@ -945,9 +961,10 @@ pub fn run(paths: Paths) -> Result<()> {
             std::thread::spawn(move || {
                 // Every reader sends completion, including malformed/timed-out
                 // frames, so a missing event cannot strand the ordered queue.
+                let accepted_ms = now_ms();
                 let frame = stream.try_clone().ok().and_then(|reader| {
                     ingest::read_hook_frame(reader, Duration::from_millis(750))
-                        .map(|frame| (frame, stream))
+                        .map(|frame| (HookFrame { accepted_ms, ..frame }, stream))
                 });
                 let _ = tx.send((ordinal as u64, frame));
             });
@@ -969,6 +986,7 @@ pub fn run(paths: Paths) -> Result<()> {
         })
         .collect();
     let feed = FeedWriter::open(&paths.activity_log())?;
+    let modroad = bridge::ModRoad::start(&paths);
 
     let mut d = Daemon {
         paths,
@@ -1062,6 +1080,8 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_landed: Vec::new(),
         turn_asks: HashMap::new(),
         answer_waits: None,
+        modroad,
+        mod_park: None,
         crown_answer_lines: HashMap::new(),
         machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
         usage: crate::usage::UsageState::new(crate::usage::shared_file()),
@@ -1162,7 +1182,9 @@ pub fn run(paths: Paths) -> Result<()> {
         let started = Instant::now();
         d.control_prompt_edge(matches!(&msg, Msg::Hook(f) if f.event == "UserPromptSubmit"));
         let what: std::borrow::Cow<'static, str> = match &msg {
-            Msg::Tick => "tick".into(),
+            Msg::Tick(_) => "tick".into(),
+            Msg::ShadowHook(f) => format!("mod frame {}", f.event).into(),
+            Msg::RoadProbed(_) => "claude road probed".into(),
             Msg::CodexSnapshots(_) => "Codex observations".into(),
             Msg::CodexOrphansChecked(_) => "Codex orphans checked".into(),
             Msg::Hook(f) => format!("hook {}", f.event).into(),
@@ -1192,12 +1214,14 @@ pub fn run(paths: Paths) -> Result<()> {
             // same road as `Shutdown`: the handler only raises a flag, and the
             // wheel — ≤250 ms away — is where it is honoured, on the writer
             // thread, with the machines in hand.
-            Msg::Tick if TERM_REQUESTED.load(Ordering::Relaxed) => {
+            Msg::Tick(_) if TERM_REQUESTED.load(Ordering::Relaxed) => {
                 d.begin_shutdown("SIGTERM");
                 break;
             }
-            Msg::Tick => d.on_tick(),
+            Msg::Tick(sent_ms) => d.on_tick(sent_ms),
             Msg::Hook(frame) => d.on_hook(frame),
+            Msg::ShadowHook(frame) => d.on_shadow_hook(frame),
+            Msg::RoadProbed(probe) => d.on_road_probed(probe),
             Msg::RemotePermission(frame, stream) => d.control_permission_wait(frame, stream),
             Msg::CodexSnapshots(snapshots) => d.on_codex_snapshots(snapshots),
             Msg::CodexOrphansChecked(results) => d.on_codex_orphans_checked(results),
@@ -1224,6 +1248,11 @@ pub fn run(paths: Paths) -> Result<()> {
                 let reply = match d.answer_waits.take() {
                     Some(id) => d.control_park_reply(id, reply),
                     None => Some(reply),
+                };
+                // A bridge's poll and a ping wait with the mod road (T-574).
+                let reply = match (reply, d.mod_park.take()) {
+                    (Some(reply), Some(park)) => d.mod_park_reply(park, reply),
+                    (reply, _) => reply,
                 };
                 if let Some(reply) = reply {
                     let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
@@ -1280,14 +1309,40 @@ impl Daemon {
                 env.push(("MESIMON_WORKTREE_BRANCH".into(), b.branch.clone()));
             }
         }
+        env
+    }
+
+    /// A launch's variables: the session's own, and for a Claude launch the
+    /// mod's (T-574) — never a shell's or Codex's pane.
+    fn launch_vars(
+        &self,
+        ticket: ulid::Ulid,
+        cwd: &std::path::Path,
+        session: uuid::Uuid,
+        kind: SessionKind,
+        road: mesimon_core::road::Road,
+    ) -> Vec<(String, String)> {
+        let mut env = self.session_vars(ticket, cwd);
+        if road == mesimon_core::road::Road::Mod {
+            env.extend(self.mod_vars(session));
+        }
         // T-573's research seam: the spike mod observes into a log under the
         // state dir and must never hot-reload (the daemon writes that dir).
-        if mod_dir().is_some() {
-            let log = self.paths.state_dir.join("mod-log").join(&key);
-            let _ = std::fs::create_dir_all(&log);
-            env.push(("CLAUDE_CODE_PLUGIN_DIR_WATCH".into(), "0".into()));
-            env.push(("MESIMON_MOD_LOG".into(), log.display().to_string()));
-            env.push(("MESIMON_MOD_GATE_BOARD".into(), self.paths.board_dir.display().to_string()));
+        if kind == SessionKind::Claude && mod_dir().is_some() {
+            if let Some(key) =
+                env.iter().find(|(k, _)| k == "MESIMON_TICKET").map(|(_, v)| v.clone())
+            {
+                let log = self.paths.state_dir.join("mod-log").join(&key);
+                let _ = std::fs::create_dir_all(&log);
+                if road != mesimon_core::road::Road::Mod {
+                    env.push(("CLAUDE_CODE_PLUGIN_DIR_WATCH".into(), "0".into()));
+                }
+                env.push(("MESIMON_MOD_LOG".into(), log.display().to_string()));
+                env.push((
+                    "MESIMON_MOD_GATE_BOARD".into(),
+                    self.paths.board_dir.display().to_string(),
+                ));
+            }
         }
         env
     }
@@ -2348,9 +2403,12 @@ impl Daemon {
             | Command::AgentSleepTicket { .. }
             | Command::AgentAskTicket { .. }
             | Command::AgentAnswerTicket { .. }
-            | Command::AgentRaiseHand { .. } => {
+            | Command::AgentRaiseHand { .. }
+            // The mod's bridge polls as its session, never as a person.
+            | Command::ModNext { .. } => {
                 Response::Err { message: "agent commands require an agent principal".into() }
             }
+            Command::ModPing { session } => self.mod_ping(session),
         };
         if let Some((cmd, ticket)) = feed_cmd {
             let cmd = cmd.as_str();
@@ -2384,8 +2442,9 @@ impl Daemon {
     /// again, and how many presses to spend before giving up and leaving the
     /// title typed. T-5 measured the ack at ~94 ms, so 500 ms is a wide
     /// margin; 10 attempts covers ~5 s of Claude startup.
-    fn on_tick(&mut self) {
+    fn on_tick(&mut self, sent_ms: u64) {
         self.uploads.prune();
+        self.tick_mod_road(sent_ms);
         self.ticks += 1;
         self.team_tick();
         self.control_tick();
@@ -3260,6 +3319,9 @@ impl Daemon {
         // Every received frame is feed-logged by NAME only — never its
         // payload (D11: prompt text is read, never stored).
         self.feed.hook_event(&frame.session, &frame.event, frame.reason.as_deref());
+        // Held against the mod's twin when the session was handed the mod
+        // (T-574's shadow); ingested below exactly as before.
+        self.shadow_hooks_frame(&frame);
         let Some(id) = self.resolve_session(&frame.session) else { return };
         // D32c invariant 2: the hook-driven path passes the chokepoint too.
         //
@@ -4094,6 +4156,20 @@ impl Daemon {
             return Response::Err { message: "session has exited".into() };
         }
         let ticket = rec.ticket;
+        // The mod's bridge (T-574) is no tool, so no tier gates it: a column
+        // whose agents have tools `off` still has its sessions' mods. It
+        // reads the delivery ledger of the caller's own session, which the
+        // chokepoint hears as a read of its ticket — an agent is never
+        // granted a session resource.
+        if let Command::ModNext { ack, pane } = cmd {
+            let by = Principal::Agent { session };
+            if let Decision::Deny { reason } =
+                authorize(&by, &Action::Read, &Resource::Ticket { id: ticket })
+            {
+                return Response::Err { message: format!("denied: {reason}") };
+            }
+            return self.mod_next(session, ack, pane);
+        }
         // The column's tier (T-117), against the ticket's column as it
         // stands NOW — the shim listed the tools of the column at spawn, and
         // the model reads the tier it is on in the refusal.
@@ -10314,9 +10390,14 @@ impl Daemon {
             Err(message) => return Response::Err { message },
         };
         let id = uuid::Uuid::new_v4();
+        // The road (T-574), decided once and stamped below with the argv it
+        // shaped.
+        let (road, mod_folder) = self.launch_road(kind);
         let spec = if let Some(adapter) = crate::agents::adapter(kind) {
-            match adapter.start(&self.launch_context(id, ticket, kind, &cwd, plan), &id.to_string())
-            {
+            match adapter.start(
+                &self.launch_context(id, ticket, kind, &cwd, plan, mod_folder),
+                &id.to_string(),
+            ) {
                 Ok(spec) => spec,
                 Err(message) => return Response::Err { message },
             }
@@ -10335,12 +10416,13 @@ impl Daemon {
         rec.state_changed_at = Some(now_ms());
         rec.codex_generation = spec.generation;
         rec.started_by = started_by;
+        rec.road = road;
         if kind == SessionKind::Codex {
             rec.agent_preview_path =
                 Some(crate::agents::codex::preview_path(&self.paths, id).display().to_string());
             rec.pending_prefill = true;
         }
-        let launch = self.launch(&argv, &self.session_vars(ticket, &cwd));
+        let launch = self.launch(&argv, &self.launch_vars(ticket, &cwd, id, kind, road));
         match self.backend.spawn(&rec.sid16(), &cwd, &launch) {
             Ok(pane) => rec.pane_key = Some(pane),
             Err(e) => return Response::Err { message: format!("spawn failed: {e}") },
@@ -11136,6 +11218,7 @@ impl Daemon {
         kind: SessionKind,
         cwd: &'a std::path::Path,
         plan: bool,
+        mod_folder: Option<std::path::PathBuf>,
     ) -> LaunchContext<'a> {
         LaunchContext {
             paths: &self.paths,
@@ -11151,7 +11234,9 @@ impl Daemon {
                 .and_then(|t| self.board.column(&t.column))
                 .map(|c| c.settings.clone())
                 .unwrap_or_default(),
-            mod_dir: mod_dir(),
+            // The laid mod when the launch's road is the mod (T-574);
+            // T-573's research seam names another folder over it.
+            mod_dir: mod_dir().or(mod_folder),
         }
     }
 
@@ -11159,9 +11244,16 @@ impl Daemon {
         &self,
         rec: &SessionRecord,
         plan: bool,
+        mod_folder: Option<std::path::PathBuf>,
     ) -> std::result::Result<LaunchSpec, String> {
-        let context =
-            self.launch_context(rec.id, rec.ticket, rec.kind, std::path::Path::new(&rec.cwd), plan);
+        let context = self.launch_context(
+            rec.id,
+            rec.ticket,
+            rec.kind,
+            std::path::Path::new(&rec.cwd),
+            plan,
+            mod_folder,
+        );
         crate::agents::adapter(rec.kind)
             .ok_or_else(|| "shells do not have agent conversations".to_string())?
             .resume(&context, rec)
@@ -11383,6 +11475,8 @@ impl Daemon {
         } else {
             None
         };
+        // A wake re-decides the road (T-574), as it re-reads the tier.
+        let (road, mod_folder) = self.launch_road(rec.kind);
         let spec = if startup_retry {
             match adapter.start(
                 &self.launch_context(
@@ -11391,6 +11485,7 @@ impl Daemon {
                     rec.kind,
                     std::path::Path::new(&rec.cwd),
                     plan,
+                    mod_folder.clone(),
                 ),
                 &rec.id.to_string(),
             ) {
@@ -11407,6 +11502,7 @@ impl Daemon {
                             rec.kind,
                             std::path::Path::new(&rec.cwd),
                             plan,
+                            mod_folder.clone(),
                         ),
                         &new_id.to_string(),
                     ) {
@@ -11414,7 +11510,7 @@ impl Daemon {
                         Err(message) => return Response::Err { message },
                     }
                 }
-                None => match self.resume_argv(&rec, plan) {
+                None => match self.resume_argv(&rec, plan, mod_folder.clone()) {
                     Ok(a) => a,
                     Err(message) => return Response::Err { message },
                 },
@@ -11466,7 +11562,7 @@ impl Daemon {
         }
         self.reaping.remove(&sid); // a fresh pane must not meet a stale reap
         let _ = self.backend.kill_session(&sid); // clear any dead remain-on-exit pane
-        let launch = self.launch(&argv, &self.session_vars(ticket, &cwd));
+        let launch = self.launch(&argv, &self.launch_vars(ticket, &cwd, id, rec.kind, road));
         let pane = match self.backend.spawn(&sid, &cwd, &launch) {
             Ok(pane) => pane,
             Err(e) => {
@@ -11492,6 +11588,7 @@ impl Daemon {
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pane_key = Some(pane);
             rec.argv = argv;
+            rec.road = road;
             rec.codex_generation = spec.generation;
             rec.codex_plan_dialog_seen = false;
             rec.codex_plan_dismissed_turn = None;
