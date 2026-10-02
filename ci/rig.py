@@ -6,7 +6,10 @@ real Claude Code on the mod road, one test at a time, through its own crown.
                                     the board, file the tests, run them all
     python3 -B ci/rig.py --lay      the same up to the crown filed and crowned;
                                     nothing starts, nothing costs
-    python3 -B ci/rig.py --only R3  run the named tests (a comma list)
+    python3 -B ci/rig.py --only R3  run the named tests (a comma list); a
+                                    letter alone names its group (R, P, D, T)
+    python3 -B ci/rig.py --failed   run again only what the last run's
+                                    verdicts.md lists as FAIL
     python3 -B ci/rig.py --reset    park and archive the rig's tickets, stop its
                                     daemon and its private tmux
     --no-build                      skip `cargo build -p mesimon`
@@ -24,7 +27,9 @@ the crown starts, answers, asks, parks and wakes the workers through its
 MCP tools. Tests and their exact words are `ci/rig/tests.toml`.
 
 Each test's verdict is a note on its ticket. The crown moves a passed test's
-ticket to DONE when the rig tells it to; a failed one stays in REVIEW. The
+ticket to DONE when the rig tells it to, at the head of the next words it
+sends (the next test's first crown step, or the run's last words), so a
+close-out costs no turn of its own; a failed one stays in REVIEW. The
 run's table is printed and written to `target/rig/verdicts.md`. Nothing is
 torn down at the end, and nothing on the rig's board is archived but by
 `--reset` (the author's rule: the crown never archives there).
@@ -244,6 +249,21 @@ def sid16(session):
 
 def of_session(line, session):
     return line.get("session") in (session, sid16(session))
+
+
+def last_failed(path):
+    """The test ids a verdicts table lists as FAIL, or None without one."""
+    try:
+        with open(path) as f:
+            rows = f.read().splitlines()
+    except OSError:
+        return None
+    out = []
+    for row in rows:
+        cells = [c.strip() for c in row.split("|")]
+        if len(cells) > 3 and cells[3].startswith("FAIL"):
+            out.append(cells[1].split()[0])
+    return out
 
 
 class Rig:
@@ -624,8 +644,8 @@ Reply with the single word ready and end your turn."""
         self.wait_for("crown woken", self.crown_settled, 120, self.watch)
         self.crown_model = model_of(transcript(self.agent_of(self.board(), self.crown)))
 
-    def crown_settled(self, after_ms=None):
-        """The crown is idle and has been for `QUIET` seconds; with
+    def crown_settled(self, after_ms=None, quiet=QUIET):
+        """The crown is idle and has been for `quiet` seconds; with
         `after_ms`, only once a turn of its ended (its `Stop`) after then."""
         rec = self.agent_of(self.board(), self.crown)
         if not rec:
@@ -641,24 +661,30 @@ Reply with the single word ready and end your turn."""
             return False
         if self.quiet_since is None:
             self.quiet_since = time.time()
-        return time.time() - self.quiet_since >= QUIET
+        return time.time() - self.quiet_since >= quiet
 
     def watch(self):
         """Read the feed and the board, and print what changed: the rig's
         live view, in words."""
         lines, self.feed_off = read_feed(self.paths, self.feed_off)
         self.feed_lines.extend(lines)
+        polled_ms = int(time.time() * 1000)
         board = self.board()
         crown = self.agent_of(board, self.crown)
         if crown:
-            self.note_word("crown", crown)
+            self.note_word("crown", crown, polled_ms)
         test = self.current
         workers = []
         for tid, key, _ in (self.test_tickets(test) if test else []):
             rec = self.agent_of(board, tid)
             if rec:
-                self.note_word(key, rec)
                 workers.append((key, rec))
+                # The card's words from the feed first: a 1.5 s `working`
+                # between two polls is still a word the card said (D1).
+                for l in lines:
+                    if l.get("kind") == "session_state" and of_session(l, rec["id"]):
+                        self.history.setdefault(key, []).append((l.get("at_ms", polled_ms), feed_word(l)))
+                self.note_word(key, rec, polled_ms)
         tickets = {self.crown} | {tid for tid, _, _ in (self.test_tickets(test) if test else [])}
         for l in lines:
             kind = l.get("kind")
@@ -677,14 +703,17 @@ Reply with the single word ready and end your turn."""
             elif kind == "crown_wake":
                 self.log(f"the board wakes the crown: {l.get('cause')}")
 
-    def note_word(self, who, rec):
+    def note_word(self, who, rec, at_ms):
+        """A poll's word: printed when it changed, and kept with its time
+        beside the feed's (a park writes no `session_state` line, so the
+        polls are what see it)."""
         w = word_of(rec["state"])
         state = rec["state"]
         detail = state.get("reason") or state.get("stop_reason") or ""
         key = (w, detail)
         if self.words.get(who) != key:
             self.words[who] = key
-            self.history.setdefault(who, []).append(w)
+            self.history.setdefault(who, []).append((at_ms, w))
             road = rec.get("road", "hooks")
             self.log(f"{who} {w.replace('_', ' ')}" + (f" ({detail})" if detail else "")
                      + (f" ∙ road {road}" if who != "crown" else ""))
@@ -698,7 +727,7 @@ Reply with the single word ready and end your turn."""
     def run_step(self, test, step, record):
         if "rig" in step:
             return self.rig_step(test, step["rig"], record, step)
-        words = step["crown"].format(**self.keys_of(test))
+        words = self.with_close_out(step["crown"].format(**self.keys_of(test)))
         say(f"  → crown: {words}")
         mark = len(self.feed_lines)
         self.quiet_since = None
@@ -754,11 +783,14 @@ Reply with the single word ready and end your turn."""
         self.quiet_since = None
         # Every crown step is a turn of the crown's on the step's words: it
         # has settled once a Stop of its came after them (or after the wake).
+        # A turn on the board's wake is the step's last, so its Stop is the
+        # end with no quiet after it; elsewhere the crown must be quiet.
         after = wake["at_ms"] if wake else sent_ms
-        settled = lambda: self.crown_settled(after_ms=after)  # noqa: E731
+        settled = lambda: self.crown_settled(after_ms=after, quiet=0 if wake else QUIET)  # noqa: E731
         if not self.wait_for("crown", settled, STEP_TIMEOUT, self.watch):
             record["failures"].append("the crown did not settle")
             return False
+        self.closed()
         return True
 
     def rig_step(self, test, what, record, step=None):
@@ -808,7 +840,7 @@ Reply with the single word ready and end your turn."""
                 and l.get("worker") == test["ticket"]), None), WAKE_GRACE, self.watch)
             self.quiet_since = None
             after = wake["at_ms"] if wake else now_ms
-            self.wait_for("crown", lambda: self.crown_settled(after_ms=after) if wake
+            self.wait_for("crown", lambda: self.crown_settled(after_ms=after, quiet=0) if wake
                           else self.crown_settled(), STEP_TIMEOUT, self.watch)
             return True
         if what == "resend":
@@ -919,7 +951,7 @@ Reply with the single word ready and end your turn."""
         rows = transcript(rec) if rec else []
         mine = [l for l in lines if rec and of_session(l, rec["id"])]
         hooks = [l["event"] for l in mine if l.get("kind") == "hook"]
-        words = squeeze(self.history.get(test["key"], []))
+        words = self.card_words(test["key"])
         disagree = [l for l in lines if l.get("kind") == "road_disagree"
                     and any((r := self.agent_of(self.board(), t)) and of_session(l, r["id"])
                             for t, _, _ in tickets)]
@@ -943,9 +975,9 @@ Reply with the single word ready and end your turn."""
         rows = transcript(rec) if rec else []
         mine = [l for l in lines if rec and of_session(l, rec["id"])]
         hooks = [l["event"] for l in mine if l.get("kind") == "hook"]
-        # The card's words as the rig's polls of the snapshot saw them (a
-        # park writes no `session_state` line, so the feed alone misses it).
-        words = squeeze(self.history.get(key, []))
+        # The card's words: the feed's `session_state` lines and the rig's
+        # polls of the snapshot (a park writes no line), in time order.
+        words = self.card_words(key)
         disagree = [l for l in mine if l.get("kind") == "road_disagree"]
         crown_cmds = [l.get("cmd") for l in lines if l.get("kind") == "board"
                       and l.get("actor") == "agent" and l.get("ticket") == tid]
@@ -1070,6 +1102,10 @@ Reply with the single word ready and end your turn."""
                 check(c, False, "unknown check")
         return results
 
+    def card_words(self, key):
+        seen = sorted(self.history.get(key, []), key=lambda p: p[0])
+        return squeeze([w for _, w in seen])
+
     def timing(self, mine):
         at = [(feed_word(l), l["at_ms"]) for l in mine if l.get("kind") == "session_state"]
         parts = []
@@ -1109,24 +1145,55 @@ Reply with the single word ready and end your turn."""
                     self.wire.sleep(rec["id"])
                 except WireError as e:
                     say(f"  could not park {key}: {e}")
-        # The crown moves a finished rig ticket to DONE (the author's rule);
-        # a failure stays where automove left it, in REVIEW, for a person.
+        # The crown moves a finished rig ticket to DONE (the author's rule),
+        # at the head of the next words the rig sends it rather than in a
+        # turn of its own; a failure stays where automove left it, in
+        # REVIEW, for a person.
         v["column"] = self.ticket(self.board(), test["ticket"])["column"]
         if v["pass"]:
+            self.close_out.append(test)
+        self.verdicts.append(v)
+
+    def with_close_out(self, words):
+        """The step's words, headed by the moves owed for the tests that
+        passed since the crown was last told anything."""
+        if not self.close_out:
+            return words
+        owed = []
+        for test in self.close_out:
             keys = [k for _, k, _ in self.test_tickets(test)]
             each = ", then ".join(f"for {k}" for k in keys)
-            words = (f"{test['id']} passed; its verdict is a note on {test['key']}. Call move_ticket "
-                     f"{each} to DONE, then end your turn with the single line: "
-                     f"{test['id']} done.")
-            say(f"  → crown: {words}")
-            mark = max((l.get("at_ms", 0) for l in self.feed_lines), default=0)
-            self.quiet_since = None
-            self.wire.prompt(self.crown, words, queued=False)
-            self.wait_for("the crown's move", lambda: self.crown_settled(after_ms=mark),
-                          STEP_TIMEOUT, self.watch)
-            v["column"] = self.ticket(self.board(), test["ticket"])["column"]
-            self.log(f"{test['key']} is in {v['column']}")
-        self.verdicts.append(v)
+            owed.append(f"{test['id']} passed; its verdict is a note on {test['key']}: call "
+                        f"move_ticket {each} to DONE.")
+        self.closing = self.close_out
+        self.close_out = []
+        return " ".join(owed) + " Then " + words
+
+    def closed(self):
+        """Read back the moves the crown was told to make: each ticket's
+        column, as the table says it."""
+        board = self.board()
+        for test in self.closing:
+            col = self.ticket(board, test["ticket"])["column"]
+            for v in self.verdicts:
+                if v["id"] == test["id"]:
+                    v["column"] = col
+            self.log(f"{test['key']} is in {col}")
+        self.closing = []
+
+    def finish(self):
+        """The last test's move, with the run's last words."""
+        if not self.close_out:
+            self.closed()
+            return
+        words = self.with_close_out("End your turn with the single line: run done.")
+        say(f"\n  → crown: {words}")
+        mark = max((l.get("at_ms", 0) for l in self.feed_lines), default=0)
+        self.quiet_since = None
+        self.wire.prompt(self.crown, words, queued=False)
+        self.wait_for("the crown's moves", lambda: self.crown_settled(after_ms=mark),
+                      STEP_TIMEOUT, self.watch)
+        self.closed()
 
     def table(self):
         disagree = [l for l in self.feed_lines if l.get("kind") == "road_disagree"]
@@ -1160,6 +1227,7 @@ Reply with the single word ready and end your turn."""
         self.words, self.current, self.quiet_since, self.restarted = {}, None, None, False
         self.history = {}
         self.verdicts = []
+        self.close_out, self.closing = [], []
         self.t0 = time.time()
         say("\n▶ laying the board")
         self.lay()
@@ -1171,6 +1239,7 @@ Reply with the single word ready and end your turn."""
         self.start_crown()
         for test in tests:
             self.run_test(test)
+        self.finish()
         self.table()
 
     def reset(self):
@@ -1205,7 +1274,9 @@ def main():
     global LOG
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--lay", action="store_true", help="lay the board and file the tests; start nothing")
-    ap.add_argument("--only", help="a comma list of test ids, as R1,R3")
+    ap.add_argument("--only", help="a comma list of test ids, as R1,R3; a letter alone is its group")
+    ap.add_argument("--failed", action="store_true",
+                    help="only the tests the last run's verdicts.md lists as FAIL")
     ap.add_argument("--reset", action="store_true", help="park and archive everything, stop the daemon and tmux")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
@@ -1230,9 +1301,17 @@ def main():
         tests = tomllib.load(f)["test"]
     if args.only:
         want = [x.strip() for x in args.only.split(",")]
-        tests = [t for t in tests if t["id"] in want]
+        tests = [t for t in tests if t["id"] in want or t["id"][0] in want]
         if not tests:
             die(f"no test named {args.only}")
+    if args.failed:
+        failed = last_failed(os.path.join(rig.out, "verdicts.md"))
+        if failed is None:
+            die("no target/rig/verdicts.md to read the failures from")
+        tests = [t for t in tests if t["id"] in failed]
+        if not tests:
+            die("the last run's verdicts list no FAIL")
+        say(f"  --failed: {', '.join(t['id'] for t in tests)}")
 
     if not args.no_build:
         say("▶ cargo build -p mesimon")
