@@ -19354,3 +19354,127 @@ before it could be, and `DISABLE_GROWTHBOOK=1` pins every flag to its default, s
 pass under it is unmeasured. C's (T-581) release heading `v0.1.0-alpha.37` is on C's branch, not
 main, when this lands: the CHANGELOG line ("a Claude Code that turns mods off keeps working on the
 hook set; `mesimon doctor` says so") goes under it on the rebase after C.
+
+## Permissions and cost on the mod road (T-581, 2026-10-03, part C of T-587, filed by the crown; folds T-581 "permissions through tool.check (deny) and classic.PermissionRequest (the one-shot allow)" and T-580 "a ticket's cost and the plan's quota read from turn.complete.usage and $.session.usage()")
+
+**What was asked.** The last of the program's four parts (R → A → B → C): the phone's one-shot
+permission answer on the mod road, the deny-only doctrine kept for anything automatic, a
+ticket's cost and the quota line from the engine's own figures, and the rig's "permissions and
+cost" group; then the program's release. Started beside B (the crown, 2026-10-03 01:05) and
+rebased onto it when it landed (f67d1760).
+
+**Measured on Claude Code 2.1.288** (on PATH; the declarations the engine lays beside a loaded
+mod were read for every shape below). `turn.complete` carries `usage` (the four API counts in
+the API's spelling and the answering `model`, the turn's requests summed; absent when nothing
+counted), `turnId`, `durationMs`, `reason` and, for a subagent's loop, `agentId`. The count says
+**neither a cache write's lifetime nor fast mode**: `cache_creation_input_tokens` is one number,
+where the transcript splits `ephemeral_1h`/`ephemeral_5m`. `$.session.usage()` answers
+`rateLimits` (`kind` `five_hour`, `seven_day` or a gateway's `spend_limit`, `percentUsed`, ISO
+`resetsAt`; empty off a subscription), `cost.usd` (what `/cost` totals) and the context window;
+without `breakdown` the call is free. The rows T-573 measured on 2.1.287 for `tool.check` and the
+`classic.PermissionRequest` hold were re-observed on the rig (C1–C3 below).
+
+**Permissions: what B had built, and what C adds.** B's mod already ran `mesimon approve` from
+`classic.PermissionRequest` and returned its decision whole. C proves the road on the real Claude
+Code and names its two edges. The daemon's release of an open wait on the session's own edge
+(`PostToolUse`, `Stop`, `UserPromptSubmit` and the rest; never a subagent's) is now one function,
+`server::releases_permission`, unit-tested on both roads: the mod relays the same `PostToolUse`
+the hook set did, so the hold a person's own answer does not abort (T-573 row 4) ends exactly as
+`mesimon approve`'s did. The mod's source scan holds its one `decision:` return to the
+one-shot's — what `mesimon approve` printed, which only a person's answer from Remote Control
+fills (`PermissionDecision::hook_output`) — and the mod spells no `behavior` of its own; no
+`tool.check` hook, no `'allow'` anywhere (B's never-list test). The crown has no tool that answers
+a permission, so "the crown's one-shot" of the brief does not exist and is not built: a crown can
+neither allow nor deny a dialog. **A phone's deny carries no message**, and the model reads Claude
+Code's own words for a hook deny without one, `Permission denied by hook` (C2): no plugin's name,
+unlike a `tool.check` deny (T-573 row 4).
+
+**Cost: the mod's report is the count, the transcript its check.** At every `turn.complete` (a
+subagent's too) the mod relays `ModUsage` through `mesimon hook --road mod`, reason the turn's
+`reason`, body `{ turnId, agentId?, reason, durationMs, usage?, rateLimits? }`: the main loop's
+carries `$.session.usage()`'s windows, read after `next(e)` resolves while the dispatch stands;
+a read that fails sends the count alone. Never the answer's text. The daemon
+(`bridge.rs::on_mod_usage`) counts it only for a record whose frames come by the mod alone
+(`frames_by_mod`) and that knows its transcript:
+- **The fence.** The first main turn the mod reports stamps the conversation's cursor
+  `by_mod_since` and adds nothing: that turn ended before the stamp, so its transcript lines are
+  the tail's. From then on every reported turn goes to the ticket's hours, and a transcript line
+  stamped at or after the fence (a subagent's transcript follows its session's fence) goes to the
+  ticket's `check.tail`, never the hours. Neither is added twice; the two counts sit side by side
+  in `costs.json` (`"check":{"mod":…,"tail":…}`). A subagent's report before the first main one is
+  the tail's. A record that wakes onto the hook set hands its conversation back to the tail
+  (`learn` clears the fence). The fence is by time, not offset, because a subagent's transcript
+  has no offset of its session's.
+- **What the count lacks.** Cache writes and fast mode follow the ticket's `hint`, what the tail
+  last read (`writes_1h`, `fast`); before any tail read a write prices as 5-minute, as an older
+  transcript's does.
+- **Which source.** `mesimon doctor`'s new `costs` line says how many tickets the mod counted and,
+  where the two counts differ by more than 2% and 1,000 tokens, how many and the largest gap
+  (`Ledger::disagreements`). A turn in flight reads ahead on the transcript until it ends. The
+  brief's "the first week's disagreement count" is the author's to read off that line after the
+  release; nothing in this build records it over time.
+- **No schema bump.** Every new field is `#[serde(default)]` and skipped at its default; an older
+  build drops them and goes on reading the transcript from the cursor's offset.
+
+**Quota: the account's windows at every turn.** `UsageState::merge_mod` (core `usage::merge_mod`)
+folds the mod's windows into the held Claude reading: `five_hour` and `seven_day` refresh the
+5-hour window and the all-models week, every window the mod cannot see (a model's week, the plan
+word, the headline pick) keeps the probe's, and the file is shared like a probe's answer. The
+engine sends no severity, so a window keeps the server's grade while it is the same window
+(`max` with `grade(percent)`) and is graded here once it starts over. **The probe keeps its own
+schedule** (`probed_at`, in memory): it alone reads a model's week, so a mod reading refreshes
+the line without sparing the `claude -p` launch. On the rig the reading was stamped by the
+crown's own report as often as a worker's: the windows are the account's, any session's report
+is as good.
+
+**Rejected.** Pricing from `$.session.usage().cost.usd`: it is per session since its start (and
+`/clear` starts it over), not per ticket, and the ledger keeps tokens by hour for the dialog's
+windows. A capability word in `SPEAKS` to mark a mod that reports usage: `SPEAKS` names commands
+the daemon sends down, and the fence needs no capability, since a mod that never reports never
+fences. Holding a mod report until the tail's next pass to learn its cache lifetime: the hint is
+a session's setting and the tail has read it by the second turn.
+
+**The rig's group (`ci/rig/tests.toml`, C1–C4).** A worker whose column runs Claude Code in
+manual mode asks before its Bash command: the rig lays a column `RIG MANUAL` with `claude_mode =
+manual`, and a test's `column` files its ticket there. A phone is paired only through a relay, so
+**the rig stands in for the phone and the daemon's wait at the socket `mesimon approve` dials**:
+`phone_allow`/`phone_deny` restart the daemon with `MESIMON_MOD_DIR` naming a copy of the mod
+whose approve dials `/tmp/msmn-rig-phone.sock`, where the rig holds each request 4 s (the dialog
+up, the card at needs you) and answers as the daemon answers, `"allow"` or `"deny"`. Everything
+from `mesimon approve` on is the real road. New steps `still_waiting` and checks `exists:`,
+`absent:`, `phone:`, `denied_verbatim`, `still_waiting`, `cost_by_mod`, `quota_by_mod`. The rig's
+docstring no longer claims it leaves `usage.json` alone: its sessions' mods refresh the machine's
+reading with the account's real windows, as any board's do.
+
+**Acceptance on the rig** (`python3 -B ci/rig.py`, one full run of all 24 tests, Sonnet 5.5 at
+low effort, Claude Code 2.1.288, `msmn/T-581…@97061e20`, after the rebase onto B). Every earlier
+group passed again (R1–R7, P1–P5, D1–D4, T1–T3); D5 failed in the full run exactly as in B's
+(the worker called `ExitPlanMode {}` with no plan, so the board kept no projection and the
+crown had no request to accept) and passed on its `--failed` re-run. The group's last rows:
+
+| test | expected | observed | build |
+|---|---|---|---|
+| C1 the phone's one-shot allow | a manual-mode Bash asks; the mod relays PermissionRequest and holds in `mesimon approve`; the phone allows after 4 s; the dialog closes and the tool runs | PASS: PermissionRequest, PostToolUse 4.5 s later, Stop; phone `Bash → allow`; `c1-allowed.txt` exists; 7 frames, all by the mod; replied `done` | 2.1.288 ∙ 97061e20 |
+| C2 the phone's deny | the dialog closes, the tool does not run, the model reads the refusal as the transcript records it, no plugin's name | PASS: phone `Bash → deny`; no `c2-denied.txt`; the model read `Permission denied by hook` and quoted it | 2.1.288 ∙ 97061e20 |
+| C3 the crown cannot allow | with no phone the dialog stands; the crown answers nothing; 20 s later the command has not run; the person's Enter runs it | PASS: needs you; after 20 s still needs you, `c3.txt` absent; no `answer_agent`; Enter → PostToolUse, `c3.txt` exists, replied `done` | 2.1.288 ∙ 97061e20 |
+| C4 cost and quota by the mod | two turns: the first fences, the second is the mod's; the check holds both counts within 2%; the quota reading written at a ModUsage | PASS: ModUsage ×2; mod 56,050 and transcript 56,050 tokens past the fence, 112,079 on the ticket; the reading (5h, week, Fable) stamped at a ModUsage of the board's | 2.1.288 ∙ 97061e20 |
+
+After the run, `mesimon doctor --verbose` on the rig's board: `costs  9 tickets counted from the
+mod's reports, each agreeing with its transcript`. C1–C3 stand in for the phone at approve's
+socket (above); C4's first run failed its quota check, which wanted the worker's own report
+while the crown's later turn had stamped the reading, and the check now takes any session's.
+
+**Built.** `register.ts`'s `turnComplete`/`usageBody` at the end of `register`, three
+`claude plugin test` tests (the report, a failed windows read, a hold released with no decision);
+`road::MOD_USAGE`; `core::cost::mod_turn`, `core::usage::merge_mod`; `daemon::cost`'s fence,
+check, hint, `count_mod`, `disagreements`, `read_only`; `UsageState::merge_mod` and `probed_at`;
+`bridge.rs::on_mod_usage`; `server::releases_permission`; doctor's `costs` line;
+`mod_cost_e2e.rs` (the same frames and transcript on each road: the mod's count on the mod road,
+the transcript's on the hook set's, the quota on the snapshot and in the shared file); docs/USING.md's
+quota and cost paragraphs; a rule and a trap in CLAUDE.md.
+
+**Not done, written down.** The phone itself on the rig (a relay and a paired device; the daemon's
+`RemotePermission` wait and its release are T-395's, unit-tested); the relay's acceptance was not
+run. The disagreement count over the first week is the author's to read off doctor. A
+compaction's summarizer request is reported by `session.compact`, not `turn.complete`; whether
+the mod's count should add it was not measured.
