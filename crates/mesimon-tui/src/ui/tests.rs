@@ -9336,15 +9336,21 @@ fn golden_cards_show_their_cost() {
     assert!(render(&app, 120, 30).join("\n").contains(">1y"));
 }
 
-/// The ticket page says what its agents cost, and at whose prices; a Codex
-/// ticket's tokens are counted with no price.
+/// The ticket page says what its agents cost while the cards wear their
+/// cost (T-572), and nothing while they wear their age; a Codex ticket's
+/// tokens are counted with no price.
 #[test]
 fn golden_ticket_page_says_what_it_cost() {
     let mut app = app_graphite(fixture(false));
     app.costs = cost_fixture();
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    assert_eq!(app.prefs.card_corner, crate::prefs::CardCorner::Age);
     let rows = render(&app, 120, 30);
-    assert!(rows[3].contains("∙ $12.10 at API prices"), "{:?}", rows[3]);
+    assert!(!rows[3].contains("$12.10"), "the age corner hides it: {:?}", rows[3]);
+    app.seed_pref(|p| p.card_corner = crate::prefs::CardCorner::Cost);
+    let rows = render(&app, 120, 30);
+    assert!(rows[3].ends_with("∙ $12.10"), "{:?}", rows[3]);
+    assert!(!rows[3].contains("API prices"), "{:?}", rows[3]);
     golden("ticket_cost_120x30", &rows);
     app.screen = Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     assert!(render(&app, 120, 30)[3].contains("∙ 300k tokens"));

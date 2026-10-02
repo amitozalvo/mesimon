@@ -306,11 +306,11 @@ with nothing happening, every 15 minutes. One reading serves every board on the 
 
 Each ticket also says what its agents have cost, as mesimon's estimate: the tokens in every
 transcript its sessions held (subagents included), at each model's published API price. A plan
-subscriber pays none of that; it is what the same work would cost on the API. The ticket page's
-facts line shows it (`∙ $4.20 at API prices`), **Esc › Usage** shows the board's last 24 hours,
-7 days and 30 days and its costliest tickets (Enter opens one), and `$` on the board switches
-every card's corner from its age to its cost and back. Codex models have no published price in
-this build, so a Codex ticket shows its tokens instead. Counting starts with this version: an
+subscriber pays none of that; it is what the same work would cost on the API. `$` on the board
+switches every card's corner from its age to its cost and back; while the cards show their cost,
+the ticket page's facts line shows it too (`∙ $4.20`). **Esc › Usage** shows the board's last 24
+hours, 7 days and 30 days and its costliest tickets (Enter opens one). Codex models have no
+published price in this build, so a Codex ticket shows its tokens instead. Counting starts with this version: an
 older ticket counts what its current sessions' transcripts hold.
 
 ## Light and dark themes

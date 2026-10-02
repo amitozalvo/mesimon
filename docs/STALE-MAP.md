@@ -17815,3 +17815,15 @@ Enters. Relay acceptance `a_batch_is_answered_whole_and_confirmed_by_the_hook_ed
 the real relay. `state.test.js` covers the form's answers and words; `ux.test.js`'s `batchFlow`
 the radios and ticks, Submit, the receipts, words, Decline, one several-choice question and an
 older host, on Chromium and WebKit at three sizes.
+
+## The ticket page's cost follows the card corner (T-572, 2026-10-02, the author's ask: "show api usage $ amount on ticket page only if showing $ instead of age, and remove the explanation 'at API prices' next to it")
+
+**Shipped.** The facts line's cost clause (T-327) is drawn only while the machine pref
+`card_corner` is `cost` — the same `$` that puts the cost on the cards puts it on the page, and
+the age corner hides both. The words ` at API prices` are gone from the page: the clause reads
+`∙ $4.20`, `∙ $4.20 + 300k tokens unpriced`, or `∙ 300k tokens` where nothing is priced. The
+estimate is still named as one where the cost is switched on (the `$` status line, the Settings ›
+Usage row's detail) and in Esc › Usage.
+
+**Tests.** `golden_ticket_page_says_what_it_cost` renders the page under the age corner (no
+cost) and the cost corner (`∙ $12.10`, no "API prices"); `ticket_cost_120x30` reminted.

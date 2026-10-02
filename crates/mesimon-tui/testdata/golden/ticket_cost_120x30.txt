@@ -1,7 +1,7 @@
  TICKET (T-3)   mesimon › kanban-tui
 
  Fix OSC-11 detection
- IN PROGRESS for >1y ∙ created >1y ago ∙ $12.10 at API prices
+ IN PROGRESS for >1y ∙ created >1y ago ∙ $12.10
 
 
   PREVIEW                                                                                  SESSIONS                  2

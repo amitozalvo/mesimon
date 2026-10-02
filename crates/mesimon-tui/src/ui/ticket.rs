@@ -278,21 +278,20 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         Span::styled(previous, d2),
         Span::styled(created, d2),
     ];
-    // What the ticket's agents have cost (T-327): mesimon's estimate, and the
-    // words beside it say whose prices — a plan subscriber pays none of it.
-    // A model with no published price here is counted in tokens instead.
-    if let Some(c) = app.cost_of(ticket.id) {
+    // What the ticket's agents have cost (T-327): mesimon's estimate, shown
+    // only while the cards wear their cost instead of their age (T-572) — the
+    // person who chose `$` is the one who reads it. A model with no published
+    // price here is counted in tokens instead.
+    let cost = app
+        .cost_of(ticket.id)
+        .filter(|_| app.prefs.card_corner == crate::prefs::CardCorner::Cost);
+    if let Some(c) = cost {
         use mesimon_core::cost::{tokens_word, usd_word};
         let words = match (c.usd > 0.0, c.unpriced > 0) {
-            (true, false) => {
-                vec![(usd_word(c.usd), d2), (" at API prices".to_string(), app.theme.dim3())]
-            }
+            (true, false) => vec![(usd_word(c.usd), d2)],
             (true, true) => vec![
                 (usd_word(c.usd), d2),
-                (
-                    format!(" at API prices + {} tokens unpriced", tokens_word(c.unpriced)),
-                    app.theme.dim3(),
-                ),
+                (format!(" + {} tokens unpriced", tokens_word(c.unpriced)), app.theme.dim3()),
             ],
             (false, _) => vec![(format!("{} tokens", tokens_word(c.tokens)), d2)],
         };
