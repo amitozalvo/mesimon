@@ -1,7 +1,7 @@
 {
   "name": "mesimon",
   "version": "1.0.0",
-  "description": "mesimon's bridge into a Claude Code session it started: relays the session's hook events to the board and carries the board's commands back. Laid and loaded by mesimon; nothing to install.",
+  "description": "mesimon's bridge into a Claude Code session it started: reports the session's events to the board, refuses writes to the board's files, serves the board's tools and carries the board's commands back. Laid and loaded by mesimon; nothing to install.",
   "author": {
     "name": "mesimon",
     "url": "https://mesimon.dev"

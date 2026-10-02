@@ -433,6 +433,37 @@ class Rig:
                              capture_output=True, text=True)
         return out.stdout.split()
 
+    def mod_digest(self):
+        """The laid mod's digest as `modroad::digest` computes it, from the
+        sources `modroad::FILES` names, in its order."""
+        import hashlib
+        src = os.path.join(self.repo, "crates/mesimon-daemon")
+        with open(os.path.join(src, "src/modroad.rs")) as f:
+            files = re.findall(r'\("([^"]+)", include_str!\("\.\./mod/([^"]+)"\)\)', f.read())
+        h = hashlib.sha256()
+        for rel, path in files:
+            with open(os.path.join(src, "mod", path), "rb") as f:
+                text = f.read()
+            h.update(rel.encode() + b"\0" + text + b"\0")
+        return h.hexdigest()
+
+    def wait_this_mod(self, timeout=120):
+        """The daemon's probe of this build's mod: a new build's mod has a
+        new digest and is probed again, and a launch before that probe
+        lands takes the hook set."""
+        want = self.mod_digest()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with open(os.path.join(self.paths.mod_root, "probe.json")) as f:
+                    p = json.load(f)
+                if p.get("key", {}).get("digest") == want and p.get("verdict") == "passed":
+                    return True
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.5)
+        return False
+
     def wait_probe(self, words, timeout=120):
         deadline = time.time() + timeout
         line = None
@@ -635,6 +666,8 @@ Reply with the single word ready and end your turn."""
         # hook set, and every step would then reach it by paste.
         line = self.wait_probe("the mod validated", 120)
         say(f"\n  road.json: {line}")
+        if not self.wait_this_mod():
+            say("  no probe of this build's mod passed in 120 s: launches take the hook set")
         say(f"\n▶ starting the crown {self.crown_key} (its brief is its first prompt)")
         r = self.wire.spawn(self.crown, "claude", submit_prompt=True)
         say(f"  spawn: {r.get('resp')}")
