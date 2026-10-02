@@ -483,6 +483,11 @@ will not show up in our tests until they break something.
   bare title declined a four-step brief (T-588). A one-line paste alone arrives as plain text.
 - **A pty in canonical mode keeps only 1 KiB of a line**, which is why long prompts are pasted
   rather than typed.
+- **`$.prompt.submit` refuses a text that begins with `/`**, leading blanks included ("would run
+  a command as the user", 2.1.287): a slash command keeps the paste road on the mod road too
+  (`road::is_command`, T-575).
+- **A mod's `submit` fires `UserPromptSubmit` as a typed prompt does, but an answer the mod
+  returns in a dialog's place fires no `PostToolUse`**: the mod's `ModAnswer` report is that edge.
 - **macOS caps unix datagrams at 2 KB**, which is why the hook transport is SOCK_STREAM one-shot.
 - **A `connect()` on a unix socket path can still succeed for a few hundred microseconds after
   its listener's `close()` returned** — XNU routes it into the dying backlog. A liveness probe

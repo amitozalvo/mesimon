@@ -18747,3 +18747,154 @@ ahead → merged)`. On that wake, `get_ticket` reads `idle`, `sleep_agent` parks
 the keyed move to DONE goes through. Nothing more comes after that. With the hold switched off,
 the test fails at "held while the notice is on its way". `cargo nextest run --workspace`: 2069
 of 2069.
+
+## The turn roads: prompts by `$.prompt.submit`, answers down the mod (T-575, 2026-10-02, part A of T-587, filed by the crown; folds T-575 "a prompt reaches Claude by $.prompt.submit, not by the paste road", T-576 "a question is answered through tool.call, not by reading the screen" and T-579 "plan accept through the mod gives manually approve edits only; decide, or keep the press")
+
+**What shipped.** On a Claude session whose mod is up and speaks `submit`, every prompt mesimon
+delivers goes down the mod's bridge as `{"kind":"submit","text":…}` and the mod calls
+`$.prompt.submit({ text, asUser: true })`: the launch's title and brief (`Owed`), the board's
+ask and Shift+Enter (`PromptSession`), Remote Control's prompts, the crown's `ask_agent` and
+its wakes, the merge flow's sentences, a note's nudge, and the resend. Nothing is typed into the
+pane, no composer is read and no Enter is pressed; `UserPromptSubmit` stays the ack. A question's
+answer from a phone or the crown goes down as one `{"kind":"answer","tool_use_id":…,"answers":
+{question → label | "A, B" | words}}`: the mod holds every `AskUserQuestion` of the session's own
+in a `tool.call` hook, races the native dialog (drawn as ever) against it, and returns `{ result:
+{ questions, answers } }` in the dialog's place. Codex and an older Claude Code keep every road
+they had.
+
+**The decisions (the author's, through T-587; the plan's applied as the default T-579 named).**
+(1) The road is `auto` and shadow stays on (T-588): the mod's relays are still only paired, never
+ingested, with one exception below. (2) The paste road, the composer wait, the press cadence,
+the dialog keys and the hook-edge confirmation stay whole for the hook set and for Codex, and
+they are also the fallback on the mod road (below). (3) **The plan accept keeps the press** on the
+native dialog's first row (T-420, T-582), the one screen read that survives on the mod road:
+"Yes, auto-accept edits" has no API in 2.1.287, and `tool.check → allow` leaves the worker in
+"manually approve edits" (T-573 row 6). **Re-measured on this build:** `grep -n "setMode\|
+permissionMode" .claude-plugin/types/claude-code/index.d.ts` in the laid folder finds
+`permissionMode` only as a subagent's spawn field (lines 294, 402, read-only facts of the
+parent) and `setMode` only as a `PermissionRequest` suggestion's `type` (line 7044): still no
+permission-mode setter. (4) Promise 3: every submit `asUser: true`, no `context`, the words as
+the person wrote them; the never-list test now bans `deny:` and `next({` as well and allows one
+`$.prompt` call, `$.prompt.submit({ text, asUser: true })`.
+
+**When the words go.** A launch's words wait for BOTH the pane's `SessionStart` (the entry is
+armed, as on the paste road: nothing reaches a pane being born, and a `UserPromptSubmit` ahead
+of its `SessionStart` would read as late startup in the attention machine) and the mod's first
+poll from that pane (`mod_bridged`); whichever comes second sends them (`mod_deliver_parked`,
+called from `arm_owed`, from `mod_next` and from the tick). The title is no longer typed at
+spawn on this road: title, a blank line and the brief go as one submit, so the brief arrives as
+the person's own words and not inside `<pasted_content>` (T-588's trap). A live prompt goes at
+once and the engine holds one that meets a running turn and runs it as a turn of its own.
+
+**When the mod cannot take them.** The bridge says what its mod speaks (`mesimon mod-bridge
+--speaks ping,submit,answer`, `ModNext.speaks`; `core::road::SPEAKS`, held to `register.ts` by a
+unit test): a session keeps the mod it loaded across a daemon upgrade, so a T-574 mod (which
+says nothing) is sent pings alone and its words are pasted. A mod that has not polled
+`MOD_BRIDGE_WAIT_MS` (10 s, seam `MESIMON_MOD_BRIDGE_WAIT_MS`) after `SessionStart` never loaded
+or is wedged (T-588 measured one launch whose mod relayed nothing for its whole life): its words
+take the paste road, title first, with the composer's own wait (feed `prompt_by_paste`). **A
+slash command keeps the paste road on every Claude session** (`road::is_command`): measured on
+2.1.287, `$.prompt.submit({ text: "/exit", asUser: true })` rejects with `prompt.submit: submits
+a prompt to the model; a text beginning with / would run a command as the user; run one with
+$.command.run({ command }) (host check)`, leading blanks included; the rig's R6 found it (the
+crown's `ask_agent "/exit"`). `$.command.run` exists and is unmeasured, so it is not used.
+
+**Receipts.** The bridge's ack of a submit frame is the mod's receipt (`Owed.taken`). The mod
+reports each submit's end with `ModSubmit` (reason: the frame id; `entered`, `dropped` with the
+engine's reason, `rejected` with the error, which the journal keeps): a refused one lands the
+words on `SessionRecord.unsent` exactly as `prompt_submit_not_ready` does (feed
+`prompt_submit_refused`), so the card says `brief not sent` and the seat's Shift+Enter resends —
+down the mod again when it is up, by paste when it is not. A submit the bridge never took by
+`INFLIGHT_MS` is taken back and kept unsent (`prompt_submit_unreceived`); one taken and queued
+behind a long turn stops counting as busy (`submit_unacked`), as a paste's does. Feed:
+`prompt_by_mod` per submit.
+
+**The answer's edge moves.** When the mod answers, the engine fires no `PostToolUse` for the
+question (its own path was aborted, T-573 row 3), so the mod reports `ModAnswer answered` with
+a `PostToolUse`-shaped body, and the daemon ingests it as that `PostToolUse`, of the mod's road:
+the one mod frame that is ingested, since it has no hook-set twin (`on_hook` offers only
+hook-road frames to the shadow). `dialog_edge` reads its road as `DialogEdge::ModAnswered`, and
+an answer that went down the mod (`DialogDelivery.by_mod`) is confirmed by that alone: the
+engine's own `PostToolUse` or a dismissal is the person's answer winning the race in the pane
+(`unknown`, `a_person_answered`, the turn's mark given back). A refusal of the native dialog
+fires no hook (the T-447 trap); the mod sees `next(e)` resolve with the tool's error result (or
+the call aborted) and reports `ModAnswer declined`, the dialog's dismissal. `nothing_held` is an
+answer that came after the person's. A phone's refusal stays the Escape key: the mod has no
+refusal of its own that would put no words of ours in front of the model (`{ deny }` would).
+Feed: `answer_by_mod`.
+
+**The stand-in engine** (`tests/common/fake_claude_mod.py`) takes a `submit` the way the engine
+hands a prompt to the model: the stub is the model, so the words go into its own pane (bracketed
+paste and Enter through the tmux build the wrapper names) and `ModSubmit entered` is relayed; it
+sends no `UserPromptSubmit`, so every test acks its prompts itself on both roads, as T-574 kept
+the relay half in `hook_send`. It answers an `answer` by closing `fake_claude_dialog.py`'s
+dialog with the answers and relaying `ModAnswer answered`. Files beside it stand for other mods
+(`mod-silent`, `mod-speaks`, `mod-drop-submit`, `mod-person-answered-<session>`). The paste
+road's own tests (`spawn_ready_e2e`) pin themselves to the hook set; `m2_attention_headless`'s
+press section and the crown's answer tests read the road; `mod_turns_e2e` holds the mod road's
+own (both passes, the daemon forced onto the mod).
+
+**Acceptance on the rig** (run `20261002-222408`, with D1 from `20261002-224128` and P2 from `20261002-225513`, build `claude 2.1.287 ∙ msmn/T-575-mod-road-a-the-turn-roads@3b4f08ff`, crown and workers on `claude-sonnet-5-5`,
+effort low; every verdict is a note on its rig ticket):
+
+| test | expected | observed | build |
+|---|---|---|---|
+| R1 a worker starts in a worktree | `start_agent` (worktree); the brief is its first prompt; road mod, `--plugin-dir`; working then idle; `claude_road:mod`; no disagreement | PASS: title and brief whole; SessionStart, UserPromptSubmit, Stop; 0 over 4 frames; first turn 3.4 s | 2.1.287 ∙ 3b4f08ff |
+| R2 a worker starts on the checkout | the same, `shared_checkout` | PASS: the checkout; 0 over 4 frames; 3.4 s | 2.1.287 ∙ 3b4f08ff |
+| R3 every hook-set event reaches the daemon | a question the crown answers, a tool, a subagent, the turn's end: zero disagreements, the card's words each seen | PASS: working → needs you → working → idle; the crown's answer now down the mod; 16 frames, 0 disagreements | 2.1.287 ∙ 3b4f08ff |
+| R4 a daemon restart loses no frame | ping before and after a SIGTERM; the crown's next ask on both roads | PASS: pong 9 ms, then 13 ms; the ask down the mod after the restart; 0 over 7 frames | 2.1.287 ∙ 3b4f08ff |
+| R5 sleep and wake keep the conversation | `sleep_agent`, then `start_agent` wakes it on the mod; the next turn answers from the conversation | PASS: working → idle → sleeping → working → idle; `--plugin-dir` on the woken argv; it answered `mango` | 2.1.287 ∙ 3b4f08ff |
+| R6 pane-died still ends a session | `/exit` from the crown; pane-died ends it, the record parks; SessionEnd on both roads | PASS on this build (FAIL on 19456fdf, which found the slash-command rejection): `/exit` typed by the paste road; SessionEnd and PaneDied; sleeping; 0 over 5 frames | 2.1.287 ∙ 3b4f08ff |
+| R7 too old for mods | a 2.1.286 wrapper: road hooks, no `--plugin-dir`, doctor says older, the turn as on the mod | PASS: road hooks; doctor `hooks ∙ claude 2.1.286 is older than 2.1.287`; the daemon restored to the mod after | 2.1.287 ∙ 3b4f08ff |
+| P1 a 10 KB brief at launch | the first prompt is the title, a blank line and the brief byte for byte, no `<pasted_content>`; `prompt_by_mod`, no `prompt_by_paste`, no `prompt_submit_not_ready` | PASS: 10,484 chars, byte for byte; UserPromptSubmit 0.3 s after SessionStart; replied `done` | 2.1.287 ∙ 3b4f08ff |
+| P2 a prompt into a running turn | the person's prompt mid-turn goes down the mod, is held, runs as a turn of its own after the first one's Stop | PASS (rerun on the same binary after the test's own fixes, see below): sent while its `find` ran, entered 45 ms after the first Stop; two prompts, replies `first` → `second` | 2.1.287 ∙ 3b4f08ff |
+| P3 the crown's `ask_agent` | the ask to an idle worker goes down the mod, whole, and is answered | PASS: two `prompt_by_mod`, no paste; replies `ready` → `lantern` | 2.1.287 ∙ 3b4f08ff |
+| P4 the resend of an unsent brief | a mod copy drops each session's first submit: the brief refused (`prompt_submit_refused`, dropped), kept unsent, no turn; the person's resend down the mod | PASS: refused, then `prompt_resent`; two ModSubmit reports; one prompt in the transcript; replied `resent`; the daemon restored after | 2.1.287 ∙ 3b4f08ff |
+| P5 three starts at once | three `start_agent` in one crown turn: each first prompt its own title and brief, byte for byte, down the mod | PASS: T-35, T-36, T-37 each byte for byte (147, 133, 132 chars), one `prompt_by_mod` each, no paste; first turns 3.4 to 5.0 s | 2.1.287 ∙ 3b4f08ff |
+| D1 one-choice question | the crown answers blue; one `answer` frame (`answer_by_mod`), `ModAnswer answered`, the receipt answered, the card off needs-you on that report | PASS (rerun with the words check loosened, see below): `answer_agent` answered `blue`; replied `Blue`; no key, no screen read | 2.1.287 ∙ 3b4f08ff |
+| D2 a batch | two questions answered in one `answer_agent`, one frame, no tab walk | PASS: answered `blue; large`; replied `blue large` | 2.1.287 ∙ 3b4f08ff |
+| D3 a several-choice question | indices 0 and 2 as labels joined by `, `, no Space, no tab walk | PASS: answered `cheese, olives`; replied `cheese, olives` | 2.1.287 ∙ 3b4f08ff |
+| D4 a person's answer first wins | the person presses Enter in the pane (red) before the crown answers blue | PASS: the worker replied `red`; the crown's `answer_agent` refused (`not stopped on a question (it is idle)`); no `answer_by_mod` | 2.1.287 ∙ 3b4f08ff |
+| D5 the crown accepts a plan | `accept_plan` presses the dialog's first row (the press that stays, T-579); the worker writes with no permission asked | PASS: working → needs you → working → idle; `notes/d5.txt` holds `plan accepted`; replied `done` | 2.1.287 ∙ 3b4f08ff |
+
+**`road_disagree`:** 0 lines over the 17-test run on 3b4f08ff; 3 on the earlier full run and 1 on the P2 rerun, all `SessionEnd no_mod_twin` after a park, T-588's open bug (the park's SIGTERM races the mod's awaited relay), none on a turn road.
+
+**The reruns, and what the rig's tests learned.** Three tests were fixed in their own words
+and rerun on the same binary. P2's first brief asked for `sleep 25`, which this Claude Code's
+harness blocks as a standalone sleep, and Sonnet then backgrounded it; it now counts files with
+`find`, and the person's prompt goes 3 s after the worker's (`settle = false` on the step, so
+the rig does not wait out the crown first). P3's `Reply with the single word again` was read as
+"the same word again" (`ready` twice); it asks for `lantern`. D1's card skipped `working` once:
+the attention machine leaves needs-you only after its 1.5 s settle, and a one-word reply ended
+the turn 1.4 s after the mod's report, so the card went straight to idle, as it would on the
+hook set; the check now asks for needs-you and then idle. The rig's `replies` check matches a
+reply that is the word alone (it had matched `first` inside "I'm not replying first").
+
+**Retired for Claude on the mod road:** the title typed at spawn, the composer read
+(`composer::read`, `COMPOSER_WAIT_MS`), the paste (`paste-buffer -p` + Enter), the 500 ms press
+cadence and its ten attempts, the resend's one Ctrl+C, and for questions `dialog_step`,
+`batch_view`, the Space ticks, `pane_tail`'s screen reads and the 5 s hook-edge wait. Kept there:
+the plan press (decision 3), the Escape of a refusal, and the paste road for slash commands and
+for a mod that cannot take a submit. Nothing was deleted.
+
+**Tests.** Core `road::tests::a_frame_is_one_flat_object_with_its_kind` (the `submit` and
+`answer` frames as the mod reads them), `every_kind_is_a_word_the_mod_can_speak`,
+`a_slash_command_is_words_the_box_runs`; daemon `hook_settings::tests::
+the_mod_relays_exactly_what_the_hook_set_reports` (`SPEAKS` and the reports' names held to
+`register.ts`) and `the_mod_spells_nothing_on_the_never_list` (one `$.prompt` call, `asUser:
+true`; no `deny:`, no `next({`); the mod's own `register.test.ts` under `claude plugin test`,
+13 tests against 2.1.287's engine (a submit whole, `asUser`, no `context`; a dropped submit
+reported; the board's answer closing a held question in the dialog's place; the person first
+and a late answer finding nothing held; a subagent's question never held; a refusal reported
+declined). E2e `mod_turns_e2e` (five, under both passes: a launch's 10 KB brief with no composer
+and a live prompt and a slash command; a mod that never comes up; an older mod; a refused submit
+resent; the crown's answer, the person first and a refusal), `crown_e2e`'s answer tests and
+`m2_attention_headless` reading the road, `spawn_ready_e2e` pinned to the hook set. The
+`mesimon` crate's e2es 196 of 196 under each road; `ci/test-run.py` at 3b4f08f passed both
+roads (`roads: ["hooks", "mod"]`), the mod pass 139 of 139, fixture audit clean.
+
+**Not done, written down.** The relay's acceptance (`mesimon-relay`) was not run under the mod
+road: no wire changed and the phone's answer rides the same `DialogDelivery`, which
+`mod_turns_e2e` and `crown_e2e` drive under both passes. A decline the mod saw ends the dialog
+but does not move the card off needs-you (no signal says what the engine did next); the next
+frame does, as before.

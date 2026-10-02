@@ -24,6 +24,8 @@
 #              worker since the step began) and/or `events = [...]`, then the
 #              worker's card word `state` (working | needs_you | idle |
 #              sleeping).
+#   settle     for a crown step: false where the next step must follow at
+#              once, without waiting for the crown's turn to end (P2).
 #   wake       for a crown step: true where the board will wake the crown
 #              for the worker once `until` holds, and the step ends with the
 #              crown's turn on that wake. The board wakes a crown for a
@@ -49,7 +51,7 @@
 #              prompts:N (user prompts in its transcript, a background
 #              task's notification not counted), held (its second prompt
 #              entered after its first turn's Stop), replies:<w1>,<w2>
-#              (its replies, in order, each holding its word), file:<path>
+#              (its replies, in order, each its word alone), file:<path>
 #              (in its cwd, holding `brief_file`'s words), answered:<word> /
 #              refused (the crown's answer_agent outcome for it, from the
 #              feed, or none answered).
@@ -223,18 +225,19 @@ long_brief = true
 id = "P2"
 title = "P2 · a prompt into a running turn waits and runs as a turn of its own"
 workspace = "worktree"
-brief = "Run the shell command `sleep 25` with the Bash tool in the foreground (never in the background) and wait for it to finish, then reply with the single word first and end your turn. Read no file and run no other command."
-expect = "while the worker's first turn runs (its foreground sleep), the person sends it a prompt: it goes down the mod (prompt_by_mod), the engine holds it, and it runs as a second turn after the first one's Stop, never typed into the box: two prompts, the second entering after the first turn ended, the replies first then second."
+brief = "Count the files under /usr: run the shell command `find /usr -type f 2>/dev/null | wc -l` with the Bash tool in the foreground (never in the background) and wait for it to finish, then reply with the single word first and end your turn. Read no file and run no other command."
+expect = "while the worker's first turn runs (its foreground find), the person sends it a prompt: it goes down the mod (prompt_by_mod), the engine holds it, and it runs as a second turn after the first one's Stop, never typed into the box: two prompts, the second entering after the first turn ended, the replies first then second."
 checks = ["road:mod", "fed:prompt_by_mod", "not_fed:prompt_by_paste", "prompts:2", "held", "replies:first,second", "hooks:UserPromptSubmit,Stop"]
 
   [[test.steps]]
   crown = "P2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: P2 started."
   until = { events = ["UserPromptSubmit"], state = "working" }
+  settle = false
 
   [[test.steps]]
   rig = "prompt"
   text = "Reply with the single word second and end your turn. Read no file and run no command."
-  after = 6
+  after = 3
 
   [[test.steps]]
   crown = "P2, the person has sent {key} a second prompt: when the board wakes you for {key}, end your turn with the single line: P2 seen."
@@ -312,8 +315,8 @@ brief = """Do these two things one at a time and nothing else.
 1. Ask me one question with the AskUserQuestion tool, alone: the question is "Which colour?" and the two options are "red" and "blue". Wait for my answer.
 2. Then reply with the colour I chose, as one word, and end your turn.
 Read no file and run no command."""
-expect = "the worker asks; the board wakes the crown, which answers blue with answer_agent; the answer goes down the worker's mod (answer_by_mod), the mod reports it answered (ModAnswer answered), the receipt says answered, and the card goes needs-you then working with no PostToolUse of the hook set's; the worker replies blue."
-checks = ["road:mod", "words:working,needs_you,working,idle", "fed:answer_by_mod", "mod_report:ModAnswer:answered", "answered:blue", "reply:blue"]
+expect = "the worker asks; the board wakes the crown, which answers blue with answer_agent; the answer goes down the worker's mod (answer_by_mod), the mod reports it answered (ModAnswer answered), the receipt says answered, and the card leaves needs-you on that report, with no PostToolUse of the hook set's (working first only when the reply outlasts the machine's 1.5 s settle); the worker replies blue."
+checks = ["road:mod", "words:working,needs_you,idle", "fed:answer_by_mod", "mod_report:ModAnswer:answered", "answered:blue", "reply:blue"]
 
   [[test.steps]]
   crown = "D1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: D1 started. Its agent will stop on the question \"Which colour?\": when the board wakes you for that question, read it with get_ticket for {key}, answer it with answer_agent choosing blue, and end your turn with the single line: D1 answered. When the board wakes you because {key}'s agent finished, end your turn with the single line: D1 seen."

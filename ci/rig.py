@@ -732,6 +732,11 @@ Reply with the single word ready and end your turn."""
         if not self.wait_for("worker", worker_done, STEP_TIMEOUT, self.watch):
             record["failures"].append(f"timed out waiting for {test['key']}: {until}")
             return False
+        # A step the next one must follow at once (P2's person, while the
+        # worker's turn runs) does not wait for the crown: its turn ends on
+        # its own, and a prompt sent to it meanwhile waits for that end.
+        if step.get("settle") is False:
+            return True
         # Where the board wakes the crown for its worker (`wake`), the step
         # ends when the crown's turn on that wake ended (its Stop) and it has
         # been quiet; elsewhere, when it has been quiet. A wake the step did
@@ -1028,7 +1033,8 @@ Reply with the single word ready and end your turn."""
             elif name == "replies":
                 want = arg.split(",")
                 said = replies(rows)
-                hit = is_subsequence(want, [next((w for w in want if w in r.lower()), None) for r in said])
+                bare = [r.strip().strip(".!").strip().lower() for r in said]
+                hit = is_subsequence(want, [b if b in want else None for b in bare])
                 check(c, hit, " → ".join(repr(r[:24]) for r in said) or "none")
             elif name == "file":
                 path = os.path.join(rec["cwd"], arg)
