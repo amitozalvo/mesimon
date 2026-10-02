@@ -17902,19 +17902,24 @@ for the AskUserQuestion (the engine's own path was aborted), so T-567's hook-edg
 must come from the mod's own report; `PermissionRequest` for AskUserQuestion still fires before
 the dialog as today.
 
-**Row 4, the permission bridge: partial.** `tool.check` fires after `classic.PreToolUse` with
+**Row 4, the permission bridge: proven.** `tool.check` fires after `classic.PreToolUse` with
 the engine's verdict: `{ decision: 'allow', rule: 'Bash' }` under an allow rule, `{ decision:
 'ask', reason: "touch in '…' needs approval …" }` otherwise, and `allow` with no dialog for a
 command its own classifier holds read-only (`printf hi`). The `permission_suggestions`
 (`addDirectories`, `setMode acceptEdits`) are **not on `tool.check`**: they ride the
-`classic.PermissionRequest` that follows 12 ms later. A hook's `{ decision: 'allow' }` skipped
-the dialog; `deny` reached the model as `Permission to use Bash denied by plugin mesimon-spike:
-<reason>`, the plugin's name in the model's text. There is no race with the dialog, because the
-dialog opens only after `tool.check` resolved `ask`: a one-shot allow decided at `tool.check`
-time is clean, but holding `tool.check` for a phone would delay the dialog for everyone. **Not
-measured:** answering `classic.PermissionRequest` from the mod (the in-process twin of `mesimon
-approve`, same classic result shape), which is the road a one-shot allow beside an open dialog
-would take.
+`classic.PermissionRequest` that follows 12 ms later. A hook's `{ decision: 'allow' }` at
+`tool.check` skipped the dialog; `deny` there reached the model as `Permission to use Bash
+denied by plugin mesimon-spike: <reason>`, the plugin's name in the model's text. **The one-shot
+allow beside an open dialog is `classic.PermissionRequest`**, the in-process twin of `mesimon
+approve`: the hook holds inside a `$.process.run` (a `$` call in flight does not count against
+the 10 s budget; a promise of the hook's own would) that waits for the daemon's decision, and
+returns `{ decision: { behavior: 'allow' } }` or `{ behavior: 'deny', message }`. Measured: the
+native dialog stays up and answerable while the hook holds; the daemon's allow closed it 96 ms
+after the decision landed and the tool ran; a deny reached the model as the `message` verbatim
+(`mesimon spike: the phone said no`, no plugin framing); when the person answered first, the
+dialog took the person's answer and the hook's hold **was not aborted** (`next.signal` stayed
+clear) and ran on until released, its late answer ignored, so the daemon must end the hold on
+the `PostToolUse` edge as it ends `mesimon approve`'s today.
 
 **Row 5, `mesimon gate`: proven.** `tool.call` on `Write|Edit|NotebookEdit` returning `{ deny }`
 for a path under the board dir, **with no daemon anywhere** (the scenario ran none), refused the
@@ -17972,8 +17977,8 @@ arguments, `tool.check → allow` beyond the consented one-shot, `$.model.*` on 
 credential, `$.session.send`. The two consented exceptions stay the tool definitions and the
 opt-in brief.
 
-**Built.** `crates/mesimon-daemon/mod-spike/` (the mod, `bridge.py`, `drive.py` with twelve
-scenarios, `report.py`, five `claude plugin test` tests); `LaunchContext.mod_dir` filled from
+**Built.** `crates/mesimon-daemon/mod-spike/` (the mod, `bridge.py`, `wait.py`, `drive.py` with
+thirteen scenarios, `report.py`, five `claude plugin test` tests); `LaunchContext.mod_dir` filled from
 `MESIMON_MOD_DIR`, `--plugin-dir` in `agents::claude::flags` and its wake-owned pair list, and
 the pane env (`CLAUDE_CODE_PLUGIN_DIR_WATCH=0`, `MESIMON_MOD_LOG`, `MESIMON_MOD_GATE_BOARD`)
 under the seam only; a unit test that the seam is off by default and re-read on a wake.

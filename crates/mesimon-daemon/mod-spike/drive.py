@@ -497,6 +497,68 @@ def sc_permission(ctx):
              notifications=[e["data"].get("notification_type") for e in s.events() if e["event"] == "classic.Notification"])
 
 
+def sc_permit(ctx):
+    """Row 4: the one-shot allow beside an open dialog, from classic.PermissionRequest."""
+    s = Session(ctx, "main", mode="default", parity=True).start()
+    s.wait_composer()
+    permits = s.spool / "permits"
+    permits.mkdir(exist_ok=True)
+    s.spool_cmd({"kind": "hold_permits", "on": True})
+    time.sleep(0.8)
+
+    def permit(n, decision):
+        tmp = permits / f".{n}.tmp"
+        tmp.write_text(json.dumps(decision))
+        tmp.rename(permits / f"{n}.json")
+        s.note(f"permit {n}: {decision}")
+        return time.time() * 1000
+
+    # Round 1: the daemon's allow while the dialog is up.
+    s.prompt("Use the Bash tool to run exactly: touch one.txt. Then reply TOUCHED and nothing else.")
+    h = s.wait_event("permit.hold", timeout=60)
+    time.sleep(1.5)
+    s.screen("r1-dialog-while-held")
+    at = permit(1, {"behavior": "allow"})
+    a = s.wait_event("permit.answered", timeout=20)
+    time.sleep(1.0)
+    s.screen("r1-after-allow")
+    t1 = s.wait_event("turn.complete", timeout=60)
+    ctx.say(f"r1 allow answered {a['t'] - at:.0f} ms after the file; model: {answer_of(t1)}")
+    # Round 2: the person answers first (Enter on Yes) while the hook holds.
+    s.prompt("Use the Bash tool to run exactly: touch two.txt. Then reply TOUCHED and nothing else.")
+    s.wait_event("permit.hold", timeout=60)
+    time.sleep(1.5)
+    s.keys("Enter")
+    t2 = s.wait_event("turn.complete", timeout=60)
+    ctx.say(f"r2 person first; model: {answer_of(t2)}")
+    time.sleep(1.0)
+    hook_after = [e["event"] for e in s.events() if e["event"].startswith("permit.") and e["seq"] > t2["seq"] - 20]
+    ctx.say(f"r2 hook events so far: {hook_after}")
+    permit(2, {"behavior": "allow"})  # releases the wait, if it still runs
+    try:
+        w = s.wait_event("permit.wait_done", timeout=10)
+        ctx.say(f"r2 wait_done: {w['data']}")
+    except TimeoutError as e:
+        ctx.say(str(e))
+    try:
+        w = s.wait_event("permit.wait_failed", timeout=3)
+        ctx.say(f"r2 wait_failed: {w['data']}")
+    except TimeoutError:
+        pass
+    # Round 3: the daemon's deny.
+    s.prompt("Use the Bash tool to run exactly: touch three.txt. Then reply with the exact error text the tool returned and nothing else.")
+    s.wait_event("permit.hold", timeout=60)
+    time.sleep(1.0)
+    permit(3, {"behavior": "deny", "message": "mesimon spike: the phone said no"})
+    t3 = s.wait_event("turn.complete", timeout=60)
+    ctx.say(f"r3 deny; model: {answer_of(t3)}")
+    s.screen("r3-after-deny")
+    s.end()
+    ctx.done(files=sorted(p.name for p in s.cwd.iterdir()), r1=answer_of(t1), r2=answer_of(t2), r3=answer_of(t3),
+             permit_events=[(e["event"], e["data"]) for e in s.events() if e["event"].startswith("permit.")],
+             parity=[json.loads(l)["event"] for l in open(s.parity_log)])
+
+
 def sc_gate(ctx):
     s = Session(ctx, "main", mode="acceptEdits").start()
     s.prompt("Use the Write tool to create the file .mesimon/spike.txt (relative to the current directory) with the content hi. Then reply with the exact error or result text the tool returned and nothing else.")
@@ -627,7 +689,7 @@ def sc_relay(ctx):
 
 
 SCENARIOS = {"coverage": sc_coverage, "submit": sc_submit, "submit_midturn": sc_submit_midturn, "load": sc_load, "ask": sc_ask, "permission": sc_permission,
-             "gate": sc_gate, "plan_result": sc_plan_result, "plan_allow": sc_plan_allow, "plan_native": sc_plan_native,
+             "gate": sc_gate, "permit": sc_permit, "plan_result": sc_plan_result, "plan_allow": sc_plan_allow, "plan_native": sc_plan_native,
              "tools": sc_tools, "relay": sc_relay}
 
 

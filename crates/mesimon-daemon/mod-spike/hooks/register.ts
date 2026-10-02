@@ -28,6 +28,7 @@ type Command =
   | { kind: 'usage' }
   | { kind: 'tools' }
   | { kind: 'ask'; question: string; options: string[] }
+  | { kind: 'hold_permits'; on: boolean }
 
 const LONG = 4000
 
@@ -42,6 +43,7 @@ let logDir: Promise<string | undefined> | undefined
 const holds = new Map<string, (a: Answer) => void>()
 const checks = new Map<string, Decision>()
 let planMode: 'native' | 'result' | 'allow' = 'native'
+let holdPermits = false
 let cwd = ''
 
 async function log($: any, event: string, data: unknown) {
@@ -93,6 +95,9 @@ async function handle($: any, line: string) {
     }
     case 'plan':
       planMode = cmd.mode
+      break
+    case 'hold_permits':
+      holdPermits = cmd.on
       break
     case 'check':
       if (cmd.decision) checks.set(cmd.tool, cmd.decision)
@@ -253,6 +258,34 @@ export const register: Register = on => {
     const want = checks.get(e.tool) ?? (e.tool === 'ExitPlanMode' && planMode === 'allow' ? 'allow' : undefined)
     await log($, 'tool.check', { tool: e.tool, input: e.input, tool_use_id: e.tool_use_id, core, override: want, origin: next.origin })
     return want ? { decision: want, reason: `mesimon spike said ${want}` } : core
+  })
+
+  // ---- Row 4, the one-shot allow beside an open dialog: the in-process twin
+  // of `mesimon approve`. The hold sits inside a `$.process.run` (a `$` call
+  // in flight does not count against the hook's 10 s budget; a promise of
+  // the hook's own would), which waits for the daemon's decision (here: a
+  // file under the spool) and prints it, as the approve binary answers.
+  on('classic.PermissionRequest', async ($, e, next) => {
+    const spool = await $.env.get('MESIMON_MOD_SPOOL')
+    if (!holdPermits || !spool || e.agent_id || e.tool_name === 'AskUserQuestion' || e.tool_name === 'ExitPlanMode') {
+      return next(e)
+    }
+    const t0 = await $.clock.now()
+    await log($, 'permit.hold', { tool: e.tool_name, input: e.tool_input, suggestions: e.permission_suggestions })
+    let r: { exitCode: number; stdout: string; stderr: string }
+    try {
+      r = await $.process.run(['python3', `${$.plugin.root}/wait.py`, `${spool}/permits`], { timeoutMs: 45000 })
+    } catch (err) {
+      await log($, 'permit.wait_failed', { ms: (await $.clock.now()) - t0, error: String(err), aborted: next.signal.aborted })
+      return next(e)
+    }
+    await log($, 'permit.wait_done', { ms: (await $.clock.now()) - t0, exitCode: r.exitCode, stdout: r.stdout, aborted: next.signal.aborted })
+    if (r.stdout.trim()) {
+      const decision = JSON.parse(r.stdout)
+      await log($, 'permit.answered', { decision, aborted: next.signal.aborted })
+      return { decision }
+    }
+    return next(e)
   })
 
   // ---- Row 3: the question, held until the daemon (here: the spool) or the

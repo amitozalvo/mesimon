@@ -16,6 +16,8 @@ Files:
   mod. `claude plugin validate .` reports what it hooks, calls and reads.
 - `hooks/register.test.ts` — `claude plugin test .`, the hooks' shapes against
   the engine's own `$`.
+- `wait.py` — the stand-in for `mesimon approve`'s wait (row 4): run by the mod inside
+  `$.process.run` while a permission dialog is up, it waits for a decision file and prints it.
 - `bridge.py` — the daemon→mod direction of the bridge: spawned once per
   session by the mod, it tails a spool directory and prints each command as a
   line the mod reads as a stream. (The mod→daemon direction is `$.process.run`
@@ -32,7 +34,7 @@ To measure again (cents, on the person's own Claude login):
 ```sh
 P=~/.local/state/mesimon/<proj16>/mod-spike
 rsync -a --exclude .claude-plugin/types --exclude tsconfig.json ./ "$P"/
-python3 drive.py run --mod "$P" --out /tmp/spike-out coverage submit ask permission gate plan_result plan_allow plan_native tools relay load
+python3 drive.py run --mod "$P" --out /tmp/spike-out coverage submit submit_midturn ask permission permit gate plan_result plan_allow plan_native tools relay load
 python3 report.py /tmp/spike-out/ask/main/log
 ```
 
