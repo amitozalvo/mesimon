@@ -342,8 +342,10 @@ the session uuid, never the pane, so a death frame from another pane is dropped
 `Unknown{DaemonRestarted}` and re-derive from the transcript tail at Low confidence until a hook
 re-asserts; reconcile never trusts stale claims.
 
-**The mod road (T-574) runs in shadow.** Under "Claude integration" `mod` (default `hooks`), a
-Claude launch also loads the mod laid at `<state>/mod/<version>-<digest8>/`, which relays the
+**The mod road (T-574) runs in shadow, and the road is `auto`, never a setting (T-588).** A
+Claude launch on a Claude Code ≥ 2.1.287 whose `claude plugin validate` passes (the probe,
+cached per binary in `<state>/mod/probe.json`, warmed when the shell env lands) also loads the
+mod laid at `<state>/mod/<version>-<digest8>/`, which relays the
 same events through `mesimon hook --road mod`; a mod frame goes to the shadow
 (`Msg::ShadowHook`), never to ingest, and a disagreement is a `road_disagree` feed line. The
 daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`), never a push
@@ -573,7 +575,7 @@ train, CLAUDE.md sample, checkout git sample), `MESIMON_NO_TAG_SEED`,
 `MESIMON_TICKET_SHELLS`, `MESIMON_UPDATE_GOLDEN`, `MESIMON_MOD_DIR` (T-573's research seam: a Claude
 Code mod folder loaded with `--plugin-dir` in place of the laid one; the spike mod and its driver
 live in `crates/mesimon-daemon/mod-spike/`, measured in STALE-MAP, shipped to nobody),
-`MESIMON_CLAUDE_ROAD` (`hooks|mod|auto`, over the "Claude integration" pref; `TestFixture` always
+`MESIMON_CLAUDE_ROAD` (`hooks|mod|auto`, a test seam over the `auto` every launch asks; `TestFixture` always
 sets it, `hooks` unless the test process has `MESIMON_TEST_ROAD=mod`, the mod road's pass that
 wraps every stub with `tests/common/fake_claude_mod.py` and twins every `hook_send`),
 `MESIMON_REQUIRE_CLAUDE` (turns `mod_plugin`'s skip without `claude` into a failure; the release

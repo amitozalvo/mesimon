@@ -77,12 +77,12 @@ impl Daemon {
     /// The road this launch takes, and the folder `--plugin-dir` names when
     /// it is the mod. Decided once per launch and stamped on the record in
     /// the same block (`spawn_session`, `resume_session`). Claude only, and
-    /// nothing is laid or probed for a launch whose setting is `hooks`.
+    /// nothing is laid or probed for a launch the seam sends on `hooks`.
     pub(super) fn launch_road(&mut self, kind: SessionKind) -> (Road, Option<std::path::PathBuf>) {
         if kind != SessionKind::Claude {
             return (Road::Hooks, None);
         }
-        let setting = modroad::read_setting(&self.paths);
+        let setting = modroad::read_setting();
         let (mut road, probe_line) = match setting.pref {
             RoadPref::Hooks => (Road::Hooks, None),
             RoadPref::Mod => (Road::Mod, None),
@@ -150,6 +150,23 @@ impl Daemon {
         (Road::Hooks, Some(line.into()))
     }
 
+    /// Every Claude launch asks `auto` (T-588), so the probe is not left for
+    /// the first launch to start, which would then take the hook set: once
+    /// the shell environment is captured, the Claude Code on its `PATH` is
+    /// probed unless this binary and this mod already were.
+    pub(super) fn warm_road_probe(&mut self) {
+        if modroad::read_setting().pref != RoadPref::Auto {
+            return;
+        }
+        let bin = modroad::claude_binary(self.shell_env.path.as_deref());
+        let key = bin.as_deref().and_then(modroad::probe_key);
+        if let (Some(bin), Some(key)) = (bin, key) {
+            if self.modroad.probe.as_ref().is_none_or(|p| p.key != key) {
+                self.start_road_probe(bin, key);
+            }
+        }
+    }
+
     fn start_road_probe(&mut self, bin: std::path::PathBuf, key: modroad::ProbeKey) {
         if self.modroad.probing {
             return;
@@ -188,7 +205,7 @@ impl Daemon {
             let word = if passes { "mod" } else { "hooks" };
             self.feed.board_outcome("automation", &format!("claude_road:{word}"), None, &line);
         }
-        let setting = modroad::read_setting(&self.paths);
+        let setting = modroad::read_setting();
         self.modroad.probe = Some(probe);
         if setting.pref == RoadPref::Auto {
             self.note_road(RoadVerdict {

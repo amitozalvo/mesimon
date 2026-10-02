@@ -1,5 +1,7 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ AGENTS ∙ 11/11 ─────────────────────────────────────╮
+  ╭─ AGENTS ∙ 10/10 ─────────────────────────────────────╮
+  │   Agent brief: off                                   │
+  │     one line: read the ticket first ∙ enter shows i~ │
   │   Agent tools: on                                    │
   │     the seven board tools every spawn carries ∙ ent~ │
   │   Agent prompts: mesimon's words                     │
@@ -14,7 +16,5 @@
   │     a question or plan from an agent it started wak~ │
   │   Crown archives tickets: off                        │
   │     it moves finished tickets to DONE and you archi~ │
-  │   Claude integration: hooks                          │
-  │     the hook set mesimon generates ∙ enter: auto, f~ │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
  SETTINGS                                            ? keys

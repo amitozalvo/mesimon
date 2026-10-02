@@ -1,5 +1,5 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ AGENTS ∙ 1/11 ──────────────────────────────────────╮
+  ╭─ AGENTS ∙ 1/10 ──────────────────────────────────────╮
   │   Default tier: claude                               │
   │     Claude Code ∙ its own model ∙ what a ticket sta~ │
   │   Tiers: none yet                                    │

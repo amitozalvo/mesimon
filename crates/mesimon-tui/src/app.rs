@@ -3509,26 +3509,6 @@ impl App {
                     }),
                 }
             }
-            // A named value: inherit, then each word, then inherit (T-574).
-            PrefKey::ClaudeRoad => {
-                use mesimon_core::road::RoadPref;
-                let next = match self.board_prefs.claude_road() {
-                    None => Some(RoadPref::ALL[0]),
-                    Some(r) => {
-                        let i = RoadPref::ALL.iter().position(|x| *x == r).unwrap_or(0);
-                        RoadPref::ALL.get(i + 1).copied()
-                    }
-                };
-                match next {
-                    Some(r) => self.set_board_pref(
-                        &format!("{label}: {} ∙ from the next launch", r.word()),
-                        |b| b.set_claude_road(r),
-                    ),
-                    None => self.set_board_pref(&format!("{label} inherits the machine's"), |b| {
-                        b.clear(key)
-                    }),
-                }
-            }
             _ => {
                 let next = match self.board_prefs.bool(key) {
                     None => Some(true),
@@ -4518,7 +4498,6 @@ impl App {
             crown_sends: self.board.crown_sends,
             crown_answers: self.board.crown_answers,
             crown_archives: self.board.crown_archives,
-            claude_road_word: self.prefs.claude_road.word(),
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
             col_offers_word: cs.offers().word(),
@@ -5265,13 +5244,6 @@ impl App {
             Verb::Usage => {
                 self.mode = Mode::Usage { idx: 0 };
                 self.refresh_usage(true);
-            }
-            // How Claude sessions report (T-574): the daemon reads the file
-            // at the next launch, so the save is the whole change.
-            Verb::ClaudeRoad => {
-                let v = self.machine_prefs.claude_road.next();
-                let word = format!("Claude integration: {} ∙ from the next launch", v.word());
-                self.set_pref(&word, |p| p.claude_road = v);
             }
             Verb::CardCorner => {
                 let v = self.prefs.card_corner.next();

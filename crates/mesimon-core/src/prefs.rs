@@ -74,16 +74,10 @@ pub enum PrefKey {
     /// What a card's corner says (T-327): its `age` (the default) or its
     /// ticket's estimated `cost` — `$` on the board flips it.
     CardCorner,
-    /// How Claude sessions report to the board (T-574): `hooks` (the
-    /// generated hook set, the default), `mod` (the mod mesimon lays, in
-    /// shadow beside the hook set) or `auto` (the mod when the Claude Code on
-    /// PATH validates it). Read by the DAEMON from the files at every launch,
-    /// so `hooks` holds with no board open; a board may override it.
-    ClaudeRoad,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 36] = [
+    pub const ALL: [PrefKey; 35] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::FollowOs,
@@ -119,7 +113,6 @@ impl PrefKey {
         PrefKey::UsageClaude,
         PrefKey::UsageCodex,
         PrefKey::CardCorner,
-        PrefKey::ClaudeRoad,
     ];
 
     /// The JSON key in both files.
@@ -160,7 +153,6 @@ impl PrefKey {
             PrefKey::UsageClaude => "usage_claude",
             PrefKey::UsageCodex => "usage_codex",
             PrefKey::CardCorner => "card_corner",
-            PrefKey::ClaudeRoad => "claude_integration",
         }
     }
 
@@ -239,7 +231,6 @@ impl PrefKey {
             PrefKey::UsageClaude => "usage line's claude",
             PrefKey::UsageCodex => "usage line's codex",
             PrefKey::CardCorner => "card corner",
-            PrefKey::ClaudeRoad => "Claude integration",
         }
     }
 
@@ -258,7 +249,6 @@ impl PrefKey {
                 | PrefKey::UsageLine
                 | PrefKey::UsageResets
                 | PrefKey::CardCorner
-                | PrefKey::ClaudeRoad
         )
     }
 }

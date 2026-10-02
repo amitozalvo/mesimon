@@ -8,15 +8,14 @@
 //! by the sources' digest means a rebuild never rewrites one a live session
 //! loaded. `--plugin-dir <folder>` is the whole installation.
 //!
-//! The road is the "Claude integration" setting: the seam
-//! `MESIMON_CLAUDE_ROAD`, else this board's `prefs.json`, else the machine's,
-//! else `hooks`. The daemon reads the files itself, at every launch, because
-//! `hooks` is the kill switch and must hold with no board open (a queued
-//! wake, the crown's start, a phone). `auto` takes the mod only once a probe
-//! of the Claude Code on PATH found it new enough and `claude plugin
-//! validate` passed on the laid folder; the probe is cached per binary (path,
-//! mtime, length) and per mod digest, so a Claude Code that updated itself is
-//! probed again before it is trusted.
+//! The road is `auto`, always (T-588; T-574 made it a setting and T-587
+//! took the setting away): the mod only once a probe of the Claude Code on
+//! PATH found it new enough and `claude plugin validate` passed on the laid
+//! folder, the hook set otherwise, and nobody is asked. The probe is cached
+//! per binary (path, mtime, length) and per mod digest, so a Claude Code that
+//! updated itself is probed again before it is trusted. The seam
+//! `MESIMON_CLAUDE_ROAD` (`hooks|mod|auto`) is for the tests: `TestFixture`
+//! sets `hooks` so no stub is ever probed as Claude Code.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -75,13 +74,12 @@ pub fn lay(paths: &Paths) -> anyhow::Result<PathBuf> {
     Ok(root)
 }
 
-/// Where the setting came from, for the verdict file and `doctor`.
+/// Where the road a launch asked for came from, for the verdict file and
+/// `doctor`: the test seam, or nothing (`auto`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     Seam,
-    Board,
-    Machine,
     Default,
 }
 
@@ -92,37 +90,19 @@ pub struct Setting {
     pub source: Source,
 }
 
-/// The seam's word, then the board's, then the machine's, then `hooks`. A
-/// word this build does not know falls through to the next layer: a newer
-/// build's road is no reason to turn the mod on.
-pub fn resolve(
-    seam: Option<&str>,
-    board: Option<&serde_json::Value>,
-    machine: Option<&serde_json::Value>,
-) -> Setting {
-    let key = mesimon_core::prefs::PrefKey::ClaudeRoad.name();
-    if let Some(pref) = seam.and_then(RoadPref::from_word) {
-        return Setting { pref, source: Source::Seam };
+/// The seam's word, else `auto`. A word this build does not know is no
+/// word: the road is `auto`. No file is read — a `claude_integration` key
+/// an alpha.36 board wrote stays in its `prefs.json`, unread.
+pub fn resolve(seam: Option<&str>) -> Setting {
+    match seam.and_then(RoadPref::from_word) {
+        Some(pref) => Setting { pref, source: Source::Seam },
+        None => Setting { pref: RoadPref::Auto, source: Source::Default },
     }
-    for (doc, source) in [(board, Source::Board), (machine, Source::Machine)] {
-        if let Some(pref) =
-            doc.and_then(|d| d.get(key)).and_then(|v| v.as_str()).and_then(RoadPref::from_word)
-        {
-            return Setting { pref, source };
-        }
-    }
-    Setting { pref: RoadPref::default(), source: Source::Default }
 }
 
-/// The setting as the files say it now. Two small reads per Claude launch.
-pub fn read_setting(paths: &Paths) -> Setting {
-    let read = |path: Option<PathBuf>| -> Option<serde_json::Value> {
-        serde_json::from_str(&std::fs::read_to_string(path?).ok()?).ok()
-    };
-    let seam = std::env::var("MESIMON_CLAUDE_ROAD").ok();
-    let board = read(Some(paths.prefs_file()));
-    let machine = read(crate::paths::state_root().ok().map(|r| r.join("prefs.json")));
-    resolve(seam.as_deref(), board.as_ref(), machine.as_ref())
+/// The road this process's launches ask for.
+pub fn read_setting() -> Setting {
+    resolve(std::env::var("MESIMON_CLAUDE_ROAD").ok().as_deref())
 }
 
 /// The Claude Code a launch would run: `MESIMON_CLAUDE_BIN` (a name or a
@@ -355,7 +335,6 @@ pub fn write_verdict(paths: &Paths, verdict: &RoadVerdict) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
 
     fn paths(dir: &Path) -> Paths {
@@ -400,29 +379,15 @@ mod tests {
     }
 
     #[test]
-    fn the_seam_beats_the_board_which_beats_the_machine_which_beats_hooks() {
-        let board = json!({ "claude_integration": "auto" });
-        let machine = json!({ "claude_integration": "mod" });
-        let s = |seam, b, m| resolve(seam, b, m);
-        assert_eq!(s(None, None, None), Setting { pref: RoadPref::Hooks, source: Source::Default });
-        assert_eq!(
-            s(None, None, Some(&machine)),
-            Setting { pref: RoadPref::Mod, source: Source::Machine }
-        );
-        assert_eq!(
-            s(None, Some(&board), Some(&machine)),
-            Setting { pref: RoadPref::Auto, source: Source::Board }
-        );
-        assert_eq!(
-            s(Some("hooks"), Some(&board), Some(&machine)),
-            Setting { pref: RoadPref::Hooks, source: Source::Seam }
-        );
-        // A word this build does not know falls through.
-        let foreign = json!({ "claude_integration": "socket" });
-        assert_eq!(
-            s(Some("x"), Some(&foreign), Some(&machine)),
-            Setting { pref: RoadPref::Mod, source: Source::Machine }
-        );
+    fn the_road_is_the_seam_else_auto() {
+        let auto = Setting { pref: RoadPref::Auto, source: Source::Default };
+        assert_eq!(resolve(None), auto);
+        assert_eq!(resolve(Some("socket")), auto, "a word this build does not know");
+        for (word, pref) in
+            [("hooks", RoadPref::Hooks), ("mod", RoadPref::Mod), ("auto", RoadPref::Auto)]
+        {
+            assert_eq!(resolve(Some(word)), Setting { pref, source: Source::Seam });
+        }
     }
 
     fn script(dir: &Path, name: &str, body: &str) -> String {

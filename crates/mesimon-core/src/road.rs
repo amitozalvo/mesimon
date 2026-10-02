@@ -51,13 +51,14 @@ impl Road {
     }
 }
 
-/// The "Claude integration" setting's three words, and the seam's
-/// (`MESIMON_CLAUDE_ROAD`). `Auto` takes the mod when the Claude Code on PATH
-/// is new enough and `claude plugin validate` passes on the laid mod.
+/// Which road a Claude launch asks for. Every launch asks `Auto` (T-588):
+/// the mod when the Claude Code on PATH is new enough and `claude plugin
+/// validate` passes on the laid mod, the hook set otherwise. The seam
+/// `MESIMON_CLAUDE_ROAD` names one of the three words, for the tests alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RoadPref {
-    #[default]
     Hooks,
+    #[default]
     Auto,
     Mod,
 }
@@ -75,16 +76,6 @@ impl RoadPref {
 
     pub fn from_word(word: &str) -> Option<RoadPref> {
         RoadPref::ALL.into_iter().find(|p| p.word() == word)
-    }
-
-    /// The settings row's cycle: the default, then the one that decides by
-    /// itself, then the forced mod.
-    pub fn next(self) -> RoadPref {
-        match self {
-            RoadPref::Hooks => RoadPref::Auto,
-            RoadPref::Auto => RoadPref::Mod,
-            RoadPref::Mod => RoadPref::Hooks,
-        }
     }
 }
 
@@ -203,20 +194,12 @@ mod tests {
     }
 
     #[test]
-    fn the_setting_words_round_trip_and_cycle_through_all_three() {
+    fn the_seam_words_round_trip_and_the_road_is_auto() {
         for p in RoadPref::ALL {
             assert_eq!(RoadPref::from_word(p.word()), Some(p));
         }
         assert_eq!(RoadPref::from_word("Mod"), None);
-        assert_eq!(RoadPref::default(), RoadPref::Hooks);
-        let mut p = RoadPref::Hooks;
-        let mut seen = vec![p];
-        for _ in 0..2 {
-            p = p.next();
-            seen.push(p);
-        }
-        assert_eq!(seen, RoadPref::ALL.to_vec());
-        assert_eq!(p.next(), RoadPref::Hooks);
+        assert_eq!(RoadPref::default(), RoadPref::Auto);
     }
 
     #[test]

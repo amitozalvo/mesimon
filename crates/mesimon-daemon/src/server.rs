@@ -1453,6 +1453,7 @@ impl Daemon {
                 if let Err(e) = self.write_shell_env_file() {
                     self.shell_env_error = Some(format!("writing the environment file: {e}"));
                 }
+                self.warm_road_probe();
             }
             // The previous environment stands. A broken rc file must not be
             // able to empty the environment every future pane gets.

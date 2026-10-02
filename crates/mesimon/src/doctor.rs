@@ -685,11 +685,6 @@ fn agents(repo: &Path, verbose: bool) -> Section {
     Section { name: "agents", records }
 }
 
-/// How Claude sessions report to this board (T-574): what the daemon decided
-/// at its last Claude launch (`<state>/mod/road.json`, because the daemon's
-/// seam is not in doctor's environment), and how often the shadow found the
-/// two roads disagreeing — zero is the bar the mod must hold before it
-/// carries the frames alone.
 /// Whether the crown takes a card off the board (T-590): a person's gesture,
 /// off by default, printed either way.
 fn crown_archives(on: bool) -> Record {
@@ -702,27 +697,24 @@ fn crown_archives(on: bool) -> Record {
     }
 }
 
+/// How Claude sessions report to this board (T-574): which road the last
+/// Claude launch got and why (`<state>/mod/road.json`, because the daemon's
+/// seam is not in doctor's environment), and how often the shadow found the
+/// two roads disagreeing — zero is the bar the mod must hold before it
+/// carries the frames alone. No setting chooses the road (T-588).
 fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
-    use mesimon_daemon::modroad::{read_setting, read_verdict, Source};
-    let source_word = |s: Source| match s {
-        Source::Seam => "MESIMON_CLAUDE_ROAD",
-        Source::Board => "this board",
-        Source::Machine => "this machine",
-        Source::Default => "the default",
-    };
+    use mesimon_daemon::modroad::{read_verdict, Source};
     let disagreements = std::fs::read_to_string(paths.activity_log())
         .map(|log| log.lines().filter(|l| l.contains("\"kind\":\"road_disagree\"")).count())
         .unwrap_or(0);
-    let advice = "Settings > Agents > Claude integration: hooks is the hook set mesimon generates; mod also loads mesimon's mod and checks its reports against the hook set's (road_disagree lines in the feed); auto takes the mod where this Claude Code validates it. A launch reads it; `mesimon state ping <KEY>` times one session's mod.";
+    let advice = "mesimon loads its mod where Claude Code is 2.1.287 or newer and `claude plugin validate` passes on it, beside the hook set it generates, and checks each against the other (road_disagree lines in the feed); below that, the hook set alone. Each launch decides; `mesimon state ping <KEY>` times one session's mod.";
     let Some(v) = read_verdict(paths) else {
-        let setting = read_setting(paths);
-        let mut value = format!("{} ∙ set by {}", setting.pref.word(), source_word(setting.source));
-        if setting.pref != mesimon_core::road::RoadPref::Hooks {
-            value.push_str(" ∙ no launch has read it yet");
-        }
-        return rec(Level::Note, "claude road", value).advice(advice);
+        return rec(Level::Note, "claude road", "auto ∙ no Claude launch yet").advice(advice);
     };
-    let mut value = format!("{} ∙ {} set by {}", v.road.word(), v.setting, source_word(v.source));
+    let mut value = v.road.word().to_string();
+    if v.source == Source::Seam {
+        value.push_str(&format!(" ∙ MESIMON_CLAUDE_ROAD={}", v.setting));
+    }
     if let Some(probe) = &v.probe {
         value.push_str(&format!(" ∙ {probe}"));
     }
@@ -735,7 +727,7 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
     }
     let level = if v.fallback || disagreements > 0 { Level::Warn } else { Level::Ok };
     let advice = if v.fallback {
-        format!("auto fell back to the hook set after a Claude Code update. {advice}")
+        format!("The mod stopped validating after a Claude Code update, so launches take the hook set. {advice}")
     } else {
         advice.into()
     };
@@ -1183,6 +1175,57 @@ pub fn run(args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::wrap;
+
+    /// T-588: the road line says which road the last Claude launch got and
+    /// why, in the probe's own words, and names no settings row.
+    #[test]
+    fn the_road_line_says_which_road_and_why() {
+        use mesimon_core::road::Road;
+        use mesimon_daemon::modroad::{write_verdict, RoadVerdict, Source};
+        let dir = std::env::temp_dir().join(format!("msmn-doctor-road-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths = mesimon_daemon::Paths::for_repo(&dir).unwrap();
+        paths.state_dir = dir.join("state");
+        let none = super::claude_road(&paths);
+        assert_eq!(none.value, "auto ∙ no Claude launch yet");
+        assert!(!none.advice.as_deref().unwrap_or_default().contains("Settings"));
+        let line = |road, setting: &str, source, probe: Option<&str>| {
+            let verdict = RoadVerdict {
+                road,
+                setting: setting.into(),
+                source,
+                probe: probe.map(Into::into),
+                lay_error: None,
+                fallback: false,
+            };
+            write_verdict(&paths, &verdict);
+            super::claude_road(&paths).value
+        };
+        let auto = Source::Default;
+        assert_eq!(
+            line(Road::Mod, "auto", auto, Some("claude 2.1.287, the mod validated")),
+            "mod ∙ claude 2.1.287, the mod validated ∙ 0 disagreements in the feed"
+        );
+        assert_eq!(
+            line(Road::Hooks, "auto", auto, Some("claude 2.1.280 is older than 2.1.287")),
+            "hooks ∙ claude 2.1.280 is older than 2.1.287"
+        );
+        assert_eq!(
+            line(
+                Road::Hooks,
+                "auto",
+                auto,
+                Some("claude plugin validate failed on 2.1.290: hooks: no such event")
+            ),
+            "hooks ∙ claude plugin validate failed on 2.1.290: hooks: no such event"
+        );
+        assert_eq!(
+            line(Road::Hooks, "hooks", Source::Seam, None),
+            "hooks ∙ MESIMON_CLAUDE_ROAD=hooks"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// T-584: the tiers line names each tier with the person's words on when
     /// to use it, a board's version with the board's words.

@@ -186,6 +186,8 @@ Claude Code and `codex` runs Codex. Claude Code is the initial default. Switchin
 leaves existing sessions, including sleeping ones, with their original provider. Accepted queued
 starts keep their choice.
 Each ticket has one live agent seat across both providers.
+Where Claude Code is 2.1.287 or newer, mesimon also loads its own mod into each Claude session
+it starts, beside the hooks it generates; `mesimon doctor` says which of the two a session got.
 
 Follow-ups default to **Queue**: they wait for the current turn to end, including
 approval stops. A question holds them instead: words queued before or while the agent asks one
