@@ -53,7 +53,7 @@ alone to sleep. Words the crown leaves for another ticket's agent wait on that c
 send them, unless you turn on *Settings › Agents › Crown sends its asks* (off by default): then
 words for an agent the crown started reach it once it is idle, and an agent you started still
 waits for you. Questions wait for you too, unless you turn on *Settings › Agents › Crown answers
-questions* (off by default): then the crown may answer a one-choice question an agent it started
+questions* (off by default): then the crown may answer a question an agent it started
 stops on, typed into that agent's dialog and shown on its card and in the activity feed, while
 every other stop, and every question from an agent you started, still waits for you. Only you can
 crown a ticket; an agent that asks for it is told to ask you.
