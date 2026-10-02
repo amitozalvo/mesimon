@@ -352,6 +352,8 @@ and no `--allowedTools`**: the mod relays the hook set's events in order through
 writes itself (the gate, below), runs `mesimon approve` from `classic.PermissionRequest`, and
 registers the board's tools with `$.tool.register`, serving each through `mesimon mcp --call`.
 A registered tool asks no permission in any mode, so the daemon's tier check is the only gate.
+A mod-alone launch with no `SessionStart` twice the bridge wait after its spawn has its words
+armed on the paste road (`rescue_silent_mods`, feed `mod_silent`): no hook set would ever send one.
 The hook set, `mesimon gate` and `mesimon mcp`'s server stay whole for an older Claude Code and
 Codex. The daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`),
 never a push from the writer thread. The mod spells nothing on promise 3's never-list (a unit
@@ -497,7 +499,9 @@ will not show up in our tests until they break something.
   returns in a dialog's place fires no `PostToolUse`**: the mod's `ModAnswer` report is that edge.
 - **A mod's `$` call in flight fails with its dispatch when that dispatch is abandoned**
   (interrupt, a hook above settled first, budget), and the first read rides the first event's:
-  the mod keeps a value only once read whole and never caches a failed read (T-594).
+  the mod keeps a value only once read whole and never caches a failed read (T-594), and no
+  event awaits another event's read: a shared in-flight read fails with the dispatch that began
+  it (T-577's three starts at once left two mods silent).
 - **A `tool.call` hook that throws is skipped** (2.1.287, T-577): a built-in tool then runs
   unjudged, and a registered tool reads to the model as "Claude requested permissions to use …
   but you haven't granted it yet". A gate or a tool hook never throws; it denies.
