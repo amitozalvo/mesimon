@@ -133,7 +133,6 @@ const SEEN_MAX = 64
 // The pane's variables once a read found all four. A read that threw or
 // came back short is never kept: the next event reads again (T-594).
 let config: Config | undefined
-let reading: Promise<Config> | undefined
 // The reads that failed before one succeeded, said to the daemon then
 // (`ModLoadFailed`): the one road that can say it is this one, once open.
 let failed: { reads: number; error: string; at: string } | undefined
@@ -147,7 +146,10 @@ const seen: string[] = []
 const holds = new Map<string, (answers: Record<string, string>) => void>()
 // The tools this session registered, by full name: the only calls served.
 const registered = new Set<string>()
-let tools: 'off' | 'registering' | 'done' = 'off'
+// Whether the tools are registered (or there were none to register), and
+// the registration in flight.
+let toolsDone = false
+let toolsRun: Promise<void> | undefined
 // The subagent each dialog tool's call ran in, by its tool_use_id, from the
 // `tool.call` beneath its `classic.PreToolUse` (which carries none).
 const agents = new Map<string, string>()
@@ -177,13 +179,17 @@ async function load($: any): Promise<Config> {
  * life (T-594). The first read that succeeds after a failure reports it.
  */
 async function settings($: any, at: string): Promise<Config | undefined> {
-  if (config) return config
-  reading ??= load($)
-  const read = reading
+  if (config) {
+    if (started && !toolsDone) void bringUp($, config)
+    return config
+  }
+  // Each event reads for itself (T-577): a read shared with another event
+  // failed with that event's dispatch, and three sessions started at once
+  // left two whose every event had awaited the one read session.start's
+  // abandoned dispatch took down.
   try {
-    config = await read
+    config ??= await load($)
   } catch (err) {
-    if (reading === read) reading = undefined
     failed ??= { reads: 0, error: String(err), at }
     failed.reads += 1
     void $.ui.log(`mesimon: the pane's variables were not read at ${at} (${String(err)}); the next event reads them again`, {
@@ -196,12 +202,9 @@ async function settings($: any, at: string): Promise<Config | undefined> {
     failed = undefined
     void relay($, 'ModLoadFailed', 'recovered', report, false)
   }
-  // `session.start` starts the bridge and registers the tools; one whose
-  // read failed left both to the first event that reads them.
-  if (started) {
-    startBridge($, config)
-    void registerTools($, config)
-  }
+  // `session.start` brings the tools and the bridge up; one whose read
+  // failed left both to the first event that reads them.
+  if (started) void bringUp($, config)
   return config
 }
 
@@ -285,18 +288,28 @@ export async function guardedBy($: any, path: string, r: Roots): Promise<string 
  * registers nothing; a list that cannot be read registers nothing either,
  * and the session runs without the tools rather than not at all.
  */
-async function registerTools($: any, c: Config) {
-  if (tools !== 'off') return
-  tools = 'registering'
+function registerTools($: any, c: Config): Promise<void> {
+  if (toolsDone) return Promise.resolve()
+  toolsRun ??= registerOnce($, c)
+  return toolsRun
+}
+
+/** The tools, then the bridge: no word goes down before the tools are listed. */
+async function bringUp($: any, c: Config) {
+  await registerTools($, c)
+  startBridge($, c)
+}
+
+async function registerOnce($: any, c: Config) {
   try {
     const tier = await $.env.get('MESIMON_MOD_TOOLS')
     if (!tier) {
-      tools = 'done'
+      toolsDone = true
       return
     }
     const out = await $.process.run([c.bin, 'mcp', '--list', '--tools', tier], { timeoutMs: 10000 })
     const specs = JSON.parse(String(out?.stdout ?? '[]'))
-    tools = 'done'
+    toolsDone = true
     if (!Array.isArray(specs)) return
     for (const spec of specs) {
       try {
@@ -307,9 +320,10 @@ async function registerTools($: any, c: Config) {
       }
     }
   } catch {
-    // The list was not read: the next event that reads the variables tries
-    // again, and the session works without the tools meanwhile.
-    if (tools === 'registering') tools = 'off'
+    // The list was not read: the next event tries again, and the session
+    // works without the tools meanwhile.
+  } finally {
+    toolsRun = undefined
   }
 }
 
@@ -544,15 +558,14 @@ function startBridge($: any, c: Config) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    // One read of the pane's variables. The tools first, so they are listed
-    // by turn one: the first session.start is awaited (T-577).
-    const c = await settings($, 'session.start')
-    if (c) await registerTools($, c)
     const result = await next(e)
     // `session.start` may come again in the same process (a `/clear`); one
-    // bridge serves them all.
+    // bridge serves them all. The read brings the tools and then the bridge
+    // up (`bringUp`), not awaited here: the daemon sends no word before the
+    // bridge's first poll, so the tools are listed before any turn it
+    // starts, and a session.start held by them is one more dispatch to lose.
     started = true
-    if (c) startBridge($, c)
+    await settings($, 'session.start')
     return result
   })
 

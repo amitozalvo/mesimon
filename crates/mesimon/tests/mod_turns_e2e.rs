@@ -248,6 +248,30 @@ fn a_mod_that_never_comes_up_leaves_the_words_to_the_paste_road() {
     let _ = c.request(Command::KillSession { id: sid });
 }
 
+/// T-577: on the mod road no hook set sends `SessionStart`, so a mod that
+/// relays nothing left the launch `spawning` with its brief parked for ever
+/// (three starts at once on the rig met it). Twice the bridge wait after the
+/// spawn the words take the paste road all the same, and the feed says so.
+#[test]
+fn a_mod_launch_with_no_session_start_is_given_its_words_by_paste() {
+    let env = [MOD, ("MESIMON_MOD_BRIDGE_WAIT_MS", "1500")];
+    let Some(h) = Harness::boot_with_env("modnostart", Some(READER), &env) else { return };
+    std::fs::write(h.dir.join("mod-silent"), "").unwrap();
+    let mut c = h.client("modnostart");
+    let ticket = ticket_with_brief(&mut c, "no start", "## Brief\n\nmesimon-nostart-1 by paste");
+    let sid = spawn(&mut c, ticket, true);
+    assert_eq!(record(&mut c, sid).road, Road::Mod);
+    // No SessionStart, from either road.
+    wait_until(Duration::from_secs(12), "the rescued delivery", || {
+        got(&h).contains("mesimon-nostart-1 by paste")
+    });
+    wait_feed(&h, &["\"cmd\":\"mod_silent\""]);
+    assert!(frames(&h, sid, "submit").is_empty());
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap_or_default();
+    assert!(journal.contains("no SessionStart from its mod"), "{journal}");
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
 #[test]
 fn an_older_mod_that_speaks_no_submit_is_pasted_to() {
     let Some(h) = Harness::boot_with_env("modold", Some(READER), &[MOD]) else { return };
@@ -403,7 +427,7 @@ fn the_crown_answers_down_the_worker_s_mod_and_the_person_first_wins() {
     wait_until(Duration::from_secs(5), "the pane at rest", || {
         std::thread::sleep(Duration::from_millis(300));
         let now = pane_keys(&mut c);
-        std::mem::replace(&mut screen, now) == screen
+        !now.trim().is_empty() && std::mem::replace(&mut screen, now) == screen
     });
     let call = answer(&mut c, "toolu_m1");
     match call.join().unwrap() {

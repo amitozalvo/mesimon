@@ -454,20 +454,27 @@ function mesimonMcp(on: any, answer: (argv: readonly string[], stdin: string) =>
   return runs
 }
 
-test('the tier\'s tools are registered at session.start, word for word, before the first turn', async ($, on) => {
+test('the tier\'s tools are registered at session.start, word for word, before the bridge starts', async ($, on) => {
   mock.env(on, TOOLS_ENV)
   mock.clock(on)
   const runs = mesimonMcp(on, () => ({}))
   const got: any[] = []
+  const order: string[] = []
   on('tool.register', ($: any, e: any) => {
     got.push(e)
+    order.push(`register ${e.name}`)
     return { value: { tool: `mcp__mesimon__${e.name}` } }
   })
   on('process.spawn', async function* () {
+    order.push('bridge')
     return { value: { code: 3, signal: null } }
   } as any)
   on('session.start', () => ({ cwd: '/repo' }) as any)
   await $.session.start({ cwd: '/repo' } as any)
+  await settle()
+  // The daemon sends no word before the bridge's first poll: the tools are
+  // listed before any turn it starts.
+  expect(order).toEqual(['register get_ticket', 'register read_attachment', 'bridge'])
   expect(runs[0].argv).toEqual(['/bin/mesimon', 'mcp', '--list', '--tools', 'read'])
   expect(got.map(g => ({ name: g.name, description: g.description, inputSchema: g.inputSchema }))).toEqual(SPECS)
 })
@@ -498,6 +505,7 @@ async function startWithTools($: any, on: any) {
   } as any)
   on('session.start', () => ({ cwd: '/repo' }) as any)
   await $.session.start({ cwd: '/repo' } as any)
+  await settle()
 }
 
 test('a call goes to the daemon through mesimon mcp --call, and its text comes back whole', async ($, on) => {
@@ -667,4 +675,27 @@ test('a session.start whose read failed leaves the tools to the next event that 
   await $.classic.Stop({ stop_hook_active: false } as any)
   await settle()
   expect(got).toEqual(['get_ticket', 'read_attachment'])
+})
+
+test('two events at once read for themselves: one read failing leaves the other\'s standing', async ($, on) => {
+  let fails = 4
+  on('env.get', ($: any, e: any) => {
+    if (fails > 0) {
+      fails -= 1
+      throw new Error('the dispatch was abandoned')
+    }
+    return { value: (ENV as Record<string, string>)[e.name] }
+  })
+  const runs = recordRuns(on)
+  on('classic.SessionStart', () => ({}) as any)
+  on('classic.UserPromptSubmit', () => ({}) as any)
+  // Both in flight together: the first event's four reads fail, the
+  // second's do not, and the second relays.
+  await Promise.all([
+    $.classic.SessionStart({ source: 'startup' } as any),
+    $.classic.UserPromptSubmit({ prompt: 'go' } as any),
+  ])
+  await settle()
+  const events = runs.map(r => r.argv[r.argv.indexOf('--event') + 1])
+  expect(events).toContain('UserPromptSubmit')
 })

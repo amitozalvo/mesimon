@@ -300,6 +300,7 @@ class Rig:
         self.claude = shutil.which("claude")
         self.claude_version = None
         self.build = None
+        self.branch = None
 
     # ---- the daemon
 
@@ -419,7 +420,10 @@ class Rig:
             "    await relay($, 'ModSubmit', id, { outcome: 'dropped', reason: 'the rig dropped it (P4)' }, false)\n"
             "    return\n"
             "  }\n"), 1)
-        text = text.replace("let bridgeOn = false\n", "let bridgeOn = false\nlet rigDropped = false\n", 1)
+        anchor = "const seen: string[] = []\n"
+        if anchor not in text:
+            die("the mod's `seen` list moved: P4's flag cannot be declared")
+        text = text.replace(anchor, anchor + "let rigDropped = false\n", 1)
         os.remove(os.path.join(dst, "hooks", "register.test.ts"))
         with open(path, "w") as f:
             f.write(text)
@@ -571,7 +575,16 @@ class Rig:
                     pass
 
     def file(self, tests):
+        # Every rig board files into the same repository, whose branches
+        # every worktree shares, and each board counts its keys from T-1: two
+        # boards' `T-9 · R1` would cut the same `msmn/T-9-r1-…` branch, and
+        # the second's worktree is refused. The worktree's own ticket heads
+        # each title (T-577 found it), so its branches are its own.
+        owner = re.match(r"msmn/(T-\d+)", self.branch or "")
         for test in tests:
+            if owner and not test["title"].startswith(owner.group(1)):
+                test["title"] = f"{owner.group(1)} {test['title']}"
+                test["siblings"] = [f"{owner.group(1)} {t}" for t in test.get("siblings", [])]
             if test.get("long_brief"):
                 test["brief"] = test["brief"] + "\n" + filler()
             tid = self.file_one(test, test["title"])
@@ -1238,7 +1251,17 @@ Reply with the single word ready and end your turn."""
         self.wire.write_note(test["ticket"], "\n".join(note))
         for tid, key, _ in self.test_tickets(test):
             rec = self.agent_of(self.board(), tid)
-            if rec and word_of(rec["state"]) not in ("sleeping", "exited", "failed"):
+            if not rec:
+                continue
+            # An agent on the board's checkout is ended, not parked: a parked
+            # one holds the checkout, and the next test that starts there is
+            # refused it (T-583; T-577's T3 met R2's). Its conversation stays.
+            if os.path.realpath(rec["cwd"]) == self.repo and word_of(rec["state"]) != "exited":
+                try:
+                    self.wire.request({"cmd": "kill_session", "id": rec["id"]})
+                except WireError as e:
+                    say(f"  could not end {key}: {e}")
+            elif word_of(rec["state"]) not in ("sleeping", "exited", "failed"):
                 try:
                     self.wire.sleep(rec["id"])
                 except WireError as e:
@@ -1383,6 +1406,7 @@ def main():
     if branch == "main" or not branch.startswith("msmn/"):
         die(f"the rig runs only in a ticket worktree (a msmn/… branch); this checkout is on {branch!r}")
     rig = Rig(repo, args)
+    rig.branch = branch
     os.makedirs(rig.out, exist_ok=True)
     LOG = open(os.path.join(rig.out, "rig.log"), "a")
     say(f"\n=== rig {time.strftime('%Y-%m-%d %H:%M:%S')} ∙ {branch} ∙ proj16 {rig.paths.proj16}")

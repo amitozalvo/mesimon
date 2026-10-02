@@ -2577,6 +2577,7 @@ impl Daemon {
             // is the clock (a paste that never got its ack, a target that
             // went without a state change of its own).
             changed |= stage!("sweep_queue", self.sweep_queue());
+            changed |= stage!("rescue_silent_mods", self.rescue_silent_mods(now));
             changed |= stage!("settle_owed", self.settle_owed(now));
             changed |= stage!("settle_plan_accepts", self.settle_plan_accepts(now));
             changed |= stage!("service_plan_accepts", self.service_plan_accepts(now));
@@ -3982,6 +3983,47 @@ impl Daemon {
         // A mod session whose bridge already polled takes its words now
         // (T-575); otherwise its first poll sends them.
         self.mod_deliver_parked(id)
+    }
+
+    /// A launch on the mod alone whose `SessionStart` never came (T-577).
+    /// Its words wait for that edge, and on the mod road no hook set sends it:
+    /// a mod that relays nothing (T-594's silent launch, which the rig's three
+    /// starts at once still met) left the seat `spawning` with its brief
+    /// parked for ever. Twice the bridge wait after the spawn its words are
+    /// armed as if the edge had come, on the paste road: the composer read
+    /// still gates the paste, the prompt it submits is an event the mod reads
+    /// on a dispatch of its own (which brings its relays, its tools and its
+    /// bridge up), and a mod that never wakes leaves them `unsent`, on the
+    /// card. Journalled and fed (`mod_silent`).
+    fn rescue_silent_mods(&mut self, now: u64) -> bool {
+        let after = mod_bridge_wait_ms().saturating_mul(2);
+        let silent: Vec<uuid::Uuid> = self
+            .owed
+            .iter()
+            .filter(|(_, o)| o.next_press.is_none() && o.presses > 0 && o.parked.is_some())
+            .filter_map(|(id, _)| self.board.sessions.iter().find(|s| s.id == *id))
+            .filter(|r| {
+                r.kind == SessionKind::Claude
+                    && r.frames_by_mod()
+                    && r.state == SessionState::Spawning
+                    && now.saturating_sub(r.state_changed_at.unwrap_or(now)) >= after
+            })
+            .map(|r| r.id)
+            .collect();
+        let mut changed = false;
+        for id in silent {
+            let Some(owed) = self.owed.get_mut(&id) else { continue };
+            owed.mod_road = false;
+            let ticket = owed.ticket;
+            self.journal.line(&format!(
+                "session {id}: no SessionStart from its mod {} s after the spawn; its words take the paste road",
+                after / 1000
+            ));
+            self.feed.board_outcome("daemon", "mod_silent", Some(ticket), "no SessionStart");
+            self.arm_owed(id, now);
+            changed = true;
+        }
+        changed
     }
 
     /// The tick's pass over the ledger: expire the pastes whose ack never
