@@ -147,9 +147,13 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::ArchiveTicket { key, restore, seen } => {
             Command::AgentArchiveTicket { key, restore, seen: Some(seen) }
         }
-        ToolCall::StartAgent { key, seen, plan, tier } => {
-            Command::AgentStartTicket { key, seen: Some(seen), plan, tier }
-        }
+        ToolCall::StartAgent { key, seen, plan, tier, workspace } => Command::AgentStartTicket {
+            key,
+            seen: Some(seen),
+            plan,
+            tier,
+            workspace: Some(workspace),
+        },
         ToolCall::SleepAgent { key, seen } => Command::AgentSleepTicket { key, seen: Some(seen) },
         ToolCall::AskAgent { key, text, seen, plan } => {
             Command::AgentAskTicket { key, text, seen: Some(seen), plan }
@@ -160,16 +164,23 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::AcceptPlan { key, seen, request } => {
             Command::AgentAcceptPlan { key, seen: Some(seen), request }
         }
-        ToolCall::CreateTicket { title, column, description, tags, idempotency_key, tier } => {
-            Command::AgentCreateTicket {
-                title,
-                column,
-                description,
-                tags,
-                idempotency_key: idempotency_key.or(tool_use_id),
-                tier,
-            }
-        }
+        ToolCall::CreateTicket {
+            title,
+            column,
+            description,
+            tags,
+            idempotency_key,
+            tier,
+            workspace,
+        } => Command::AgentCreateTicket {
+            title,
+            column,
+            description,
+            tags,
+            idempotency_key: idempotency_key.or(tool_use_id),
+            tier,
+            workspace,
+        },
         ToolCall::TagTicket { name, group, remove, key } => {
             Command::AgentTagTicket { name, group, remove, key }
         }
@@ -202,9 +213,17 @@ fn render(resp: Response) -> Value {
             }
             text(&body)
         }
-        Response::AgentCreated { key, column, board_version, replayed } => text(&json!({
-            "key": key, "column": column, "board_version": board_version, "replayed": replayed
-        })),
+        // The workspace the ticket was filed with (T-583), so a crown that
+        // will start it reads its own choice back.
+        Response::AgentCreated { key, column, board_version, replayed, workspace } => {
+            let mut body = json!({
+                "key": key, "column": column, "board_version": board_version, "replayed": replayed
+            });
+            if !workspace.is_empty() {
+                body["workspace"] = json!(workspace);
+            }
+            text(&body)
+        }
         Response::AgentTagged { tags, replaced, board_version, seen } => {
             let mut body =
                 json!({ "tags": tags, "replaced": replaced, "board_version": board_version });
@@ -225,16 +244,25 @@ fn render(resp: Response) -> Value {
         // `wakes` (T-537) says the board will tell the crown what became of
         // the start, so it arms no monitor of its own — which would hold the
         // wake — and how it picks a tier (T-584). `tier` names the one the
-        // agent launched on; a daemon from before it sends none.
-        Response::AgentStarted { key, session_started, budget_left, tier } => {
+        // agent launched on; a daemon from before it sends none. `woken`
+        // (T-583) is the crown's own parked agent back in its conversation,
+        // and `workspace` where it runs.
+        Response::AgentStarted { key, session_started, budget_left, tier, woken, workspace } => {
             let mut body = json!({
                 "key": key,
-                "status": if session_started { "started" } else { "waiting_for_worktree" },
+                "status": match (session_started, woken) {
+                    (false, _) => "waiting_for_worktree",
+                    (true, true) => "woken",
+                    (true, false) => "started",
+                },
                 "budget_left": budget_left,
                 "wakes": mcp::CROWN_WAKES
             });
             if !tier.is_empty() {
                 body["tier"] = json!(tier);
+            }
+            if !workspace.is_empty() {
+                body["workspace"] = json!(workspace);
             }
             text(&body)
         }
@@ -417,12 +445,15 @@ mod tests {
             column: "TODO".into(),
             board_version: 3,
             replayed: false,
+            workspace: "worktree".into(),
         });
         assert_eq!(v["isError"], false);
         let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(body["key"], "T-9");
         assert_eq!(body["column"], "TODO");
         assert_eq!(body["replayed"], false);
+        // T-583: the receipt echoes the workspace it was filed with.
+        assert_eq!(body["workspace"], "worktree");
     }
 
     /// A note body is the text block itself, not JSON with a string in it.
@@ -534,17 +565,19 @@ mod tests {
     /// Shift+Enter on a start that landed thirty seconds later.
     #[test]
     fn a_start_receipt_says_started_or_waiting_never_false() {
-        let body = |session_started| {
+        let body = |session_started, woken| {
             let v = render(Response::AgentStarted {
                 key: "T-7".into(),
                 session_started,
                 budget_left: 0,
                 tier: "deep".into(),
+                woken,
+                workspace: "worktree".into(),
             });
             assert_eq!(v["isError"], false);
             serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
         };
-        let now = body(true);
+        let now = body(true, false);
         assert_eq!(now["status"], "started");
         assert_eq!(now["key"], "T-7");
         assert_eq!(now["budget_left"], 0);
@@ -555,9 +588,13 @@ mod tests {
         // T-537: the receipt says the board wakes the crown, so it polls nothing.
         assert_eq!(now["wakes"], mcp::CROWN_WAKES);
         assert!(mcp::CROWN_WAKES.contains("Nothing needs polling"));
-        let parked = body(false);
+        let parked = body(false, false);
         assert_eq!(parked["status"], "waiting_for_worktree");
         assert!(parked.get("session_started").is_none(), "no bool to read as a refusal");
+        // T-583: the crown's parked agent woken, and where every start runs.
+        assert_eq!(body(true, true)["status"], "woken");
+        assert_eq!(body(false, true)["status"], "waiting_for_worktree", "a rebuild first");
+        assert_eq!(now["workspace"], "worktree");
     }
 
     /// The crown's answer (T-569): the outcome the hooks saw, the answer as

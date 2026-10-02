@@ -10,7 +10,11 @@
 //! another ticket's card: nothing reaches the pane until a person's send.
 //! The crown's sleep (T-539) parks an idle agent it started and nobody
 //! else's, so the archive that was refused over the awake seat goes through,
-//! and the park alone frees that agent's budget seat (T-541).
+//! and the park alone frees that agent's budget seat (T-541). The crown
+//! names a workspace on every start and every filing (T-583): an unstarted
+//! ticket takes it, a worktree or a parked agent keeps its own, the shared
+//! checkout is refused while another ticket's agent holds it, and a start
+//! on a worker the crown parked is that worker's wake.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -369,16 +373,27 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert_eq!(c.board().crown_budget, 2);
     let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
     assert!(file.contains("crown_budget = 2"), "{file}");
+    // A repository, so a start can cut a worktree (T-583: B, a person's
+    // agent, already works on the checkout).
+    init_repo(&h.repo, "a.txt", "hello\n");
     let e1 = create(&mut c, "first start");
     let e2 = create(&mut c, "second start");
     let e3 = create(&mut c, "third start");
     let (k1, k2, k3) = (key_of(&mut c, e1), key_of(&mut c, e2), key_of(&mut c, e3));
-    let start = |c: &mut TestClient, key: &str, seen: Option<String>| {
+    let start_in = |c: &mut TestClient, key: &str, seen: Option<String>, workspace: &str| {
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: key.into(), seen, plan: false, tier: None },
+            Command::AgentStartTicket {
+                key: key.into(),
+                seen,
+                plan: false,
+                tier: None,
+                workspace: Some(workspace.into()),
+            },
         )
     };
+    let start =
+        |c: &mut TestClient, key: &str, seen: Option<String>| start_in(c, key, seen, "worktree");
     // Refused: a ticket that already holds a seat, the crown's own ticket,
     // and a start without the stamp.
     let bv = read(&mut c, sa, &kb).unwrap();
@@ -394,20 +409,69 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::Err { message } => assert!(message.contains("seen is required"), "{message}"),
         other => panic!("a start without the stamp: {other:?}"),
     }
-    // The start: a launch on the card, the record carries the crown's id,
-    // the touch says so, and the receipt says what is left.
+    // T-583: the workspace is the crown's to name, in one of two words, and
+    // the shared checkout is refused while another ticket's agent works
+    // there (B, a person's; the crown's own A coordinates and holds none).
     let v1 = read(&mut c, sa, &k1).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: k1.clone(),
+            seen: v1.seen.clone(),
+            plan: false,
+            tier: None,
+            workspace: None,
+        },
+    ) {
+        Response::Err { message } => assert!(message.contains("needs workspace"), "{message}"),
+        other => panic!("a start with no workspace: {other:?}"),
+    }
+    match start_in(&mut c, &k1, v1.seen.clone(), "elsewhere") {
+        Response::Err { message } => {
+            assert!(message.contains("worktree or shared_checkout"), "{message}")
+        }
+        other => panic!("an unknown workspace word: {other:?}"),
+    }
+    match start_in(&mut c, &k1, v1.seen.clone(), "shared_checkout") {
+        Response::Err { message } => {
+            assert!(message.contains(&format!("{kb} (")), "names the holder: {message}");
+            assert!(message.contains("works on this checkout; use worktree, or wait"), "{message}");
+            assert!(!message.contains(&ka), "the crown is no holder: {message}");
+        }
+        other => panic!("a second agent on a held checkout: {other:?}"),
+    }
+    match c.send(Principal::Agent { session: sa }, Command::AgentListBoard) {
+        Response::AgentBoard { board } => assert_eq!(board.checkout_held_by, vec![kb.clone()]),
+        other => panic!("list_board: {other:?}"),
+    }
+    assert!(c.board().live_agent(e1).is_none(), "a refused start starts nothing");
+    assert_eq!(c.board().ticket(e1).unwrap().workspace, None, "and sets nothing");
+    // The start: the ticket takes the crown's workspace, a worktree is cut,
+    // and the parked start replays as a launch on the card; the record
+    // carries the crown's id, the touch says so, and the receipt says what
+    // is left.
     match start(&mut c, &k1, v1.seen) {
-        Response::AgentStarted { key, session_started, budget_left, .. } => {
+        Response::AgentStarted { key, session_started, budget_left, woken, workspace, .. } => {
             assert_eq!(key, k1);
-            assert!(session_started);
+            assert!(!session_started, "waiting for its worktree first");
+            assert!(!woken);
+            assert_eq!(workspace, "worktree");
             assert_eq!(budget_left, 1);
         }
         other => panic!("the first start: {other:?}"),
     }
+    assert_eq!(
+        c.board().ticket(e1).unwrap().workspace,
+        Some(WorkspaceStrategy::Worktree),
+        "the crown's choice is the ticket's"
+    );
+    wait_until(std::time::Duration::from_secs(15), "E1's worktree start to land", || {
+        c.board().live_agent(e1).is_some()
+    });
     let started = c.board().live_agent(e1).cloned().expect("E1 holds a seat now");
     assert_eq!(started.started_by, Some(a), "the record names the crown's ticket");
     assert_eq!(started.kind, SessionKind::Claude);
+    assert_ne!(started.cwd, h.repo.to_string_lossy(), "it runs in its worktree");
     assert!(
         matches!(started.state, SessionState::Spawning | SessionState::Running),
         "{:?}",
@@ -444,7 +508,11 @@ fn the_crown_lets_one_agent_edit_the_others() {
         }
         other => panic!("the (N+1)th start: {other:?}"),
     }
+    assert_eq!(c.board().ticket(e3).unwrap().workspace, None, "a refused start sets nothing");
     // A seat frees when its agent exits (or sleeps: the wake test, T-541).
+    wait_until(std::time::Duration::from_secs(15), "E2's worktree start to land", || {
+        c.board().live_agent(e2).is_some()
+    });
     let s2 = c.board().live_agent(e2).unwrap().id;
     let _ = c.request(Command::KillSession { id: s2 });
     assert!(c.board().live_agent(e2).is_none(), "E2's seat is free");
@@ -456,8 +524,10 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // A start parked behind a worktree cut (T-466) is accepted, not refused:
     // the receipt says it is not running yet, the parked start already holds
     // its seat, and the spawn replays as the crown's once the cut is ready.
-    init_repo(&h.repo, "a.txt", "hello\n");
     assert!(matches!(c.request(Command::SetCrownBudget { budget: 3 }), Response::Ok));
+    wait_until(std::time::Duration::from_secs(15), "E3's worktree start to land", || {
+        c.board().live_agent(e3).is_some()
+    });
     let e5 = create(&mut c, "parked start");
     let k5 = key_of(&mut c, e5);
     assert!(matches!(
@@ -476,6 +546,17 @@ fn the_crown_lets_one_agent_edit_the_others() {
         c.board().live_agent(e5).is_some()
     });
     assert_eq!(c.board().live_agent(e5).unwrap().started_by, Some(a), "replayed as the crown's");
+    // A ticket with a worktree starts there: the other word is refused in
+    // words naming what it has, before the budget is asked. E2's agent
+    // exited; its worktree stands.
+    let v2 = read(&mut c, sa, &k2).unwrap();
+    match start_in(&mut c, &k2, v2.seen, "shared_checkout") {
+        Response::Err { message } => assert_eq!(
+            message,
+            format!("{k2} has a worktree; start it there (workspace worktree) or archive it")
+        ),
+        other => panic!("the checkout on a worktree ticket: {other:?}"),
+    }
     // The feed says the agent started it (buffered; flushed on a later tick).
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     wait_until(std::time::Duration::from_secs(5), "the feed line", || {
@@ -640,8 +721,8 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert!(!queue.contains("mesimon-probe-6"), "a held ask is never persisted");
 
     // ---- a crowned filing is a touch the board strikes (T-544) ----------------
-    let filed = |c: &mut TestClient, title: &str| {
-        match c.send(
+    let file_in = |c: &mut TestClient, title: &str, workspace: Option<&str>| {
+        c.send(
             Principal::Agent { session: sa },
             Command::AgentCreateTicket {
                 title: title.into(),
@@ -650,14 +731,32 @@ fn the_crown_lets_one_agent_edit_the_others() {
                 tags: Vec::new(),
                 idempotency_key: None,
                 tier: None,
+                workspace: workspace.map(str::to_string),
             },
-        ) {
-            Response::AgentCreated { .. } => {}
+        )
+    };
+    let filed = |c: &mut TestClient, title: &str, workspace: Option<&str>| {
+        match file_in(c, title, workspace) {
+            Response::AgentCreated { workspace: echoed, .. } => {
+                assert_eq!(echoed, workspace.unwrap_or("shared_checkout"), "the receipt echoes it")
+            }
             other => panic!("create_ticket: {other:?}"),
         }
         c.board().tickets.iter().find(|t| t.title == title).expect("filed").id
     };
-    let crowned_filing = filed(&mut c, "filed by the crown");
+    // T-583: the crown files a ticket with its workspace decided.
+    match file_in(&mut c, "filed without a workspace", None) {
+        Response::Err { message } => {
+            assert!(message.contains("the crown files a ticket with its workspace decided"))
+        }
+        other => panic!("a crowned filing with no workspace: {other:?}"),
+    }
+    assert!(!c.board().tickets.iter().any(|t| t.title == "filed without a workspace"));
+    let crowned_filing = filed(&mut c, "filed by the crown", Some("worktree"));
+    assert_eq!(
+        c.board().ticket(crowned_filing).unwrap().workspace,
+        Some(WorkspaceStrategy::Worktree)
+    );
     let touch = touches(&mut c).into_iter().find(|t| t.ticket == crowned_filing);
     let touch = touch.expect("the crown's filing is a touch");
     assert_eq!((touch.action.as_str(), touch.from), ("created", Some(a)));
@@ -678,6 +777,9 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
     let r = shim.call("start_agent", json!({ "key": k4 }));
     assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
+    let r = shim.call("start_agent", json!({ "key": k4, "seen": "x" }));
+    assert_eq!(r["isError"], true, "workspace is required by the tool: {r}");
+    assert!(r.to_string().contains("workspace is required"), "{r}");
 
     let other = shim.call_ok("get_ticket", json!({ "key": kb }));
     assert_eq!(other["key"], json!(kb));
@@ -693,7 +795,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert!(c.board().crown.is_none());
     assert!(read(&mut c, sa, &kb).is_err(), "uncrowned again");
     // Any agent may file a ticket; only the crown's filing is a touch.
-    let plain_filing = filed(&mut c, "filed uncrowned");
+    let plain_filing = filed(&mut c, "filed uncrowned", None);
     assert!(!touches(&mut c).iter().any(|t| t.ticket == plain_filing), "not the crown's");
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     // Persisted with the board's scalars.
@@ -807,17 +909,25 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     start(&mut c, sa);
     stop(&mut c, sa);
 
-    let start_agent = |c: &mut TestClient, key: &str| {
+    let start_in = |c: &mut TestClient, key: &str, workspace: &str| {
         let v = read(c, sa, key).unwrap();
-        match c.send(
+        c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: key.into(), seen: v.seen, plan: false, tier: None },
-        ) {
-            Response::AgentStarted { .. } => {}
-            other => panic!("start_agent {key}: {other:?}"),
-        }
+            Command::AgentStartTicket {
+                key: key.into(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some(workspace.into()),
+            },
+        )
     };
-    start_agent(&mut c, &kw1);
+    match start_in(&mut c, &kw1, "shared_checkout") {
+        Response::AgentStarted { session_started: true, workspace, .. } => {
+            assert_eq!(workspace, "shared_checkout")
+        }
+        other => panic!("start_agent {kw1}: {other:?}"),
+    }
     let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -879,8 +989,27 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     start(&mut c, sa);
     let w2 = create(&mut c, "mesimon-probe-72 worker");
     let kw2 = key_of(&mut c, w2);
-    start_agent(&mut c, &kw2);
+    // T-583: a second crown worker on the checkout W1 holds is refused, by
+    // name; W2 works in a worktree of its own instead.
+    match start_in(&mut c, &kw2, "shared_checkout") {
+        Response::Err { message } => assert_eq!(
+            message,
+            format!("{kw1} (idle) works on this checkout; use worktree, or wait")
+        ),
+        other => panic!("a second worker on W1's checkout: {other:?}"),
+    }
+    match start_in(&mut c, &kw2, "worktree") {
+        Response::AgentStarted { session_started: false, workspace, .. } => {
+            assert_eq!(workspace, "worktree")
+        }
+        other => panic!("start_agent {kw2}: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "W2's worktree start to land", || {
+        c.board().live_agent(w2).is_some()
+    });
     let ws2 = c.board().live_agent(w2).expect("W2 holds a seat").id;
+    let tree2 = std::path::PathBuf::from(c.board().live_agent(w2).unwrap().cwd.clone());
+    assert_ne!(tree2, h.repo, "W2 runs in its worktree");
     std::thread::sleep(std::time::Duration::from_millis(500));
     let h2 = commit(&h.repo, "w1b.txt");
     start(&mut c, ws1);
@@ -888,19 +1017,26 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     wait_until(std::time::Duration::from_secs(5), "W1's delivery to be owed", || {
         wake_rows(&mut c, a).len() == 1
     });
-    let h3 = commit(&h.repo, "w2.txt");
+    commit(&tree2, "w2.txt");
     start(&mut c, ws2);
     stop(&mut c, ws2);
     let column2 = c.board().ticket(w2).unwrap().column.clone();
     // W1's column is what the crown last heard, so only the commit is news;
-    // W2 has told the crown nothing yet.
-    let both = format!(
+    // W2 has told the crown nothing yet, and its branch says it in its merge
+    // state (behind W1's commit on the base, whichever word that reads).
+    let head = format!(
         "{kw1} \"mesimon-probe-71 worker\" delivered (commit {h2}); {kw2} \"mesimon-probe-72 \
-         worker\" delivered (commit {h3}, column {column2}) ∙ get_ticket key={kw1}, {kw2} for \
-         state and notes"
+         worker\" delivered (merge_state "
     );
-    wait_until(std::time::Duration::from_secs(5), "both deliveries in one row", || {
-        wake_rows(&mut c, a).first().and_then(|r| r.text.clone()).as_deref() == Some(&both)
+    let tail = format!(", column {column2}) ∙ get_ticket key={kw1}, {kw2} for state and notes");
+    let mut both = String::new();
+    wait_until(std::time::Duration::from_secs(10), "both deliveries in one row", || {
+        let text = wake_rows(&mut c, a).first().and_then(|r| r.text.clone()).unwrap_or_default();
+        let whole = text.starts_with(&head) && text.ends_with(&tail);
+        if whole {
+            both = text;
+        }
+        whole
     });
     let rows = wake_rows(&mut c, a);
     assert_eq!(rows.len(), 1, "one row for both deliveries: {rows:?}");
@@ -1016,15 +1152,29 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     stop(&mut c, ws2);
     // A budget of two is spent by W1 and W2, both awake.
     assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));
-    let w3 = create(&mut c, "mesimon-probe-73 worker");
-    let kw3 = key_of(&mut c, w3);
-    let start_w3 = |c: &mut TestClient| {
-        let v = read(c, sa, &kw3).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: kw3.clone(), seen: v.seen, plan: false, tier: None },
-        )
+    // T-583: the crown files W3 with its workspace decided, and starts it
+    // there; a start in the other word would be applied, not refused, on a
+    // ticket nobody has started.
+    let kw3 = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentCreateTicket {
+            title: "mesimon-probe-73 worker".into(),
+            column: None,
+            description: None,
+            tags: Vec::new(),
+            idempotency_key: None,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentCreated { key, workspace, .. } => {
+            assert_eq!(workspace, "worktree");
+            key
+        }
+        other => panic!("create_ticket: {other:?}"),
     };
+    let w3 = c.board().ticket_by_key(&kw3).unwrap().id;
+    let start_w3 = |c: &mut TestClient| start_in(c, &kw3, "worktree");
     match start_w3(&mut c) {
         Response::Err { message } => {
             for word in ["2 of 2", &kw1, &kw2, "sleep_agent"] {
@@ -1067,10 +1217,52 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     }
     // Parked is freed: the seat W2 held takes W3's start, with no archive.
     assert!(!c.board().crown_started().iter().any(|s| s.ticket == w2), "a parked seat is free");
+    // ---- the crown wakes what it parked, where it parked it (T-583) --------
+    // A wake in the other workspace is refused in words naming its own; a
+    // person's parked agent is no crown's to wake (the unit tests); in its
+    // worktree, the start is W2's wake: the same record, the conversation
+    // kept, the card lit `♛ woken`, the seat taken back.
+    match start_in(&mut c, &kw2, "shared_checkout") {
+        Response::Err { message } => assert_eq!(
+            message,
+            format!(
+                "{kw2}'s parked agent works in its worktree, and a wake runs it there: \
+                 workspace worktree"
+            )
+        ),
+        other => panic!("a wake in the other workspace: {other:?}"),
+    }
+    match start_in(&mut c, &kw2, "worktree") {
+        Response::AgentStarted { key, session_started, woken, workspace, budget_left, .. } => {
+            assert_eq!(key, kw2);
+            assert!(session_started && woken, "the receipt says woken");
+            assert_eq!(workspace, "worktree");
+            assert_eq!(budget_left, 0, "the woken seat counts again");
+        }
+        other => panic!("the crown's wake of its parked worker: {other:?}"),
+    }
+    let woke = c.board().live_agent(w2).cloned().expect("W2 holds its seat");
+    assert_eq!(woke.id, ws2, "the same record, never a second agent");
+    assert_eq!(woke.started_by, Some(a), "still the crown's");
+    assert_eq!(std::path::PathBuf::from(&woke.cwd), tree2, "in its worktree");
+    assert_eq!(
+        touches(&mut c).iter().find(|t| t.ticket == w2).map(|t| t.action.as_str()),
+        Some("woken"),
+    );
+    start(&mut c, ws2);
+    stop(&mut c, ws2);
+    let v2 = read(&mut c, sa, &kw2).unwrap();
+    assert!(matches!(sleep(&mut c, &kw2, v2.seen), Response::AgentTicket { .. }), "parked again");
     match start_w3(&mut c) {
-        Response::AgentStarted { budget_left, .. } => assert_eq!(budget_left, 0),
+        Response::AgentStarted { session_started, budget_left, .. } => {
+            assert!(!session_started, "filed for a worktree, so waiting for it first");
+            assert_eq!(budget_left, 0)
+        }
         other => panic!("the start after the park: {other:?}"),
     }
+    wait_until(std::time::Duration::from_secs(15), "W3's worktree start to land", || {
+        c.board().live_agent(w3).is_some()
+    });
     assert_eq!(c.board().live_agent(w3).unwrap().started_by, Some(a));
     let v2 = read(&mut c, sa, &kw2).unwrap();
     match c.send(
@@ -1161,7 +1353,13 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     let v = read(&mut c, sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
-        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false, tier: None },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
     ) {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
@@ -1365,7 +1563,13 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     let v = read(&mut c, sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
-        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false, tier: None },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
     ) {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
@@ -1510,7 +1714,26 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     let (kp, kw, kw2, kw3) =
         (key_of(&mut c, p), key_of(&mut c, w), key_of(&mut c, w2), key_of(&mut c, w3));
     let sa = spawn(&mut c, a);
-    let sp = spawn(&mut c, p);
+    // The person's own agent works in a worktree, so the crown's W may take
+    // the checkout beside the crown (T-583: a start there is refused while
+    // another ticket's agent holds it).
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: p, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket: p,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false,
+        }),
+        Response::Provisioning
+    ));
+    wait_until(std::time::Duration::from_secs(15), "P's worktree spawn to land", || {
+        c.board().live_agent(p).is_some()
+    });
+    let sp = c.board().live_agent(p).unwrap().id;
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     // The stub emits no `SessionStart`: a turn walked through each pane is
     // what makes it idle, and an idle checkout is what the queue waits for.
@@ -1519,14 +1742,20 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         start(&mut c, s);
         stop(&mut c, s);
     }
-    let start_agent = |c: &mut TestClient, key: &str| {
+    let start_agent = |c: &mut TestClient, key: &str, workspace: &str| {
         let v = read(c, sa, key).unwrap();
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: key.into(), seen: v.seen, plan: false, tier: None },
+            Command::AgentStartTicket {
+                key: key.into(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some(workspace.into()),
+            },
         )
     };
-    assert!(matches!(start_agent(&mut c, &kw), Response::AgentStarted { .. }));
+    assert!(matches!(start_agent(&mut c, &kw, "shared_checkout"), Response::AgentStarted { .. }));
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws);
@@ -1685,7 +1914,18 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     }
     c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
     assert!(matches!(c.request(Command::SetCrownBudget { budget: 1 }), Response::Ok));
-    assert!(matches!(start_agent(&mut c, &kw2), Response::AgentStarted { .. }));
+    // W, parked on the checkout, still holds it (T-583): W2 takes a worktree.
+    match start_agent(&mut c, &kw2, "shared_checkout") {
+        Response::Err { message } => assert_eq!(
+            message,
+            format!("{kw} (sleeping) works on this checkout; use worktree, or wait")
+        ),
+        other => panic!("a start on the checkout a parked worker holds: {other:?}"),
+    }
+    assert!(matches!(start_agent(&mut c, &kw2, "worktree"), Response::AgentStarted { .. }));
+    wait_until(std::time::Duration::from_secs(15), "W2's worktree start to land", || {
+        c.board().live_agent(w2).is_some()
+    });
     let ws2 = c.board().live_agent(w2).expect("W2 holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws2);
@@ -1698,15 +1938,29 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         c.request(Command::TakeQueuedAsk { ticket: w }),
         Response::PromptTakenBack { .. }
     ));
+    assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));
+    // Words that would wake W onto a checkout another ticket's agent holds
+    // wait for a person (T-583), as a start there would be refused.
+    let q = create(&mut c, "the person's on the checkout");
+    let kq = key_of(&mut c, q);
+    let sq = spawn(&mut c, q);
+    let (held, why) = ask(&mut c, &kw, "mesimon-probe-96b wake onto a held checkout");
+    assert!(held && why.contains("parked on the shared checkout"), "{why}");
+    assert!(why.contains(&format!("{kq} (")) && why.contains("works on this checkout"), "{why}");
+    assert!(matches!(
+        c.request(Command::TakeQueuedAsk { ticket: w }),
+        Response::PromptTakenBack { .. }
+    ));
+    let _ = c.request(Command::KillSession { id: sq });
+    assert!(c.board().live_agent(q).is_none(), "Q's agent gone, the checkout is free");
     // With a seat free, the words go — and while they wait on the checkout
     // (the crown mid-turn holds it), the wake holds the seat they need.
-    assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));
     start(&mut c, sa);
     let (held, why) = ask(&mut c, &kw, "mesimon-probe-97 wake for this");
     assert!(!held, "{why}");
     let r = row(&mut c, w).expect("the wake waits on the checkout");
     assert!(r.sends && r.action == mesimon_core::command::PendingAction::Wake, "{r:?}");
-    match start_agent(&mut c, &kw3) {
+    match start_agent(&mut c, &kw3, "worktree") {
         Response::Err { message } => {
             assert!(message.contains("budget is spent") && message.contains(&kw), "{message}")
         }
@@ -1812,7 +2066,13 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     let v = read(&mut c, sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
-        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false, tier: None },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
     ) {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
@@ -2123,10 +2383,21 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false, tier: None },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
         ),
         Response::AgentStarted { .. }
     ));
+    // T-583: P, a person's agent, holds the checkout, so W works in a
+    // worktree of its own.
+    wait_until(std::time::Duration::from_secs(15), "W's worktree start to land", || {
+        c.board().live_agent(w).is_some()
+    });
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws);
@@ -2347,7 +2618,13 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false, tier: None },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("shared_checkout".into()),
+            },
         ),
         Response::AgentStarted { .. }
     ));
@@ -2570,10 +2847,21 @@ fn the_crown_accepts_a_plan_by_default() {
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: true, tier: None },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: true,
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
         ),
         Response::AgentStarted { .. }
     ));
+    // T-583: P, a person's agent, holds the checkout, so W works in a
+    // worktree of its own.
+    wait_until(std::time::Duration::from_secs(15), "W's worktree start to land", || {
+        c.board().live_agent(w).is_some()
+    });
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws);
@@ -2773,6 +3061,9 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
     else {
         return;
     };
+    // A repository, so the crown's starts can each take a worktree (T-583:
+    // the person's P holds the checkout, and then the crown's own F).
+    init_repo(&h.repo, "a.txt", "hello\n");
     let mut c = h.client("crown_tier");
     let tier = |id: &str, name: &str, model: &str, effort, words: &str| Tier {
         id: id.into(),
@@ -2833,6 +3124,7 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
                 tags: Vec::new(),
                 idempotency_key: None,
                 tier: Some(pick.into()),
+                workspace: Some("worktree".into()),
             },
         )
     };
@@ -2868,16 +3160,23 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
                 seen: v.seen,
                 plan: false,
                 tier: pick.map(str::to_string),
+                workspace: Some("worktree".into()),
             },
         )
     };
     match start(&mut c, &kf, None) {
         Response::AgentStarted { session_started, tier, .. } => {
-            assert!(session_started);
+            assert!(!session_started, "waiting for its worktree first");
             assert_eq!(tier, "quick", "the receipt names the tier it launched on");
         }
         other => panic!("start_agent: {other:?}"),
     }
+    let landed = |c: &mut TestClient, t: ulid::Ulid| {
+        wait_until(std::time::Duration::from_secs(15), "the worktree start to land", || {
+            c.board().live_agent(t).is_some()
+        })
+    };
+    landed(&mut c, f);
     assert_eq!(flag(&mut c, f, "--model").as_deref(), Some("sonnet"));
     assert_eq!(flag(&mut c, f, "--effort").as_deref(), Some("low"));
 
@@ -2886,6 +3185,7 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
         Response::AgentStarted { tier, .. } => assert_eq!(tier, "deep"),
         other => panic!("start_agent with a tier: {other:?}"),
     }
+    landed(&mut c, w);
     assert_eq!(c.board().ticket(w).unwrap().tier.as_deref(), Some("01DEEP"));
     assert_eq!(flag(&mut c, w, "--model").as_deref(), Some("opus"));
     assert_eq!(flag(&mut c, w, "--effort").as_deref(), Some("max"));
@@ -2910,5 +3210,6 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
         Response::AgentStarted { tier, .. } => assert_eq!(tier, "claude"),
         other => panic!("a start on the person's own tier: {other:?}"),
     }
+    landed(&mut c, p);
     assert_eq!(flag(&mut c, p, "--model"), None, "the built-in passes no model");
 }

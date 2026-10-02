@@ -18274,3 +18274,88 @@ the store round-trips with words on both layers; `mcp::tests::the_crown_names_a_
 (the list for crown and worker, a worker refused, an unknown tier refused with the ids, a filed
 ticket's start on `--model sonnet --effort low`, a named start switching to `opus`/`max`, a
 person's ticket refusing another tier and starting on its own).
+
+## The crown chooses a ticket's workspace on purpose (T-583, 2026-10-02, filed by the crown on T-573: "crown must make intentional decision for worktree / shared checkout before creating a ticket / starting a parked agent")
+
+**Seen.** The crown filed T-574 and T-582 with `create_ticket` and started both with
+`start_agent`. Neither call said anything about a workspace, so both took the board's default,
+the shared checkout, and two agents were set to edit `main` at once. By the time the crown
+noticed, `set_workspace` refused ("once the ticket has an agent pane or a worktree"),
+`sleep_agent` refused a working agent, and the author stopped T-582 by hand. The crown then
+parked it, set its workspace to a worktree, and could not wake it: `start_agent` answered
+"already has an agent (sleeping); one agent per ticket", so the wake was a person's `c`.
+
+**Shipped.** The judgement is pure, in `core/src/crown.rs::judge`, unit-tested without a daemon:
+
+- **`start_agent` takes `workspace`**, `worktree` or `shared_checkout`, a word validated by the
+  daemon (`crown::parse_workspace`, which `set_workspace` now shares). Required in the schema
+  and by the daemon (`AgentStartTicket.workspace` is `Option` on the wire only so an older shim
+  is refused in words, not by a parse error). A ticket nobody has started takes the choice
+  through `set_workspace`'s own road and lock, applied only after the budget and plan checks
+  pass, so a refused start sets nothing. A ticket with a worktree binding starts there, and
+  `shared_checkout` reads `T-582 has a worktree; start it there (workspace worktree) or archive
+  it`. The receipt names the workspace.
+- **A parked agent's workspace is its record's cwd, not the ticket's field.** `resume_session`
+  replays the cwd it parked in and never relocates, and T-309 lets `set_workspace` move the field
+  under a parked record — exactly T-582's path (parked on the checkout, then set to a worktree).
+  Judged by the field, the crown would have asked for a worktree and been woken on `main`. So
+  `crown::runs_in` reads `rec.cwd == repo_root` (a worktree reclaimed under it still reads as
+  the worktree the wake rebuilds, T-278).
+- **The crown wakes what it parked.** A start on a ticket whose only agent sleeps and carries
+  `started_by` is that agent's wake: `resume_session_in(id, false, plan)`, the conversation kept,
+  under the budget (a wake takes back the seat the park freed, T-541) and the same workspace
+  rule. The receipt's status is `woken` (`AgentStarted.woken`; `waiting_for_worktree` when the
+  wake waits on a rebuild) and the card lights `♛ woken`. A person's parked agent is refused:
+  `T-582's agent was started by a person and is parked; a person wakes it (c on its card)`.
+- **A start on a held checkout is refused.** `shared_checkout` while another ticket's agent
+  seat is live with the checkout as its cwd — working, idle, or parked — reads `T-574 (working)
+  works on this checkout; use worktree, or wait`. Shells, dead records, worktree agents and an
+  archived ticket's parked agent do not hold it. **The crown's own ticket is not a holder**: it is
+  the caller and coordinates, the T-414 wake tests run checkout workers beside a checkout crown,
+  and counting it would make `shared_checkout` unusable for any crown that sits there. A wake
+  onto the checkout is a start there and meets the same rule.
+- **The person decides for themselves.** `crown::checkout_refusal` returns nothing for a human
+  principal; `SpawnSession`, the composer, the phone and a person's queued start never consult
+  it. The daemon's own road that can put the crown's worker on the checkout, a T-550 crown ask
+  delivered by `queued_ask` automation that would wake a parked checkout worker, is held for a
+  person by `crown_ask_hold` while another ticket holds the checkout.
+- **`create_ticket` takes `workspace`**, optional in the schema (a worker's ticket is a person's
+  to pick up, and the column's default stands) and required by the daemon of a crowned caller,
+  so a ticket the crown will start is filed with its workspace decided. The receipt echoes the
+  ticket's workspace (`AgentCreated.workspace`, kept in the idempotency replay).
+- **`list_board` carries `checkout_held_by`**: the other tickets whose agent holds the shared
+  checkout, by the same `crown::checkout_holders`, so the crown sees it before it chooses.
+- **The words.** Both tools carry T-584's `tier` beside `workspace` inside the cap. `start_agent`
+  dropped the refusals' list (each refusal is in words), the brief-as-prompt clause and the list
+  of what wakes the crown (`CROWN_WAKES` now says the first prompt is the title and description,
+  and has the wakes whole), and its `key`, `seen` and `plan` descriptions. `create_ticket` folded
+  "A ticket is" into a colon, dropped the `column` and `description` descriptions (`list_board`
+  names the columns, `get_ticket` says the description is the first note) and spells its field
+  `worktree|shared_checkout; crown: required.` `CROWN_WAKES` says the crown decides a workspace
+  before it files or starts, what each word means, the checkout rule and the wake;
+  `sleep_agent` says `start_agent` wakes too. `docs/USING.md`'s crown section says it in one
+  sentence.
+
+**Refuted/limits.** Not built: a workspace for a person's tickets, the board's default
+workspace, Codex. A ticket whose parked agent sits on the checkout cannot be moved to a worktree
+by the crown; the refusal names the workspace it has, and a fresh start in a worktree is a
+person's (ending that session). `checkout_held_by` is computed per call and excludes the caller.
+
+**Tests.** `crown::tests` (nine): the two words; an unstarted ticket takes the choice (and a dead
+record leaves it unstarted); a worktree matched or refused; an awake agent refused whoever
+started it; a crown-parked agent woken and a person's refused; a parked agent matched by its cwd
+against the field; the checkout held working, idle and parked and by nothing else; a wake onto a
+held checkout refused; a person never refused. `mcp::tests::the_crown_chooses_a_workspace_on_
+purpose`: `workspace` required on `start_agent`, optional on `create_ticket`, the words inside
+the cap and the lint, `CROWN_WAKES`. `crown_e2e`: the first start on the checkout the person's B
+holds is refused by name and `list_board` names B; the start in a worktree applies the field,
+waits for the cut and lands; a worktree ticket refuses `shared_checkout`; a crowned filing
+without a workspace is refused and with one is set and echoed; a second worker on W1's checkout
+is refused and starts in a worktree, whose delivery coalesces with W1's; the crown parks W2,
+is refused a checkout wake, wakes it in its worktree (same record, `woken`, `♛ woken`) and
+parks it again; W3 is filed with `worktree` and started (`waiting_for_worktree`, then live); a
+crown ask that would wake W onto a checkout a person's agent holds is held with the holder's key.
+`the_crown_accepts_a_plan_by_default` (T-582, landed first) starts its W in a worktree, since its
+person's P holds the checkout, and `the_crown_picks_a_tier_by_the_persons_words` (T-584) cuts a
+repository and files and starts every crown ticket in a worktree for the same reason, waiting for
+each start to land before reading its flags.

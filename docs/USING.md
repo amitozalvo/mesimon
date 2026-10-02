@@ -266,6 +266,9 @@ At most three agents the crown started may be awake at once; **Settings › Agen
 number or turns starting off. A ticket the crown started can never be crowned itself. The crown
 may put an agent it started to sleep once that agent is idle, the same park as `x` on its card:
 the conversation is kept, `c` wakes it, and while it sleeps its seat is free for another start.
+The crown chooses each ticket's workspace when it files or starts it, a worktree of its own or the
+shared checkout, is refused the shared checkout while another ticket's agent works or sleeps
+there, and wakes an agent it parked itself, in the workspace it was parked in.
 It may then archive the ticket, which reclaims a merged worktree, so a finished worker is
 cleared without asking you. An agent you started yourself is never slept by
 the crown; it is told to leave that to you. Crowning types nothing into the agent's conversation: the crowned agent learns

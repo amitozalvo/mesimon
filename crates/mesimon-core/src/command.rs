@@ -954,8 +954,9 @@ pub enum Command {
     /// what Shift+Enter does — the title and the brief submitted, a worktree
     /// provisioned lazily when the ticket asks for one. Crown only, behind
     /// `Board::crown_budget`; refused on a ticket that already holds an
-    /// agent seat and on the crown's own. The daemon spawns; the agent only
-    /// asks, and `SpawnSession` itself stays in the never-tier.
+    /// agent seat and on the crown's own — except a seat the crown started
+    /// and parked, which this wakes (T-583). The daemon spawns; the agent
+    /// only asks, and `SpawnSession` itself stays in the never-tier.
     AgentStartTicket {
         key: String,
         #[serde(default)]
@@ -969,6 +970,13 @@ pub enum Command {
         /// person's pick. Absent starts it on the ticket's own tier.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier: Option<String>,
+        /// Where the agent works (T-583): `worktree` or `shared_checkout`, a
+        /// WORD validated server-side and required — absent only from a
+        /// shim older than the field, which the daemon refuses in words.
+        /// Applied to a ticket nobody has started; matched against one with
+        /// a worktree or a parked agent (`crown::judge`).
+        #[serde(default)]
+        workspace: Option<String>,
     },
     /// Park another ticket's agent, by key (T-539): what `x` on its card
     /// does — the conversation kept, the pane gone, a person's `c` wakes it.
@@ -1068,6 +1076,12 @@ pub enum Command {
         /// pick up, and the person picks its tier.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier: Option<String>,
+        /// The new ticket's workspace (T-583), `worktree` or
+        /// `shared_checkout`: required of the crown, which files what it may
+        /// start; a worker's ticket is a person's to pick up, and absent
+        /// leaves the column's default.
+        #[serde(default)]
+        workspace: Option<String>,
     },
     /// Put one of the board's EXISTING tags on the caller's own ticket, or
     /// take it off (`tag_ticket`). The registry is the human's vocabulary —
@@ -1749,6 +1763,10 @@ pub enum Response {
         /// was replayed instead of minting a second ticket.
         #[serde(default)]
         replayed: bool,
+        /// The workspace the ticket was filed with (T-583), as
+        /// `get_ticket` spells it.
+        #[serde(default)]
+        workspace: String,
     },
     /// AgentTagTicket's receipt: what the ticket wears now, and the tag on
     /// the same axis that was taken off to make room, when there was one.
@@ -1794,6 +1812,14 @@ pub enum Response {
         /// worktree is cut (T-584). Empty from a daemon before the field.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         tier: String,
+        /// The crown's own parked agent was woken rather than a new one
+        /// started (T-583): the conversation is the one it parked.
+        #[serde(default)]
+        woken: bool,
+        /// The workspace the agent runs in, `worktree` or
+        /// `shared_checkout` (T-583).
+        #[serde(default)]
+        workspace: String,
     },
     /// AgentAskTicket's receipt (T-413): which ticket holds the words,
     /// whether they replaced an earlier ask of the crown's, and the
@@ -2103,6 +2129,12 @@ pub struct AgentBoardView {
     /// agent's `list_board` carries it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tiers: Vec<AgentTierView>,
+    /// The other tickets whose agent holds the shared checkout (T-583):
+    /// working, idle, or parked with the checkout as its cwd. The crown's
+    /// `start_agent` on `shared_checkout` is refused while one does, so it
+    /// reads this before it chooses.
+    #[serde(default)]
+    pub checkout_held_by: Vec<String>,
 }
 
 /// One tier as `list_board` shows it (T-584). `model` empty and `effort`

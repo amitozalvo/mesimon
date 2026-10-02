@@ -127,8 +127,11 @@ pub const CROWN_TIERS: &str = crown_tiers!();
 /// worker's question is read (T-566): a crown on a friend's board saw only
 /// `needs-you`, guessed, and sent words that could not land; which
 /// questions the crown may answer (T-569); and where an ask of its that was
-/// dropped before it was sent is read (T-568); and how it picks a tier for a
-/// ticket it files or starts (T-584, `CROWN_TIERS`).
+/// dropped before it was sent is read (T-568); how it picks a tier for a
+/// ticket it files or starts (T-584, `CROWN_TIERS`); and that the crown
+/// chooses where each agent it files or starts works and wakes what it
+/// parked (T-583): it started two agents on one checkout, having been told
+/// nothing of workspaces, and could not wake the one it then parked.
 pub const CROWN_WAKES: &str = concat!(
     "The board wakes this session on its own: when an agent the crown started delivers, is \
      merged, answers the crown's ask, raises its hand, asks a question or stops on a plan, one \
@@ -139,7 +142,16 @@ pub const CROWN_WAKES: &str = concat!(
      finished: sleep_agent parks it, which frees its seat in the crown's budget, and \
      archive_ticket then takes its ticket off the board and reclaims a merged worktree. That \
      is the crown's to do, not a person's to be asked for; a person's own agent is the one the \
-     crown may not park. A worker stopped on a question or a plan reads needs-you, and \
+     crown may not park. The crown decides each ticket's workspace before it files or starts \
+     it: create_ticket and start_agent take workspace, worktree (the ticket's own branch, \
+     merged later) or shared_checkout (the repository's own checkout). shared_checkout is \
+     refused while another ticket's agent holds it, awake or parked (list_board's \
+     checkout_held_by), and a ticket with a worktree or a parked agent keeps the workspace it \
+     has. A started agent's first prompt is its ticket's title and description, so the \
+     brief is what it works from. start_agent on a ticket whose agent the crown started and \
+     parked wakes that agent, conversation kept, in the workspace it was parked in. A worker \
+     stopped on a question or a \
+     plan reads needs-you, and \
      get_ticket on its ticket carries it (needs_you: the reason, the request, and the \
      question's words and options or the plan's markdown); ask_agent is refused while it \
      stands. Where the board lets the crown answer (Settings → Agents → Crown answers \
@@ -267,10 +279,11 @@ pub fn tools() -> Vec<Value> {
             "name": "list_board",
             "description": "Returns the mesimon board: every column in order, what each \
                             column is for in the user's words (column_descriptions), every \
-                            ticket's key, title and column, and the agent tiers a ticket may \
+                            ticket's key, title and column, the agent tiers a ticket may \
                             start on, each with when to use it in the user's words (tiers: \
-                            description, is_default). Session and process information \
-                            is excluded. Title comparison here is the pre-check for \
+                            description, is_default), and the other tickets whose agent holds \
+                            the shared checkout (checkout_held_by). Session and process \
+                            information is excluded. Title comparison here is the pre-check for \
                             create_ticket: work extending a ticket in todo, in progress \
                             or review belongs on that ticket as scope, not as a sibling. \
                             A near-duplicate title means the older ticket wins.",
@@ -372,23 +385,23 @@ pub fn tools() -> Vec<Value> {
             // two schema descriptions losing a word. The crown's `tier`
             // (T-584) was paid for by the idempotency key's words (the shim
             // fills it from the client's tool-use id), "(markdown)", "one per
-            // group" (the refusal says it) and "if omitted".
-            "description": "Creates a ticket for a session of its own, not this one. \
-                            A ticket is a work unit to pick up, not an idea/list \
-                            row; findings on one surface share a ticket with a list. \
-                            list_board checks scope/duplicates first. Research belongs \
-                            in this ticket's notes; the user chooses tickets. Agents \
-                            cannot delete tickets; cleanup costs the user.",
+            // group" (the refusal says it) and "if omitted". The crown's
+            // `workspace` (T-583) by folding "A ticket is" into a colon and by
+            // the descriptions of `column` (list_board names the columns) and
+            // `description` (get_ticket says it is the first note).
+            "description": "Creates a ticket for a session of its own, not this one: \
+                            a work unit to pick up, not an idea/list row; findings on \
+                            one surface share a ticket with a list. list_board checks \
+                            scope/duplicates first. Research belongs in this ticket's \
+                            notes; the user chooses tickets. Agents cannot delete \
+                            tickets; cleanup costs the user.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "title": { "type": "string" },
                     // A plain string, NOT an enum: see the module header.
-                    "column": {
-                        "type": "string",
-                        "description": "list_board column, else default.",
-                    },
-                    "description": { "type": "string", "description": "First note." },
+                    "column": { "type": "string" },
+                    "description": { "type": "string" },
                     // Names, NOT the registry: see the module header on enums.
                     "tags": {
                         "type": "array",
@@ -399,6 +412,11 @@ pub fn tools() -> Vec<Value> {
                     // T-584: the crown's pick, by the person's words on each
                     // tier. A worker's ticket is a person's to pick up.
                     "tier": { "type": "string", "description": "Crown only; list_board tiers id." },
+                    // A plain string, as `set_workspace`'s (T-583).
+                    "workspace": {
+                        "type": "string",
+                        "description": "worktree|shared_checkout; crown: required.",
+                    },
                 },
                 "required": ["title"],
                 "additionalProperties": false,
@@ -513,27 +531,34 @@ pub fn tools() -> Vec<Value> {
             },
         }),
         // The crown's one start (T-412). The daemon spawns; this only asks,
-        // behind the board's spawn budget and the one-agent-per-ticket rule.
+        // behind the board's spawn budget, the one-agent-per-ticket rule and
+        // the workspace rules (`crown::judge`, T-583).
         json!({
             "name": "start_agent",
             // At the byte cap. The crown's `tier` (T-584) was paid for by the
             // receipt's own words: its status and budget_left say themselves
-            // (a word, never a bool — T-466 — is the shim's to keep).
-            "description": "Starts the board's agent on another mesimon ticket (crown only); \
-                            title and description are its first prompt. Refused with an agent \
-                            there, on this session's ticket, past the crown's budget, or with \
-                            a tier where a person started one. The receipt names the tier it \
-                            launched on. The board then wakes this session when that agent \
-                            delivers, merges, answers or raises its hand, so nothing is polled.",
+            // (a word, never a bool — T-466 — is the shim's to keep). The
+            // workspace rules (T-583) by the refusals' list (each refusal is
+            // in words), the brief-as-prompt clause and the list of what wakes
+            // the crown (`CROWN_WAKES` in the same receipt has both whole),
+            // and the `key`, `seen` and `plan` descriptions.
+            "description": "Starts the board's agent on another mesimon ticket (crown only) in \
+                            workspace: an unstarted ticket takes it, a worktree or parked agent \
+                            keeps its own, no shared_checkout while list_board's \
+                            checkout_held_by lists one. A parked agent the crown started is \
+                            woken, a person's refused, as is a start with a tier where a person \
+                            started one. The receipt names the tier it launched on. The board \
+                            then wakes this session, so nothing is polled.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
-                    "seen": { "type": "string", "description": "get_ticket's seen stamp." },
-                    "plan": { "type": "boolean", "description": "Optional. True: plan mode." },
+                    "key": { "type": "string" },
+                    "seen": { "type": "string" },
+                    "workspace": { "type": "string", "description": "worktree or shared_checkout." },
+                    "plan": { "type": "boolean" },
                     "tier": { "type": "string", "description": "Optional. A list_board tiers id." },
                 },
-                "required": ["key", "seen"],
+                "required": ["key", "seen", "workspace"],
                 "additionalProperties": false,
             },
         }),
@@ -545,7 +570,8 @@ pub fn tools() -> Vec<Value> {
         json!({
             "name": "sleep_agent",
             "description": "Parks another mesimon ticket's agent (crown only), as x on its \
-                            card does: the conversation is kept and a person's c wakes it. \
+                            card does: the conversation is kept, and a person's c or \
+                            start_agent wakes it. \
                             Only an agent the crown started, and only once it is idle; a \
                             working agent, a person's agent and this session's own are \
                             refused in words. A parked agent holds no seat in the crown's \
@@ -713,6 +739,8 @@ pub enum ToolCall {
         plan: bool,
         /// A tier id (or name) from `list_board`'s `tiers` (T-584).
         tier: Option<String>,
+        /// A word, validated by the daemon (T-583).
+        workspace: String,
     },
     SleepAgent {
         key: String,
@@ -748,6 +776,9 @@ pub enum ToolCall {
         idempotency_key: Option<String>,
         /// The crown's tier pick (T-584).
         tier: Option<String>,
+        /// A word, validated by the daemon, which requires it of the crown
+        /// (T-583).
+        workspace: Option<String>,
     },
     TagTicket {
         name: String,
@@ -894,6 +925,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             seen: word(args, "seen")?,
             plan: flag(args, "plan")?,
             tier: opt_word(args, "tier")?,
+            workspace: word(args, "workspace")?,
         }),
         "sleep_agent" => {
             Ok(ToolCall::SleepAgent { key: word(args, "key")?, seen: word(args, "seen")? })
@@ -1007,6 +1039,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                 tags,
                 idempotency_key: word("idempotency_key").map(str::to_string),
                 tier: opt_word(args, "tier")?,
+                workspace: opt_word(args, "workspace")?,
             })
         }
         "tag_ticket" => {
@@ -1508,6 +1541,7 @@ mod tests {
                     seen: None,
                     plan: false,
                     tier: None,
+                    workspace: None,
                 },
                 "start_agent",
             ),
@@ -1548,6 +1582,7 @@ mod tests {
                     tags: vec![],
                     idempotency_key: None,
                     tier: None,
+                    workspace: None,
                 },
                 "create_ticket",
             ),
@@ -1804,31 +1839,45 @@ mod tests {
             Ok(ToolCall::ArchiveTicket { key: "T-4".into(), restore: false, seen: "abc".into() })
         );
         assert_eq!(
-            parse_tool_call("start_agent", &json!({ "key": " T-4 ", "seen": "abc" })),
+            parse_tool_call(
+                "start_agent",
+                &json!({ "key": " T-4 ", "seen": "abc", "workspace": " worktree " })
+            ),
             Ok(ToolCall::StartAgent {
                 key: "T-4".into(),
                 seen: "abc".into(),
                 plan: false,
-                tier: None
+                tier: None,
+                workspace: "worktree".into()
             })
         );
         // The plan flag (T-434): absent is false, a boolean is itself, a
         // non-boolean is refused by name.
         assert_eq!(
-            parse_tool_call("start_agent", &json!({ "key": "T-4", "seen": "abc", "plan": true })),
+            parse_tool_call(
+                "start_agent",
+                &json!({ "key": "T-4", "seen": "abc", "plan": true, "workspace": "shared_checkout" })
+            ),
             Ok(ToolCall::StartAgent {
                 key: "T-4".into(),
                 seen: "abc".into(),
                 plan: true,
-                tier: None
+                tier: None,
+                workspace: "shared_checkout".into()
             })
         );
         assert!(parse_tool_call(
             "start_agent",
-            &json!({ "key": "T-4", "seen": "abc", "plan": "yes" })
+            &json!({ "key": "T-4", "seen": "abc", "plan": "yes", "workspace": "worktree" })
         )
         .unwrap_err()
         .contains("plan must be a boolean"));
+        // T-583: the crown names a workspace on every start; the word is the
+        // daemon's to judge, the field the tool's to require.
+        assert_eq!(
+            parse_tool_call("start_agent", &json!({ "key": "T-4", "seen": "abc" })),
+            Err("workspace is required".into())
+        );
         assert!(parse_tool_call("start_agent", &json!({ "key": "T-4" })).is_err());
         assert!(parse_tool_call("start_agent", &json!({ "seen": "abc" })).is_err());
         assert_eq!(
@@ -1930,13 +1979,14 @@ mod tests {
         assert_eq!(
             parse_tool_call(
                 "start_agent",
-                &json!({ "key": "T-4", "seen": "abc", "tier": " 01DEEP " })
+                &json!({ "key": "T-4", "seen": "abc", "tier": " 01DEEP ", "workspace": "worktree" })
             ),
             Ok(ToolCall::StartAgent {
                 key: "T-4".into(),
                 seen: "abc".into(),
                 plan: false,
-                tier: Some("01DEEP".into())
+                tier: Some("01DEEP".into()),
+                workspace: "worktree".into()
             })
         );
         match parse_tool_call("create_ticket", &json!({ "title": "t", "tier": "quick" })) {
@@ -1998,13 +2048,15 @@ mod tests {
                 tags: vec![],
                 idempotency_key: None,
                 tier: None,
+                workspace: None,
             })
         );
         assert_eq!(
             parse_tool_call(
                 "create_ticket",
                 &json!({ "title": "t", "column": " REVIEW ", "description": "  # why\n\nbecause",
-                         "tags": [" BUG ", "", "P1"], "idempotency_key": "k" })
+                         "tags": [" BUG ", "", "P1"], "idempotency_key": "k",
+                         "workspace": " worktree " })
             ),
             Ok(ToolCall::CreateTicket {
                 title: "t".into(),
@@ -2013,6 +2065,7 @@ mod tests {
                 tags: vec!["BUG".into(), "P1".into()],
                 idempotency_key: Some("k".into()),
                 tier: None,
+                workspace: Some("worktree".into()),
             })
         );
         // Blank optionals are absent, not empty strings the daemon must judge.
@@ -2028,6 +2081,7 @@ mod tests {
                 tags: vec![],
                 idempotency_key: None,
                 tier: None,
+                workspace: None,
             })
         );
         assert!(parse_tool_call("create_ticket", &json!({})).is_err());
@@ -2166,6 +2220,54 @@ mod tests {
     #[test]
     fn the_crown_is_told_where_a_dropped_ask_is_read() {
         for words in ["asked: dropped", "dropped before it was sent", "who dropped it"] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+    }
+
+    /// T-583: the crown names a workspace where it files and where it
+    /// starts, the two tools say so inside the cap and the lint, and the
+    /// receipt says why. A worker's `create_ticket` needs none.
+    #[test]
+    fn the_crown_chooses_a_workspace_on_purpose() {
+        let registry = tools();
+        let tool = |name: &str| registry.iter().find(|t| t["name"] == name).unwrap().clone();
+        let start = tool("start_agent");
+        assert_eq!(start["inputSchema"]["required"], json!(["key", "seen", "workspace"]));
+        assert_eq!(start["inputSchema"]["properties"]["workspace"]["type"], "string");
+        let description = start["description"].as_str().unwrap();
+        for words in [
+            "in workspace",
+            "an unstarted ticket takes it",
+            "a worktree or parked agent keeps its own",
+            "A parked agent the crown started is woken",
+            "a person's refused",
+            "no shared_checkout while list_board's checkout_held_by lists one",
+        ] {
+            assert!(description.contains(words), "start_agent says {words:?}");
+        }
+        let create = tool("create_ticket");
+        assert_eq!(create["inputSchema"]["required"], json!(["title"]), "optional for a worker");
+        let field = create["inputSchema"]["properties"]["workspace"]["description"].as_str();
+        assert_eq!(field, Some("worktree|shared_checkout; crown: required."));
+        let list = tool("list_board");
+        assert!(list["description"].as_str().unwrap().contains("checkout_held_by"));
+        for t in [&start, &create, &list] {
+            lint_tool_text(t["description"].as_str().unwrap()).unwrap();
+            for p in t["inputSchema"]["properties"].as_object().unwrap().values() {
+                if let Some(d) = p["description"].as_str() {
+                    lint_tool_text(d).unwrap();
+                }
+            }
+            let bytes = serde_json::to_vec(t).unwrap().len();
+            assert!(bytes <= MAX_TOOL_BYTES, "{} is {bytes} bytes", t["name"]);
+        }
+        for words in [
+            "decides each ticket's workspace before it files or starts it",
+            "create_ticket and start_agent take workspace",
+            "list_board's checkout_held_by",
+            "first prompt is its ticket's title and description",
+            "wakes that agent",
+        ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
     }
@@ -2364,6 +2466,7 @@ mod tests {
                 tags: vec![],
                 idempotency_key: None,
                 tier: None,
+                workspace: None,
             },
             Command::AgentTagTicket { name: "x".into(), group: None, remove: false, key: None },
             Command::AgentRaiseHand { reason: "x".into() },
@@ -2374,7 +2477,13 @@ mod tests {
                 seen: None,
             },
             Command::AgentArchiveTicket { key: "T-1".into(), restore: false, seen: None },
-            Command::AgentStartTicket { key: "T-1".into(), seen: None, plan: false, tier: None },
+            Command::AgentStartTicket {
+                key: "T-1".into(),
+                seen: None,
+                plan: false,
+                tier: None,
+                workspace: None,
+            },
             Command::AgentSleepTicket { key: "T-1".into(), seen: None },
             Command::AgentAskTicket {
                 key: "T-1".into(),

@@ -25,6 +25,7 @@ use mesimon_core::command::{
     Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Notice, Pending, PendingAction,
     Resources, Response, TerminalItem, WorktreeItem, WorktreeRepoItem, PROTOCOL_VERSION,
 };
+use mesimon_core::crown;
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
 use mesimon_core::usage::{Provider, Wants};
@@ -1965,6 +1966,18 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
     let _ = tx.send(Msg::ClientGone(writer));
 }
 
+/// What an agent's `create_ticket` asks to file, as the wire carried it.
+struct AgentFiling {
+    title: String,
+    column: Option<String>,
+    description: Option<String>,
+    tags: Vec<String>,
+    /// A tier id or name (T-584), the crown's alone.
+    tier: Option<String>,
+    /// A word (T-583), required of the crown.
+    workspace: Option<String>,
+}
+
 /// What a mutating agent tool call left behind, kept under its idempotency
 /// key so a retry gets the first receipt. Keyed by tool as well as by key:
 /// a `move_ticket` retry must never be answered with a `create_ticket`
@@ -1972,7 +1985,7 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
 #[derive(Debug, Clone)]
 enum AgentReplay {
     Moved { column: String },
-    Created { key: String, column: String },
+    Created { key: String, column: String, workspace: String },
 }
 
 impl Daemon {
@@ -4260,7 +4273,7 @@ impl Daemon {
                 if let Decision::Deny { reason } = authorize(&by, &Action::Read, &Resource::Board) {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
-                Response::AgentBoard { board: self.agent_board_view() }
+                Response::AgentBoard { board: self.agent_board_view(ticket) }
             }
             Command::AgentMoveTicket { to_column, idempotency_key, key, before, seen } => {
                 // Replay before acting. A mid-call transport drop hands the
@@ -4411,16 +4424,9 @@ impl Daemon {
                 {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
-                let ws = match workspace.as_str() {
-                    "worktree" => WorkspaceStrategy::Worktree,
-                    "shared_checkout" => WorkspaceStrategy::SharedCheckout,
-                    other => {
-                        return Response::Err {
-                            message: format!(
-                                "workspace is worktree or shared_checkout, not {other}"
-                            ),
-                        }
-                    }
+                let ws = match crown::parse_workspace(&workspace) {
+                    Ok(ws) => ws,
+                    Err(message) => return Response::Err { message },
                 };
                 if self.worktrees_barred {
                     return Response::Err { message: self.barred_message("worktrees") };
@@ -4551,7 +4557,7 @@ impl Daemon {
                 }
                 // The road (T-550): held for a person's send, unless the
                 // board lets the crown send and the crown started this agent.
-                let held_because = self.crown_ask_hold(target, &seat);
+                let held_because = self.crown_ask_hold(ticket, target, &seat);
                 let sends = held_because.is_none();
                 let replaced =
                     self.queued.iter().any(|q| q.ticket == target && q.by == Some(ticket));
@@ -4686,7 +4692,7 @@ impl Daemon {
                     Err(message) => Response::Err { message },
                 }
             }
-            Command::AgentStartTicket { key, seen, plan, tier } => {
+            Command::AgentStartTicket { key, seen, plan, tier, workspace } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -4705,14 +4711,33 @@ impl Daemon {
                 {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
-                if let Some(held) = self.board.live_agent(target) {
+                // Where it works is the crown's to decide on every start
+                // (T-583): a shim from before the field sends none.
+                let Some(word) = workspace else {
                     return Response::Err {
-                        message: format!(
-                            "{key} already has an agent ({}); one agent per ticket",
-                            held.state_word()
-                        ),
+                        message: "start_agent needs workspace: worktree (the ticket's own \
+                                  branch) or shared_checkout; the crown decides where each agent \
+                                  it starts works"
+                            .into(),
                     };
-                }
+                };
+                let wanted = match crown::parse_workspace(&word) {
+                    Ok(ws) => ws,
+                    Err(message) => return Response::Err { message },
+                };
+                let checkout = self.paths.repo_root.to_string_lossy().into_owned();
+                let has_worktree = self.worktrees.contains_key(&target);
+                let start = match crown::judge(
+                    &self.board,
+                    ticket,
+                    target,
+                    wanted,
+                    has_worktree,
+                    &checkout,
+                ) {
+                    Ok(start) => start,
+                    Err(message) => return Response::Err { message },
+                };
                 if let Some(message) = self.crown_budget_refusal() {
                     return Response::Err { message };
                 }
@@ -4733,26 +4758,66 @@ impl Daemon {
                 if let Some(message) = plan_refused {
                     return Response::Err { message };
                 }
+                if wanted == WorkspaceStrategy::Worktree && self.worktrees_barred {
+                    return Response::Err { message: self.barred_message("worktrees") };
+                }
                 if let Some(t) = pick {
                     if let Err(message) = self.apply_ticket_tier(target, Some(t.id)) {
                         return Response::Err { message };
                     }
                 }
-                let kind = self.tier_book().start_provider(target).session_kind();
-                let session_started =
-                    match self.spawn_session(target, kind, true, None, Some(ticket), plan) {
-                        Response::Spawned { .. } => true,
-                        Response::Provisioning => false,
-                        Response::Err { message } => return Response::Err { message },
-                        other => {
-                            return Response::Err {
-                                message: format!("unexpected spawn answer: {other:?}"),
+                let (session_started, woken, kind) = match start {
+                    // The crown's own parked agent (T-583): the person's `c`,
+                    // the conversation kept, in the cwd it was parked in.
+                    crown::Start::Wake(id) => {
+                        let kind = self
+                            .board
+                            .sessions
+                            .iter()
+                            .find(|s| s.id == id)
+                            .map(|s| s.kind)
+                            .unwrap_or(SessionKind::Claude);
+                        let resp = self.resume_session_in(id, false, plan);
+                        self.persist_and_notify();
+                        match resp {
+                            Response::Spawned { .. } => (true, true, kind),
+                            Response::Provisioning => (false, true, kind),
+                            Response::Err { message } => {
+                                return Response::Err { message: format!("{key}: {message}") }
+                            }
+                            other => {
+                                return Response::Err {
+                                    message: format!("unexpected wake answer: {other:?}"),
+                                }
                             }
                         }
-                    };
+                    }
+                    crown::Start::Spawn { apply } => {
+                        // As `set_workspace` would, behind the same lock.
+                        if apply {
+                            if let Response::Err { message } =
+                                self.set_workspace(target, Some(wanted))
+                            {
+                                return Response::Err { message: format!("{key}: {message}") };
+                            }
+                        }
+                        let kind = self.tier_book().start_provider(target).session_kind();
+                        match self.spawn_session(target, kind, true, None, Some(ticket), plan) {
+                            Response::Spawned { .. } => (true, false, kind),
+                            Response::Provisioning => (false, false, kind),
+                            Response::Err { message } => return Response::Err { message },
+                            other => {
+                                return Response::Err {
+                                    message: format!("unexpected spawn answer: {other:?}"),
+                                }
+                            }
+                        }
+                    }
+                };
                 self.feed.board(by.actor(), "start_agent", Some(target));
-                self.crown_touched(ticket, target, "started");
-                // A checkout worker's first delivery is a HEAD past this one.
+                self.crown_touched(ticket, target, if woken { "woken" } else { "started" });
+                // A checkout worker's first delivery is a HEAD past this one;
+                // a woken one's next is a HEAD past the wake.
                 self.probe_turn(target, ProbeWhy::Baseline);
                 let (held, _) = self.crown_seats();
                 Response::AgentStarted {
@@ -4760,6 +4825,8 @@ impl Daemon {
                     session_started,
                     budget_left: self.board.crown_budget.saturating_sub(held.len() as u8),
                     tier: self.tier_book().launch(target, kind).name,
+                    woken,
+                    workspace: crown::workspace_word(wanted).to_string(),
                 }
             }
             // The crown's sleep (T-539): `x` on a card the crown started. The
@@ -4809,11 +4876,12 @@ impl Daemon {
                 tags,
                 idempotency_key,
                 tier,
+                workspace,
             } => {
                 // Replay first, for the same reason as a move: a retry after
                 // `Connection closed` must not file the same work twice.
                 if let Some(key) = &idempotency_key {
-                    if let Some(AgentReplay::Created { key: short_key, column }) =
+                    if let Some(AgentReplay::Created { key: short_key, column, workspace }) =
                         self.agent_replay.get(&(session, key.clone()))
                     {
                         return Response::AgentCreated {
@@ -4821,19 +4889,26 @@ impl Daemon {
                             column: column.clone(),
                             board_version: self.board_version,
                             replayed: true,
+                            workspace: workspace.clone(),
                         };
                     }
                 }
                 let by = Principal::Agent { session };
-                let resp =
-                    self.agent_create_ticket(&by, ticket, title, column, description, tags, tier);
-                if let (Some(key), Response::AgentCreated { key: short_key, column, .. }) =
-                    (idempotency_key, &resp)
+                let filing = AgentFiling { title, column, description, tags, tier, workspace };
+                let resp = self.agent_create_ticket(&by, ticket, filing);
+                if let (
+                    Some(key),
+                    Response::AgentCreated { key: short_key, column, workspace, .. },
+                ) = (idempotency_key, &resp)
                 {
                     self.remember_agent_result(
                         session,
                         key,
-                        AgentReplay::Created { key: short_key.clone(), column: column.clone() },
+                        AgentReplay::Created {
+                            key: short_key.clone(),
+                            column: column.clone(),
+                            workspace: workspace.clone(),
+                        },
                     );
                 }
                 resp
@@ -4934,8 +5009,17 @@ impl Daemon {
     /// the switch says; and for a parked agent, the budget. Words to a
     /// sleeping agent wake it, and a wake on the crown's word spends what a
     /// start spends, so it needs a free seat and holds one while it waits
-    /// (`crown_seats`). The words are the crown's to relay to the person.
-    fn crown_ask_hold(&self, target: ulid::Ulid, seat: &QueuedSeat) -> Option<String> {
+    /// (`crown_seats`). And a wake on the shared checkout waits while
+    /// another ticket's agent holds it (T-583): the daemon's own delivery
+    /// is held to `start_agent`'s rule, and a person's send is not.
+    /// `crown_ticket` is the crown's own, which coordinates rather than holds.
+    /// The words are the crown's to relay to the person.
+    fn crown_ask_hold(
+        &self,
+        crown_ticket: ulid::Ulid,
+        target: ulid::Ulid,
+        seat: &QueuedSeat,
+    ) -> Option<String> {
         if !self.board.crown_sends {
             return Some(
                 "this board holds the crown's asks for a person to send (Settings → Agents → \
@@ -4947,6 +5031,24 @@ impl Daemon {
             return Some(
                 "a person started this agent, and a person sends it words (^y on its card)".into(),
             );
+        }
+        if let QueuedSeat::Wake(id) = seat {
+            let checkout = self.paths.repo_root.to_string_lossy();
+            let on_checkout = self.board.sessions.iter().find(|s| s.id == *id).is_some_and(|rec| {
+                crown::runs_in(rec, &checkout) == WorkspaceStrategy::SharedCheckout
+            });
+            if on_checkout {
+                let holders =
+                    crown::checkout_holders(&self.board, &checkout, &[crown_ticket, target]);
+                let by = Principal::Automation { rule: "queued_ask".into() };
+                if let Some(who) = crown::checkout_refusal(&by, &holders) {
+                    return Some(format!(
+                        "its agent is parked on the shared checkout and the words would wake it \
+                         there, but {who}; a person's send wakes it, or the ask can be made \
+                         again once the checkout is free"
+                    ));
+                }
+            }
         }
         if matches!(seat, QueuedSeat::Wake(_)) {
             let budget = self.board.crown_budget;
@@ -5349,12 +5451,24 @@ impl Daemon {
         &mut self,
         by: &Principal,
         from: ulid::Ulid,
-        title: String,
-        column: Option<String>,
-        description: Option<String>,
-        tags: Vec<String>,
-        tier: Option<String>,
+        filing: AgentFiling,
     ) -> Response {
+        let AgentFiling { title, column, description, tags, tier, workspace } = filing;
+        // The crown files what it may start, so it says where that work
+        // will run (T-583); a worker's ticket is a person's to pick up, and
+        // the column's default stands unless it names one.
+        let workspace = match workspace.as_deref().map(crown::parse_workspace) {
+            Some(Ok(ws)) => Some(ws),
+            Some(Err(message)) => return Response::Err { message },
+            None if self.board.is_crowned(from) => {
+                return Response::Err {
+                    message: "the crown files a ticket with its workspace decided: workspace is \
+                              worktree (its own branch) or shared_checkout"
+                        .into(),
+                }
+            }
+            None => None,
+        };
         // No column named means the board's default (T-279): the one chosen
         // in Settings while it still exists, else the first column.
         let Some(column) = column.or_else(|| self.board.landing_column()) else {
@@ -5394,7 +5508,7 @@ impl Daemon {
         let mint = Mint {
             column: column.clone(),
             title,
-            workspace: None,
+            workspace,
             from: Some(from),
             tags,
             note: description.map(|text| (text, Vec::new())),
@@ -5411,8 +5525,17 @@ impl Daemon {
         if self.board.is_crowned(from) {
             self.crown_touched(from, id, "created");
         }
-        let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
-        Response::AgentCreated { key, column, board_version: self.board_version, replayed: false }
+        let t = self.board.ticket(id);
+        let key = t.map(|t| t.short_key.clone()).unwrap_or_default();
+        let workspace =
+            t.map(|t| crown::workspace_word(t.workspace_strategy())).unwrap_or_default();
+        Response::AgentCreated {
+            key,
+            column,
+            board_version: self.board_version,
+            replayed: false,
+            workspace: workspace.to_string(),
+        }
     }
 
     /// Tag NAMES from an agent, as registry references — or the reason one
@@ -5700,11 +5823,7 @@ impl Daemon {
 
     fn agent_ticket_view(&self, id: ulid::Ulid) -> Option<AgentTicketView> {
         let t = self.board.ticket(id)?;
-        let workspace = match t.workspace_strategy() {
-            WorkspaceStrategy::Worktree => "worktree",
-            WorkspaceStrategy::SharedCheckout => "shared_checkout",
-            WorkspaceStrategy::AdoptExisting => "adopt_existing",
-        };
+        let workspace = crown::workspace_word(t.workspace_strategy());
         Some(AgentTicketView {
             key: t.short_key.clone(),
             title: t.title.clone(),
@@ -5824,7 +5943,9 @@ impl Daemon {
     /// when the board model does. Archived tickets are excluded because
     /// `column_tickets` is the archived-exclusion chokepoint and an archived
     /// ticket is off the board.
-    fn agent_board_view(&self) -> AgentBoardView {
+    /// `own` is the caller's ticket: `checkout_held_by` (T-583) names the
+    /// OTHER tickets on the checkout, as `start_agent` judges them.
+    fn agent_board_view(&self, own: ulid::Ulid) -> AgentBoardView {
         let columns: Vec<String> =
             self.board.sorted_columns().into_iter().map(|c| c.name.clone()).collect();
         let tickets = columns
@@ -5846,6 +5967,14 @@ impl Daemon {
             board_version: self.board_version,
             crown: self.board.crown_holder().map(|t| t.short_key.clone()),
             tiers: self.agent_tier_views(),
+            checkout_held_by: crown::checkout_holders(
+                &self.board,
+                &self.paths.repo_root.to_string_lossy(),
+                &[own],
+            )
+            .into_iter()
+            .map(|h| h.key)
+            .collect(),
         }
     }
 
