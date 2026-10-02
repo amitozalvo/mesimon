@@ -9073,19 +9073,28 @@ fn tier(
         provider,
         model: model.into(),
         effort,
+        description: String::new(),
     }
 }
 
 /// A machine with two tiers (`quick`, its default, and `coder`); a board
 /// with its own version of `coder` and a tier of its own (`reviewer`). T-1
 /// picked `coder` and has no agent; T-3 picked it too, and its claude still
-/// runs on `claude`, owed the switch.
+/// runs on `claude`, owed the switch. Each layer's `coder` carries its own
+/// words on when to use it (T-584); `reviewer` carries none.
 fn tier_app() -> App {
     use mesimon_core::board::AgentProvider::{ClaudeCode, Codex};
     use mesimon_core::tier::Effort;
+    let words = |t: mesimon_core::tier::Tier, d: &str| mesimon_core::tier::Tier {
+        description: d.into(),
+        ..t
+    };
     let mut board = fixture(false);
     board.tiers = vec![
-        tier("01CODER", "coder", ClaudeCode, "opus", Effort::Max),
+        words(
+            tier("01CODER", "coder", ClaudeCode, "opus", Effort::Max),
+            "this repo: anything touching the daemon's writer",
+        ),
         tier("01REVIEW", "reviewer", Codex, "gpt-6-astra", Effort::High),
     ];
     for t in &mut board.tickets {
@@ -9103,8 +9112,14 @@ fn tier_app() -> App {
     app.machine_tiers = mesimon_core::tier::MachineTiers {
         default_tier: Some("01QUICK".into()),
         tiers: vec![
-            tier("01QUICK", "quick", ClaudeCode, "sonnet", Effort::High),
-            tier("01CODER", "coder", ClaudeCode, "opus", Effort::Xhigh),
+            words(
+                tier("01QUICK", "quick", ClaudeCode, "sonnet", Effort::High),
+                "docs, renames, one-file fixes",
+            ),
+            words(
+                tier("01CODER", "coder", ClaudeCode, "opus", Effort::Xhigh),
+                "cross-crate refactors",
+            ),
         ],
     };
     app
@@ -9122,17 +9137,67 @@ fn golden_tiers_list_both_scopes_and_a_page() {
     assert!(rows.iter().any(|r| r.contains("quick") && r.contains("default")), "{rows:?}");
     assert!(!rows.iter().any(|r| r.contains("reviewer")), "the machine's list is the machine's");
     assert!(rows.iter().any(|r| r.contains("+ new tier")));
+    // T-584: each tier's words, under its name.
+    let under = |rows: &[String], name: &str, words: &str| {
+        let at = rows.iter().position(|r| r.contains(&format!("   {name} "))).unwrap();
+        assert!(rows[at + 1].contains(words), "{words:?} under {name}: {rows:?}");
+    };
+    under(&rows, "quick", "docs, renames, one-file fixes");
+    under(&rows, "coder", "cross-crate refactors");
     golden("tiers_machine_120x30", &rows);
+    // Too short for every description: one row a tier, as before.
+    let mut many = tier_app();
+    many.mode = Mode::Tiers { idx: 0, naming: None };
+    for n in 0..6 {
+        many.machine_tiers.tiers.push(mesimon_core::tier::Tier {
+            description: format!("words for tier {n}"),
+            ..tier(
+                &format!("01MORE{n}"),
+                &format!("more{n}"),
+                mesimon_core::board::AgentProvider::ClaudeCode,
+                "",
+                mesimon_core::tier::Effort::Default,
+            )
+        });
+    }
+    let short = render(&many, 120, 20);
+    assert!(short.iter().any(|r| r.contains("+ new tier")), "{short:?}");
+    assert!(!short.iter().any(|r| r.contains("words for tier")), "{short:?}");
+    let tall = render(&many, 120, 30);
+    assert!(tall.iter().any(|r| r.contains("words for tier 5")), "{tall:?}");
     app.settings_board_scope = true;
     let rows = render(&app, 120, 30);
     assert!(rows.iter().any(|r| r.contains("reviewer")), "{rows:?}");
     assert!(rows.iter().any(|r| r.contains("TIERS ∙ THIS BOARD")), "{rows:?}");
+    under(&rows, "coder", "anything touching the daemon's writer");
+    assert!(!rows.iter().any(|r| r.contains("cross-crate")), "the board's version, its words");
     golden("tiers_board_120x30", &rows);
-    app.mode = Mode::TierEdit { id: "01CODER".into(), idx: 4, field: None, armed: false };
+    app.mode = Mode::TierEdit { id: "01CODER".into(), idx: 5, field: None, armed: false };
     let rows = render(&app, 120, 30);
     assert!(rows.iter().any(|r| r.contains("Use the machine's")), "{rows:?}");
     assert!(rows.iter().any(|r| r.contains("Effort: max")), "the board's version: {rows:?}");
+    assert!(
+        rows.iter().any(|r| r.contains("Description: this repo: anything touching")),
+        "{rows:?}"
+    );
     golden("tier_edit_board_120x30", &rows);
+    // The description row opens as a field in place, the Model row's way.
+    app.mode = Mode::TierEdit {
+        id: "01CODER".into(),
+        idx: 4,
+        field: Some(crate::text::EditBuffer::from_text(
+            "this repo: anything touching the daemon's writer".into(),
+            mesimon_core::tier::DESCRIPTION_MAX,
+        )),
+        armed: false,
+    };
+    let rows = render(&app, 120, 30);
+    assert!(
+        rows.iter().any(|r| r.contains("Description: ") && r.contains("the daemon's writer")),
+        "{rows:?}"
+    );
+    assert!(rows.iter().any(|r| r.contains("the crown picks by it")), "{rows:?}");
+    golden("tier_edit_description_120x30", &rows);
     app.settings_board_scope = false;
     app.mode = Mode::TierEdit {
         id: "01QUICK".into(),

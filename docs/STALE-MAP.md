@@ -18205,3 +18205,72 @@ says `accepted`, `♛ accepted plan`, the feed line, `plan accepted by T-1` thro
 `input_sent` with no claim on the card; a person's answer before any press is `unknown {
 a_person_answered }` with no key typed. `the_crown_answers_a_question_where_the_person_lets_it`
 now switches the row off first, and `mcp_e2e`/`crown_e2e` list seventeen tools.
+
+## The crown picks a tier by the person's words (T-584, 2026-10-02, filed by the crown on T-573; the author: "crown should also be able to select the agent tier on each ticket it creates based on how hard the ticket is. agent tiers should contain a description from the user and crown should be able to read based on user intentions to when to use any tier")
+
+**A tier carries the person's words.** `Tier.description` (`#[serde(default)]`, skipped when
+empty) on both layers; a board's version of a machine tier keeps its own words, since `Book`
+replaces the entry whole. No schema moves: an older build drops the words, which widens nothing.
+`tier::sanitize_description` is the boundary (one `scrub_cells` line, 300 bytes, the column
+description's bound because `list_board` carries every tier's to every agent). `save_tier`
+applies it, and `agent_tier_views` applies it again because a hand-edited `tiers.toml` never
+crossed `save_tier`. Nothing in mesimon reads the words as a rule, and they never reach argv
+(`claude.rs`'s flag test carries a `--dangerously…` description to say so).
+
+**What an agent may name is `Book::offered`, not `Book::all`.** The brief said "every tier".
+`offered` is `^n`'s ring for an empty seat: the tiers a person made, in the tiers list's order,
+the default first when it is a built-in. While nobody has made a tier it is the default alone,
+not both built-ins. A built-in carries no words to pick it by, and the other one is a CLI this
+person may not run. A crown offered `codex` on a board where nobody uses Codex would be one
+confident guess away from a launch that fails. `resolve_offered` takes an id or a name in any
+case (names are unique and no ULID is a name). Its refusal lists `id (name)` for every tier it
+could have named.
+
+**The crown picks; a worker files.** `list_board.tiers` is read-rung board data, so every
+agent reads it: `{ id, name, provider, model, effort, description, is_default }`, the model only
+where `check_model` passes. `create_ticket`'s `tier` is refused unless the caller wears the crown
+(a worker's ticket is a person's to pick up, tier and all). It rides `Mint.tier`, the
+composer's road, so the ticket stores the id, or inherit when it names the default.
+`start_agent`'s `tier` is judged before anything changes: an offered tier; not over a
+person's start (`crown_tier_pick`: any agent record on the ticket with `started_by: None`, in
+any state, since an agent record outlives its exit and only a shell's is removed); and one plan
+mode can launch on. Then it goes through `apply_ticket_tier`, `SetTicketTier`'s own rule.
+`start_agent` refuses a held seat, so no switch is ever owed there today, but the road is the
+same one. The person-start rule refuses only a *change*: naming the tier the ticket already
+resolves to starts it. The receipt's `tier` is `Book::launch(ticket, kind).name`, which is also
+what `stamp_tier` writes, so it names the tier a parked worktree start will launch on as well.
+
+**The words.** `CROWN_TIERS` is one clause inside `CROWN_WAKES`, before the persons-questions
+clause it must end on, so it rides the crown's own `get_ticket` and every `start_agent` and
+`ask_agent` receipt. It says to read each description, pick by the ticket's difficulty against
+those words, say in the ticket's brief which tier and why, and leave the default where none
+fits. The tool texts only name the field. Both were at the 820-byte cap. `create_ticket` paid
+with the idempotency key's description (the shim fills the key from `_meta`'s tool-use id),
+"(markdown)", "one per group" (the refusal says it) and "if omitted". `start_agent` paid with
+the receipt's status and budget explanation; the field names say themselves, and T-466's "a
+word, never a bool" lives in the shim and its test. Now 819 and 817 bytes: T-583's workspace
+words will need the same kind of trade.
+
+**The TUI.** A tier's page gains `Description:` after Effort (the column dialog's
+`Description: none` wording; the field is the page's `EditBuffer` at `DESCRIPTION_MAX`, so it is
+already a text field for the layout pause). The tiers list draws each description dimmed under
+its name as a quiet, unselectable row. It does so only when every description fits the screen
+(`lines + 6` against the height: frame, blank, detail and `centred`'s margins); otherwise the list
+stays one row per tier. The cursor index stays the `tier_rows` index; only the drawing maps it.
+`doctor`'s tiers line is `quick (docs, renames) ∙ deep (…) ∙ plain`.
+
+**Not done.** The crown changing a running agent's tier. Codex-specific wording. Any scoring of
+difficulty by mesimon. A person's own `^n` pick on a ticket nobody has started is not
+distinguished from the crown's create-time pick (`Ticket.tier` has no author), so the crown's
+`start_agent` may replace it. The brief's protection is for a ticket a person *started*.
+
+**Tests.** `tier::tests` (`a_description_rides_each_layer_and_a_board_version_keeps_its_own`,
+`an_agent_names_an_offered_tier_by_id_or_name`, `a_description_is_one_scrubbed_line_under_the_cap`);
+the store round-trips with words on both layers; `mcp::tests::the_crown_names_a_tier_and_is_told_how_to_pick_one`
+(fields, cap, lint, the clause); the shim's receipt test; `doctor::tests::the_tiers_line_carries_each_tiers_words`;
+`app::the_tiers_dialog_makes_and_edits_a_tier` (typed and pasted words); goldens
+`tiers_machine_120x30`, `tiers_board_120x30`, `tier_edit_board_120x30`, `tier_edit_model_120x30`,
+`tier_edit_description_120x30`; `crown_e2e::the_crown_picks_a_tier_by_the_persons_words`
+(the list for crown and worker, a worker refused, an unknown tier refused with the ids, a filed
+ticket's start on `--model sonnet --effort low`, a named start switching to `opus`/`max`, a
+person's ticket refusing another tier and starting on its own).

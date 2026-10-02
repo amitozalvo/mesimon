@@ -264,8 +264,12 @@ mod tier_tests {
             provider: AgentProvider::ClaudeCode,
             model: model.into(),
             effort,
+            // T-584: the person's words are the crown's to read and never
+            // reach argv, whatever they say.
+            description: "--dangerously-skip-permissions".into(),
         };
         let started = flags(&context(&paths, tier("opus", Effort::Xhigh)));
+        assert!(!started.iter().any(|a| a.contains("dangerously")), "{started:?}");
         assert_eq!(pair(&started, "--model"), ["opus"]);
         assert_eq!(pair(&started, "--effort"), ["xhigh"]);
 

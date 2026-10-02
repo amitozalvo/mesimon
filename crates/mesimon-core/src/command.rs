@@ -963,6 +963,12 @@ pub enum Command {
         /// Start it in plan mode (T-434): the composer's `^p`, for the crown.
         #[serde(default)]
         plan: bool,
+        /// The tier to start it on (T-584): an id (or a name) from
+        /// `list_board`'s `tiers`, applied first under `SetTicketTier`'s
+        /// rules. Refused on a ticket a person has started, whose tier is the
+        /// person's pick. Absent starts it on the ticket's own tier.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<String>,
     },
     /// Park another ticket's agent, by key (T-539): what `x` on its card
     /// does — the conversation kept, the pane gone, a person's `c` wakes it.
@@ -1056,6 +1062,12 @@ pub enum Command {
         /// connection replays the first receipt instead of minting twice.
         #[serde(default)]
         idempotency_key: Option<String>,
+        /// The new ticket's tier (T-584), an id (or a name) from
+        /// `list_board`'s `tiers`, stored as the composer's `^n` pick is.
+        /// The crown's alone: a worker's ticket is an idea for a person to
+        /// pick up, and the person picks its tier.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<String>,
     },
     /// Put one of the board's EXISTING tags on the caller's own ticket, or
     /// take it off (`tag_ticket`). The registry is the human's vocabulary —
@@ -1778,6 +1790,10 @@ pub enum Response {
         session_started: bool,
         #[serde(default)]
         budget_left: u8,
+        /// The name of the tier the agent launched on — or will, once its
+        /// worktree is cut (T-584). Empty from a daemon before the field.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        tier: String,
     },
     /// AgentAskTicket's receipt (T-413): which ticket holds the words,
     /// whether they replaced an earlier ask of the crown's, and the
@@ -2080,6 +2096,31 @@ pub struct AgentBoardView {
     /// The key of the ticket wearing the crown (T-411), when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crown: Option<String>,
+    /// The tiers a ticket may be started on (T-584), as `tier::Book`
+    /// resolves them for this board (`Book::offered`), each with the
+    /// person's words on when to use it: what the crown picks from for a
+    /// ticket it files or starts. Board data, not session data, so every
+    /// agent's `list_board` carries it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tiers: Vec<AgentTierView>,
+}
+
+/// One tier as `list_board` shows it (T-584). `model` empty and `effort`
+/// `default` leave the CLI's own; `description` is the person's words on
+/// when to use the tier, empty where they wrote none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTierView {
+    pub id: String,
+    pub name: String,
+    pub provider: crate::board::AgentProvider,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    pub effort: crate::tier::Effort,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// What a ticket that picked no tier starts on.
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 /// A ticket's worktree binding, as the board renders it (M4). Oids stay

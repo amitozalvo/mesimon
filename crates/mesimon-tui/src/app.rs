@@ -15211,6 +15211,7 @@ mod tests {
             provider: AgentProvider::ClaudeCode,
             model: "sonnet".into(),
             effort: Effort::High,
+            description: String::new(),
         });
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.cursor_col = 0;
@@ -15307,6 +15308,22 @@ mod tests {
         press(&mut app, 'l');
         let last = app_tier(&sent);
         assert!(last.contains("Codex") && last.contains("model: \"\""), "{last}");
+        // T-584: the person's words on when to use it, a field in place too,
+        // and a paste into it is one line.
+        for _ in 0..3 {
+            press(&mut app, 'j');
+        }
+        assert_eq!(app.tier_fields()[4], TierField::Description);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.text_field(), "the layout pause reads it as a field");
+        for c in "docs, ".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.on_paste("renames\nand one-file fixes").unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let last = app_tier(&sent);
+        assert!(last.contains("description: \"docs, renames and one-file fixes\""), "{last}");
+        assert!(matches!(app.mode, Mode::TierEdit { idx: 4, field: None, .. }), "{:?}", app.mode);
         // Esc goes back to the list, on the tier.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Tiers { idx: 0, naming: None });
@@ -15326,6 +15343,7 @@ mod tests {
             provider: AgentProvider::ClaudeCode,
             model: String::new(),
             effort: Effort::Default,
+            description: String::new(),
         };
         let mut board = board_three_columns();
         board.tiers = vec![tier("01MINE", "mine"), tier("01ALSO", "also")];

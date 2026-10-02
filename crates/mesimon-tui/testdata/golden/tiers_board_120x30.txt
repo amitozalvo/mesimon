@@ -8,16 +8,16 @@
 
 
 
-
                            ╭─ TIERS ∙ THIS BOARD ───────────────────────────────────────────╮
                            │   quick             Claude Code ∙ sonnet ∙ high ∙ default      │
+                           │     docs, renames, one-file fixes                              │
                            │   coder             Claude Code ∙ opus ∙ max                   │
+                           │     this repo: anything touching the daemon's writer           │
                            │   reviewer          Codex ∙ gpt-6-astra ∙ high                 │
                            │   + new tier                                                   │
                            │                                                                │
                            │     machine ∙ an edit here makes this board's own version      │
                            ╰──────────────── jk select ∙ enter edit ∙ b machine ∙ esc back ─╯
-
 
 
 

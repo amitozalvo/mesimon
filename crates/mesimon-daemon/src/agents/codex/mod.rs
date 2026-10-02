@@ -444,6 +444,7 @@ mod policy_tests {
             provider: AgentProvider::Codex,
             model: "gpt-6-astra".into(),
             effort: Effort::High,
+            description: String::new(),
         };
         assert_eq!(
             tier_flags(&reviewer),

@@ -8,15 +8,15 @@
 
 
 
-
                            ╭─ TIERS ────────────────────────────────────────────────────────╮
                            │   quick             Claude Code ∙ sonnet ∙ high ∙ default      │
+                           │     docs, renames, one-file fixes                              │
                            │   coder             Claude Code ∙ opus ∙ xhigh                 │
+                           │     cross-crate refactors                                      │
                            │   + new tier                                                   │
                            │                                                                │
                            │     every board ∙ enter edits                                  │
                            ╰─── jk select ∙ JK move ∙ enter edit ∙ b this board ∙ esc back ─╯
-
 
 
 

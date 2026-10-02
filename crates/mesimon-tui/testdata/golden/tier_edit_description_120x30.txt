@@ -8,15 +8,15 @@
 
 
 
-                           ╭─ TIER ∙ QUICK ─────────────────────────────────────────────────╮
-                           │   Name: quick                                                  │
+                           ╭─ TIER ∙ CODER ∙ THIS BOARD ────────────────────────────────────╮
+                           │   Name: coder                                                  │
                            │   Provider: Claude Code                                        │
-                           │   Model: sonnet                                                │
-                           │   Effort: high                                                 │
-                           │   Description: docs, renames, one-file fixes                   │
-                           │   Delete tier                                                  │
+                           │   Model: opus                                                  │
+                           │   Effort: max                                                  │
+                           │   Description: his repo: anything touching the daemon's writer │
+                           │   Use the machine's                                            │
                            │                                                                │
-                           │     claude --model ∙ an alias (fable, opus, sonnet) or a full~ │
+                           │     when to use it, in your words ∙ the crown picks by it      │
                            ╰────────────────────────────────────── enter save ∙ esc cancel ─╯
 
 

@@ -13,11 +13,11 @@
                            │   Provider: Claude Code                                        │
                            │   Model: opus                                                  │
                            │   Effort: max                                                  │
+                           │   Description: this repo: anything touching the daemon's writ~ │
                            │   Use the machine's                                            │
                            │                                                                │
                            │     enter twice ∙ drops this board's version ∙ the machine's ~ │
                            ╰────────────────────────── jk select ∙ enter revert ∙ esc back ─╯
-
 
 
 

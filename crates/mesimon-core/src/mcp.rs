@@ -99,6 +99,24 @@ macro_rules! persons_plans {
 /// See `persons_plans!`.
 pub const PERSONS_PLANS: &str = persons_plans!();
 
+/// How the crown picks a tier (T-584), as one clause inside `CROWN_WAKES`.
+/// The judgement is the crown's: mesimon scores no ticket's difficulty, and
+/// the words it judges against are the person's own, one description a
+/// tier. The two tool descriptions only name the field.
+macro_rules! crown_tiers {
+    () => {
+        "A ticket the crown files or starts runs on the tier create_ticket or start_agent names \
+         (tier: an id from list_board's tiers), else on its own pick, else the board's default \
+         (is_default). Each tier's description is the person's words on when to use it: the \
+         crown reads each one, picks by the ticket's difficulty against those words, says in \
+         the ticket's brief which tier and why, and leaves the default where no description \
+         fits. A ticket a person started keeps the person's tier. "
+    };
+}
+
+/// See `crown_tiers!`.
+pub const CROWN_TIERS: &str = crown_tiers!();
+
 /// What a crowned agent is told about the board's wake (T-414, T-537), in
 /// the `start_agent` and `ask_agent` receipts and on its own `get_ticket`
 /// view: transient result data, never tool text, so it may instruct. It is
@@ -109,7 +127,8 @@ pub const PERSONS_PLANS: &str = persons_plans!();
 /// worker's question is read (T-566): a crown on a friend's board saw only
 /// `needs-you`, guessed, and sent words that could not land; which
 /// questions the crown may answer (T-569); and where an ask of its that was
-/// dropped before it was sent is read (T-568).
+/// dropped before it was sent is read (T-568); and how it picks a tier for a
+/// ticket it files or starts (T-584, `CROWN_TIERS`).
 pub const CROWN_WAKES: &str = concat!(
     "The board wakes this session on its own: when an agent the crown started delivers, is \
      merged, answers the crown's ask, raises its hand, asks a question or stops on a plan, one \
@@ -132,6 +151,7 @@ pub const CROWN_WAKES: &str = concat!(
      An ask dropped before it was sent (a person replaced it, took it back or talked past it, \
      or its agent went first) reads asked: dropped on that ticket's get_ticket, with who \
      dropped it. ",
+    crown_tiers!(),
     persons_plans!(),
     " ",
     persons_questions!()
@@ -246,8 +266,10 @@ pub fn tools() -> Vec<Value> {
         json!({
             "name": "list_board",
             "description": "Returns the mesimon board: every column in order, what each \
-                            column is for in the user's words (column_descriptions), and every \
-                            ticket's key, title and column. Session and process information \
+                            column is for in the user's words (column_descriptions), every \
+                            ticket's key, title and column, and the agent tiers a ticket may \
+                            start on, each with when to use it in the user's words (tiers: \
+                            description, is_default). Session and process information \
                             is excluded. Title comparison here is the pre-check for \
                             create_ticket: work extending a ticket in todo, in progress \
                             or review belongs on that ticket as scope, not as a sibling. \
@@ -347,9 +369,12 @@ pub fn tools() -> Vec<Value> {
             // At the byte cap: the first clause says WHO works a filed ticket
             // (T-415 — an agent offered to build a sibling ticket in its own
             // session), paid for by "returns key" (the result carries it) and
-            // two schema descriptions losing a word.
+            // two schema descriptions losing a word. The crown's `tier`
+            // (T-584) was paid for by the idempotency key's words (the shim
+            // fills it from the client's tool-use id), "(markdown)", "one per
+            // group" (the refusal says it) and "if omitted".
             "description": "Creates a ticket for a session of its own, not this one. \
-                            One ticket is a work unit to pick up, not an idea/list \
+                            A ticket is a work unit to pick up, not an idea/list \
                             row; findings on one surface share a ticket with a list. \
                             list_board checks scope/duplicates first. Research belongs \
                             in this ticket's notes; the user chooses tickets. Agents \
@@ -361,22 +386,19 @@ pub fn tools() -> Vec<Value> {
                     // A plain string, NOT an enum: see the module header.
                     "column": {
                         "type": "string",
-                        "description": "list_board column; default if omitted.",
+                        "description": "list_board column, else default.",
                     },
-                    "description": {
-                        "type": "string",
-                        "description": "First note (markdown).",
-                    },
+                    "description": { "type": "string", "description": "First note." },
                     // Names, NOT the registry: see the module header on enums.
                     "tags": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "allowed_tags; one per group.",
+                        "description": "allowed_tags.",
                     },
-                    "idempotency_key": {
-                        "type": "string",
-                        "description": "Same key replays.",
-                    },
+                    "idempotency_key": { "type": "string" },
+                    // T-584: the crown's pick, by the person's words on each
+                    // tier. A worker's ticket is a person's to pick up.
+                    "tier": { "type": "string", "description": "Crown only; list_board tiers id." },
                 },
                 "required": ["title"],
                 "additionalProperties": false,
@@ -494,20 +516,22 @@ pub fn tools() -> Vec<Value> {
         // behind the board's spawn budget and the one-agent-per-ticket rule.
         json!({
             "name": "start_agent",
-            "description": "Starts the board's agent on another mesimon ticket (crown only): \
-                            the title and description are its first prompt. Refused, as an \
-                            error, on a ticket that has an agent, on this session's own \
-                            ticket, and past the crown's budget. The receipt's status is \
-                            started, or waiting_for_worktree until its worktree is cut; \
-                            budget_left is the starts left. The board then wakes this session \
-                            when that agent delivers, merges, answers or raises its hand, so \
-                            nothing is polled.",
+            // At the byte cap. The crown's `tier` (T-584) was paid for by the
+            // receipt's own words: its status and budget_left say themselves
+            // (a word, never a bool — T-466 — is the shim's to keep).
+            "description": "Starts the board's agent on another mesimon ticket (crown only); \
+                            title and description are its first prompt. Refused with an agent \
+                            there, on this session's ticket, past the crown's budget, or with \
+                            a tier where a person started one. The receipt names the tier it \
+                            launched on. The board then wakes this session when that agent \
+                            delivers, merges, answers or raises its hand, so nothing is polled.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The ticket's key, from list_board." },
                     "seen": { "type": "string", "description": "get_ticket's seen stamp." },
                     "plan": { "type": "boolean", "description": "Optional. True: plan mode." },
+                    "tier": { "type": "string", "description": "Optional. A list_board tiers id." },
                 },
                 "required": ["key", "seen"],
                 "additionalProperties": false,
@@ -687,6 +711,8 @@ pub enum ToolCall {
         key: String,
         seen: String,
         plan: bool,
+        /// A tier id (or name) from `list_board`'s `tiers` (T-584).
+        tier: Option<String>,
     },
     SleepAgent {
         key: String,
@@ -720,6 +746,8 @@ pub enum ToolCall {
         /// the argument was absent.
         tags: Vec<String>,
         idempotency_key: Option<String>,
+        /// The crown's tier pick (T-584).
+        tier: Option<String>,
     },
     TagTicket {
         name: String,
@@ -865,6 +893,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             key: word(args, "key")?,
             seen: word(args, "seen")?,
             plan: flag(args, "plan")?,
+            tier: opt_word(args, "tier")?,
         }),
         "sleep_agent" => {
             Ok(ToolCall::SleepAgent { key: word(args, "key")?, seen: word(args, "seen")? })
@@ -977,6 +1006,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                     .map(str::to_string),
                 tags,
                 idempotency_key: word("idempotency_key").map(str::to_string),
+                tier: opt_word(args, "tier")?,
             })
         }
         "tag_ticket" => {
@@ -1473,7 +1503,12 @@ mod tests {
                 "archive_ticket",
             ),
             (
-                Command::AgentStartTicket { key: "T-1".into(), seen: None, plan: false },
+                Command::AgentStartTicket {
+                    key: "T-1".into(),
+                    seen: None,
+                    plan: false,
+                    tier: None,
+                },
                 "start_agent",
             ),
             (Command::AgentSleepTicket { key: "T-1".into(), seen: None }, "sleep_agent"),
@@ -1512,6 +1547,7 @@ mod tests {
                     description: None,
                     tags: vec![],
                     idempotency_key: None,
+                    tier: None,
                 },
                 "create_ticket",
             ),
@@ -1769,13 +1805,23 @@ mod tests {
         );
         assert_eq!(
             parse_tool_call("start_agent", &json!({ "key": " T-4 ", "seen": "abc" })),
-            Ok(ToolCall::StartAgent { key: "T-4".into(), seen: "abc".into(), plan: false })
+            Ok(ToolCall::StartAgent {
+                key: "T-4".into(),
+                seen: "abc".into(),
+                plan: false,
+                tier: None
+            })
         );
         // The plan flag (T-434): absent is false, a boolean is itself, a
         // non-boolean is refused by name.
         assert_eq!(
             parse_tool_call("start_agent", &json!({ "key": "T-4", "seen": "abc", "plan": true })),
-            Ok(ToolCall::StartAgent { key: "T-4".into(), seen: "abc".into(), plan: true })
+            Ok(ToolCall::StartAgent {
+                key: "T-4".into(),
+                seen: "abc".into(),
+                plan: true,
+                tier: None
+            })
         );
         assert!(parse_tool_call(
             "start_agent",
@@ -1876,6 +1922,71 @@ mod tests {
         assert!(parse_tool_call("tag_ticket", &json!({ "name": "bug", "remove": "yes" })).is_err());
     }
 
+    /// T-584: the crown names a tier on the two tools that start work, and
+    /// reads the tiers on `list_board`. The fields are named inside the cap
+    /// and the lint; how to pick is the receipt's, in `CROWN_WAKES`.
+    #[test]
+    fn the_crown_names_a_tier_and_is_told_how_to_pick_one() {
+        assert_eq!(
+            parse_tool_call(
+                "start_agent",
+                &json!({ "key": "T-4", "seen": "abc", "tier": " 01DEEP " })
+            ),
+            Ok(ToolCall::StartAgent {
+                key: "T-4".into(),
+                seen: "abc".into(),
+                plan: false,
+                tier: Some("01DEEP".into())
+            })
+        );
+        match parse_tool_call("create_ticket", &json!({ "title": "t", "tier": "quick" })) {
+            Ok(ToolCall::CreateTicket { tier, .. }) => assert_eq!(tier.as_deref(), Some("quick")),
+            other => panic!("{other:?}"),
+        }
+        for tool in ["start_agent", "create_ticket"] {
+            let args = json!({ "key": "T-4", "seen": "abc", "title": "t", "tier": 3 });
+            assert!(parse_tool_call(tool, &args).unwrap_err().contains("tier must be a string"));
+        }
+
+        let registry = tools();
+        let tool = |name: &str| registry.iter().find(|t| t["name"] == name).unwrap().clone();
+        for name in ["start_agent", "create_ticket"] {
+            let t = tool(name);
+            let field = &t["inputSchema"]["properties"]["tier"];
+            assert_eq!(field["type"], "string", "{name} takes a tier");
+            assert!(field["description"].as_str().unwrap().contains("list_board tiers id"));
+            assert!(!t["inputSchema"]["required"].as_array().unwrap().contains(&json!("tier")));
+            lint_tool_text(field["description"].as_str().unwrap()).unwrap();
+        }
+        assert!(tool("create_ticket")["inputSchema"]["properties"]["tier"]["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("Crown only"));
+        let start = tool("start_agent");
+        let start = start["description"].as_str().unwrap();
+        for words in ["with a tier where a person started one", "names the tier it launched on"] {
+            assert!(start.contains(words), "start_agent says {words:?}");
+        }
+        let list = tool("list_board");
+        let list = list["description"].as_str().unwrap();
+        for words in ["agent tiers a ticket may start on", "in the user's words (tiers"] {
+            assert!(list.contains(words), "list_board says {words:?}");
+        }
+
+        for words in [
+            "an id from list_board's tiers",
+            "the person's words on when to use it",
+            "by the ticket's difficulty",
+            "says in the ticket's brief which tier and why",
+            "leaves the default where no description fits",
+            "A ticket a person started keeps the person's tier",
+        ] {
+            assert!(CROWN_TIERS.contains(words), "CROWN_TIERS says {words:?}");
+        }
+        assert!(CROWN_WAKES.contains(CROWN_TIERS), "the receipt paragraph carries it");
+        assert_eq!(lint_tool_text(CROWN_TIERS), Ok(()));
+    }
+
     #[test]
     fn create_ticket_parses_and_refuses() {
         assert_eq!(
@@ -1886,6 +1997,7 @@ mod tests {
                 description: None,
                 tags: vec![],
                 idempotency_key: None,
+                tier: None,
             })
         );
         assert_eq!(
@@ -1900,6 +2012,7 @@ mod tests {
                 description: Some("  # why\n\nbecause".into()),
                 tags: vec!["BUG".into(), "P1".into()],
                 idempotency_key: Some("k".into()),
+                tier: None,
             })
         );
         // Blank optionals are absent, not empty strings the daemon must judge.
@@ -1914,6 +2027,7 @@ mod tests {
                 description: None,
                 tags: vec![],
                 idempotency_key: None,
+                tier: None,
             })
         );
         assert!(parse_tool_call("create_ticket", &json!({})).is_err());
@@ -2249,6 +2363,7 @@ mod tests {
                 description: None,
                 tags: vec![],
                 idempotency_key: None,
+                tier: None,
             },
             Command::AgentTagTicket { name: "x".into(), group: None, remove: false, key: None },
             Command::AgentRaiseHand { reason: "x".into() },
@@ -2259,7 +2374,7 @@ mod tests {
                 seen: None,
             },
             Command::AgentArchiveTicket { key: "T-1".into(), restore: false, seen: None },
-            Command::AgentStartTicket { key: "T-1".into(), seen: None, plan: false },
+            Command::AgentStartTicket { key: "T-1".into(), seen: None, plan: false, tier: None },
             Command::AgentSleepTicket { key: "T-1".into(), seen: None },
             Command::AgentAskTicket {
                 key: "T-1".into(),

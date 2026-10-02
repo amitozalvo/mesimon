@@ -147,8 +147,8 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::ArchiveTicket { key, restore, seen } => {
             Command::AgentArchiveTicket { key, restore, seen: Some(seen) }
         }
-        ToolCall::StartAgent { key, seen, plan } => {
-            Command::AgentStartTicket { key, seen: Some(seen), plan }
+        ToolCall::StartAgent { key, seen, plan, tier } => {
+            Command::AgentStartTicket { key, seen: Some(seen), plan, tier }
         }
         ToolCall::SleepAgent { key, seen } => Command::AgentSleepTicket { key, seen: Some(seen) },
         ToolCall::AskAgent { key, text, seen, plan } => {
@@ -160,13 +160,14 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::AcceptPlan { key, seen, request } => {
             Command::AgentAcceptPlan { key, seen: Some(seen), request }
         }
-        ToolCall::CreateTicket { title, column, description, tags, idempotency_key } => {
+        ToolCall::CreateTicket { title, column, description, tags, idempotency_key, tier } => {
             Command::AgentCreateTicket {
                 title,
                 column,
                 description,
                 tags,
                 idempotency_key: idempotency_key.or(tool_use_id),
+                tier,
             }
         }
         ToolCall::TagTicket { name, group, remove, key } => {
@@ -223,13 +224,20 @@ fn render(resp: Response) -> Value {
         // read as "no" when it meant "not yet".
         // `wakes` (T-537) says the board will tell the crown what became of
         // the start, so it arms no monitor of its own — which would hold the
-        // wake.
-        Response::AgentStarted { key, session_started, budget_left } => text(&json!({
-            "key": key,
-            "status": if session_started { "started" } else { "waiting_for_worktree" },
-            "budget_left": budget_left,
-            "wakes": mcp::CROWN_WAKES
-        })),
+        // wake — and how it picks a tier (T-584). `tier` names the one the
+        // agent launched on; a daemon from before it sends none.
+        Response::AgentStarted { key, session_started, budget_left, tier } => {
+            let mut body = json!({
+                "key": key,
+                "status": if session_started { "started" } else { "waiting_for_worktree" },
+                "budget_left": budget_left,
+                "wakes": mcp::CROWN_WAKES
+            });
+            if !tier.is_empty() {
+                body["tier"] = json!(tier);
+            }
+            text(&body)
+        }
         // The crown's ask (T-413): held on the card until a person sends it,
         // or, where the board lets the crown send (T-550), queued to go once
         // the agent is idle. `held_because` says why a send was held.
@@ -531,6 +539,7 @@ mod tests {
                 key: "T-7".into(),
                 session_started,
                 budget_left: 0,
+                tier: "deep".into(),
             });
             assert_eq!(v["isError"], false);
             serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
@@ -539,6 +548,10 @@ mod tests {
         assert_eq!(now["status"], "started");
         assert_eq!(now["key"], "T-7");
         assert_eq!(now["budget_left"], 0);
+        // T-584: the receipt names the tier the agent launched on, and the
+        // paragraph says how the crown picks one.
+        assert_eq!(now["tier"], "deep");
+        assert!(mcp::CROWN_WAKES.contains(mcp::CROWN_TIERS));
         // T-537: the receipt says the board wakes the crown, so it polls nothing.
         assert_eq!(now["wakes"], mcp::CROWN_WAKES);
         assert!(mcp::CROWN_WAKES.contains("Nothing needs polling"));

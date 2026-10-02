@@ -252,6 +252,16 @@ the agent's. The crown is told that a plan it would change, or one that reaches 
 is yours: it raises its hand on its own card, and you answer the dialog. If you answer first, the
 crown presses nothing.
 
+The crown picks the agent tier for each ticket it files or starts, and it picks by your words.
+Give each tier a description in **Settings › Agents › Tiers**: when to use it, in your own words
+(`docs, renames, one-file fixes`, `cross-crate refactors and anything touching the daemon`). The
+crown reads every description, chooses by how hard the ticket is against what you wrote, and says
+in the ticket's brief which tier it chose and why. Where no description fits, it uses the default
+tier. A ticket you started keeps your tier: the crown may start it again, but not on another
+tier. Other agents can read the descriptions but cannot choose a tier for a ticket they file;
+that choice stays with you when you pick the ticket up. mesimon does not judge how hard a ticket
+is. The crown makes the choice, against what you wrote.
+
 At most three agents the crown started may be awake at once; **Settings › Agents** changes the
 number or turns starting off. A ticket the crown started can never be crowned itself. The crown
 may put an agent it started to sleep once that agent is idle, the same park as `x` on its card:
@@ -386,8 +396,9 @@ MCP servers still load alongside.
 
 There is no tool, at any tier, to kill a session, delete a ticket, merge a branch, or read a
 session, a transcript or a cost. Those commands are refused by the daemon, not merely absent from
-the tool list. Starting an agent, and archiving or renaming another ticket, belong to the ticket
-wearing [the crown](#the-crown-one-agent-runs-the-board) alone;
+the tool list. Starting an agent, choosing the tier a ticket it files or starts runs on, and
+archiving or renaming another ticket, belong to the ticket wearing
+[the crown](#the-crown-one-agent-runs-the-board) alone;
 [promise 3](PROMISES.md#3-zero-prompt-injection) says how the crown works.
 
 Claude's `Edit`/`Write` and Codex's structured `apply_patch` writes into `.mesimon/` and

@@ -9,6 +9,7 @@
 
 use super::*;
 use mesimon_core::board::{AgentProvider, SessionRecord};
+use mesimon_core::text::scrub_cells;
 use mesimon_core::tier::{self, Book, Effort, Source, Tier, TierScope};
 
 /// One row of the tiers list.
@@ -25,6 +26,9 @@ pub enum TierField {
     Provider,
     Model,
     Effort,
+    /// When to use it, in the person's words (T-584): what the crown reads
+    /// to pick a tier for a ticket it files or starts.
+    Description,
     /// Delete the tier — or, for this board's own version of a machine
     /// tier, drop the version and inherit the machine's again.
     Remove,
@@ -361,7 +365,7 @@ impl App {
                 let field = self.tier_fields().get(*idx).copied();
                 c.tier_on_step = matches!(field, Some(TierField::Provider | TierField::Effort));
                 c.tier_edit_enter_word = match field {
-                    Some(TierField::Name | TierField::Model) => "edit",
+                    Some(TierField::Name | TierField::Model | TierField::Description) => "edit",
                     Some(TierField::Provider) => "switch",
                     Some(TierField::Effort) => "next",
                     Some(TierField::Remove) if *armed => "confirm",
@@ -532,6 +536,7 @@ impl App {
                     provider,
                     model: String::new(),
                     effort: Effort::Default,
+                    description: String::new(),
                 };
                 let scope = self.tier_scope();
                 match self.req(Command::SaveTier { scope, tier: t.clone() }) {
@@ -553,6 +558,7 @@ impl App {
                 match self.tier_fields().get(idx) {
                     Some(TierField::Name) => t.name = text,
                     Some(TierField::Model) => t.model = text,
+                    Some(TierField::Description) => t.description = text,
                     _ => {}
                 }
                 if self.save_edited(t)? {
@@ -582,11 +588,16 @@ impl App {
         }
     }
 
-    /// The page's rows: the four settings, and the removal where there is
+    /// The page's rows: the five settings, and the removal where there is
     /// one to make — a machine tier seen from a board has nothing to drop.
     pub(crate) fn tier_fields(&self) -> Vec<TierField> {
-        let mut fields =
-            vec![TierField::Name, TierField::Provider, TierField::Model, TierField::Effort];
+        let mut fields = vec![
+            TierField::Name,
+            TierField::Provider,
+            TierField::Model,
+            TierField::Effort,
+            TierField::Description,
+        ];
         let removable = match self.edited_tier() {
             Some((_, Source::Machine)) => !self.settings_board_scope,
             Some(_) => true,
@@ -628,6 +639,14 @@ impl App {
                         .into()
                 },
             ),
+            TierField::Description => (
+                if t.description.is_empty() {
+                    "Description: none".into()
+                } else {
+                    format!("Description: {}", scrub_cells(&t.description, false))
+                },
+                "when to use it, in your words ∙ the crown picks by it".into(),
+            ),
             TierField::Remove => {
                 let (label, what) = if source == Source::Override {
                     ("Use the machine's", "drops this board's version ∙ the machine's comes back")
@@ -660,6 +679,10 @@ impl App {
             }
             Some(TierField::Model) => {
                 let buf = EditBuffer::from_text(t.model, tier::MODEL_MAX);
+                self.mode = Mode::TierEdit { id, idx, field: Some(buf), armed: false };
+            }
+            Some(TierField::Description) => {
+                let buf = EditBuffer::from_text(t.description, tier::DESCRIPTION_MAX);
                 self.mode = Mode::TierEdit { id, idx, field: Some(buf), armed: false };
             }
             Some(TierField::Provider | TierField::Effort) => self.tier_edit_step(true)?,

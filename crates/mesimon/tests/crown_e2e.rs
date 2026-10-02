@@ -376,7 +376,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let start = |c: &mut TestClient, key: &str, seen: Option<String>| {
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: key.into(), seen, plan: false },
+            Command::AgentStartTicket { key: key.into(), seen, plan: false, tier: None },
         )
     };
     // Refused: a ticket that already holds a seat, the crown's own ticket,
@@ -398,7 +398,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // the touch says so, and the receipt says what is left.
     let v1 = read(&mut c, sa, &k1).unwrap();
     match start(&mut c, &k1, v1.seen) {
-        Response::AgentStarted { key, session_started, budget_left } => {
+        Response::AgentStarted { key, session_started, budget_left, .. } => {
             assert_eq!(key, k1);
             assert!(session_started);
             assert_eq!(budget_left, 1);
@@ -649,6 +649,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
                 description: None,
                 tags: Vec::new(),
                 idempotency_key: None,
+                tier: None,
             },
         ) {
             Response::AgentCreated { .. } => {}
@@ -810,7 +811,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         let v = read(c, sa, key).unwrap();
         match c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: key.into(), seen: v.seen, plan: false },
+            Command::AgentStartTicket { key: key.into(), seen: v.seen, plan: false, tier: None },
         ) {
             Response::AgentStarted { .. } => {}
             other => panic!("start_agent {key}: {other:?}"),
@@ -1021,7 +1022,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         let v = read(c, sa, &kw3).unwrap();
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: kw3.clone(), seen: v.seen, plan: false },
+            Command::AgentStartTicket { key: kw3.clone(), seen: v.seen, plan: false, tier: None },
         )
     };
     match start_w3(&mut c) {
@@ -1160,7 +1161,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     let v = read(&mut c, sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
-        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false },
+        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false, tier: None },
     ) {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
@@ -1364,7 +1365,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     let v = read(&mut c, sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
-        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false },
+        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false, tier: None },
     ) {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
@@ -1522,7 +1523,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         let v = read(c, sa, key).unwrap();
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: key.into(), seen: v.seen, plan: false },
+            Command::AgentStartTicket { key: key.into(), seen: v.seen, plan: false, tier: None },
         )
     };
     assert!(matches!(start_agent(&mut c, &kw), Response::AgentStarted { .. }));
@@ -1811,7 +1812,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     let v = read(&mut c, sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
-        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false },
+        Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false, tier: None },
     ) {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
@@ -2122,7 +2123,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false },
+            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false, tier: None },
         ),
         Response::AgentStarted { .. }
     ));
@@ -2346,7 +2347,7 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false },
+            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: false, tier: None },
         ),
         Response::AgentStarted { .. }
     ));
@@ -2569,7 +2570,7 @@ fn the_crown_accepts_a_plan_by_default() {
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
-            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: true },
+            Command::AgentStartTicket { key: kw.clone(), seen: v.seen, plan: true, tier: None },
         ),
         Response::AgentStarted { .. }
     ));
@@ -2754,4 +2755,160 @@ fn the_crown_accepts_a_plan_by_default() {
         other => panic!("accept_plan after a person: {other:?}"),
     }
     assert_eq!(pressed(), before, "the crown pressed nothing");
+}
+
+/// T-584: the crown picks a tier by the person's words. `list_board` lists
+/// the tiers a ticket may start on, each with the words the person wrote on
+/// when to use it, to every agent; the crown files a ticket on one and its
+/// start launches with that tier's flags, and a start that names a tier
+/// switches the ticket to it first and says so in the receipt. A worker may
+/// not pick, a tier that does not resolve is refused with the ids it could
+/// have named, and a ticket a person started keeps the person's tier.
+#[test]
+fn the_crown_picks_a_tier_by_the_persons_words() {
+    use mesimon_core::board::AgentProvider;
+    use mesimon_core::tier::{Effort, Tier, TierScope};
+    const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n";
+    let Some(h) = Harness::boot_with_env("crown_tier", Some(STUB), &[("MESIMON_NO_TAG_SEED", "1")])
+    else {
+        return;
+    };
+    let mut c = h.client("crown_tier");
+    let tier = |id: &str, name: &str, model: &str, effort, words: &str| Tier {
+        id: id.into(),
+        name: name.into(),
+        provider: AgentProvider::ClaudeCode,
+        model: model.into(),
+        effort,
+        description: words.into(),
+    };
+    // The person's tiers, one on each layer, with their words on each.
+    let quick = tier("01QUICK", "quick", "sonnet", Effort::Low, "docs, renames, one-file fixes");
+    let deep = tier("01DEEP", "deep", "opus", Effort::Max, "cross-crate refactors");
+    for (scope, t) in [(TierScope::Machine, quick), (TierScope::Board, deep)] {
+        assert!(matches!(c.request(Command::SaveTier { scope, tier: t }), Response::Ok));
+    }
+    let flag = |c: &mut TestClient, ticket: ulid::Ulid, name: &str| -> Option<String> {
+        let board = c.board();
+        let argv = &board.live_agent(ticket).expect("a seat").argv;
+        argv.iter().position(|a| a == name).and_then(|at| argv.get(at + 1).cloned())
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "split the writer");
+    let p = create(&mut c, "a person's own");
+    let (kw, kp) = (key_of(&mut c, w), key_of(&mut c, p));
+    let sa = spawn(&mut c, a);
+    let sp = spawn(&mut c, p);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+
+    // ---- list_board: the tiers in the list's order, the person's words on each
+    let listed = |c: &mut TestClient, session| match c
+        .send(Principal::Agent { session }, Command::AgentListBoard)
+    {
+        Response::AgentBoard { board } => board.tiers,
+        other => panic!("list_board: {other:?}"),
+    };
+    let tiers = listed(&mut c, sa);
+    let rows: Vec<(&str, &str, bool)> =
+        tiers.iter().map(|t| (t.name.as_str(), t.description.as_str(), t.is_default)).collect();
+    assert_eq!(
+        rows,
+        [
+            ("claude", "", true),
+            ("quick", "docs, renames, one-file fixes", false),
+            ("deep", "cross-crate refactors", false)
+        ]
+    );
+    assert_eq!((tiers[2].model.as_str(), tiers[2].effort), ("opus", Effort::Max));
+    assert_eq!(listed(&mut c, sp), tiers, "board data: a worker reads it too");
+
+    let create_on = |c: &mut TestClient, session, title: &str, pick: &str| {
+        c.send(
+            Principal::Agent { session },
+            Command::AgentCreateTicket {
+                title: title.into(),
+                column: None,
+                description: None,
+                tags: Vec::new(),
+                idempotency_key: None,
+                tier: Some(pick.into()),
+            },
+        )
+    };
+    // ---- a worker's ticket is a person's to pick up, tier and all -------------
+    match create_on(&mut c, sp, "a worker's idea", "01QUICK") {
+        Response::Err { message } => assert!(message.contains("crown's to pick"), "{message}"),
+        other => panic!("a worker picking a tier: {other:?}"),
+    }
+    assert!(!c.board().tickets.iter().any(|t| t.title == "a worker's idea"), "nothing filed");
+    // ---- a tier that does not resolve names the ones that do ------------------
+    match create_on(&mut c, sa, "nowhere", "huge") {
+        Response::Err { message } => {
+            for word in ["no tier huge", "claude", "01QUICK (quick)", "01DEEP (deep)"] {
+                assert!(message.contains(word), "{word}: {message}");
+            }
+        }
+        other => panic!("an unknown tier: {other:?}"),
+    }
+
+    // ---- the crown files on a tier, and the start launches on it --------------
+    let kf = match create_on(&mut c, sa, "rename the field", "01QUICK") {
+        Response::AgentCreated { key, .. } => key,
+        other => panic!("create_ticket with a tier: {other:?}"),
+    };
+    let f = c.board().ticket_by_key(&kf).unwrap().id;
+    assert_eq!(c.board().ticket(f).unwrap().tier.as_deref(), Some("01QUICK"));
+    let start = |c: &mut TestClient, key: &str, pick: Option<&str>| {
+        let v = read(c, sa, key).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: key.into(),
+                seen: v.seen,
+                plan: false,
+                tier: pick.map(str::to_string),
+            },
+        )
+    };
+    match start(&mut c, &kf, None) {
+        Response::AgentStarted { session_started, tier, .. } => {
+            assert!(session_started);
+            assert_eq!(tier, "quick", "the receipt names the tier it launched on");
+        }
+        other => panic!("start_agent: {other:?}"),
+    }
+    assert_eq!(flag(&mut c, f, "--model").as_deref(), Some("sonnet"));
+    assert_eq!(flag(&mut c, f, "--effort").as_deref(), Some("low"));
+
+    // ---- a start that names a tier picks it first, by name as well as id ------
+    match start(&mut c, &kw, Some("Deep")) {
+        Response::AgentStarted { tier, .. } => assert_eq!(tier, "deep"),
+        other => panic!("start_agent with a tier: {other:?}"),
+    }
+    assert_eq!(c.board().ticket(w).unwrap().tier.as_deref(), Some("01DEEP"));
+    assert_eq!(flag(&mut c, w, "--model").as_deref(), Some("opus"));
+    assert_eq!(flag(&mut c, w, "--effort").as_deref(), Some("max"));
+    assert_eq!(c.board().live_agent(w).unwrap().tier, "01DEEP");
+
+    // ---- a ticket a person started keeps the person's tier --------------------
+    let _ = c.request(Command::KillSession { id: sp });
+    wait_until(std::time::Duration::from_secs(10), "the person's agent gone", || {
+        c.board().live_agent(p).is_none()
+    });
+    match start(&mut c, &kp, Some("01DEEP")) {
+        Response::Err { message } => {
+            assert!(message.contains("a person started"), "{message}");
+            assert!(message.contains("(claude)"), "names the person's tier: {message}");
+        }
+        other => panic!("the crown's tier over a person's start: {other:?}"),
+    }
+    assert_eq!(c.board().ticket(p).unwrap().tier, None, "the pick is untouched");
+    assert!(c.board().live_agent(p).is_none(), "and nothing started");
+    // The person's own tier is the crown's to start it on again.
+    match start(&mut c, &kp, Some("claude")) {
+        Response::AgentStarted { tier, .. } => assert_eq!(tier, "claude"),
+        other => panic!("a start on the person's own tier: {other:?}"),
+    }
+    assert_eq!(flag(&mut c, p, "--model"), None, "the built-in passes no model");
 }

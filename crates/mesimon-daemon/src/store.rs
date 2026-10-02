@@ -2172,6 +2172,7 @@ order = "a0"
                 provider: AgentProvider::ClaudeCode,
                 model: "opus".into(),
                 effort: mesimon_core::tier::Effort::Xhigh,
+                description: "cross-crate refactors".into(),
             }],
         };
         let text = toml::to_string_pretty(&cf).unwrap();
@@ -2391,11 +2392,14 @@ by = "local"
                 provider: AgentProvider::ClaudeCode,
                 model: "sonnet".into(),
                 effort: Effort::High,
+                description: "docs, renames, one-file fixes".into(),
             }],
         };
         save_machine_tiers(&path, &tiers).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("schema_version = 1\n"), "{text}");
+        // T-584: the person's words ride the file, and no schema moves.
+        assert!(text.contains("description = \"docs, renames, one-file fixes\""), "{text}");
         let back = load_machine_tiers(&path);
         assert_eq!(back.tiers, tiers);
         assert!(back.notice.is_none() && !back.barred);
@@ -2435,6 +2439,7 @@ by = "local"
             provider: AgentProvider::Codex,
             model: String::new(),
             effort: mesimon_core::tier::Effort::Default,
+            description: "reviews: this board's words".into(),
         });
         save_columns(&paths, &loaded.board).unwrap();
         save_ticket(&paths, &loaded.board.tickets[0]).unwrap();

@@ -1043,6 +1043,7 @@ fn a_codex_tier_switch_parks_waits_for_the_stop_and_wakes_on_the_new_tier() {
         provider: AgentProvider::Codex,
         model: "gpt-6-astra".into(),
         effort: Effort::High,
+        description: String::new(),
     };
     assert!(matches!(
         c.request(Command::SaveTier { scope: TierScope::Board, tier: reviewer }),

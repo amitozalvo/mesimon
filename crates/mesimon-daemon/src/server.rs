@@ -4686,7 +4686,7 @@ impl Daemon {
                     Err(message) => Response::Err { message },
                 }
             }
-            Command::AgentStartTicket { key, seen, plan } => {
+            Command::AgentStartTicket { key, seen, plan, tier } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -4716,8 +4716,27 @@ impl Daemon {
                 if let Some(message) = self.crown_budget_refusal() {
                     return Response::Err { message };
                 }
-                if let Some(message) = self.plan_refusal(target, plan) {
+                // The crown's tier (T-584), judged before anything changes:
+                // one it may name, not over a person's own start, and one
+                // plan mode can launch on.
+                let pick = match tier.as_deref().map(|w| self.crown_tier_pick(target, &key, w)) {
+                    None => None,
+                    Some(Ok(t)) => Some(t),
+                    Some(Err(message)) => return Response::Err { message },
+                };
+                let plan_refused = match &pick {
+                    Some(t) => (plan && t.provider == AgentProvider::Codex).then(|| {
+                        format!("plan mode is a claude launch flag ∙ {} runs codex", t.name)
+                    }),
+                    None => self.plan_refusal(target, plan),
+                };
+                if let Some(message) = plan_refused {
                     return Response::Err { message };
+                }
+                if let Some(t) = pick {
+                    if let Err(message) = self.apply_ticket_tier(target, Some(t.id)) {
+                        return Response::Err { message };
+                    }
                 }
                 let kind = self.tier_book().start_provider(target).session_kind();
                 let session_started =
@@ -4740,6 +4759,7 @@ impl Daemon {
                     key: self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key),
                     session_started,
                     budget_left: self.board.crown_budget.saturating_sub(held.len() as u8),
+                    tier: self.tier_book().launch(target, kind).name,
                 }
             }
             // The crown's sleep (T-539): `x` on a card the crown started. The
@@ -4782,7 +4802,14 @@ impl Daemon {
                 self.agent_ticket_view(target)
                     .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
             }
-            Command::AgentCreateTicket { title, column, description, tags, idempotency_key } => {
+            Command::AgentCreateTicket {
+                title,
+                column,
+                description,
+                tags,
+                idempotency_key,
+                tier,
+            } => {
                 // Replay first, for the same reason as a move: a retry after
                 // `Connection closed` must not file the same work twice.
                 if let Some(key) = &idempotency_key {
@@ -4798,7 +4825,8 @@ impl Daemon {
                     }
                 }
                 let by = Principal::Agent { session };
-                let resp = self.agent_create_ticket(&by, ticket, title, column, description, tags);
+                let resp =
+                    self.agent_create_ticket(&by, ticket, title, column, description, tags, tier);
                 if let (Some(key), Response::AgentCreated { key: short_key, column, .. }) =
                     (idempotency_key, &resp)
                 {
@@ -5314,7 +5342,9 @@ impl Daemon {
     /// one, is written as the first note by `write_note`, so it carries the
     /// agent as its author the way any note an agent writes does. Tags are
     /// resolved BEFORE the mint (`resolve_agent_tags`): a bad name refuses
-    /// the whole call and leaves no half-filed card behind.
+    /// the whole call and leaves no half-filed card behind. The arguments
+    /// are the tool's own fields, one each.
+    #[allow(clippy::too_many_arguments)]
     fn agent_create_ticket(
         &mut self,
         by: &Principal,
@@ -5323,6 +5353,7 @@ impl Daemon {
         column: Option<String>,
         description: Option<String>,
         tags: Vec<String>,
+        tier: Option<String>,
     ) -> Response {
         // No column named means the board's default (T-279): the one chosen
         // in Settings while it still exists, else the first column.
@@ -5341,6 +5372,23 @@ impl Daemon {
             Ok(refs) => refs,
             Err(message) => return Response::Err { message },
         };
+        // The new ticket's tier (T-584) is the crown's to pick, by the
+        // person's words on each: a worker's ticket is an idea for a person
+        // to pick up, and its tier is that person's.
+        let tier = match tier {
+            None => None,
+            Some(_) if !self.board.is_crowned(from) => {
+                return Response::Err {
+                    message: "tier is the crown's to pick; a ticket filed here is for a person \
+                              to pick up, and the person picks its tier (^n on its card)"
+                        .into(),
+                }
+            }
+            Some(word) => match self.tier_book().resolve_offered(&word) {
+                Ok(t) => Some(t.id),
+                Err(message) => return Response::Err { message },
+            },
+        };
         // One mint (T-243): a description the daemon would refuse refuses the
         // ticket with it, so the receipt never has to say "created, but".
         let mint = Mint {
@@ -5350,7 +5398,7 @@ impl Daemon {
             from: Some(from),
             tags,
             note: description.map(|text| (text, Vec::new())),
-            tier: None,
+            tier,
             envelope: None,
         };
         let id = match self.mint_full(by, mint) {
@@ -5797,7 +5845,29 @@ impl Daemon {
             tickets,
             board_version: self.board_version,
             crown: self.board.crown_holder().map(|t| t.short_key.clone()),
+            tiers: self.agent_tier_views(),
         }
+    }
+
+    /// `list_board`'s tiers (T-584): what an agent may name for a ticket it
+    /// files or starts (`Book::offered`), each with the person's words on
+    /// when to use it. The words are scrubbed again here, because a
+    /// hand-edited `tiers.toml` never crossed `save_tier`.
+    fn agent_tier_views(&self) -> Vec<mesimon_core::command::AgentTierView> {
+        let book = self.tier_book();
+        let default = book.default_tier().id;
+        book.offered()
+            .into_iter()
+            .map(|t| mesimon_core::command::AgentTierView {
+                is_default: t.id == default,
+                description: mesimon_core::tier::sanitize_description(&t.description),
+                model: t.model_arg().unwrap_or_default().to_string(),
+                id: t.id,
+                name: t.name,
+                provider: t.provider,
+                effort: t.effort,
+            })
+            .collect()
     }
 
     /// The one function that moves a ticket between columns.

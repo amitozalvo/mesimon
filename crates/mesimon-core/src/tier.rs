@@ -32,6 +32,10 @@ pub const NAME_MAX: usize = 16;
 /// A model rides argv and a Codex `-c` TOML string; this is generous for
 /// `claude-opus-5-5[1m]` and bounded for both.
 pub const MODEL_MAX: usize = 64;
+/// A tier's description (T-584), in bytes: a sentence or two on when to use
+/// it, the column description's bound, since `list_board` carries every
+/// tier's to every agent that reads the board.
+pub const DESCRIPTION_MAX: usize = 300;
 
 /// How hard the agent thinks. `Default` passes nothing and leaves the CLI's
 /// own choice. Each provider accepts its own subset ([`Effort::ring`]):
@@ -109,6 +113,14 @@ pub struct Tier {
     pub model: String,
     #[serde(default, skip_serializing_if = "Effort::is_default")]
     pub effort: Effort,
+    /// When to use this tier, in the person's own words (T-584): "docs,
+    /// renames, one-file fixes". The crown reads it in `list_board` to pick
+    /// a tier for a ticket it files or starts; nothing in mesimon reads it
+    /// as a rule. Each layer's entry carries its own, so a board's version
+    /// of a machine tier keeps the board's words. An older build drops it,
+    /// which widens nothing, so no schema moves.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 impl Tier {
@@ -121,6 +133,7 @@ impl Tier {
             provider,
             model: String::new(),
             effort: Effort::Default,
+            description: String::new(),
         }
     }
 
@@ -365,6 +378,48 @@ impl<'a> Book<'a> {
         tiers.into_iter().filter(|t| seat.is_none_or(|p| t.provider == p)).collect()
     }
 
+    /// The tiers an agent may name for a ticket it files or starts (T-584),
+    /// as `list_board` lists them: `^n`'s ring for an empty seat
+    /// ([`Self::cycle`]) — the tiers a person made, in the tiers list's
+    /// order, with the default first when it is a built-in. While nobody
+    /// made a tier the ring is both built-ins, and only the default is
+    /// offered: a built-in carries no words to pick it by, and the other
+    /// one is a CLI this person may not run.
+    pub fn offered(&self) -> Vec<Tier> {
+        let mut tiers = self.cycle(None);
+        if self.custom().is_empty() {
+            let default = self.default_tier().id;
+            tiers.retain(|t| t.id == default);
+        }
+        tiers
+    }
+
+    /// The tier an agent's `word` names among [`Self::offered`]: its id, or
+    /// its name in any case (names are unique, and a ULID is no name). The
+    /// refusal lists what it could have named.
+    pub fn resolve_offered(&self, word: &str) -> Result<Tier, String> {
+        let offered = self.offered();
+        let found = offered
+            .iter()
+            .find(|t| t.id == word)
+            .or_else(|| offered.iter().find(|t| t.name.eq_ignore_ascii_case(word)));
+        match found {
+            Some(t) => Ok(t.clone()),
+            None => Err(format!(
+                "no tier {word} on this board; list_board's tiers are {}",
+                offered
+                    .iter()
+                    .map(|t| if t.id == t.name {
+                        t.id.clone()
+                    } else {
+                        format!("{} ({})", t.id, t.name)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
     /// The tier after `from` on the ticket's ring, wrapping; `None` when the
     /// ring has nothing else to offer.
     pub fn next_after(&self, ticket: ulid::Ulid, from: &str) -> Option<Tier> {
@@ -450,6 +505,15 @@ pub fn check_name(name: &str, taken: &[Tier], except: Option<&str>) -> Result<()
     Ok(())
 }
 
+/// The daemon-side boundary for a tier's description (T-584): drawn in the
+/// tiers list and read by the crown, so `scrub_cells` on one line (which
+/// also removes everything `scrub_text` does), capped at
+/// [`DESCRIPTION_MAX`]. Empty when blank once scrubbed.
+pub fn sanitize_description(raw: &str) -> String {
+    use crate::text::{cap_bytes, nonblank, scrub_cells};
+    nonblank(cap_bytes(&scrub_cells(raw, false), DESCRIPTION_MAX)).unwrap_or_default()
+}
+
 /// A model a person typed. It reaches argv (`--model <m>`) and a Codex TOML
 /// string (`-c model="<m>"`), so it is a narrow whitelist rather than a
 /// sanitizer: `[A-Za-z0-9._:/@[]-]`, at most 64 bytes, never a leading `-`.
@@ -475,7 +539,14 @@ mod tests {
     use crate::board::{SessionRecord, SessionState, Ticket};
 
     fn tier(id: &str, name: &str, provider: AgentProvider, model: &str, effort: Effort) -> Tier {
-        Tier { id: id.into(), name: name.into(), provider, model: model.into(), effort }
+        Tier {
+            id: id.into(),
+            name: name.into(),
+            provider,
+            model: model.into(),
+            effort,
+            description: String::new(),
+        }
     }
 
     fn ticket(board: &mut Board, tier: Option<&str>) -> ulid::Ulid {
@@ -558,6 +629,86 @@ mod tests {
         assert_eq!(board.tiers[1].id, "B");
         let ordered = Book::new(&machine, &board).ordered(TierScope::Board);
         assert_eq!(move_tier(&mut board.tiers, &ordered, "B", 0), None, "the machine orders it");
+    }
+
+    /// T-584: a tier carries the person's words on when to use it. Each
+    /// layer's entry carries its own, so a board's version of a machine
+    /// tier keeps the board's words, and the resolver hands them on.
+    #[test]
+    fn a_description_rides_each_layer_and_a_board_version_keeps_its_own() {
+        let words = |t: Tier, d: &str| Tier { description: d.into(), ..t };
+        let machine = MachineTiers {
+            default_tier: None,
+            tiers: vec![
+                words(tier("A", "quick", claude_code(), "sonnet", Effort::Low), "docs, renames"),
+                words(tier("B", "deep", claude_code(), "opus", Effort::High), "refactors"),
+            ],
+        };
+        let board = Board {
+            tiers: vec![
+                words(tier("B", "deep", claude_code(), "opus", Effort::Max), "the daemon's writer"),
+                tier("C", "plain", claude_code(), "", Effort::Default),
+            ],
+            ..Board::default()
+        };
+        let book = Book::new(&machine, &board);
+        assert_eq!(book.get("A").unwrap().description, "docs, renames");
+        assert_eq!(book.get("B").unwrap().description, "the daemon's writer", "the board's own");
+        assert_eq!(book.get("C").unwrap().description, "");
+        assert_eq!(book.get(CLAUDE).unwrap().description, "", "a built-in has no words");
+
+        // Empty is not written, and a file from before the field parses.
+        let json = serde_json::to_string(&board.tiers[1]).unwrap();
+        assert!(!json.contains("description"), "{json}");
+        let old: Tier =
+            serde_json::from_str(r#"{"id":"A","name":"x","provider":"claude_code"}"#).unwrap();
+        assert_eq!(old.description, "");
+        let back: MachineTiers =
+            serde_json::from_str(&serde_json::to_string(&machine).unwrap()).unwrap();
+        assert_eq!(back, machine);
+    }
+
+    /// T-584: what an agent may name — `^n`'s ring for an empty seat, and
+    /// only the default while nobody made a tier — by id or by name, and
+    /// the refusal lists every id it could have named.
+    #[test]
+    fn an_agent_names_an_offered_tier_by_id_or_name() {
+        let none = MachineTiers::default();
+        let ids = |m: &MachineTiers, b: &Board| -> Vec<String> {
+            Book::new(m, b).offered().into_iter().map(|t| t.id).collect()
+        };
+        assert_eq!(ids(&none, &Board::default()), [CLAUDE], "no tiers: the default alone");
+        let codex = Board { default_tier: Some(CODEX.into()), ..Board::default() };
+        assert_eq!(ids(&none, &codex), [CODEX]);
+        let machine = MachineTiers {
+            default_tier: None,
+            tiers: vec![
+                tier("01QUICK", "quick", claude_code(), "sonnet", Effort::Low),
+                tier("01DEEP", "deep", claude_code(), "opus", Effort::Max),
+            ],
+        };
+        let board = Board::default();
+        assert_eq!(ids(&machine, &board), [CLAUDE, "01QUICK", "01DEEP"]);
+        let ours = MachineTiers { default_tier: Some("01DEEP".into()), ..machine.clone() };
+        assert_eq!(ids(&ours, &board), ["01QUICK", "01DEEP"], "a default of one's own");
+
+        let book = Book::new(&machine, &board);
+        assert_eq!(book.resolve_offered("01DEEP").unwrap().name, "deep");
+        assert_eq!(book.resolve_offered("Quick").unwrap().id, "01QUICK", "a name, any case");
+        let refused = book.resolve_offered("codex").unwrap_err();
+        assert_eq!(
+            refused,
+            "no tier codex on this board; list_board's tiers are claude, 01QUICK (quick), \
+             01DEEP (deep)"
+        );
+    }
+
+    #[test]
+    fn a_description_is_one_scrubbed_line_under_the_cap() {
+        assert_eq!(sanitize_description("  docs\tand\u{7} renames \n"), "docs and renames");
+        assert_eq!(sanitize_description(" \u{1b} \n"), "", "blank once scrubbed");
+        let long = sanitize_description(&"é".repeat(DESCRIPTION_MAX));
+        assert!(long.len() <= DESCRIPTION_MAX && long.chars().all(|c| c == 'é'));
     }
 
     #[test]

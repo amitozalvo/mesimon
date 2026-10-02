@@ -176,10 +176,40 @@ impl Daemon {
         Ok(())
     }
 
+    /// The tier the crown's `start_agent` names for `ticket` (T-584): one
+    /// `list_board` offers, by id or name. A ticket a person has started an
+    /// agent on keeps the person's tier — the crown may start it again on
+    /// that one, never move it to another.
+    pub(super) fn crown_tier_pick(
+        &self,
+        ticket: ulid::Ulid,
+        key: &str,
+        word: &str,
+    ) -> Result<Tier, String> {
+        let book = self.tier_book();
+        let want = book.resolve_offered(word)?;
+        let current = book.of_ticket(ticket);
+        let by_person = self
+            .board
+            .sessions
+            .iter()
+            .any(|s| s.ticket == ticket && s.kind.is_agent() && s.started_by.is_none());
+        if by_person && want.id != current.id {
+            return Err(format!(
+                "{key}: a person started this ticket's {}, so its tier is theirs ({}); \
+                 start_agent without a tier starts it on that one",
+                mesimon_core::keymap::AGENT_WORD,
+                current.name
+            ));
+        }
+        Ok(want)
+    }
+
     /// `Command::SaveTier`: create or edit a tier on one layer.
     pub(super) fn save_tier(&mut self, scope: TierScope, mut t: Tier) -> Response {
         t.name = t.name.trim().to_string();
         t.model = t.model.trim().to_string();
+        t.description = tier::sanitize_description(&t.description);
         if t.id.is_empty() || t.is_builtin() {
             return Response::Err { message: "the built-in tiers cannot be edited".into() };
         }

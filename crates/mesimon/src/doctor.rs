@@ -456,6 +456,21 @@ fn provider_installation(
     records
 }
 
+/// The tiers a person made, each with their words on when to use it
+/// (T-584), which the crown reads in `list_board` to pick one. `None` while
+/// nobody made a tier.
+fn tiers_line(book: &mesimon_core::tier::Book) -> Option<String> {
+    let names: Vec<String> = book
+        .custom()
+        .into_iter()
+        .map(|(t, _)| match mesimon_core::tier::sanitize_description(&t.description) {
+            words if words.is_empty() => t.name,
+            words => format!("{} ({words})", t.name),
+        })
+        .collect();
+    (!names.is_empty()).then(|| names.join(" ∙ "))
+}
+
 fn agents(repo: &Path, verbose: bool) -> Section {
     let paths = mesimon_daemon::Paths::for_repo(repo).ok();
     // Everything this section reads off `columns.toml`, parsed once (T-247).
@@ -482,9 +497,8 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         format!("{} ∙ {}", default.name, default.summary()),
     )
     .advice("Settings > Agents > Default tier picks what a ticket starts on; ^n on a ticket picks its own. Existing and sleeping sessions keep their original provider.")];
-    let names: Vec<String> = book.custom().into_iter().map(|(t, _)| t.name).collect();
-    if !names.is_empty() {
-        records.push(rec(Level::Note, "tiers", names.join(" ")));
+    if let Some(line) = tiers_line(&book) {
+        records.push(rec(Level::Note, "tiers", line));
     }
     for (provider, name, override_key) in [
         (AgentProvider::ClaudeCode, "claude", "MESIMON_CLAUDE_BIN"),
@@ -1155,6 +1169,36 @@ pub fn run(args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::wrap;
+
+    /// T-584: the tiers line names each tier with the person's words on when
+    /// to use it, a board's version with the board's words.
+    #[test]
+    fn the_tiers_line_carries_each_tiers_words() {
+        use mesimon_core::board::{AgentProvider, Board};
+        use mesimon_core::tier::{Book, Effort, MachineTiers, Tier};
+        let tier = |id: &str, name: &str, description: &str| Tier {
+            id: id.into(),
+            name: name.into(),
+            provider: AgentProvider::ClaudeCode,
+            model: String::new(),
+            effort: Effort::Default,
+            description: description.into(),
+        };
+        let none = MachineTiers::default();
+        assert_eq!(super::tiers_line(&Book::new(&none, &Board::default())), None);
+        let machine = MachineTiers {
+            default_tier: None,
+            tiers: vec![tier("A", "quick", "docs, renames"), tier("B", "deep", "refactors")],
+        };
+        let board = Board {
+            tiers: vec![tier("B", "deep", "the daemon's writer"), tier("C", "plain", "")],
+            ..Board::default()
+        };
+        assert_eq!(
+            super::tiers_line(&Book::new(&machine, &board)).as_deref(),
+            Some("quick (docs, renames) ∙ deep (the daemon's writer) ∙ plain")
+        );
+    }
 
     /// Advice that is meant to be pasted keeps its shape. `wrap` reflows
     /// prose that overruns and leaves everything else exactly as written,

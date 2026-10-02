@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap::{self, MenuItem, Scope};
 
-use crate::app::{App, ColumnSubject, Mode, SharingRow, TierField};
+use crate::app::{App, ColumnSubject, Mode, SharingRow, TierField, TierRow};
 use crate::qr::Qr;
 use crate::text::truncate;
 
@@ -176,12 +176,45 @@ const QR_CAPTION: &str = "scan with your phone's camera";
 /// one that makes a new one, dense like the sharing list because the last
 /// row becomes a name field in place. The title says the scope, the
 /// Settings list's rule.
+///
+/// A tier's description (T-584) sits dimmed under its name, as a quiet row
+/// the cursor steps over, where the screen has room for every one of them;
+/// otherwise the list stays one row a tier.
 pub(super) fn draw_tiers(f: &mut Frame, app: &App) {
     let Mode::Tiers { idx, naming } = &app.mode else { return };
     let rows = app.tier_rows();
     let words: Vec<(String, String)> = rows.iter().map(|r| app.tier_row_words(r)).collect();
     let field = naming.as_ref().map(|b| ("Name: ", b));
-    draw_rows(f, app, *idx, &scoped(app, "TIERS"), &words, &[], field);
+    let title = scoped(app, "TIERS");
+    let described: Vec<Option<String>> = rows
+        .iter()
+        .map(|r| match r {
+            TierRow::Tier(t, _) if !t.description.is_empty() => {
+                Some(mesimon_core::text::scrub_cells(&t.description, false))
+            }
+            _ => None,
+        })
+        .collect();
+    let lines = words.len() + described.iter().flatten().count();
+    // The frame, the blank and the detail line, and `dialog::centred`'s
+    // margins: what a dialog of `lines` rows needs to show them all.
+    if lines == words.len() || lines + 6 > f.area().height as usize {
+        draw_rows(f, app, *idx, &title, &words, &[], field);
+        return;
+    }
+    let (mut items, mut quiet, mut at) = (Vec::new(), Vec::new(), 0);
+    for (i, (row, description)) in words.into_iter().zip(described).enumerate() {
+        if i == *idx {
+            at = items.len();
+        }
+        items.push(row);
+        quiet.push(false);
+        if let Some(d) = description {
+            items.push((format!("    {d}"), String::new()));
+            quiet.push(true);
+        }
+    }
+    draw_rows(f, app, at, &title, &items, &quiet, field);
 }
 
 /// One tier's page (T-443): the column dialog's shape — a row a setting,
@@ -198,6 +231,7 @@ pub(super) fn draw_tier_edit(f: &mut Frame, app: &App) {
     let lead = match fields.get(*idx) {
         Some(TierField::Name) => "Name: ",
         Some(TierField::Model) => "Model: ",
+        Some(TierField::Description) => "Description: ",
         _ => "",
     };
     let field = field.as_ref().map(|b| (lead, b));

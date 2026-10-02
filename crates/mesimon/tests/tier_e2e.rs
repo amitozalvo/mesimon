@@ -21,7 +21,14 @@ const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\
 const DONE: &str = r#"{"stop_hook_active":false,"background_tasks":[]}"#;
 
 fn tier(id: &str, name: &str, provider: AgentProvider, model: &str, effort: Effort) -> Tier {
-    Tier { id: id.into(), name: name.into(), provider, model: model.into(), effort }
+    Tier {
+        id: id.into(),
+        name: name.into(),
+        provider,
+        model: model.into(),
+        effort,
+        description: String::new(),
+    }
 }
 
 fn create(c: &mut TestClient, title: &str, pick: Option<&str>) -> ulid::Ulid {
