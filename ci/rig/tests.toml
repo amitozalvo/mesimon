@@ -277,7 +277,7 @@ checks = ["road:mod", "fed:prompt_by_mod", "not_fed:prompt_by_paste", "prompts:2
 
   [[test.steps]]
   crown = "P2, the person has sent {key} a second prompt: when the board wakes you for {key}, end your turn with the single line: P2 seen."
-  until = { stops = 2, state = "idle" }
+  until = { stops = 1, state = "idle" }
   wake = true
 
 [[test]]
@@ -482,5 +482,92 @@ checks = ["road:mod", "mod_alone", "cwd:checkout", "gate_refused", "mod_report:G
 
   [[test.steps]]
   crown = "T3: call start_agent for {key} with workspace shared_checkout, no tier and no plan, then end your turn with the single line: T3 started. When the board wakes you for {key}, end your turn with the single line: T3 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+# ---- Permissions and cost (T-581). A worker whose column runs Claude Code in
+# manual mode (`column`: the rig lays RIG MANUAL with `claude_mode = manual`)
+# asks before its Bash command. The phone's one-shot answer reaches the mod's
+# hold in `classic.PermissionRequest` through the real `mesimon approve`; the
+# rig stands in for the phone and the daemon's wait at the socket approve
+# dials (`phone_allow`, `phone_deny`: a copy of the mod whose approve dials
+# the rig, answering as the daemon answers, `"allow"` or `"deny"`), because a
+# phone is paired only through a relay. Everything from approve on is the
+# real road; the daemon's wait and its release are T-395's, unchanged.
+
+[[test]]
+id = "C1"
+title = "C1 · the phone's one-shot allow closes an open permission dialog: do the steps below"
+workspace = "worktree"
+column = "RIG MANUAL"
+brief = "Run exactly one Bash command, `touch c1-allowed.txt`, in your working directory. Then reply with the single word done and end your turn. Read no file and run no other command."
+expect = "the worker's Bash asks (manual mode): the mod relays PermissionRequest and holds in mesimon approve while the dialog stands; the phone answers allow after 4 s; the dialog closes on that decision and the tool runs (c1-allowed.txt exists, PostToolUse follows), and the worker replies done."
+checks = ["road:mod", "mod_alone", "hooks:PermissionRequest,PostToolUse,Stop", "phone:allow", "exists:c1-allowed.txt", "reply:done"]
+
+  [[test.steps]]
+  rig = "phone_allow"
+
+  [[test.steps]]
+  crown = "C1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: C1 started. Its agent may stop on a permission dialog: do nothing about it, it is not yours to answer. When the board wakes you because {key}'s agent finished, end your turn with the single line: C1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "C2"
+title = "C2 · the phone's deny reaches the model as Claude Code words it: do the steps below"
+workspace = "worktree"
+column = "RIG MANUAL"
+brief = "Run exactly one Bash command, `touch c2-denied.txt`, in your working directory. If it is refused, do not try again and run nothing else: reply with the exact words the refusal gave you, quoted, and end your turn. If it ran, reply with the single word ran. Read no file."
+expect = "the phone answers deny: the dialog closes, the tool does not run (no c2-denied.txt), and the model reads the refusal exactly as the transcript's tool result records it, with no plugin's name added; the worker quotes it."
+checks = ["road:mod", "hooks:PermissionRequest,Stop", "phone:deny", "absent:c2-denied.txt", "denied_verbatim"]
+
+  [[test.steps]]
+  rig = "phone_deny"
+
+  [[test.steps]]
+  crown = "C2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: C2 started. Its agent may stop on a permission dialog: do nothing about it, it is not yours to answer. When the board wakes you because {key}'s agent finished, end your turn with the single line: C2 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "C3"
+title = "C3 · no phone: the crown cannot allow, and the dialog waits for the person: do the steps below"
+workspace = "worktree"
+column = "RIG MANUAL"
+brief = "Run exactly one Bash command, `touch c3.txt`, in your working directory. Then reply with the single word done and end your turn. Read no file and run no other command."
+expect = "on the laid mod with no phone, the worker's dialog stands: the card says needs you, the crown has no tool that allows (the mod registers no tool.check and decides no allow) and answers nothing, and 20 s later the command still has not run; the person presses Enter in the pane (Yes), the tool runs and the worker replies done."
+checks = ["road:mod", "hooks:PermissionRequest,PostToolUse,Stop", "words:needs_you,idle", "still_waiting", "refused", "exists:c3.txt", "reply:done"]
+
+  [[test.steps]]
+  rig = "restart_plain"
+
+  [[test.steps]]
+  crown = "C3: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: C3 started. Its agent will stop on a permission dialog. Do not answer it and do not try to: if the board wakes you for it, end your turn with the single line: C3 waiting."
+  until = { events = ["PermissionRequest"], state = "needs_you" }
+  settle = false
+
+  [[test.steps]]
+  rig = "still_waiting"
+  seconds = 20
+  file = "c3.txt"
+
+  [[test.steps]]
+  rig = "press_enter"
+
+[[test]]
+id = "C4"
+title = "C4 · a worker's turns fill its ticket's cost and the quota line through its mod: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word one and end your turn. Read no file and run no command."
+expect = "each turn's end goes up as ModUsage; the first main turn fences the conversation and the second is counted from the mod's report: costs.json's check holds the mod's count and the transcript's for the same turn, within 2%, and the ticket's tokens are nonzero; the Claude quota reading on the snapshot was written at a ModUsage of the worker's (five_hour and seven_day from $.session.usage())."
+checks = ["road:mod", "mod_report:ModUsage:answer", "cost_by_mod", "quota_by_mod", "replies:one,two"]
+
+  [[test.steps]]
+  crown = "C4: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: C4 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: C4 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "C4: call ask_agent for {key} with the words: Reply with the single word two and end your turn. Then end your turn with the single line: C4 asked. When the board wakes you because {key}'s agent finished, end your turn with the single line: C4 seen."
   until = { stops = 1, state = "idle" }
   wake = true

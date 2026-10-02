@@ -7,7 +7,7 @@ real Claude Code on the mod road, one test at a time, through its own crown.
     python3 -B ci/rig.py --lay      the same up to the crown filed and crowned;
                                     nothing starts, nothing costs
     python3 -B ci/rig.py --only R3  run the named tests (a comma list); a
-                                    letter alone names its group (R, P, D, T)
+                                    letter alone names its group (R, P, D, T, C)
     python3 -B ci/rig.py --failed   run again only what the last run's
                                     verdicts.md lists as FAIL
     python3 -B ci/rig.py --reset    park and archive the rig's tickets, stop its
@@ -26,8 +26,10 @@ Watch it with the command it prints: `cd <worktree> && target/debug/mesimon`.
 
 The rig is a second board on this worktree's own proj16 (its own state dir,
 sockets and private tmux); it never touches the author's main board, and it
-writes nothing under the machine layer (`tiers.toml`, `prefs.json`,
-`usage.json`): its tier is a board tier, in the worktree's `.mesimon/`.
+writes nothing under the machine layer (`tiers.toml`, `prefs.json`): its
+tier is a board tier, in the worktree's `.mesimon/`. Its sessions' mods do
+refresh the machine's `usage.json` with the account's own windows (T-581),
+as any board's do.
 It drives the daemon over the wire (`ci/rig/wire.py`) and reads the feed and
 the transcripts, never a screen. Its crown, a real Claude Code session on
 Sonnet, is the subject under test: each test's words go to the crown, and
@@ -50,8 +52,10 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 
@@ -68,6 +72,14 @@ STEP_TIMEOUT = 600
 WAKE_GRACE = 60
 QUIET = 6.0
 SWEEP_WAIT = 1.0  # the last frames' feed lines, after the worker's end
+# The column the permission tests' workers start in (T-581): Claude Code in
+# manual mode, so a Bash command asks.
+MANUAL_COLUMN = "RIG MANUAL"
+# Where the rig stands in for the phone (T-581): the socket the phone mod's
+# `mesimon approve` dials, short for sun_path. The phone holds each request
+# this long, so the dialog is up and the card says so before it is answered.
+PHONE_SOCK = "/tmp/msmn-rig-phone.sock"
+PHONE_HOLD = 4.0
 # What a terminal hands a program it starts: the rig's daemon is started from
 # this, never from the environment of the agent running the rig, which
 # carries another board's MESIMON_*, a tmux pane's TMUX and Claude Code's own.
@@ -295,6 +307,56 @@ def last_failed(path):
     return out
 
 
+class Phone:
+    """The phone and the daemon's wait, stood in for at the socket the phone
+    mod's `mesimon approve` dials (T-581): each request (a RemotePermission
+    header line and the PermissionRequest payload) is held `PHONE_HOLD`
+    seconds and answered as the daemon answers it, `"allow"` or `"deny"`
+    (`mesophon::PermissionDecision`), then the stream closes. Every request is
+    logged with the session and the answer."""
+
+    def __init__(self):
+        self.answer = "allow"
+        self.log = []
+        if os.path.exists(PHONE_SOCK):
+            os.remove(PHONE_SOCK)
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.bind(PHONE_SOCK)
+        os.chmod(PHONE_SOCK, 0o600)
+        self.sock.listen(8)
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def serve(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.one, args=(conn,), daemon=True).start()
+
+    def one(self, conn):
+        with conn:
+            buf = b""
+            conn.settimeout(5)
+            try:
+                while buf.count(b"\n") < 2:
+                    chunk = conn.recv(1 << 16)
+                    if not chunk:
+                        break
+                    buf += chunk
+                header, payload = (json.loads(x) for x in buf.split(b"\n")[:2])
+            except (OSError, ValueError):
+                return
+            answer = self.answer
+            time.sleep(PHONE_HOLD)
+            try:
+                conn.sendall(json.dumps(answer).encode())
+            except OSError:
+                answer = f"{answer} (unsent)"
+            self.log.append({"session": header.get("session"), "tool": payload.get("tool_name"),
+                             "answer": answer, "at_ms": int(time.time() * 1000)})
+
+
 class Rig:
     def __init__(self, repo, args):
         self.repo = repo
@@ -311,6 +373,7 @@ class Rig:
         self.branch = None
         # The rig's seams on every start of its daemon (`--flags-off`).
         self.seams = {"MESIMON_RIG_NO_FLAGS": "1"} if getattr(args, "flags_off", False) else {}
+        self.phone = None
 
     # ---- the daemon
 
@@ -446,6 +509,31 @@ class Rig:
             die(f"P4's mod does not validate:\n{out.stdout}{out.stderr}")
         return dst
 
+    def phone_mod(self):
+        """C1's and C2's mod: the laid sources, with `mesimon approve` dialing
+        the rig's phone instead of the board's hook.sock. Nothing else moves:
+        the hold, the relay of PermissionRequest and the decision's return
+        are the mod's own."""
+        src = os.path.join(self.repo, "crates/mesimon-daemon/mod")
+        dst = os.path.join(self.paths.state_dir, "rig", "mod-phone")
+        if os.path.exists(dst):
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        path = os.path.join(dst, "hooks", "register.ts")
+        with open(path) as f:
+            text = f.read()
+        line = "const argv = [c.bin, 'approve', '--sock', c.hookSock, '--session', c.session]"
+        if line not in text:
+            die("the mod's approve moved: the phone cannot be patched in")
+        text = text.replace(line, line.replace("c.hookSock", repr(PHONE_SOCK)), 1)
+        os.remove(os.path.join(dst, "hooks", "register.test.ts"))
+        with open(path, "w") as f:
+            f.write(text)
+        out = subprocess.run([self.claude, "plugin", "validate", dst], capture_output=True, text=True)
+        if out.returncode != 0:
+            die(f"the phone mod does not validate:\n{out.stdout}{out.stderr}")
+        return dst
+
     def env_of(self, pid):
         out = subprocess.run(["ps", "-wwE", "-o", "command=", "-p", str(pid)],
                              capture_output=True, text=True)
@@ -534,6 +622,16 @@ class Rig:
         if board.get("default_tier") != spec["id"]:
             self.wire.set_default_tier("board", spec["id"])
         self.tier = spec
+        # The permission tests' column (T-581): Claude Code in manual mode.
+        col = next((c for c in board["columns"] if c["name"] == MANUAL_COLUMN), None)
+        if col is None:
+            self.wire.request({"cmd": "add_column", "name": MANUAL_COLUMN, "after": "TODO"})
+            col = next(c for c in self.board()["columns"] if c["name"] == MANUAL_COLUMN)
+        if col.get("claude_mode") != "manual":
+            settings = {k: v for k, v in col.items() if k not in ("name", "order")}
+            settings["claude_mode"] = "manual"
+            self.wire.request({"cmd": "set_column_settings", "name": MANUAL_COLUMN,
+                               "settings": settings})
         if not board.get("crown_answers", True):
             self.wire.set_crown_answers(True)
         # The crown's asks go straight to the workers it started (T-550);
@@ -624,7 +722,7 @@ class Rig:
         say(f"  filed and crowned {self.crown_key}: the rig's crown, on the checkout")
 
     def file_one(self, test, title):
-        tid = self.wire.create_ticket("TODO", title)
+        tid = self.wire.create_ticket(test.get("column", "TODO"), title)
         self.wire.write_note(tid, test["brief"])
         self.wire.write_note(tid, self.test_card(test))
         # Off the merge train: a rebase ask would be a prompt the test did
@@ -943,6 +1041,32 @@ Reply with the single word ready and end your turn."""
             if not ok:
                 record["failures"].append("the daemon never came up with P4's mod")
             return ok
+        if what in ("phone_allow", "phone_deny"):
+            # The phone stands in at the socket the phone mod's approve dials
+            # (T-581); the daemon comes up with that mod once.
+            self.phone = self.phone or Phone()
+            self.phone.answer = "allow" if what == "phone_allow" else "deny"
+            if self.on_phone_mod:
+                return True
+            ok = self.restart({"MESIMON_MOD_DIR": self.phone_mod()}, want_probe="the mod validated")
+            self.restarted = True
+            self.on_phone_mod = ok
+            if not ok:
+                record["failures"].append("the daemon never came up with the phone mod")
+            return ok
+        if what == "still_waiting":
+            # The dialog stands with nobody to answer it (C3): `seconds`
+            # later the card still says needs you and the command has not run.
+            time.sleep(step.get("seconds", 20))
+            rec = self.agent_of(self.board(), test["ticket"])
+            path = os.path.join(rec["cwd"], step.get("file", ""))
+            word = word_of(rec["state"])
+            ran = os.path.exists(path)
+            record["still_waiting"] = (word == "needs_you" and not ran,
+                                       f"after {step.get('seconds', 20)} s: {word}, "
+                                       f"{step.get('file')} {'exists' if ran else 'absent'}")
+            self.log(f"still waiting: {record['still_waiting'][1]}")
+            return True
         if what == "ping":
             rec = self.agent_of(self.board(), test["ticket"])
             for attempt in (1, 2, 3):
@@ -1000,6 +1124,7 @@ Reply with the single word ready and end your turn."""
         if what == "restart_plain":
             ok = self.restart(want_probe="the mod validated")
             self.restarted = True
+            self.on_phone_mod = False
             if not ok:
                 record["failures"].append("the daemon did not come back on the mod")
             return ok
@@ -1253,6 +1378,49 @@ Reply with the single word ready and end your turn."""
                     held = None
                 ok = held is not None and test.get("brief_file", "") in held
                 check(c, ok, f"{arg}: {held.strip()[:40]!r}" if held is not None else f"no {arg}")
+            elif name == "exists" or name == "absent":
+                there = os.path.exists(os.path.join(rec["cwd"], arg))
+                check(c, there == (name == "exists"), f"{arg} {'exists' if there else 'absent'}")
+            elif name == "phone":
+                got = [p for p in (self.phone.log if self.phone else []) if p["session"] == rec["id"]]
+                ok = len(got) == 1 and got[0]["answer"] == arg
+                check(c, ok, "; ".join(f"{p['tool']} → {p['answer']}" for p in got) or "never asked")
+            elif name == "denied_verbatim":
+                # The tool result the transcript records is what the model
+                # read; no plugin's name rides it (T-573 row 4: a tool.check
+                # deny would say "denied by plugin mesimon").
+                bash = [r for n, r in tool_calls(rows) if n == "Bash"]
+                text = (bash[-1] or {}).get("text", "") if bash else ""
+                said = last_reply(rows)
+                ok = bool(bash) and (bash[-1] or {}).get("is_error") and "plugin" not in text.lower()
+                check(c, ok, f"the model read {text[:160]!r}; replied {said[:80]!r}")
+            elif name == "still_waiting":
+                ok, said = record.get("still_waiting", (False, "not measured"))
+                check(c, ok, said)
+            elif name == "cost_by_mod":
+                try:
+                    with open(os.path.join(self.paths.state_dir, "costs.json")) as f:
+                        ledger = json.load(f)
+                except (OSError, ValueError):
+                    ledger = {}
+                t = ledger.get("tickets", {}).get(tid, {})
+                chk = t.get("check", {})
+                by_mod, by_tail = chk.get("mod", 0), chk.get("tail", 0)
+                hours = sum(sum(v.values()) for m in t.get("hours", {}).values() for v in m.values())
+                ok = by_mod > 0 and hours > 0 and abs(by_mod - by_tail) * 50 <= max(by_mod, by_tail)
+                check(c, ok, f"mod {by_mod}, transcript {by_tail} tokens past the fence; "
+                      f"{hours} on the ticket")
+            elif name == "quota_by_mod":
+                reading = (self.snapshot().get("usage", {}).get("claude") or {}).get("reading") or {}
+                at = reading.get("read_at_ms", 0)
+                # The windows are the account's: the last report of any of
+                # the board's sessions (the crown's turns report too) wrote it.
+                reports = [l["at_ms"] for l in lines if l.get("kind") == "hook"
+                           and l.get("event") == "ModUsage"]
+                kinds = [w.get("label") for w in reading.get("windows", [])]
+                ok = any(abs(at - r) <= 1500 for r in reports) and "5h" in kinds
+                check(c, ok, f"read at {at}, at a ModUsage of the board's ({len(reports)} in the test); windows {kinds}"
+                      if ok else f"read at {at}, {len(reports)} ModUsage; windows {kinds}")
             elif name == "answered":
                 said = [l for l in lines if l.get("cmd") == "answer_agent" and l.get("ticket") == tid]
                 ok = any(l.get("outcome") == "answered" and l.get("answer", "").lower() == arg
@@ -1407,6 +1575,7 @@ Reply with the single word ready and end your turn."""
         _, self.feed_off = read_feed(self.paths)
         self.words, self.current, self.quiet_since, self.restarted = {}, None, None, False
         self.history = {}
+        self.on_phone_mod = False
         self.verdicts = []
         self.close_out, self.closing = [], []
         self.t0 = time.time()

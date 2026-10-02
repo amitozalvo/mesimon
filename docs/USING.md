@@ -341,7 +341,9 @@ The board reads only while it is open. For Claude it runs `claude -p` once, asks
 `/usage` numbers over Claude Code's own SDK protocol, and closes it: no prompt, no tokens, no
 saved session, none of your hooks or MCP servers. Claude Code still records the launch in its
 own `~/.claude.json`, as it does for every session. A Codex session the board started reports
-its quota after every turn; otherwise a short-lived `codex app-server` answers. A turn ending,
+its quota after every turn; otherwise a short-lived `codex app-server` answers. A Claude
+session on Claude Code 2.1.287 or newer reports the 5-hour window and the week at the end of
+every turn as well, through mesimon's mod; the per-model weeks still come from the read. A turn ending,
 a rate-limit stop and a window resetting each prompt a fresh read, at most once a minute;
 with nothing happening, every 15 minutes. One reading serves every board on the machine.
 `mesimon doctor`'s `usage` line shows the last one without starting anything.
@@ -353,7 +355,9 @@ switches every card's corner from its age to its cost and back; while the cards 
 the ticket page's facts line shows it too (`∙ $4.20`). **Esc › Usage** shows the board's last 24
 hours, 7 days and 30 days and its costliest tickets (Enter opens one). Codex models have no
 published price in this build, so a Codex ticket shows its tokens instead. Counting starts with this version: an
-older ticket counts what its current sessions' transcripts hold.
+older ticket counts what its current sessions' transcripts hold. On Claude Code 2.1.287 or newer,
+a session's turns are counted from Claude Code's own report of each turn, and its transcript is
+read beside it as a check; `mesimon doctor`'s `costs` line says where the two disagree.
 
 ## Light and dark themes
 

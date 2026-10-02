@@ -369,7 +369,10 @@ and a question's answer as one `answer` frame, confirmed by the mod's `ModAnswer
 (the engine fires no `PostToolUse` for a dialog the mod closed). Launch words wait for the
 pane's `SessionStart` AND the mod's first poll; the paste road, the composer wait and the
 dialog keys stay for the hook set, Codex, a mod that never polled or an older one, a refusal,
-and the plan accept (T-579).
+and the plan accept (T-579). **Each turn's end goes up as `ModUsage` (T-581)**: the engine's
+count of the turn and the main loop's rate-limit windows. A mod session's ticket is counted from
+those reports past a per-conversation fence, the transcript read beside them into a check and
+never the hours (`cost::Ledger::count_mod`); the windows merge into `usage.json`.
 
 **The one deciding hook is `mesimon gate`**, a separate subcommand precisely so `mesimon hook`'s
 never-writes-stdout invariant stays literally true. It is the 32nd entry — `PreToolUse` matcher
@@ -521,6 +524,8 @@ will not show up in our tests until they break something.
   hook's `{ isError: true }` is not marked an error: only `{ deny }` is.
 - **A call a mod's `tool.call` hook answers fires no `PostToolUse`** (a registered tool's, a
   question the mod answered): only the engine's own path fires it.
+- **`turn.complete.usage` says neither a cache write's lifetime nor fast mode** (2.1.288): a mod
+  report's writes and speed follow what the transcript tail last read (`cost::Hint`, T-581).
 - **`classic.PreToolUse` carries no `agentId`**; the `tool.call` beneath it does, by
   `tool_use_id`.
 - **`$.mcp.call` on a server the mod's manifest lists is refused without an allow rule**, and that
