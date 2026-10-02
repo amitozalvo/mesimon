@@ -302,9 +302,9 @@ pub struct SessionRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_key: Option<String>,
     /// The road this record's process reports on (T-574): `mod` when its
-    /// launch was handed the mod mesimon lays, so the shadow expects every
-    /// hook-set frame twice. Re-decided at every launch and wake, like the
-    /// tier; absent means the hook set alone.
+    /// launch was handed the mod mesimon lays. Re-decided at every launch and
+    /// wake, like the tier; absent means the hook set alone. Since T-577 a
+    /// mod launch passes no hook set (`frames_by_mod`).
     #[serde(default, skip_serializing_if = "crate::road::Road::is_hooks")]
     pub road: crate::road::Road,
     /// Codex's exact resumable thread, independent of Mesimon's record UUID.
@@ -456,6 +456,14 @@ impl Unsent {
 }
 
 impl SessionRecord {
+    /// Whether this record's pane reports through the mod alone (T-577): a
+    /// mod launch from a build that passes no hook set. A record launched on
+    /// the mod by an earlier build still carries `--settings` on its argv and
+    /// reports through the hook set until its next wake, which re-decides.
+    pub fn frames_by_mod(&self) -> bool {
+        self.road == crate::road::Road::Mod && !self.argv.iter().any(|a| a == "--settings")
+    }
+
     /// Words that never reached this seat's agent (T-570), while there is a
     /// pane to resend them into. A parked or dead seat has nothing to type
     /// at, and its card says so in its own words.
@@ -2693,6 +2701,31 @@ impl Board {
 
 #[cfg(test)]
 mod tests {
+
+    /// T-577: a record reports through the mod alone when its launch took
+    /// the mod and passed no hook set; one an earlier build launched on the
+    /// mod still has `--settings` and its hook set until its next wake.
+    #[test]
+    fn frames_ride_the_mod_only_where_no_hook_set_was_passed() {
+        let rec = |road, argv: &[&str]| {
+            let mut r = SessionRecord::new(
+                uuid::Uuid::from_u128(1),
+                SessionKind::Claude,
+                ulid::Ulid(1),
+                argv.iter().map(|a| a.to_string()).collect(),
+                "/".into(),
+                SessionState::Running,
+            );
+            r.road = road;
+            r
+        };
+        use crate::road::Road;
+        assert!(rec(Road::Mod, &["claude", "--plugin-dir", "/m"]).frames_by_mod());
+        assert!(!rec(Road::Mod, &["claude", "--settings", "/s.json", "--plugin-dir", "/m"])
+            .frames_by_mod());
+        assert!(!rec(Road::Hooks, &["claude", "--settings", "/s.json"]).frames_by_mod());
+    }
+
     use super::*;
 
     /// T-570: words a launch never delivered make the seat `unsent` to the

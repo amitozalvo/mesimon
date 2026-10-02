@@ -299,9 +299,10 @@ struct ClientReply {
 enum Msg {
     Request(Envelope, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
     Hook(HookFrame),
-    /// A frame the mod relayed (`road: mod`, T-574): shadow-paired against
-    /// the hook set's, never ingested.
-    ShadowHook(HookFrame),
+    /// A frame the mod relayed (`road: mod`, T-574): since T-577 the frames
+    /// a mod launch reports by, ingested as the hook set's were
+    /// (`Daemon::on_mod_hook`).
+    ModHook(HookFrame),
     /// The `auto` road's probe of the Claude Code on PATH came back.
     RoadProbed(crate::modroad::Probe),
     RemotePermission(HookFrame, UnixStream),
@@ -310,9 +311,8 @@ enum Msg {
     /// (T-357): per record, its generation and whether every known native
     /// owner is provably gone. Off-thread because it forks `ps`.
     CodexOrphansChecked(Vec<(uuid::Uuid, Option<u64>, std::result::Result<(), String>)>),
-    /// The wheel, with the time it was sent: the shadow sweeps against that
-    /// rather than the time a stalled writer got to it.
-    Tick(u64),
+    /// The wheel.
+    Tick,
     /// A provisioning thread finished (M4): the binding, or the failing
     /// stage, and how long it took — the number the journal keeps (T-368).
     Provisioned(ulid::Ulid, std::result::Result<Binding, (String, String)>, Duration),
@@ -859,7 +859,7 @@ pub fn run(paths: Paths) -> Result<()> {
     let tick_tx = tx.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(TICK_MS));
-        if tick_tx.send(Msg::Tick(now_ms())).is_err() {
+        if tick_tx.send(Msg::Tick).is_err() {
             break;
         }
     });
@@ -971,7 +971,7 @@ pub fn run(paths: Paths) -> Result<()> {
                     let message = if frame.event == "RemotePermission" {
                         Msg::RemotePermission(frame, reply)
                     } else if frame.road == mesimon_core::road::Road::Mod {
-                        Msg::ShadowHook(frame)
+                        Msg::ModHook(frame)
                     } else {
                         Msg::Hook(frame)
                     };
@@ -1211,8 +1211,8 @@ pub fn run(paths: Paths) -> Result<()> {
         let started = Instant::now();
         d.control_prompt_edge(matches!(&msg, Msg::Hook(f) if f.event == "UserPromptSubmit"));
         let what: std::borrow::Cow<'static, str> = match &msg {
-            Msg::Tick(_) => "tick".into(),
-            Msg::ShadowHook(f) => format!("mod frame {}", f.event).into(),
+            Msg::Tick => "tick".into(),
+            Msg::ModHook(f) => format!("mod frame {}", f.event).into(),
             Msg::RoadProbed(_) => "claude road probed".into(),
             Msg::CodexSnapshots(_) => "Codex observations".into(),
             Msg::CodexOrphansChecked(_) => "Codex orphans checked".into(),
@@ -1243,13 +1243,13 @@ pub fn run(paths: Paths) -> Result<()> {
             // same road as `Shutdown`: the handler only raises a flag, and the
             // wheel — ≤250 ms away — is where it is honoured, on the writer
             // thread, with the machines in hand.
-            Msg::Tick(_) if TERM_REQUESTED.load(Ordering::Relaxed) => {
+            Msg::Tick if TERM_REQUESTED.load(Ordering::Relaxed) => {
                 d.begin_shutdown("SIGTERM");
                 break;
             }
-            Msg::Tick(sent_ms) => d.on_tick(sent_ms),
+            Msg::Tick => d.on_tick(),
             Msg::Hook(frame) => d.on_hook(frame),
-            Msg::ShadowHook(frame) => d.on_shadow_hook(frame),
+            Msg::ModHook(frame) => d.on_mod_hook(frame),
             Msg::RoadProbed(probe) => d.on_road_probed(probe),
             Msg::RemotePermission(frame, stream) => d.control_permission_wait(frame, stream),
             Msg::CodexSnapshots(snapshots) => d.on_codex_snapshots(snapshots),
@@ -1356,6 +1356,12 @@ impl Daemon {
         let mut env = self.session_vars(ticket, cwd);
         if road == mesimon_core::road::Road::Mod {
             env.extend(self.mod_vars(session));
+            // The tier the mod registers (T-577), as the shim's `--tools`:
+            // what it LISTS; the daemon checks the tier at every call.
+            let tools = self.agent_tools_for(ticket);
+            if tools != mesimon_core::board::AgentTools::Off {
+                env.push(("MESIMON_MOD_TOOLS".into(), tools.word().into()));
+            }
         }
         // T-573's research seam: the spike mod observes into a log under the
         // state dir and must never hot-reload (the daemon writes that dir).
@@ -2527,9 +2533,9 @@ impl Daemon {
     /// again, and how many presses to spend before giving up and leaving the
     /// title typed. T-5 measured the ack at ~94 ms, so 500 ms is a wide
     /// margin; 10 attempts covers ~5 s of Claude startup.
-    fn on_tick(&mut self, sent_ms: u64) {
+    fn on_tick(&mut self) {
         self.uploads.prune();
-        self.tick_mod_road(sent_ms);
+        self.tick_mod_road();
         self.ticks += 1;
         self.team_tick();
         self.control_tick();
@@ -3408,14 +3414,20 @@ impl Daemon {
     fn on_hook(&mut self, frame: HookFrame) {
         // Every received frame is feed-logged by NAME only — never its
         // payload (D11: prompt text is read, never stored).
-        self.feed.hook_event(&frame.session, &frame.event, frame.reason.as_deref());
-        // Held against the mod's twin when the session was handed the mod
-        // (T-574's shadow); ingested below exactly as before. A frame of the
-        // mod's own road reaches here only where the mod is its one source
-        // (an answer the mod returned, T-576), so it has no twin to hold.
-        if frame.road == Road::Hooks {
-            self.shadow_hooks_frame(&frame);
+        // A hook-set frame for a session whose pane reports through the mod
+        // alone (T-577) came from nothing mesimon launched there: the pane
+        // has no hook set. Tmux's `pane-died` and the gate's report are not
+        // the hook set's events and pass.
+        if frame.road == Road::Hooks
+            && mesimon_core::road::RELAYED_EVENTS.contains(&frame.event.as_str())
+            && self
+                .resolve_session(&frame.session)
+                .and_then(|id| self.board.sessions.iter().find(|s| s.id == id))
+                .is_some_and(|rec| rec.frames_by_mod())
+        {
+            return;
         }
+        self.feed.hook_event_by(&frame.session, &frame.event, frame.reason.as_deref(), frame.road);
         let Some(id) = self.resolve_session(&frame.session) else { return };
         // D32c invariant 2: the hook-driven path passes the chokepoint too.
         //
@@ -11828,6 +11840,11 @@ impl Daemon {
                 .unwrap_or_default(),
             // The laid mod when the launch's road is the mod (T-574);
             // T-573's research seam names another folder over it.
+            road: if mod_folder.is_some() {
+                mesimon_core::road::Road::Mod
+            } else {
+                mesimon_core::road::Road::Hooks
+            },
             mod_dir: mod_dir().or(mod_folder),
         }
     }

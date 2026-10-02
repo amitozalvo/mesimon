@@ -3,7 +3,8 @@
 //! daemon from inside the pane, a ping that crosses the whole road and back
 //! (daemon → bridge → the mod's stand-in → `mesimon hook --road mod` →
 //! daemon), a daemon restart and a killed bridge with nothing lost, the
-//! delivery ledger's rules, and the shadow's lines.
+//! delivery ledger's rules, and the mod's frames as the session's only ones
+//! (T-577: no hook set rides a mod launch).
 //!
 //! The stub cannot load a mod, so the harness runs `fake_claude_mod.py`
 //! beside it on the mod road (`TestFixture::spawn`): the stand-in engine.
@@ -67,12 +68,17 @@ fn ping(h: &Harness, session: uuid::Uuid) -> Response {
     h.client("ping").request(Command::ModPing { session })
 }
 
-fn disagreements(h: &Harness) -> Vec<serde_json::Value> {
+/// The feed's `hook` lines for one session: (event, reason, road).
+fn hook_lines(h: &Harness, session: &str) -> Vec<(String, Option<String>, Option<String>)> {
     std::fs::read_to_string(h.paths.activity_log())
         .unwrap_or_default()
         .lines()
-        .filter(|l| l.contains("\"kind\":\"road_disagree\""))
-        .map(|l| serde_json::from_str(l).unwrap())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|l| l["kind"] == "hook" && l["session"] == session)
+        .map(|l| {
+            let word = |k: &str| l[k].as_str().map(str::to_string);
+            (word("event").unwrap_or_default(), word("reason"), word("road"))
+        })
         .collect()
 }
 
@@ -89,7 +95,22 @@ fn a_ping_crosses_the_whole_road_and_survives_a_restart_and_a_dead_bridge() {
     let folder = std::path::PathBuf::from(&rec.argv[at + 1]);
     assert!(folder.starts_with(&h.paths.state_dir), "never a checkout: {}", folder.display());
     assert!(folder.join("hooks/register.ts").is_file());
-    assert!(rec.argv.iter().any(|a| a == "--settings"), "the hook set stays in shadow");
+    // No hook set rides it (T-577): the mod relays every event, holds the
+    // gate and serves the tools, so no settings file, no MCP server and no
+    // allow rule; the pane carries the gate's roots and the tools' tier.
+    for flag in ["--settings", "--mcp-config", "--allowedTools"] {
+        assert!(!rec.argv.iter().any(|a| a == flag), "{flag}: {:?}", rec.argv);
+    }
+    assert!(!h.paths.state_dir.join("hooks").join(format!("{sid}.json")).exists());
+    let start = pane_start(&h.paths.tmux_sock(), &rec);
+    for var in [
+        "MESIMON_MOD_GATE_BOARD=",
+        "MESIMON_MOD_GATE_STATE=",
+        "MESIMON_MOD_GATE_ALLOW=",
+        "MESIMON_MOD_TOOLS=full",
+    ] {
+        assert!(start.contains(var), "{var}: {start}");
+    }
     // A shell on the same board never gets the mod.
     let (_, shell) = spawn(&mut c, "a shell", SessionKind::Bash);
     let shell = c.board().sessions.into_iter().find(|s| s.id == shell).unwrap();
@@ -124,7 +145,6 @@ fn a_ping_crosses_the_whole_road_and_survives_a_restart_and_a_dead_bridge() {
     }
     assert_ne!(pid(&h, "bridge", sid), Some(first), "a new bridge");
     assert_eq!(received(&h, sid).len(), 3);
-    assert!(disagreements(&h).is_empty(), "{:?}", disagreements(&h));
 }
 
 /// One raw line on a connection, without waiting for the answer.
@@ -210,59 +230,48 @@ fn the_ledger_resends_until_acked_and_one_poll_holds_the_seat() {
 }
 
 #[test]
-fn the_shadow_pairs_the_twins_and_names_a_frame_without_one() {
-    let Some(h) = boot("modbridge-shadow") else { return };
-    let mut c = h.client("shadow");
-    let (_, sid) = spawn(&mut c, "the shadow", SessionKind::Claude);
+fn the_mods_frames_are_the_sessions_and_the_hook_sets_are_not() {
+    let Some(h) = boot("modbridge-frames") else { return };
+    let mut c = h.client("frames");
+    let (_, sid) = spawn(&mut c, "the frames", SessionKind::Claude);
     let s = sid.to_string();
     let sock = h.paths.hook_sock();
-    let both = |event: &str, reason: Option<&str>, body: &str| {
-        hook_send_road(&sock, &s, event, reason, None, &mod_body(event, body), Some("mod"));
-        hook_send_road(&sock, &s, event, reason, None, body, None);
+    let state =
+        |c: &mut TestClient| c.board().sessions.into_iter().find(|r| r.id == sid).unwrap().state;
+    let by_mod = |event: &str, reason: Option<&str>, body: &str| {
+        hook_send_road(&sock, &s, event, reason, None, body, Some("mod"));
     };
-    both("SessionStart", Some("startup"), r#"{"source":"startup","session_id":"x"}"#);
-    both("UserPromptSubmit", None, r#"{"prompt":"go"}"#);
-    both(
-        "PreToolUse",
-        None,
-        r#"{"session_id":"x","cwd":"/r","tool_name":"AskUserQuestion","tool_use_id":"t1","tool_input":{"questions":[]}}"#,
-    );
-    both("PostToolUse", None, r#"{"tool_name":"Read","tool_use_id":"t2"}"#);
-    both("Stop", None, r#"{"stop_hook_active":false}"#);
-    // Events the mod never relays are never expected from it.
-    hook_send_road(&sock, &s, "GateDenied", Some("board"), None, "{}", None);
-    std::thread::sleep(Duration::from_millis(2_600));
-    assert!(disagreements(&h).is_empty(), "{:?}", disagreements(&h));
-
-    // One frame per road without a twin, and one event told two ways.
-    hook_send_road(&sock, &s, "Stop", None, None, r#"{"stop_hook_active":true}"#, None);
-    hook_send_road(&sock, &s, "SubagentStop", None, None, "{}", Some("mod"));
-    hook_send_road(&sock, &s, "Notification", None, None, r#"{"n":1}"#, None);
-    hook_send_road(&sock, &s, "Notification", None, None, r#"{"n":2}"#, Some("mod"));
-    wait_until(Duration::from_secs(10), "the shadow's three lines", || {
-        disagreements(&h).len() >= 3
+    by_mod("SessionStart", Some("startup"), r#"{"source":"startup","session_id":"x"}"#);
+    by_mod("UserPromptSubmit", None, r#"{"prompt":"go"}"#);
+    wait_until(Duration::from_secs(10), "working on the mod's frames", || {
+        matches!(state(&mut c), mesimon_core::board::SessionState::Running)
     });
+    // A hook-set frame for this pane came from nothing mesimon launched:
+    // dropped, not ingested, not in the feed.
+    hook_send_road(&sock, &s, "Stop", None, None, r#"{"stop_hook_active":false}"#, None);
     std::thread::sleep(Duration::from_millis(600));
-    let mut lines: Vec<(String, String, u64)> = disagreements(&h)
-        .iter()
-        .map(|l| {
-            (
-                l["cmd"].as_str().unwrap().to_string(),
-                l["outcome"].as_str().unwrap().to_string(),
-                l["count"].as_u64().unwrap(),
-            )
-        })
-        .collect();
-    lines.sort();
+    assert!(matches!(state(&mut c), mesimon_core::board::SessionState::Running));
+    by_mod("Stop", None, r#"{"stop_hook_active":false}"#);
+    wait_until(Duration::from_secs(10), "idle on the mod's Stop", || {
+        matches!(state(&mut c), mesimon_core::board::SessionState::Idle { .. })
+    });
+    // The mod's refusal of a write reaches the feed, as the gate's did.
+    by_mod("GateDenied", Some("board_dir"), r#"{"file_path":"/r/.mesimon/x"}"#);
+    wait_until(Duration::from_secs(5), "the gate's line", || {
+        hook_lines(&h, &s).iter().any(|(e, _, _)| e == "GateDenied")
+    });
+    let lines = hook_lines(&h, &s);
+    let mod_line =
+        |e: &str, r: Option<&str>| (e.to_string(), r.map(str::to_string), Some("mod".into()));
     assert_eq!(
         lines,
         vec![
-            ("road_disagree:Notification".into(), "differs".into(), 1),
-            ("road_disagree:Stop".into(), "no_mod_twin".into(), 1),
-            ("road_disagree:SubagentStop".into(), "no_hooks_twin".into(), 1),
+            mod_line("SessionStart", Some("startup")),
+            mod_line("UserPromptSubmit", None),
+            mod_line("Stop", None),
+            mod_line("GateDenied", Some("board_dir")),
         ]
     );
-    assert!(disagreements(&h).iter().all(|l| l["session"] == s.as_str()));
 }
 
 /// A mod whose reads of its pane variables failed before one succeeded says
@@ -339,9 +348,7 @@ fn a_parks_session_end_twins_pair_across_the_tick_that_sees_the_pane_gone() {
     // The window still holds after the pane: a lone frame of a parked
     // session is reported, not dropped with it.
     hooks("SessionEnd", Some("logout"), end);
-    wait_until(Duration::from_secs(10), "the lone frame's line", || {
-        !disagreements(&h).is_empty()
-    });
+    wait_until(Duration::from_secs(10), "the lone frame's line", || !disagreements(&h).is_empty());
     let lines = disagreements(&h);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0]["outcome"], "no_mod_twin");

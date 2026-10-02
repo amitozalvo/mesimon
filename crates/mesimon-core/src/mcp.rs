@@ -1474,9 +1474,49 @@ pub fn tools_for(tier: AgentTools) -> Vec<Value> {
         .collect()
 }
 
+/// What the mod registers for `tier` by `$.tool.register` on the mod road
+/// (T-577): each tool `tools_for` lists, by the same name, description and
+/// input schema, and nothing else. `annotations` stay behind: `$.tool.register`
+/// takes none, and the one there (`readOnlyHint`) was plan mode's admission
+/// rule for an MCP tool, which a registered tool does not go through (T-573
+/// row 7: no permission check runs for it in any mode). The model calls each
+/// as `mcp__<plugin>__<name>`, and the plugin is named `mesimon` like the
+/// shim's server, so the names it reads do not change.
+pub fn registered_for(tier: AgentTools) -> Vec<Value> {
+    tools_for(tier)
+        .into_iter()
+        .map(|t| {
+            json!({
+                "name": t["name"],
+                "description": t["description"],
+                "inputSchema": t["inputSchema"],
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T-577: the mod registers exactly what the shim lists, tier by tier,
+    /// word for word; only the annotation the shim carried for plan mode is
+    /// left behind.
+    #[test]
+    fn the_registered_set_is_tools_for_the_tier() {
+        for tier in [AgentTools::Off, AgentTools::Read, AgentTools::Annotate, AgentTools::Full] {
+            let listed = tools_for(tier);
+            let registered = registered_for(tier);
+            assert_eq!(listed.len(), registered.len(), "{tier:?}");
+            for (l, r) in listed.iter().zip(&registered) {
+                assert_eq!(r.as_object().unwrap().len(), 3, "{r}");
+                for key in ["name", "description", "inputSchema"] {
+                    assert_eq!(l[key], r[key], "{tier:?} {key}");
+                    assert!(!r[key].is_null(), "{key}");
+                }
+            }
+        }
+    }
 
     /// The tier table (T-117): every tool sits on exactly one rung, `Off`
     /// lists and admits nothing, and each rung admits by name exactly what

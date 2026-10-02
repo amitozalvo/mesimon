@@ -432,3 +432,239 @@ test('without the gate\'s roots a structured write is refused, never let through
   await settle()
   expect(runs.filter(r => r.argv.includes('GateDenied')).length).toBe(0)
 })
+
+// ---- The tools (T-577): registered from `mesimon mcp --list`, served by
+// `mesimon mcp --call`.
+
+const TOOLS_ENV = { ...ENV, MESIMON_MOD_TOOLS: 'read' }
+const SPECS = [
+  { name: 'get_ticket', description: 'Returns the ticket.', inputSchema: { type: 'object', properties: { key: { type: 'string' } } } },
+  { name: 'read_attachment', description: 'Returns an image.', inputSchema: { type: 'object' } },
+]
+
+/** `mesimon mcp`: `--list` prints SPECS; `--call` prints `answer(argv, stdin)`. */
+function mesimonMcp(on: any, answer: (argv: readonly string[], stdin: string) => unknown) {
+  const runs: Run[] = []
+  on('process.run', ($: any, e: any) => {
+    runs.push({ argv: e.argv, stdin: e.init?.stdin ?? '' })
+    if (e.argv[1] === 'mcp' && e.argv.includes('--list')) return { value: { exitCode: 0, stdout: JSON.stringify(SPECS) + '\n', stderr: '' } }
+    if (e.argv[1] === 'mcp') return { value: { exitCode: 0, stdout: JSON.stringify(answer(e.argv, e.init?.stdin ?? '')) + '\n', stderr: '' } }
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  return runs
+}
+
+test('the tier\'s tools are registered at session.start, word for word, before the first turn', async ($, on) => {
+  mock.env(on, TOOLS_ENV)
+  mock.clock(on)
+  const runs = mesimonMcp(on, () => ({}))
+  const got: any[] = []
+  on('tool.register', ($: any, e: any) => {
+    got.push(e)
+    return { value: { tool: `mcp__mesimon__${e.name}` } }
+  })
+  on('process.spawn', async function* () {
+    return { value: { code: 3, signal: null } }
+  } as any)
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+  expect(runs[0].argv).toEqual(['/bin/mesimon', 'mcp', '--list', '--tools', 'read'])
+  expect(got.map(g => ({ name: g.name, description: g.description, inputSchema: g.inputSchema }))).toEqual(SPECS)
+})
+
+test('no tier, no tools', async ($, on) => {
+  mock.env(on, ENV)
+  mock.clock(on)
+  const runs = mesimonMcp(on, () => ({}))
+  let registered = 0
+  on('tool.register', () => {
+    registered += 1
+    return { value: { tool: 'x' } }
+  })
+  on('process.spawn', async function* () {
+    return { value: { code: 3, signal: null } }
+  } as any)
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+  expect(registered).toBe(0)
+  expect(runs.filter(r => r.argv.includes('--list')).length).toBe(0)
+})
+
+async function startWithTools($: any, on: any) {
+  mock.clock(on)
+  on('tool.register', ($: any, e: any) => ({ value: { tool: `mcp__mesimon__${e.name}` } }))
+  on('process.spawn', async function* () {
+    return { value: { code: 3, signal: null } }
+  } as any)
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+}
+
+test('a call goes to the daemon through mesimon mcp --call, and its text comes back whole', async ($, on) => {
+  mock.env(on, TOOLS_ENV)
+  const runs = mesimonMcp(on, () => ({ content: [{ type: 'text', text: '{\n  "key": "T-1"\n}' }], isError: false }))
+  await startWithTools($, on)
+  const r: any = await $.tool.call({ tool: 'mcp__mesimon__get_ticket', tool_use_id: 'toolu_1', key: 'T-1' } as any)
+  expect(r.result).toBe('{\n  "key": "T-1"\n}')
+  const call = runs.find(r => r.argv.includes('--call'))!
+  expect(call.argv).toEqual([
+    '/bin/mesimon', 'mcp', '--sock', '/rt/orch.sock', '--session', ENV.MESIMON_MOD_SESSION,
+    '--call', 'get_ticket', '--tool-use-id', 'toolu_1',
+  ])
+  expect(JSON.parse(call.stdin)).toEqual({ key: 'T-1' })
+})
+
+test('a refusal is an error result in the daemon\'s words; an image is an image', async ($, on) => {
+  mock.env(on, TOOLS_ENV)
+  mesimonMcp(on, argv =>
+    argv.includes('read_attachment')
+      ? { content: [{ type: 'image', mimeType: 'image/png', data: 'iVBOR' }], isError: false }
+      : { content: [{ type: 'text', text: 'no column named NOPE' }], isError: true },
+  )
+  await startWithTools($, on)
+  const refused: any = await $.tool.call({ tool: 'mcp__mesimon__get_ticket', tool_use_id: 'toolu_2', key: 'NOPE' } as any)
+  expect(refused.deny).toBe('no column named NOPE')
+  const image: any = await $.tool.call({ tool: 'mcp__mesimon__read_attachment', tool_use_id: 'toolu_3' } as any)
+  expect(image.result).toEqual([{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBOR' } }])
+})
+
+test('a call that cannot be made is refused in plain words, never thrown', async ($, on) => {
+  mock.env(on, TOOLS_ENV)
+  on('process.run', ($: any, e: any) => {
+    if (e.argv.includes('--list')) return { value: { exitCode: 0, stdout: JSON.stringify(SPECS), stderr: '' } }
+    throw new Error('the binary is gone')
+  })
+  await startWithTools($, on)
+  const r: any = await $.tool.call({ tool: 'mcp__mesimon__get_ticket', tool_use_id: 'toolu_4' } as any)
+  expect(String(r.deny)).toContain('mesimon could not answer the call')
+})
+
+test('a tool this session did not register is not served', async ($, on) => {
+  mock.env(on, TOOLS_ENV)
+  const runs = mesimonMcp(on, () => ({ content: [], isError: false }))
+  let native = 0
+  on('tool.call', () => {
+    native += 1
+    return { result: 'theirs' } as any
+  })
+  await startWithTools($, on)
+  const r: any = await $.tool.call({ tool: 'mcp__mesimon__move_ticket', tool_use_id: 'toolu_5' } as any)
+  expect(r.result).toBe('theirs')
+  expect(native).toBe(1)
+  expect(runs.filter(r => r.argv.includes('--call')).length).toBe(0)
+})
+
+test('a gate whose roots cannot be read refuses, and the next write reads them again', async ($, on) => {
+  let reads = 0
+  on('env.get', ($: any, e: any) => {
+    if (String(e.name ?? e.key ?? e).includes('GATE')) {
+      reads += 1
+      if (reads <= 3) throw new Error('the dispatch was abandoned')
+    }
+    return { value: (GATE_ENV as any)[e.name ?? e.key ?? e] }
+  })
+  recordRuns(on)
+  disk(on, DIRS)
+  const reached = nativeWrites(on)
+  const first: any = await $.tool.call({ tool: 'Write', tool_use_id: 't8', file_path: '/repo/src/main.rs', content: 'x' } as any)
+  expect(first.deny).toBe('Mesimon write guard context is unavailable')
+  const second: any = await $.tool.call({ tool: 'Write', tool_use_id: 't9', file_path: '/repo/src/main.rs', content: 'x' } as any)
+  expect(second.deny).toBe(undefined)
+  expect(reached).toEqual(['/repo/src/main.rs'])
+  await settle()
+})
+
+// ---- The frames alone (T-577): ordered, a subagent's named, and the
+// permission bridge the hook set carried.
+
+test('relays go one after another, in the order the events came', async ($, on) => {
+  mock.env(on, ENV)
+  const clock = mock.clock(on)
+  const started: string[] = []
+  let release: () => void = () => undefined
+  on('process.run', ($: any, e: any) => {
+    const event = e.argv[e.argv.indexOf('--event') + 1]
+    started.push(event)
+    // The first relay is slow; nothing after it may start before it ends.
+    if (event === 'UserPromptSubmit') return new Promise(resolve => {
+      release = () => resolve({ value: { exitCode: 0, stdout: '', stderr: '' } })
+    }) as any
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('classic.UserPromptSubmit', () => ({}) as any)
+  on('classic.Stop', () => ({}) as any)
+  await $.classic.UserPromptSubmit({ prompt: 'go' } as any)
+  await $.classic.Stop({ stop_hook_active: false } as any)
+  await settle()
+  expect(started).toEqual(['UserPromptSubmit'])
+  release()
+  await settle()
+  expect(started).toEqual(['UserPromptSubmit', 'Stop'])
+  void clock
+})
+
+test('a subagent\'s PreToolUse names its agent, as the hook set\'s stdin did', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  on('tool.call', () => ({ result: { plan: 'p' } }) as any)
+  await $.tool.call({ tool: 'ExitPlanMode', tool_use_id: 'toolu_6', agentId: 'a7', plan: 'p' } as any)
+  await settle()
+  const pre = runs.filter(r => r.argv.includes('PreToolUse'))
+  expect(JSON.parse(pre[0].stdin).agent_id).toBe('a7')
+})
+
+test('a permission dialog is put to mesimon approve, and a person\'s answer from the phone is its decision', async ($, on) => {
+  mock.env(on, ENV)
+  const runs: Run[] = []
+  let answer = '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"the phone said no"}}}'
+  on('process.run', ($: any, e: any) => {
+    runs.push({ argv: e.argv, stdin: e.init?.stdin ?? '' })
+    return { value: { exitCode: 0, stdout: e.argv[1] === 'approve' ? answer : '', stderr: '' } }
+  })
+  on('classic.PermissionRequest', () => ({}) as any)
+  const body = { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'touch x' } }
+  const r: any = await $.classic.PermissionRequest(body as any)
+  expect(r.decision).toEqual({ behavior: 'deny', message: 'the phone said no' })
+  const approve = runs.find(r => r.argv[1] === 'approve')!
+  expect(approve.argv).toEqual(['/bin/mesimon', 'approve', '--sock', '/rt/hook.sock', '--session', ENV.MESIMON_MOD_SESSION])
+  expect(JSON.parse(approve.stdin)).toMatchObject(body)
+  // No answer leaves the dialog to whatever else answers it.
+  answer = ''
+  const none: any = await $.classic.PermissionRequest(body as any)
+  expect(none.decision).toBe(undefined)
+  await settle()
+  expect(runs.filter(r => r.argv.includes('PermissionRequest')).length).toBe(2)
+})
+
+test('a session.start whose read failed leaves the tools to the next event that reads', async ($, on) => {
+  let fails = 1
+  on('env.get', ($: any, e: any) => {
+    if (fails > 0) {
+      fails -= 1
+      throw new Error('the dispatch was abandoned')
+    }
+    return { value: (TOOLS_ENV as Record<string, string>)[e.name] }
+  })
+  mock.clock(on)
+  mesimonMcp(on, () => ({}))
+  const got: string[] = []
+  on('tool.register', ($: any, e: any) => {
+    got.push(e.name)
+    return { value: { tool: `mcp__mesimon__${e.name}` } }
+  })
+  on('process.spawn', async function* () {
+    return { value: { code: 3, signal: null } }
+  } as any)
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  on('classic.Stop', () => ({}) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+  await settle()
+  expect(got).toEqual([])
+  await $.classic.Stop({ stop_hook_active: false } as any)
+  await settle()
+  expect(got).toEqual(['get_ticket', 'read_attachment'])
+  // Once, whatever comes after.
+  await $.classic.Stop({ stop_hook_active: false } as any)
+  await settle()
+  expect(got).toEqual(['get_ticket', 'read_attachment'])
+})

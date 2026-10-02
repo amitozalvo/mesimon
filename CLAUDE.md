@@ -73,7 +73,7 @@ cargo clippy --workspace --all-targets -- -D warnings # the release gate's exact
 cargo run                                             # TUI for cwd; `-- daemon --repo <p>` runs the daemon
 MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui     # remint goldens after a deliberate visual change
 python3 -B ci/test-run.py                             # bounded runner: 20-min deadline, lock, fixture audit, + the mod road pass
-python3 -B ci/rig.py [--lay|--only R3|--reset]        # in a ticket worktree: a board there drives the real claude (Sonnet) through its crown, tests in ci/rig/tests.toml
+python3 -B ci/rig.py [--lay|--only R3|--failed|--reset] # in a ticket worktree: a board there drives the real claude (Sonnet) through its crown, tests in ci/rig/tests.toml
 ci/test-linux.sh                                      # whole suite on Debian 12 in Docker (~90 s warm)
 ci/sandbox.sh [up|tui|pair|build|relay]               # Docker sandbox: this tree's daemon + relay + Remote Control page
 ci/build-linux.sh                                     # the two Linux release binaries, cross-linked here
@@ -343,14 +343,19 @@ the session uuid, never the pane, so a death frame from another pane is dropped
 `Unknown{DaemonRestarted}` and re-derive from the transcript tail at Low confidence until a hook
 re-asserts; reconcile never trusts stale claims.
 
-**The mod road (T-574) runs in shadow, and the road is `auto`, never a setting (T-588).** A
-Claude launch on a Claude Code ≥ 2.1.287 whose `claude plugin validate` passes (the probe,
-cached per binary in `<state>/mod/probe.json`, warmed when the shell env lands) also loads the
-mod laid at `<state>/mod/<version>-<digest8>/`, which relays the
-same events through `mesimon hook --road mod`; a mod frame goes to the shadow
-(`Msg::ShadowHook`), never to ingest, and a disagreement is a `road_disagree` feed line. The
-daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`), never a push
-from the writer thread. The mod spells nothing on promise 3's never-list (a unit test scans it).
+**The mod road carries a Claude session alone (T-577), and the road is `auto`, never a setting
+(T-588).** A Claude launch on a Claude Code ≥ 2.1.287 whose `claude plugin validate` passes (the
+probe, cached per binary in `<state>/mod/probe.json`, warmed when the shell env lands) loads the
+mod laid at `<state>/mod/<version>-<digest8>/` and passes **no `--settings`, no `--mcp-config`
+and no `--allowedTools`**: the mod relays the hook set's events in order through `mesimon hook
+--road mod` (`Msg::ModHook`, ingested where `SessionRecord::frames_by_mod`), refuses structured
+writes itself (the gate, below), runs `mesimon approve` from `classic.PermissionRequest`, and
+registers the board's tools with `$.tool.register`, serving each through `mesimon mcp --call`.
+A registered tool asks no permission in any mode, so the daemon's tier check is the only gate.
+The hook set, `mesimon gate` and `mesimon mcp`'s server stay whole for an older Claude Code and
+Codex. The daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`),
+never a push from the writer thread. The mod spells nothing on promise 3's never-list (a unit
+test scans it); its two `deny`s are the gate's words and a board tool's refusal.
 **The turn roads ride it (T-575):** for a session whose mod speaks `submit` (`mod_speaks`, from
 the bridge's `--speaks`), every prompt goes down as `$.prompt.submit({ text, asUser: true })`
 and a question's answer as one `answer` frame, confirmed by the mod's `ModAnswer` report alone
@@ -362,13 +367,15 @@ and the plan accept (T-579).
 **The one deciding hook is `mesimon gate`**, a separate subcommand precisely so `mesimon hook`'s
 never-writes-stdout invariant stays literally true. It is the 32nd entry — `PreToolUse` matcher
 `"Edit,Write,NotebookEdit"`, synchronous — and it refuses structured writes under
-`<repo>/.mesimon` and the state dir. **`core/src/verdict.rs`'s `Verdict` has `Deny` and
+`<repo>/.mesimon` and the state dir; on the mod road the mod holds the same rules at `tool.call`,
+in the same words, from the pane's `MESIMON_MOD_GATE_*` roots. **`core/src/verdict.rs`'s `Verdict` has `Deny` and
 `NoOpinion` and no `Allow`, ever**; a repo-wide test asserts no source line puts `"allow"` or
 `"ask"` in a `permissionDecision` position. The decision is local and static from argv, so a
 dead daemon cannot make it fail open. **Bash is not hooked** and `docs/USING.md` says so:
 command-shape matching is an evasion hole.
 
 **The agent tier (T-84): eight tools, three named movers.** Every Claude session mesimon spawns
+on the hook set's road (on the mod's, the mod registers the same tools, above)
 carries `--mcp-config '<inline JSON>'` naming `mesimon mcp`, a stdio shim forwarding each
 `tools/call` to `orch.sock` as `Envelope { principal: Agent { session } }`. **The config is
 written to no file**, so a session mesimon did not spawn can never reach the tools and revoking
@@ -491,6 +498,19 @@ will not show up in our tests until they break something.
 - **A mod's `$` call in flight fails with its dispatch when that dispatch is abandoned**
   (interrupt, a hook above settled first, budget), and the first read rides the first event's:
   the mod keeps a value only once read whole and never caches a failed read (T-594).
+- **A `tool.call` hook that throws is skipped** (2.1.287, T-577): a built-in tool then runs
+  unjudged, and a registered tool reads to the model as "Claude requested permissions to use …
+  but you haven't granted it yet". A gate or a tool hook never throws; it denies.
+- **A registered tool answers with `{ result: <text> }`** (the model reads it verbatim) or an
+  array of API content blocks (an image is `{ type: 'image', source: { type: 'base64', … } }`);
+  an MCP-shaped `{ content, isError }` is refused ("does not match its output shape"), and a
+  hook's `{ isError: true }` is not marked an error: only `{ deny }` is.
+- **A call a mod's `tool.call` hook answers fires no `PostToolUse`** (a registered tool's, a
+  question the mod answered): only the engine's own path fires it.
+- **`classic.PreToolUse` carries no `agentId`**; the `tool.call` beneath it does, by
+  `tool_use_id`.
+- **`$.mcp.call` on a server the mod's manifest lists is refused without an allow rule**, and that
+  server's tools are listed to the model: not an up-channel for mesimon.
 - **macOS caps unix datagrams at 2 KB**, which is why the hook transport is SOCK_STREAM one-shot.
 - **A `connect()` on a unix socket path can still succeed for a few hundred microseconds after
   its listener's `close()` returned** — XNU routes it into the dying backlog. A liveness probe

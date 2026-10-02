@@ -186,8 +186,10 @@ Claude Code and `codex` runs Codex. Claude Code is the initial default. Switchin
 leaves existing sessions, including sleeping ones, with their original provider. Accepted queued
 starts keep their choice.
 Each ticket has one live agent seat across both providers.
-Where Claude Code is 2.1.287 or newer, mesimon also loads its own mod into each Claude session
-it starts, beside the hooks it generates; `mesimon doctor` says which of the two a session got.
+Where Claude Code is 2.1.287 or newer, mesimon loads its own mod into each Claude session it
+starts, in place of the hooks and the MCP server it generates for an older one; `mesimon doctor`
+says which of the two a session got. The mod reports the session's events to the board, refuses
+its writes to the board's files and serves its board tools.
 Through the mod, a session gets its brief and every prompt you send it as your own words, whole,
 without anything typed into its pane, and a question it asks is answered straight in its dialog
 when you answer from Remote Control or the crown does. A session without the mod has its prompts
@@ -410,9 +412,12 @@ knows which ticket it is on, can read the ticket's description and notes, write 
 move its own card, put one of your tags on it, and file a new ticket for work it found outside its
 scope (the new card has no session; you decide what happens to it). The tags are yours: an agent
 picks from the ones you made in the picker and cannot add, rename, recolour or delete one.
-They arrive on the command line and are installed nowhere: no `.mcp.json`, no `~/.claude.json`,
-no `settings.local.json`, no plugin. A session you start yourself never sees them, and your own
-MCP servers still load alongside.
+They arrive on the command line, or with mesimon's mod where Claude Code loads one, and are
+installed nowhere: no `.mcp.json`, no `~/.claude.json`, no `settings.local.json`, no plugin in
+your Claude Code configuration. A session you start yourself never sees them, and your own MCP
+servers still load alongside. Through the mod, Claude Code asks no permission before a board tool
+runs, in any mode, plan mode included: the board checks the tier and the ticket at every call,
+and that check is the whole gate.
 
 There is no tool, at any tier, to kill a session, delete a ticket, merge a branch, or read a
 session, a transcript or a cost. Those commands are refused by the daemon, not merely absent from
@@ -421,7 +426,7 @@ another ticket and, where you turn it on, archiving one, belong to the ticket we
 [the crown](#the-crown-one-agent-runs-the-board) alone;
 [promise 3](PROMISES.md#3-zero-prompt-injection) says how the crown works.
 
-Claude's `Edit`/`Write` and Codex's structured `apply_patch` writes into `.mesimon/` and
+Claude's `Edit`/`Write`/`NotebookEdit` and Codex's structured `apply_patch` writes into `.mesimon/` and
 mesimon's state directory are refused too — which is why a note, a markdown file under
 `.mesimon/`, reaches an agent through a tool and not through `Write`; the tool stamps who wrote
 it. Its shell is not: `sed -i` into those paths still

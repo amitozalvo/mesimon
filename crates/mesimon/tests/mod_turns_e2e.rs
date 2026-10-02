@@ -397,7 +397,14 @@ fn the_crown_answers_down_the_worker_s_mod_and_the_person_first_wins() {
     // ---- the crown's answer, down the mod: the receipt is the mod's report --
     hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &question("toolu_m1"));
     c.await_state(ws, "asking", asking);
-    let screen = pane_keys(&mut c);
+    // The pane as it rests: under a loaded machine the launch's own paint can
+    // still be landing when the card says needs-you.
+    let mut screen = pane_keys(&mut c);
+    wait_until(Duration::from_secs(5), "the pane at rest", || {
+        std::thread::sleep(Duration::from_millis(300));
+        let now = pane_keys(&mut c);
+        std::mem::replace(&mut screen, now) == screen
+    });
     let call = answer(&mut c, "toolu_m1");
     match call.join().unwrap() {
         Response::AgentAnswered { outcome, answer, reason, .. } => {

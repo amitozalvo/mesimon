@@ -59,7 +59,7 @@ TIER_DESCRIPTION = "every rig test and the rig's crown"
 STEP_TIMEOUT = 600
 WAKE_GRACE = 60
 QUIET = 6.0
-SWEEP_WAIT = 4.0  # the shadow calls a lone frame after 2 s
+SWEEP_WAIT = 1.0  # the last frames' feed lines, after the worker's end
 # What a terminal hands a program it starts: the rig's daemon is started from
 # this, never from the environment of the agent running the rig, which
 # carries another board's MESIMON_*, a tmux pane's TMUX and Claude Code's own.
@@ -207,6 +207,27 @@ def filler(size=10_000):
                    f"an apostrophe's turn, a `backtick`, $HOME written as text, and the "
                    f"number {n} so no two lines read alike.")
     return "\n\n".join(out)
+
+
+def tool_calls(rows):
+    """(tool name, its result) for every tool use in a transcript, in order;
+    a result is `{is_error, text}`, or None while none came."""
+    results = {}
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                body = b.get("content")
+                text = body if isinstance(body, str) else " ".join(
+                    x.get("text", "") for x in body or [] if isinstance(x, dict))
+                results[b.get("tool_use_id")] = {"is_error": bool(b.get("is_error")), "text": text}
+    out = []
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                out.append((b.get("name"), results.get(b.get("id"))))
+    return out
 
 
 def user_prompts(rows, at=False):
@@ -690,10 +711,8 @@ Reply with the single word ready and end your turn."""
             kind = l.get("kind")
             mine = next((key for key, rec in workers if of_session(l, rec["id"])), None)
             if kind == "hook" and mine:
-                self.log(f"{mine} frame {l['event']}" + (f" ({l['reason']})" if l.get("reason") else ""))
-            elif kind == "road_disagree":
-                self.log(f"!! road_disagree {l.get('cmd')} {l.get('outcome')} ×{l.get('count')} "
-                         f"session {str(l.get('session'))[:8]}")
+                self.log(f"{mine} frame {l['event']}" + (f" ({l['reason']})" if l.get("reason") else "")
+                         + ("" if l.get("road") == "mod" or l.get("event") == "PaneDied" else " ∙ NOT by the mod"))
             elif kind == "board" and l.get("ticket") in tickets and l.get("actor") == "agent":
                 self.log(f"crown {l.get('cmd')}" + (f" → {l['outcome']}" if l.get("outcome") else ""))
             elif kind == "board" and l.get("ticket") in tickets and l.get("cmd") in TURN_ROAD_WORDS:
@@ -896,6 +915,12 @@ Reply with the single word ready and end your turn."""
             if not ok:
                 record["failures"].append("the daemon did not come back on the mod")
             return ok
+        if what == "doctor_mcp":
+            out = subprocess.run([self.bin, "doctor", "--mcp"], cwd=self.repo, capture_output=True,
+                                 text=True, env=terminal_env(), timeout=120)
+            record["doctor_mcp"] = out.stdout
+            self.log(f"doctor --mcp: {len(out.stdout.splitlines())} lines")
+            return True
         if what == "doctor":
             out = subprocess.run([self.bin, "doctor"], cwd=self.repo, capture_output=True,
                                  text=True, env=terminal_env(), timeout=120)
@@ -952,9 +977,6 @@ Reply with the single word ready and end your turn."""
         mine = [l for l in lines if rec and of_session(l, rec["id"])]
         hooks = [l["event"] for l in mine if l.get("kind") == "hook"]
         words = self.card_words(test["key"])
-        disagree = [l for l in lines if l.get("kind") == "road_disagree"
-                    and any((r := self.agent_of(self.board(), t)) and of_session(l, r["id"])
-                            for t, _, _ in tickets)]
         timing = self.timing(mine)
         return {
             "id": test["id"], "key": test["key"], "expect": test["expect"],
@@ -964,7 +986,6 @@ Reply with the single word ready and end your turn."""
             "model": model_of(rows),
             "wakes": [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                       and l.get("worker") == test["ticket"]],
-            "disagree": [f"{l.get('cmd')} {l.get('outcome')}×{l.get('count')}" for l in disagree],
             "alive": record.get("alive"),
         }
 
@@ -978,7 +999,6 @@ Reply with the single word ready and end your turn."""
         # The card's words: the feed's `session_state` lines and the rig's
         # polls of the snapshot (a park writes no line), in time order.
         words = self.card_words(key)
-        disagree = [l for l in mine if l.get("kind") == "road_disagree"]
         crown_cmds = [l.get("cmd") for l in lines if l.get("kind") == "board"
                       and l.get("actor") == "agent" and l.get("ticket") == tid]
         fed = [l.get("cmd") for l in lines if l.get("kind") == "board" and l.get("ticket") == tid]
@@ -1027,11 +1047,57 @@ Reply with the single word ready and end your turn."""
                 missing = [e for e in want if e not in hooks]
                 counts = ", ".join(f"{e}×{hooks.count(e)}" for e in want if e in hooks)
                 check(c, not missing, counts + (f"; missing {', '.join(missing)}" if missing else ""))
-            elif name == "no_disagree":
-                said = ", ".join(f"{l.get('cmd')} {l.get('outcome')}×{l.get('count')}" for l in disagree)
-                check(c, not disagree and rec.get("road") == "mod",
-                      f"0 road_disagree over {sum(1 for e in hooks if e != 'PaneDied')} frames"
-                      if not disagree else said)
+            elif name == "mod_alone":
+                # T-577: the mod carries the session alone. No hook set, no
+                # MCP server and no allow rule on argv; every frame the
+                # daemon took for it came by the mod (tmux's pane-died aside).
+                flags = [f for f in ("--settings", "--mcp-config", "--allowedTools") if f in rec["argv"]]
+                frames = [l for l in mine if l.get("kind") == "hook" and l.get("event") != "PaneDied"]
+                other = [l["event"] for l in frames if l.get("road") != "mod"]
+                ok = rec.get("road") == "mod" and not flags and not other and frames
+                check(c, ok, f"{len(frames)} frames, all by the mod; no hook set or MCP flag on argv"
+                      if ok else f"flags {flags}; frames not by the mod: {other}; road {rec.get('road')}")
+            elif name == "no_shim":
+                out = subprocess.run(["ps", "-axww", "-o", "command="], capture_output=True, text=True)
+                shims = [l for l in out.stdout.splitlines() if " mcp " in f" {l} "
+                         and f"--session {rec['id']}" in l and "--call" not in l]
+                check(c, not shims, "no `mesimon mcp` server for the session" if not shims
+                      else f"{len(shims)} running: {shims[0][:80]}")
+            elif name == "tools":
+                calls = tool_calls(rows)
+                missing, failed = [], []
+                for tool in arg.split(","):
+                    got = [r for n, r in calls if n == f"mcp__mesimon__{tool}"]
+                    if not got:
+                        missing.append(tool)
+                    elif not any(r and not r.get("is_error") for r in got):
+                        failed.append(f"{tool}: {(got[-1] or {}).get('text', 'no result')[:60]!r}")
+                check(c, not missing and not failed,
+                      f"{len(arg.split(','))} served with no error" if not missing and not failed
+                      else f"missing {missing}; refused {failed}")
+            elif name == "never":
+                check(c, arg not in words, " → ".join(words) or "none")
+            elif name == "plan_mode":
+                argv = rec["argv"]
+                mode = next((argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--permission-mode"), None)
+                check(c, mode == "plan", f"--permission-mode {mode}")
+            elif name == "doctor_mcp":
+                text = record.get("doctor_mcp") or ""
+                names = ["get_ticket", "list_board", "read_note", "write_note", "tag_ticket",
+                         "create_ticket", "move_ticket", "raise_hand"]
+                absent = [n for n in names if f"mcp__mesimon__{n}" not in text]
+                says = "The mod registers the same tools" in " ".join(text.split())
+                check(c, says and not absent, "lists the tools and says the mod registers them"
+                      if says and not absent else f"absent {absent}; mod paragraph {'seen' if says else 'missing'}")
+            elif name == "gate_refused":
+                path = os.path.join(rec["cwd"], test["gate_file"])
+                writes = [r for n, r in tool_calls(rows) if n == "Write"]
+                refused = [r for r in writes if r and r.get("is_error")
+                           and "mesimon owns .mesimon/" in r.get("text", "")]
+                ok = bool(refused) and not os.path.exists(path)
+                check(c, ok, f"{len(writes)} Write, refused in mesimon gate's words; "
+                      f"{test['gate_file']} not created" if ok else
+                      f"writes {[(r or {}).get('text', '')[:60] for r in writes]}; exists {os.path.exists(path)}")
             elif name == "claude_road_mod":
                 seen = [l for l in feed_all(self.paths) if l.get("cmd") == "claude_road:mod"]
                 check(c, seen, f"claude_road:mod ({seen[-1].get('outcome')})" if seen else "never written")
@@ -1132,10 +1198,9 @@ Reply with the single word ready and end your turn."""
                 "| check | | observed |", "|---|---|---|"]
         note += [f"| `{n}` | {'✓' if ok else '✗'} | {o} |" for n, ok, o in v["results"]]
         note += [f"| step | ✗ | {f} |" for f in v["failures"]]
-        note += ["", f"**Frames the daemon ingested** (hook road, in order): {', '.join(v['hooks']) or 'none'}.",
+        note += ["", f"**Frames the daemon ingested** (in order): {', '.join(v['hooks']) or 'none'}.",
                  f"**Card words seen:** {' → '.join(v['words']) or 'none'}.",
                  f"**The board woke the crown for it:** {', '.join(v['wakes']) or 'never'}.",
-                 f"**road_disagree for its session:** {', '.join(v['disagree']) or 'none'}.",
                  f"**Its mod at the end:** {v['alive'] or 'no pane to ask'}."]
         self.wire.write_note(test["ticket"], "\n".join(note))
         for tid, key, _ in self.test_tickets(test):
@@ -1196,18 +1261,14 @@ Reply with the single word ready and end your turn."""
         self.closed()
 
     def table(self):
-        disagree = [l for l in self.feed_lines if l.get("kind") == "road_disagree"]
-        total = sum(int(l.get("count") or 1) for l in disagree)
         out = [f"# The rig's verdicts, run {self.run_id}", "",
                f"Build: {self.build}. Crown model: {self.crown_model}. "
-               f"road_disagree over the run: {len(disagree)} lines, {total} frames.", "",
+               f"Run time: {(time.time() - self.t0) / 60:.1f} min.", "",
                "| test | expected | observed | build |", "|---|---|---|---|"]
         for v in self.verdicts:
             failed = [f"✗ {n}: {o}" for n, ok, o in v["results"] if not ok] + [f"✗ {f}" for f in v["failures"]]
             observed = ("PASS ∙ " + "; ".join(o for _, _, o in v["results"])) if v["pass"] else (
                 "FAIL ∙ " + "; ".join(failed))
-            if v["disagree"]:
-                observed += f" ∙ road_disagree: {', '.join(v['disagree'])}"
             observed += f" ∙ ticket in {v.get('column')}"
             out.append(f"| {v['id']} {v['key']} | {v['expect']} | {observed} | {self.build} |")
         text = "\n".join(out) + "\n"

@@ -72,12 +72,28 @@ impl FeedWriter {
 
     /// One received hook frame, by name only — never its payload (D11).
     pub fn hook_event(&mut self, session: &str, event: &str, reason: Option<&str>) {
-        self.push(json!({
+        self.hook_event_by(session, event, reason, mesimon_core::road::Road::Hooks);
+    }
+
+    /// The same, saying the road it came by when that is the mod's (T-577):
+    /// on the mod road a frame is the mod's relay, and the line says so.
+    pub fn hook_event_by(
+        &mut self,
+        session: &str,
+        event: &str,
+        reason: Option<&str>,
+        road: mesimon_core::road::Road,
+    ) {
+        let mut line = json!({
             "kind": "hook",
             "session": session,
             "event": event,
             "reason": reason,
-        }));
+        });
+        if road == mesimon_core::road::Road::Mod {
+            line["road"] = json!("mod");
+        }
+        self.push(line);
     }
 
     /// Metadata only; raw hook payloads and conversation content are excluded.
@@ -116,28 +132,6 @@ impl FeedWriter {
             "crown": crown,
             "worker": worker,
             "cause": cause,
-        }));
-    }
-
-    /// The two roads disagreed about one session's event (T-574's shadow):
-    /// `outcome` says how (`differs`, `no_mod_twin`, `no_hooks_twin`) and
-    /// `count` how many such frames since the last line. Names only, never
-    /// either payload (D11).
-    pub fn road_disagree(
-        &mut self,
-        session: uuid::Uuid,
-        ticket: Option<ulid::Ulid>,
-        event: &str,
-        outcome: &str,
-        count: u32,
-    ) {
-        self.push(json!({
-            "kind": "road_disagree",
-            "cmd": format!("road_disagree:{event}"),
-            "session": session,
-            "ticket": ticket,
-            "outcome": outcome,
-            "count": count,
         }));
     }
 

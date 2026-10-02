@@ -31,16 +31,22 @@ pub fn user_default_mode() -> Option<String> {
 
 fn flags(context: &LaunchContext<'_>) -> Vec<String> {
     let mut argv = Vec::new();
+    // On the mod road the mod registers the tools itself (T-577): no MCP
+    // server is named, and a registered tool goes through no permission
+    // check, so there is no allow rule to pass either.
+    let shim = context.road != mesimon_core::road::Road::Mod;
     if context.tools != AgentTools::Off {
-        argv.extend([
-            "--mcp-config".into(),
-            hook_settings::mcp_config_json(
-                context.paths,
-                &mesimon_bin(),
-                context.session,
-                context.tools,
-            ),
-        ]);
+        if shim {
+            argv.extend([
+                "--mcp-config".into(),
+                hook_settings::mcp_config_json(
+                    context.paths,
+                    &mesimon_bin(),
+                    context.session,
+                    context.tools,
+                ),
+            ]);
+        }
         if context.brief {
             argv.extend([mesimon_core::brief::FLAG.into(), mesimon_core::brief::TEXT.into()]);
         }
@@ -48,7 +54,7 @@ fn flags(context: &LaunchContext<'_>) -> Vec<String> {
         // Code prompts for every MCP tool, so plan mode asked for
         // `get_ticket` on every turn. Argv, never a settings file — promise 2.
         let allowed = mesimon_core::mcp::allowed_tool_names(context.tools);
-        if !allowed.is_empty() {
+        if shim && !allowed.is_empty() {
             argv.extend(["--allowedTools".into(), allowed.join(",")]);
         }
     }
@@ -83,15 +89,27 @@ fn flags(context: &LaunchContext<'_>) -> Vec<String> {
     argv
 }
 
+/// The hook set's `--settings` pair, written for this session: on the hook
+/// set's road only. On the mod road (T-577) the mod relays every event the
+/// set reported, holds the gate and runs `mesimon approve`, so no settings
+/// file is written and none is passed.
+fn hook_set(context: &LaunchContext<'_>) -> Result<Vec<String>, String> {
+    if context.road == mesimon_core::road::Road::Mod {
+        return Ok(Vec::new());
+    }
+    let settings = hook_settings::write_settings(context.paths, context.session, &mesimon_bin())
+        .map_err(|e| format!("hook settings: {e}"))?;
+    Ok(vec!["--settings".into(), settings.display().to_string()])
+}
+
 fn launch(
     context: &LaunchContext<'_>,
     identity_flag: &str,
     identity: &str,
 ) -> Result<Vec<String>, String> {
-    let settings = hook_settings::write_settings(context.paths, context.session, &mesimon_bin())
-        .map_err(|e| format!("hook settings: {e}"))?;
     let executable = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
-    let mut argv = vec![executable, "--settings".into(), settings.display().to_string()];
+    let mut argv = vec![executable];
+    argv.extend(hook_set(context)?);
     argv.extend(flags(context));
     argv.extend([identity_flag.into(), identity.into()]);
     Ok(argv)
@@ -192,7 +210,10 @@ impl AgentAdapter for Claude {
         }
         // Retain user flags while refreshing every pair Mesimon owns. An
         // in-app /resume can change identity without changing the saved argv.
+        // The hook set's pair is one (T-577): a wake re-decides the road, so
+        // one launched on the hook set may wake on the mod and the reverse.
         let owned = [
+            "--settings",
             "--session-id",
             "--resume",
             "--mcp-config",
@@ -214,12 +235,9 @@ impl AgentAdapter for Claude {
                 argv.push(arg.clone());
             }
         }
-        let at = argv
-            .iter()
-            .position(|a| a == "--settings")
-            .map(|i| (i + 2).min(argv.len()))
-            .unwrap_or(argv.len().min(1));
-        let mut ours = flags(context);
+        let at = argv.len().min(1);
+        let mut ours = hook_set(context)?;
+        ours.extend(flags(context));
         ours.extend(["--resume".into(), identity]);
         argv.splice(at..at, ours);
         Ok(LaunchSpec::plain(argv))
@@ -243,6 +261,7 @@ mod tier_tests {
             plan: false,
             tier,
             mod_dir: None,
+            road: mesimon_core::road::Road::Hooks,
         }
     }
 
@@ -300,6 +319,47 @@ mod tier_tests {
         let codex = Tier { provider: AgentProvider::Codex, ..tier("gpt-6-astra", Effort::Ultra) };
         let argv = flags(&context(&paths, codex));
         assert!(!argv.iter().any(|a| a == "--model" || a == "--effort"), "{argv:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-577: on the mod road the tools are the mod's registration, so no
+    /// MCP server and no allow rule ride argv; the opt-in brief still does.
+    /// A wake that lands on the mod drops a hook-road launch's pair.
+    #[test]
+    fn the_mod_road_carries_no_mcp_config_and_no_allow_rule() {
+        use mesimon_core::road::Road;
+        let dir = std::env::temp_dir().join(format!("msmn-claude-tools-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = crate::paths::Paths::for_repo(&dir).unwrap();
+        let on = |road| LaunchContext {
+            tools: AgentTools::Full,
+            brief: true,
+            road,
+            ..context(&paths, Tier::builtin(AgentProvider::ClaudeCode))
+        };
+        let hooks = flags(&on(Road::Hooks));
+        assert_eq!(pair(&hooks, "--mcp-config").len(), 1, "{hooks:?}");
+        assert_eq!(pair(&hooks, "--allowedTools").len(), 1, "{hooks:?}");
+        let modded = flags(&on(Road::Mod));
+        assert!(pair(&modded, "--mcp-config").is_empty(), "{modded:?}");
+        assert!(pair(&modded, "--allowedTools").is_empty(), "{modded:?}");
+        assert_eq!(pair(&modded, mesimon_core::brief::FLAG), [mesimon_core::brief::TEXT]);
+
+        let mut argv = vec!["claude".to_string()];
+        argv.extend(hooks);
+        argv.extend(["--session-id".to_string(), uuid::Uuid::from_u128(1).to_string()]);
+        let rec = SessionRecord::new(
+            uuid::Uuid::from_u128(1),
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            argv,
+            "/".into(),
+            SessionState::Sleeping,
+        );
+        let woke = Claude.resume(&on(Road::Mod), &rec).unwrap();
+        for flag in ["--mcp-config", "--allowedTools"] {
+            assert!(pair(&woke.argv, flag).is_empty(), "{flag}: {:?}", woke.argv);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

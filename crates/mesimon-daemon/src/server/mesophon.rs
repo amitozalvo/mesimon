@@ -1190,9 +1190,11 @@ impl Daemon {
     pub(super) fn on_mod_answer(&mut self, id: uuid::Uuid, frame: HookFrame) {
         let request = frame.payload["tool_use_id"].as_str().unwrap_or("").to_string();
         match frame.reason.as_deref() {
-            Some("answered") => {
-                self.on_hook(HookFrame { event: "PostToolUse".into(), reason: None, ..frame })
-            }
+            // Ingested as the `PostToolUse` the engine never fired, keeping
+            // its reason: on the mod road every frame comes by the mod
+            // (T-577), and the reason is what tells this one from the
+            // engine's own (`dialog_edge`).
+            Some("answered") => self.on_hook(HookFrame { event: "PostToolUse".into(), ..frame }),
             Some("declined") => {
                 if self.control.dialogs.get(&id).is_some_and(|d| d.request == request) {
                     self.control.dialogs.remove(&id);
@@ -3744,8 +3746,14 @@ fn dialog_edge(frame: &HookFrame, dialog: &api::Dialog) -> Option<DialogEdge> {
     let own = dialog_own_call(frame, dialog);
     match frame.event.as_str() {
         // The mod's `answered` report rides in as a `PostToolUse` of its own
-        // road (`on_mod_answer`), the only one a dialog the mod closed has.
-        "PostToolUse" if own && frame.road == mesimon_core::road::Road::Mod => {
+        // road with its reason kept (`on_mod_answer`), the only one a dialog
+        // the mod closed has. A relayed `PostToolUse` of the engine's has no
+        // reason: the person's answer, on the mod road too (T-577).
+        "PostToolUse"
+            if own
+                && frame.road == mesimon_core::road::Road::Mod
+                && frame.reason.as_deref() == Some("answered") =>
+        {
             Some(DialogEdge::ModAnswered)
         }
         "PostToolUse" if own => Some(DialogEdge::Answered),

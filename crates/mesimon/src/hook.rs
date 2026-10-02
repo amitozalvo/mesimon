@@ -20,14 +20,19 @@ use std::time::Duration;
 
 /// Hard self-abort: `async: true` disables Claude Code's own timeout
 /// enforcement, so a hook blocked on a wedged daemon is otherwise unbounded.
+/// The hook set's alone: the mod's relay (`--road mod`, T-577) is bounded by
+/// the mod's own `timeoutMs` and stalls no turn, and on the mod road a frame
+/// cut short is a frame the board never hears.
 const ABORT_MS: u64 = 500;
 const WRITE_TIMEOUT_MS: u64 = 250;
 
 pub fn run(args: &[String]) -> ! {
-    std::thread::spawn(|| {
-        std::thread::sleep(Duration::from_millis(ABORT_MS));
-        std::process::exit(0);
-    });
+    if val(args, "--road") != Some("mod") {
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(ABORT_MS));
+            std::process::exit(0);
+        });
+    }
     forward(args);
     std::process::exit(0);
 }

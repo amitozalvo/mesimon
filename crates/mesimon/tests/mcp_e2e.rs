@@ -143,9 +143,14 @@ fn agent_board_tools_tier_and_collisions() {
     // ---- the config travels on argv and is installed nowhere -------------
     let board = board_of(c.request(Command::Snapshot));
     let rec = board.sessions.iter().find(|s| s.id == sid).unwrap();
-    let i = rec.argv.iter().position(|a| a == "--mcp-config").expect("--mcp-config");
-    let blob: Value = serde_json::from_str(&rec.argv[i + 1]).unwrap();
-    assert_eq!(blob["mcpServers"]["mesimon"]["type"], "stdio");
+    // On the mod road (T-577) the mod registers the tools: no blob at all,
+    // the tier on the pane (`launch_tools`).
+    if test_road() == "hooks" {
+        let i = rec.argv.iter().position(|a| a == "--mcp-config").expect("--mcp-config");
+        let blob: Value = serde_json::from_str(&rec.argv[i + 1]).unwrap();
+        assert_eq!(blob["mcpServers"]["mesimon"]["type"], "stdio");
+    }
+    assert_eq!(launch_tools(&tmux_sock, rec).as_deref(), Some("full"));
     // The three files mesimon must never have written, and the one it must not
     // have created in the repo. This is the whole of "only for sessions
     // mesimon created": there is nowhere else for the config to have come from.
@@ -186,9 +191,12 @@ fn agent_board_tools_tier_and_collisions() {
         "the switch is off, so the flag is not there at all: {:?}",
         quiet_rec.argv
     );
+    assert_eq!(launch_tools(&tmux_sock, quiet_rec), None, "and no tier on the pane");
     // The hooks are untouched — the two flags are different promises, and
-    // turning the tools off must not also blind the board to attention.
-    assert!(quiet_rec.argv.iter().any(|a| a == "--settings"), "{:?}", quiet_rec.argv);
+    // turning the tools off must not also blind the board to attention: the
+    // hook set, or on the mod road the mod, which carries the frames.
+    let observed = if test_road() == "hooks" { "--settings" } else { "--plugin-dir" };
+    assert!(quiet_rec.argv.iter().any(|a| a == observed), "{:?}", quiet_rec.argv);
     assert!(matches!(c.request(Command::SetMcpTools { on: true }), Response::Ok));
 
     // ---- the session knows which ticket it is on, from the shell ---------

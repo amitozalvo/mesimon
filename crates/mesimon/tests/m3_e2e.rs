@@ -206,8 +206,15 @@ fn m3_adoption_and_sleep() {
     let rec = board.sessions.iter().find(|s| s.id == obs).unwrap();
     assert_eq!(rec.state, SessionState::Spawning);
     assert!(rec.argv.iter().any(|a| a == "--resume"));
-    assert!(rec.argv.iter().any(|a| a == "--settings"), "takeover must inject hooks");
-    assert!(rec.argv.iter().any(|a| a == "--mcp-config"), "takeover must inject the tools");
+    // Takeover injects the hooks and the tools: the hook set and the inline
+    // MCP server, or on the mod road (T-577) the mod, which carries both.
+    if test_road() == "hooks" {
+        assert!(rec.argv.iter().any(|a| a == "--settings"), "takeover must inject hooks");
+        assert!(rec.argv.iter().any(|a| a == "--mcp-config"), "takeover must inject the tools");
+    } else {
+        assert!(rec.argv.iter().any(|a| a == "--plugin-dir"), "takeover must load the mod");
+        assert!(!rec.argv.iter().any(|a| a == "--settings" || a == "--mcp-config"));
+    }
     // T-240: a taken-over session keeps `Adopted` for life, and the gate on the
     // agent tier once read provenance alone — so the tools it was just handed
     // were refused on every call. The record is now one mesimon launched.

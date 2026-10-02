@@ -18,6 +18,13 @@
 //! mesimon did not spawn never receives these tools, because the config is
 //! passed on argv and installed nowhere.
 //!
+//! On the mod road (T-577) no MCP server runs: the mod registers the same
+//! tools with `$.tool.register` and serves each call from a `tool.call` hook
+//! by running this binary once per call, `mesimon mcp --call <tool>` with the
+//! arguments on stdin and the result on stdout, and lists them at the
+//! session's start with `mesimon mcp --list`. The same translation, the same
+//! daemon checks; only the transport is a process instead of a stdio server.
+//!
 //! One connection per call, deliberately. Tool calls happen at human scale, and
 //! a fresh connect removes every stale-socket path on a daemon that gets
 //! restarted many times a day during its own development.
@@ -45,6 +52,17 @@ const READ_TIMEOUT_SECS: u64 = 20;
 const ANSWER_WAIT_SECS: u64 = 75;
 
 pub fn run(args: &[String]) -> ! {
+    // The column's tier at spawn (T-117): what this process LISTS. Absent —
+    // an argv persisted before the flag existed — lists everything; the
+    // daemon decides at every call, so listing more never grants more.
+    let tier = val(args, "--tools").and_then(AgentTools::parse).unwrap_or(AgentTools::Full);
+    // The mod's registration (T-577): what `$.tool.register` takes, no
+    // daemon asked.
+    if args.iter().any(|a| a == "--list") {
+        let list = serde_json::to_string(&mcp::registered_for(tier)).unwrap_or_default();
+        println!("{list}");
+        std::process::exit(0);
+    }
     let Some(sock) = val(args, "--sock").map(PathBuf::from) else {
         eprintln!("mesimon mcp: --sock is required");
         std::process::exit(2);
@@ -53,10 +71,20 @@ pub fn run(args: &[String]) -> ! {
         eprintln!("mesimon mcp: --session must be a uuid");
         std::process::exit(2);
     };
-    // The column's tier at spawn (T-117): what this process LISTS. Absent —
-    // an argv persisted before the flag existed — lists everything; the
-    // daemon decides at every call, so listing more never grants more.
-    let tier = val(args, "--tools").and_then(AgentTools::parse).unwrap_or(AgentTools::Full);
+    // One call for the mod (T-577): the model's arguments on stdin, the
+    // result as `tools/call` answers it on stdout.
+    if let Some(name) = val(args, "--call") {
+        let mut body = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut body);
+        let arguments: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        let mut params = json!({ "name": name, "arguments": arguments });
+        if let Some(id) = val(args, "--tool-use-id") {
+            params["_meta"] = json!({ "claudecode/toolUseId": id });
+        }
+        let result = tool_result(&params, &sock, session);
+        let _ = writeln!(std::io::stdout(), "{result}");
+        std::process::exit(0);
+    }
 
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
@@ -105,11 +133,16 @@ fn handle_line(line: &str, sock: &PathBuf, session: uuid::Uuid, tier: AgentTools
 }
 
 fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> Value {
+    ok(id, tool_result(params, sock, session))
+}
+
+/// One `tools/call`'s `result`: the shim's and the mod's (T-577) alike.
+fn tool_result(params: &Value, sock: &PathBuf, session: uuid::Uuid) -> Value {
     let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     let call = match mcp::parse_tool_call(name, &args) {
         Ok(c) => c,
-        Err(message) => return ok(id, tool_error(&message)),
+        Err(message) => return tool_error(&message),
     };
     // The client's own tool-use id, when the agent supplied no key of its own.
     // It is already on the wire in `_meta`, and it is stable across the retry
@@ -188,8 +221,8 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
     };
     let env = Envelope { principal: Principal::Agent { session }, command };
     match ask(sock, &env) {
-        Ok(resp) => ok(id, render(resp)),
-        Err(message) => ok(id, tool_error(&message)),
+        Ok(resp) => render(resp),
+        Err(message) => tool_error(&message),
     }
 }
 

@@ -60,13 +60,12 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
         Response::Spawned { id, .. } => id,
         other => panic!("spawn: {other:?}"),
     };
+    // The tier the launch lists: the blob's on the hook set's road, the
+    // pane's `MESIMON_MOD_TOOLS` on the mod's (T-577).
+    let tmux_sock = h.paths.tmux_sock();
     let blob_tools = |c: &mut TestClient, sid| -> String {
         let rec = c.board().sessions.into_iter().find(|s| s.id == sid).unwrap();
-        let at = rec.argv.iter().position(|a| a == "--mcp-config").expect("the blob");
-        let blob: serde_json::Value = serde_json::from_str(&rec.argv[at + 1]).unwrap();
-        let args = blob["mcpServers"]["mesimon"]["args"].as_array().unwrap();
-        let i = args.iter().position(|a| a == "--tools").expect("--tools on the shim's argv");
-        args[i + 1].as_str().unwrap().to_string()
+        launch_tools(&tmux_sock, &rec).expect("the launch hands a tier")
     };
 
     // ---- full: today's behaviour, the whole surface -------------------------
@@ -74,12 +73,16 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     let s_full = spawn(&mut c, t_full);
     assert_eq!(blob_tools(&mut c, s_full), "full");
     // T-362: the read tools are pre-approved on argv, the writers are not.
+    // On the mod road a registered tool asks no permission (T-577), so no
+    // rule rides argv (`launch_tools` holds it).
     let rec = c.board().sessions.into_iter().find(|s| s.id == s_full).unwrap();
-    let at = rec.argv.iter().position(|a| a == "--allowedTools").expect("--allowedTools");
-    assert_eq!(
-        rec.argv[at + 1],
-        "mcp__mesimon__get_ticket,mcp__mesimon__list_board,mcp__mesimon__read_note,mcp__mesimon__read_attachment"
-    );
+    if test_road() == "hooks" {
+        let at = rec.argv.iter().position(|a| a == "--allowedTools").expect("--allowedTools");
+        assert_eq!(
+            rec.argv[at + 1],
+            "mcp__mesimon__get_ticket,mcp__mesimon__list_board,mcp__mesimon__read_note,mcp__mesimon__read_attachment"
+        );
+    }
     let mut shim = Shim::start(&sock, s_full);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
@@ -198,6 +201,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     let rec = c.board().sessions.into_iter().find(|s| s.id == s_off).unwrap();
     assert!(!rec.argv.iter().any(|a| a == "--mcp-config"), "{:?}", rec.argv);
     assert!(!rec.argv.iter().any(|a| a == "--allowedTools"), "{:?}", rec.argv);
+    assert_eq!(launch_tools(&tmux_sock, &rec), None, "off hands no tier on either road");
     match c.send(Principal::Agent { session: s_off }, Command::AgentGetTicket) {
         Response::Err { message } => assert!(message.contains("off"), "{message}"),
         other => panic!("off admits nothing: {other:?}"),

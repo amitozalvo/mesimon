@@ -281,35 +281,53 @@ fn m2_attention_headless() {
     let (board, _) = board_of(c.request(Command::Snapshot));
     let rec = board.sessions.iter().find(|s| s.id == claude_sid).unwrap();
     assert_eq!(rec.state, SessionState::Spawning);
-    assert!(rec.argv.iter().any(|a| a == "--settings"));
-    // T-84: the MCP server travels on argv and is installed nowhere. The blob
-    // names this binary, the daemon's own socket, and the record uuid — so a
-    // session mesimon did not spawn can never reach these tools.
-    let mcp_pos = rec.argv.iter().position(|a| a == "--mcp-config").expect("--mcp-config on argv");
-    let blob: serde_json::Value = serde_json::from_str(&rec.argv[mcp_pos + 1]).unwrap();
-    let server = &blob["mcpServers"]["mesimon"];
-    assert_eq!(server["type"], "stdio");
-    let args: Vec<&str> =
-        server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
-    assert_eq!(args[0], "mcp");
-    assert!(args.contains(&claude_sid.to_string().as_str()), "bound to the record uuid");
-    // Subtractive magic check: the user's own MCP servers still load.
-    assert!(!rec.argv.iter().any(|a| a == "--strict-mcp-config"));
-    let settings = state_dir.join("hooks").join(format!("{claude_sid}.json"));
-    assert!(settings.is_file(), "settings file written");
-    let mode = std::os::unix::fs::MetadataExt::mode(&settings.metadata().unwrap()) & 0o777;
-    assert_eq!(mode, 0o600, "settings must be 0600");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
-    let n: usize =
-        parsed["hooks"].as_object().unwrap().values().map(|a| a.as_array().unwrap().len()).sum();
-    assert_eq!(n, 36, "34 observer entries, the static gate and the paired-human decider");
-    for event in ["PreCompact", "PostCompact"] {
-        assert_eq!(
-            parsed["hooks"][event].as_array().unwrap().len(),
-            1,
-            "manual compaction must be observed at both boundaries"
-        );
+    // The hook set's road: the settings file and the inline MCP server. On
+    // the mod's (T-577) the mod carries the frames, the gate and the tools,
+    // and neither rides argv nor is written.
+    if test_road() == "hooks" {
+        assert!(rec.argv.iter().any(|a| a == "--settings"));
+        // T-84: the MCP server travels on argv and is installed nowhere. The blob
+        // names this binary, the daemon's own socket, and the record uuid — so a
+        // session mesimon did not spawn can never reach these tools.
+        let mcp_pos =
+            rec.argv.iter().position(|a| a == "--mcp-config").expect("--mcp-config on argv");
+        let blob: serde_json::Value = serde_json::from_str(&rec.argv[mcp_pos + 1]).unwrap();
+        let server = &blob["mcpServers"]["mesimon"];
+        assert_eq!(server["type"], "stdio");
+        let args: Vec<&str> =
+            server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        assert_eq!(args[0], "mcp");
+        assert!(args.contains(&claude_sid.to_string().as_str()), "bound to the record uuid");
+        // Subtractive magic check: the user's own MCP servers still load.
+        assert!(!rec.argv.iter().any(|a| a == "--strict-mcp-config"));
+        let settings = state_dir.join("hooks").join(format!("{claude_sid}.json"));
+        assert!(settings.is_file(), "settings file written");
+        let mode = std::os::unix::fs::MetadataExt::mode(&settings.metadata().unwrap()) & 0o777;
+        assert_eq!(mode, 0o600, "settings must be 0600");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let n: usize = parsed["hooks"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|a| a.as_array().unwrap().len())
+            .sum();
+        assert_eq!(n, 36, "34 observer entries, the static gate and the paired-human decider");
+        for event in ["PreCompact", "PostCompact"] {
+            assert_eq!(
+                parsed["hooks"][event].as_array().unwrap().len(),
+                1,
+                "manual compaction must be observed at both boundaries"
+            );
+        }
+    } else {
+        for flag in ["--settings", "--mcp-config", "--allowedTools"] {
+            assert!(!rec.argv.iter().any(|a| a == flag), "{flag}: {:?}", rec.argv);
+        }
+        assert!(!state_dir.join("hooks").join(format!("{claude_sid}.json")).exists());
+        assert!(rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
+        // Subtractive magic check: the user's own MCP servers still load.
+        assert!(!rec.argv.iter().any(|a| a == "--strict-mcp-config"));
     }
     // Prefill: the ticket title is typed into the fresh pane, never submitted
     // (the pty echoes it even though the stub never reads stdin).

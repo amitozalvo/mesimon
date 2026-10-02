@@ -164,8 +164,15 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
         let rec = c.board().sessions.into_iter().find(|s| s.id == bsid).unwrap();
         let at = rec.argv.iter().position(|a| a == brief::FLAG).expect("the brief's flag");
         assert_eq!(rec.argv[at + 1], brief::TEXT, "the text is the argv value, verbatim");
-        let tools = rec.argv.iter().position(|a| a == "--mcp-config").expect("--mcp-config");
-        assert!(tools < at, "the brief follows the tools it names: {:?}", rec.argv);
+        // The brief follows the tools it names: the blob on the hook set's
+        // road; on the mod's the mod registers them (T-577) and the brief
+        // still rides argv.
+        if test_road() == "hooks" {
+            let tools = rec.argv.iter().position(|a| a == "--mcp-config").expect("--mcp-config");
+            assert!(tools < at, "the brief follows the tools it names: {:?}", rec.argv);
+        } else {
+            assert!(!rec.argv.iter().any(|a| a == "--mcp-config"), "{:?}", rec.argv);
+        }
         assert!(!rec.argv.iter().any(|a| a == "--system-prompt"), "append, never replace");
     }
     std::thread::sleep(Duration::from_millis(700));

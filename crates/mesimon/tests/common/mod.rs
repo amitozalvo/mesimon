@@ -411,9 +411,12 @@ pub fn hook_send_from_pane(
     pane: Option<&str>,
     body: &str,
 ) {
-    // Under the mod road (T-574) the mod sees every hook-set event before the
-    // command hook does, and relays it: the stand-in engine's relay half.
-    if test_road() == "mod" && mesimon_core::road::PAIRED_EVENTS.contains(&event) {
+    // The mod sees every hook-set event before the command hook does, and
+    // relays it: the stand-in engine's relay half (T-574). Both are sent on
+    // both passes, and the daemon takes one (T-577): the mod's for a pane
+    // that reports through it alone, the hook set's for every other. So a
+    // test that pins a road, either one, reads the same under both passes.
+    if mesimon_core::road::RELAYED_EVENTS.contains(&event) {
         let twin = mod_body(event, body);
         hook_send_road(sock, session, event, reason, pane, &twin, Some("mod"));
     }
@@ -422,19 +425,22 @@ pub fn hook_send_from_pane(
 
 /// What the mod relays for `body`: the payload itself, except `PreToolUse`,
 /// which the mod rebuilds from the tool envelope (`register.ts`'s
-/// `preToolUseBody`) and the shadow compares through the same three fields.
+/// `preToolUseBody`): the tool, its id, its input, and a subagent's id.
 pub fn mod_body(event: &str, body: &str) -> String {
     if event != "PreToolUse" {
         return body.to_string();
     }
     let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-    serde_json::json!({
+    let mut rebuilt = serde_json::json!({
         "hook_event_name": "PreToolUse",
         "tool_name": v.get("tool_name"),
         "tool_use_id": v.get("tool_use_id"),
         "tool_input": v.get("tool_input"),
-    })
-    .to_string()
+    });
+    if let Some(agent) = v.get("agent_id").filter(|a| a.is_string()) {
+        rebuilt["agent_id"] = agent.clone();
+    }
+    rebuilt.to_string()
 }
 
 /// One frame through the real hook binary, on one road (`None` is the hook
@@ -508,6 +514,37 @@ pub fn tmux(sock: &Path) -> Proc {
     let mut cmd = Proc::new(mesimon_backend_tmux::tmux_bin());
     cmd.arg("-S").arg(sock);
     cmd
+}
+
+/// The command line a session's pane was started with: the launcher, its
+/// `--set` variables and the agent's argv.
+pub fn pane_start(tmux_sock: &Path, rec: &mesimon_core::board::SessionRecord) -> String {
+    let out = tmux(tmux_sock)
+        .args(["list-panes", "-t", &rec.sid16(), "-F", "#{pane_start_command}"])
+        .output()
+        .expect("tmux list-panes");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The tier of tools a Claude launch hands its session (T-117, T-577): on
+/// the hook set's road the `--tools` word on the inline `--mcp-config`
+/// blob's shim argv; on the mod road the `MESIMON_MOD_TOOLS` its pane
+/// carries, which the mod registers (and no blob, no allow rule ride argv).
+/// `None` when it hands none.
+pub fn launch_tools(tmux_sock: &Path, rec: &mesimon_core::board::SessionRecord) -> Option<String> {
+    let blob = rec.argv.iter().position(|a| a == "--mcp-config");
+    if rec.road == mesimon_core::road::Road::Mod {
+        assert!(blob.is_none(), "the mod road names no MCP server: {:?}", rec.argv);
+        assert!(!rec.argv.iter().any(|a| a == "--allowedTools"), "{:?}", rec.argv);
+        let start = pane_start(tmux_sock, rec);
+        let at = start.find("MESIMON_MOD_TOOLS=")?;
+        let word = start[at + "MESIMON_MOD_TOOLS=".len()..].split_whitespace().next()?;
+        return Some(word.trim_matches('\'').to_string());
+    }
+    let blob: Value = serde_json::from_str(&rec.argv[blob? + 1]).unwrap();
+    let args = blob["mcpServers"]["mesimon"]["args"].as_array().unwrap();
+    let i = args.iter().position(|a| a == "--tools").expect("--tools on the shim's argv");
+    Some(args[i + 1].as_str().unwrap().to_string())
 }
 
 pub fn kill_tmux(sock: &Path) {
@@ -632,17 +669,6 @@ impl Drop for Harness {
             let env = Envelope { principal: Principal::Local, command: Command::Shutdown };
             let _ = writeln!(c.write, "{}", serde_json::to_string(&env).unwrap());
         }
-        // The shadow's verdict on this test (T-574): every disagreement the
-        // daemon wrote, said where a failing test's output will show it.
-        let disagreed: Vec<String> = std::fs::read_to_string(self.paths.activity_log())
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains("\"kind\":\"road_disagree\""))
-            .map(str::to_string)
-            .collect();
-        if !disagreed.is_empty() {
-            eprintln!("road_disagree in {}:\n{}", self.dir.display(), disagreed.join("\n"));
-        }
         // The supervisor owns bounded termination and checked resource removal.
         // It remains responsible if this process panics or is forcibly killed.
         let _ = &self.fixture;
@@ -727,11 +753,15 @@ pub fn pending_of(c: &mut TestClient, ticket: Option<ulid::Ulid>) -> Vec<Pending
 // ------------------------------------------- the shim, driven as Claude does
 
 /// The real `mesimon mcp` process, spoken to over stdin/stdout exactly the way
-/// Claude Code speaks to a stdio MCP server.
+/// Claude Code speaks to a stdio MCP server. Under the mod road's pass
+/// (T-577) a `tools/call` goes instead the way the mod makes it: one
+/// `mesimon mcp --call <tool>` per call, the arguments on stdin, the result
+/// on stdout, so every test's tool calls hold on both roads.
 pub struct Shim {
     child: Child,
     out: BufReader<std::process::ChildStdout>,
     next_id: i64,
+    argv: Vec<String>,
 }
 
 impl Shim {
@@ -742,23 +772,46 @@ impl Shim {
     /// The shim with extra argv — `--tools <tier>`, the way the daemon's
     /// blob starts it (T-117).
     pub fn start_with(sock: &Path, session: uuid::Uuid, extra: &[&str]) -> Self {
+        let mut argv: Vec<String> = vec!["mcp".into(), "--sock".into(), sock.display().to_string()];
+        argv.extend(["--session".into(), session.to_string()]);
+        argv.extend(extra.iter().map(|a| a.to_string()));
         let mut child = Proc::new(mesimon_binary())
-            .args(["mcp", "--sock"])
-            .arg(sock)
-            .args(["--session", &session.to_string()])
-            .args(extra)
+            .args(&argv)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn mcp shim");
         let out = BufReader::new(child.stdout.take().unwrap());
-        Self { child, out, next_id: 1 }
+        Self { child, out, next_id: 1, argv }
+    }
+
+    /// One call as the mod makes it (T-577): `mesimon mcp --call`.
+    fn call_as_the_mod(&self, params: &Value) -> Value {
+        let mut argv = self.argv.clone();
+        argv.extend(["--call".into(), params["name"].as_str().unwrap_or_default().into()]);
+        if let Some(id) = params["_meta"]["claudecode/toolUseId"].as_str() {
+            argv.extend(["--tool-use-id".into(), id.into()]);
+        }
+        let mut child = Proc::new(mesimon_binary())
+            .args(&argv)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn mesimon mcp --call");
+        let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+        child.stdin.take().unwrap().write_all(args.to_string().as_bytes()).unwrap();
+        let out = child.wait_with_output().expect("mesimon mcp --call");
+        serde_json::from_slice(&out.stdout).expect("mesimon mcp --call prints json")
     }
 
     pub fn rpc(&mut self, method: &str, params: Value) -> Value {
         let id = self.next_id;
         self.next_id += 1;
+        if method == "tools/call" && test_road() == "mod" {
+            return json!({"jsonrpc": "2.0", "id": id, "result": self.call_as_the_mod(&params)});
+        }
         let msg = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
         let stdin = self.child.stdin.as_mut().unwrap();
         writeln!(stdin, "{msg}").unwrap();

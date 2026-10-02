@@ -309,8 +309,9 @@ mod tests {
     }
 
     /// The mod relays the hook set's events by the hook set's names and
-    /// matchers (T-574), or the shadow reports a twin that was never going to
-    /// come. One list in each language, held together here.
+    /// matchers (T-574): on the mod road it is the only road (T-577), so an
+    /// event it missed is an event the board never hears. One list in each
+    /// language, held together here.
     #[test]
     fn the_mod_relays_exactly_what_the_hook_set_reports() {
         let words = |list: &[&str]| list.iter().map(|w| w.to_string()).collect::<Vec<_>>();
@@ -322,11 +323,11 @@ mod tests {
         let mut events: Vec<&str> =
             rendered["hooks"].as_object().unwrap().keys().map(String::as_str).collect();
         events.sort_unstable();
-        let mut paired = mesimon_core::road::PAIRED_EVENTS.to_vec();
-        paired.sort_unstable();
-        assert_eq!(events, paired);
+        let mut relayed = mesimon_core::road::RELAYED_EVENTS.to_vec();
+        relayed.sort_unstable();
+        assert_eq!(events, relayed);
         let src = crate::modroad::FILES[2].1;
-        for event in mesimon_core::road::PAIRED_EVENTS {
+        for event in mesimon_core::road::RELAYED_EVENTS {
             assert!(src.contains(&format!("on('classic.{event}',")), "{event} is not relayed");
         }
         assert!(!src.contains("on('classic.*'"), "the wildcard carries the verbose tier");
@@ -355,6 +356,7 @@ mod tests {
             "MESIMON_MOD_GATE_BOARD",
             "MESIMON_MOD_GATE_STATE",
             "MESIMON_MOD_GATE_ALLOW",
+            "MESIMON_MOD_TOOLS",
         ] {
             assert!(src.contains(&format!("$.env.get('{var}')")), "{var}");
         }
@@ -417,10 +419,13 @@ mod tests {
         ] {
             assert!(!code.contains(banned), "the mod spells {banned}");
         }
-        // A deny's text reaches the model: the one deny is the gate's, in
-        // `mesimon gate`'s words (`the_mod_gate_says_what_mesimon_gate_says`).
-        assert_eq!(code.matches("deny:").count(), 1, "one deny, the gate's");
+        // A deny's text reaches the model: one is the gate's, in `mesimon
+        // gate`'s words (`the_mod_gate_says_what_mesimon_gate_says`), the
+        // other a board tool's refusal in the daemon's, as the shim's error
+        // result carried them (T-577).
+        assert_eq!(code.matches("deny:").count(), 2, "the gate's and a tool's refusal");
         assert!(code.contains("return { deny: denial(rule) }"));
+        assert!(code.contains("if (out?.isError === true) return { deny: text ||"));
         // The one `$.prompt` call is the turn road's submit (T-575), and it
         // is the person's words, bare: `asUser: true`, the text as it came.
         let calls: Vec<&str> = code.matches("$.prompt.").collect();

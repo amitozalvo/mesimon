@@ -699,15 +699,11 @@ fn crown_archives(on: bool) -> Record {
 
 /// How Claude sessions report to this board (T-574): which road the last
 /// Claude launch got and why (`<state>/mod/road.json`, because the daemon's
-/// seam is not in doctor's environment), and how often the shadow found the
-/// two roads disagreeing — zero is the bar the mod must hold before it
-/// carries the frames alone. No setting chooses the road (T-588).
+/// seam is not in doctor's environment). No setting chooses the road
+/// (T-588), and since T-577 the mod carries a session alone.
 fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
     use mesimon_daemon::modroad::{read_verdict, Source};
-    let disagreements = std::fs::read_to_string(paths.activity_log())
-        .map(|log| log.lines().filter(|l| l.contains("\"kind\":\"road_disagree\"")).count())
-        .unwrap_or(0);
-    let advice = "mesimon loads its mod where Claude Code is 2.1.287 or newer and `claude plugin validate` passes on it, beside the hook set it generates, and checks each against the other (road_disagree lines in the feed); below that, the hook set alone. Each launch decides; `mesimon state ping <KEY>` times one session's mod.";
+    let advice = "mesimon loads its mod where Claude Code is 2.1.287 or newer and `claude plugin validate` passes on it: the mod reports the session's events, refuses writes to the board's files and serves the board's tools. Below that, the hook set and the MCP server mesimon generates. Each launch decides; `mesimon state ping <KEY>` times one session's mod.";
     let Some(v) = read_verdict(paths) else {
         return rec(Level::Note, "claude road", "auto ∙ no Claude launch yet").advice(advice);
     };
@@ -718,14 +714,11 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
     if let Some(probe) = &v.probe {
         value.push_str(&format!(" ∙ {probe}"));
     }
-    if v.road == mesimon_core::road::Road::Mod || disagreements > 0 {
-        value.push_str(&format!(" ∙ {disagreements} disagreements in the feed"));
-    }
     if let Some(e) = &v.lay_error {
         return rec(Level::Warn, "claude road", value)
             .advice(format!("The mod could not be laid, so launches take the hook set: {e}"));
     }
-    let level = if v.fallback || disagreements > 0 { Level::Warn } else { Level::Ok };
+    let level = if v.fallback { Level::Warn } else { Level::Ok };
     let advice = if v.fallback {
         format!("The mod stopped validating after a Claude Code update, so launches take the hook set. {advice}")
     } else {
@@ -1065,6 +1058,13 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
     println!("  --strict-mcp-config is NOT passed: your own MCP servers still load.");
     println!("  --allowedTools pre-approves the read tools only; writers still prompt.");
     println!("  <session> above is the per-session uuid; nothing else varies.");
+    println!("Claude Code 2.1.287 and newer, with mesimon's mod (see `claude road`):");
+    println!("  no --mcp-config and no --allowedTools. The mod registers the same tools,");
+    println!("  by the same names, descriptions and input schemas, from");
+    println!("  `mesimon mcp --list --tools <tier>`, and serves each call through");
+    println!("  `mesimon mcp --call`. Claude Code asks no permission for a tool a mod");
+    println!("  registers, in any mode: mesimon checks the tier and the ticket at every");
+    println!("  call, which is the same check the MCP server's calls get.");
     println!();
 
     println!("what the model sees ({} tools)", mcp::tools().len());
@@ -1083,6 +1083,11 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
     }
     println!();
     println!("  {total} serialized bytes in the complete tools/list response.");
+    let registered: usize = mcp::registered_for(mesimon_core::board::AgentTools::Full)
+        .iter()
+        .map(|t| serde_json::to_string(t).map(|s| s.len()).unwrap_or(0))
+        .sum();
+    println!("  {registered} bytes registered by the mod (the same, less each readOnlyHint).");
     println!("  Native providers decide when tool definitions enter model context.");
     println!();
 
@@ -1205,7 +1210,7 @@ mod tests {
         let auto = Source::Default;
         assert_eq!(
             line(Road::Mod, "auto", auto, Some("claude 2.1.287, the mod validated")),
-            "mod ∙ claude 2.1.287, the mod validated ∙ 0 disagreements in the feed"
+            "mod ∙ claude 2.1.287, the mod validated"
         );
         assert_eq!(
             line(Road::Hooks, "auto", auto, Some("claude 2.1.280 is older than 2.1.287")),

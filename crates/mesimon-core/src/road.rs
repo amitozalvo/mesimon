@@ -18,11 +18,11 @@
 //! screen or type into one.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 /// What a launch got: the road its session reports on. Recorded on the
-/// session (`SessionRecord::road`) so the shadow pairs only frames from a
-/// session that was handed the mod.
+/// session (`SessionRecord::road`): on the mod a launch since T-577 passes
+/// no hook set, and its frames are the mod's alone
+/// (`SessionRecord::frames_by_mod`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Road {
@@ -104,11 +104,13 @@ pub fn has_mods(version: (u32, u32, u32)) -> bool {
 }
 
 /// The hook-set events the mod relays, by the names `mesimon hook` sends for
-/// a Claude session — the twins the shadow pairs. Never `PaneDied` (tmux's),
-/// `GateDenied` (`mesimon gate`'s), `RemotePermission` (`mesimon approve`'s)
-/// or [`MOD_PONG`]. The daemon's unit test holds this list to the hook set's
-/// and to the mod's `register.ts`.
-pub const PAIRED_EVENTS: [&str; 17] = [
+/// a Claude session: on the mod road (T-577) the frames ingest reads, in
+/// place of the hook set's. Never `PaneDied` (tmux's, the one exit signal
+/// on both roads), `GateDenied` (the gate's report), `RemotePermission`
+/// (`mesimon approve`'s, which the mod runs as the hook set did) or the
+/// mod's own reports. The daemon's unit test holds this list to the hook
+/// set's and to the mod's `register.ts`.
+pub const RELAYED_EVENTS: [&str; 17] = [
     "SessionStart",
     "SessionEnd",
     "StopFailure",
@@ -132,18 +134,6 @@ pub const PAIRED_EVENTS: [&str; 17] = [
 /// `mesimon hook --road mod` with the ping's id as its reason: the round trip
 /// daemon → bridge → mod → hook.sock, whole.
 pub const MOD_PONG: &str = "ModPong";
-
-/// What a `PreToolUse` frame is compared by. The mod's `classic.PreToolUse`
-/// is the tool envelope (`{ tool, tool_use_id, ...arguments }`), not the
-/// command hook's stdin (T-573 row 1), so the mod rebuilds these three and
-/// the shadow reads both roads through the same three.
-pub fn pre_tool_use_projection(payload: &Value) -> Value {
-    serde_json::json!({
-        "tool_name": payload.get("tool_name").cloned().unwrap_or(Value::Null),
-        "tool_use_id": payload.get("tool_use_id").cloned().unwrap_or(Value::Null),
-        "tool_input": payload.get("tool_input").cloned().unwrap_or(Value::Null),
-    })
-}
 
 /// The event the mod reports a [`ModCommand::Submit`]'s end with (T-575),
 /// relayed with the frame's id as its reason: `{ "outcome": "entered" }`
@@ -335,21 +325,5 @@ mod tests {
         ] {
             assert!(SPEAKS.contains(&c.word()), "{c:?}");
         }
-    }
-
-    #[test]
-    fn the_projection_keeps_three_fields_and_nothing_else() {
-        let hook = serde_json::json!({
-            "session_id": "s", "transcript_path": "/t", "cwd": "/c",
-            "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion",
-            "tool_use_id": "toolu_1", "tool_input": { "questions": [] },
-        });
-        let modded = serde_json::json!({
-            "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion",
-            "tool_use_id": "toolu_1", "tool_input": { "questions": [] },
-        });
-        assert_eq!(pre_tool_use_projection(&hook), pre_tool_use_projection(&modded));
-        let other = serde_json::json!({ "tool_name": "AskUserQuestion", "tool_use_id": "toolu_2" });
-        assert_ne!(pre_tool_use_projection(&hook), pre_tool_use_projection(&other));
     }
 }

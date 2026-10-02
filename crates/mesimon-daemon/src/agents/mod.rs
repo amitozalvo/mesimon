@@ -93,6 +93,11 @@ pub struct LaunchContext<'a> {
     /// Off by default and read by the Claude adapter alone; Codex has no
     /// mods. Nothing is written for it: the flag is the whole installation.
     pub mod_dir: Option<std::path::PathBuf>,
+    /// The road this launch takes (T-574, T-577), decided by
+    /// `Daemon::launch_road`: on the mod the board's tools are the mod's
+    /// `$.tool.register`, so no `--mcp-config` and no `--allowedTools` ride
+    /// argv. Claude only; Codex's launch is always `Hooks`.
+    pub road: mesimon_core::road::Road,
 }
 
 pub struct LaunchSpec {

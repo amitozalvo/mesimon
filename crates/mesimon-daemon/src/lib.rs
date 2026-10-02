@@ -20,7 +20,6 @@ pub mod paths;
 pub mod plan_dialog;
 pub mod resources;
 pub mod server;
-pub mod shadow;
 pub mod shellenv;
 pub mod started;
 pub mod state_replay;

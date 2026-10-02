@@ -1,6 +1,7 @@
 //! The mod road in the daemon (T-574): which road a Claude launch takes, the
 //! commands queued for each session's mod and the bridge that polls them,
-//! and the shadow that holds the mod's frames against the hook set's.
+//! and the mod's frames, which since T-577 are the session's only frames
+//! (no hook set rides a mod launch; T-574's shadow ended with it).
 //!
 //! Delivery is a long poll on purpose. The writer thread writes nothing to a
 //! bridge: a bridge whose mod stopped reading (Claude on Ctrl+Z) would block
@@ -20,11 +21,8 @@
 
 use super::*;
 use crate::modroad::{self, Probe, RoadVerdict};
-use crate::shadow::{self, Shadow};
 use mesimon_core::road::{
-    ModCommand, ModFrame, Road, RoadPref, GATE_DENIED, MOD_ANSWER, MOD_LOAD_FAILED, MOD_PONG,
-    MOD_SUBMIT,
-    PAIRED_EVENTS,
+    ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_LOAD_FAILED, MOD_PONG, MOD_SUBMIT,
 };
 use std::collections::VecDeque;
 
@@ -75,7 +73,6 @@ pub(super) struct ModRoad {
     waiters: HashMap<uuid::Uuid, Waiter>,
     pings: HashMap<String, Ping>,
     bridges: HashMap<uuid::Uuid, Bridge>,
-    pub(super) shadow: Shadow,
 }
 
 impl ModRoad {
@@ -434,17 +431,15 @@ impl Daemon {
         None
     }
 
-    // ---- Up: the mod's frames, held against the hook set's.
+    // ---- Up: the mod's frames.
 
-    /// A hook-set frame the writer is ingesting: offered to the shadow when
-    /// its session was handed the mod.
-    pub(super) fn shadow_hooks_frame(&mut self, frame: &HookFrame) {
-        self.shadow_offer(frame, Road::Hooks);
-    }
-
-    /// A frame the mod relayed (`road: mod`): never ingested. A pong answers
-    /// its ping; anything else is paired.
-    pub(super) fn on_shadow_hook(&mut self, frame: HookFrame) {
+    /// A frame the mod relayed (`road: mod`). A pong answers its ping; the
+    /// mod's own reports are read here; every other frame is the session's
+    /// own report, ingested exactly as the hook set's was (T-577) when its
+    /// pane reports through the mod alone, and dropped otherwise: a record
+    /// an earlier build launched on the mod still carries its hook set, whose
+    /// frames are the ones ingested until its next wake.
+    pub(super) fn on_mod_hook(&mut self, frame: HookFrame) {
         if frame.event == MOD_PONG {
             if let Some(ping) = frame.reason.as_deref().and_then(|id| self.modroad.pings.remove(id))
             {
@@ -453,20 +448,21 @@ impl Daemon {
             }
             return;
         }
-        // The mod's own reports (T-575, T-576, T-577): the only source of
-        // what they say, so they are read here and paired with nothing. A
-        // write the mod refused has no twin either: the refusal precedes
-        // every `PreToolUse`, so the hook set's gate never ran for it.
-        if frame.event == GATE_DENIED {
-            self.feed.hook_event(&frame.session, &frame.event, frame.reason.as_deref());
+        let Ok(session) = frame.session.parse::<uuid::Uuid>() else { return };
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else { return };
+        if rec.road != Road::Mod {
             return;
         }
+        let by_mod = rec.frames_by_mod();
+        // The mod's own reports (T-575, T-576): the only source of what they
+        // say, on every mod session.
         if frame.event == MOD_SUBMIT || frame.event == MOD_ANSWER {
-            let Ok(session) = frame.session.parse::<uuid::Uuid>() else { return };
-            if !self.board.sessions.iter().any(|s| s.id == session && s.road == Road::Mod) {
-                return;
-            }
-            self.feed.hook_event(&frame.session, &frame.event, frame.reason.as_deref());
+            self.feed.hook_event_by(
+                &frame.session,
+                &frame.event,
+                frame.reason.as_deref(),
+                Road::Mod,
+            );
             if frame.event == MOD_SUBMIT {
                 self.on_mod_submit(session, &frame);
             } else {
@@ -478,7 +474,9 @@ impl Daemon {
             self.on_mod_load_failed(&frame);
             return;
         }
-        self.shadow_offer(&frame, Road::Mod);
+        if by_mod {
+            self.on_hook(frame);
+        }
     }
 
     /// The mod's report that reads of its pane variables failed before one
@@ -507,27 +505,9 @@ impl Daemon {
         self.feed.board_outcome("daemon", "mod_load_failed", Some(ticket), &line);
     }
 
-    fn shadow_offer(&mut self, frame: &HookFrame, road: Road) {
-        if !PAIRED_EVENTS.contains(&frame.event.as_str()) {
-            return;
-        }
-        let Ok(session) = frame.session.parse::<uuid::Uuid>() else { return };
-        if !self.board.sessions.iter().any(|s| s.id == session && s.road == Road::Mod) {
-            return;
-        }
-        let key = shadow::Key { session, event: frame.event.clone(), reason: frame.reason.clone() };
-        let at = if frame.accepted_ms == 0 { now_ms() } else { frame.accepted_ms };
-        self.modroad.shadow.offer(key, road, shadow::digest(&frame.event, &frame.payload), at);
-    }
-
-    /// The tick's share (`sent_ms`, when the tick was sent): the shadow's
-    /// lines, the pings that waited out their time, and the frames whose
-    /// pane is gone.
-    pub(super) fn tick_mod_road(&mut self, sent_ms: u64) {
-        for d in self.modroad.shadow.sweep(sent_ms) {
-            let ticket = self.board.sessions.iter().find(|s| s.id == d.session).map(|s| s.ticket);
-            self.feed.road_disagree(d.session, ticket, &d.event, d.outcome.word(), d.count);
-        }
+    /// The tick's share: the pings that waited out their time, and the
+    /// frames whose pane is gone.
+    pub(super) fn tick_mod_road(&mut self) {
         let now = now_ms();
         let late: Vec<String> = self
             .modroad
@@ -593,11 +573,8 @@ impl Daemon {
         }
     }
 
-    /// A session lost its pane or its record: its frames and its parked poll
-    /// go. Its shadow stays and empties by time (T-593): the pane goes first
-    /// on a park, and the `SessionEnd` twins it causes land after, the mod's
-    /// a few tens of milliseconds before the hook set's, so a tick between
-    /// them that forgot the session read the hook set's as `no_mod_twin`.
+    /// A session lost its pane or its record: its frames and its parked
+    /// poll go.
     pub(super) fn mod_forget(&mut self, session: uuid::Uuid) {
         if let Some(q) = self.modroad.outbox.remove(&session) {
             if !q.is_empty() {

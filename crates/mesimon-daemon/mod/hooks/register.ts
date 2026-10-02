@@ -4,15 +4,24 @@
 // road; nothing installs it anywhere.
 //
 // What it does, and all it does:
+//  - TOOLS: the board's tools for this session's tier, registered at
+//    session.start with `$.tool.register` by the names, descriptions and
+//    schemas `mesimon mcp --list` prints (the shim's own, `doctor --mcp`),
+//    and each call served by `mesimon mcp --call`, which asks the daemon as
+//    the shim does. The daemon checks the tier and the session at every call
+//    (T-577): a registered tool runs without Claude Code's permission check.
 //  - GATE: a structured write (`Write`, `Edit`, `NotebookEdit`) under the
 //    board dir or the state dir, the worktrees under it excepted, is refused
 //    at `tool.call` with `mesimon gate`'s own words, decided here and from
 //    the pane's variables alone, and reported for the feed (T-577).
 //  - RELAY: each event the generated hook set reports, by the same names and
 //    the same matchers, goes up through the real `mesimon hook` binary with
-//    `--road mod`. The daemon pairs it with the hook set's own frame of the
-//    same event and says when they disagree (shadow mode); it ingests only
-//    the hook set's.
+//    `--road mod`, one after another in the order the events came. Since
+//    T-577 a mod launch carries no hook set, so these are the frames the
+//    daemon ingests.
+//  - APPROVE: a permission dialog is put to `mesimon approve` as the hook
+//    set's entry did, and a person's one-shot answer from Remote Control is
+//    returned as the dialog's decision; no answer leaves the dialog alone.
 //  - BRIDGE: one `mesimon mod-bridge` per session, spawned at session.start
 //    (or by the first event after it, when its read of the variables failed),
 //    whose stdout is the daemon's commands to this session, one JSON line
@@ -36,8 +45,9 @@
 // `context` on any hook, no `prompt.compose` / `prompt.context` /
 // `prompt.section`, no rewrite of a prompt's words, no submit without
 // `asUser: true`, no rewrite of the model's tool arguments, no `deny` of a
-// tool but the gate's (its words are `mesimon gate`'s, which the hook set
-// already hands the model; deny or nothing, never allow), no `tool.check →
+// tool but two: the gate's (its words are `mesimon gate`'s, which the hook
+// set already hands the model; deny or nothing, never allow) and a board
+// tool's refusal (the daemon's words, the shim's error result), no `tool.check →
 // allow` beyond the one-shot a person consented to, no `$.model.*`, no
 // `$.session.send`. Every hook here returns `next(e)` as it came, but the
 // question's and the gate's: the question's returns the answer a person or
@@ -53,6 +63,7 @@
 //   MESIMON_MOD_GATE_BOARD the board dir, `<repo>/.mesimon` (the gate's)
 //   MESIMON_MOD_GATE_STATE the state dir
 //   MESIMON_MOD_GATE_ALLOW the worktrees under it, the agent's own
+//   MESIMON_MOD_TOOLS      the tier of tools to register (off: unset)
 import type { Register } from 'claude-code'
 
 type Config = { bin: string; hookSock: string; orchSock: string; session: string }
@@ -91,6 +102,19 @@ const REASON_STATE =
 // (`mesimon gate`'s trusted-environment rule).
 const REASON_NO_ROOTS = 'Mesimon write guard context is unavailable'
 
+// ---- The tools (T-577). The plugin is `mesimon`, so a registered tool is
+// `mcp__mesimon__<name>`: the shim's names, unchanged for the model.
+const TOOL_PREFIX = 'mcp__mesimon__'
+// `answer_agent` and `accept_plan` wait for their delivery (`mesimon mcp`'s
+// ANSWER_WAIT_SECS, 75 s); every other call answers in seconds.
+const TOOL_CALL_TIMEOUT_MS = 90000
+
+// A relay's own bound (`mesimon hook --road mod` has no other), and the
+// permission bridge's: `mesimon approve` gives up at 47 s, the hook set gave
+// it 50.
+const RELAY_TIMEOUT_MS = 5000
+const APPROVE_TIMEOUT_MS = 50000
+
 // The kinds of command this mod reads, said to the daemon by the bridge
 // (`mesimon_core::road::SPEAKS`): a session keeps the mod it was launched
 // with, so a newer daemon sends it only these.
@@ -115,11 +139,19 @@ let reading: Promise<Config> | undefined
 let failed: { reads: number; error: string; at: string } | undefined
 let bridge: 'off' | 'on' | 'refused' = 'off'
 let started = false
-let roots: Promise<Roots | undefined> | undefined
+// The last relay: the next one starts once it has gone.
+let tail: Promise<unknown> = Promise.resolve()
 const seen: string[] = []
 // The questions held for the board's answer, by tool_use_id: each settles
 // its race with the answer's labels.
 const holds = new Map<string, (answers: Record<string, string>) => void>()
+// The tools this session registered, by full name: the only calls served.
+const registered = new Set<string>()
+let tools: 'off' | 'registering' | 'done' = 'off'
+// The subagent each dialog tool's call ran in, by its tool_use_id, from the
+// `tool.call` beneath its `classic.PreToolUse` (which carries none).
+const agents = new Map<string, string>()
+const AGENTS_MAX = 64
 
 /** The four variables, read at once; a short read throws, naming what is unset. */
 async function load($: any): Promise<Config> {
@@ -164,24 +196,28 @@ async function settings($: any, at: string): Promise<Config | undefined> {
     failed = undefined
     void relay($, 'ModLoadFailed', 'recovered', report, false)
   }
-  // `session.start` starts the bridge; one whose read failed left it to the
-  // first event that reads them.
-  if (started) startBridge($, config)
+  // `session.start` starts the bridge and registers the tools; one whose
+  // read failed left both to the first event that reads them.
+  if (started) {
+    startBridge($, config)
+    void registerTools($, config)
+  }
   return config
 }
 
-async function loadRoots($: any): Promise<Roots | undefined> {
-  const board = await $.env.get('MESIMON_MOD_GATE_BOARD')
-  const state = await $.env.get('MESIMON_MOD_GATE_STATE')
-  const allow = await $.env.get('MESIMON_MOD_GATE_ALLOW')
+/**
+ * The gate's roots, absolute, read at every guarded call: three variables
+ * are cheap, and nothing read once can be a failure kept for the session's
+ * life (T-594's lesson).
+ */
+async function gateRoots($: any): Promise<Roots | undefined> {
+  const [board, state, allow] = await Promise.all([
+    $.env.get('MESIMON_MOD_GATE_BOARD'),
+    $.env.get('MESIMON_MOD_GATE_STATE'),
+    $.env.get('MESIMON_MOD_GATE_ALLOW'),
+  ])
   if (![board, state, allow].every(r => typeof r === 'string' && r.startsWith('/'))) return undefined
   return { board, state, allow }
-}
-
-/** The gate's roots, absolute, read once. */
-function gateRoots($: any): Promise<Roots | undefined> {
-  roots ??= loadRoots($)
-  return roots
 }
 
 /** `.` and `..` folded by spelling, before anything is asked of the disk:
@@ -243,6 +279,66 @@ export async function guardedBy($: any, path: string, r: Roots): Promise<string 
   return undefined
 }
 
+/**
+ * The board's tools for this session's tier, registered before the first
+ * turn. No tier (`MESIMON_MOD_TOOLS` unset: the column's tools are off)
+ * registers nothing; a list that cannot be read registers nothing either,
+ * and the session runs without the tools rather than not at all.
+ */
+async function registerTools($: any, c: Config) {
+  if (tools !== 'off') return
+  tools = 'registering'
+  try {
+    const tier = await $.env.get('MESIMON_MOD_TOOLS')
+    if (!tier) {
+      tools = 'done'
+      return
+    }
+    const out = await $.process.run([c.bin, 'mcp', '--list', '--tools', tier], { timeoutMs: 10000 })
+    const specs = JSON.parse(String(out?.stdout ?? '[]'))
+    tools = 'done'
+    if (!Array.isArray(specs)) return
+    for (const spec of specs) {
+      try {
+        const r = await $.tool.register({ name: spec.name, description: spec.description, inputSchema: spec.inputSchema })
+        if (r && typeof r.tool === 'string') registered.add(r.tool)
+      } catch {
+        // That one tool is missing; the others stand.
+      }
+    }
+  } catch {
+    // The list was not read: the next event that reads the variables tries
+    // again, and the session works without the tools meanwhile.
+    if (tools === 'registering') tools = 'off'
+  }
+}
+
+/**
+ * A `tools/call` result, as `mesimon mcp --call` printed it, in the form a
+ * registered tool answers the model: its text whole (an object of content
+ * blocks is refused by the engine's output check, measured), an image as
+ * the API's image block, and a refusal as an error result in the daemon's
+ * own words (`{ isError }` from a hook is not marked an error; a deny is).
+ */
+export function toolAnswer(out: any): any {
+  const content: any[] = Array.isArray(out?.content) ? out.content : []
+  const text = content
+    .filter(b => b?.type === 'text' && typeof b.text === 'string')
+    .map(b => b.text)
+    .join('\n')
+  if (out?.isError === true) return { deny: text || 'mesimon: the call failed' }
+  if (content.some(b => b?.type === 'image')) {
+    return {
+      result: content.map(b =>
+        b?.type === 'image'
+          ? { type: 'image', source: { type: 'base64', media_type: b.mimeType, data: b.data } }
+          : { type: 'text', text: String(b?.text ?? '') },
+      ),
+    }
+  }
+  return { result: text }
+}
+
 /** What the model reads for a refused write: the rule's own text. */
 function denial(rule: string): string {
   if (rule === RULE_BOARD) return REASON_BOARD
@@ -268,23 +364,60 @@ async function relay($: any, event: string, reason: string | undefined, body: un
     const argv = [c.bin, 'hook', '--sock', c.hookSock, '--session', c.session, '--event', event]
     if (reason !== undefined) argv.push('--reason', reason)
     argv.push('--road', 'mod')
-    const run = $.process.run(argv, { stdin: JSON.stringify(body ?? {}), timeoutMs: 5000 })
+    const run = runAfter($, tail, argv, JSON.stringify(body ?? {}))
+    tail = run.then(
+      () => undefined,
+      () => undefined,
+    )
     if (wait) await run
-    else
-      void run.then(
-        () => undefined,
-        () => undefined,
-      )
   } catch {
     // A frame that never left: the daemon is down or the host went.
   }
 }
 
-/** The command hook's stdin for a `PreToolUse`, rebuilt from the envelope. */
-export function preToolUseBody(e: any): Record<string, unknown> {
-  const { tool, tool_use_id, agentId, ...tool_input } = e ?? {}
-  void agentId
-  return { hook_event_name: 'PreToolUse', tool_name: tool, tool_use_id, tool_input }
+/**
+ * One relay, once the one before it has gone: the hook socket orders frames
+ * by when it accepted them, and two `mesimon hook` processes started a few
+ * milliseconds apart may connect in either order (T-577). Each waits at most
+ * the one before's own bound.
+ */
+async function runAfter($: any, before: Promise<unknown>, argv: string[], stdin: string) {
+  await before
+  return $.process.run(argv, { stdin, timeoutMs: RELAY_TIMEOUT_MS })
+}
+
+/**
+ * `mesimon approve`, as the hook set's PermissionRequest entry ran it: a
+ * person answering the dialog from Remote Control, once. Its decision is
+ * the daemon's, passed through whole; no decision (no phone, no answer in
+ * time, the daemon down) is none, and the dialog stays the person's.
+ */
+async function approve($: any, e: unknown): Promise<unknown> {
+  try {
+    const c = await settings($, 'PermissionRequest')
+    if (!c) return undefined
+    const argv = [c.bin, 'approve', '--sock', c.hookSock, '--session', c.session]
+    const out = await $.process.run(argv, { stdin: JSON.stringify(e ?? {}), timeoutMs: APPROVE_TIMEOUT_MS })
+    const decision = JSON.parse(String(out?.stdout || 'null'))?.hookSpecificOutput?.decision
+    return decision && typeof decision === 'object' ? decision : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The command hook's stdin for a `PreToolUse`, rebuilt from the envelope,
+ * with a subagent's `agent_id` as the hook set spelled it: the daemon tells
+ * a subagent's dialog from the session's own by it. `classic.PreToolUse`
+ * carries no `agentId` (T-574); the `tool.call` beneath it does, and is
+ * noted by its call's id (`agents`).
+ */
+export function preToolUseBody(e: any, agentId?: string): Record<string, unknown> {
+  const { tool, tool_use_id, agentId: own, ...tool_input } = e ?? {}
+  const body: Record<string, unknown> = { hook_event_name: 'PreToolUse', tool_name: tool, tool_use_id, tool_input }
+  const agent = typeof own === 'string' ? own : agentId
+  if (typeof agent === 'string') body.agent_id = agent
+  return body
 }
 
 /** The `ModAnswer` report's body: a `PostToolUse` as the hook set spells it. */
@@ -411,11 +544,14 @@ function startBridge($: any, c: Config) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // One read of the pane's variables. The tools first, so they are listed
+    // by turn one: the first session.start is awaited (T-577).
+    const c = await settings($, 'session.start')
+    if (c) await registerTools($, c)
     const result = await next(e)
     // `session.start` may come again in the same process (a `/clear`); one
     // bridge serves them all.
     started = true
-    const c = await settings($, 'session.start')
     if (c) startBridge($, c)
     return result
   })
@@ -440,22 +576,75 @@ export const register: Register = on => {
   })
   on('classic.PreToolUse', async ($, e, next) => {
     const tool = (e as any).tool
-    if (PRE_TOOL_USE_TOOLS.includes(tool)) void relay($, 'PreToolUse', undefined, preToolUseBody(e), false)
+    if (PRE_TOOL_USE_TOOLS.includes(tool)) {
+      const id = (e as any).tool_use_id
+      const agent = typeof id === 'string' ? agents.get(id) : undefined
+      if (typeof id === 'string') agents.delete(id)
+      void relay($, 'PreToolUse', undefined, preToolUseBody(e, agent), false)
+    }
+    return next(e)
+  })
+  // Noted before anything else runs for the call: which subagent it is.
+  on('tool.call', { tool: PRE_TOOL_USE_TOOLS }, async ($, e, next) => {
+    const { tool_use_id: id, agentId } = e as any
+    if (typeof id === 'string' && typeof agentId === 'string') {
+      agents.set(id, agentId)
+      if (agents.size > AGENTS_MAX) agents.delete(agents.keys().next().value as string)
+    }
     return next(e)
   })
   // ---- The gate (T-577): deny or nothing, local and static. Nothing is
   // asked of the daemon, so a dead one still refuses; the denial is reported
   // afterwards for the feed and may be lost. Bash is not judged: a command
-  // string is no path (docs/USING.md). The one `deny` this mod returns.
+  // string is no path (docs/USING.md).
+  // A hook that threw would be skipped and the write would run, so a
+  // decision that could not be made is a refusal.
   on('tool.call', { tool: GATE_TOOLS }, async ($, e, next) => {
     const path = gatePath(e)
     if (path === undefined) return next(e)
-    const r = await gateRoots($)
-    const rule = r ? await guardedBy($, path, r) : 'no_roots'
+    let r: Roots | undefined
+    let rule: string | undefined
+    try {
+      r = await gateRoots($)
+      rule = r ? await guardedBy($, path, r) : 'no_roots'
+    } catch {
+      r = undefined
+      rule = 'no_roots'
+    }
     if (rule === undefined) return next(e)
     // The path, and nothing else: the one fact the feed's line carries.
     if (r) void relay($, 'GateDenied', rule, { file_path: path }, false)
     return { deny: denial(rule) }
+  })
+
+  // ---- The tools (T-577): each call of a tool this session registered
+  // goes to the daemon through `mesimon mcp --call`, the model's arguments
+  // as they came (the envelope's own keys aside), and its answer comes
+  // back. A hook that threw would be skipped and the model told it lacked a
+  // permission, so nothing here throws: a call that could not be made is a
+  // refusal in plain words.
+  on('tool.call', { tool: /^mcp__mesimon__/ }, async ($, e, next) => {
+    const { tool, tool_use_id, agentId, consent, ...args } = e as any
+    void agentId
+    void consent
+    if (!registered.has(tool)) return next(e)
+    let c: Config | undefined
+    try {
+      c = await settings($, 'tool.call')
+    } catch {
+      c = undefined
+    }
+    if (!c) return toolAnswer({ content: [{ type: 'text', text: 'mesimon could not answer the call: the pane\'s variables were not read' }], isError: true })
+    const argv = [c.bin, 'mcp', '--sock', c.orchSock, '--session', c.session, '--call', tool.slice(TOOL_PREFIX.length)]
+    if (typeof tool_use_id === 'string') argv.push('--tool-use-id', tool_use_id)
+    let out: any
+    try {
+      const run = await $.process.run(argv, { stdin: JSON.stringify(args), timeoutMs: TOOL_CALL_TIMEOUT_MS })
+      out = JSON.parse(String(run?.stdout ?? ''))
+    } catch (err) {
+      out = { content: [{ type: 'text', text: `mesimon could not answer the call: ${String(err)}` }], isError: true }
+    }
+    return toolAnswer(out)
   })
 
   // ---- The question (T-576): the native dialog is drawn as ever, and the
@@ -508,7 +697,21 @@ export const register: Register = on => {
   on('classic.SubagentStart', relaySingle)
   on('classic.SubagentStop', relaySingle)
   on('classic.TeammateIdle', relaySingle)
-  on('classic.PermissionRequest', relaySingle)
+  on('classic.PermissionRequest', async ($, e, next) => {
+    void relay($, 'PermissionRequest', undefined, e, false)
+    // Beside whatever else answers the dialog, as the hook set's two
+    // entries ran side by side; a person's phone answer is the one taken.
+    const theirs = next(e)
+    const ours = await approve($, e)
+    if (ours) {
+      void theirs.then(
+        () => undefined,
+        () => undefined,
+      )
+      return { decision: ours } as any
+    }
+    return theirs
+  })
   on('classic.PermissionDenied', relaySingle)
   on('classic.Notification', relaySingle)
   on('classic.Elicitation', relaySingle)
