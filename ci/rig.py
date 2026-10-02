@@ -248,6 +248,12 @@ class Rig:
         os.kill(pid, signal.SIGTERM)
         deadline = time.time() + 30
         while time.time() < deadline:
+            # A daemon the rig started is its child: reaped here, or it
+            # stays a zombie that `kill(pid, 0)` still finds.
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
@@ -274,22 +280,30 @@ class Rig:
         self.start_daemon()
 
     def restart(self, extra_env=None, want_probe=None):
-        """SIGTERM and start again. A board TUI watching the rig may respawn
-        the daemon first, without the rig's seam; `want_probe` names words
-        `road.json` must come to say, and the restart is tried again when it
-        does not."""
-        for attempt in range(3):
+        """SIGTERM and start again. A board TUI watching the rig respawns a
+        daemon the moment its socket goes, without the rig's seam, and often
+        wins the lock: the winner's environment (`ps -wwE`) says whose it
+        is, and one that lacks the seam is stopped and the race run again.
+        Then `want_probe` names the words `road.json` must come to say."""
+        for attempt in range(1, 11):
             self.stop_daemon()
-            self.start_daemon(extra_env)
-            if not want_probe:
-                return True
-            line = self.wait_probe(want_probe)
-            if line and want_probe in line:
-                say(f"  road.json: {line}")
-                return True
-            say(f"  road.json says {line!r}, not {want_probe!r}: another client respawned "
-                f"the daemon first; again ({attempt + 1}/3)")
-        return False
+            hello = self.start_daemon(extra_env)
+            if all(f"{k}={v}" in self.env_of(hello["daemon_pid"]) for k, v in (extra_env or {}).items()):
+                break
+            say(f"  pid {hello['daemon_pid']} lacks the rig's seam: another client respawned "
+                f"it first; again ({attempt}/10)")
+        else:
+            return False
+        if not want_probe:
+            return True
+        line = self.wait_probe(want_probe)
+        say(f"  road.json: {line}")
+        return bool(line and want_probe in line)
+
+    def env_of(self, pid):
+        out = subprocess.run(["ps", "-wwE", "-o", "command=", "-p", str(pid)],
+                             capture_output=True, text=True)
+        return out.stdout.split()
 
     def wait_probe(self, words, timeout=120):
         deadline = time.time() + timeout
@@ -539,6 +553,7 @@ Reply with the single word ready and end your turn."""
         key = (w, detail)
         if self.words.get(who) != key:
             self.words[who] = key
+            self.history.setdefault(who, []).append(w)
             road = rec.get("road", "hooks")
             self.log(f"{who} {w.replace('_', ' ')}" + (f" ({detail})" if detail else "")
                      + (f" ∙ road {road}" if who != "crown" else ""))
@@ -647,6 +662,7 @@ Reply with the single word ready and end your turn."""
     def run_test(self, test):
         self.current = test
         self.words.pop(test["key"], None)
+        self.history.pop(test["key"], None)
         start_mark = len(self.feed_lines)
         t0 = time.time()
         say(f"\n▶ {test['id']} {test['key']}: {test['title']}")
@@ -676,7 +692,9 @@ Reply with the single word ready and end your turn."""
         rows = transcript(rec) if rec else []
         mine = [l for l in lines if rec and of_session(l, rec["id"])]
         hooks = [l["event"] for l in mine if l.get("kind") == "hook"]
-        words = squeeze(feed_word(l) for l in mine if l.get("kind") == "session_state")
+        # The card's words as the rig's polls of the snapshot saw them (a
+        # park writes no `session_state` line, so the feed alone misses it).
+        words = squeeze(self.history.get(test["key"], []))
         disagree = [l for l in mine if l.get("kind") == "road_disagree"]
         crown_cmds = [l.get("cmd") for l in lines if l.get("kind") == "board"
                       and l.get("actor") == "agent" and l.get("ticket") == test["ticket"]]
@@ -747,6 +765,7 @@ Reply with the single word ready and end your turn."""
             "model": model_of(rows),
             "wakes": [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                       and l.get("worker") == test["ticket"]],
+            "disagree": [f"{l.get('cmd')} {l.get('outcome')}×{l.get('count')}" for l in disagree],
         }
 
     def timing(self, mine):
@@ -777,7 +796,8 @@ Reply with the single word ready and end your turn."""
         note += [f"| step | ✗ | {f} |" for f in v["failures"]]
         note += ["", f"**Frames the daemon ingested** (hook road, in order): {', '.join(v['hooks']) or 'none'}.",
                  f"**Card words seen:** {' → '.join(v['words']) or 'none'}.",
-                 f"**The board woke the crown for it:** {', '.join(v['wakes']) or 'never'}."]
+                 f"**The board woke the crown for it:** {', '.join(v['wakes']) or 'never'}.",
+                 f"**road_disagree for its session:** {', '.join(v['disagree']) or 'none'}."]
         self.wire.write_note(test["ticket"], "\n".join(note))
         rec = self.agent_of(self.board(), test["ticket"])
         if rec and word_of(rec["state"]) not in ("sleeping", "exited", "failed"):
@@ -813,6 +833,8 @@ Reply with the single word ready and end your turn."""
             failed = [f"✗ {n}: {o}" for n, ok, o in v["results"] if not ok] + [f"✗ {f}" for f in v["failures"]]
             observed = ("PASS ∙ " + "; ".join(o for _, _, o in v["results"])) if v["pass"] else (
                 "FAIL ∙ " + "; ".join(failed))
+            if v["disagree"]:
+                observed += f" ∙ road_disagree: {', '.join(v['disagree'])}"
             observed += f" ∙ ticket in {v.get('column')}"
             out.append(f"| {v['id']} {v['key']} | {v['expect']} | {observed} | {self.build} |")
         text = "\n".join(out) + "\n"
@@ -830,6 +852,7 @@ Reply with the single word ready and end your turn."""
         self.feed_lines, self.feed_off = [], 0
         _, self.feed_off = read_feed(self.paths)
         self.words, self.current, self.quiet_since, self.restarted = {}, None, None, False
+        self.history = {}
         self.verdicts = []
         self.t0 = time.time()
         say("\n▶ laying the board")

@@ -35,7 +35,9 @@
 #              daemon ingested), no_disagree, claude_road_mod, crown:<cmd>
 #              (a feed line of the crown's), pings, reply:<word> (the
 #              worker's last answer, from its transcript), doctor:<words>,
-#              final:<word>.
+#              final:<word>. A road_disagree is a bug to file, not a gate
+#              (T-587), so `no_disagree` is a check only where a test's
+#              acceptance names it; every verdict lists the session's lines.
 #
 # The prompts are explicit and small, so the repository's CLAUDE.md does not
 # send a Sonnet worker off to work: a run is a few turns per test, cents.
@@ -69,11 +71,11 @@ checks = ["road:mod", "plugin_dir", "started_by_crown", "cwd:checkout", "first_p
 id = "R3"
 title = "R3 · every hook-set event reaches the daemon on the mod road and the card follows"
 workspace = "worktree"
-brief = """Do these four things in order, and nothing else.
-1. Ask me one question with the AskUserQuestion tool: the question is "Which colour?" and the two options are "red" and "blue".
-2. Run the shell command `echo rig` with the Bash tool.
-3. Start one subagent with the Agent tool (also called Task) whose whole prompt is "Reply with the single word ok.", and wait for its answer.
-4. Reply with the single word done and end your turn.
+brief = """Do these four things one at a time, each only once the one before has finished, and nothing else.
+1. Ask me one question with the AskUserQuestion tool, alone: the question is "Which colour?" and the two options are "red" and "blue". Wait for my answer.
+2. Then run the shell command `echo` followed by the colour I chose, with the Bash tool.
+3. Then start one subagent with the Agent tool (also called Task) whose whole prompt is "Reply with the single word ok.", and wait for its answer.
+4. Then reply with the single word done and end your turn.
 Read no file."""
 expect = "a question (AskUserQuestion: needs-you; the crown answers it with answer_agent, blue), a tool, a subagent (SubagentStart/SubagentStop) and the turn's end (Stop): zero disagreements for the session, so every paired event arrived on both roads, and the card's words working, needs-you and idle each seen."
 checks = ["road:mod", "words:working,needs_you,working,idle", "hooks:UserPromptSubmit,PreToolUse,PostToolUse,SubagentStart,SubagentStop,Stop", "no_disagree", "crown:answer_agent"]
@@ -114,7 +116,7 @@ title = "R5 · sleep and wake keep the conversation on the mod road"
 workspace = "worktree"
 brief = "Remember the word mango. Reply with the single word done and end your turn. Read no file and run no command."
 expect = "the crown parks the worker with sleep_agent once it is done and wakes it with start_agent; the woken session's road is decided again and reads mod; its next turn answers from the conversation it had (mango)."
-checks = ["road:mod", "plugin_dir", "words:working,idle,sleeping,working,idle", "no_disagree", "crown:sleep_agent", "crown:start_agent", "crown:ask_agent", "reply:mango"]
+checks = ["road:mod", "plugin_dir", "words:working,idle,sleeping,working,idle", "crown:sleep_agent", "crown:start_agent", "crown:ask_agent", "reply:mango"]
 
   [[test.steps]]
   crown = "R5: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R5 started."
