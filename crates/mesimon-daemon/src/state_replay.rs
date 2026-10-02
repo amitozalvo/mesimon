@@ -182,7 +182,6 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
                         reason: reason.clone(),
                         pane: None,
                         road: mesimon_core::road::Road::Hooks,
-                        accepted_ms: 0,
                         payload: payload.clone(),
                     },
                     &mut tasks,

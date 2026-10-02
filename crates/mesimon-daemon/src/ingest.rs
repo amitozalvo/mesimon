@@ -16,12 +16,9 @@ pub struct HookFrame {
     /// from outside a pane.
     pub pane: Option<String>,
     /// Which road the frame came by (T-574): the hook set's, or the mod's
-    /// relay of the same event. A mod frame is shadow-paired, never ingested.
+    /// relay of the same event, which since T-577 is the only one a mod
+    /// launch reports by (`SessionRecord::frames_by_mod`).
     pub road: mesimon_core::road::Road,
-    /// When the hook socket accepted it, epoch ms (0 until the reader thread
-    /// stamps it): the shadow's 2 s window runs from here, so a writer stall
-    /// cannot make a twin look late.
-    pub accepted_ms: u64,
     pub payload: Value,
 }
 
@@ -40,7 +37,7 @@ pub fn parse_frame(bytes: &[u8]) -> Option<HookFrame> {
         .filter(|rest| !rest.is_empty())
         .and_then(|rest| serde_json::from_slice(rest).ok())
         .unwrap_or(Value::Null);
-    Some(HookFrame { session, event, reason, pane, road, accepted_ms: 0, payload })
+    Some(HookFrame { session, event, reason, pane, road, payload })
 }
 
 /// A whole-frame deadline (not a fresh timeout per byte) bounds how long a

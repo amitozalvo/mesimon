@@ -4079,7 +4079,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel";
             reason: None,
             pane: None,
             road: mesimon_core::road::Road::Hooks,
-            accepted_ms: 0,
             payload,
         };
         let ask = |id: &str| serde_json::json!({"tool_name": "AskUserQuestion", "tool_use_id": id});
@@ -4125,7 +4124,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel";
             reason: None,
             pane: None,
             road: mesimon_core::road::Road::Hooks,
-            accepted_ms: 0,
             payload,
         };
         let tool = |name: &str, id: &str| serde_json::json!({"tool_name": name, "tool_use_id": id});

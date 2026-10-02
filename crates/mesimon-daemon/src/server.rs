@@ -650,7 +650,7 @@ pub struct Daemon {
     /// delivery (`control_park_reply`), which answers it when it settles.
     answer_waits: Option<uuid::Uuid>,
     /// The mod road (T-574): the road decision's cache, the commands queued
-    /// for each session's mod and the polls parked for them, and the shadow.
+    /// for each session's mod and the polls parked for them.
     modroad: bridge::ModRoad,
     /// What the request in hand asked the writer to park (a bridge's poll, a
     /// ping), like `answer_waits`.
@@ -987,10 +987,9 @@ pub fn run(paths: Paths) -> Result<()> {
             std::thread::spawn(move || {
                 // Every reader sends completion, including malformed/timed-out
                 // frames, so a missing event cannot strand the ordered queue.
-                let accepted_ms = now_ms();
                 let frame = stream.try_clone().ok().and_then(|reader| {
                     ingest::read_hook_frame(reader, Duration::from_millis(750))
-                        .map(|frame| (HookFrame { accepted_ms, ..frame }, stream))
+                        .map(|frame| (frame, stream))
                 });
                 let _ = tx.send((ordinal as u64, frame));
             });

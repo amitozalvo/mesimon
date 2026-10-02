@@ -308,48 +308,39 @@ fn a_load_failure_the_mod_reports_is_a_feed_line_on_its_ticket() {
     assert!(outcome.contains("the dispatch was abandoned"), "{outcome}");
     let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap_or_default();
     assert!(journal.contains(&format!("mod of session {sid}: 2 read(s)")), "{journal}");
-    // It is the mod's report alone: never a twin the shadow waits for.
-    std::thread::sleep(Duration::from_millis(2_600));
-    assert!(disagreements(&h).is_empty(), "{:?}", disagreements(&h));
 }
 
-/// T-593: a park takes the pane at once, and the twins of the `SessionEnd`
-/// it causes land after it. Claude Code runs the mod's awaited relay before
-/// the hook set's command hook, so the mod's frame arrives first and the
-/// hook set's tens of milliseconds later; a tick between them used to forget
-/// the session's shadow with the mod's frame in it, and the hook set's
-/// read as `no_mod_twin`. The gap here spans several ticks.
+/// T-593: a park takes the pane at once, and the `SessionEnd` it causes
+/// lands after it: Claude Code waits for the mod's awaited relay, so the
+/// frame arrives once the record is already parked. On the mod road it is
+/// the session's only `SessionEnd` (T-577): taken from a parked record, into
+/// the feed by the mod, and the park stands.
 #[test]
-fn a_parks_session_end_twins_pair_across_the_tick_that_sees_the_pane_gone() {
+fn a_parks_session_end_lands_by_the_mod_after_the_pane_is_gone() {
     let Some(h) = boot("modbridge-park") else { return };
     let mut c = h.client("park");
     let (_, sid) = spawn(&mut c, "the park", SessionKind::Claude);
     let s = sid.to_string();
     let sock = h.paths.hook_sock();
-    let mod_twin = |event: &str, reason: Option<&str>, body: &str| {
+    let by_mod = |event: &str, reason: Option<&str>, body: &str| {
         hook_send_road(&sock, &s, event, reason, None, body, Some("mod"));
     };
-    let hooks = |event: &str, reason: Option<&str>, body: &str| {
-        hook_send_road(&sock, &s, event, reason, None, body, None);
-    };
-    for (event, body) in [("UserPromptSubmit", r#"{"prompt":"go"}"#), ("Stop", "{}")] {
-        mod_twin(event, None, body);
-        hooks(event, None, body);
-    }
+    by_mod("UserPromptSubmit", None, r#"{"prompt":"go"}"#);
+    by_mod("Stop", None, "{}");
     c.await_state(sid, "idle", |s| matches!(s, mesimon_core::board::SessionState::Idle { .. }));
     assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
-    let end = r#"{"reason":"other","session_id":"x"}"#;
-    mod_twin("SessionEnd", Some("other"), end);
+    c.await_state(sid, "parked", |s| *s == mesimon_core::board::SessionState::Sleeping);
     std::thread::sleep(Duration::from_millis(700));
-    hooks("SessionEnd", Some("other"), end);
-    std::thread::sleep(Duration::from_millis(2_600));
-    assert!(disagreements(&h).is_empty(), "{:?}", disagreements(&h));
-
-    // The window still holds after the pane: a lone frame of a parked
-    // session is reported, not dropped with it.
-    hooks("SessionEnd", Some("logout"), end);
-    wait_until(Duration::from_secs(10), "the lone frame's line", || !disagreements(&h).is_empty());
-    let lines = disagreements(&h);
-    assert_eq!(lines.len(), 1, "{lines:?}");
-    assert_eq!(lines[0]["outcome"], "no_mod_twin");
+    by_mod("SessionEnd", Some("other"), r#"{"reason":"other","session_id":"x"}"#);
+    wait_until(Duration::from_secs(10), "the SessionEnd line", || {
+        hook_lines(&h, &s).iter().any(|(e, _, _)| e == "SessionEnd")
+    });
+    assert!(hook_lines(&h, &s).contains(&(
+        "SessionEnd".to_string(),
+        Some("other".to_string()),
+        Some("mod".to_string())
+    )));
+    std::thread::sleep(Duration::from_millis(500));
+    let rec = c.board().sessions.into_iter().find(|r| r.id == sid).unwrap();
+    assert_eq!(rec.state, mesimon_core::board::SessionState::Sleeping, "the park stands");
 }
