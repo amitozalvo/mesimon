@@ -352,9 +352,37 @@ mod tests {
             "MESIMON_MOD_HOOK_SOCK",
             "MESIMON_MOD_ORCH_SOCK",
             "MESIMON_MOD_SESSION",
+            "MESIMON_MOD_GATE_BOARD",
+            "MESIMON_MOD_GATE_STATE",
+            "MESIMON_MOD_GATE_ALLOW",
         ] {
             assert!(src.contains(&format!("$.env.get('{var}')")), "{var}");
         }
+    }
+
+    /// The mod's gate (T-577) is `mesimon gate`'s: the same tools, the
+    /// same rules by the same tags, and the model reads the same words.
+    #[test]
+    fn the_mod_gate_says_what_mesimon_gate_says() {
+        use mesimon_core::verdict::RuleId;
+        let src = crate::modroad::FILES[2].1;
+        let gate = gate(&rendered());
+        let tools: Vec<String> =
+            gate["matcher"].as_str().unwrap().split(',').map(str::to_string).collect();
+        let mut theirs = ts_list("GATE_TOOLS");
+        theirs.sort_unstable();
+        let mut ours = tools;
+        ours.sort_unstable();
+        assert_eq!(theirs, ours);
+        for (rule, name) in [(RuleId::BoardDir, "BOARD"), (RuleId::StateDir, "STATE")] {
+            assert!(src.contains(&format!("const RULE_{name} = '{}'", rule.tag())), "{name}");
+            let literal = rule.reason().replace('\\', "\\\\").replace('\'', "\\'");
+            assert!(
+                src.contains(&format!("const REASON_{name} =\n  '{literal}'")),
+                "REASON_{name} is not RuleId::reason: {literal}"
+            );
+        }
+        assert!(src.contains(&format!("relay($, '{}', rule,", mesimon_core::road::GATE_DENIED)));
     }
 
     /// README promise 3, as far as a source scan can hold it: the mod never
@@ -377,13 +405,22 @@ mod tests {
             "'prompt.submit'",
             "'tool.check'",
             "context:",
-            // A deny's text reaches the model; a rewrite of an event's input
-            // is a rewrite of the model's arguments or the person's words.
-            "deny:",
+            // A rewrite of an event's input is a rewrite of the model's
+            // arguments or the person's words.
             "next({",
+            // Deny or nothing (T-577): the mod decides no allow and no ask
+            // of its own, in any position.
+            "'allow'",
+            "\"allow\"",
+            "'ask'",
+            "\"ask\"",
         ] {
             assert!(!code.contains(banned), "the mod spells {banned}");
         }
+        // A deny's text reaches the model: the one deny is the gate's, in
+        // `mesimon gate`'s words (`the_mod_gate_says_what_mesimon_gate_says`).
+        assert_eq!(code.matches("deny:").count(), 1, "one deny, the gate's");
+        assert!(code.contains("return { deny: denial(rule) }"));
         // The one `$.prompt` call is the turn road's submit (T-575), and it
         // is the person's words, bare: `asUser: true`, the text as it came.
         let calls: Vec<&str> = code.matches("$.prompt.").collect();

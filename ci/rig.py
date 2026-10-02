@@ -1186,7 +1186,7 @@ Reply with the single word ready and end your turn."""
         if not self.close_out:
             self.closed()
             return
-        words = self.with_close_out("End your turn with the single line: run done.")
+        words = self.with_close_out("end your turn with the single line: run done.")
         say(f"\n  → crown: {words}")
         mark = max((l.get("at_ms", 0) for l in self.feed_lines), default=0)
         self.quiet_since = None

@@ -4,6 +4,10 @@
 // road; nothing installs it anywhere.
 //
 // What it does, and all it does:
+//  - GATE: a structured write (`Write`, `Edit`, `NotebookEdit`) under the
+//    board dir or the state dir, the worktrees under it excepted, is refused
+//    at `tool.call` with `mesimon gate`'s own words, decided here and from
+//    the pane's variables alone, and reported for the feed (T-577).
 //  - RELAY: each event the generated hook set reports, by the same names and
 //    the same matchers, goes up through the real `mesimon hook` binary with
 //    `--road mod`. The daemon pairs it with the hook set's own frame of the
@@ -32,11 +36,13 @@
 // `context` on any hook, no `prompt.compose` / `prompt.context` /
 // `prompt.section`, no rewrite of a prompt's words, no submit without
 // `asUser: true`, no rewrite of the model's tool arguments, no `deny` of a
-// tool (its text would reach the model), no `tool.check → allow` beyond the
-// one-shot a person consented to, no `$.model.*`, no `$.session.send`. Every
-// hook here returns `next(e)` as it came, but the question's: that one
-// returns the answer a person or the crown chose, by the dialog's own
-// labels, which is what the native dialog would have returned.
+// tool but the gate's (its words are `mesimon gate`'s, which the hook set
+// already hands the model; deny or nothing, never allow), no `tool.check →
+// allow` beyond the one-shot a person consented to, no `$.model.*`, no
+// `$.session.send`. Every hook here returns `next(e)` as it came, but the
+// question's and the gate's: the question's returns the answer a person or
+// the crown chose, by the dialog's own labels, which is what the native
+// dialog would have returned.
 //
 // Environment, set by the daemon on the pane (`mesimon exec --set`):
 //   MESIMON_MOD_BIN        the mesimon binary
@@ -44,9 +50,13 @@
 //   MESIMON_MOD_ORCH_SOCK  the board's orch.sock
 //   MESIMON_MOD_SESSION    mesimon's id for this session (not Claude's
 //                          session_id, which `/clear` changes)
+//   MESIMON_MOD_GATE_BOARD the board dir, `<repo>/.mesimon` (the gate's)
+//   MESIMON_MOD_GATE_STATE the state dir
+//   MESIMON_MOD_GATE_ALLOW the worktrees under it, the agent's own
 import type { Register } from 'claude-code'
 
 type Config = { bin: string; hookSock: string; orchSock: string; session: string }
+type Roots = { board: string; state: string; allow: string }
 
 // The hook set's matchers (`hook_settings.rs`), so each relayed frame has a
 // twin. The daemon's unit test holds these lists to the Rust ones.
@@ -65,6 +75,21 @@ const STOP_FAILURE_MATCHERS = [
   'unknown',
 ]
 const PRE_TOOL_USE_TOOLS = ['AskUserQuestion', 'ExitPlanMode']
+
+// ---- The gate (T-577): `mesimon gate`'s rules, in-process. The structured
+// writes it judges, and what the model reads when one is refused: each
+// rule's text is `mesimon_core::verdict::RuleId::reason`, held to it by the
+// daemon's unit test, and the rule's tag is `RuleId::tag`.
+const GATE_TOOLS = ['Write', 'Edit', 'NotebookEdit']
+const RULE_BOARD = 'board_dir'
+const RULE_STATE = 'state_dir'
+const REASON_BOARD =
+  'mesimon owns .mesimon/ — the board is edited through mesimon, not by writing its files. Use mesimon\'s scoped MCP tools instead.'
+const REASON_STATE =
+  'mesimon owns its state directory — sessions, worktree bindings and hook settings are not editable by an agent.'
+// Losing the roots must not turn a guarded write into no opinion
+// (`mesimon gate`'s trusted-environment rule).
+const REASON_NO_ROOTS = 'Mesimon write guard context is unavailable'
 
 // The kinds of command this mod reads, said to the daemon by the bridge
 // (`mesimon_core::road::SPEAKS`): a session keeps the mod it was launched
@@ -90,6 +115,7 @@ let reading: Promise<Config> | undefined
 let failed: { reads: number; error: string; at: string } | undefined
 let bridge: 'off' | 'on' | 'refused' = 'off'
 let started = false
+let roots: Promise<Roots | undefined> | undefined
 const seen: string[] = []
 // The questions held for the board's answer, by tool_use_id: each settles
 // its race with the answer's labels.
@@ -144,29 +170,113 @@ async function settings($: any, at: string): Promise<Config | undefined> {
   return config
 }
 
+async function loadRoots($: any): Promise<Roots | undefined> {
+  const board = await $.env.get('MESIMON_MOD_GATE_BOARD')
+  const state = await $.env.get('MESIMON_MOD_GATE_STATE')
+  const allow = await $.env.get('MESIMON_MOD_GATE_ALLOW')
+  if (![board, state, allow].every(r => typeof r === 'string' && r.startsWith('/'))) return undefined
+  return { board, state, allow }
+}
+
+/** The gate's roots, absolute, read once. */
+function gateRoots($: any): Promise<Roots | undefined> {
+  roots ??= loadRoots($)
+  return roots
+}
+
+/** `.` and `..` folded by spelling, before anything is asked of the disk:
+ * `<repo>/src/../.mesimon/x` names a guarded file whatever exists. */
+export function fold(path: string): string {
+  const absolute = path.startsWith('/')
+  const out: string[] = []
+  for (const part of path.split('/')) {
+    if (part === '' || part === '.') continue
+    if (part === '..') {
+      if (out.length && out[out.length - 1] !== '..') out.pop()
+      else if (!absolute) out.push('..')
+      continue
+    }
+    out.push(part)
+  }
+  return (absolute ? '/' : '') + out.join('/')
+}
+
+/**
+ * Where a path lands: the deepest ancestor that exists, every link
+ * followed, with the rest put back. A file about to be written has no real
+ * path of its own; its folder usually has. A relative path is the session's
+ * working directory's, as the tool reads it.
+ */
+async function placed($: any, path: string): Promise<string> {
+  const parts = fold(path).split('/')
+  const tail: string[] = []
+  while (parts.length) {
+    const probe = parts.join('/') || (path.startsWith('/') ? '/' : '.')
+    let real: string | undefined
+    try {
+      real = (await $.fs.stat(probe, { resolve: true }))?.realPath
+    } catch {
+      real = undefined
+    }
+    if (typeof real === 'string') {
+      const base = real.replace(/\/+$/, '')
+      return tail.length ? `${base}/${tail.reverse().join('/')}` : base || '/'
+    }
+    const name = parts.pop()
+    if (name) tail.push(name)
+  }
+  return fold(path)
+}
+
+const under = (path: string, root: string) => path === root || path.startsWith(root === '/' ? root : `${root}/`)
+
+/**
+ * Which rule a structured write lands under, if any: `mesimon gate`'s
+ * `guarded_by`. The worktrees under the state dir are the agent's own and are
+ * judged first; then the board dir, then the state dir.
+ */
+export async function guardedBy($: any, path: string, r: Roots): Promise<string | undefined> {
+  const target = await placed($, path)
+  if (under(target, await placed($, r.allow))) return undefined
+  if (under(target, await placed($, r.board))) return RULE_BOARD
+  if (under(target, await placed($, r.state))) return RULE_STATE
+  return undefined
+}
+
+/** What the model reads for a refused write: the rule's own text. */
+function denial(rule: string): string {
+  if (rule === RULE_BOARD) return REASON_BOARD
+  if (rule === RULE_STATE) return REASON_STATE
+  return REASON_NO_ROOTS
+}
+
+/** The path a structured write names: `file_path`, or a notebook's. */
+export function gatePath(e: any): string | undefined {
+  const path = e?.file_path ?? e?.notebook_path
+  return typeof path === 'string' && path !== '' ? path : undefined
+}
+
 /**
  * One frame up through `mesimon hook --road mod`, as the hook set's command
  * hook sends it. Not awaited unless `wait`: the event goes on at once and a
  * relay that fails is a missing twin the daemon reports, never an error here.
  */
 async function relay($: any, event: string, reason: string | undefined, body: unknown, wait: boolean) {
-  const c = await settings($, event)
-  if (!c) return
-  const argv = [c.bin, 'hook', '--sock', c.hookSock, '--session', c.session, '--event', event]
-  if (reason !== undefined) argv.push('--reason', reason)
-  argv.push('--road', 'mod')
-  const run = $.process.run(argv, { stdin: JSON.stringify(body ?? {}), timeoutMs: 5000 })
-  if (wait) {
-    try {
-      await run
-    } catch {
-      // The daemon reports the missing twin.
-    }
-  } else {
-    void run.then(
-      () => undefined,
-      () => undefined,
-    )
+  try {
+    const c = await settings($, event)
+    if (!c) return
+    const argv = [c.bin, 'hook', '--sock', c.hookSock, '--session', c.session, '--event', event]
+    if (reason !== undefined) argv.push('--reason', reason)
+    argv.push('--road', 'mod')
+    const run = $.process.run(argv, { stdin: JSON.stringify(body ?? {}), timeoutMs: 5000 })
+    if (wait) await run
+    else
+      void run.then(
+        () => undefined,
+        () => undefined,
+      )
+  } catch {
+    // A frame that never left: the daemon is down or the host went.
   }
 }
 
@@ -333,6 +443,21 @@ export const register: Register = on => {
     if (PRE_TOOL_USE_TOOLS.includes(tool)) void relay($, 'PreToolUse', undefined, preToolUseBody(e), false)
     return next(e)
   })
+  // ---- The gate (T-577): deny or nothing, local and static. Nothing is
+  // asked of the daemon, so a dead one still refuses; the denial is reported
+  // afterwards for the feed and may be lost. Bash is not judged: a command
+  // string is no path (docs/USING.md). The one `deny` this mod returns.
+  on('tool.call', { tool: GATE_TOOLS }, async ($, e, next) => {
+    const path = gatePath(e)
+    if (path === undefined) return next(e)
+    const r = await gateRoots($)
+    const rule = r ? await guardedBy($, path, r) : 'no_roots'
+    if (rule === undefined) return next(e)
+    // The path, and nothing else: the one fact the feed's line carries.
+    if (r) void relay($, 'GateDenied', rule, { file_path: path }, false)
+    return { deny: denial(rule) }
+  })
+
   // ---- The question (T-576): the native dialog is drawn as ever, and the
   // first of the person's answer and the board's wins. When the board's
   // does, the mod returns it as the dialog would have (the model reads the

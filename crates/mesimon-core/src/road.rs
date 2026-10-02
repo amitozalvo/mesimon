@@ -174,6 +174,13 @@ pub const MOD_ANSWER: &str = "ModAnswer";
 /// shadow's `no_mod_twin` lines are then the only word of it.
 pub const MOD_LOAD_FAILED: &str = "ModLoadFailed";
 
+/// The event a refused structured write is reported with, its rule's tag
+/// (`RuleId::tag`) as the reason and `{ "file_path" }` as the body: `mesimon
+/// gate`'s frame on the hook set, and the mod's own on the mod road (T-577),
+/// where the mod refuses the write at `tool.call` before any `PreToolUse`
+/// runs. Only the feed reads it.
+pub const GATE_DENIED: &str = "GateDenied";
+
 /// Whether words are a slash command for Claude Code's prompt box (`/exit`,
 /// `/compact`, a skill's `/name`): its first character, past blanks, is a
 /// slash. The engine rejects one as a plugin's `$.prompt.submit`, which

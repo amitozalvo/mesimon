@@ -137,9 +137,13 @@ fn structured_paths<'a>(payload: &'a serde_json::Value, provider: Option<&str>) 
         Some("codex") if payload["tool_name"] == "apply_patch" => {
             input["command"].as_str().map(codex_patch_paths).unwrap_or_default()
         }
-        None | Some("claude") => {
-            input["file_path"].as_str().filter(|path| !path.is_empty()).into_iter().collect()
-        }
+        // `NotebookEdit` names its file `notebook_path` (T-577 found the
+        // gate never judged one).
+        None | Some("claude") => ["file_path", "notebook_path"]
+            .into_iter()
+            .filter_map(|key| input[key].as_str())
+            .filter(|path| !path.is_empty())
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -381,6 +385,9 @@ mod tests {
         let mut shell = payload;
         shell["tool_name"] = serde_json::json!("Bash");
         assert!(structured_paths(&shell, Some("codex")).is_empty());
+        let notebook = serde_json::json!({"tool_name": "NotebookEdit",
+            "tool_input": {"notebook_path": ".mesimon/a.ipynb", "new_source": "x"}});
+        assert_eq!(structured_paths(&notebook, None), vec![".mesimon/a.ipynb"]);
         let legacy = serde_json::json!({"tool_input": {"file_path": ".mesimon/a"}});
         assert_eq!(structured_paths(&legacy, None), vec![".mesimon/a"]);
         assert_eq!(structured_paths(&legacy, Some("claude")), vec![".mesimon/a"]);

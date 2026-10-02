@@ -22,7 +22,8 @@ use super::*;
 use crate::modroad::{self, Probe, RoadVerdict};
 use crate::shadow::{self, Shadow};
 use mesimon_core::road::{
-    ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_LOAD_FAILED, MOD_PONG, MOD_SUBMIT,
+    ModCommand, ModFrame, Road, RoadPref, GATE_DENIED, MOD_ANSWER, MOD_LOAD_FAILED, MOD_PONG,
+    MOD_SUBMIT,
     PAIRED_EVENTS,
 };
 use std::collections::VecDeque;
@@ -267,6 +268,11 @@ impl Daemon {
             ("MESIMON_MOD_HOOK_SOCK".into(), self.paths.hook_sock().display().to_string()),
             ("MESIMON_MOD_ORCH_SOCK".into(), self.paths.orch_sock().display().to_string()),
             ("MESIMON_MOD_SESSION".into(), session.to_string()),
+            // The gate's roots (T-577), as `mesimon gate` gets them in argv:
+            // the decision is the mod's alone, so a dead daemon still denies.
+            ("MESIMON_MOD_GATE_BOARD".into(), self.paths.board_dir.display().to_string()),
+            ("MESIMON_MOD_GATE_STATE".into(), self.paths.state_dir.display().to_string()),
+            ("MESIMON_MOD_GATE_ALLOW".into(), self.paths.worktrees_root().display().to_string()),
         ]
     }
 
@@ -447,8 +453,14 @@ impl Daemon {
             }
             return;
         }
-        // The mod's own reports (T-575, T-576): the only source of what they
-        // say, so they are read here and paired with nothing.
+        // The mod's own reports (T-575, T-576, T-577): the only source of
+        // what they say, so they are read here and paired with nothing. A
+        // write the mod refused has no twin either: the refusal precedes
+        // every `PreToolUse`, so the hook set's gate never ran for it.
+        if frame.event == GATE_DENIED {
+            self.feed.hook_event(&frame.session, &frame.event, frame.reason.as_deref());
+            return;
+        }
         if frame.event == MOD_SUBMIT || frame.event == MOD_ANSWER {
             let Ok(session) = frame.session.parse::<uuid::Uuid>() else { return };
             if !self.board.sessions.iter().any(|s| s.id == session && s.road == Road::Mod) {

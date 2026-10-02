@@ -46,9 +46,15 @@ fn the_laid_mod_validates_and_its_tests_pass_on_this_claude_code() {
     let folder = laid(&dir);
     let (ok, text) = run(&bin, &["plugin", "validate"], &folder);
     assert!(ok, "claude plugin validate refused the mod:\n{text}");
-    for env in
-        ["MESIMON_MOD_BIN", "MESIMON_MOD_HOOK_SOCK", "MESIMON_MOD_ORCH_SOCK", "MESIMON_MOD_SESSION"]
-    {
+    for env in [
+        "MESIMON_MOD_BIN",
+        "MESIMON_MOD_HOOK_SOCK",
+        "MESIMON_MOD_ORCH_SOCK",
+        "MESIMON_MOD_SESSION",
+        "MESIMON_MOD_GATE_BOARD",
+        "MESIMON_MOD_GATE_STATE",
+        "MESIMON_MOD_GATE_ALLOW",
+    ] {
         assert!(text.contains(env), "validate lists the variables the mod reads: {env}\n{text}");
     }
     let (ok, text) = run(&bin, &["plugin", "test"], &folder);

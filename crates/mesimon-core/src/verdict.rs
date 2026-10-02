@@ -120,7 +120,8 @@ mod tests {
     /// that no line which mentions `permissionDecision` also carries `"allow"`
     /// or `"ask"` — the two words that would turn this hook from something
     /// that can only tighten into something that can widen, or (for `"ask"`)
-    /// into a silent deny in headless.
+    /// into a silent deny in headless. The mod's TypeScript (T-577) is
+    /// walked beside the Rust, in either quote.
     #[test]
     fn no_source_line_can_decide_allow_or_ask() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -135,10 +136,14 @@ mod tests {
             for e in entries.flatten() {
                 let path = e.path();
                 if path.is_dir() {
-                    stack.push(path);
+                    // Claude Code's own declarations, laid into a mod folder
+                    // at a load, are its words, not ours.
+                    if path.file_name().is_none_or(|n| n != ".claude-plugin") {
+                        stack.push(path);
+                    }
                     continue;
                 }
-                if path.extension().and_then(|x| x.to_str()) != Some("rs") {
+                if !matches!(path.extension().and_then(|x| x.to_str()), Some("rs" | "ts")) {
                     continue;
                 }
                 let Ok(text) = std::fs::read_to_string(&path) else { continue };
@@ -153,7 +158,7 @@ mod tests {
                         continue;
                     }
                     checked += 1;
-                    for banned in ["\"allow\"", "\"ask\""] {
+                    for banned in ["\"allow\"", "\"ask\"", "'allow'", "'ask'"] {
                         assert!(
                             !line.contains(banned),
                             "{}:{}: {banned} in a permissionDecision position",

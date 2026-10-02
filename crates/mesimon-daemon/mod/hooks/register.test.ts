@@ -311,3 +311,124 @@ test('a question the person refuses is reported declined, and its result stands'
   expect(reports.map(reasonOf)).toEqual(['declined'])
   expect(JSON.parse(reports[0].stdin).tool_use_id).toBe('toolu_3')
 })
+
+// ---- The gate (T-577): `mesimon gate`'s rules, judged in-process.
+
+const GATE_ENV = {
+  ...ENV,
+  MESIMON_MOD_GATE_BOARD: '/repo/.mesimon',
+  MESIMON_MOD_GATE_STATE: '/state',
+  MESIMON_MOD_GATE_ALLOW: '/state/worktrees',
+}
+
+/**
+ * The disk as `$.fs.stat` answers it: the folders that exist, and links
+ * (a spelling and where it lands). Anything else is missing.
+ */
+function disk(on: any, dirs: string[], links: Record<string, string> = {}) {
+  on('fs.stat', ($: any, e: any) => {
+    const path: string = e.path
+    for (const [link, to] of Object.entries(links)) {
+      if (path === link || path.startsWith(`${link}/`)) {
+        const real = to + path.slice(link.length)
+        if (dirs.includes(real)) return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: path === link, realPath: real } }
+      }
+    }
+    if (dirs.includes(path)) return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: path } }
+    throw new Error(`ENOENT: ${path}`)
+  })
+}
+
+const DIRS = ['/', '/repo', '/repo/src', '/repo/.mesimon', '/repo/.mesimon/board', '/state', '/state/worktrees', '/state/worktrees/T-1-x']
+
+/** The native tool beneath: counts the calls that reached it. */
+function nativeWrites(on: any) {
+  const reached: string[] = []
+  on('tool.call', ($: any, e: any) => {
+    reached.push(e.file_path ?? e.notebook_path)
+    return { result: { type: 'create', filePath: e.file_path } }
+  })
+  return reached
+}
+
+const BOARD_WORDS =
+  'mesimon owns .mesimon/ — the board is edited through mesimon, not by writing its files. Use mesimon\'s scoped MCP tools instead.'
+const STATE_WORDS =
+  'mesimon owns its state directory — sessions, worktree bindings and hook settings are not editable by an agent.'
+
+test('a write under the board dir is refused in mesimon gate\'s words, then reported', async ($, on) => {
+  mock.env(on, GATE_ENV)
+  const runs = recordRuns(on)
+  disk(on, DIRS)
+  const reached = nativeWrites(on)
+  const r: any = await $.tool.call({ tool: 'Write', tool_use_id: 't1', file_path: '/repo/.mesimon/board/columns.toml', content: 'x' } as any)
+  expect(r.deny).toBe(BOARD_WORDS)
+  expect(reached).toEqual([])
+  await settle()
+  const gate = runs.filter(r => r.argv.includes('GateDenied'))
+  expect(gate.map(reasonOf)).toEqual(['board_dir'])
+  expect(gate[0].argv).toContain('mod')
+  expect(JSON.parse(gate[0].stdin)).toEqual({ file_path: '/repo/.mesimon/board/columns.toml' })
+})
+
+test('the state dir is refused, its worktrees and ordinary source are not', async ($, on) => {
+  mock.env(on, GATE_ENV)
+  recordRuns(on)
+  disk(on, DIRS)
+  const reached = nativeWrites(on)
+  const state: any = await $.tool.call({ tool: 'Edit', tool_use_id: 't2', file_path: '/state/sessions.json', old_string: 'a', new_string: 'b' } as any)
+  expect(state.deny).toBe(STATE_WORDS)
+  for (const file_path of ['/state/worktrees/T-1-x/src/main.rs', '/repo/src/main.rs', '/repo/.mesimon-notes/x.md']) {
+    const r: any = await $.tool.call({ tool: 'Write', tool_use_id: 't3', file_path, content: 'x' } as any)
+    expect(r.deny).toBe(undefined)
+  }
+  expect(reached).toEqual(['/state/worktrees/T-1-x/src/main.rs', '/repo/src/main.rs', '/repo/.mesimon-notes/x.md'])
+  await settle()
+})
+
+test('.. cannot walk in sideways, and a link into the board dir is followed', async ($, on) => {
+  mock.env(on, GATE_ENV)
+  recordRuns(on)
+  disk(on, DIRS, { '/repo/src/board-link': '/repo/.mesimon' })
+  const reached = nativeWrites(on)
+  for (const file_path of ['/repo/src/../.mesimon/board/new.toml', '/repo/src/board-link/board/new.toml']) {
+    const r: any = await $.tool.call({ tool: 'Write', tool_use_id: 't4', file_path, content: 'x' } as any)
+    expect(r.deny).toBe(BOARD_WORDS)
+  }
+  expect(reached).toEqual([])
+  await settle()
+})
+
+test('a notebook is judged by its notebook_path', async ($, on) => {
+  mock.env(on, GATE_ENV)
+  recordRuns(on)
+  disk(on, DIRS)
+  nativeWrites(on)
+  const r: any = await $.tool.call({ tool: 'NotebookEdit', tool_use_id: 't5', notebook_path: '/repo/.mesimon/n.ipynb', new_source: 'x' } as any)
+  expect(r.deny).toBe(BOARD_WORDS)
+  await settle()
+})
+
+test('a dead daemon still denies: the decision asks nothing of it', async ($, on) => {
+  mock.env(on, GATE_ENV)
+  on('process.run', () => {
+    throw new Error('connection refused')
+  })
+  disk(on, DIRS)
+  nativeWrites(on)
+  const r: any = await $.tool.call({ tool: 'Write', tool_use_id: 't6', file_path: '/repo/.mesimon/x', content: 'x' } as any)
+  expect(r.deny).toBe(BOARD_WORDS)
+  await settle()
+})
+
+test('without the gate\'s roots a structured write is refused, never let through', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  disk(on, DIRS)
+  const reached = nativeWrites(on)
+  const r: any = await $.tool.call({ tool: 'Write', tool_use_id: 't7', file_path: '/repo/src/main.rs', content: 'x' } as any)
+  expect(r.deny).toBe('Mesimon write guard context is unavailable')
+  expect(reached).toEqual([])
+  await settle()
+  expect(runs.filter(r => r.argv.includes('GateDenied')).length).toBe(0)
+})
