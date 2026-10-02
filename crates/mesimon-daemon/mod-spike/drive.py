@@ -371,7 +371,10 @@ def sc_submit_midturn(ctx):
 
 def sc_load(ctx):
     sessions = []
-    burners = [subprocess.Popen(["sh", "-c", "yes > /dev/null"]) for _ in range(6)]
+    # `yes` directly, never `sh -c "yes > /dev/null"`: kill() reaches the
+    # direct child only, and a `yes` behind a shell outlived the run as a
+    # launchd orphan at 100% of a core, six per run (T-585).
+    burners = [subprocess.Popen(["yes"], stdout=subprocess.DEVNULL) for _ in range(6)]
     try:
         for i in range(3):
             brief = ctx.out / ctx.scenario / f"brief-{i}.txt"
@@ -389,6 +392,8 @@ def sc_load(ctx):
     finally:
         for b in burners:
             b.kill()
+        for b in burners:
+            b.wait()
     for s in sessions:
         s.end()
         rows = user_rows(s.transcript())

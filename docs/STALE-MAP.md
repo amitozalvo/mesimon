@@ -18359,3 +18359,20 @@ crown ask that would wake W onto a checkout a person's agent holds is held with 
 person's P holds the checkout, and `the_crown_picks_a_tier_by_the_persons_words` (T-584) cuts a
 repository and files and starts every crown ticket in a worktree for the same reason, waiting for
 each start to land before reading its flags.
+
+## T-585: the mod spike's load burners outlived the run (2026-10-02)
+
+**Symptom.** The machine at load average 70 on 11 cores for two hours, twelve `yes` processes
+at a core each, parented to launchd, stdout on `/dev/null`, cwd in `mod-spike/`. Two T-573
+runs of `sc_load` (15:02 and 15:06), six burners each.
+
+**Cause.** `drive.py` spawned each burner as `sh -c "yes > /dev/null"` and ended it with
+`Popen.kill()`, which signals the shell only: `yes` was the shell's child, not the driver's,
+and a killed `sh` leaves its child to launchd. Not a mesimon bug — the daemon, the hooks and
+the TUI never spawn a burner — and not the e2e suite: `ci/test_guard.py` reaps only what a
+fixture registers, and the spike's driver runs outside it by design.
+
+**Fix.** The driver execs `yes` itself (`Popen(["yes"], stdout=DEVNULL)`), so `kill()` lands
+on the process that burns, and `wait()`s each so none is left a zombie. The rule, for any
+research driver here: a load generator is a direct child or a process group, never a command
+behind `sh -c`.
