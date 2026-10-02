@@ -344,6 +344,7 @@ mod tests {
             (mesimon_core::road::MOD_ANSWER, "'declined'"),
             (mesimon_core::road::MOD_ANSWER, "'nothing_held'"),
             (mesimon_core::road::MOD_LOAD_FAILED, "'recovered'"),
+            (mesimon_core::road::MOD_USAGE, "String(e?.reason ?? 'answer')"),
         ] {
             assert!(src.contains(&format!("relay($, '{event}', {reason},")), "{event} {reason}");
         }
@@ -431,6 +432,17 @@ mod tests {
         let calls: Vec<&str> = code.matches("$.prompt.").collect();
         assert_eq!(calls.len(), 1, "one $.prompt call, the submit");
         assert!(code.contains("$.prompt.submit({ text, asUser: true })"), "a submit is asUser");
+        // The one allow is the consented one-shot (T-581): a permission
+        // dialog's decision is returned in one place, and it is what `mesimon
+        // approve` printed, which only a person's answer from Remote Control
+        // fills (`PermissionDecision::hook_output`). The mod spells no
+        // behavior of its own.
+        assert_eq!(code.matches("decision:").count(), 1, "one decision, the one-shot's");
+        assert!(code.contains("return { decision: ours } as any"));
+        assert!(code.contains("const ours = await approve($, e)"));
+        assert!(code
+            .contains("JSON.parse(String(out?.stdout || 'null'))?.hookSpecificOutput?.decision"));
+        assert!(!code.contains("behavior"), "the mod spells no behavior");
     }
 
     fn rendered() -> Value {

@@ -699,3 +699,82 @@ test('two events at once read for themselves: one read failing leaves the other\
   const events = runs.map(r => r.argv[r.argv.indexOf('--event') + 1])
   expect(events).toContain('UserPromptSubmit')
 })
+
+test('a permission hold the daemon released with no decision leaves the dialog the person\'s', async ($, on) => {
+  mock.env(on, ENV)
+  // `mesimon approve` waits on the daemon; a person answering the dialog is
+  // the PostToolUse edge, on which the daemon closes the wait unanswered
+  // (T-581): empty stdout, and the hook returns what answered beneath it.
+  let release: () => void = () => undefined
+  on('process.run', ($: any, e: any) => {
+    if (e.argv[1] !== 'approve') return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    return new Promise(resolve => {
+      release = () => resolve({ value: { exitCode: 0, stdout: '', stderr: '' } })
+    }) as any
+  })
+  on('classic.PermissionRequest', () => ({ decision: { behavior: 'deny', message: 'the person said no' } }) as any)
+  const body = { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'touch x' } }
+  let done: any
+  const held = $.classic.PermissionRequest(body as any).then(r => (done = r))
+  await settle()
+  expect(done).toBe(undefined)
+  release()
+  await held
+  expect(done.decision).toEqual({ behavior: 'deny', message: 'the person said no' })
+})
+
+test('a turn\'s end goes up as ModUsage: its count, and the main loop\'s rate-limit windows', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  let reads = 0
+  on('session.usage', () => {
+    reads += 1
+    return {
+      value: {
+        startedAt: 0,
+        context: { window: 200000 },
+        rateLimits: [{ kind: 'five_hour', percentUsed: 9, resetsAt: '2026-10-03T12:00:00Z' }],
+        cost: { usd: 0.42 },
+      },
+    } as any
+  })
+  on('turn.complete', () => ({ text: 'done' }) as any)
+  const usage = { input_tokens: 3, output_tokens: 40, cache_read_input_tokens: 900, cache_creation_input_tokens: 120, model: 'claude-sonnet-5-5' }
+  const r: any = await $.turn.complete({ answer: 'done', durationMs: 1200, isAborted: false, turnId: 't1', reason: 'answer', usage } as any)
+  expect(r.text).toBe('done')
+  await $.turn.complete({ answer: '', durationMs: 300, isAborted: false, turnId: 't2', agentId: 'a7', reason: 'answer', usage } as any)
+  await settle()
+  const frames = runs.filter(r => r.argv.includes('ModUsage'))
+  expect(frames.map(f => f.argv.slice(7, 10))).toEqual([
+    ['ModUsage', '--reason', 'answer'],
+    ['ModUsage', '--reason', 'answer'],
+  ])
+  const main = JSON.parse(frames[0].stdin)
+  expect(main).toEqual({
+    turnId: 't1',
+    reason: 'answer',
+    durationMs: 1200,
+    usage,
+    rateLimits: [{ kind: 'five_hour', percentUsed: 9, resetsAt: '2026-10-03T12:00:00Z' }],
+  })
+  expect(main.answer).toBe(undefined)
+  // A subagent's turn: its count and its agent, never the account's windows.
+  const sub = JSON.parse(frames[1].stdin)
+  expect(sub.agentId).toBe('a7')
+  expect(sub.rateLimits).toBe(undefined)
+  expect(reads).toBe(1)
+})
+
+test('a turn whose windows could not be read still sends its count', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  on('session.usage', () => {
+    throw new Error('the dispatch was abandoned')
+  })
+  on('turn.complete', () => ({ text: '' }) as any)
+  await $.turn.complete({ answer: '', durationMs: 5, isAborted: true, turnId: 't3', reason: 'aborted' } as any)
+  await settle()
+  const frame = runs.find(r => r.argv.includes('ModUsage'))!
+  expect(frame.argv.slice(7, 10)).toEqual(['ModUsage', '--reason', 'aborted'])
+  expect(JSON.parse(frame.stdin)).toEqual({ turnId: 't3', reason: 'aborted', durationMs: 5 })
+})

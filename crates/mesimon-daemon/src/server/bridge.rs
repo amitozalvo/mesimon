@@ -28,6 +28,7 @@ use super::*;
 use crate::modroad::{self, Probe, RoadVerdict, Verdict};
 use mesimon_core::road::{
     ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_LOAD_FAILED, MOD_PONG, MOD_SUBMIT,
+    MOD_USAGE,
 };
 use std::collections::VecDeque;
 
@@ -705,8 +706,44 @@ impl Daemon {
             self.on_mod_load_failed(&frame);
             return;
         }
+        if frame.event == MOD_USAGE {
+            self.feed.hook_event_by(
+                &frame.session,
+                &frame.event,
+                frame.reason.as_deref(),
+                Road::Mod,
+            );
+            self.on_mod_usage(session, &frame);
+            return;
+        }
         if by_mod {
             self.on_hook(frame);
+        }
+    }
+
+    /// A turn's end as the mod reports it (T-581): the account's windows go
+    /// into the machine's quota reading, and the turn's count into its
+    /// ticket's cost where the session reports through the mod alone (a
+    /// record an earlier build launched keeps its hook set, and the tail
+    /// counts it). A count with no transcript to fence is left to the tail.
+    fn on_mod_usage(&mut self, session: uuid::Uuid, frame: &HookFrame) {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else { return };
+        let (ticket, by_mod, path) = (rec.ticket, rec.frames_by_mod(), rec.transcript_path.clone());
+        let now = now_ms();
+        let quota = frame.payload.get("rateLimits").is_some_and(|l| self.usage.merge_mod(l, now));
+        let counted = by_mod
+            && match (path, frame.payload.get("usage").and_then(mesimon_core::cost::mod_turn)) {
+                (Some(path), Some((model, tokens))) => {
+                    let subagent = frame.payload.get("agentId").is_some_and(|a| a.is_string());
+                    self.costs.count_mod(ticket, &path, subagent, now, &model, tokens)
+                }
+                _ => false,
+            };
+        if counted {
+            self.persist_costs();
+        }
+        if counted || quota {
+            self.broadcast();
         }
     }
 

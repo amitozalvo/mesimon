@@ -164,6 +164,17 @@ pub const MOD_ANSWER: &str = "ModAnswer";
 /// shadow's `no_mod_twin` lines are then the only word of it.
 pub const MOD_LOAD_FAILED: &str = "ModLoadFailed";
 
+/// The event the mod reports a turn's end with (T-581), at every
+/// `turn.complete`, the turn's `reason` as the frame's reason and `{ turnId,
+/// agentId?, reason, durationMs, usage?, rateLimits? }` as the body: `usage`
+/// is the engine's own count of the turn's requests (the four API counts and
+/// the model, summed; absent when nothing counted), a subagent's turn names
+/// its `agentId`, and the main loop's carries `$.session.usage()`'s
+/// rate-limit windows, read at that moment. The daemon counts the ticket's
+/// tokens from it (`cost::Ledger::count_mod`) and merges the windows into
+/// the machine's quota reading (`UsageState::merge_mod`).
+pub const MOD_USAGE: &str = "ModUsage";
+
 /// The event a refused structured write is reported with, its rule's tag
 /// (`RuleId::tag`) as the reason and `{ "file_path" }` as the body: `mesimon
 /// gate`'s frame on the hook set, and the mod's own on the mod road (T-577),

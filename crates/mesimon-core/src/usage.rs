@@ -425,6 +425,69 @@ fn mark_fullest(windows: &mut [Window]) {
     }
 }
 
+/// The rate-limit windows a session's mod read off `$.session.usage()` at a
+/// turn's end (T-581), merged into what is held: `five_hour` and
+/// `seven_day` (each `percentUsed` and an ISO `resetsAt`) refresh the 5-hour
+/// and the all-models week, and every window the mod does not see (a
+/// model's week, the plan word, the server's headline pick) keeps the
+/// probe's reading. The engine sends no severity, so a window keeps the
+/// server's grade while it is the same window and is graded here once it
+/// starts over, or when it is new. `None` when the answer names no window.
+pub fn merge_mod(held: Option<&Reading>, limits: &Value, now_ms: u64) -> Option<Reading> {
+    let mut out = held.cloned().unwrap_or_default();
+    let fresh = held.is_none_or(|r| r.windows.is_empty());
+    let mut moved = false;
+    for row in limits.as_array().into_iter().flatten() {
+        let (Some(kind), Some(percent)) = (
+            row.get("kind").and_then(Value::as_str),
+            row.get("percentUsed").and_then(Value::as_f64).filter(|p| p.is_finite()),
+        ) else {
+            continue;
+        };
+        let (kind, label, long, length_mins) = match kind {
+            "five_hour" => (WindowKind::Session, "5h".to_string(), "5-hour".to_string(), Some(300)),
+            "seven_day" => {
+                (WindowKind::Weekly, "week".into(), "week, all models".into(), Some(10_080))
+            }
+            other => {
+                let name = bounded(&other.replace('_', " "));
+                (WindowKind::Other, name.clone(), name, None)
+            }
+        };
+        let resets_at_ms = row.get("resetsAt").and_then(Value::as_str).and_then(rfc3339_ms);
+        let same =
+            |w: &&mut Window| w.kind == kind && (kind != WindowKind::Other || w.label == label);
+        match out.windows.iter_mut().find(same) {
+            Some(w) => {
+                let started_over = resets_at_ms.is_some() && resets_at_ms != w.resets_at_ms;
+                w.severity =
+                    if started_over { grade(percent) } else { w.severity.max(grade(percent)) };
+                w.percent = percent;
+                w.resets_at_ms = resets_at_ms.or(w.resets_at_ms);
+            }
+            None => out.windows.push(Window {
+                kind,
+                label,
+                long,
+                percent,
+                resets_at_ms,
+                severity: grade(percent),
+                headline: false,
+                length_mins,
+            }),
+        }
+        moved = true;
+    }
+    if !moved {
+        return None;
+    }
+    if fresh {
+        mark_fullest(&mut out.windows);
+    }
+    out.read_at_ms = now_ms;
+    Some(out)
+}
+
 /// A field under either spelling: the app-server's camelCase or the
 /// rollout's snake_case.
 fn field<'a>(v: &'a Value, camel: &str, snake: &str) -> Option<&'a Value> {
@@ -760,6 +823,50 @@ mod tests {
     use serde_json::json;
 
     const NOW: u64 = 1_790_870_640_000; // 2026-10-01T16:04:00Z
+
+    #[test]
+    fn a_mods_windows_refresh_the_probes_and_keep_what_it_cannot_see() {
+        let held = parse_claude(&claude_answer(), NOW - 600_000).unwrap();
+        let week = held.windows.iter().find(|w| w.kind == WindowKind::Weekly).cloned();
+        let limits = json!([
+            {"kind": "five_hour", "percentUsed": 9.5, "resetsAt": "2026-10-01T20:00:00Z"},
+            {"kind": "seven_day", "percentUsed": 81, "resetsAt": "2099-01-01T00:00:00Z"},
+        ]);
+        let got = merge_mod(Some(&held), &limits, NOW).unwrap();
+        assert_eq!(got.read_at_ms, NOW);
+        assert_eq!(got.plan, held.plan, "the plan word is the probe's");
+        let five = got.windows.iter().find(|w| w.kind == WindowKind::Session).unwrap();
+        assert_eq!((five.percent, five.label.as_str()), (9.5, "5h"));
+        // Every window the mod does not name stands as the probe read it.
+        for w in held
+            .windows
+            .iter()
+            .filter(|w| !matches!(w.kind, WindowKind::Session | WindowKind::Weekly))
+        {
+            assert!(got.windows.contains(w), "{w:?} kept");
+        }
+        let w = got.windows.iter().find(|w| w.kind == WindowKind::Weekly).unwrap();
+        assert_eq!(w.percent, 81.0);
+        if let Some(old) = week {
+            // A week that started over is graded here; the same one keeps the
+            // server's grade unless it climbed past it.
+            assert_eq!(
+                w.severity,
+                if old.resets_at_ms == w.resets_at_ms {
+                    old.severity.max(Severity::Warning)
+                } else {
+                    Severity::Warning
+                }
+            );
+        }
+        // Nothing held: the mod's windows alone, graded, the fullest the headline.
+        let alone = merge_mod(None, &limits, NOW).unwrap();
+        assert_eq!(alone.windows.len(), 2);
+        assert!(alone.windows.iter().any(|w| w.headline && w.percent == 81.0));
+        // Off a subscription the list is empty: nothing to merge.
+        assert!(merge_mod(Some(&held), &json!([]), NOW).is_none());
+        assert!(merge_mod(None, &json!([{"kind": "five_hour"}]), NOW).is_none());
+    }
 
     /// The author's `get_usage` answer on 2026-10-01, trimmed to what this
     /// module reads.

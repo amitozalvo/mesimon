@@ -11,6 +11,15 @@
 //! and counted to the same ticket. What a ticket held before this file
 //! existed is counted from the transcripts its live records still name.
 //!
+//! A Claude session whose mod reports its turns (T-581) is counted from
+//! those reports instead: the engine's own sum of each turn's requests,
+//! `turn.complete`'s `usage`. Its conversation is fenced at the first main
+//! turn the mod reports, and from that moment the transcript tail still reads
+//! it, into the ticket's `check` and never its hours, so the two counts stand
+//! side by side (`Ledger::disagreements`, doctor's `costs` line) and neither
+//! is added twice. The tail stays the count for the hook set's sessions,
+//! Codex, and whatever a conversation held before its fence.
+//!
 //! The reading runs on a worker (`scan`): a transcript is megabytes, and the
 //! writer only folds the counts back in. The file follows the other state
 //! files' contract: its own `schema_version`, a newer build's bytes left
@@ -22,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use mesimon_core::command::Notice;
-use mesimon_core::cost::{claude_turn, codex_line, delta, CodexLine, TicketCost, Tokens};
+use mesimon_core::cost::{claude_turn, codex_line, delta, CodexLine, TicketCost, Tokens, FAST};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
@@ -50,6 +59,47 @@ pub struct Cursor {
     pub totals: Option<Tokens>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Unix ms from which the session's mod counts this conversation's turns
+    /// (T-581): a transcript line stamped at or after it is the check's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_mod_since: Option<u64>,
+}
+
+/// The two counts of a ticket's mod-reported turns (T-581), in tokens: the
+/// mod's, which are the ticket's, and the transcript tail's of the same
+/// conversations past their fence, which are only compared.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Check {
+    #[serde(default, rename = "mod", skip_serializing_if = "is_zero")]
+    pub by_mod: u64,
+    #[serde(default, rename = "tail", skip_serializing_if = "is_zero")]
+    pub by_tail: u64,
+}
+
+impl Check {
+    fn is_empty(&self) -> bool {
+        *self == Check::default()
+    }
+}
+
+/// What the tail last read of a ticket's Claude cache writes and speed: the
+/// mod's count says neither, and both are a session's settings, not a turn's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writes_1h: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
+}
+
+impl Hint {
+    fn is_empty(&self) -> bool {
+        *self == Hint::default()
+    }
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -60,6 +110,23 @@ pub struct TicketLedger {
     /// Tokens by unix hour, then model key.
     #[serde(default)]
     pub hours: BTreeMap<u64, BTreeMap<String, Tokens>>,
+    #[serde(default, skip_serializing_if = "Check::is_empty")]
+    pub check: Check,
+    #[serde(default, skip_serializing_if = "Hint::is_empty")]
+    pub hint: Hint,
+}
+
+impl TicketLedger {
+    /// Where the mod's count of `path` starts, if it does: its own fence, or
+    /// for a subagent's transcript its session's (`<s>/subagents/…` is
+    /// `<s>.jsonl`'s).
+    fn fence(&self, path: &str) -> Option<u64> {
+        let own = self.conversations.get(path).and_then(|c| c.by_mod_since);
+        own.or_else(|| {
+            let (stem, _) = path.split_once("/subagents/")?;
+            self.conversations.get(&format!("{stem}.jsonl"))?.by_mod_since
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -78,7 +145,8 @@ pub struct Job {
     pub cursor: Cursor,
 }
 
-/// What a read found: the cursor after it and the tokens it added.
+/// What a read found: the cursor after it and the tokens it added, each
+/// with its unix ms and model key.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Done {
     pub ticket: ulid::Ulid,
@@ -88,14 +156,79 @@ pub struct Done {
 }
 
 impl Ledger {
-    /// A transcript a ticket's session points at. True when it is new.
-    pub fn learn(&mut self, ticket: ulid::Ulid, path: &str, codex: bool) -> bool {
+    /// A transcript a ticket's session points at. True when it is new. A
+    /// session that no longer reports through a mod (`by_mod` false: a wake
+    /// on an older Claude Code) hands its conversation back to the tail.
+    pub fn learn(&mut self, ticket: ulid::Ulid, path: &str, codex: bool, by_mod: bool) -> bool {
         let t = self.tickets.entry(ticket).or_default();
-        if t.conversations.contains_key(path) {
+        if let Some(c) = t.conversations.get_mut(path) {
+            if !by_mod {
+                c.by_mod_since = None;
+            }
             return false;
         }
         t.conversations.insert(path.to_string(), Cursor { codex, ..Cursor::default() });
         true
+    }
+
+    /// One turn a session's mod counted (T-581), `path` its conversation and
+    /// `subagent` whether a subagent's loop ran it. The first main turn
+    /// fences the conversation and is not added: it ended before the fence,
+    /// so its lines are the tail's; a subagent's turn before that is the
+    /// tail's too. After it every turn is the ticket's, with the cache writes
+    /// and the speed the tail last read. True when the ledger moved.
+    pub fn count_mod(
+        &mut self,
+        ticket: ulid::Ulid,
+        path: &str,
+        subagent: bool,
+        at_ms: u64,
+        model: &str,
+        tokens: Tokens,
+    ) -> bool {
+        let t = self.tickets.entry(ticket).or_default();
+        if t.fence(path).is_none() {
+            if subagent {
+                return false;
+            }
+            let c = t.conversations.entry(path.to_string()).or_default();
+            c.by_mod_since = Some(at_ms);
+            return true;
+        }
+        let mut tokens = tokens;
+        if t.hint.writes_1h == Some(true) {
+            tokens.write_1h += std::mem::take(&mut tokens.write_5m);
+        }
+        let model = if t.hint.fast && !model.ends_with(FAST) {
+            format!("{model}{FAST}")
+        } else {
+            model.to_string()
+        };
+        if tokens.is_empty() {
+            return false;
+        }
+        t.check.by_mod += tokens.total();
+        t.hours.entry(at_ms / 3_600_000).or_default().entry(model).or_default().add(&tokens);
+        true
+    }
+
+    /// The tickets whose two counts differ by more than 2% (and 1,000
+    /// tokens): the ticket, the mod's count and the transcript's. A turn in
+    /// flight reads ahead on the transcript until its end is reported.
+    pub fn disagreements(&self) -> Vec<(ulid::Ulid, u64, u64)> {
+        self.tickets
+            .iter()
+            .filter(|(_, t)| {
+                let (a, b) = (t.check.by_mod, t.check.by_tail);
+                a.abs_diff(b) > 1_000 && a.abs_diff(b) * 50 > a.max(b)
+            })
+            .map(|(id, t)| (*id, t.check.by_mod, t.check.by_tail))
+            .collect()
+    }
+
+    /// How many tickets the mod has counted.
+    pub fn by_mod(&self) -> usize {
+        self.tickets.values().filter(|t| t.check.by_mod > 0).count()
     }
 
     /// Every known transcript, for the worker to read what grew.
@@ -112,20 +245,42 @@ impl Ledger {
             .collect()
     }
 
-    /// Fold a pass back in. True when anything moved.
+    /// Fold a pass back in. True when anything moved. A line past its
+    /// conversation's fence goes to the check, never the hours; the fence is
+    /// the ledger's, which a mod's report may have set while the pass ran.
     pub fn apply(&mut self, done: Vec<Done>) -> bool {
         let mut moved = false;
         for d in done {
             let t = self.tickets.entry(d.ticket).or_default();
-            if t.conversations.get(&d.path) != Some(&d.cursor) {
-                t.conversations.insert(d.path, d.cursor);
+            let mut cursor = d.cursor;
+            cursor.by_mod_since = t.conversations.get(&d.path).and_then(|c| c.by_mod_since);
+            let fence = t.fence(&d.path);
+            if t.conversations.get(&d.path) != Some(&cursor) {
+                t.conversations.insert(d.path, cursor.clone());
                 moved = true;
             }
-            for (hour, model, tokens) in d.added {
+            for (at_ms, model, tokens) in d.added {
                 if tokens.is_empty() {
                     continue;
                 }
-                t.hours.entry(hour).or_default().entry(model).or_default().add(&tokens);
+                if !cursor.codex {
+                    if tokens.write_1h > 0 {
+                        t.hint.writes_1h = Some(true);
+                    } else if tokens.write_5m > 0 {
+                        t.hint.writes_1h = Some(false);
+                    }
+                    t.hint.fast = model.ends_with(FAST);
+                }
+                if fence.is_some_and(|since| at_ms >= since) {
+                    t.check.by_tail += tokens.total();
+                } else {
+                    t.hours
+                        .entry(at_ms / 3_600_000)
+                        .or_default()
+                        .entry(model)
+                        .or_default()
+                        .add(&tokens);
+                }
                 moved = true;
             }
         }
@@ -233,7 +388,7 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
                     let grew = delta(&cursor.totals.unwrap_or_default(), &tokens);
                     cursor.totals = Some(tokens);
                     let model = cursor.model.clone().unwrap_or_else(|| "codex".into());
-                    added.push((hour_of(at_ms, now_ms), model, grew));
+                    added.push((stamp(at_ms, now_ms), model, grew));
                 }
                 None => {}
             }
@@ -245,15 +400,20 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
             if cursor.recent.len() > RECENT {
                 cursor.recent.remove(0);
             }
-            added.push((hour_of(turn.at_ms, now_ms), turn.model, turn.tokens));
+            added.push((stamp(turn.at_ms, now_ms), turn.model, turn.tokens));
         }
     }
     cursor.offset += end as u64 + 1;
     Some(Done { ticket: job.ticket, path: job.path, cursor, added })
 }
 
-fn hour_of(at_ms: u64, now_ms: u64) -> u64 {
-    (if at_ms == 0 { now_ms } else { at_ms }) / 3_600_000
+/// A line's moment: its own stamp, or the pass's when it carries none.
+fn stamp(at_ms: u64, now_ms: u64) -> u64 {
+    if at_ms == 0 {
+        now_ms
+    } else {
+        at_ms
+    }
 }
 
 /// `Err(Some(v))` is a file from a NEWER mesimon; `Err(None)` is unparseable.
@@ -323,6 +483,12 @@ pub fn load_or_recover(paths: &Paths) -> (Ledger, Vec<Notice>, bool) {
     (Ledger::default(), notices, moved.is_none())
 }
 
+/// The ledger as it stands on disk, for a reader that writes nothing
+/// (doctor): `None` when it is missing, unreadable or a newer build's.
+pub fn read_only(paths: &Paths) -> Option<Ledger> {
+    parse(&std::fs::read_to_string(paths.costs_file()).ok()?).ok()
+}
+
 pub fn save(paths: &Paths, ledger: &Ledger) -> Result<()> {
     let mut body = ledger.clone();
     body.schema_version = COSTS_SCHEMA;
@@ -356,6 +522,78 @@ mod tests {
         )
     }
 
+    /// A message stamped `at` (`16:MM:SS`), with 1-hour cache writes.
+    fn line_at(id: &str, out: u64, at: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","requestId":"r","timestamp":"2026-10-01T{at}.000Z","message":{{"id":"{id}","model":"claude-opus-5-5","usage":{{"input_tokens":1,"output_tokens":{out},"cache_creation":{{"ephemeral_1h_input_tokens":10,"ephemeral_5m_input_tokens":0}}}}}}}}"#
+        )
+    }
+
+    /// The mod's count (T-581) and the tail's stand side by side: the first
+    /// main turn fences the conversation, the tail's lines past the fence go
+    /// to the check, and every later reported turn is the ticket's.
+    #[test]
+    fn a_mods_turns_are_counted_once_and_the_tail_is_their_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("s.jsonl");
+        let path = main.display().to_string();
+        let ms = |hh_mm_ss: &str| {
+            mesimon_core::usage::rfc3339_ms(&format!("2026-10-01T{hh_mm_ss}Z")).unwrap()
+        };
+        std::fs::write(&main, format!("{}\n", line_at("m1", 100, "16:00:00"))).unwrap();
+        let t = ulid::Ulid::new();
+        let mut ledger = Ledger::default();
+        ledger.learn(t, &path, false, true);
+        ledger.apply(scan(ledger.jobs(), NOW));
+        assert_eq!(ledger.view(NOW)[0].tokens, 111, "before any report the tail counts");
+        let turn = Tokens { input: 1, output: 100, write_5m: 10, ..Tokens::default() };
+        // A subagent's turn before the fence is the tail's; the first main
+        // turn sets the fence and adds nothing (its lines were read).
+        assert!(!ledger.count_mod(t, &path, true, ms("16:00:01"), "claude-opus-5-5", turn));
+        assert!(ledger.count_mod(t, &path, false, ms("16:00:02"), "claude-opus-5-5", turn));
+        assert_eq!(ledger.view(NOW)[0].tokens, 111);
+        // The next turn: the tail reads it into the check, the mod's report
+        // into the hours, its writes at the hour the transcript showed.
+        std::fs::create_dir_all(dir.path().join("s/subagents")).unwrap();
+        std::fs::write(
+            dir.path().join("s/subagents/agent-1.jsonl"),
+            format!("{}\n", line_at("a1", 5, "16:00:03")),
+        )
+        .unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&main).unwrap();
+        use std::io::Write;
+        writeln!(f, "{}", line_at("m2", 100, "16:00:04")).unwrap();
+        ledger.apply(scan(ledger.jobs(), NOW));
+        assert!(ledger.count_mod(
+            t,
+            &path,
+            true,
+            ms("16:00:05"),
+            "claude-opus-5-5",
+            Tokens { input: 1, output: 5, write_5m: 10, ..Tokens::default() }
+        ));
+        assert!(ledger.count_mod(t, &path, false, ms("16:00:06"), "claude-opus-5-5", turn));
+        let l = &ledger.tickets[&t];
+        assert_eq!(l.check, Check { by_mod: 127, by_tail: 127 });
+        assert_eq!(ledger.view(NOW)[0].tokens, 111 + 127, "each turn once");
+        let writes: u64 = l.hours.values().flat_map(|m| m.values()).map(|t| t.write_5m).sum();
+        assert_eq!(writes, 0, "the transcript said the writes live an hour");
+        assert!(ledger.disagreements().is_empty());
+        // A mod that went quiet leaves the two apart, and doctor says so.
+        writeln!(f, "{}", line_at("m3", 5_000, "16:00:07")).unwrap();
+        ledger.apply(scan(ledger.jobs(), NOW));
+        assert_eq!(ledger.disagreements(), vec![(t, 127, 127 + 5_011)]);
+        assert_eq!(ledger.by_mod(), 1);
+        // A wake on an older Claude Code hands the conversation back.
+        ledger.learn(t, &path, false, false);
+        writeln!(f, "{}", line_at("m4", 100, "16:00:08")).unwrap();
+        ledger.apply(scan(ledger.jobs(), NOW));
+        assert_eq!(ledger.view(NOW)[0].tokens, 111 + 127 + 111);
+        // The ledger round-trips with its check and its hint.
+        let back: Ledger = serde_json::from_str(&serde_json::to_string(&ledger).unwrap()).unwrap();
+        assert_eq!(back, ledger);
+    }
+
     #[test]
     fn a_transcript_is_read_once_a_message_and_only_what_grew() {
         let dir = tempfile::tempdir().unwrap();
@@ -371,8 +609,8 @@ mod tests {
         );
         std::fs::write(&path, &body).unwrap();
         let mut ledger = Ledger::default();
-        assert!(ledger.learn(t, &path.display().to_string(), false));
-        assert!(!ledger.learn(t, &path.display().to_string(), false));
+        assert!(ledger.learn(t, &path.display().to_string(), false, false));
+        assert!(!ledger.learn(t, &path.display().to_string(), false, false));
         assert!(ledger.apply(scan(ledger.jobs(), NOW)));
         let c = &ledger.view(NOW)[0];
         assert_eq!(c.tokens, 152, "m1 once, m2 once");
@@ -414,8 +652,8 @@ mod tests {
         .unwrap();
         let (a, b) = (ulid::Ulid::new(), ulid::Ulid::new());
         let mut ledger = Ledger::default();
-        ledger.learn(a, &main.display().to_string(), false);
-        ledger.learn(b, &rollout.display().to_string(), true);
+        ledger.learn(a, &main.display().to_string(), false, false);
+        ledger.learn(b, &rollout.display().to_string(), true, false);
         ledger.apply(scan(ledger.jobs(), NOW));
         let view = ledger.view(NOW);
         let of = |t| view.iter().find(|c| c.ticket == t).unwrap();

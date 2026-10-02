@@ -521,6 +521,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
     // (T-217). Both read the board's own files; neither writes one.
     if let Some(paths) = paths {
         records.push(claude_road(&paths));
+        records.push(cost_sources(&paths));
         let on = cols.mcp_tools;
         if on {
             records.push(rec(Level::Ok, "agent tools", "on for this repo"));
@@ -733,6 +734,34 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
         advice.into()
     };
     rec(level, "claude road", value).advice(advice)
+}
+
+/// Where the tickets' token counts come from (T-581): a Claude session
+/// whose mod reports its turns is counted from those reports, and its
+/// transcript is still read beside them. Where the two disagree, this line
+/// says by how much; the board shows the mod's.
+fn cost_sources(paths: &mesimon_daemon::Paths) -> Record {
+    let advice = "A Claude session on the mod road is counted from Claude Code's own report of each turn; its transcript is read beside it as a check. The hook set's sessions and Codex are counted from their transcripts. A turn still running reads ahead on the transcript until it ends.";
+    let Some(ledger) = mesimon_daemon::cost::read_only(paths) else {
+        return rec(Level::Note, "costs", "nothing counted yet").advice(advice);
+    };
+    let by_mod = ledger.by_mod();
+    if by_mod == 0 {
+        return rec(Level::Note, "costs", "from the transcripts").advice(advice);
+    }
+    let apart = ledger.disagreements();
+    let tickets = |n: usize| if n == 1 { "1 ticket".to_string() } else { format!("{n} tickets") };
+    let mut value = format!("{} counted from the mod's reports", tickets(by_mod));
+    let Some((_, m, t)) = apart.iter().max_by_key(|(_, m, t)| m.abs_diff(*t)) else {
+        value.push_str(", each agreeing with its transcript");
+        return rec(Level::Note, "costs", value).advice(advice);
+    };
+    value.push_str(&format!(
+        "; {} disagree with the transcript, the most by {} tokens (mod {m}, transcript {t})",
+        apart.len(),
+        m.abs_diff(*t)
+    ));
+    rec(Level::Note, "costs", value).advice(advice)
 }
 
 fn git_section(repo: &Path, verbose: bool) -> Section {

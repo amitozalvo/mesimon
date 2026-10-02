@@ -34,6 +34,10 @@
 //  - HOLD: every `AskUserQuestion` call of the session's own (no subagent's)
 //    is raced between the native dialog, which is drawn as ever and which
 //    the person may answer first, and the board's `answer`.
+//  - COST: each turn's end (`turn.complete`, a subagent's too) goes up as
+//    `ModUsage`: the engine's count of the turn's tokens and, for the main
+//    loop, the rate-limit windows `$.session.usage()` reads at that moment
+//    (T-581). Observed only: the turn's result passes as it came.
 //  - LOAD: the pane's variables are read by the first event and kept once
 //    read whole; a read that fails is tried again by the next event, and the
 //    one that succeeds reports the failures before it as `ModLoadFailed`
@@ -556,6 +560,39 @@ function startBridge($: any, c: Config) {
   void bridgeLoop($, c)
 }
 
+/**
+ * The `ModUsage` report's body (T-581): the turn's own fields as the engine
+ * gave them, and the main loop's rate-limit windows. Never the answer's
+ * text: the daemon reads counts, not words.
+ */
+export function usageBody(e: any, usage: unknown, limits?: unknown): Record<string, unknown> {
+  const body: Record<string, unknown> = { turnId: e?.turnId, reason: e?.reason, durationMs: e?.durationMs }
+  if (typeof e?.agentId === 'string') body.agentId = e.agentId
+  if (usage && typeof usage === 'object') body.usage = usage
+  if (Array.isArray(limits)) body.rateLimits = limits
+  return body
+}
+
+/**
+ * A turn's end, observed: its count and, for the main loop, the account's
+ * windows. `$.session.usage()` is read before the hook returns, while the
+ * event's dispatch stands (a `$` call fails with an abandoned one, T-594);
+ * a read that failed sends the count alone.
+ */
+async function turnComplete($: any, e: any, next: any) {
+  const result = await next(e)
+  let limits: unknown
+  if (typeof e?.agentId !== 'string') {
+    try {
+      limits = (await $.session.usage())?.rateLimits
+    } catch {
+      limits = undefined
+    }
+  }
+  void relay($, 'ModUsage', String(e?.reason ?? 'answer'), usageBody(e, e?.usage ?? result?.usage, limits), false)
+  return result
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
@@ -731,4 +768,7 @@ export const register: Register = on => {
   on('classic.ElicitationResult', relaySingle)
   on('classic.PreCompact', relaySingle)
   on('classic.PostCompact', relaySingle)
+
+  // ---- The cost (T-581): each turn's count, and the main loop's windows.
+  on('turn.complete', turnComplete)
 }

@@ -190,6 +190,28 @@ pub fn claude_turn(line: &str) -> Option<Turn> {
     Some(Turn { id, model, at_ms, tokens })
 }
 
+/// A turn's count as a session's mod reports it (T-581): `turn.complete`'s
+/// `usage`, the engine's own sum of the turn's requests in the API's
+/// spelling, and the model that answered. The engine says neither how long a
+/// cache write lives nor whether the turn ran fast, so a write reads as
+/// 5-minute here, as an older transcript's does; the ledger moves it by what
+/// the conversation's transcript says (`Ledger::count_mod`).
+pub fn mod_turn(usage: &Value) -> Option<(String, Tokens)> {
+    let model = usage.get("model")?.as_str()?;
+    if model.is_empty() || model.starts_with('<') || model.len() > 128 {
+        return None;
+    }
+    let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let tokens = Tokens {
+        input: n("input_tokens"),
+        output: n("output_tokens"),
+        write_5m: n("cache_creation_input_tokens"),
+        write_1h: 0,
+        read: n("cache_read_input_tokens"),
+    };
+    Some((model.to_string(), tokens))
+}
+
 /// What one Codex rollout line says about tokens.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodexLine {
@@ -338,6 +360,21 @@ pub fn tokens_word(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mod_turn_is_the_engines_four_counts_and_its_model() {
+        let usage = serde_json::json!({
+            "input_tokens": 3, "output_tokens": 40, "cache_read_input_tokens": 900,
+            "cache_creation_input_tokens": 120, "model": "claude-sonnet-5-5"
+        });
+        let (model, t) = mod_turn(&usage).unwrap();
+        assert_eq!(model, "claude-sonnet-5-5");
+        assert_eq!(t, Tokens { input: 3, output: 40, write_5m: 120, write_1h: 0, read: 900 });
+        // No model, a synthetic one or no object: nothing to count.
+        assert!(mod_turn(&serde_json::json!({"input_tokens": 3})).is_none());
+        assert!(mod_turn(&serde_json::json!({"model": "<synthetic>"})).is_none());
+        assert!(mod_turn(&serde_json::json!(null)).is_none());
+    }
 
     #[test]
     fn prices_match_the_published_table_and_the_longest_id_wins() {

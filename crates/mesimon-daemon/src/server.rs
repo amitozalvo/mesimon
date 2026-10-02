@@ -285,6 +285,28 @@ extern "C" fn on_sigterm(_: libc::c_int) {
 /// Make SIGTERM a clean shutdown (`begin_shutdown` on the next tick) instead of
 /// an instant death. Called by the `daemon` subcommand only — never by the
 /// in-process daemons the e2e suite runs, whose process is the test runner's.
+/// Whether a frame ends a session's open permission wait (T-395): the
+/// dialog's tool ran or failed (the person answered it in the pane), or the
+/// turn, the conversation or the pane moved on. A subagent's frame is about
+/// another dialog. The wait's stream is closed unanswered, so `mesimon
+/// approve` prints nothing and exits, on the hook set's road and the mod's
+/// alike: on the mod road that ends the mod's hold in
+/// `classic.PermissionRequest`, which a person's own answer does not abort
+/// (T-573 row 4, T-581).
+fn releases_permission(frame: &HookFrame) -> bool {
+    matches!(
+        frame.event.as_str(),
+        "UserPromptSubmit"
+            | "Stop"
+            | "StopFailure"
+            | "SessionEnd"
+            | "SessionStart"
+            | "PaneDied"
+            | "PostToolUse"
+            | "PostToolUseFailure"
+    ) && frame.payload.get("agent_id").is_none()
+}
+
 pub fn install_sigterm_handler() {
     // SAFETY: the handler touches one atomic and one async-signal-safe call.
     unsafe { libc::signal(libc::SIGTERM, on_sigterm as *const () as libc::sighandler_t) };
@@ -3447,18 +3469,7 @@ impl Daemon {
         {
             return;
         }
-        if matches!(
-            frame.event.as_str(),
-            "UserPromptSubmit"
-                | "Stop"
-                | "StopFailure"
-                | "SessionEnd"
-                | "SessionStart"
-                | "PaneDied"
-                | "PostToolUse"
-                | "PostToolUseFailure"
-        ) && frame.payload.get("agent_id").is_none()
-        {
+        if releases_permission(&frame) {
             self.control_cancel_permission(id);
         }
         self.control_observe_dialog(id, &frame);
@@ -7032,7 +7043,7 @@ impl Daemon {
     }
 
     /// The single write path for `costs.json` (T-327).
-    fn persist_costs(&self) {
+    pub(super) fn persist_costs(&self) {
         if self.costs_barred {
             return;
         }
@@ -7048,10 +7059,13 @@ impl Daemon {
             .board
             .sessions
             .iter()
-            .filter_map(|r| crate::cost::transcript_of(r).map(|(p, codex)| (r.ticket, p, codex)))
+            .filter_map(|r| {
+                crate::cost::transcript_of(r)
+                    .map(|(p, codex)| (r.ticket, p, codex, r.frames_by_mod()))
+            })
             .collect();
-        for (ticket, path, codex) in learned {
-            self.costs.learn(ticket, &path.display().to_string(), codex);
+        for (ticket, path, codex, by_mod) in learned {
+            self.costs.learn(ticket, &path.display().to_string(), codex, by_mod);
         }
         let jobs = self.costs.jobs();
         if jobs.is_empty() {
@@ -13357,5 +13371,44 @@ mod crown_archive_tests {
             crown_archive_off("T-5", true),
             "Settings → Agents → Crown archives tickets is off; a person restores T-5"
         );
+    }
+}
+
+#[cfg(test)]
+mod permission_release_tests {
+    use super::releases_permission;
+    use crate::ingest::HookFrame;
+    use mesimon_core::road::Road;
+    use serde_json::json;
+
+    fn frame(event: &str, road: Road, payload: serde_json::Value) -> HookFrame {
+        HookFrame {
+            session: uuid::Uuid::nil().to_string(),
+            event: event.into(),
+            reason: None,
+            pane: None,
+            road,
+            payload,
+        }
+    }
+
+    /// T-581: the mod's hold in `classic.PermissionRequest` runs on until
+    /// the daemon closes `mesimon approve`'s wait, and the person answering
+    /// the dialog in the pane is the `PostToolUse` edge the mod relays, read
+    /// exactly as the hook set's.
+    #[test]
+    fn the_session_s_own_edge_ends_the_wait_on_either_road() {
+        for road in [Road::Hooks, Road::Mod] {
+            for event in
+                ["PostToolUse", "PostToolUseFailure", "Stop", "UserPromptSubmit", "SessionEnd"]
+            {
+                assert!(releases_permission(&frame(event, road, json!({}))), "{event} {road:?}");
+            }
+            // A subagent's tool, or a frame that says nothing of the dialog.
+            assert!(!releases_permission(&frame("PostToolUse", road, json!({"agent_id": "a7"}))));
+            for event in ["PreToolUse", "PermissionRequest", "Notification", "ModUsage"] {
+                assert!(!releases_permission(&frame(event, road, json!({}))), "{event}");
+            }
+        }
     }
 }

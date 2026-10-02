@@ -97,6 +97,10 @@ pub struct UsageState {
     claude: Cadence,
     codex: Cadence,
     in_flight: [bool; 2],
+    /// Unix ms of this daemon's last probe that read: a mod's merged windows
+    /// (T-581) refresh the reading's age but not the probe's, which alone
+    /// sees a model's week.
+    probed_at: [Option<u64>; 2],
     wants_by: HashMap<usize, Wants>,
     file: Option<PathBuf>,
     /// The file's (mtime, len) as last read or written: a change means another
@@ -123,6 +127,7 @@ impl UsageState {
             claude: Cadence::default(),
             codex: Cadence::default(),
             in_flight: [false; 2],
+            probed_at: [None; 2],
             wants_by: HashMap::new(),
             file,
             seen: None,
@@ -192,7 +197,7 @@ impl UsageState {
         for p in Provider::ALL {
             let wanted = self.view.wants.get(p);
             let usage = self.view.get(p);
-            let read_at = usage.reading.as_ref().map(|r| r.read_at_ms);
+            let read_at = self.probed_at[slot(p)].or(usage.reading.as_ref().map(|r| r.read_at_ms));
             let next_reset = usage.reading.as_ref().and_then(Reading::next_reset_ms);
             let c = self.cadence(p).clone();
             if self.in_flight[slot(p)]
@@ -219,6 +224,7 @@ impl UsageState {
                 return true;
             }
             Outcome::Read(reading) => {
+                self.probed_at[slot(p)] = Some(reading.read_at_ms);
                 self.cadence(p).succeeded();
                 self.view.get_mut(p).read(reading);
             }
@@ -240,6 +246,23 @@ impl UsageState {
         }
         self.cadence(p).succeeded();
         self.view.get_mut(p).read(reading);
+        self.save();
+        true
+    }
+
+    /// The windows a Claude session's mod read at a turn's end (T-581),
+    /// merged into the held reading (`usage::merge_mod`) and shared through
+    /// the file like a probe's. True when the view changed. The probe keeps
+    /// its own schedule: only it reads the windows the mod cannot see.
+    pub fn merge_mod(&mut self, limits: &Value, now_ms: u64) -> bool {
+        let held = self.view.claude.reading.as_ref();
+        let Some(reading) = mesimon_core::usage::merge_mod(held, limits, now_ms) else {
+            return false;
+        };
+        if held.is_some_and(|h| h.read_at_ms > now_ms) {
+            return false;
+        }
+        self.view.claude.read(reading);
         self.save();
         true
     }
