@@ -1101,6 +1101,11 @@ impl Daemon {
                 let tool_use_id = pending.request.clone();
                 let frame = self.mod_enqueue(id, ModCommand::Answer { tool_use_id, answers });
                 pending.by_mod = Some(frame);
+                self.feed.board(
+                    pending.by.principal().actor(),
+                    "answer_by_mod",
+                    Some(pending.ticket),
+                );
                 pending.steps += 1;
                 pending.confirm = Some(Instant::now() + DIALOG_CONFIRM);
                 pending.next = Instant::now() + Duration::from_millis(100);

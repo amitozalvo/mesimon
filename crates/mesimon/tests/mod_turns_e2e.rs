@@ -193,8 +193,22 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
     let submits = frames(&h, sid, "submit");
     assert_eq!(submits.len(), 2);
     assert_eq!(submits[1]["text"], "mesimon-probe-575 one more turn");
+    // A live prompt draws no launching arc, on either road.
+    assert!(!record(&mut c, sid).pending_submit);
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    wait_until(Duration::from_secs(3), "the second ack", || !record(&mut c, sid).pending_submit);
+    wait_until(Duration::from_secs(5), "the second ack", || {
+        feed(&h).matches("\"cmd\":\"prompt_submitted\"").count() == 2
+    });
+
+    // A slash command is for the prompt box, which the engine will not take
+    // from a plugin's submit (measured, 2.1.287): it is typed, as before.
+    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sid, "idle again", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(matches!(prompt(&mut c, ticket, "/mesimon-probe-cmd now", false), Response::Ok));
+    wait_until(Duration::from_secs(5), "the command typed into the pane", || {
+        got(&h).contains("/mesimon-probe-cmd now")
+    });
+    assert_eq!(frames(&h, sid, "submit").len(), 2, "no submit for a command");
     let _ = c.request(Command::KillSession { id: sid });
 }
 

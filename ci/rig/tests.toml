@@ -41,6 +41,28 @@
 #              final:<word>. A road_disagree is a bug to file, not a gate
 #              (T-587), so `no_disagree` is a check only where a test's
 #              acceptance names it; every verdict lists the session's lines.
+#              The turn roads (T-575) add: first_prompt_exact (the first
+#              prompt is the title, a blank line and the brief, byte for byte,
+#              and no <pasted_content> wraps it), fed:<cmd> / not_fed:<cmd> (a
+#              board feed line for the ticket, or none, since the test began),
+#              mod_report:<event>:<reason> (a report the worker's mod relayed),
+#              prompts:N (user prompts in its transcript, a background
+#              task's notification not counted), held (its second prompt
+#              entered after its first turn's Stop), replies:<w1>,<w2>
+#              (its replies, in order, each holding its word), file:<path>
+#              (in its cwd, holding `brief_file`'s words), answered:<word> /
+#              refused (the crown's answer_agent outcome for it, from the
+#              feed, or none answered).
+#   siblings   more tickets the test files beside its own ({key2}, {key3}
+#              in a step), each with the same brief and every check run on
+#              each.
+#   rig steps  the turn roads add: `prompt` (the person's words to the
+#              worker while its turn runs, `text`, sent once it has worked
+#              `after` seconds), `press_enter` (the person answers the
+#              worker's dialog in its pane), `resend` (the person's resend of
+#              the worker's unsent words), `restart_drop_mod` (the daemon
+#              again with MESIMON_MOD_DIR naming a copy of the mod whose first
+#              submit in each session is dropped).
 #
 # The prompts are explicit and small, so the repository's CLAUDE.md does not
 # send a Sonnet worker off to work: a run is a few turns per test, cents.
@@ -172,3 +194,198 @@ checks = ["road:hooks", "no_plugin_dir", "started_by_crown", "words:working,idle
 
   [[test.steps]]
   rig = "restart_plain"
+
+# ---------------------------------------------------------------- the prompts
+# T-575: on a Claude Code whose mod is up, every prompt mesimon delivers goes
+# down the mod as $.prompt.submit({ text, asUser: true }): no composer is
+# read, nothing is typed into the pane and no Enter is pressed.
+
+[[test]]
+id = "P1"
+title = "P1 · a long brief reaches the worker whole as its first prompt"
+workspace = "worktree"
+brief = """This brief is long on purpose: it tests that a whole brief reaches you as your first prompt, word for word. Everything below the line is filler for that test; do not act on it.
+
+When you have read it, reply with the single word done and end your turn. Read no file and run no command.
+
+----
+""" 
+expect = "the crown starts the worker; its first prompt is the title, a blank line and the 10 KB brief, byte for byte, as the person's own words (no <pasted_content>); it went down the mod (prompt_by_mod) and neither the composer wait nor the paste road ran (no prompt_by_paste, no prompt_submit_not_ready); the worker answers done."
+checks = ["road:mod", "started_by_crown", "first_prompt_exact", "fed:prompt_by_mod", "not_fed:prompt_by_paste", "not_fed:prompt_submit_not_ready", "hooks:SessionStart,UserPromptSubmit,Stop", "words:working,idle", "reply:done"]
+long_brief = true
+
+  [[test.steps]]
+  crown = "P1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: P1 started. When the board wakes you for {key}, end your turn with the single line: P1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "P2"
+title = "P2 · a prompt into a running turn waits and runs as a turn of its own"
+workspace = "worktree"
+brief = "Run the shell command `sleep 25` with the Bash tool in the foreground (never in the background) and wait for it to finish, then reply with the single word first and end your turn. Read no file and run no other command."
+expect = "while the worker's first turn runs (its foreground sleep), the person sends it a prompt: it goes down the mod (prompt_by_mod), the engine holds it, and it runs as a second turn after the first one's Stop, never typed into the box: two prompts, the second entering after the first turn ended, the replies first then second."
+checks = ["road:mod", "fed:prompt_by_mod", "not_fed:prompt_by_paste", "prompts:2", "held", "replies:first,second", "hooks:UserPromptSubmit,Stop"]
+
+  [[test.steps]]
+  crown = "P2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: P2 started."
+  until = { events = ["UserPromptSubmit"], state = "working" }
+
+  [[test.steps]]
+  rig = "prompt"
+  text = "Reply with the single word second and end your turn. Read no file and run no command."
+  after = 6
+
+  [[test.steps]]
+  crown = "P2, the person has sent {key} a second prompt: when the board wakes you for {key}, end your turn with the single line: P2 seen."
+  until = { stops = 2, state = "idle" }
+  wake = true
+
+[[test]]
+id = "P3"
+title = "P3 · the crown's ask_agent reaches the worker as its own prompt"
+workspace = "worktree"
+brief = "Reply with the single word ready and end your turn. Read no file and run no command."
+expect = "the crown's ask_agent to its idle worker goes down the mod (two prompt_by_mod: the start and the ask), arrives whole as the person's words, and the worker answers it: replies ready then lantern."
+checks = ["road:mod", "crown:ask_agent", "fed:prompt_by_mod", "not_fed:prompt_by_paste", "prompts:2", "replies:ready,lantern"]
+
+  [[test.steps]]
+  crown = "P3: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: P3 started. When the board wakes you for {key}, end your turn with the single line: P3 ready."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "P3: call ask_agent for {key} with the text: Reply with the single word lantern and end your turn. Then end your turn with the single line: P3 asked. When the board wakes you because {key}'s agent answered, end your turn with the single line: P3 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "P4"
+title = "P4 · a brief the mod refused is kept unsent and the person's resend delivers it"
+workspace = "worktree"
+brief = "Reply with the single word resent and end your turn. Read no file and run no command."
+expect = "the rig's daemon restarts with a mod whose first submit in each session is dropped: the worker's brief is refused (prompt_submit_refused, dropped), kept unsent (the card's brief not sent), and no turn runs; the person's resend sends title and brief down the mod again (prompt_resent) and the worker answers resent. The daemon is restored after."
+checks = ["road:mod", "fed:prompt_submit_refused", "fed:prompt_resent", "mod_report:ModSubmit:", "prompts:1", "reply:resent", "words:working,idle"]
+
+  [[test.steps]]
+  rig = "restart_drop_mod"
+
+  [[test.steps]]
+  crown = "P4: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: P4 started."
+  until = { fed = "prompt_submit_refused", state = "idle" }
+
+  [[test.steps]]
+  rig = "resend"
+
+  [[test.steps]]
+  crown = "P4, the person resent {key}'s brief: when the board wakes you for {key}, end your turn with the single line: P4 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "restart_plain"
+
+[[test]]
+id = "P5"
+title = "P5 · three workers started at once each take their brief whole"
+siblings = ["P5 · the second of three workers started at once", "P5 · the third of three workers started at once"]
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown starts three workers in one turn: each one's first prompt is its own title and brief, whole, down the mod (prompt_by_mod each), with no paste and no composer wait, and each goes working then idle."
+checks = ["road:mod", "started_by_crown", "first_prompt_exact", "fed:prompt_by_mod", "not_fed:prompt_by_paste", "not_fed:prompt_submit_not_ready", "reply:done"]
+
+  [[test.steps]]
+  crown = "P5: call start_agent three times in a row, one right after the other, each with workspace worktree, no tier and no plan: for {key}, then for {key2}, then for {key3}. Then end your turn with the single line: P5 started. When the board wakes you for them, end your turn with the single line: P5 seen."
+  until = { stops = 1, state = "idle", all = true }
+  wake = true
+
+# ---------------------------------------------------------------- the dialogs
+# T-576: a question's answer goes down the worker's mod as one frame, by the
+# dialog's own labels; no screen is read and no key is sent, and the mod's
+# report (no PostToolUse fires for a dialog it closed) moves the card.
+
+[[test]]
+id = "D1"
+title = "D1 · the crown answers a worker's question through its mod: do the steps below"
+workspace = "worktree"
+brief = """Do these two things one at a time and nothing else.
+1. Ask me one question with the AskUserQuestion tool, alone: the question is "Which colour?" and the two options are "red" and "blue". Wait for my answer.
+2. Then reply with the colour I chose, as one word, and end your turn.
+Read no file and run no command."""
+expect = "the worker asks; the board wakes the crown, which answers blue with answer_agent; the answer goes down the worker's mod (answer_by_mod), the mod reports it answered (ModAnswer answered), the receipt says answered, and the card goes needs-you then working with no PostToolUse of the hook set's; the worker replies blue."
+checks = ["road:mod", "words:working,needs_you,working,idle", "fed:answer_by_mod", "mod_report:ModAnswer:answered", "answered:blue", "reply:blue"]
+
+  [[test.steps]]
+  crown = "D1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: D1 started. Its agent will stop on the question \"Which colour?\": when the board wakes you for that question, read it with get_ticket for {key}, answer it with answer_agent choosing blue, and end your turn with the single line: D1 answered. When the board wakes you because {key}'s agent finished, end your turn with the single line: D1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "D2"
+title = "D2 · the crown answers a batch of two questions through the mod: do the steps below"
+workspace = "worktree"
+brief = """Do these two things one at a time and nothing else.
+1. Ask me two questions in ONE AskUserQuestion call: the first is "Which colour?" with the options "red" and "blue", the second is "Which size?" with the options "small" and "large". Wait for my answers.
+2. Then reply with the two words I chose, colour first, separated by a space, and end your turn.
+Read no file and run no command."""
+expect = "the worker asks two questions at once; the crown answers both in one answer_agent call (answers: blue, large), down the mod as one frame (answer_by_mod), no tab walk; the mod reports answered and the worker replies blue large."
+checks = ["road:mod", "fed:answer_by_mod", "mod_report:ModAnswer:answered", "answered:blue; large", "reply:large"]
+
+  [[test.steps]]
+  crown = "D2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: D2 started. Its agent will ask two questions in one dialog: when the board wakes you for it, read it with get_ticket for {key} and answer both with ONE answer_agent call whose answers are, in order, the option blue for the first and the option large for the second; then end your turn with the single line: D2 answered. When the board wakes you because {key}'s agent finished, end your turn with the single line: D2 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "D3"
+title = "D3 · the crown answers a several-choice question through the mod: do the steps below"
+workspace = "worktree"
+brief = """Do these two things one at a time and nothing else.
+1. Ask me one question with the AskUserQuestion tool, alone, that takes several answers (multiSelect true): the question is "Which toppings?" and the three options are "cheese", "ham" and "olives". Wait for my answer.
+2. Then reply with the toppings I chose, exactly as you received them, and end your turn.
+Read no file and run no command."""
+expect = "the worker asks a several-choice question; the crown chooses cheese and olives with answer_agent (indices 0 and 2); the answer goes down the mod as the labels joined by a comma (cheese, olives), with no Space and no tab walk; the mod reports answered and the worker replies with both."
+checks = ["road:mod", "fed:answer_by_mod", "mod_report:ModAnswer:answered", "answered:cheese, olives", "reply:olives"]
+
+  [[test.steps]]
+  crown = "D3: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: D3 started. Its agent will ask a question that takes several choices: when the board wakes you for it, read it with get_ticket for {key} and answer it with answer_agent choosing the options cheese and olives (the first and the third); then end your turn with the single line: D3 answered. When the board wakes you because {key}'s agent finished, end your turn with the single line: D3 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "D4"
+title = "D4 · a person's answer in the pane wins over the crown's: do the steps below"
+workspace = "worktree"
+brief = """Do these two things one at a time and nothing else.
+1. Ask me one question with the AskUserQuestion tool, alone: the question is "Which colour?" and the two options are "red" and "blue", in that order. Wait for my answer.
+2. Then reply with the colour I chose, as one word, and end your turn.
+Read no file and run no command."""
+expect = "the worker asks; the crown is told to wait; the person answers in the pane first (Enter on red, the first row); the native dialog takes it, the worker replies red, and the crown's answer of blue afterwards is refused or reads unknown, never answered."
+checks = ["road:mod", "refused", "reply:red", "not_fed:answer_by_mod"]
+
+  [[test.steps]]
+  crown = "D4: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: D4 started. Its agent will stop on the question \"Which colour?\": when the board wakes you for that question, call get_ticket for {key} and remember the question's request id, but do NOT answer it; end your turn with the single line: D4 waiting."
+  until = { events = ["PreToolUse"], state = "needs_you" }
+  wake = true
+
+  [[test.steps]]
+  rig = "press_enter"
+
+  [[test.steps]]
+  crown = "D4: the person has answered {key}'s question in its pane. Now call answer_agent for {key} with the request id you remembered, choosing blue, and end your turn with one line saying what answer_agent returned."
+  until = { state = "idle" }
+
+[[test]]
+id = "D5"
+title = "D5 · the crown accepts a worker's plan and the worker goes on to edit"
+workspace = "worktree"
+brief = "Plan this, then do it once your plan is accepted: create the file notes/d5.txt holding the single line plan accepted. Use the ExitPlanMode tool to present the plan. After writing the file, reply with the single word done and end your turn. Run no command."
+brief_file = "plan accepted"
+plan = true
+expect = "the worker starts in plan mode and presents its plan; the board wakes the crown, which accepts it with accept_plan (T-582's press on the native dialog's first row, Yes, auto-accept edits: the one screen read that stays on the mod road, T-579); the worker leaves plan mode, writes the file with no permission asked, and replies done."
+checks = ["road:mod", "crown:accept_plan", "words:working,needs_you,working,idle", "file:notes/d5.txt", "reply:done"]
+
+  [[test.steps]]
+  crown = "D5: call start_agent for {key} with workspace worktree, no tier and plan true, then end your turn with the single line: D5 started. Its agent will stop on its plan: when the board wakes you for that plan, read it with get_ticket for {key}, accept it with accept_plan, and end your turn with the single line: D5 accepted. When the board wakes you because {key}'s agent finished, end your turn with the single line: D5 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true

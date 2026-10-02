@@ -165,6 +165,16 @@ pub const MOD_SUBMIT: &str = "ModSubmit";
 /// answered or refused.
 pub const MOD_ANSWER: &str = "ModAnswer";
 
+/// Whether words are a slash command for Claude Code's prompt box (`/exit`,
+/// `/compact`, a skill's `/name`): its first character, past blanks, is a
+/// slash. The engine rejects one as a plugin's `$.prompt.submit`, which
+/// takes prompts the model reads, not commands for the box (measured on
+/// 2.1.287, T-575), so such words keep the paste road on every Claude
+/// session: typed, then Enter, exactly as a person runs them.
+pub fn is_command(text: &str) -> bool {
+    text.trim_start().starts_with('/')
+}
+
 /// The kinds of [`ModCommand`] a mod declares it speaks, by the word it
 /// passes its bridge (`mesimon mod-bridge --speaks ping,submit,answer`): a
 /// session keeps the mod it was launched with across a daemon upgrade, so
@@ -288,6 +298,15 @@ mod tests {
             serde_json::to_string(&f).unwrap(),
             r#"{"id":"b","kind":"answer","tool_use_id":"toolu_1","answers":{"Which colour?":"blue"}}"#
         );
+    }
+
+    #[test]
+    fn a_slash_command_is_words_the_box_runs() {
+        assert!(is_command("/exit"));
+        assert!(is_command("  /compact keep the plan"));
+        assert!(!is_command("exit"));
+        assert!(!is_command("run /usr/bin/true"));
+        assert!(!is_command(""));
     }
 
     #[test]

@@ -28,7 +28,7 @@ use mesimon_core::command::{
 use mesimon_core::crown;
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
-use mesimon_core::road::{ModCommand, Road};
+use mesimon_core::road::{self, ModCommand, Road};
 use mesimon_core::usage::{Provider, Wants};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
 
@@ -3727,9 +3727,13 @@ impl Daemon {
         // nothing is typed, so there is no stray text to clear first. One
         // whose mod never came up — the reason its words went unsent, most
         // likely — takes the paste road below.
-        if self.mod_speaks(id, "submit") {
+        if self.mod_speaks(id, "submit") && !road::is_command(&self.launch_words(ticket, &parked)) {
             if !self.mod_submit(id, ticket, parked, Ack::PROMPT) {
                 return Response::Err { message: "nothing to send".into() };
+            }
+            // The card's launching arc, as a resend on the paste road draws.
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                rec.pending_submit = true;
             }
             self.feed.board("local", "prompt_resent", Some(ticket));
             self.persist_and_notify();
@@ -3803,9 +3807,8 @@ impl Daemon {
         let read = words.brief && self.description_body(ticket).is_some();
         let frame = self.mod_enqueue(id, ModCommand::Submit { text });
         self.owed.insert(id, Owed::submitted(ticket, words, frame, ack, now_ms()));
-        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-            rec.pending_submit = true;
-            if read {
+        if read {
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.ticket_read = true;
             }
         }
@@ -3838,12 +3841,18 @@ impl Daemon {
         if !self.mod_bridged(id) {
             return false;
         }
-        if !self.mod_speaks(id, "submit") {
+        let command = owed.parked.as_ref().is_some_and(|p| {
+            let ticket = owed.ticket;
+            road::is_command(&self.launch_words(ticket, p))
+        });
+        if command || !self.mod_speaks(id, "submit") {
             if let Some(owed) = self.owed.get_mut(&id) {
                 owed.mod_road = false;
             }
-            self.journal
-                .line(&format!("session {id}'s mod does not speak submit: its words are pasted"));
+            self.journal.line(&format!(
+                "session {id}'s words are pasted: {}",
+                if command { "a slash command" } else { "its mod does not speak submit" }
+            ));
             return true;
         }
         let Some(owed) = self.owed.remove(&id) else { return false };
@@ -3885,6 +3894,11 @@ impl Daemon {
                 .line(&format!("mod submit {fid} for session {id}: {outcome}, nothing owed"));
             return;
         }
+        let said = frame.payload["error"].as_str().or(frame.payload["reason"].as_str());
+        self.journal.line(&format!(
+            "mod submit {fid} for session {id}: {outcome}: {}",
+            said.map(|s| mesimon_core::text::cap_bytes(s, 300)).unwrap_or("no reason given")
+        ));
         let Some(owed) = self.drop_owed(id) else { return };
         self.mark_unsent(id, owed.sent);
         self.feed.board_outcome("daemon", "prompt_submit_refused", Some(owed.ticket), outcome);
@@ -8339,7 +8353,8 @@ impl Daemon {
         }
         // A Claude session whose mod is up takes the words by its `submit`
         // (T-575): a turn of its own, held behind a running one, never typed.
-        if self.mod_speaks(id, "submit") {
+        // A slash command is for the box, and is typed into it.
+        if self.mod_speaks(id, "submit") && !road::is_command(text) {
             let words = Parked { text: text.to_string(), brief: false, title: false };
             if !self.mod_submit(id, ticket, words, ack) {
                 return Err("nothing to send".into());

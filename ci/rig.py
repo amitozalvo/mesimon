@@ -65,6 +65,11 @@ TERMINAL_ENV = (
 )
 
 LOG = None
+# The turn roads' feed words (T-575, T-576), printed as they land.
+TURN_ROAD_WORDS = (
+    "prompt_by_mod", "prompt_by_paste", "prompt_submit_refused", "prompt_submit_unreceived",
+    "prompt_resent", "prompt_submit_not_ready", "answer_by_mod",
+)
 
 
 def say(text=""):
@@ -188,6 +193,50 @@ def flat(text):
     return " ".join(text.split())
 
 
+def filler(size=10_000):
+    """P1's filler: numbered paragraphs of plain prose, to `size` bytes."""
+    out, n = [], 0
+    while sum(len(p) + 2 for p in out) < size:
+        n += 1
+        out.append(f"{n}. A paragraph of filler for the long-brief test, with \"quotes\", "
+                   f"an apostrophe's turn, a `backtick`, $HOME written as text, and the "
+                   f"number {n} so no two lines read alike.")
+    return "\n\n".join(out)
+
+
+def user_prompts(rows, at=False):
+    """The person's prompts in a transcript, in order: user rows with text,
+    not a background task's notification (the engine's, not the person's).
+    With `at`, each with its timestamp."""
+    out = []
+    for row in rows:
+        if row.get("type") == "user" and not row.get("isMeta"):
+            t = "\n".join(texts(row)).strip()
+            if t and not t.startswith("<task-notification>"):
+                out.append((t, row.get("timestamp")) if at else t)
+    return out
+
+
+def iso_ms(stamp):
+    """A transcript's ISO timestamp as epoch ms."""
+    from datetime import datetime
+    try:
+        return int(datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)
+    except (AttributeError, ValueError):
+        return None
+
+
+def replies(rows):
+    """The assistant's text replies, in order."""
+    out = []
+    for row in rows:
+        if row.get("type") == "assistant":
+            t = "\n".join(texts(row)).strip()
+            if t:
+                out.append(t)
+    return out
+
+
 def sid16(session):
     """The tmux session name: a pane-died frame names its session by it."""
     return session.replace("-", "")[:16]
@@ -299,6 +348,44 @@ class Rig:
         line = self.wait_probe(want_probe)
         say(f"  road.json: {line}")
         return bool(line and want_probe in line)
+
+    def tmux(self, *args):
+        """The rig's private tmux server, by the build its daemon runs."""
+        tmux = os.environ.get("MESIMON_TMUX_BIN") or (
+            os.path.join(self.repo, "target/debug/mesimon-tmux")
+            if os.path.exists(os.path.join(self.repo, "target/debug/mesimon-tmux")) else "tmux")
+        return subprocess.run([tmux, "-S", self.paths.tmux_sock, *args],
+                              capture_output=True, text=True)
+
+    def drop_mod(self):
+        """P4's mod: the laid sources, with the first submit of each session
+        reported dropped. Under the rig's state dir: every load writes
+        Claude Code's types and tsconfig into the folder, never a checkout."""
+        src = os.path.join(self.repo, "crates/mesimon-daemon/mod")
+        dst = os.path.join(self.paths.state_dir, "rig", "mod-drop")
+        if os.path.exists(dst):
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        path = os.path.join(dst, "hooks", "register.ts")
+        with open(path) as f:
+            text = f.read()
+        head = "async function submitPrompt($: any, id: string, text: string) {\n"
+        if head not in text:
+            die("the mod's submitPrompt moved: P4's drop cannot be patched in")
+        text = text.replace(head, head + (
+            "  if (!rigDropped) {\n"
+            "    rigDropped = true\n"
+            "    await relay($, 'ModSubmit', id, { outcome: 'dropped', reason: 'the rig dropped it (P4)' }, false)\n"
+            "    return\n"
+            "  }\n"), 1)
+        text = text.replace("let bridgeOn = false\n", "let bridgeOn = false\nlet rigDropped = false\n", 1)
+        os.remove(os.path.join(dst, "hooks", "register.test.ts"))
+        with open(path, "w") as f:
+            f.write(text)
+        out = subprocess.run([self.claude, "plugin", "validate", dst], capture_output=True, text=True)
+        if out.returncode != 0:
+            die(f"P4's mod does not validate:\n{out.stdout}{out.stderr}")
+        return dst
 
     def env_of(self, pid):
         out = subprocess.run(["ps", "-wwE", "-o", "command=", "-p", str(pid)],
@@ -413,15 +500,19 @@ class Rig:
 
     def file(self, tests):
         for test in tests:
-            tid = self.wire.create_ticket("TODO", test["title"])
-            self.wire.write_note(tid, test["brief"])
-            self.wire.write_note(tid, self.test_card(test))
-            # Off the merge train: a rebase ask would be a prompt the test
-            # did not send.
-            self.wire.set_manual_merge(tid, True)
+            if test.get("long_brief"):
+                test["brief"] = test["brief"] + "\n" + filler()
+            tid = self.file_one(test, test["title"])
             test["ticket"] = tid
             test["key"] = self.ticket(self.board(), tid)["short_key"]
-            say(f"  filed {test['key']}: {test['title']}")
+            # Siblings (P5): tickets the test starts beside its own, each
+            # with the same brief, every check run on each.
+            test["others"] = []
+            for title in test.get("siblings", []):
+                sid = self.file_one(test, title)
+                test["others"].append((sid, self.ticket(self.board(), sid)["short_key"], title))
+            keys = " ".join([test["key"]] + [k for _, k, _ in test["others"]])
+            say(f"  filed {keys}: {test['title']}")
         # The title is the person's own words and the brief is pasted, so the
         # title asks for it (see tests.toml on <pasted_content>).
         crown = self.wire.create_ticket("TODO", f"Rig crown · run {self.run_id}: follow the brief below")
@@ -433,12 +524,32 @@ class Rig:
         self.crown_key = self.ticket(self.board(), crown)["short_key"]
         say(f"  filed and crowned {self.crown_key}: the rig's crown, on the checkout")
 
+    def file_one(self, test, title):
+        tid = self.wire.create_ticket("TODO", title)
+        self.wire.write_note(tid, test["brief"])
+        self.wire.write_note(tid, self.test_card(test))
+        # Off the merge train: a rebase ask would be a prompt the test did
+        # not send.
+        self.wire.set_manual_merge(tid, True)
+        return tid
+
+    def test_tickets(self, test):
+        """(ticket, key, title) for the test's own ticket and its siblings."""
+        return [(test["ticket"], test["key"], test["title"])] + test.get("others", [])
+
+    def keys_of(self, test):
+        keys = {"key": test["key"]}
+        for i, (_, k, _) in enumerate(test.get("others", []), start=2):
+            keys[f"key{i}"] = k
+        return keys
+
     def test_card(self, test):
         lines = [f"# {test['id']}: what the rig checks", "", f"**Expected.** {test['expect']}", ""]
         lines.append("**Steps.**")
         for step in test["steps"]:
             if "crown" in step:
-                lines.append(f"- the crown is told: “{step['crown'].format(key='this ticket')}”")
+                said = step["crown"].format(key="this ticket", key2="the second", key3="the third")
+                lines.append(f"- the crown is told: “{said}”")
             else:
                 lines.append(f"- the rig: `{step['rig']}`")
         lines += ["", "**Checks.** " + ", ".join(f"`{c}`" for c in test["checks"])]
@@ -478,6 +589,11 @@ Reply with the single word ready and end your turn."""
         return None
 
     def start_crown(self):
+        # A fresh board probes its Claude Code when the shell environment
+        # lands (T-588); a crown started before the verdict launches on the
+        # hook set, and every step would then reach it by paste.
+        line = self.wait_probe("the mod validated", 120)
+        say(f"\n  road.json: {line}")
         say(f"\n▶ starting the crown {self.crown_key} (its brief is its first prompt)")
         r = self.wire.spawn(self.crown, "claude", submit_prompt=True)
         say(f"  spawn: {r.get('resp')}")
@@ -537,19 +653,25 @@ Reply with the single word ready and end your turn."""
         if crown:
             self.note_word("crown", crown)
         test = self.current
-        worker = self.agent_of(board, test["ticket"]) if test else None
-        if worker:
-            self.note_word(test["key"], worker)
-        tickets = {self.crown} | ({test["ticket"]} if test else set())
+        workers = []
+        for tid, key, _ in (self.test_tickets(test) if test else []):
+            rec = self.agent_of(board, tid)
+            if rec:
+                self.note_word(key, rec)
+                workers.append((key, rec))
+        tickets = {self.crown} | {tid for tid, _, _ in (self.test_tickets(test) if test else [])}
         for l in lines:
             kind = l.get("kind")
-            if kind == "hook" and worker and of_session(l, worker["id"]):
-                self.log(f"{test['key']} frame {l['event']}" + (f" ({l['reason']})" if l.get("reason") else ""))
+            mine = next((key for key, rec in workers if of_session(l, rec["id"])), None)
+            if kind == "hook" and mine:
+                self.log(f"{mine} frame {l['event']}" + (f" ({l['reason']})" if l.get("reason") else ""))
             elif kind == "road_disagree":
                 self.log(f"!! road_disagree {l.get('cmd')} {l.get('outcome')} ×{l.get('count')} "
                          f"session {str(l.get('session'))[:8]}")
             elif kind == "board" and l.get("ticket") in tickets and l.get("actor") == "agent":
                 self.log(f"crown {l.get('cmd')}" + (f" → {l['outcome']}" if l.get("outcome") else ""))
+            elif kind == "board" and l.get("ticket") in tickets and l.get("cmd") in TURN_ROAD_WORDS:
+                self.log(f"{l['cmd']}" + (f" → {l['outcome']}" if l.get("outcome") else ""))
             elif kind == "board" and str(l.get("cmd", "")).startswith("claude_road"):
                 self.log(f"{l['cmd']}: {l.get('outcome')}")
             elif kind == "crown_wake":
@@ -575,17 +697,19 @@ Reply with the single word ready and end your turn."""
 
     def run_step(self, test, step, record):
         if "rig" in step:
-            return self.rig_step(test, step["rig"], record)
-        words = step["crown"].format(key=test["key"])
+            return self.rig_step(test, step["rig"], record, step)
+        words = step["crown"].format(**self.keys_of(test))
         say(f"  → crown: {words}")
         mark = len(self.feed_lines)
         self.quiet_since = None
+        sent_ms = int(time.time() * 1000)
         self.wire.prompt(self.crown, words, queued=False)
         self.restarted = False
         until = step.get("until", {})
+        tickets = [t for t, _, _ in self.test_tickets(test)] if until.get("all") else [test["ticket"]]
 
-        def worker_done():
-            rec = self.agent_of(self.board(), test["ticket"])
+        def one_done(tid):
+            rec = self.agent_of(self.board(), tid)
             if not rec:
                 return False
             mine = self.worker_lines(rec["id"], mark)
@@ -595,7 +719,15 @@ Reply with the single word ready and end your turn."""
             for e in until.get("events", []):
                 if not any(l.get("kind") == "hook" and l.get("event") == e for l in mine):
                     return False
+            if until.get("fed") and not any(
+                l.get("kind") == "board" and l.get("cmd") == until["fed"] and l.get("ticket") == tid
+                for l in self.feed_lines[mark:]
+            ):
+                return False
             return word_of(rec["state"]) == until.get("state", "idle")
+
+        def worker_done():
+            return all(one_done(t) for t in tickets)
 
         if not self.wait_for("worker", worker_done, STEP_TIMEOUT, self.watch):
             record["failures"].append(f"timed out waiting for {test['key']}: {until}")
@@ -604,25 +736,93 @@ Reply with the single word ready and end your turn."""
         # ends when the crown's turn on that wake ended (its Stop) and it has
         # been quiet; elsewhere, when it has been quiet. A wake the step did
         # not expect still resets the quiet, since the crown works on it.
-        rec = self.agent_of(self.board(), test["ticket"])
-        final_at = max((l["at_ms"] for l in self.worker_lines(rec["id"], mark)
+        recs = [self.agent_of(self.board(), t) for t in tickets]
+        final_at = max((l["at_ms"] for rec in recs for l in self.worker_lines(rec["id"], mark)
                         if l.get("kind") == "session_state"), default=0)
         wake = None
         if step.get("wake"):
             wake = self.wait_for("the board's wake for the crown", lambda: next((
                 l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
-                and l.get("worker") == test["ticket"] and l.get("at_ms", 0) >= final_at - 500),
+                and l.get("worker") in tickets and l.get("at_ms", 0) >= final_at - 500),
                 None), WAKE_GRACE, self.watch)
             record["wakes"].append(wake.get("cause") if wake else "none came")
         self.quiet_since = None
-        settled = (lambda: self.crown_settled(after_ms=wake["at_ms"])) if wake else self.crown_settled
+        # Every crown step is a turn of the crown's on the step's words: it
+        # has settled once a Stop of its came after them (or after the wake).
+        after = wake["at_ms"] if wake else sent_ms
+        settled = lambda: self.crown_settled(after_ms=after)  # noqa: E731
         if not self.wait_for("crown", settled, STEP_TIMEOUT, self.watch):
             record["failures"].append("the crown did not settle")
             return False
         return True
 
-    def rig_step(self, test, what, record):
+    def rig_step(self, test, what, record, step=None):
+        step = step or {}
         say(f"  → rig: {what}")
+        if what == "prompt":
+            # The person's words to the worker while its turn runs (P2).
+            rec = self.agent_of(self.board(), test["ticket"])
+            began = next((l["at_ms"] for l in reversed(self.feed_lines) if l.get("kind") == "hook"
+                          and of_session(l, rec["id"]) and l.get("event") == "UserPromptSubmit"), None)
+            wait = max(0.0, step.get("after", 0) - (time.time() - (began or 0) / 1000))
+            time.sleep(min(wait, step.get("after", 0)))
+            rec = self.agent_of(self.board(), test["ticket"])
+            if word_of(rec["state"]) != "working":
+                record["failures"].append(f"the worker was {word_of(rec['state'])}, not working, "
+                                          "when the person's prompt was due")
+                return False
+            try:
+                r = self.wire.prompt(test["ticket"], step["text"], queued=False)
+            except WireError as e:
+                record["failures"].append(f"the person's prompt: {e}")
+                return False
+            self.log(f"the person's prompt to a working {test['key']}: {r.get('resp')}")
+            return True
+        if what == "press_enter":
+            # The person answers the worker's dialog in its pane (D4): Enter
+            # on the row the cursor rests on, the first. The worker's turn
+            # then ends, the board wakes the crown, and the crown settles.
+            rec = self.agent_of(self.board(), test["ticket"])
+            mark = len(self.feed_lines)
+            now_ms = int(time.time() * 1000)
+            out = self.tmux("send-keys", "-t", sid16(rec["id"]), "Enter")
+            self.log(f"the person pressed Enter in {test['key']}'s pane ({out.returncode})")
+
+            def finished():
+                r = self.agent_of(self.board(), test["ticket"])
+                stopped = any(l.get("kind") == "hook" and of_session(l, r["id"])
+                              and l.get("event") == "Stop" for l in self.feed_lines[mark:])
+                return stopped and word_of(r["state"]) == "idle"
+
+            if not self.wait_for("the worker's turn on the person's answer", finished,
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("the worker never finished on the person's answer")
+                return False
+            wake = self.wait_for("the board's wake for the crown", lambda: next((
+                l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
+                and l.get("worker") == test["ticket"]), None), WAKE_GRACE, self.watch)
+            self.quiet_since = None
+            after = wake["at_ms"] if wake else now_ms
+            self.wait_for("crown", lambda: self.crown_settled(after_ms=after) if wake
+                          else self.crown_settled(), STEP_TIMEOUT, self.watch)
+            return True
+        if what == "resend":
+            # The person's Shift+Enter over the seat's unsent words (P4).
+            try:
+                r = self.wire.request({"cmd": "prompt_session", "ticket": test["ticket"],
+                                       "text": "", "queued": False, "resend": True})
+            except WireError as e:
+                record["failures"].append(f"resend: {e}")
+                return False
+            self.log(f"the person's resend for {test['key']}: {r.get('resp')}")
+            return True
+        if what == "restart_drop_mod":
+            folder = self.drop_mod()
+            ok = self.restart({"MESIMON_MOD_DIR": folder}, want_probe="the mod validated")
+            self.restarted = True
+            if not ok:
+                record["failures"].append("the daemon never came up with P4's mod")
+            return ok
         if what == "ping":
             rec = self.agent_of(self.board(), test["ticket"])
             for attempt in (1, 2, 3):
@@ -703,18 +903,48 @@ Reply with the single word ready and end your turn."""
     # ---- verdicts
 
     def judge(self, test, mark, record, seconds):
-        board = self.board()
-        rec = self.agent_of(board, test["ticket"])
         lines = self.feed_lines[mark:]
+        results = []
+        tickets = self.test_tickets(test)
+        for tid, key, title in tickets:
+            prefix = f"{key} " if len(tickets) > 1 else ""
+            for name, ok, observed in self.check_ticket(test, tid, title, lines, record):
+                results.append((prefix + name, ok, observed))
+        rec = self.agent_of(self.board(), test["ticket"])
+        rows = transcript(rec) if rec else []
+        mine = [l for l in lines if rec and of_session(l, rec["id"])]
+        hooks = [l["event"] for l in mine if l.get("kind") == "hook"]
+        words = squeeze(self.history.get(test["key"], []))
+        disagree = [l for l in lines if l.get("kind") == "road_disagree"
+                    and any((r := self.agent_of(self.board(), t)) and of_session(l, r["id"])
+                            for t, _, _ in tickets)]
+        timing = self.timing(mine)
+        return {
+            "id": test["id"], "key": test["key"], "expect": test["expect"],
+            "results": results, "failures": record["failures"], "seconds": seconds,
+            "timing": timing, "hooks": hooks, "words": words,
+            "pass": all(ok for _, ok, _ in results) and not record["failures"],
+            "model": model_of(rows),
+            "wakes": [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
+                      and l.get("worker") == test["ticket"]],
+            "disagree": [f"{l.get('cmd')} {l.get('outcome')}×{l.get('count')}" for l in disagree],
+            "alive": record.get("alive"),
+        }
+
+    def check_ticket(self, test, tid, title, lines, record):
+        board = self.board()
+        rec = self.agent_of(board, tid)
+        key = self.ticket(board, tid)["short_key"]
         rows = transcript(rec) if rec else []
         mine = [l for l in lines if rec and of_session(l, rec["id"])]
         hooks = [l["event"] for l in mine if l.get("kind") == "hook"]
         # The card's words as the rig's polls of the snapshot saw them (a
         # park writes no `session_state` line, so the feed alone misses it).
-        words = squeeze(self.history.get(test["key"], []))
+        words = squeeze(self.history.get(key, []))
         disagree = [l for l in mine if l.get("kind") == "road_disagree"]
         crown_cmds = [l.get("cmd") for l in lines if l.get("kind") == "board"
-                      and l.get("actor") == "agent" and l.get("ticket") == test["ticket"]]
+                      and l.get("actor") == "agent" and l.get("ticket") == tid]
+        fed = [l.get("cmd") for l in lines if l.get("kind") == "board" and l.get("ticket") == tid]
         results = []
 
         def check(name, ok, observed):
@@ -740,9 +970,18 @@ Reply with the single word ready and end your turn."""
                 check(c, ok, "the checkout" if at_root else rec["cwd"].replace(os.environ["HOME"], "~"))
             elif name == "first_prompt":
                 first = flat(first_prompt(rows))
-                ok = flat(test["brief"]) in first and test["title"] in first
+                ok = flat(test["brief"]) in first and title in first
                 check(c, ok, f"first prompt {len(first)} chars, title and brief "
                       + ("whole" if ok else f"missing: {first[:80]!r}"))
+            elif name == "first_prompt_exact":
+                first = first_prompt(rows)
+                want = f"{title}\n\n{test['brief'].rstrip()}"
+                ok = first == want and "<pasted_content" not in first
+                said = (f"{len(first)} chars, byte for byte" if ok else
+                        f"{len(first)} chars against {len(want)}: "
+                        f"{next((i for i, (a, b) in enumerate(zip(first, want)) if a != b), min(len(first), len(want)))} "
+                        f"is the first byte that differs; head {first[:60]!r}")
+                check(c, ok, said)
             elif name == "words":
                 want = arg.split(",")
                 check(c, is_subsequence(want, words), " → ".join(words) or "none")
@@ -761,6 +1000,56 @@ Reply with the single word ready and end your turn."""
                 check(c, seen, f"claude_road:mod ({seen[-1].get('outcome')})" if seen else "never written")
             elif name == "crown":
                 check(c, arg in crown_cmds, f"{arg}×{crown_cmds.count(arg)}")
+            elif name == "fed":
+                check(c, arg in fed, f"{arg}×{fed.count(arg)}")
+            elif name == "not_fed":
+                check(c, arg not in fed, f"{arg}×{fed.count(arg)}")
+            elif name == "mod_report":
+                event, _, reason = arg.partition(":")
+                seen = [l for l in mine if l.get("kind") == "hook" and l.get("event") == event
+                        and (not reason or l.get("reason") == reason)]
+                check(c, seen, f"{event}" + (f" ({reason})" if reason else "") + f"×{len(seen)}")
+            elif name == "prompts":
+                got = user_prompts(rows)
+                check(c, len(got) == int(arg), f"{len(got)} prompts: "
+                      + "; ".join(repr(p[:30]) for p in got))
+            elif name == "held":
+                # The second prompt entered after the first turn's Stop: the
+                # engine held it for its own turn. The Stop is the daemon's
+                # clock, the hook's exec after the turn's end (40-116 ms,
+                # T-573), so a second's slack; a prompt delivered into the
+                # turn would sit the whole sleep before it.
+                got = user_prompts(rows, at=True)
+                stops = [l["at_ms"] for l in mine if l.get("kind") == "hook" and l.get("event") == "Stop"]
+                second = iso_ms(got[1][1]) if len(got) > 1 else None
+                ok = bool(second and stops and stops[0] - 1000 <= second)
+                check(c, ok, f"first Stop at {stops[0] if stops else None}, second prompt entered "
+                      f"at {second}" + (f" ({(second - stops[0]) / 1000:+.1f} s)" if ok else ""))
+            elif name == "replies":
+                want = arg.split(",")
+                said = replies(rows)
+                hit = is_subsequence(want, [next((w for w in want if w in r.lower()), None) for r in said])
+                check(c, hit, " → ".join(repr(r[:24]) for r in said) or "none")
+            elif name == "file":
+                path = os.path.join(rec["cwd"], arg)
+                try:
+                    with open(path) as f:
+                        held = f.read()
+                except OSError:
+                    held = None
+                ok = held is not None and test.get("brief_file", "") in held
+                check(c, ok, f"{arg}: {held.strip()[:40]!r}" if held is not None else f"no {arg}")
+            elif name == "answered":
+                said = [l for l in lines if l.get("cmd") == "answer_agent" and l.get("ticket") == tid]
+                ok = any(l.get("outcome") == "answered" and l.get("answer", "").lower() == arg
+                         for l in said)
+                check(c, ok, "; ".join(f"{l.get('outcome')} {l.get('answer')!r}" for l in said)
+                      or "no answer_agent line")
+            elif name == "refused":
+                said = [l for l in lines if l.get("cmd") == "answer_agent" and l.get("ticket") == tid]
+                ok = not any(l.get("outcome") == "answered" for l in said)
+                check(c, ok, "; ".join(f"{l.get('outcome')} ({l.get('reason') or ''})" for l in said)
+                      or "refused: no answer_agent line")
             elif name == "pings":
                 ok = record["pings"] and all(p.endswith(" ms") for p in record["pings"])
                 check(c, ok, "pong " + ", then ".join(record["pings"]))
@@ -773,18 +1062,7 @@ Reply with the single word ready and end your turn."""
                 check(c, word_of(rec["state"]) == arg, word_of(rec["state"]))
             else:
                 check(c, False, "unknown check")
-        timing = self.timing(mine)
-        return {
-            "id": test["id"], "key": test["key"], "expect": test["expect"],
-            "results": results, "failures": record["failures"], "seconds": seconds,
-            "timing": timing, "hooks": hooks, "words": words,
-            "pass": all(ok for _, ok, _ in results) and not record["failures"],
-            "model": model_of(rows),
-            "wakes": [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
-                      and l.get("worker") == test["ticket"]],
-            "disagree": [f"{l.get('cmd')} {l.get('outcome')}×{l.get('count')}" for l in disagree],
-            "alive": record.get("alive"),
-        }
+        return results
 
     def timing(self, mine):
         at = [(feed_word(l), l["at_ms"]) for l in mine if l.get("kind") == "session_state"]
@@ -818,18 +1096,21 @@ Reply with the single word ready and end your turn."""
                  f"**road_disagree for its session:** {', '.join(v['disagree']) or 'none'}.",
                  f"**Its mod at the end:** {v['alive'] or 'no pane to ask'}."]
         self.wire.write_note(test["ticket"], "\n".join(note))
-        rec = self.agent_of(self.board(), test["ticket"])
-        if rec and word_of(rec["state"]) not in ("sleeping", "exited", "failed"):
-            try:
-                self.wire.sleep(rec["id"])
-            except WireError as e:
-                say(f"  could not park {test['key']}: {e}")
+        for tid, key, _ in self.test_tickets(test):
+            rec = self.agent_of(self.board(), tid)
+            if rec and word_of(rec["state"]) not in ("sleeping", "exited", "failed"):
+                try:
+                    self.wire.sleep(rec["id"])
+                except WireError as e:
+                    say(f"  could not park {key}: {e}")
         # The crown moves a finished rig ticket to DONE (the author's rule);
         # a failure stays where automove left it, in REVIEW, for a person.
         v["column"] = self.ticket(self.board(), test["ticket"])["column"]
         if v["pass"]:
+            keys = [k for _, k, _ in self.test_tickets(test)]
+            each = ", then ".join(f"for {k}" for k in keys)
             words = (f"{test['id']} passed; its verdict is a note on {test['key']}. Call move_ticket "
-                     f"for {test['key']} to DONE, then end your turn with the single line: "
+                     f"{each} to DONE, then end your turn with the single line: "
                      f"{test['id']} done.")
             say(f"  → crown: {words}")
             mark = max((l.get("at_ms", 0) for l in self.feed_lines), default=0)

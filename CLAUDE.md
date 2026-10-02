@@ -351,6 +351,13 @@ same events through `mesimon hook --road mod`; a mod frame goes to the shadow
 (`Msg::ShadowHook`), never to ingest, and a disagreement is a `road_disagree` feed line. The
 daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`), never a push
 from the writer thread. The mod spells nothing on promise 3's never-list (a unit test scans it).
+**The turn roads ride it (T-575):** for a session whose mod speaks `submit` (`mod_speaks`, from
+the bridge's `--speaks`), every prompt goes down as `$.prompt.submit({ text, asUser: true })`
+and a question's answer as one `answer` frame, confirmed by the mod's `ModAnswer` report alone
+(the engine fires no `PostToolUse` for a dialog the mod closed). Launch words wait for the
+pane's `SessionStart` AND the mod's first poll; the paste road, the composer wait and the
+dialog keys stay for the hook set, Codex, a mod that never polled or an older one, a refusal,
+and the plan accept (T-579).
 
 **The one deciding hook is `mesimon gate`**, a separate subcommand precisely so `mesimon hook`'s
 never-writes-stdout invariant stays literally true. It is the 32nd entry — `PreToolUse` matcher
@@ -579,7 +586,8 @@ train, CLAUDE.md sample, checkout git sample), `MESIMON_NO_TAG_SEED`,
 `MESIMON_TICKET_SHELLS`, `MESIMON_UPDATE_GOLDEN`, `MESIMON_MOD_DIR` (T-573's research seam: a Claude
 Code mod folder loaded with `--plugin-dir` in place of the laid one; the spike mod and its driver
 live in `crates/mesimon-daemon/mod-spike/`, measured in STALE-MAP, shipped to nobody),
-`MESIMON_CLAUDE_ROAD` (`hooks|mod|auto`, a test seam over the `auto` every launch asks; `TestFixture` always
+`MESIMON_MOD_BRIDGE_WAIT_MS` (how long a mod launch's words wait for its bridge before the paste
+road, T-575), `MESIMON_CLAUDE_ROAD` (`hooks|mod|auto`, a test seam over the `auto` every launch asks; `TestFixture` always
 sets it, `hooks` unless the test process has `MESIMON_TEST_ROAD=mod`, the mod road's pass that
 wraps every stub with `tests/common/fake_claude_mod.py` and twins every `hook_send`),
 `MESIMON_REQUIRE_CLAUDE` (turns `mod_plugin`'s skip without `claude` into a failure; the release

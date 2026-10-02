@@ -188,6 +188,11 @@ starts keep their choice.
 Each ticket has one live agent seat across both providers.
 Where Claude Code is 2.1.287 or newer, mesimon also loads its own mod into each Claude session
 it starts, beside the hooks it generates; `mesimon doctor` says which of the two a session got.
+Through the mod, a session gets its brief and every prompt you send it as your own words, whole,
+without anything typed into its pane, and a question it asks is answered straight in its dialog
+when you answer from Remote Control or the crown does. A session without the mod has its prompts
+typed and its dialogs keyed, as on an older Claude Code. A plan is still accepted by a press on
+its dialog either way.
 
 Follow-ups default to **Queue**: they wait for the current turn to end, including
 approval stops. A question holds them instead: words queued before or while the agent asks one
@@ -282,7 +287,7 @@ closed without asking you. Where **Crown archives tickets** is on, it may also a
 which reclaims the merged worktree; otherwise the ticket and its worktree stay until you archive it. An agent you started yourself is never slept by
 the crown; it is told to leave that to you. Crowning types nothing into the agent's conversation: the crowned agent learns
 it through its tools. When an agent it started delivers, answers what it asked, or raises its
-hand, one sentence saying so is pasted into the crown's session, and so is a question, where the
+hand, one sentence saying so is sent into the crown's session, and so is a question, where the
 crown may answer it; the sentence never carries the question's words. So is the merge of that agent's
 worktree branch, whether `m`, the merge train or your own `git merge` made it. So is a turn that
 agent finishes with nothing new to merge, such as research written into notes, a review or an
