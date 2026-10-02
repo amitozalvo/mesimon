@@ -913,6 +913,16 @@ impl Daemon {
         }
     }
 
+    /// The plan a stopped agent's dialog shows (T-582), as the hook stream
+    /// carried it: its request and markdown.
+    pub(super) fn control_plan(&self, session: uuid::Uuid) -> Option<(&str, &str)> {
+        let dialog = self.control.dialogs.get(&session)?;
+        match &dialog.content {
+            api::DialogContent::Plan { markdown } => Some((&dialog.request, markdown)),
+            api::DialogContent::Questions { .. } => None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn control_dialog_answer(
         &mut self,
@@ -1202,6 +1212,9 @@ impl Daemon {
                     seen: Some(self.seen_token(pending.ticket)),
                 };
                 if let Some(reply) = reply {
+                    // Mid-tick, before the tick's own flush (T-582): the
+                    // feed line the receipt speaks for is on disk first.
+                    let _ = self.feed.flush();
                     let _ = reply.send(ClientReply { response, delivered: None });
                 }
             }
@@ -1248,6 +1261,13 @@ impl Daemon {
         let id = rec.id;
         match rec.state {
             SessionState::RequiresAction { reason: Reason::Question } => {}
+            // T-582: a plan has its own road.
+            SessionState::RequiresAction { reason: Reason::Plan } => {
+                return Err(format!(
+                    "{key}'s agent is stopped on a plan, not a question; accept_plan accepts a \
+                     plan, after get_ticket shows it (needs_you)"
+                ));
+            }
             SessionState::RequiresAction { reason } => {
                 let word = agent_reason_word(reason);
                 return Err(format!(
@@ -1269,7 +1289,7 @@ impl Daemon {
             return Err("dialog changed; read get_ticket again".into());
         };
         let api::DialogContent::Questions { questions } = &dialog.content else {
-            return Err(format!("{key}'s dialog is a plan, and a plan is a person's to answer"));
+            return Err(format!("{key}'s dialog is a plan; accept_plan accepts a plan"));
         };
         let answers = crown_answers(key, questions, answer)?;
         let answer = answer_words(questions, &answers);

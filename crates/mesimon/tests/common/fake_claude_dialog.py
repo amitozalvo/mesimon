@@ -19,8 +19,17 @@ from (the daemon's unit tests hold the captured screens themselves):
   made, joined by `, `), `Ready to submit your answers?`, `1. Submit answers`
   and `2. Cancel`, and no footer.
 
+* a plan (T-582), when the tool input is `{"plan": "..."}`: the plan's lines,
+  `Would you like to proceed?` and the three rows measured on 2.1.287 (T-573,
+  row 6) — `1. Yes, auto-accept edits`, `2. Yes, manually approve edits`,
+  `3. Tell Claude what to change` — the cursor on the first. Enter on either
+  `Yes` row accepts it: the row's label is written to `accepted-<ticket>`.
+  Enter on the third row does nothing here (it opens a text box nobody types
+  into in these tests).
+
 Escape anywhere declines. The dialog is `dialog-<MESIMON_TICKET>.json` next to
-this file, the tool input (`{"questions": [...]}`), written by the test. While
+this file, the tool input (`{"questions": [...]}` or `{"plan": "..."}`),
+written by the test. While
 it is absent the pane paints Claude's composer and appends each line typed or
 pasted into it to `got.txt`, as the shell stubs do. An answer is written to
 `answered-<ticket>.json` as Claude's `tool_response.answers` reads (question
@@ -58,8 +67,40 @@ def banner():
 def load():
     try:
         with open(DIALOG) as f:
-            return json.load(f)["questions"]
-    except (OSError, ValueError, KeyError):
+            tool_input = json.load(f)
+        if "plan" in tool_input:
+            return tool_input
+        return tool_input["questions"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+class Plan:
+    ROWS = ["Yes, auto-accept edits", "Yes, manually approve edits", "Tell Claude what to change"]
+
+    def __init__(self, tool_input):
+        self.plan = tool_input["plan"]
+        self.cursor = 0
+        self.accepted = None
+
+    def draw(self):
+        lines = [RULE, " Ready to code?", "", " Here is Claude's plan:", ""]
+        lines += ["  " + line for line in self.plan.splitlines()]
+        lines += ["", " Would you like to proceed?", ""]
+        for i, row in enumerate(self.ROWS):
+            lines.append((" ❯ " if self.cursor == i else "   ") + f"{i + 1}. {row}")
+        return lines
+
+    def key(self, kind, text=""):
+        if kind == "esc":
+            return "decline"
+        if kind == "up":
+            self.cursor = max(self.cursor - 1, 0)
+        elif kind == "down":
+            self.cursor = min(self.cursor + 1, len(self.ROWS) - 1)
+        elif kind == "enter" and self.cursor < 2:
+            self.accepted = self.ROWS[self.cursor]
+            return "accept"
         return None
 
 
@@ -244,7 +285,8 @@ def main():
         if questions is None:
             dialog, source = None, None
         elif json.dumps(questions) != source:
-            dialog, source = Dialog(questions), json.dumps(questions)
+            shape = Plan if isinstance(questions, dict) else Dialog
+            dialog, source = shape(questions), json.dumps(questions)
         top = "\x1b[2J\x1b[H" + "".join(line + "\r\n" for line in banner())
         if dialog:
             screen = top + "\r\n".join(dialog.draw())
@@ -272,7 +314,10 @@ def main():
                     typed += text or " "
                 continue
             ended = dialog.key(kind, text)
-            if ended == "submit":
+            if ended == "accept":
+                with open(os.path.join(HERE, f"accepted-{TICKET}"), "w") as f:
+                    f.write(dialog.accepted)
+            elif ended == "submit":
                 answers = {q["question"]: dialog.answer(i) for i, q in enumerate(dialog.qs)}
                 with open(os.path.join(HERE, f"answered-{TICKET}.json"), "w") as f:
                     json.dump(answers, f)

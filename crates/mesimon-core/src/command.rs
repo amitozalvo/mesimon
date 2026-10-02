@@ -1016,6 +1016,19 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answers: Option<Vec<crate::mesophon::QuestionAnswer>>,
     },
+    /// Accept the plan another ticket's agent stopped on, by key (T-582):
+    /// the board's own accept (T-420), Enter on the plan dialog's default
+    /// row once the screen shows it there, pressed for the crown. Crown
+    /// only, behind `Board::crown_answers`, only for a claude the crown
+    /// started, only at `RequiresAction{Plan}` on the dialog `request`
+    /// names (get_ticket's `needs_you.request`). The receipt waits for the
+    /// hook edge (`Response::AgentPlanAccepted`).
+    AgentAcceptPlan {
+        key: String,
+        #[serde(default)]
+        seen: Option<String>,
+        request: String,
+    },
     /// Mint a NEW ticket (`create_ticket`). The one agent command that is
     /// not about the caller's own ticket, and the one place the tier makes a
     /// second card: an agent that finds work outside its ticket's scope
@@ -1346,6 +1359,7 @@ impl Command {
             | AgentSleepTicket { .. }
             | AgentAskTicket { .. }
             | AgentAnswerTicket { .. }
+            | AgentAcceptPlan { .. }
             | AgentRaiseHand { .. } => m(Mutate, false, None),
         }
     }
@@ -1798,6 +1812,20 @@ pub enum Response {
         #[serde(default)]
         seen: Option<String>,
     },
+    /// AgentAcceptPlan's receipt (T-582), sent once the press settles:
+    /// `accepted` only on the plan's own hook edge (`PostToolUse` on
+    /// `ExitPlanMode`), `input_sent` when the Enter went in and no edge
+    /// followed inside the window, `queued` with `reason` naming what holds
+    /// the checkout when the press still waits for it, `unknown` with
+    /// `reason` when no Enter went — `a_person_answered` among them.
+    AgentPlanAccepted {
+        key: String,
+        outcome: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default)]
+        seen: Option<String>,
+    },
 }
 
 /// The caller's own ticket, as an agent sees it.
@@ -1936,6 +1964,11 @@ pub struct AgentNeedsYouView {
     pub questions: Vec<AgentQuestionView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answerable: Option<bool>,
+    /// On a plan stop (T-582): the plan's markdown as the pre-approval
+    /// frames carry it (`tool_input.plan`), scrubbed, for the crown to read
+    /// before `accept_plan`. `request` then names the plan's dialog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 /// The crown's last ask, where it did not go (T-568). `status` is a word —
@@ -1965,7 +1998,8 @@ pub struct AgentQuestionView {
 /// One of the crown's recent edits (T-411), for the board to light the
 /// touched card: which ticket, what was done (a WORD — `moved`, `renamed`,
 /// `tagged`, `note`, `workspace`, `archived`, `restored`, `started`,
-/// `asked`, `parked`, `created`, and `woke` on the crown itself — so an
+/// `asked`, `parked`, `created`, `answered`, `accepted plan`, and `woke`
+/// on the crown itself — so an
 /// older client drops what it cannot read), and when. In memory only,
 /// pruned after ten seconds; the feed is the record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

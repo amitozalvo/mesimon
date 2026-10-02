@@ -95,6 +95,7 @@ impl Mint {
 
 mod attachments;
 mod bridge;
+mod crownplan;
 mod crownwake;
 mod mesophon;
 mod teamglue;
@@ -638,6 +639,15 @@ pub struct Daemon {
     /// What the request in hand asked the writer to park (a bridge's poll, a
     /// ping), like `answer_waits`.
     mod_park: Option<bridge::Park>,
+    /// The crown's plan accepts on their way (T-582), by the worker's
+    /// session: pressed on the board's own road when the checkout lets
+    /// them, each holding its `accept_plan` call's reply until it settles.
+    /// In memory, like `plan_accept`.
+    crown_plans: HashMap<uuid::Uuid, crownplan::CrownPlan>,
+    /// The worker session whose plan the `accept_plan` call in hand
+    /// registered a press for (T-582): the writer loop parks that call's
+    /// reply with it (`crown_plan_park_reply`).
+    plan_waits: Option<uuid::Uuid>,
     /// The card's line after the crown answered a question (T-569),
     /// `answered by T-411: Okta`, by the session it rides in `detail`:
     /// kept through the question's own leave, which is the answer landing,
@@ -1082,6 +1092,8 @@ pub fn run(paths: Paths) -> Result<()> {
         answer_waits: None,
         modroad,
         mod_park: None,
+        crown_plans: HashMap::new(),
+        plan_waits: None,
         crown_answer_lines: HashMap::new(),
         machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
         usage: crate::usage::UsageState::new(crate::usage::shared_file()),
@@ -1245,9 +1257,11 @@ pub fn run(paths: Paths) -> Result<()> {
                 let resp = d.handle(env, &stream);
                 // `answer_agent` (T-569) answers when its delivery settles:
                 // the reply waits with it, and the shim's call with the reply.
-                let reply = match d.answer_waits.take() {
-                    Some(id) => d.control_park_reply(id, reply),
-                    None => Some(reply),
+                // `accept_plan` (T-582) the same way, when its press settles.
+                let reply = match (d.answer_waits.take(), d.plan_waits.take()) {
+                    (Some(id), _) => d.control_park_reply(id, reply),
+                    (None, Some(id)) => d.crown_plan_park_reply(id, reply),
+                    (None, None) => Some(reply),
                 };
                 // A bridge's poll and a ping wait with the mod road (T-574).
                 let reply = match (reply, d.mod_park.take()) {
@@ -2403,6 +2417,7 @@ impl Daemon {
             | Command::AgentSleepTicket { .. }
             | Command::AgentAskTicket { .. }
             | Command::AgentAnswerTicket { .. }
+            | Command::AgentAcceptPlan { .. }
             | Command::AgentRaiseHand { .. }
             // The mod's bridge polls as its session, never as a person.
             | Command::ModNext { .. } => {
@@ -2473,6 +2488,9 @@ impl Daemon {
         for (id, change) in fired {
             changed |= stage!("apply_change", self.apply_change(id, &change, None, None));
         }
+        // The crown's plan accepts (T-582) answer on the wheel, as the
+        // answers' deliveries do: the receipt follows its hook edge closely.
+        changed |= stage!("settle_crown_plans", self.settle_crown_plans());
         if self.ticks.is_multiple_of(4) {
             changed |= stage!("probe_spawning", self.probe_spawning());
             changed |= stage!("probe_activity", self.probe_activity());
@@ -2487,6 +2505,7 @@ impl Daemon {
             changed |= stage!("settle_owed", self.settle_owed(now));
             changed |= stage!("settle_plan_accepts", self.settle_plan_accepts(now));
             changed |= stage!("service_plan_accepts", self.service_plan_accepts(now));
+            changed |= stage!("service_crown_plans", self.service_crown_plans());
             self.refresh_machine_tiers();
             changed |= stage!("drain_tier_switches", self.drain_tier_switches());
             changed |= stage!("drain_queue", self.drain_queue());
@@ -3988,12 +4007,16 @@ impl Daemon {
         // The crown's answer reads on the card until the next state edge
         // (T-569): kept through the question's own leave — the answer
         // landing — and through a commit that moved nothing, and gone at
-        // any other edge, or under a stop's own words.
+        // any other edge, or under a stop's own words. Its plan accept
+        // (T-582) the same, through the plan's leave.
         if let Some(line) = self.crown_answer_lines.get(&id) {
             let keeps = if change.from == change.to {
                 !stop_words
             } else {
-                change.from == SessionState::RequiresAction { reason: Reason::Question }
+                matches!(
+                    change.from,
+                    SessionState::RequiresAction { reason: Reason::Question | Reason::Plan }
+                )
             };
             if keeps {
                 rec.detail = Some(line.clone());
@@ -4056,12 +4079,14 @@ impl Daemon {
         if change.to.question_stop() {
             self.hold_queued_on_question(id);
         }
-        // A question from a claude the crown started wakes the crown (T-569)
-        // where the board lets it answer; off, the person is the one to
-        // wake, and the card's needs-you already does. Only a question: a
-        // secret, a form, a permission or a plan is never the crown's.
-        if crownwake::asks_the_crown(self.board.crown_answers, snapshot.kind, change) {
-            self.note_crown_wake(snapshot.ticket, WakeCause::Asked, None, None);
+        // A question or a plan from a claude the crown started wakes the
+        // crown (T-569, T-582) where the board lets it answer; off, the
+        // person is the one to wake, and the card's needs-you already does.
+        // A secret, a form or a permission is never the crown's.
+        if let Some(cause) =
+            crownwake::asks_the_crown(self.board.crown_answers, snapshot.kind, change)
+        {
+            self.note_crown_wake(snapshot.ticket, cause, None, None);
         }
         // A turn ended, or a target died: the queued asks look again. The
         // settle that lands `Idle{EndTurn}` comes through here from the
@@ -4498,6 +4523,22 @@ impl Daemon {
                         ),
                     };
                 }
+                // A plan stands (T-582): words queued now would wait behind
+                // it and the turn it starts. The crown accepts it, or raises
+                // its hand for a plan it would change.
+                if self.board.live_agent(target).is_some_and(|rec| {
+                    rec.state == SessionState::RequiresAction { reason: Reason::Plan }
+                }) {
+                    return Response::Err {
+                        message: format!(
+                            "{key}'s agent stopped on a plan; accept_plan accepts it where the \
+                             board lets the crown answer, after get_ticket shows the plan \
+                             (needs_you), and a plan the crown would change is a person's: \
+                             raise_hand names the worker and the change. Words queued now would \
+                             wait behind the plan and the turn it starts."
+                        ),
+                    };
+                }
                 // Sanitized by subtraction alone, as the person's own words
                 // are: nothing is added, and blank words queue nothing.
                 let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
@@ -4597,6 +4638,48 @@ impl Daemon {
                             outcome: "awaiting_delivery".into(),
                             reason: None,
                             answer: String::new(),
+                            seen: Some(self.seen_token(target)),
+                        }
+                    }
+                    Err(message) => Response::Err { message },
+                }
+            }
+            // The crown's plan accept (T-582): the board's own Enter on the
+            // plan dialog's default row (T-420), for a plan a claude the
+            // crown started stopped on. The structure is enforced here and in
+            // `crown_accept_plan`; which plans stay a person's is the crown's
+            // judgement, described in the tool and the receipt. The receipt
+            // waits for the hook edge: the writer parks the call's reply
+            // with the press (`plan_waits`).
+            Command::AgentAcceptPlan { key, seen, request } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                if target == ticket {
+                    return Response::Err {
+                        message: format!(
+                            "{key} is this session's own ticket; accept_plan is for another \
+                             ticket's agent"
+                        ),
+                    };
+                }
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                let key = self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key);
+                match self.crown_accept_plan(ticket, session, target, &key, &request) {
+                    Ok(id) => {
+                        self.plan_waits = Some(id);
+                        // What a caller that is not the writer loop reads:
+                        // the press is on its way, nothing yet confirmed.
+                        Response::AgentPlanAccepted {
+                            key,
+                            outcome: "awaiting_delivery".into(),
+                            reason: None,
                             seen: Some(self.seen_token(target)),
                         }
                     }
@@ -5636,15 +5719,29 @@ impl Daemon {
     /// What a `needs-you` agent's stop is (T-566): its reason, and on a
     /// question the dialog as Remote Control draws it, gated on the state
     /// as that draw is — a dialog the agent has since left is not shown.
-    /// The words are an agent's, leaving for another agent: scrubbed.
+    /// On a plan (T-582), the plan's markdown, for the crown to read before
+    /// it accepts. The words are an agent's, leaving for another agent:
+    /// scrubbed.
     fn agent_needs_you(&self, id: ulid::Ulid) -> Option<AgentNeedsYouView> {
         let rec = self.board.live_agent(id)?;
         let SessionState::RequiresAction { reason } = rec.state else { return None };
         let dialog = (reason == Reason::Question).then(|| self.control_questions(rec.id)).flatten();
+        let plan = (reason == Reason::Plan).then(|| self.control_plan(rec.id)).flatten();
         let scrub = mesimon_core::text::scrub_text;
         Some(AgentNeedsYouView {
             reason: agent_reason_word(reason).to_string(),
-            request: dialog.map(|(request, _)| request.to_string()),
+            request: dialog
+                .map(|(request, _)| request.to_string())
+                .or_else(|| plan.map(|(request, _)| request.to_string())),
+            plan: plan.map(|(_, markdown)| {
+                let text = mesimon_core::text::scrub_lines(markdown);
+                let cut = mesimon_core::text::cap_bytes(&text, AGENT_PLAN_MAX_BYTES);
+                if cut.len() < text.len() {
+                    format!("{cut}…")
+                } else {
+                    text
+                }
+            }),
             questions: dialog
                 .map(|(_, qs)| qs)
                 .unwrap_or_default()
@@ -9139,6 +9236,15 @@ impl Daemon {
     /// confirms the press through its own hooks; `settle_plan_accepts` is
     /// the deadline on that.
     fn accept_plan(&mut self, session: uuid::Uuid, actor: &str) -> Result<(), &'static str> {
+        let ticket = self.press_plan(session)?;
+        self.feed.board(actor, "plan_accepted", Some(ticket));
+        Ok(())
+    }
+
+    /// `accept_plan`'s press without its feed line, for a road that writes
+    /// its own (the crown's, T-582): the checks, the screen, the Enter, the
+    /// deadline. `Ok` is the ticket pressed for.
+    fn press_plan(&mut self, session: uuid::Uuid) -> Result<ulid::Ulid, &'static str> {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
             return Err("no such session");
         };
@@ -9163,8 +9269,7 @@ impl Daemon {
         self.backend.send_enter(&sid).map_err(|_| "could not press enter")?;
         self.plan_accept.insert(session, now_ms() + PLAN_ACCEPT_CONFIRM_MS);
         self.plan_accept_tries.remove(&session);
-        self.feed.board(actor, "plan_accepted", Some(ticket));
-        Ok(())
+        Ok(ticket)
     }
 
     /// The flagged asks (T-420): a pane at `Plan` with an `accept_plan`
@@ -12613,6 +12718,9 @@ fn created_at_ms(created_at: &str) -> Option<u64> {
 /// How much of the description rides `get_ticket`. The whole of it is one
 /// `read_note` away; this keeps a routine call from carrying 32 KiB.
 const AGENT_DESCRIPTION_MAX_BYTES: usize = 4096;
+/// The longest plan `get_ticket.needs_you.plan` carries (T-582): the
+/// projection's own bound on the tool input it was read from.
+const AGENT_PLAN_MAX_BYTES: usize = 16 * 1024;
 
 fn now_iso() -> String {
     // Seconds precision is enough for created_at; avoid a chrono dependency.

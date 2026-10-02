@@ -594,13 +594,14 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         });
 
         // Whether the crown answers a question in another agent's dialog
-        // (T-569): a decision made for the person, printed either way.
+        // (T-569) and accepts its plan (T-582): a decision made for the
+        // person, on by default, printed either way.
         records.push(if cols.crown_answers {
-            rec(Level::Note, "crown answers", "on - the crown may answer a one-choice question an agent it started asks")
-                .advice("Such a question wakes the crown, and answer_agent types the answer into the dialog; the feed and the card say what it chose. A question from an agent you started, and every permission, secret, form or plan, still waits for you. Settings > Agents > Crown answers questions turns it off.")
+            rec(Level::Note, "crown answers", "on - the crown may answer the questions and accept the plans of agents it started")
+                .advice("Such a question or plan wakes the crown; answer_agent types the answer into the dialog and accept_plan presses the plan dialog's default row, and the feed and the card say what it did. It raises its hand for a question or a plan that is yours to decide. A question or plan from an agent you started, and every permission, secret or form, still waits for you. Settings > Agents > Crown answers questions turns it off.")
         } else {
-            rec(Level::Ok, "crown answers", "off - every question an agent asks waits for you")
-                .advice("Settings > Agents > Crown answers questions lets the crown answer the questions the agents it started ask.")
+            rec(Level::Ok, "crown answers", "off - every question and plan an agent stops on waits for you")
+                .advice("Settings > Agents > Crown answers questions lets the crown answer the questions and accept the plans of the agents it started.")
         });
 
         // The columns and what each one DOES (T-117): every automation is a

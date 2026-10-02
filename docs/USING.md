@@ -227,20 +227,30 @@ started still wait for you, whatever the setting says. Words that would wake a s
 a free seat in the crown's budget and hold it while they wait. Turning the setting off, or taking
 the crown back, holds whatever had not gone yet on its card.
 
-**Settings › Agents › Crown answers questions** (off by default, and separate from sending) lets
-the crown answer a question an agent it started stops on. That question wakes the crown, which
+**Settings › Agents › Crown answers questions** (on by default, and separate from sending; turn it
+off there to keep every question and plan for yourself) lets the crown answer a question, and
+accept a plan, that an agent it started stops on. That question wakes the crown, which
 reads it on the agent's ticket and may pick one of its options, tick several where the question
 takes several, or type a one-line answer in their place, through the same screen-checked road as
 Remote Control's question card. A dialog that asks several questions at once is answered whole,
 one answer per question, because Claude Code submits them together. The card lights
 `♛ answered` and reads `answered by T-411: Okta` while the agent works on the answer (several
 answers are joined by `;`), and the activity feed records the answer as the agent's. A
-permission, a secret, a form or a plan waits for you, and so does every question from an agent
+permission, a secret or a form waits for you, and so does every question or plan from an agent
 you started. mesimon does not read the question to decide. The crown is told that a question
 about secrets or credentials, spend or quota, something destructive or irreversible (deleting,
 force-pushing, publishing, sending to people), a preference its brief leaves open, or anything
 beyond the brief is yours, and that one such question in a batch makes the whole batch yours, and
 to raise its hand on its own card for it. If you answer first, the crown's answer is refused.
+
+A plan an agent the crown started stops on wakes the crown too. The crown reads the plan on that
+agent's ticket and may accept it the way the board's own accept does: one Enter on the plan
+dialog's first row, only once the screen shows the dialog with the cursor there, and only while
+no other agent is working in the same checkout. The card lights `♛ accepted plan` and reads `plan
+accepted by T-411` while the agent works on the plan, and the activity feed records the accept as
+the agent's. The crown is told that a plan it would change, or one that reaches past its brief,
+is yours: it raises its hand on its own card, and you answer the dialog. If you answer first, the
+crown presses nothing.
 
 At most three agents the crown started may be awake at once; **Settings › Agents** changes the
 number or turns starting off. A ticket the crown started can never be crowned itself. The crown

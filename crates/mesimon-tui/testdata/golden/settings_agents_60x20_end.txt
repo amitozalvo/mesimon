@@ -12,8 +12,8 @@
   │     start_agent on the crowned ticket ∙ a sleeping ~ │
   │   Crown sends its asks: off                          │
   │     its asks wait on the card for ^y ∙ enter lets i~ │
-  │   Crown answers questions: off                       │
-  │     every question waits for you ∙ enter lets it an~ │
+  │   Crown answers questions: on                        │
+  │     a question or plan from an agent it started wak~ │
   │   Claude integration: hooks                          │
   │     the hook set mesimon generates ∙ enter: auto, f~ │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯

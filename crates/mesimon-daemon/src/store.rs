@@ -124,11 +124,13 @@ struct ColumnsFile {
     /// takes authority away.
     #[serde(default)]
     crown_sends: bool,
-    /// The crown answers questions from the agents it started
-    /// (`Board::crown_answers`, T-569). Absent means off, and no bump: a
-    /// build that drops it leaves every question to a person again, which
-    /// only takes authority away.
-    #[serde(default)]
+    /// The crown answers questions from the agents it started and accepts
+    /// their plans (`Board::crown_answers`, T-569, T-582). Absent means ON
+    /// since T-582 — every file before the field, and every board that never
+    /// turned it — and no bump: a build that drops it leaves every question
+    /// to a person again, which only takes authority away. Written either
+    /// way, so an off survives the default.
+    #[serde(default = "yes")]
     crown_answers: bool,
     /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
     /// so it sits here, before the tables. Absent on every file written
@@ -709,7 +711,7 @@ impl Default for ColumnsScalars {
             tiers: Vec::new(),
             crown_budget: mesimon_core::board::DEFAULT_CROWN_BUDGET,
             crown_sends: false,
-            crown_answers: false,
+            crown_answers: true,
             mcp_tools: true,
 
             system_prompt: false,
@@ -1067,6 +1069,36 @@ mod tests {
         assert!(std::fs::read_to_string(dir.join(".mesimon/board/columns.toml"))
             .unwrap()
             .contains(&format!("schema_version = {COLUMNS_SCHEMA}")));
+        cleanup(&dir, &paths);
+    }
+
+    /// T-582: a `columns.toml` that never carried `crown_answers` — every
+    /// file before T-569, and every board whose person never turned it —
+    /// lets the crown answer and accept, in the daemon and in doctor alike;
+    /// one that says `false` keeps it off through a save, because the
+    /// scalar is written either way.
+    #[test]
+    fn crown_answers_is_on_unless_the_file_says_off() {
+        let (dir, paths) = scratch("crownanswers");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        write(
+            &cols,
+            &format!(
+                "schema_version = {COLUMNS_SCHEMA}\nnext_key = 2\ncrown_sends = true\n\n\
+                 [[columns]]\nname = \"TODO\"\norder = \"a0\"\n"
+            ),
+        );
+        assert!(read_columns_scalars(&paths).crown_answers, "doctor reads it on");
+        let l = load(&paths).unwrap();
+        assert!(l.board.crown_answers, "an older file turns the crown's answers on");
+        assert!(l.board.crown_sends, "the scalar beside it survives");
+        let mut off = l.board;
+        off.crown_answers = false;
+        save_columns(&paths, &off).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("crown_answers = false"), "{text}");
+        assert!(!load(&paths).unwrap().board.crown_answers, "an off is kept");
+        assert!(!read_columns_scalars(&paths).crown_answers);
         cleanup(&dir, &paths);
     }
 

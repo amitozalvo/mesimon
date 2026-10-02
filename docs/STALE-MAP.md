@@ -18106,3 +18106,102 @@ answered by the mod's `turn.step` (each request's usage, `stopReason`, tool name
 verbose tier's `classic.MessageDisplay`; noted, not built. Not yet measured: the shadow on a
 live session — the author's soak (`Claude integration: mod`, `mesimon state ping <KEY>`,
 `mesimon doctor`).
+
+## The crown answers and accepts plans by default (T-582, 2026-10-02, filed by the crown on T-573; the author: "as the crown you should be able to answer without user unless you choose to delegate to the user. also to accept plans")
+
+**Seen.** The T-574 planner, started by the crown in plan mode, stopped on a two-question batch
+about its own brief, and the crown's `answer_agent` was refused because T-569's switch was off,
+as it was on every board nobody had turned it on for.
+
+**The switch defaults on.** `Board.crown_answers` is `#[serde(default = "yes")]` and the hand-written
+`Default` says `true`, so a `columns.toml` that never carried the scalar — every file before T-569
+and every board whose person never touched the row — lets the crown answer and accept. The scalar
+is written either way, so an off survives the default. No `COLUMNS_SCHEMA` bump: an older build
+drops it and leaves every question to a person, which only takes authority away. Settings → Agents
+keeps the row (its label unchanged, its detail naming plans) as the opt-out; `doctor` prints it.
+The delegation is the crown's own `raise_hand`, as T-569 wrote it; `persons_questions!` is
+unchanged.
+
+**`accept_plan { key, seen, request }`**, the seventeenth tool, crown only, `Full` rung (eighteen
+commands in the tier), 749 bytes. Refusals in words and in order: uncrowned, own ticket, stamp,
+`authorize` (`Mutate` on the target), the switch (naming the row), no agent, an agent a person
+started, a stop that is not a plan (a question names `answer_agent`; every other stop is a
+person's), a claude only (a Codex plan stays a person's, not in scope), a `request` that is not the
+current plan projection (`plan changed; read get_ticket again`), and a press already on its way
+(the crown's, the board's in flight, or a person's flagged ask on that pane).
+
+- **The press is the board's own** (T-420): `press_plan` is `accept_plan`'s press without its
+  `plan_accepted` feed line — the screen read, `claude_at_default` (Enter only on the dialog's
+  first row with the cursor on it, never a label), the Enter, and the `plan_accept` deadline. It
+  goes from `service_crown_plans` (once at the call, then on the 1 s bucket after
+  `service_plan_accepts`) under T-429's checkout rule, **with the crown's own ticket not counted
+  as a holder**: the crown is mid-turn while it calls, and its turn waits on this receipt and
+  writes nothing, so counting it would hold the press until the receipt timed out. A screen that
+  does not show the dialog at its default row is retried, up to `PLAN_ACCEPT_TRIES`. Every pass
+  re-checks the crown's authority (`crown_plan_allowed`), as `answer_agent`'s walk does. The
+  pending presses (`Daemon::crown_plans`) are memory only, like `plan_accept`.
+- **The receipt waits for the hook edge**, as `answer_agent`'s does: `plan_waits` parks the call's
+  reply with the press, and `settle_crown_plans` (every wheel tick) answers `accepted` only on the
+  projected `ExitPlanMode`'s own `PostToolUse` (`DialogEdge::Answered`); `input_sent` for an Enter
+  with no edge by `PLAN_ACCEPT_CONFIRM_MS`; `unknown { a_person_answered }` when the edge came
+  before any Enter of the crown's, `unknown { state_changed | shape_unrecognised | not_at_default
+  | pane_unreachable }` otherwise. **`queued { after T-7 }`** is a fourth outcome the brief did not
+  list: a busy checkout can hold the press for minutes, the receipt answers it after
+  `CROWN_PLAN_WAIT_MS` (30 s), and the press keeps its place and goes when the checkout is quiet.
+  The shim waits `ANSWER_WAIT_SECS` for it. The receipt carries `PERSONS_PLANS`.
+- **Standing is judged by the edge, not the state.** A record leaving `Plan` still reads `Plan`
+  through the attention settle (1.5 s) after the `PostToolUse` that accepted it; the first cut read
+  the state and took every accepted plan for a dialog left standing.
+- **Everyone sees it.** Keys in and the dialog not left standing: `♛ accepted plan` on the card (a
+  crown touch, so T-544's bolt runs), the claude's `detail` reads `plan accepted by T-573`
+  (`crown_answer_lines`, now kept through a plan's own leave as through a question's), and the
+  Enter marks the turn `TurnAsk::Crown`, so the accepted plan's turn wakes the crown with
+  `answered your ask` at its end. An Enter that left the dialog standing gives the turn its mark
+  back and claims nothing on the card. The feed's `accept_plan` line (actor `agent`, the target,
+  the outcome) is written for every settle; a refusal writes none.
+- **The wake.** `crownwake::asks_the_crown` returns the cause: `Asked` for a question, and the new
+  `WakeCause::Planned` (`stops on a plan`, ranked between `Raised` and `Asked`) for a claude this
+  crown started entering `RequiresAction{Plan}` under the switch. Never the plan's words (T-414).
+- **The crown reads the plan first.** `get_ticket.needs_you` on a plan stop carries `reason:
+  "plan"`, the `request`, and `plan`: the markdown the pre-approval frames carry (`tool_input.plan`,
+  the projection Remote Control already kept), through `scrub_lines` (lines kept), capped at
+  16 KiB.
+- **The words.** `CROWN_WAKES` (the `start_agent` and `ask_agent` receipts' `wakes`) now says the
+  crown answers and accepts by default, where the plan is read, and ends on `persons_plans!` then
+  `persons_questions!`. `ask_agent` is refused at a plan stop, naming `accept_plan` and
+  `raise_hand`, since words queued there wait behind the plan and the turn it starts; `answer_agent`
+  at a plan names `accept_plan`.
+
+**Also.** Both crown receipts flush the feed before replying: the reply leaves mid-tick, the feed
+was flushed only at the tick's end, and `the_crown_answers_a_batch_one_answer_per_question` read
+the feed right after its receipt and lost that race under the full suite's load.
+
+**Promise 3.** The tool definition is the named consented exception; mesimon reads no plan's or
+question's words to decide anything, and none reaches a model from mesimon. `docs/PROMISES.md`
+still says the switch is off by default; it is the author's words, so the corrected sentence is
+drafted in a note on T-582, awaiting approval.
+
+**Not built.** The crown sending a plan back with words (the dialog's third row takes words a
+person types); Remote Control's plan accept (its own road, to `Yes, manually approve edits`);
+Codex plans.
+
+**Tests.** Core: `exactly_seventeen_tools`, the tier table, `accept_plan_parses_and_refuses`, the
+cap, `the_crown_is_told_which_plans_are_a_person_s` (tool, `PERSONS_PLANS`, `CROWN_WAKES`), the
+never-tier's allowed list, `crown_answers_defaults_on_and_an_off_is_kept`. Store:
+`crown_answers_is_on_unless_the_file_says_off` (an older file loads on, in the daemon and doctor's
+scalars; an off is written and kept). Daemon: `a_question_or_a_plan_wakes_the_crown_only_under_the_switch`,
+`Asked > Planned > Raised`, `a_miss_is_named_in_a_word`. Shim:
+`a_plan_receipt_says_what_the_hooks_saw_and_whose_plans_are_whose`. TUI: the toggle test reads on
+by default; `settings_agents_120x30` and `settings_agents_60x20_end` reminted (the row reads `on`
+and names plans), reviewed by eye. E2e `crown_e2e::the_crown_accepts_a_plan_by_default`, through
+`fake_claude_dialog.py`, which now draws the plan dialog measured on 2.1.287 (`1. Yes, auto-accept
+edits`, `2. Yes, manually approve edits`, `3. Tell Claude what to change`): on by default; a
+person's agent's plan refused and no wake; the worker's plan wakes the crown without its words and
+`get_ticket` shows it; a stale request, the own ticket, a stale stamp, `answer_agent` and
+`ask_agent` at the plan, and the switch off refused, typing nothing and writing no feed line; the
+accept is one Enter landing on `Yes, auto-accept edits`, the receipt waits for `PostToolUse` and
+says `accepted`, `♛ accepted plan`, the feed line, `plan accepted by T-1` through the edge to
+`Running` and gone at the next, and the turn's end wakes the crown; an Enter with no edge is
+`input_sent` with no claim on the card; a person's answer before any press is `unknown {
+a_person_answered }` with no key typed. `the_crown_answers_a_question_where_the_person_lets_it`
+now switches the row off first, and `mcp_e2e`/`crown_e2e` list seventeen tools.

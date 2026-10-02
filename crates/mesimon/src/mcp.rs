@@ -39,7 +39,9 @@ const READ_TIMEOUT_SECS: u64 = 20;
 /// How long `answer_agent`'s receipt is waited for (T-569, T-571): it comes
 /// once the delivery settles, after the key walk (8 s for one question, up
 /// to the daemon's 60 s `DIALOG_WALK_MAX` for a batch) and the 5 s hook
-/// window, so this is that and a margin.
+/// window, so this is that and a margin. `accept_plan`'s (T-582) waits
+/// as long: at most the daemon's 30 s for a busy checkout and its 8 s for
+/// the hook edge.
 const ANSWER_WAIT_SECS: u64 = 75;
 
 pub fn run(args: &[String]) -> ! {
@@ -155,6 +157,9 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::AnswerAgent { key, seen, request, index, text, answers } => {
             Command::AgentAnswerTicket { key, seen: Some(seen), request, index, text, answers }
         }
+        ToolCall::AcceptPlan { key, seen, request } => {
+            Command::AgentAcceptPlan { key, seen: Some(seen), request }
+        }
         ToolCall::CreateTicket { title, column, description, tags, idempotency_key } => {
             Command::AgentCreateTicket {
                 title,
@@ -262,6 +267,25 @@ fn render(resp: Response) -> Value {
             }
             text(&body)
         }
+        // The crown's plan accept (T-582), once its press settled:
+        // `accepted` only on the plan's own hook edge, `input_sent` for an
+        // Enter unconfirmed, `queued` while a busy checkout holds the press,
+        // `unknown` with its reason when no Enter went. The receipt repeats
+        // which plans stay a person's.
+        Response::AgentPlanAccepted { key, outcome, reason, seen } => {
+            let mut body = json!({
+                "key": key,
+                "outcome": outcome,
+                "persons_plans": mcp::PERSONS_PLANS,
+            });
+            if let Some(why) = reason {
+                body["reason"] = json!(why);
+            }
+            if let Some(seen) = seen {
+                body["seen"] = json!(seen);
+            }
+            text(&body)
+        }
 
         // The body as the text block itself: markdown inside a JSON string is
         // a worse read, and the metadata already travels in `get_ticket`.
@@ -288,7 +312,7 @@ fn ask(sock: &PathBuf, env: &Envelope) -> Result<Response, String> {
     let stream = UnixStream::connect(sock)
         .map_err(|e| format!("mesimon daemon is not reachable ({e}); the board may be closed"))?;
     let wait = match env.command {
-        Command::AgentAnswerTicket { .. } => ANSWER_WAIT_SECS,
+        Command::AgentAnswerTicket { .. } | Command::AgentAcceptPlan { .. } => ANSWER_WAIT_SECS,
         _ => READ_TIMEOUT_SECS,
     };
     stream
@@ -547,6 +571,33 @@ mod tests {
         assert_eq!(answered["persons_questions"], mcp::PERSONS_QUESTIONS);
         let unknown = body("unknown", Some("label_not_found"));
         assert_eq!(unknown["reason"], "label_not_found");
+    }
+
+    /// The crown's plan accept (T-582): the outcome the hooks saw, the
+    /// reason only when there is one, and the clause naming which plans
+    /// stay a person's.
+    #[test]
+    fn a_plan_receipt_says_what_the_hooks_saw_and_whose_plans_are_whose() {
+        let body = |outcome: &str, reason: Option<&str>| {
+            let v = render(Response::AgentPlanAccepted {
+                key: "T-5".into(),
+                outcome: outcome.into(),
+                reason: reason.map(str::to_string),
+                seen: Some("ab12".into()),
+            });
+            assert_eq!(v["isError"], false);
+            serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        let accepted = body("accepted", None);
+        assert_eq!(
+            (accepted["key"].as_str(), accepted["outcome"].as_str()),
+            (Some("T-5"), Some("accepted"))
+        );
+        assert_eq!(accepted["seen"], "ab12");
+        assert!(accepted.get("reason").is_none());
+        assert_eq!(accepted["persons_plans"], mcp::PERSONS_PLANS);
+        let unknown = body("unknown", Some("a_person_answered"));
+        assert_eq!(unknown["reason"], "a_person_answered");
     }
 
     #[test]

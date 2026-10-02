@@ -1707,14 +1707,18 @@ pub struct Board {
     /// Off by default; a build that drops it only takes authority away.
     #[serde(default)]
     pub crown_sends: bool,
-    /// The crown answers questions (T-569): `answer_agent` may answer the
-    /// one-choice `AskUserQuestion` an agent the crown STARTED stopped on,
-    /// and such a question wakes the crown. Separate from `crown_sends`: a
-    /// person who let the crown's words through at idle has not consented to
-    /// answers in a dialog. A person's agent, and every stop that is not a
-    /// question, stays the person's whatever this says. Off by default; a
-    /// build that drops it only takes authority away.
-    #[serde(default)]
+    /// The crown answers questions (T-569) and accepts plans (T-582):
+    /// `answer_agent` may answer the `AskUserQuestion` an agent the crown
+    /// STARTED stopped on and `accept_plan` the plan one stopped on, and
+    /// either stop wakes the crown. Separate from `crown_sends`: a person
+    /// who let the crown's words through at idle has not consented to
+    /// answers in a dialog. A person's agent, and every other stop, stays
+    /// the person's whatever this says. ON by default since T-582 (the
+    /// author: "as the crown you should be able to answer without user
+    /// unless you choose to delegate to the user"); the crown's delegation
+    /// is its own `raise_hand`. A build that drops it leaves every question
+    /// to a person again, which only takes authority away.
+    #[serde(default = "yes")]
     pub crown_answers: bool,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
@@ -1826,8 +1830,8 @@ fn default_crown_budget() -> u8 {
     DEFAULT_CROWN_BUDGET
 }
 
-/// `Board::mcp_tools` defaults ON: a serde default has to be a function, and
-/// this is the whole of it.
+/// `Board::mcp_tools` and `Board::crown_answers` default ON: a serde default
+/// has to be a function, and this is the whole of it.
 fn yes() -> bool {
     true
 }
@@ -1888,7 +1892,7 @@ impl Default for Board {
             park_after_minutes: 0,
             crown_budget: DEFAULT_CROWN_BUDGET,
             crown_sends: false,
-            crown_answers: false,
+            crown_answers: true,
             next_key: 0,
             tags: Vec::new(),
             tags_seeded: false,
@@ -2751,6 +2755,18 @@ mod tests {
             serde_json::from_value::<Board>(legacy).unwrap().agent_provider,
             AgentProvider::ClaudeCode
         );
+    }
+
+    /// T-582: a board from before the field lets the crown answer and
+    /// accept, and one that turned it off keeps it off.
+    #[test]
+    fn crown_answers_defaults_on_and_an_off_is_kept() {
+        assert!(Board::default().crown_answers);
+        let mut wire = serde_json::to_value(Board::default()).unwrap();
+        wire.as_object_mut().unwrap().remove("crown_answers");
+        assert!(serde_json::from_value::<Board>(wire.clone()).unwrap().crown_answers);
+        wire["crown_answers"] = serde_json::json!(false);
+        assert!(!serde_json::from_value::<Board>(wire).unwrap().crown_answers);
     }
 
     /// T-543: a column opts its tickets into the idle park, and each timer

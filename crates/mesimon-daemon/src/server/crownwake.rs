@@ -95,17 +95,19 @@ impl BranchLook {
 }
 
 /// What the crown is woken for, in the precedence two events on one worker
-/// coalesce by: a question outranks a hand (T-569) — both wait on someone,
-/// and the question is a turn frozen on it — a hand an answer, an answer a
-/// delivery, and a delivery a merge — a merge folded into any other line is
-/// said in its delta (`merge_state merged`), so a delivery and its merge
-/// between two crown turns are one line.
+/// coalesce by: a question outranks a plan (T-582) and a plan a hand
+/// (T-569) — all three wait on someone, and a question or a plan is a turn
+/// frozen on it — a hand an answer, an answer a delivery, and a delivery a
+/// merge — a merge folded into any other line is said in its delta
+/// (`merge_state merged`), so a delivery and its merge between two crown
+/// turns are one line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum WakeCause {
     Merged,
     Delivered,
     Answered,
     Raised,
+    Planned,
     Asked,
 }
 
@@ -117,6 +119,9 @@ impl WakeCause {
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered your ask",
             WakeCause::Raised => "raised its hand",
+            // Never the plan's words (T-414's rule for a hand's reason):
+            // the crown reads them with `get_ticket`.
+            WakeCause::Planned => "stops on a plan",
             // Never the question's words (T-414's rule for a hand's
             // reason): the crown reads them with `get_ticket`.
             WakeCause::Asked => "asks a question",
@@ -130,6 +135,7 @@ impl WakeCause {
             WakeCause::Delivered => "delivered",
             WakeCause::Answered => "answered",
             WakeCause::Raised => "raised",
+            WakeCause::Planned => "planned",
             WakeCause::Asked => "asked",
         }
     }
@@ -180,16 +186,27 @@ pub(super) fn verdict(
     before.is_none_or(|b| b.tip != now.tip).then_some(WakeCause::Delivered)
 }
 
-/// Whether this state change is a question the crown is woken for
-/// (T-569): a claude entering `RequiresAction{Question}` on a board whose
-/// person let the crown answer. Off, the person is the one to wake, and the
-/// card's needs-you already does. A secret, a form, a permission or a plan
-/// is never the crown's, so none of them wakes it; a codex has no dialog
-/// the board can answer. Whose agent it is — one THIS crown started — is
-/// `note_crown_wake`'s to judge.
-pub(super) fn asks_the_crown(answers: bool, kind: SessionKind, change: &Change) -> bool {
-    let question = SessionState::RequiresAction { reason: Reason::Question };
-    answers && kind == SessionKind::Claude && change.from != change.to && change.to == question
+/// Whether this state change is a stop the crown is woken for, and why:
+/// a claude entering `RequiresAction{Question}` (T-569) or
+/// `RequiresAction{Plan}` (T-582) on a board whose person let the crown
+/// answer — on unless they turned it off. Off, the person is the one to
+/// wake, and the card's needs-you already does. A secret, a form or a
+/// permission is never the crown's, so none of them wakes it; a codex has
+/// no dialog the board answers for the crown. Whose agent it is — one THIS
+/// crown started — is `note_crown_wake`'s to judge.
+pub(super) fn asks_the_crown(
+    answers: bool,
+    kind: SessionKind,
+    change: &Change,
+) -> Option<WakeCause> {
+    if !answers || kind != SessionKind::Claude || change.from == change.to {
+        return None;
+    }
+    match change.to {
+        SessionState::RequiresAction { reason: Reason::Question } => Some(WakeCause::Asked),
+        SessionState::RequiresAction { reason: Reason::Plan } => Some(WakeCause::Planned),
+        _ => None,
+    }
 }
 
 /// What a turn's end does once the merge train is counted (T-554).
@@ -899,10 +916,10 @@ mod tests {
         assert!(!line.contains('\u{1b}'), "{line:?}");
     }
 
-    /// T-569: a question wakes the crown under the switch and not without,
-    /// only on the edge into it, and only a question from a claude.
+    /// T-569, T-582: a question or a plan wakes the crown under the switch
+    /// and not without, only on the edge into it, and only from a claude.
     #[test]
-    fn a_question_wakes_the_crown_only_under_the_switch() {
+    fn a_question_or_a_plan_wakes_the_crown_only_under_the_switch() {
         let question = SessionState::RequiresAction { reason: Reason::Question };
         let change = |from: SessionState, to: SessionState| Change {
             from,
@@ -911,31 +928,42 @@ mod tests {
             confidence: Confidence::High,
         };
         let asked = change(SessionState::Running, question.clone());
-        assert!(asks_the_crown(true, SessionKind::Claude, &asked));
-        assert!(!asks_the_crown(false, SessionKind::Claude, &asked), "off: the person's");
-        assert!(!asks_the_crown(true, SessionKind::Codex, &asked), "no dialog to answer");
-        assert!(!asks_the_crown(true, SessionKind::Claude, &change(question.clone(), question)));
-        for reason in [
-            Reason::Secret,
-            Reason::Elicitation,
-            Reason::Permission,
-            Reason::Auth,
-            Reason::Trust,
-            Reason::Plan,
-        ] {
+        assert_eq!(asks_the_crown(true, SessionKind::Claude, &asked), Some(WakeCause::Asked));
+        assert_eq!(asks_the_crown(false, SessionKind::Claude, &asked), None, "off: the person's");
+        assert_eq!(asks_the_crown(true, SessionKind::Codex, &asked), None, "no dialog to answer");
+        assert_eq!(
+            asks_the_crown(true, SessionKind::Claude, &change(question.clone(), question)),
+            None
+        );
+        let plan = SessionState::RequiresAction { reason: Reason::Plan };
+        let planned = change(SessionState::Running, plan.clone());
+        assert_eq!(asks_the_crown(true, SessionKind::Claude, &planned), Some(WakeCause::Planned));
+        assert_eq!(asks_the_crown(false, SessionKind::Claude, &planned), None, "off: the person's");
+        assert_eq!(asks_the_crown(true, SessionKind::Codex, &planned), None, "a codex plan");
+        assert_eq!(asks_the_crown(true, SessionKind::Claude, &change(plan.clone(), plan)), None);
+        for reason in
+            [Reason::Secret, Reason::Elicitation, Reason::Permission, Reason::Auth, Reason::Trust]
+        {
             let stop = change(SessionState::Running, SessionState::RequiresAction { reason });
-            assert!(!asks_the_crown(true, SessionKind::Claude, &stop), "{reason:?} is a person's");
+            assert_eq!(
+                asks_the_crown(true, SessionKind::Claude, &stop),
+                None,
+                "{reason:?} is a person's"
+            );
         }
         let answered = change(
             SessionState::RequiresAction { reason: Reason::Question },
             SessionState::Running,
         );
-        assert!(!asks_the_crown(true, SessionKind::Claude, &answered));
+        assert_eq!(asks_the_crown(true, SessionKind::Claude, &answered), None);
+        // The wake carries the cause, never the plan's words.
+        assert_eq!(WakeCause::Planned.clause(), "stops on a plan");
     }
 
     #[test]
     fn coalesced_causes_keep_the_strongest() {
-        assert!(WakeCause::Asked > WakeCause::Raised);
+        assert!(WakeCause::Asked > WakeCause::Planned);
+        assert!(WakeCause::Planned > WakeCause::Raised);
         assert!(WakeCause::Raised > WakeCause::Answered);
         assert!(WakeCause::Answered > WakeCause::Delivered);
         assert!(WakeCause::Delivered > WakeCause::Merged);

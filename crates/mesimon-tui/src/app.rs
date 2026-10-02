@@ -5748,12 +5748,13 @@ impl App {
                     Response::Err { message } => self.status = message,
                     _ => {
                         self.refresh()?;
-                        // The reach (T-569): whose questions, and that a
-                        // person's agent still asks the person.
+                        // The reach (T-569, T-582): whose questions and
+                        // plans, and that a person's agent still asks the
+                        // person.
                         self.status = if on {
                             "crown answers on ∙ agents it started may be answered by it".into()
                         } else {
-                            "crown answers off ∙ every question waits for you".into()
+                            "crown answers off ∙ every question and plan waits for you".into()
                         };
                     }
                 }
@@ -15068,8 +15069,9 @@ mod tests {
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownSends")).count(), 2);
     }
 
-    /// The crown's answers switch (T-569) is off on a fresh board, sits
-    /// under the sends row, and toggles through its own board command.
+    /// The crown's answers switch (T-569) is ON on a fresh board since
+    /// T-582, sits under the sends row, and toggles through its own board
+    /// command: the row is the opt-out.
     #[test]
     fn crown_answers_setting_toggles_through_board_command() {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
@@ -15077,15 +15079,15 @@ mod tests {
         let idx = app.settings_row(Verb::CrownAnswers);
         assert_eq!(idx, app.settings_row(Verb::CrownSends) + 1, "under the sends row");
         app.mode = Mode::Settings { idx };
-        assert!(!app.board.crown_answers, "off by default");
+        assert!(app.board.crown_answers && app.ctx().crown_answers, "on by default");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.board.crown_answers && !app.ctx().crown_answers);
+        assert!(app.status.contains("question and plan waits for you"), "{}", app.status);
+        assert_eq!(app.mode, Mode::Settings { idx });
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.board.crown_answers && app.ctx().crown_answers);
         assert!(!app.board.crown_sends, "the sends switch is its own");
         assert!(app.status.contains("agents it started"), "{}", app.status);
-        assert_eq!(app.mode, Mode::Settings { idx });
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(!app.board.crown_answers && !app.ctx().crown_answers);
-        assert!(app.status.contains("waits for you"), "{}", app.status);
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownAnswers")).count(), 2);
     }
 

@@ -683,8 +683,9 @@ pub enum Verb {
     /// `^y`. Board state like `CrownBudget`; Enter toggles it.
     CrownSends,
     /// The Settings row under it (T-569): whether the crown may answer a
-    /// question an agent it started stopped on (`answer_agent`), and is
-    /// woken by one. Board state like `CrownSends`; Enter toggles it.
+    /// question an agent it started stopped on (`answer_agent`) and accept
+    /// its plan (`accept_plan`, T-582), and is woken by either. Board state
+    /// like `CrownSends`, on by default; Enter toggles it.
     CrownAnswers,
     /// The Agents settings' "Claude integration" row (T-574): how Claude
     /// sessions report to the board — `hooks`, `auto` or `mod` — a
@@ -4774,10 +4775,12 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         key: "",
     },
     // Whether the crown may answer a question an agent it started asks
-    // (T-569). Off, every question is the person's; on, a one-choice
-    // question from an agent the crown started wakes the crown and it may
-    // answer, announced on the card and in the feed. Every other stop, and
-    // a person's agent, stays the person's.
+    // (T-569) and accept the plan one stops on (T-582). On by default: a
+    // question or a plan from an agent the crown started wakes the crown
+    // and it may answer or accept, announced on the card and in the feed,
+    // raising its hand for what is a person's. Off, every question and plan
+    // is the person's. Every other stop, and a person's agent, stays the
+    // person's.
     MenuItem {
         verb: Verb::CrownAnswers,
         label: |c| {
@@ -4789,9 +4792,10 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.crown_answers {
-                "a question from an agent it started wakes it, and it may answer ∙ yours still ask you ∙ enter turns off".into()
+                "a question or plan from an agent it started wakes it, and it may answer or accept ∙ yours still ask you ∙ enter turns off".into()
             } else {
-                "every question waits for you ∙ enter lets it answer agents it started".into()
+                "every question and plan waits for you ∙ enter lets it answer agents it started"
+                    .into()
             }
         },
         avail: always,

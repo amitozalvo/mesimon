@@ -83,6 +83,22 @@ macro_rules! persons_questions {
 /// See `persons_questions!`.
 pub const PERSONS_QUESTIONS: &str = persons_questions!();
 
+/// The plans that stay a person's (T-582): the crown accepts a plan as the
+/// board's own accept does, and has no road to send one back — the
+/// dialog's revise row takes words a person types. The `accept_plan`
+/// receipt carries it (`PERSONS_PLANS`) and `CROWN_WAKES` says it before
+/// the questions' clause; the tool's own description says the same.
+macro_rules! persons_plans {
+    () => {
+        "A plan the crown would change, or one that reaches past the ticket's brief, is a \
+         person's: raise_hand on the crown's own ticket, naming the worker and the change, puts \
+         one card in front of the person, who answers the dialog."
+    };
+}
+
+/// See `persons_plans!`.
+pub const PERSONS_PLANS: &str = persons_plans!();
+
 /// What a crowned agent is told about the board's wake (T-414, T-537), in
 /// the `start_agent` and `ask_agent` receipts and on its own `get_ticket`
 /// view: transient result data, never tool text, so it may instruct. It is
@@ -96,22 +112,28 @@ pub const PERSONS_QUESTIONS: &str = persons_questions!();
 /// dropped before it was sent is read (T-568).
 pub const CROWN_WAKES: &str = concat!(
     "The board wakes this session on its own: when an agent the crown started delivers, is \
-     merged, answers the crown's ask or raises its hand, one sentence naming the ticket and \
-     what changed arrives as this session's next prompt, once it is idle. Nothing needs \
+     merged, answers the crown's ask, raises its hand, asks a question or stops on a plan, one \
+     sentence naming the ticket and what changed arrives as this session's next prompt, once \
+     it is idle. Nothing needs \
      polling. A background task or monitor left running makes this session read as busy, and \
      the wake and every queued word wait until it ends. A worker whose branch is merged is \
      finished: sleep_agent parks it, which frees its seat in the crown's budget, and \
      archive_ticket then takes its ticket off the board and reclaims a merged worktree. That \
      is the crown's to do, not a person's to be asked for; a person's own agent is the one the \
-     crown may not park. A worker stopped on a question reads needs-you, and get_ticket on its \
-     ticket carries the question (needs_you: the reason, the words, the options, the \
-     request); ask_agent is refused while it stands. Where the board lets the crown answer \
-     (Settings → Agents → Crown answers questions), a question an agent the crown started \
-     asks wakes this session and answer_agent answers it; every other stop, an agent a person \
-     started, and a question on a board that does not let the crown answer stay a person's. \
+     crown may not park. A worker stopped on a question or a plan reads needs-you, and \
+     get_ticket on its ticket carries it (needs_you: the reason, the request, and the \
+     question's words and options or the plan's markdown); ask_agent is refused while it \
+     stands. Where the board lets the crown answer (Settings → Agents → Crown answers \
+     questions, on unless a person turned it off), the crown answers by default: a question \
+     an agent the crown started asks wakes this session and answer_agent answers it, and a \
+     plan one stops on wakes it and accept_plan accepts it, after get_ticket shows the plan. \
+     Every other stop, an agent a person started, and a board that does not let the crown \
+     answer stay a person's. \
      An ask dropped before it was sent (a person replaced it, took it back or talked past it, \
      or its agent went first) reads asked: dropped on that ticket's get_ticket, with who \
      dropped it. ",
+    persons_plans!(),
+    " ",
     persons_questions!()
 );
 
@@ -570,6 +592,30 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        // The crown's plan accept (T-582): the board's own accept (T-420),
+        // Enter on the dialog's default row once the screen shows it there,
+        // for a plan an agent the crown started stops on, under the same
+        // switch as its answers. Sending a plan back stays a person's.
+        json!({
+            "name": "accept_plan",
+            "description": "Accepts the plan an agent the crown started stops on (crown \
+                            only, if the board lets it), as the board's own accept: Enter on \
+                            the plan dialog's default row. request: needs_you.request; \
+                            needs_you.plan is the plan. A plan the crown would change, or one \
+                            past the brief, is a person's: raise_hand names the worker and the \
+                            change. Outcome: accepted, input_sent, queued (its checkout busy) \
+                            or unknown.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
+                    "seen": { "type": "string", "description": "get_ticket's seen stamp." },
+                    "request": { "type": "string", "description": "needs_you.request." },
+                },
+                "required": ["key", "seen", "request"],
+                "additionalProperties": false,
+            },
+        }),
     ]
 }
 
@@ -660,6 +706,11 @@ pub enum ToolCall {
         index: Option<usize>,
         text: Option<String>,
         answers: Option<Vec<crate::mesophon::QuestionAnswer>>,
+    },
+    AcceptPlan {
+        key: String,
+        seen: String,
+        request: String,
     },
     CreateTicket {
         title: String,
@@ -857,6 +908,11 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                 answers,
             })
         }
+        "accept_plan" => Ok(ToolCall::AcceptPlan {
+            key: word(args, "key")?,
+            seen: word(args, "seen")?,
+            request: word(args, "request")?,
+        }),
         "read_attachment" => Ok(ToolCall::ReadAttachment {
             attachment: args
                 .get("attachment")
@@ -993,7 +1049,7 @@ fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Sixteen tools, seventeen commands (`get_ticket` with a
+        // The tier. Seventeen tools, eighteen commands (`get_ticket` with a
         // key is its own command on the wire).
         Command::AgentGetTicket
         | Command::AgentListBoard
@@ -1026,6 +1082,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // board's `crown_answers` switch, the agent's provenance and the
         // dialog's shape. `PromptSession` stays below.
         | Command::AgentAnswerTicket { .. }
+        // The crown's plan accept (T-582): the board's own Enter on a plan
+        // dialog an agent the crown started stopped on, behind the same
+        // switch and provenance as the answer. `PromptSession` stays below.
+        | Command::AgentAcceptPlan { .. }
         // T1 ANNOTATE: notes on the caller's OWN ticket. Unlike a tag, a
         // note is what D10 enumerated a tier for, and it is the one channel
         // through which the ticket's description reaches the agent without
@@ -1280,7 +1340,8 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
         | Command::AgentStartTicket { .. }
         | Command::AgentSleepTicket { .. }
         | Command::AgentAskTicket { .. }
-        | Command::AgentAnswerTicket { .. } => AgentTools::Full,
+        | Command::AgentAnswerTicket { .. }
+        | Command::AgentAcceptPlan { .. } => AgentTools::Full,
         _ => return None,
     })
 }
@@ -1291,7 +1352,9 @@ pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
         "get_ticket" | "list_board" | "read_note" | "read_attachment" => AgentTools::Read,
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket" | "create_ticket" | "rename_ticket" | "set_workspace" | "archive_ticket"
-        | "start_agent" | "sleep_agent" | "ask_agent" | "answer_agent" => AgentTools::Full,
+        | "start_agent" | "sleep_agent" | "ask_agent" | "answer_agent" | "accept_plan" => {
+            AgentTools::Full
+        }
         _ => return None,
     })
 }
@@ -1435,6 +1498,14 @@ mod tests {
                 "answer_agent",
             ),
             (
+                Command::AgentAcceptPlan {
+                    key: "T-1".into(),
+                    seen: None,
+                    request: "toolu_1".into(),
+                },
+                "accept_plan",
+            ),
+            (
                 Command::AgentCreateTicket {
                     title: "x".into(),
                     column: None,
@@ -1495,9 +1566,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_sixteen_tools() {
+    fn exactly_seventeen_tools() {
         let t = tools();
-        assert_eq!(t.len(), 16);
+        assert_eq!(t.len(), 17);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -1517,9 +1588,34 @@ mod tests {
                 "start_agent",
                 "sleep_agent",
                 "ask_agent",
-                "answer_agent"
+                "answer_agent",
+                "accept_plan"
             ]
         );
+    }
+
+    /// The crown's plan accept (T-582): key, seen and request are required
+    /// words, and nothing else rides it — no words for the plan.
+    #[test]
+    fn accept_plan_parses_and_refuses() {
+        let base = json!({ "key": " T-4 ", "seen": "abc", "request": "toolu_p" });
+        assert_eq!(
+            parse_tool_call("accept_plan", &base),
+            Ok(ToolCall::AcceptPlan {
+                key: "T-4".into(),
+                seen: "abc".into(),
+                request: "toolu_p".into()
+            })
+        );
+        for missing in ["key", "seen", "request"] {
+            let mut v = base.clone();
+            v.as_object_mut().unwrap().remove(missing);
+            let why = parse_tool_call("accept_plan", &v).unwrap_err();
+            assert!(why.contains(missing), "{missing} is required: {why}");
+        }
+        let mut v = base;
+        v["request"] = json!(7);
+        assert!(parse_tool_call("accept_plan", &v).unwrap_err().contains("must be a string"));
     }
 
     /// The crown's answer (T-569): key, seen and request are required words,
@@ -1874,12 +1970,48 @@ mod tests {
             "Crown answers questions",
             "answer_agent answers it",
             "an agent a person started",
+            // T-582: on by default, the plan read and accepted.
+            "the crown answers by default",
+            "on unless a person turned it off",
+            "stops on a plan",
+            "accept_plan accepts it",
+            "the plan's markdown",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
         assert!(CROWN_WAKES.ends_with(PERSONS_QUESTIONS), "one clause, said once");
+        assert!(CROWN_WAKES.contains(PERSONS_PLANS), "and the plans' clause before it");
         assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
         assert_eq!(lint_tool_text(PERSONS_QUESTIONS), Ok(()));
+        assert_eq!(lint_tool_text(PERSONS_PLANS), Ok(()));
+    }
+
+    /// T-582: a plan the crown would change stays a person's, said in the
+    /// tool, the receipt's clause and the wake words alike; the tool names
+    /// where the plan is read and every outcome its receipt can carry.
+    #[test]
+    fn the_crown_is_told_which_plans_are_a_person_s() {
+        let registry = tools();
+        let tool = registry.iter().find(|t| t["name"] == "accept_plan").unwrap();
+        let description = tool["description"].as_str().unwrap();
+        for text in [description, PERSONS_PLANS, CROWN_WAKES] {
+            for case in ["would change", "past", "a person's", "raise_hand", "the worker and the"] {
+                assert!(text.contains(case), "{case:?} is named in {text:?}");
+            }
+        }
+        for words in [
+            "crown only",
+            "an agent the crown started",
+            "needs_you.request",
+            "needs_you.plan",
+            "default row",
+        ] {
+            assert!(description.contains(words), "accept_plan says {words:?}");
+        }
+        for outcome in ["accepted", "input_sent", "queued", "unknown"] {
+            assert!(description.contains(outcome), "accept_plan names {outcome}");
+        }
+        lint_tool_text(description).unwrap();
     }
 
     /// T-569: a person's question stays a person's. mesimon does not read
@@ -2143,6 +2275,7 @@ mod tests {
                 text: Some("x".into()),
                 answers: None,
             },
+            Command::AgentAcceptPlan { key: "T-1".into(), seen: None, request: "toolu_1".into() },
         ];
         for c in &allowed {
             assert!(agent_allows(c), "{c:?} should be in the tier");
