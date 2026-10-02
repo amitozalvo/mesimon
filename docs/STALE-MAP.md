@@ -18520,3 +18520,151 @@ back to crown-driven once this lands. A's worker does that on the rig, not this 
 - `the_crown_sends_its_asks…`: the crown takes W's and W2's finishes before the asks, and a
   person's own agent wakes nobody.
 - The train's three cases pass unchanged.
+
+## The Claude road is `auto`, always, and a rig drives the real Claude Code (T-588, 2026-10-02, part R of T-587, filed by the crown; the author: "I don't want a user setting, it should be auto always and there should not be a reason to go back for the user", "mesimon can be its own testing machine", "sequential, able to see the tests in real time, and know what exactly we are testing")
+
+**T-574's decision (1) is reversed.** T-574 shipped the road as a setting (the seam, then the
+board's `prefs.json`, then the machine's, then `hooks`) behind the Agents row "Claude
+integration", with `hooks` the default "until phase 4", so the soak was the author's board
+alone. T-587's decision 1 takes the setting away: every Claude launch resolves `auto`. Why:
+the mod in shadow changes nothing the daemon believes (the hook set is still the one
+ingested), so turning it on for everyone costs nobody anything and makes the soak every board,
+and each `road_disagree` line in a user's feed is a bug report nobody had to opt into. A
+setting with one right answer is a question nobody should be asked; `doctor` says what was
+decided.
+
+**What changed.** `PrefKey::ClaudeRoad`, the TUI's `Prefs.claude_road` (load, body, word,
+overlay, the round-trip test), `Verb::ClaudeRoad` and its `MenuItem`, `Ctx::claude_road_word`,
+the dispatch arm, the board-scope cycle and `RoadPref::next` are gone. `RoadPref` stays as the
+seam's three words, `Auto` its default. `modroad::resolve` is the seam, else `auto`, and reads
+no file; `Source` keeps `Seam` and `Default`. A `prefs.json` from alpha.36 that carries
+`claude_integration` loads with the key ignored and keeps it as written, as any key this build
+does not read. `MESIMON_CLAUDE_ROAD` (`hooks|mod|auto`) is a test seam only: `TestFixture`
+sets `hooks`, `MESIMON_TEST_ROAD=mod` sets `mod`. Codex ignores all of it.
+
+- **The probe is warmed when the shell environment lands** (`Daemon::warm_road_probe`, called
+  from `on_shell_env`), not left for the first launch. T-574 probed lazily, at the first launch
+  that asked `auto`, and that launch took the hook set; with `auto` everywhere that would be
+  every fresh board's first agent and the first agent after every Claude Code self-update that
+  a daemon start sees. A probe is two local commands (`claude --version`, `claude plugin
+  validate <laid folder>`), no model call; it runs only when the binary's stamp or the mod's
+  digest is not the cached one. Measured on the rig: a fresh board wrote `road.json` (`mod ∙
+  claude 2.1.287, the mod validated`) and the feed's `claude_road:mod` with no launch at all.
+- **`doctor`'s line** reads `road.json` and says the road and why, in the probe's words:
+  `claude road: mod ∙ claude 2.1.287, the mod validated ∙ 0 disagreements in the feed`, `hooks
+  ∙ claude 2.1.280 is older than 2.1.287`, `hooks ∙ claude plugin validate failed on 2.1.290:
+  <line>`, under the seam `… ∙ MESIMON_CLAUDE_ROAD=hooks`, and `auto ∙ no Claude launch yet`
+  before any. The advice names no settings row. A probe that fails after one passed still
+  writes `claude_road_fallback` and flags the verdict (T-574), which is decision 1's "says so in
+  the feed"; doctor's advice for it says the mod passed on an earlier Claude Code and this one
+  does not.
+- Promise 3: unchanged. The mod in shadow registers no tool, submits nothing and appends
+  nothing, and T-574's never-list test still scans `register.ts`. This ticket adds no hook.
+
+**The rig.** `python3 -B ci/rig.py`, run in a ticket worktree (it refuses `main` and any branch
+not `msmn/…`), is a second board on the worktree's own proj16 (its own state dir, sockets and
+private tmux), driving the real Claude Code on the mod road. It never touches the author's
+board and writes nothing on the machine layer (`tiers.toml`, `prefs.json`, `usage.json`): its
+`rig` tier (Claude Code, `sonnet`, effort `low`, "every rig test and the rig's crown") is a
+**board** tier, the board's default, in the worktree's `.mesimon/columns.toml`. It builds
+`target/debug/mesimon`, finds the rig's daemon (restarting one that runs another build) or
+starts it detached the way the client does, from a terminal's environment rather than the
+calling agent's (which carries another board's `MESIMON_*`, a pane's `TMUX` and Claude Code's
+own variables), and prints the one command to watch with: `cd <worktree> &&
+target/debug/mesimon`. It lays the board, files each test of `ci/rig/tests.toml` (the title
+says what it proves and asks for the steps below it, the description is the rest of the
+worker's first prompt, a second note says what the crown is told and what is checked; every
+ticket off the merge train), files a crown ticket whose description is the run order and each
+test's acceptance, crowns it and starts it with its brief as its first prompt. Then, one test at a time, it sends the crown the test's
+exact words, prints the board and the feed as they move (state words, every frame the worker's
+session sends, the crown's tool lines, the board's wakes, any `road_disagree` loudly), waits
+for the worker's end state and for the crown's turn on its wake to end, and judges: the record
+(`road`, `argv`, `cwd`, `started_by`), the feed (hook frames, state words, `road_disagree`,
+`claude_road:*`, the crown's lines) and the transcript (the first prompt, the last answer, the
+model), never a screen; the card's words are the rig's own polls of the snapshot, since a park
+writes no `session_state` line. Before each verdict it pings a mod-road worker's whole road
+(evidence, not a gate). Each verdict is a note on its ticket; the crown then moves a passed
+ticket to DONE when the rig tells it to, and a failure stays in REVIEW. **Nothing on the rig's
+board is archived but by `--reset`** (the author, during the run: "the crown never archives
+on this board"); a re-run leaves the earlier tickets where they are and ends only the agents
+parked on the checkout, which would hold it from the next R2 (T-583). `--lay` stops before
+anything starts, `--only R3` runs a subset, `--reset` parks (ending an agent held on a
+dialog), archives, and stops the rig's daemon and its tmux (this proj16's socket, no other).
+The rig turns the crown's sends on (T-550), since its asks would otherwise wait for a person's
+`^y`, and leaves the crown's answers on (its default). A crown step names the exact calls and
+the line to end on; a step the board will wake the crown for (`wake = true`: a delivery, an
+answered ask) ends with the crown's turn on that wake, any other when the crown is quiet.
+
+**The wire client** (`ci/rig/wire.py`, standard library only) speaks `orch.sock` as
+`state.rs::request` and the harness's `TestClient` do: `Hello { version: 2 }`, then one
+`Envelope { principal: local, command }` per line, every shape read from `command.rs`, and a
+second connection for `Subscribe`'s `board_changed` pushes. It reads the feed from a byte
+offset, a rotation included.
+
+**What the crown is.** The crown under test is told the protocol once, in its brief: the rig
+sends one step at a time naming the exact tool calls; it makes exactly those and nothing else
+(no file, no command, no note, no ticket, no raised hand), moves a ticket only when told (a
+passed test to DONE), never archives, takes each seen stamp from `get_ticket` right before a
+call that needs one, and does what the step said when the board wakes it for a worker.
+
+**The acceptance group "session and frames", on the real Claude Code** (run
+`20261002-202741`, build `claude 2.1.287 ∙ msmn/T-588-mod-road-r-the-rig-a-mesimon@280533ba`,
+crown and workers on `claude-sonnet-5-5`, effort low; 7 of 7, about 7 minutes; each verdict is
+a note on its rig ticket, and the crown moved all seven to DONE):
+
+| test | expected | observed | build |
+|---|---|---|---|
+| R1 a worker starts in a worktree | `start_agent` (worktree); the brief is its first prompt; `road` mod, `--plugin-dir` in argv; working then idle; `claude_road:mod` in the feed; no disagreement | PASS: started by the crown in its worktree; title and brief whole in the first prompt; SessionStart, UserPromptSubmit, Stop; 0 `road_disagree` over 3 frames; first turn 3.5 s; mod ping 8 ms | 2.1.287 ∙ 280533ba |
+| R2 a worker starts on the checkout | the same, `shared_checkout` | PASS: the checkout; 0 over 4 frames; 3.4 s; ping 8 ms | 2.1.287 ∙ 280533ba |
+| R3 every hook-set event reaches the daemon | a question (needs-you, the crown answers blue with `answer_agent`), a tool, a subagent, the turn's end: zero disagreements, the card's words each seen | PASS: working → needs you → working → idle from the snapshot; the board woke the crown (`asked`), its answer confirmed on the hook edge; UserPromptSubmit×2, PreToolUse, PostToolUse×4, SubagentStart, SubagentStop, Stop×2; 0 over 14 frames; ping 7 ms | 2.1.287 ∙ 280533ba |
+| R4 a daemon restart loses no frame | ping before; SIGTERM and a fresh daemon; ping after; the next turn on both roads | PASS: pong 11 ms, then 5 ms after the restart; the crown's `ask_agent` turn after it, 0 over 5 frames, and the board woke the crown (`answered`) | 2.1.287 ∙ 280533ba |
+| R5 sleep and wake keep the conversation | `sleep_agent`, then `start_agent` wakes it; the woken launch re-decides and reads mod; the next turn answers from the conversation | PASS: working → idle → sleeping → working → idle; road mod and `--plugin-dir` on the woken argv; it answered `mango` | 2.1.287 ∙ 280533ba |
+| R6 pane-died still ends a session | `/exit` from the crown; pane-died ends it, the record parks; SessionEnd on both roads | PASS: SessionEnd (`prompt_input_exit`) and PaneDied (0); the record sleeping; 0 over 4 frames | 2.1.287 ∙ 280533ba |
+| R7 too old for mods | a wrapper saying 2.1.286: road hooks, no `--plugin-dir`, doctor says older, the turn as on the mod | PASS: road hooks, no `--plugin-dir`; doctor `hooks ∙ claude 2.1.286 is older than 2.1.287`; the same three frames and words; the daemon restored to the mod after (`claude_road:mod`) | 2.1.287 ∙ 280533ba |
+
+**`road_disagree`:** 0 over the final run. Over all four runs of the day (about 30 mod-road
+launches, 30 SessionEnds), 7 lines, all `no_mod_twin`, in two kinds, both bugs to file and
+neither a gate (decision 2): **a park loses the mod's SessionEnd twin** 4 times in 27 (the
+daemon's park SIGTERMs Claude Code, pane-died status 143, and the mod's awaited relay races
+the exit; an `/exit` paired 3 of 3), and **one launch's mod relayed nothing for its whole
+life** (SessionStart, UserPromptSubmit, Stop and the park's SessionEnd all lone; the same
+record's woken launch paired every frame; no load error in its transcript). The rig now pings
+each mod-road worker before its verdict, so the next silent launch says whether its bridge was
+alive.
+
+**Traps measured on the way.**
+
+- **Claude Code 2.1.287 wraps the brief in `<pasted_content>`.** A composed start types the
+  title and pastes the description under it; Claude Code wraps that paste in
+  `<pasted_content id=…>` and its harness follows instructions inside only where the person's
+  own words ask. A Sonnet worker whose title only named the test declined R3's four steps and
+  asked what was wanted. A one-line paste on its own (each crown step) arrives as the person's
+  text. The rig's titles now ask ("…: do the steps below"); phase 2's `$.prompt.submit` with
+  `asUser: true` (T-573 row 2) is the road that delivers a brief as the person's words.
+- **A plain finished turn wakes no crown** (T-469): only a delivery (on the checkout, any new
+  HEAD), an answered ask, a question or raised hand, and a merge. A crown told "when the board
+  wakes you because it finished" after a worktree start waits for ever.
+- **A parallel tool batch clears a question's projection.** Sonnet sent AskUserQuestion, the
+  Bash call and the subagent as one batch; the Bash call's `PostToolUse` cleared the open
+  question in `control_observe_dialog` (any `PostToolUse` drops it), so `get_ticket` gave the
+  crown `needs_you: question` with no words or request and `answer_agent` answered `dialog
+  changed`. The card stayed right. A bug to file; R3's brief now asks alone.
+- **A board TUI respawns the daemon the moment its socket closes** and won the lock from the
+  rig's own respawn about half the time, without the rig's seam: R7's restart checks the
+  winner's environment (`ps -wwE`) and runs the race again.
+- **The `sonnet` alias is `claude-sonnet-5-5` on 2.1.287** (every transcript's model).
+- Two of Python's, for the next driver: `socket.makefile`'s reader refuses every read after
+  one timeout ("cannot read from timed out object"), so the wire keeps its own buffer; and a
+  daemon the driver started is its child, a zombie `kill(pid, 0)` still finds until reaped.
+
+**Tests.** Core `road::tests::the_seam_words_round_trip_and_the_road_is_auto`,
+`prefs::tests::the_claude_road_is_no_pref`; daemon `modroad::tests::the_road_is_the_seam_else_auto`;
+TUI `prefs::tests::an_old_claude_integration_key_is_ignored_and_kept_as_found` (both files);
+`doctor::tests::the_road_line_says_which_road_and_why`; goldens `settings_agents_120x30`,
+`settings_agents_60x20`, `settings_agents_60x20_end` and `settings_codex_60x20` reminted (the
+row gone, the counter `9`, the 120-column dialog two rows shorter and one row lower), reviewed
+by eye; e2e `mod_auto_e2e` (a stub that plays `--version` and `plugin validate`: a 2.1.287 board
+writes its verdict and `claude_road:mod` before any launch and launches with `--plugin-dir` on
+the mod; a 2.1.286 board launches on the hook set with none). `ci/test-run.py`: 2053 of 2053,
+then the mod road's pass 134 of 134; `mod_plugin` with `MESIMON_REQUIRE_CLAUDE=1` against the
+real 2.1.287.

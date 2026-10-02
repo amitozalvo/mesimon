@@ -471,6 +471,9 @@ will not show up in our tests until they break something.
   that edge is echoed and cut by the cooked tty (T-570). Launch words go only into a composer
   `agents::claude::composer` reads off the screen. **Exactly one Ctrl+C clears a composer that
   holds text; a second exits Claude** — the resend sends one, only into a box seen holding text.
+- **Claude Code 2.1.287 wraps a launch's pasted brief in `<pasted_content>`** and follows
+  instructions inside only where the person's own words (the typed title) ask: a worker given a
+  bare title declined a four-step brief (T-588). A one-line paste alone arrives as plain text.
 - **A pty in canonical mode keeps only 1 KiB of a line**, which is why long prompts are pasted
   rather than typed.
 - **macOS caps unix datagrams at 2 KB**, which is why the hook transport is SOCK_STREAM one-shot.
