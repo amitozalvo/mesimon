@@ -23,9 +23,11 @@ Sonnet, is the subject under test: each test's words go to the crown, and
 the crown starts, answers, asks, parks and wakes the workers through its
 MCP tools. Tests and their exact words are `ci/rig/tests.toml`.
 
-Each test's verdict is a note on its ticket, which moves to DONE on a pass and
-stays in REVIEW on a failure; the run's table is printed and written to
-`target/rig/verdicts.md`. Nothing is torn down at the end: `--reset` does it.
+Each test's verdict is a note on its ticket. The crown moves a passed test's
+ticket to DONE when the rig tells it to; a failed one stays in REVIEW. The
+run's table is printed and written to `target/rig/verdicts.md`. Nothing is
+torn down at the end, and nothing on the rig's board is archived but by
+`--reset` (the author's rule: the crown never archives there).
 """
 
 import argparse
@@ -351,20 +353,22 @@ class Rig:
             f"the crown answers and sends")
 
     def clear_previous(self):
-        """A run is repeatable: the tickets of an earlier run are parked and
-        archived first (archive keeps them on disk), so no parked worker
-        holds the checkout and no crown of theirs stands."""
+        """A run is repeatable. An earlier run's tickets stay where they are
+        (only `--reset` archives on this board); their agents are parked,
+        and an agent parked on the checkout is ended (its conversation kept
+        on disk), since a parked agent there holds the checkout and the next
+        R2 would be refused it (T-583)."""
         board = self.board()
-        old = [t for t in board["tickets"] if not t.get("archived")]
-        if not old:
-            return
         self.park_all(board)
-        for t in old:
+        held = [s for s in self.board()["sessions"] if s["kind"] == "claude"
+                and word_of(s["state"]) == "sleeping" and os.path.realpath(s["cwd"]) == self.repo]
+        for s in held:
             try:
-                self.wire.archive(t["id"])
+                self.wire.request({"cmd": "kill_session", "id": s["id"]})
             except WireError as e:
-                say(f"  could not archive {t['short_key']}: {e}")
-        say(f"  archived the previous run's {len(old)} tickets")
+                say(f"  could not end {s['id'][:8]}: {e}")
+        if held:
+            say(f"  ended {len(held)} earlier agents parked on the checkout")
 
     def park_all(self, board):
         live = [s for s in board["sessions"]
@@ -423,7 +427,7 @@ class Rig:
                           f"{t['expect']}" for t in tests)
         return f"""You wear the crown of the rig: a mesimon board inside a ticket worktree, run by `ci/rig.py`, that tests mesimon's Claude Code mod road on the real Claude Code. You are the subject under test: each test proves a crown can drive a worker through the board while the mod relays every frame, with nothing read off a screen.
 
-How a run goes. The rig sends you one step at a time, as a prompt that names one test ticket and the exact tool calls to make. Make exactly those calls, in that order, and nothing else: read no file, run no command, write no note, file no ticket, move no ticket and raise no hand; the rig reads the board itself and writes every verdict. Take a ticket's seen stamp from get_ticket with its key right before a call that needs one. When the board wakes you for a worker, do what the step said for that moment; if it said nothing, end your turn with one line naming the test and the worker's state word.
+How a run goes. The rig sends you one step at a time, as a prompt that names one test ticket and the exact tool calls to make. Make exactly those calls, in that order, and nothing else: read no file, run no command, write no note, file no ticket and raise no hand; the rig reads the board itself and writes every verdict. Move a ticket only when the rig tells you to: a test that passed goes to DONE with move_ticket. Never archive a ticket: on this board only `ci/rig.py --reset` archives. Take a ticket's seen stamp from get_ticket with its key right before a call that needs one. When the board wakes you for a worker, do what the step said for that moment; if it said nothing, end your turn with one line naming the test and the worker's state word.
 
 The tests, in order, and what each needs:
 {order}
@@ -775,12 +779,21 @@ Reply with the single word ready and end your turn."""
                 self.wire.sleep(rec["id"])
             except WireError as e:
                 say(f"  could not park {test['key']}: {e}")
-        column = "DONE" if v["pass"] else "REVIEW"
-        try:
-            self.wire.move(test["ticket"], column)
-        except WireError as e:
-            v["failures"].append(f"move to {column} refused: {e}")
-            say(f"  move to {column} refused: {e}")
+        # The crown moves a finished rig ticket to DONE (the author's rule);
+        # a failure stays where automove left it, in REVIEW, for a person.
+        v["column"] = self.ticket(self.board(), test["ticket"])["column"]
+        if v["pass"]:
+            words = (f"{test['id']} passed; its verdict is a note on {test['key']}. Call move_ticket "
+                     f"for {test['key']} to DONE, then end your turn with the single line: "
+                     f"{test['id']} done.")
+            say(f"  → crown: {words}")
+            mark = max((l.get("at_ms", 0) for l in self.feed_lines), default=0)
+            self.quiet_since = None
+            self.wire.prompt(self.crown, words, queued=False)
+            self.wait_for("the crown's move", lambda: self.crown_settled(after_ms=mark),
+                          STEP_TIMEOUT, self.watch)
+            v["column"] = self.ticket(self.board(), test["ticket"])["column"]
+            self.log(f"{test['key']} is in {v['column']}")
         self.verdicts.append(v)
 
     def table(self):
@@ -794,6 +807,7 @@ Reply with the single word ready and end your turn."""
             failed = [f"✗ {n}: {o}" for n, ok, o in v["results"] if not ok] + [f"✗ {f}" for f in v["failures"]]
             observed = ("PASS ∙ " + "; ".join(o for _, _, o in v["results"])) if v["pass"] else (
                 "FAIL ∙ " + "; ".join(failed))
+            observed += f" ∙ ticket in {v.get('column')}"
             out.append(f"| {v['id']} {v['key']} | {v['expect']} | {observed} | {self.build} |")
         text = "\n".join(out) + "\n"
         for path in (os.path.join(self.out, "verdicts.md"),
