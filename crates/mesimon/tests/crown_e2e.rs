@@ -2863,14 +2863,23 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     // ---- the crown's worker asks: the crown wakes, without the words -------
     hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &question("toolu_a2"));
     c.await_state(ws, "asking", asking);
+    // T-595: the question rode one parallel batch with a Bash call and a
+    // subagent, which finish while its dialog stands.
+    let bash = json!({ "tool_name": "Bash", "tool_use_id": "toolu_bash" }).to_string();
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &bash);
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUseFailure", &bash);
+    let nested = json!({ "tool_name": "Read", "tool_use_id": "toolu_sub", "agent_id": "a1" });
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &nested.to_string());
     let wake = format!("{kw} \"mesimon-probe-569 worker\" asks a question");
     wait_until(std::time::Duration::from_secs(10), "the question's wake on the crown", || {
         landed(&wake)
     });
     assert!(!typed().contains("Which auth provider"), "the question's words never ride a wake");
     start(&mut c, sa);
+    c.await_state(ws, "still asking past its siblings", asking);
     let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the question");
-    assert_eq!(needs.request.as_deref(), Some("toolu_a2"));
+    assert_eq!(needs.request.as_deref(), Some("toolu_a2"), "the words outlive the batch");
+    assert_eq!(needs.questions[0].text, "Which auth provider?");
 
     // ---- refusals in words -------------------------------------------------
     let why = refused(&mut c, &kw, "toolu_a1", Some(0), None);

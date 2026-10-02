@@ -18898,3 +18898,44 @@ road: no wire changed and the phone's answer rides the same `DialogDelivery`, wh
 `mod_turns_e2e` and `crown_e2e` drive under both passes. A decline the mod saw ends the dialog
 but does not move the card off needs-you (no signal says what the engine did next); the next
 frame does, as before.
+
+## A sibling tool's end leaves an open question standing (T-595, 2026-10-02, filed by the crown on T-587 from the T-588 rig run)
+
+**What was wrong.** A Sonnet worker on the rig (R3) sent `AskUserQuestion`, a Bash call and a
+subagent as one assistant message. Claude Code runs them as one parallel batch: the question's
+`PreToolUse` and `PermissionRequest` came first, then the Bash call's and the subagent launch's
+`PostToolUse` while the dialog stood (the rig daemon's feed: Pre 15.94 s, PermissionRequest
+15.97 s, Post 16.90 s, SubagentStart 16.90 s, Post 17.29 s). `control_observe_dialog` dropped the
+projection on any `PostToolUse` or `PostToolUseFailure`, so `get_ticket` gave the crown
+`needs_you: question` with no words and no request, `answer_agent` answered `dialog changed`,
+and a paired phone lost the dialog it draws from the same map. The card stayed right: the
+attention machine reads a sibling's completion as no change to a question.
+
+**The rule now.** A dialog ends only on its own edge: its own call's `PostToolUse` (`Answered`,
+or `ModAnswered` on the mod's report), another tool's `PreToolUse` (`Dismissed`, T-447's refusal
+road), its own call's `PostToolUseFailure` or `PermissionDenied`, the turn's `Stop` or
+`StopFailure`, a new prompt, or the session starting, ending or its pane dying. "Its own call" is
+`dialog_own_call`: the dialog's tool (`AskUserQuestion` or `ExitPlanMode`) and its
+`tool_use_id` where the frame carries one, so the plan and a batch of questions (one call,
+T-571) follow the same rule. `dialog_edge` and the new `dialog_dropped` are the two pure
+functions `control_observe_dialog` asks; a subagent's frame (`agent_id`) still never touches the
+lead's dialog.
+
+**Measured on the way.** The hook set's `PreToolUse` entry matches only `AskUserQuestion` and
+`ExitPlanMode`, so a sibling Bash or Agent call sends no `PreToolUse` the refusal road could
+misread; the feed above has exactly one.
+
+**Tests.** Daemon `mesophon::tests::a_sibling_tool_s_end_leaves_the_dialog_standing` (a
+question, a two-question batch and a plan, each past a sibling's `PostToolUse`,
+`PostToolUseFailure`, `PermissionDenied`, `PermissionRequest` and a `SubagentStop`; its own
+edges and the turn's still end it). E2e `crown_e2e::the_crown_answers_a_question_where_the_person_lets_it`
+sends a Bash call's `PostToolUse` and `PostToolUseFailure` and a subagent's `PostToolUse` after
+the question; the crown still reads its request and words and answers it. It fails on the old
+code at "the words outlive the batch"; passes under both roads.
+
+**Not done, written down.** Two dialogs in one parallel batch (two `AskUserQuestion` calls, or a
+question beside `ExitPlanMode`) both fire `PreToolUse` up front, and the second's dismisses the
+first's projection while Claude Code still shows the first: the projection holds one dialog per
+session. No run has shown it. The relay's acceptance was not run: no wire changed, and a phone
+reads the projection `crown_e2e` now drives. Remote Control's permission wait has the same
+any-`PostToolUse` cancel (`control_cancel_permission` in `on_hook`); it is not this ticket.

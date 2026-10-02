@@ -837,17 +837,7 @@ impl Daemon {
             self.control.dialogs.remove(&id);
             self.control.dialog_edges.insert(id, edge);
         }
-        if matches!(
-            frame.event.as_str(),
-            "UserPromptSubmit"
-                | "SessionStart"
-                | "SessionEnd"
-                | "PaneDied"
-                | "Stop"
-                | "StopFailure"
-                | "PostToolUse"
-                | "PostToolUseFailure"
-        ) {
+        if self.control.dialogs.get(&id).is_some_and(|d| dialog_dropped(frame, d)) {
             self.control.dialogs.remove(&id);
         }
         if !matches!(frame.event.as_str(), "PreToolUse" | "PermissionRequest") {
@@ -3751,30 +3741,41 @@ fn batch_step(
 /// `PostToolUse` says it took an answer; another tool's `PreToolUse` says it
 /// is gone with none taken, the refusal road (T-447). Nothing else does.
 fn dialog_edge(frame: &HookFrame, dialog: &api::Dialog) -> Option<DialogEdge> {
+    let own = dialog_own_call(frame, dialog);
+    match frame.event.as_str() {
+        // The mod's `answered` report rides in as a `PostToolUse` of its own
+        // road (`on_mod_answer`), the only one a dialog the mod closed has.
+        "PostToolUse" if own && frame.road == mesimon_core::road::Road::Mod => {
+            Some(DialogEdge::ModAnswered)
+        }
+        "PostToolUse" if own => Some(DialogEdge::Answered),
+        "PreToolUse" if !own => Some(DialogEdge::Dismissed),
+        _ => None,
+    }
+}
+
+/// Whether this frame ends `dialog` with no answer to confirm: the turn or
+/// the session ending, or its own call failing or denied. Another tool's
+/// end never does (T-595): a model sends a question beside other tools in
+/// one parallel batch, and they finish while the dialog stands.
+fn dialog_dropped(frame: &HookFrame, dialog: &api::Dialog) -> bool {
+    match frame.event.as_str() {
+        "UserPromptSubmit" | "SessionStart" | "SessionEnd" | "PaneDied" | "Stop"
+        | "StopFailure" => true,
+        "PostToolUseFailure" | "PermissionDenied" => dialog_own_call(frame, dialog),
+        _ => false,
+    }
+}
+
+/// Whether a tool frame is the dialog's own call (T-595): its tool, and its
+/// `tool_use_id` where the frame carries one.
+fn dialog_own_call(frame: &HookFrame, dialog: &api::Dialog) -> bool {
     let tool = match dialog.content {
         api::DialogContent::Questions { .. } => "AskUserQuestion",
         api::DialogContent::Plan { .. } => "ExitPlanMode",
     };
-    let name = frame.payload["tool_name"].as_str();
-    let call = frame.payload["tool_use_id"].as_str();
-    match frame.event.as_str() {
-        // The mod's `answered` report rides in as a `PostToolUse` of its own
-        // road (`on_mod_answer`), the only one a dialog the mod closed has.
-        "PostToolUse"
-            if name == Some(tool)
-                && call.is_none_or(|c| c == dialog.request)
-                && frame.road == mesimon_core::road::Road::Mod =>
-        {
-            Some(DialogEdge::ModAnswered)
-        }
-        "PostToolUse" if name == Some(tool) && call.is_none_or(|c| c == dialog.request) => {
-            Some(DialogEdge::Answered)
-        }
-        "PreToolUse" if name != Some(tool) || call.is_some_and(|c| c != dialog.request) => {
-            Some(DialogEdge::Dismissed)
-        }
-        _ => None,
-    }
+    frame.payload["tool_name"].as_str() == Some(tool)
+        && frame.payload["tool_use_id"].as_str().is_none_or(|c| c == dialog.request)
 }
 
 #[cfg(test)]
@@ -4102,6 +4103,77 @@ Enter to select · ↑/↓ to navigate · Esc to cancel";
         assert_eq!(dialog_edge(&frame("PermissionRequest", ask("tool-1")), &dialog), None);
         assert_eq!(dialog_edge(&frame("PostToolUseFailure", ask("tool-1")), &dialog), None);
         assert_eq!(dialog_edge(&frame("Stop", serde_json::json!({})), &dialog), None);
+    }
+
+    /// T-595: a question sent beside a Bash call and a subagent in one
+    /// parallel batch stands while they finish; only its own call's end, a
+    /// later tool's start, the turn's end or the session's drops it. The
+    /// same holds for a plan and for a batch of questions (one call, T-571).
+    #[test]
+    fn a_sibling_tool_s_end_leaves_the_dialog_standing() {
+        let frame = |event: &str, payload: serde_json::Value| HookFrame {
+            session: "s".into(),
+            event: event.into(),
+            reason: None,
+            pane: None,
+            road: mesimon_core::road::Road::Hooks,
+            accepted_ms: 0,
+            payload,
+        };
+        let tool = |name: &str, id: &str| serde_json::json!({"tool_name": name, "tool_use_id": id});
+        let mut two = question();
+        if let api::DialogContent::Questions { questions } = &mut two.content {
+            questions
+                .push(api::Question { question: "Which size?".into(), ..questions[0].clone() });
+        }
+        let plan = api::Dialog {
+            request: "tool-1".into(),
+            content: api::DialogContent::Plan { markdown: "plan".into() },
+        };
+        for (dialog, own) in
+            [(question(), "AskUserQuestion"), (two, "AskUserQuestion"), (plan, "ExitPlanMode")]
+        {
+            let ends =
+                |f: &HookFrame| dialog_edge(f, &dialog).is_some() || dialog_dropped(f, &dialog);
+            // The batch's siblings finish, succeed or fail, while it stands.
+            for sibling in ["Bash", "Agent"] {
+                for event in ["PostToolUse", "PostToolUseFailure", "PermissionDenied"] {
+                    assert!(
+                        !ends(&frame(event, tool(sibling, "tool-2"))),
+                        "{own}: {sibling} {event}"
+                    );
+                }
+            }
+            assert!(
+                !ends(&frame("PostToolUse", serde_json::json!({"tool_name": "Bash"}))),
+                "{own}"
+            );
+            assert!(!ends(&frame("PermissionRequest", tool("Bash", "tool-2"))), "{own}");
+            assert!(!ends(&frame("SubagentStop", serde_json::json!({}))), "{own}");
+            assert!(!ends(&frame("Notification", serde_json::json!({}))), "{own}");
+            // Its own edges end it.
+            assert_eq!(
+                dialog_edge(&frame("PostToolUse", tool(own, "tool-1")), &dialog),
+                Some(DialogEdge::Answered),
+                "{own}"
+            );
+            assert!(dialog_dropped(&frame("PostToolUseFailure", tool(own, "tool-1")), &dialog));
+            assert!(dialog_dropped(&frame("PermissionDenied", tool(own, "tool-1")), &dialog));
+            assert!(!dialog_dropped(&frame("PermissionDenied", tool(own, "tool-0")), &dialog));
+            for event in [
+                "Stop",
+                "StopFailure",
+                "SessionEnd",
+                "SessionStart",
+                "UserPromptSubmit",
+                "PaneDied",
+            ] {
+                assert!(
+                    dialog_dropped(&frame(event, serde_json::json!({})), &dialog),
+                    "{own}: {event}"
+                );
+            }
+        }
     }
 
     // ---- T-571: the shapes measured on Claude Code 2.1.287 -----------------
