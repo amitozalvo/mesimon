@@ -391,7 +391,13 @@ class Rig:
             try:
                 self.wire.sleep(s["id"])
             except WireError as e:
-                say(f"  could not park {s['id'][:8]}: {e}")
+                # Only an idle agent sleeps; one held on a dialog is ended
+                # (its conversation stays on disk).
+                say(f"  could not park {s['id'][:8]} ({e}): ending it")
+                try:
+                    self.wire.request({"cmd": "kill_session", "id": s["id"]})
+                except WireError as e2:
+                    say(f"  could not end {s['id'][:8]}: {e2}")
         deadline = time.time() + 90
         while live and time.time() < deadline:
             board = self.board()
