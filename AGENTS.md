@@ -148,6 +148,10 @@ Additional targeted gates:
 - Linux suite: `ci/test-linux.sh` (requires Docker).
 - Trying unreleased work by hand, Remote Control included: `ci/sandbox.sh` (requires Docker and
   the `mesimon-relay` checkout beside this one); its header lists what each change needs.
+- The real Claude Code on the mod road: `python3 -B ci/rig.py` in a ticket worktree (a
+  `msmn/` branch) lays a board there and drives Sonnet sessions through that board's crown, one
+  test of `ci/rig/tests.toml` at a time; `--lay` starts nothing, `--reset` stops it all. It
+  costs cents per run and needs the author's Claude Code login.
 - Linux release artifacts: `ci/build-linux.sh`.
 - Release rehearsal: `ci/release.sh --dry-run`; follow the script's current Docker policy and
   never publish as part of an ordinary development task. The author releases with one command,

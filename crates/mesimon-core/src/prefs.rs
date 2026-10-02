@@ -257,6 +257,12 @@ impl PrefKey {
 mod tests {
     use super::*;
 
+    /// T-588: the Claude road is no setting, on either layer.
+    #[test]
+    fn the_claude_road_is_no_pref() {
+        assert!(PrefKey::ALL.iter().all(|k| k.name() != "claude_integration"));
+    }
+
     #[test]
     fn key_names_are_unique_and_the_terminal_keys_are_machine_only() {
         let mut names: Vec<_> = PrefKey::ALL.iter().map(|k| k.name()).collect();
