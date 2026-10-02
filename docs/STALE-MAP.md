@@ -19073,3 +19073,191 @@ the park the live check rides; R6 is an `/exit`, which always paired. T-588's ot
 launch whose mod relayed nothing for its whole life, is T-594's; that block's reading of the park
 lines (the SIGTERM landing while the mod's relay is in flight) is the hypothesis this block
 measured and set aside.
+
+## The mod carries a Claude session alone: frames, gate and tools (T-577, 2026-10-03, part B of T-587, filed by the crown; folds T-577 "the hook set rides the mod alone and the gate moves in-process" and T-578 "the board's tools by $.tool.register, no shim, no --allowedTools")
+
+**What shipped.** A Claude launch on a Claude Code ≥ 2.1.287 whose laid mod validated passes
+`--plugin-dir` and none of `--settings`, `--mcp-config` or `--allowedTools`; no settings file is
+written for it. The mod is the session's whole integration:
+
+- **Frames.** It relays the hook set's 17 events by the same names and matchers through `mesimon
+  hook --road mod`, one after another (`runAfter` chains each relay on the one before, so
+  hook.sock accepts them in event order: two `mesimon hook` processes started milliseconds apart
+  may connect in either order, which T-574 left open). The daemon routes a mod frame
+  (`Msg::ModHook`) to ingest where `SessionRecord::frames_by_mod` (road `mod` and no
+  `--settings` on argv), and drops a hook-set frame of a relayed event there; a record an
+  earlier build launched on the mod still has its hook set and is read by it until its next
+  wake, which re-decides the road and now owns the `--settings` pair. The feed's `hook` lines
+  carry `"road": "mod"`. `PreToolUse` carries a subagent's `agent_id` again: `classic.PreToolUse`
+  has none, so the mod notes it from the `tool.call` beneath, by `tool_use_id`. `mesimon hook`'s
+  500 ms self-abort stays for the hook set alone; on `--road mod` the bound is the mod's own
+  `timeoutMs` (5 s), since a cut frame is now a frame the board never hears.
+- **The gate, in-process.** A `tool.call` hook on `Write|Edit|NotebookEdit` holds `mesimon
+  gate`'s rules: the path folded by spelling, then placed by its deepest real ancestor
+  (`$.fs.stat({ resolve: true })`), the worktrees first, then the board dir, then the state dir,
+  from the pane's `MESIMON_MOD_GATE_BOARD|STATE|ALLOW`, read at every guarded call. A refusal is
+  `{ deny }` in `RuleId::reason`'s exact words (a unit test holds the literals), then a
+  `GateDenied` report for the feed. Nothing asks the daemon, so a dead one still refuses (a
+  `claude plugin test` case); a decision that cannot be made refuses (`Mesimon write guard
+  context is unavailable`, `mesimon gate`'s own trusted-environment rule), because a `tool.call`
+  hook that throws is skipped and the native write would run. **Found on the way:** `mesimon
+  gate` read only `file_path`, and `NotebookEdit` names its file `notebook_path`; both gates now
+  judge either.
+- **Approve.** `classic.PermissionRequest` relays the observer frame and puts the payload to
+  `mesimon approve`, as the hook set's 50 s entry did, beside whatever else answers the dialog;
+  a decision from a paired phone is returned as the dialog's, none leaves the dialog the
+  person's. The mod spells no `allow`: the decision is the daemon's, passed through whole.
+- **The tools.** Once `session.start` has read the pane variables, the mod runs `mesimon mcp
+  --list --tools <tier>` (`mcp::registered_for`: `tools_for(tier)` less `annotations`),
+  registers each with `$.tool.register`, and only then starts the bridge (`bringUp`): the daemon
+  sends no word before the bridge's first poll, so the tools are listed before any turn it
+  starts. The plugin is named `mesimon`, so the model reads the
+  same `mcp__mesimon__<name>`s. Each call goes through `mesimon mcp --call <tool> [--tool-use-id
+  id]` with the model's arguments on stdin, the same translation and the same daemon checks as
+  the stdio shim (`agent_allows`, the tier, the crown). The tier rides the pane
+  (`MESIMON_MOD_TOOLS`, absent at `off`). A session.start whose read of the pane variables
+  failed (T-594) leaves the tools, like the bridge, to the first later event that reads them.
+
+**A silent mod, found by the rig and fixed twice.** The first full run started three workers at
+once (P5) and two came up idle at their composer with a mod that relayed nothing and never started
+a bridge: T-594's silent launch, which with no hook set behind it is a seat `spawning` for ever.
+Two causes. In the mod, `settings()` shared one in-flight read of the pane variables across
+events, and `session.start`, which this ticket had made register the tools before `next(e)`, made
+that first read; when its dispatch was abandoned under three concurrent startups, every event
+awaiting the shared read failed with it, and an idle session has no next event to read again.
+Each event now reads for itself, and `session.start` reads after `next(e)` (as T-594 had it) and
+brings the tools and then the bridge up without holding the hook (`bringUp`): the daemon sends no
+word before the bridge's first poll, so the tools are still listed before any turn it starts. In
+the daemon, a net (`rescue_silent_mods`): a mod-alone launch with no `SessionStart` twice the
+bridge wait after its spawn (20 s) has its words armed on the paste road, journalled and fed as
+`mod_silent`; the composer read still gates the paste, the prompt it submits is an event the mod
+reads on a fresh dispatch, and a mod that never wakes leaves the words `unsent` on the card.
+After the fix P5 passed three runs of three starts at once with no `mod_silent` line.
+
+**A registered tool goes through no permission check, in any mode.** T-573 row 7 measured it and
+T1/T2 below hold it: no dialog, no allow rule, plan mode included, and that is for the writers too
+(`move_ticket`, `write_note`, `create_ticket`, the crown's `start_agent`), which on the hook set's
+road still prompted in default mode and were refused in plan mode. So on the mod road **the
+daemon's server-side check is the only gate**: the never-tier is `mcp::agent_allows`' exhaustive
+match with no `_` arm, the tier is checked against the ticket's column at every call, and the
+crown's keyed tools against the crown. It was already the only real gate (an agent can run
+`mesimon mcp` itself); the dialog was a courtesy, and it is gone. `docs/USING.md` says so.
+
+**Promise 3.** The registered tools are `core/src/mcp.rs`'s names, descriptions and schemas,
+under the same lint and 820-byte cap; `doctor --mcp` prints them and now says the mod registers
+them and that no permission is asked. The mod's never-list test allows exactly two `deny`s, the
+gate's (`mesimon gate`'s words, which the hook set already hands the model) and a board tool's
+refusal (the daemon's words, which the shim's `isError` result carried), and bans `'allow'`,
+`"allow"`, `'ask'` and `"ask"` anywhere in the mod's code; the repo-wide `permissionDecision`
+scan now walks the mod's TypeScript too. Bash stays unhooked.
+
+**Measured on 2.1.287 and 2.1.288** (Claude Code updated itself to 2.1.288 during the work; the
+probe re-ran and the mod validated there, and the final rig run is on it).
+
+| what | found |
+|---|---|
+| up-channel, per event | `$.process.run([mesimon, "hook", …])` 30 in a row: median 5 ms, p90 10, max 15; 30 at once: 49 ms. `$.mcp.call` on a stdio server the mod's manifest lists: median 4, p90 10, max 38; 30 at once: 53 ms. **Picked `$.process.run`**: the same cost, and `$.mcp.call` was refused without an allow rule (`Claude requested permissions to use mcp__plugin_probe_echo__echo`) while that server's tools are listed to the model. The first exec of a freshly built debug binary held 5 s (Gatekeeper's first-exec scan) |
+| a registered tool's answer | `{ result: "<text>" }` is read verbatim; an array of API blocks works (an 8x8 PNG as `{ type: 'image', source: { type: 'base64', … } }` was seen); an MCP-shaped `{ content, isError }` is refused (`does not match its output shape`); a hook's `{ isError: true }` is **not** marked an error, `{ deny }` is (`<tool_use_error>`) |
+| a `tool.call` hook that throws | skipped: the registered tool then reads to the model as `Claude requested permissions to use mcp__probe__probe_throw, but you haven't granted it yet` |
+| `PostToolUse` | none fires for a call a mod's hook answered: T1's eight board calls produced one `PostToolUse`, ToolSearch's |
+| token cost | `claude plugin details mesimon` (under `--plugin-dir`): "Always-on ~0 tok": the tools are registered at runtime and, like MCP tools in this build, deferred behind ToolSearch. Bytes: 17 tools, 11,989 registered against the shim's 12,133 (four `readOnlyHint`s) |
+| a `turn.step` generator hook | not measured: phase 8 has not asked for one |
+
+**The soak bar, as the program moved it.** `road_disagree` over R's and A's rig runs and the
+author's board: T-588's four runs had 7 lines in two kinds, both bugs, both fixed before this
+ticket dropped the hook set: a park's `SessionEnd` read as `no_mod_twin` (T-593: the daemon's
+shadow forgot the session at the park's tick; the mod's relay was never lost) and one launch whose
+mod relayed nothing (T-594: a failed read of the pane variables was kept for the process's life).
+A's final run had none on a turn road. Then the shadow went: with no hook set there is no twin,
+so `shadow.rs`, `road_disagree`, doctor's count, `Msg::Tick`'s timestamp and
+`HookFrame::accepted_ms` (both the shadow's) are gone, and main's T-593 and T-594 tests were
+rewritten for the mod alone (a park's `SessionEnd` lands by the mod after the pane is gone and
+the park stands; a load failure is a feed line).
+
+**Retired for Claude on the mod road:** the per-session settings file and its 36 entries, the
+command-hook framing and the 500 ms self-abort, `mesimon gate`, `mesimon approve` as a settings
+hook, the inline `--mcp-config` and the stdio shim, `--allowedTools` and T-362's hint pair, and
+the shadow. **Kept whole** for an older Claude Code and for Codex: `hook_settings.rs`, `mesimon
+gate`, `mesimon approve`, `mesimon mcp`'s server.
+
+**The rig, faster without testing less** (the crown's note on this ticket). A passed test's move
+to DONE rides the head of the next words the crown is sent instead of a turn of its own, and the
+run's last words carry the last one; a step that ends on the board's wake ends on that turn's Stop
+with no 6 s quiet; `--failed` re-runs the last table's failures and `--only T` a group; the card's
+words merge the feed's `session_state` lines with the polls (D1's false FAIL was a 1.5 s
+`working` between two polls). The shadow's 4 s sweep wait is 1 s. The crown waits for a passing
+probe of *this* build's mod (`mod_digest`, computed as `modroad::digest`), since a new build's
+mod is probed again and a crown started on the stale `road.json` launched on the hook set.
+Three things the full run met in the rig itself: rig boards in different worktrees share the
+repository's branches and each counts its keys from T-1, so this board's `T-9 · R1` asked for
+T-588's still-attached `msmn/T-9-r1-…` (each title is now headed by the worktree's own ticket,
+`T-577 R1 · …`); P4's dropping mod declared its flag by replacing `let bridgeOn = false`, which
+T-594 removed, so the patched submit threw before reporting (it now anchors on the `seen` list and
+dies if that moves); and R2's worker, parked on the checkout, held it from T3 (an agent on the
+checkout is now ended after its verdict, as `clear_previous` does at a run's start).
+**Before:** A's full run `20261002-222408`, 17 tests, 16 min 35 s from `=== rig` to its table.
+**After:** the final full run `20261003-011608` on `d08796e2`, 20 tests: 17.8 min wall, of which
+574 s was D5 waiting out its 600 s step against the 27 s it took on its re-run, so about 8.2 min
+for 20 tests; the 17 tests A ran took 395 s of test time against A's 699 s, with no close-out turn
+after each (A's were about 16 s).
+
+**Acceptance on the rig** (the final full run `20261003-011608`, and D5 re-run with `--failed` on
+the same binary; build `claude 2.1.288 ∙ msmn/T-577-mod-road-b-frames-gate-and-tools@d08796e2`,
+crown and workers on `claude-sonnet-5-5`, effort low; the crown itself on the mod, so every
+crown call in the run went through `$.tool.register`; every verdict is a note on its rig ticket):
+
+| test | expected | observed | build |
+|---|---|---|---|
+| R1 a worker starts in a worktree | `start_agent` (worktree); the brief its first prompt; road mod, `--plugin-dir`; working then idle; `claude_road:mod`; no hook set or MCP flag, every frame by the mod | PASS: title and brief whole; SessionStart, UserPromptSubmit, Stop; 4 frames, all by the mod | 2.1.288 ∙ d08796e2 |
+| R2 a worker starts on the checkout | the same, `shared_checkout` | PASS: the checkout; 4 frames, all by the mod | 2.1.288 ∙ d08796e2 |
+| R3 every hook-set event reaches the daemon | a question the crown answers, a tool, a subagent, the turn's end, every event by the mod alone; the card's words each seen | PASS: working → needs you → working → idle; UserPromptSubmit×2, PreToolUse, PostToolUse×4, SubagentStart, SubagentStop, Stop×2: 16 frames, all by the mod | 2.1.288 ∙ d08796e2 |
+| R4 a daemon restart loses no frame | ping before and after a SIGTERM; the crown's next ask by the mod | PASS: pong 8 ms, then 5 ms; 7 frames, all by the mod | 2.1.288 ∙ d08796e2 |
+| R5 sleep and wake keep the conversation | `sleep_agent`, then `start_agent` wakes it on the mod; the next turn answers from the conversation | PASS: … → sleeping → working → idle; `--plugin-dir` on the woken argv; it answered `mango` | 2.1.288 ∙ d08796e2 |
+| R6 pane-died still ends a session | `/exit` (the paste road, a slash command); SessionEnd by the mod and PaneDied; the record parks | PASS: SessionEnd and PaneDied; sleeping; 5 frames, all by the mod | 2.1.288 ∙ d08796e2 |
+| R7 too old for mods | a 2.1.286 wrapper: the hook set's road whole (settings, MCP server), doctor says older | PASS: road hooks, no `--plugin-dir`; doctor `hooks ∙ claude 2.1.286 is older than 2.1.287`; the daemon back on the mod after | 2.1.288 ∙ d08796e2 |
+| P1 a 10 KB brief at launch | title, blank line and brief byte for byte, down the mod | PASS: 10,490 chars byte for byte; `prompt_by_mod`, no paste | 2.1.288 ∙ d08796e2 |
+| P2 a prompt into a running turn | held by the engine, entered after the first Stop | PASS: entered 28 ms after the first Stop; `first` → `second` | 2.1.288 ∙ d08796e2 |
+| P3 the crown's `ask_agent` | down the mod, whole, answered | PASS: two `prompt_by_mod`; `ready` → `lantern` | 2.1.288 ∙ d08796e2 |
+| P4 the resend of an unsent brief | a mod that drops each session's first submit: refused, kept unsent; the resend down the mod | PASS (FAIL on ac407dae: the rig's patch, see above): `prompt_submit_refused`, `prompt_resent`; one prompt; `resent` | 2.1.288 ∙ d08796e2 |
+| P5 three starts at once | each first prompt its own title and brief, down the mod | PASS (FAIL on ac407dae: two silent mods, see above; three runs since, no `mod_silent`): each byte for byte, one `prompt_by_mod` each | 2.1.288 ∙ d08796e2 |
+| D1 one-choice question | the crown answers blue down the mod; `ModAnswer answered` moves the card | PASS: `answer_by_mod`, `ModAnswer (answered)`; replied `blue` | 2.1.288 ∙ d08796e2 |
+| D2 a batch | two questions in one `answer_agent`, one frame | PASS: `blue; large`; replied `blue large` | 2.1.288 ∙ d08796e2 |
+| D3 a several-choice question | indices 0 and 2 as labels joined by `, ` | PASS: `cheese, olives` | 2.1.288 ∙ d08796e2 |
+| D4 a person's answer first wins | Enter in the pane before the crown answers | PASS: replied `red`; the crown's answer refused; no `answer_by_mod` | 2.1.288 ∙ d08796e2 |
+| D5 the crown accepts a plan | `accept_plan` presses the dialog's first row; the worker writes with no permission asked | PASS on the re-run (same binary). The full run's FAIL: Sonnet called `ExitPlanMode {}` without writing a plan file, the board keeps no projection for an empty plan (T-582, either road), and the crown had no request to accept | 2.1.288 ∙ d08796e2 |
+| T1 the board's tools with no MCP server | the eight tools served by `$.tool.register` and `mesimon mcp --call`; no MCP server process, no `--mcp-config`, `--allowedTools` or `--settings`; no error, no permission asked; `doctor --mcp` lists them and says the mod registers them | PASS: 8 served with no error; no `mesimon mcp` server for the session; never needs-you; 5 frames, all by the mod | 2.1.288 ∙ d08796e2 |
+| T2 plan mode admits the read tools | `--permission-mode plan`; `get_ticket`, `list_board` served, no dialog | PASS: 2 served with no error; never needs-you; replied `read` | 2.1.288 ∙ d08796e2 |
+| T3 a write under `.mesimon` is refused | the mod refuses the Write at `tool.call` in `mesimon gate`'s words, no dialog; the file not created; `GateDenied (board_dir)` by the mod | PASS: 1 Write, refused in the gate's words; `.mesimon/rig-t3.txt` not created; `GateDenied (board_dir)`; replied `tried` | 2.1.288 ∙ d08796e2 |
+
+**Tests.** Core `mcp::tests::the_registered_set_is_tools_for_the_tier`,
+`board::tests::frames_ride_the_mod_only_where_no_hook_set_was_passed`,
+`verdict::tests::no_source_line_can_decide_allow_or_ask` (now `.ts` too); daemon
+`hook_settings::tests::the_mod_gate_says_what_mesimon_gate_says`,
+`the_mod_spells_nothing_on_the_never_list` (two denies, no allow or ask),
+`agents::claude::tier_tests::the_mod_road_carries_no_mcp_config_and_no_allow_rule`; binary
+`gate::tests::provider_is_explicit_and_codex_never_parses_shell_input` (`notebook_path`). The
+mod's `register.test.ts` under `claude plugin test`: 33 tests, the gate's seven (board and state
+refused in the gate's words and reported, worktrees and source and a `.mesimon-notes` sibling
+through, `..` and a link into the board dir, a notebook, a dead daemon, no roots, a failed read
+of the roots refused then read again), the tools' seven (registered word for word, none without a
+tier, a call through `mesimon mcp --call`, a refusal as a deny and an image as an image, a call
+that cannot be made refused not thrown, an unregistered name not served, registration left to the
+next event after a failed read) and the frames' four (relays in event order, a subagent's
+`agent_id`, the permission dialog put to `mesimon approve`, two events' reads apart). E2e:
+`mod_bridge_e2e`'s
+`the_mods_frames_are_the_sessions_and_the_hook_sets_are_not` replaces the shadow's test;
+`Shim::call` is `mesimon mcp --call` under the mod pass, so every e2e's tool call holds on both
+roads; `hook_send` sends the mod's twin on both passes and the daemon takes one; `hook_e2e`,
+`mcp_e2e`, `agent_tools_e2e`, `brief_e2e` and `m3_e2e` read the launch's road (`launch_tools`,
+`pane_start`); `mod_turns_e2e`'s answered and person-first edges now tell the mod's report from
+the engine's relayed `PostToolUse` by its reason, and
+`a_mod_launch_with_no_session_start_is_given_its_words_by_paste` holds the rescue.
+`ci/test-run.py` at d08796e: 2,074 of 2,074, then the mod road's pass 143 of 143, fixture audit
+clean (an earlier run lost `worktree_e2e` to load once; it passed four times alone).
+
+**Not done, written down.** The phone's permission answer through the mod's `mesimon approve`
+is held by `claude plugin test` and by the daemon's unchanged `RemotePermission` road, not by the
+rig (it needs a paired phone) nor by an e2e (the stand-in engine runs no TypeScript); the relay's
+acceptance (`mesimon-relay`) was not run. A writer tool in plan mode now runs unasked on the mod
+road; whether the board should refuse writers to a session in plan mode is the author's call and
+is not built.
