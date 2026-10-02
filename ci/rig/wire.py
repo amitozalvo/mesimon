@@ -81,7 +81,11 @@ class Wire:
                 time.sleep(0.1)
         s.settimeout(timeout)
         self.sock = s
-        self.reader = s.makefile("r", encoding="utf-8", newline="\n")
+        self.timeout = timeout
+        # A buffer of our own, not `socket.makefile`: a buffered reader
+        # refuses every read after one timeout ("cannot read from timed out
+        # object"), and a subscription times out on every quiet wait.
+        self.buf = b""
         self.hello = self.request({"cmd": "hello", "version": PROTOCOL_VERSION, "client": client})
 
     def __enter__(self):
@@ -92,31 +96,37 @@ class Wire:
 
     def close(self):
         try:
-            self.reader.close()
             self.sock.close()
         except OSError:
             pass
 
     def _line(self):
-        line = self.reader.readline()
-        if not line:
-            raise ConnectionError("the daemon closed the connection")
+        """One whole line as JSON. A timeout raises `socket.timeout` and
+        keeps what was read for the next call."""
+        while b"\n" not in self.buf:
+            chunk = self.sock.recv(1 << 16)
+            if not chunk:
+                raise ConnectionError("the daemon closed the connection")
+            self.buf += chunk
+        line, _, self.buf = self.buf.partition(b"\n")
         return json.loads(line)
 
     def request(self, command, timeout=None):
         """Send one command as the person; return the response dict, or raise
         `WireError` on `Response::Err`."""
-        if timeout is not None:
-            self.sock.settimeout(timeout)
+        self.sock.settimeout(timeout or self.timeout)
         envelope = {"principal": LOCAL, "command": command}
         self.sock.sendall((json.dumps(envelope) + "\n").encode())
-        while True:
-            msg = self._line()
-            if "event" in msg and "resp" not in msg:
-                continue
-            if msg.get("resp") == "err":
-                raise WireError(msg.get("message", "refused"))
-            return msg
+        try:
+            while True:
+                msg = self._line()
+                if "event" in msg and "resp" not in msg:
+                    continue
+                if msg.get("resp") == "err":
+                    raise WireError(msg.get("message", "refused"))
+                return msg
+        finally:
+            self.sock.settimeout(self.timeout)
 
     # ---- Reads.
 
