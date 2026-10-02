@@ -52,8 +52,8 @@ TIER_MODEL_FULL = "claude-sonnet-5-5"
 TIER_EFFORT = "low"
 TIER_DESCRIPTION = "every rig test and the rig's crown"
 STEP_TIMEOUT = 600
-WAKE_GRACE = 30
-QUIET = 4.0
+WAKE_GRACE = 60
+QUIET = 6.0
 SWEEP_WAIT = 4.0  # the shadow calls a lone frame after 2 s
 # What a terminal hands a program it starts: the rig's daemon is started from
 # this, never from the environment of the agent running the rig, which
@@ -576,17 +576,20 @@ Reply with the single word ready and end your turn."""
         if not self.wait_for("worker", worker_done, STEP_TIMEOUT, self.watch):
             record["failures"].append(f"timed out waiting for {test['key']}: {until}")
             return False
-        # The board wakes the crown for its worker once the worker reached
-        # its last state; the step ends when the crown's turn on that wake
-        # ended (its Stop) and it has been quiet. A worker that wakes nobody
-        # (an /exit) leaves the crown idle: then quiet alone ends it.
+        # Where the board wakes the crown for its worker (`wake`), the step
+        # ends when the crown's turn on that wake ended (its Stop) and it has
+        # been quiet; elsewhere, when it has been quiet. A wake the step did
+        # not expect still resets the quiet, since the crown works on it.
         rec = self.agent_of(self.board(), test["ticket"])
         final_at = max((l["at_ms"] for l in self.worker_lines(rec["id"], mark)
                         if l.get("kind") == "session_state"), default=0)
-        wake = self.wait_for("crown wake", lambda: next((
-            l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
-            and l.get("worker") == test["ticket"] and l.get("at_ms", 0) >= final_at - 500), None),
-            WAKE_GRACE, self.watch)
+        wake = None
+        if step.get("wake"):
+            wake = self.wait_for("the board's wake for the crown", lambda: next((
+                l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
+                and l.get("worker") == test["ticket"] and l.get("at_ms", 0) >= final_at - 500),
+                None), WAKE_GRACE, self.watch)
+            record["wakes"].append(wake.get("cause") if wake else "none came")
         self.quiet_since = None
         settled = (lambda: self.crown_settled(after_ms=wake["at_ms"])) if wake else self.crown_settled
         if not self.wait_for("crown", settled, STEP_TIMEOUT, self.watch):
@@ -647,7 +650,7 @@ Reply with the single word ready and end your turn."""
         start_mark = len(self.feed_lines)
         t0 = time.time()
         say(f"\n▶ {test['id']} {test['key']}: {test['title']}")
-        record = {"failures": [], "pings": [], "doctor": None}
+        record = {"failures": [], "pings": [], "doctor": None, "wakes": []}
         ok = True
         for step in test["steps"]:
             if ok:
@@ -742,6 +745,8 @@ Reply with the single word ready and end your turn."""
             "timing": timing, "hooks": hooks, "words": words,
             "pass": all(ok for _, ok, _ in results) and not record["failures"],
             "model": model_of(rows),
+            "wakes": [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
+                      and l.get("worker") == test["ticket"]],
         }
 
     def timing(self, mine):
@@ -771,7 +776,8 @@ Reply with the single word ready and end your turn."""
         note += [f"| `{n}` | {'✓' if ok else '✗'} | {o} |" for n, ok, o in v["results"]]
         note += [f"| step | ✗ | {f} |" for f in v["failures"]]
         note += ["", f"**Frames the daemon ingested** (hook road, in order): {', '.join(v['hooks']) or 'none'}.",
-                 f"**Card words seen:** {' → '.join(v['words']) or 'none'}."]
+                 f"**Card words seen:** {' → '.join(v['words']) or 'none'}.",
+                 f"**The board woke the crown for it:** {', '.join(v['wakes']) or 'never'}."]
         self.wire.write_note(test["ticket"], "\n".join(note))
         rec = self.agent_of(self.board(), test["ticket"])
         if rec and word_of(rec["state"]) not in ("sleeping", "exited", "failed"):
