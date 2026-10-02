@@ -27,11 +27,10 @@
 #   wake       for a crown step: true where the board will wake the crown
 #              for the worker once `until` holds, and the step ends with the
 #              crown's turn on that wake. The board wakes a crown for a
-#              delivery (something new to merge: on the checkout, any new
-#              HEAD), an answered ask, a question or a raised hand, and a
-#              merge (T-414, T-469, T-527) — never for a turn that merely
-#              ended, so a start that leaves nothing to merge wakes nobody
-#              and its step ends when the crown has been quiet.
+#              delivery, an answered ask, a question or a raised hand, a
+#              merge (T-414, T-469, T-527) and, since T-591, a turn that
+#              finished with nothing pending; an /exit ends no turn and
+#              wakes nobody, so that step ends when the crown is quiet.
 #   checks     what the verdict reads, each a name `ci/rig.py` defines:
 #              road:<mod|hooks>, plugin_dir, no_plugin_dir, started_by_crown,
 #              cwd:<worktree|checkout>, first_prompt, words:<w1,w2,...> (the
@@ -55,8 +54,9 @@ expect = "start_agent with workspace worktree; the brief is its first prompt; Se
 checks = ["road:mod", "plugin_dir", "started_by_crown", "cwd:worktree", "first_prompt", "words:working,idle", "hooks:SessionStart,UserPromptSubmit,Stop", "no_disagree", "claude_road_mod"]
 
   [[test.steps]]
-  crown = "R1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R1 started."
+  crown = "R1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R1 started. When the board wakes you for {key}, end your turn with the single line: R1 seen."
   until = { stops = 1, state = "idle" }
+  wake = true
 
 [[test]]
 id = "R2"
@@ -85,8 +85,9 @@ expect = "a question (AskUserQuestion: needs-you; the crown answers it with answ
 checks = ["road:mod", "words:working,needs_you,working,idle", "hooks:UserPromptSubmit,PreToolUse,PostToolUse,SubagentStart,SubagentStop,Stop", "no_disagree", "crown:answer_agent"]
 
   [[test.steps]]
-  crown = "R3: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R3 started. Its agent will stop on the question \"Which colour?\": when the board wakes you for that question, read it with get_ticket for {key}, answer it with answer_agent choosing blue, and end your turn with the single line: R3 answered."
+  crown = "R3: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R3 started. Its agent will stop on the question \"Which colour?\": when the board wakes you for that question, read it with get_ticket for {key}, answer it with answer_agent choosing blue, and end your turn with the single line: R3 answered. When the board wakes you because {key}'s agent finished, end your turn with the single line: R3 seen."
   until = { stops = 1, state = "idle" }
+  wake = true
 
 [[test]]
 id = "R4"
@@ -97,8 +98,9 @@ expect = "mesimon state ping answers before; the rig's daemon is stopped with SI
 checks = ["road:mod", "pings", "hooks:UserPromptSubmit,Stop", "no_disagree", "crown:ask_agent"]
 
   [[test.steps]]
-  crown = "R4: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R4 started."
+  crown = "R4: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R4 started. When the board wakes you for {key}, end your turn with the single line: R4 ready."
   until = { stops = 1, state = "idle" }
+  wake = true
 
   [[test.steps]]
   rig = "ping"
@@ -123,8 +125,9 @@ expect = "the crown parks the worker with sleep_agent once it is done and wakes 
 checks = ["road:mod", "plugin_dir", "words:working,idle,sleeping,working,idle", "crown:sleep_agent", "crown:start_agent", "crown:ask_agent", "reply:mango"]
 
   [[test.steps]]
-  crown = "R5: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R5 started."
+  crown = "R5: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R5 started. When the board wakes you for {key}, end your turn with the single line: R5 ready."
   until = { stops = 1, state = "idle" }
+  wake = true
 
   [[test.steps]]
   crown = "R5, its agent is done: do three things in order. Call sleep_agent for {key}. Then call start_agent for {key} with workspace worktree again, which wakes the parked agent. Then call ask_agent for {key} with the text: Which word were you asked to remember? Reply with that word alone and end your turn. Then end your turn with the single line: R5 asked. When the board wakes you because {key}'s agent answered, end your turn with the single line: R5 seen."
@@ -140,8 +143,9 @@ expect = "the crown sends the worker /exit; the pane dies, tmux's pane-died ends
 checks = ["road:mod", "hooks:SessionEnd,PaneDied", "no_disagree", "crown:ask_agent", "final:sleeping"]
 
   [[test.steps]]
-  crown = "R6: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R6 started."
+  crown = "R6: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R6 started. When the board wakes you for {key}, end your turn with the single line: R6 ready."
   until = { stops = 1, state = "idle" }
+  wake = true
 
   [[test.steps]]
   crown = "R6, its agent is done: call ask_agent for {key} with the text /exit, then end your turn with the single line: R6 sent."
@@ -159,8 +163,9 @@ checks = ["road:hooks", "no_plugin_dir", "started_by_crown", "words:working,idle
   rig = "restart_old_claude"
 
   [[test.steps]]
-  crown = "R7: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R7 started."
+  crown = "R7: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R7 started. When the board wakes you for {key}, end your turn with the single line: R7 seen."
   until = { stops = 1, state = "idle" }
+  wake = true
 
   [[test.steps]]
   rig = "doctor"

@@ -18593,7 +18593,8 @@ dialog), archives, and stops the rig's daemon and its tmux (this proj16's socket
 The rig turns the crown's sends on (T-550), since its asks would otherwise wait for a person's
 `^y`, and leaves the crown's answers on (its default). A crown step names the exact calls and
 the line to end on; a step the board will wake the crown for (`wake = true`: a delivery, an
-answered ask) ends with the crown's turn on that wake, any other when the crown is quiet.
+answered ask, and since T-591 a finished turn) ends with the crown's turn on that wake, any
+other when the crown is quiet.
 
 **The wire client** (`ci/rig/wire.py`, standard library only) speaks `orch.sock` as
 `state.rs::request` and the harness's `TestClient` do: `Hello { version: 2 }`, then one
@@ -18641,9 +18642,12 @@ alive.
   asked what was wanted. A one-line paste on its own (each crown step) arrives as the person's
   text. The rig's titles now ask ("…: do the steps below"); phase 2's `$.prompt.submit` with
   `asUser: true` (T-573 row 2) is the road that delivers a brief as the person's words.
-- **A plain finished turn wakes no crown** (T-469): only a delivery (on the checkout, any new
-  HEAD), an answered ask, a question or raised hand, and a merge. A crown told "when the board
-  wakes you because it finished" after a worktree start waits for ever.
+- **A plain finished turn woke no crown** (T-469): only a delivery, an answered ask, a question
+  or raised hand, and a merge, so a crown told "when the board wakes you because it finished"
+  after a worktree start waited for ever, and the run split R5 and R6 into rig-driven steps.
+  T-591, filed from this finding, landed first: a turn that finishes with nothing pending now
+  wakes the crown (`finished`). On the rebase the rig's start steps expect that wake
+  (`wake = true`); R5 and R6 going back to crown-driven is ticket A's, as T-591 says.
 - **A parallel tool batch clears a question's projection.** Sonnet sent AskUserQuestion, the
   Bash call and the subagent as one batch; the Bash call's `PostToolUse` cleared the open
   question in `control_observe_dialog` (any `PostToolUse` drops it), so `get_ticket` gave the
