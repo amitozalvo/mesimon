@@ -18672,3 +18672,78 @@ writes its verdict and `claude_road:mod` before any launch and launches with `--
 the mod; a 2.1.286 board launches on the hook set with none). `ci/test-run.py`: 2053 of 2053,
 then the mod road's pass 134 of 134; `mod_plugin` with `MESIMON_REQUIRE_CLAUDE=1` against the
 real 2.1.287.
+
+## The merged wake waits for the worker's notice turn to end (T-596, 2026-10-02, filed by the crown on T-587; the author, watching T-588 land: "the board also told T-588 about the merge, this is also a gap because you should probably be woken only after T-588 is finished entirely.")
+
+**Seen.** The train merged T-588 and T-590 and pasted each worker the merged notice; on the same
+tick `hear_merges` woke the crown `merged`. Its `get_ticket` read `state: working, since 5 s`:
+the worker was on the notice turn, and the close-out the wake was for (`sleep_agent`, then DONE)
+is refused on a working agent, so the wake cost a crown turn that could only wait for the next
+one. Delivery, in the author's rule (T-587, the parked-seat note on T-573): merged, the agent
+notified, and its turn ended. T-414's merge-step rule kept the notice turn itself silent but
+said nothing about the merge it belonged to.
+
+**Shipped: one list of what is pending on a ticket, and a merge waits for its step.** This was
+the third "pending" case after T-554 (the train will take it) and T-591 (nothing pending wakes),
+each written as its own rule. `crownwake.rs`'s doctrine now holds the list, `Pending` has one
+field per line (`train`, `merge_step`, `words`, `turn`, `hand`, `dialog`), `Daemon::pending_on`
+reads them all in one place, and `due` is the one table every wake road goes through
+(`on_turn_probed`, `hear_merges`, `hear_deferred`). `due` replaces `with_train`, and `verdict`
+now takes `fresh` and leaves the pending check to `due`:
+
+- a finished turn is silent while anything but the train is pending (T-591, unchanged);
+- a delivery or a finished turn the train will land is held for the merge (T-554, unchanged);
+- **a merge, or a delivery, while a merge step is in flight is held until that step is over**
+  (`Due::Step`). A merge step is the merge flow's words (`m`'s or the train's rebase ask, the
+  merged notice) from their paste (`tag_owed`) until the end of the turn that took them
+  (`turn_asks`, taken by `turn_ended`);
+- an answer, a hand, a question and a plan are never held, and a delivery is never silenced.
+
+The held landing moves both baselines when it is held, so another flags reading at `merged` is
+silent (T-527: one wake per merge). Its line waits in `Heard.stepped`. A tick stage,
+`hear_stepped` (after `hear_deferred`), says it once no merge step is pending and no turn probe
+is out. That covers the notice taken and its turn ended, and also a paste given up after
+`INFLIGHT_MS` or a pane that died. The line says the column the turn left the card in, and
+the clause adds `and finished its turn`: `T-12 "…" merged and finished its turn (merge_state
+ahead → merged)`. A delivery held for the train and landed with a notice (T-554) takes the same
+road: `delivered and finished its turn (merge_state merged, column REVIEW)`. The feed records
+the hold once as `crown_wake_deferred:merge_step`. The cause and the feed's `crown_wake` word are
+unchanged.
+
+**A merge with no step in flight is heard at once, as before.** That is a merge with no live
+agent, one the train could not notify (`merge_train_refused:no_pane`), a train whose notice is
+off, a `git merge` in a terminal, and a person's `m`, whose notice is a later, separate press
+(the TUI's Notify stage). The hand-merge e2es are unchanged for that reason. A train that merges
+always pastes its notice in the same pass, so the notice is on its way by the tick that hears
+the merge.
+
+**Refuted/limits.** Only the merge flow's own words hold a merge. Making any running turn or
+queued words hold it was considered and refuted: a crown ask held for `^y` can wait for ever,
+and a merge is strong news, unlike a finish. mesimon never merges under a working agent anyway
+(`merge_ticket`'s quiet-tickets rule). A delivery the probe reads while a person's rebase ask is
+pasted and not yet taken is held to that turn's end too, and its line keeps the tip it delivered.
+If a stronger wake (a hand, a question) fires during the notice turn, it does not carry the held
+merge: the merge still comes at the turn's end, so the crown can get two lines. This state is in
+memory like the rest of the crown's wakes, so a restart drops a held landing, and the first
+flags reading after the restart hears the merge only if the crown had been told of the branch.
+
+**Tests.** `crownwake` (22):
+- `the_pending_list_weighs_every_wake`: the table, entry by entry.
+- `a_merge_with_its_notice_turn_is_heard_at_that_turns_end_once`: held; a reading mid-turn is
+  silent; one line, `merged and finished its turn`, in the turn's column; nothing more held; a
+  stronger fold says its own clause.
+- `a_merge_with_no_notice_turn_is_heard_at_once`.
+- `a_held_delivery_landed_by_the_train_is_heard_after_the_notice_turn`: also covers a ticket gone
+  from the board, which takes the hold with it.
+- The T-554 and T-591 tests now go through `due`.
+
+`crown_e2e::the_merged_wake_waits_for_the_notice_turn` runs the train with its notice on. A
+delivery held for the train merges and its notice is pasted; nothing reaches the crown for 2 s,
+nor for 2 s more while the worker's notice turn runs. The turn's `Stop` brings `delivered and
+finished its turn (merge_state merged, column …)`, and the feed has one `crown_wake_deferred` and
+one `crown_wake_deferred:merge_step`. Then a delivery the crown heard, merged by the re-armed
+train, waits the same way and arrives as exactly `merged and finished its turn (merge_state
+ahead → merged)`. On that wake, `get_ticket` reads `idle`, `sleep_agent` parks the worker, and
+the keyed move to DONE goes through. Nothing more comes after that. With the hold switched off,
+the test fails at "held while the notice is on its way". `cargo nextest run --workspace`: 2069
+of 2069.

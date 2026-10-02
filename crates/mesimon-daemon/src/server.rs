@@ -2546,6 +2546,7 @@ impl Daemon {
             changed |= stage!("drain_queue", self.drain_queue());
             changed |= stage!("hear_merges", self.hear_merges());
             changed |= stage!("hear_deferred", self.hear_deferred());
+            changed |= stage!("hear_stepped", self.hear_stepped());
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
             changed |= stage!("drive_usage", self.drive_usage(now));
             if !self.cost_scanning && (self.cost_due || self.ticks.is_multiple_of(COST_TICKS)) {

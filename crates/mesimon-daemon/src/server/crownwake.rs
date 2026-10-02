@@ -32,10 +32,35 @@
 //! changed since the crown last heard (`merge_state needs_rebase → ahead`,
 //! `column REVIEW`), so the obvious costs no tool call.
 //!
-//! A delivery or a finished turn the armed merge train will take is held
-//! (T-554): the crown hears it once, at the merge, as the delivery with
-//! `merged` in its delta — or the moment the train will not take it after
-//! all (`hear_deferred`), as what was held.
+//! **What is pending on a ticket** (T-596) is one list, read by
+//! `Daemon::pending_on` wherever a wake is judged, and one table of what
+//! each entry does to a wake (`due`). The next gap is a line here, not a
+//! new rule:
+//!
+//! - **the train lane** — the armed merge train will land the branch from
+//!   here (T-554): a delivery or a finished turn is held, and the crown
+//!   hears it once, at the merge, as the delivery with `merged` in its
+//!   delta — or the moment the train will not take it after all
+//!   (`hear_deferred`), as what was held;
+//! - **a merge step in flight** — the merge flow's words (`m`'s or the
+//!   train's rebase ask, the merged notice) pasted and not yet taken, or
+//!   the turn that took them still running: a merge, and a delivery, is
+//!   held until that turn is over (`hear_stepped`), so the crown hears a
+//!   landing when its worker is finished entirely — merged, notified, and
+//!   its turn ended — and its line says `and finished its turn`;
+//! - **words on their way** — queued for the agent (a person's, or the
+//!   crown's held for `^y` or sent by the queue), or pasted and not yet
+//!   taken: a finished turn is silent, and the turn those words run is
+//!   judged on its own end (T-591);
+//! - **a turn running**: a finished turn is silent (T-591);
+//! - **its hand up, a question or a plan** — each its own wake: a finished
+//!   turn is silent.
+//!
+//! An answer, a hand, a question and a plan are never held: the crown
+//! asked, or someone waits on it. A delivery is never silenced, only
+//! delayed: words queued behind it do not hold it (T-591). A merge with no
+//! step in flight — no live agent, a merge the train could not notify, a
+//! person's `m` whose notice is not sent yet — is heard at once.
 
 use super::*;
 
@@ -155,11 +180,15 @@ impl WakeCause {
 /// One thing the crown has yet to hear about: keyed by worker, so a second
 /// event before delivery raises the cause (`WakeCause`'s order) and moves
 /// `to` rather than adding a clause. `from` stays what the crown last heard.
+#[derive(Clone, Debug)]
 pub(super) struct CrownWake {
     pub(super) worker: ulid::Ulid,
     cause: WakeCause,
     from: Option<Told>,
     to: Option<Told>,
+    /// Held until the merge step's turn was over (T-596): the line says the
+    /// worker finished its turn after the merge.
+    finished: bool,
 }
 
 impl CrownWake {
@@ -173,6 +202,18 @@ impl CrownWake {
         }
         if to.is_some() {
             self.to = to;
+        }
+    }
+
+    /// The clause after the ticket: the cause's, and for a landing held
+    /// until its merge step's turn was over (T-596), that the turn ended —
+    /// the crown's close-out (`sleep_agent`) goes through from here.
+    fn clause(&self) -> String {
+        let clause = self.cause.clause();
+        if self.finished && matches!(self.cause, WakeCause::Merged | WakeCause::Delivered) {
+            format!("{clause} and finished its turn")
+        } else {
+            clause.to_string()
         }
     }
 
@@ -191,20 +232,20 @@ impl CrownWake {
     }
 }
 
-/// Whether a turn's end wakes the crown, and why. `before` is the worker's
-/// last baseline (`None` after a restart, or before the first look), `now`
-/// its work as the turn left it, and `done` that the worker is done with
-/// what it was asked: a turn ran since the last end judged, and nothing is
-/// pending on its ticket (`Daemon::pending_on`). An answer always wakes; a
-/// merge step never does; something mergeable at a tip not seen before is
-/// a delivery; and any other turn that is done finished (T-591) — "nothing
-/// new" is no reason for silence, and the crown decides what comes next.
+/// What a turn's end says about the worker, and why. `before` is the
+/// worker's last baseline (`None` after a restart, or before the first
+/// look), `now` its work as the turn left it, and `fresh` that a turn ran
+/// since the last end judged. An answer always wakes; a merge step never
+/// does; something mergeable at a tip not seen before is a delivery; and
+/// any other fresh turn finished (T-591) — "nothing new" is no reason for
+/// silence, and the crown decides what comes next. What is pending on the
+/// ticket is `due`'s to weigh.
 pub(super) fn verdict(
     before: Option<&Told>,
     now: &Told,
     answered: bool,
     merge_step: bool,
-    done: bool,
+    fresh: bool,
 ) -> Option<WakeCause> {
     if answered {
         return Some(WakeCause::Answered);
@@ -215,7 +256,7 @@ pub(super) fn verdict(
     if now.mergeable() && before.is_none_or(|b| b.tip != now.tip) {
         return Some(WakeCause::Delivered);
     }
-    done.then_some(WakeCause::Finished)
+    fresh.then_some(WakeCause::Finished)
 }
 
 /// Whether this state change is a stop the crown is woken for, and why:
@@ -241,39 +282,71 @@ pub(super) fn asks_the_crown(
     }
 }
 
-/// What a turn's end does once the merge train is counted (T-554).
+/// What is pending on a worker's ticket (T-596): the list in the module's
+/// doctrine, one field per line of it, read by `Daemon::pending_on` where
+/// a wake is judged and weighed by `due`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Pending {
+    /// The armed merge train will land the branch from here (T-554),
+    /// judged on the branch as a look saw it. A merged branch has none.
+    pub(super) train: bool,
+    /// The merge flow's words pasted and not yet taken, or the turn that
+    /// took them still running.
+    pub(super) merge_step: bool,
+    /// Other words for the agent: queued, or pasted and not yet taken.
+    pub(super) words: bool,
+    /// A turn running on the agent, other than a question or a plan.
+    pub(super) turn: bool,
+    /// Its hand up.
+    pub(super) hand: bool,
+    /// A question or a plan the agent stopped on (T-569, T-582).
+    pub(super) dialog: bool,
+}
+
+impl Pending {
+    /// The worker is not done with what it was asked: a turn that ended
+    /// with nothing new is not yet news (T-591). The train is not in it —
+    /// a finish the train will take is held for it, not silenced.
+    fn busy(&self) -> bool {
+        self.merge_step || self.words || self.turn || self.hand || self.dialog
+    }
+}
+
+/// What a wake does once what is pending on its ticket is counted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Due {
     Wake(WakeCause),
-    /// Held for the train as this cause: no wake now, and `told` stays
-    /// where it was.
+    /// Held for the train as this cause (T-554): no wake now, and `told`
+    /// stays where it was.
     Hold(WakeCause),
+    /// Held as this cause until the merge step in flight is over (T-596):
+    /// `told` moves now, so the landing is heard once, and `hear_stepped`
+    /// says it.
+    Step(WakeCause),
     Silent,
 }
 
-/// `verdict`'s answer with the merge train in it (T-554). A delivery or a
-/// finished turn (T-591) the train will land is held, and so is one held
-/// before (`held`, as what it was held) whose new turn left it still the
-/// train's; held, the stronger of the two is kept, so a delivery the crown
-/// has not heard of is never said as a finish. One the train will not take
-/// after all comes due as that. `takes` asks the train about the branch as
-/// this turn left it, and is asked only then: an answer, a hand and a
-/// silent turn with nothing held are `verdict`'s alone.
-pub(super) fn with_train(
-    cause: Option<WakeCause>,
-    held: Option<WakeCause>,
-    takes: impl FnOnce() -> bool,
-) -> Due {
+/// The table (T-596): `verdict`'s or `merge_verdict`'s answer, with what is
+/// pending on the ticket in it. A finished turn on a busy ticket is
+/// silent. A delivery or a finished turn (T-591) the train will land is
+/// held, and so is one held before (`held`, as what it was held) whose new
+/// turn left it still the train's; held, the stronger of the two is kept,
+/// so a delivery the crown has not heard of is never said as a finish. One
+/// the train will not take after all comes due as that. A merge, or a
+/// delivery, while a merge step is in flight waits for that turn's end.
+/// Anything else wakes now.
+pub(super) fn due(cause: Option<WakeCause>, held: Option<WakeCause>, pending: &Pending) -> Due {
+    let cause = cause.filter(|c| *c != WakeCause::Finished || !pending.busy());
     let due = match cause {
-        Some(WakeCause::Delivered | WakeCause::Finished) => cause.max(held),
+        Some(WakeCause::Delivered | WakeCause::Finished | WakeCause::Merged) => cause.max(held),
         Some(other) => return Due::Wake(other),
         None => held,
     };
-    let Some(due) = due else { return Due::Silent };
-    if takes() {
-        Due::Hold(due)
-    } else {
-        Due::Wake(due)
+    match due {
+        None => Due::Silent,
+        Some(c @ (WakeCause::Delivered | WakeCause::Finished)) if pending.train => Due::Hold(c),
+        Some(c @ (WakeCause::Delivered | WakeCause::Merged)) if pending.merge_step => Due::Step(c),
+        Some(c) => Due::Wake(c),
     }
 }
 
@@ -351,6 +424,9 @@ pub(super) struct Heard {
     /// not move while it is held, so the merge reads as a tip the crown
     /// never heard of.
     deferred: Option<Held>,
+    /// A landing held until the merge step in flight is over (T-596), the
+    /// line as it will be said; `told` already moved to it.
+    stepped: Option<CrownWake>,
     /// Turn probes out for this worker. While one is, the train is not
     /// judged on what came before it: the turn that just ended may have
     /// moved the branch.
@@ -362,6 +438,38 @@ impl Heard {
     /// or a delivery is held for the train.
     pub(super) fn awaits_merge(&self) -> bool {
         self.told.is_some() || self.deferred.is_some()
+    }
+
+    /// Hold a landing — a merge, or a delivery — for the merge step in
+    /// flight on the worker (T-596): both baselines move to it now, so the
+    /// crown hears it once, and the line waits in `stepped`. A second one
+    /// before the step is over folds in, as two wakes owed to a working
+    /// crown do. True the first time.
+    fn hold_for_step(&mut self, worker: ulid::Ulid, cause: WakeCause, now: Told) -> bool {
+        self.judged = Some(now.clone());
+        self.deferred = None;
+        let from = self.told.replace(now.clone());
+        if let Some(w) = self.stepped.as_mut() {
+            w.fold(cause, from, Some(now));
+            return false;
+        }
+        self.stepped = Some(CrownWake { worker, cause, from, to: Some(now), finished: true });
+        true
+    }
+
+    /// The merge step is over: the landing it held, with the column the
+    /// turn left the card in (`None`: the ticket is gone, and takes what
+    /// was held with it), which is also what the crown has now heard.
+    fn step_over(&mut self, column: Option<String>) -> Option<CrownWake> {
+        let mut wake = self.stepped.take()?;
+        let column = column?;
+        if let Some(to) = wake.to.as_mut() {
+            if let Some(told) = self.told.as_mut().filter(|t| t.tip == to.tip) {
+                told.column.clone_from(&column);
+            }
+            to.column = column;
+        }
+        Some(wake)
     }
 }
 
@@ -525,19 +633,35 @@ impl Daemon {
         }
     }
 
-    /// Something is still pending on the worker's ticket (T-591), so a turn
-    /// that ended with nothing new is not yet news: words queued for its
-    /// agent — a person's, or the crown's, held for `^y` or sent by the
-    /// queue — or pasted and not yet taken, a turn already running on them
-    /// (or on anything else) by the time the look landed, or its hand up,
-    /// which is its own wake. A question or a plan never reaches here: it
-    /// is no `EndTurn`, and is its own wake too. The merge train is the
-    /// probe's to ask (`with_train`), on the branch the turn left.
-    fn pending_on(&self, worker: ulid::Ulid) -> bool {
-        self.queued.iter().any(|q| q.ticket == worker)
-            || self.owed.values().any(|o| o.ticket == worker)
-            || self.board.live_agent(worker).is_some_and(mesimon_core::quiet::is_working)
-            || self.board.ticket(worker).is_some_and(|t| t.hand_raised())
+    /// What is pending on the worker's ticket now (T-596): the module's
+    /// list, each line read once. The train is judged on `look`, the branch
+    /// as a turn's look or the train's sample saw it; with none — a merged
+    /// branch — it has nothing to take. The merge flow's words are a merge
+    /// step from their paste (`tag_owed`) to the end of the turn that took
+    /// them (`mark_turn`, taken by `turn_ended`); any other words are words.
+    pub(super) fn pending_on(&self, worker: ulid::Ulid, look: Option<&BranchLook>) -> Pending {
+        let agent = self.board.live_agent(worker);
+        let working = agent.is_some_and(mesimon_core::quiet::is_working);
+        let dialog = agent.is_some_and(|s| {
+            matches!(
+                s.state,
+                SessionState::RequiresAction { reason: Reason::Question | Reason::Plan }
+            )
+        });
+        let owed = |merge: bool| {
+            self.owed
+                .values()
+                .any(|o| o.ticket == worker && (o.asked == Some(TurnAsk::Merge)) == merge)
+        };
+        Pending {
+            train: look.is_some_and(|look| self.train_takes(worker, look)),
+            merge_step: owed(true)
+                || (working && self.turn_asks.get(&worker) == Some(&TurnAsk::Merge)),
+            words: owed(false) || self.queued.iter().any(|q| q.ticket == worker),
+            turn: working && !dialog,
+            hand: self.board.ticket(worker).is_some_and(|t| t.hand_raised()),
+            dialog,
+        }
     }
 
     /// Send a look at the worker's work to a thread: the flags sample for a
@@ -580,12 +704,13 @@ impl Daemon {
     }
 
     /// A probe landed: judge it against the worker's baseline, move the
-    /// baseline, and owe the crown a wake when the verdict says so. A
-    /// delivery or a finished turn the merge train will take is held
-    /// instead (T-554, T-591), and one already held is judged again on what
-    /// this turn left: a rebase the train asked for and the agent could not
-    /// finish comes due here. Whether anything is pending on the ticket is
-    /// judged as the look lands, after the queue has had the turn's end.
+    /// baseline, and owe the crown a wake when the verdict says so, weighed
+    /// against what is pending on the ticket (`due`). A delivery or a
+    /// finished turn the merge train will take is held instead (T-554,
+    /// T-591), and one already held is judged again on what this turn
+    /// left: a rebase the train asked for and the agent could not finish
+    /// comes due here. What is pending is judged as the look lands, after
+    /// the queue has had the turn's end.
     pub(super) fn on_turn_probed(&mut self, p: TurnProbe) {
         if self.board.crown_holder().map(|t| t.id) != Some(p.crown) {
             return;
@@ -602,17 +727,16 @@ impl Daemon {
         };
         let answered = matches!(asked, Some(TurnAsk::Crown(c)) if c == p.crown);
         let merge_step = asked == Some(TurnAsk::Merge);
-        let done = fresh && !self.pending_on(p.worker);
         let (now, branch) = match p.found {
             Found::Branch(look) => (look.told(column), Some(look)),
             Found::Checkout { head } => (Told { tip: head, merge: None, ahead: 0, column }, None),
             Found::Unknown => {
-                // Git could not say what the turn left; an answer is still
-                // an answer, and a finished turn still finished.
-                if answered {
-                    self.note_crown_wake(p.worker, WakeCause::Answered, None, None);
-                } else if done && !merge_step {
-                    self.note_crown_wake(p.worker, WakeCause::Finished, None, None);
+                // Git could not say what the turn left — nothing seen is
+                // nothing to merge — but an answer is still an answer, and
+                // a finished turn still finished.
+                let cause = verdict(None, &Told::default(), answered, merge_step, fresh);
+                if let Due::Wake(cause) = due(cause, None, &self.pending_on(p.worker, None)) {
+                    self.note_crown_wake(p.worker, cause, None, None);
                 }
                 return;
             }
@@ -624,10 +748,9 @@ impl Daemon {
         }
         let before = heard.judged.replace(now.clone());
         let held = heard.deferred.as_ref().map(|h| h.cause);
-        let cause = verdict(before.as_ref(), &now, answered, merge_step, done);
+        let cause = verdict(before.as_ref(), &now, answered, merge_step, fresh);
         // A checkout has no branch for the train: its delivery wakes.
-        let takes = || branch.as_ref().is_some_and(|look| self.train_takes(p.worker, look));
-        let cause = match with_train(cause, held, takes) {
+        let cause = match due(cause, held, &self.pending_on(p.worker, branch.as_ref())) {
             Due::Wake(cause) => cause,
             Due::Silent => return,
             Due::Hold(cause) => {
@@ -638,6 +761,13 @@ impl Daemon {
                     branch.map(|look| Held { cause, look });
                 return;
             }
+            Due::Step(cause) => {
+                // Held, so the claim is judged now, when the turn's look did.
+                if held.is_some() || self.started_by_crown(p.worker, p.crown) {
+                    self.hold_for_step(p.worker, cause, now);
+                }
+                return;
+            }
         };
         let heard = self.crown_heard.entry(p.worker).or_default();
         heard.deferred = None;
@@ -645,9 +775,18 @@ impl Daemon {
         if held.is_some() {
             // Held, so the claim was judged when it was: the seat may have
             // gone since.
-            self.owe_crown_wake(p.crown, p.worker, cause, from, Some(now));
+            self.owe_crown_wake(p.crown, p.worker, cause, from, Some(now), false);
         } else {
             self.note_crown_wake(p.worker, cause, from, Some(now));
+        }
+    }
+
+    /// A landing that waits for the merge step in flight on its worker
+    /// (T-596), said in the feed the first time. The claim on the worker is
+    /// the caller's to have judged.
+    fn hold_for_step(&mut self, worker: ulid::Ulid, cause: WakeCause, now: Told) {
+        if self.crown_heard.entry(worker).or_default().hold_for_step(worker, cause, now) {
+            self.feed.board("automation", "crown_wake_deferred:merge_step", Some(worker));
         }
     }
 
@@ -737,14 +876,44 @@ impl Daemon {
                 continue;
             };
             let seen = self.sampled(worker).filter(|s| s.tip == look.tip).unwrap_or(look);
-            if self.train_takes(worker, &seen) {
-                continue;
-            }
             let now = seen.told(column);
-            let heard = self.crown_heard.entry(worker).or_default();
-            heard.deferred = None;
-            let from = heard.told.replace(now.clone());
-            self.owe_crown_wake(crown, worker, cause, from, Some(now));
+            match due(None, Some(cause), &self.pending_on(worker, Some(&seen))) {
+                Due::Wake(cause) => {
+                    let heard = self.crown_heard.entry(worker).or_default();
+                    heard.deferred = None;
+                    let from = heard.told.replace(now.clone());
+                    self.owe_crown_wake(crown, worker, cause, from, Some(now), false);
+                    woke = true;
+                }
+                Due::Step(cause) => self.hold_for_step(worker, cause, now),
+                Due::Hold(_) | Due::Silent => {}
+            }
+        }
+        woke
+    }
+
+    /// Landings held for a merge step (T-596) whose step is over: the words
+    /// were taken and their turn ended, or they never reached the agent (a
+    /// paste given up on, a pane that died), on the tick. Each wakes the
+    /// crown as it was held, saying the worker finished its turn, with the
+    /// column the turn left the card in. Not while a probe is out: the
+    /// turn that just ended is still being looked at. A ticket gone from
+    /// the board takes what was held with it.
+    pub(super) fn hear_stepped(&mut self) -> bool {
+        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
+        let over: Vec<ulid::Ulid> = self
+            .crown_heard
+            .iter()
+            .filter(|(_, h)| h.stepped.is_some() && h.looks == 0)
+            .map(|(w, _)| *w)
+            .filter(|w| !self.pending_on(*w, None).merge_step)
+            .collect();
+        let mut woke = false;
+        for worker in over {
+            let column = self.board.ticket(worker).map(|t| t.column.clone());
+            let Some(heard) = self.crown_heard.get_mut(&worker) else { continue };
+            let Some(wake) = heard.step_over(column) else { continue };
+            self.owe_crown_wake(crown, worker, wake.cause, wake.from, wake.to, true);
             woke = true;
         }
         woke
@@ -756,7 +925,10 @@ impl Daemon {
     /// inside the refresh that saw them, so the line says the column the
     /// merge flow left the card in; a reading that fell back before the
     /// tick was no merge. Both baselines move to the merge, so a turn probe
-    /// that read the branch just before it is not a second delivery.
+    /// that read the branch just before it is not a second delivery. A
+    /// merge whose notice is on its way to the worker, or whose notice turn
+    /// is running, waits for that turn to end (T-596): the train pastes it
+    /// in the pass that merged, so it is on its way by this tick.
     pub(super) fn hear_merges(&mut self) -> bool {
         if self.crown_landed.is_empty() {
             return false;
@@ -782,13 +954,19 @@ impl Daemon {
             // whatever became of the seat since.
             let started = worker != crown
                 && (heard.deferred.is_some() || self.started_by_crown(worker, crown));
-            let Some(cause) = merge_verdict(started, &heard, &now) else { continue };
-            let heard = self.crown_heard.entry(worker).or_default();
-            heard.judged = Some(now.clone());
-            heard.deferred = None;
-            let from = heard.told.replace(now.clone());
-            self.owe_crown_wake(crown, worker, cause, from, Some(now));
-            woke = true;
+            let cause = merge_verdict(started, &heard, &now);
+            match due(cause, None, &self.pending_on(worker, None)) {
+                Due::Step(cause) => self.hold_for_step(worker, cause, now),
+                Due::Wake(cause) => {
+                    let heard = self.crown_heard.entry(worker).or_default();
+                    heard.judged = Some(now.clone());
+                    heard.deferred = None;
+                    let from = heard.told.replace(now.clone());
+                    self.owe_crown_wake(crown, worker, cause, from, Some(now), false);
+                    woke = true;
+                }
+                Due::Hold(_) | Due::Silent => {}
+            }
         }
         woke
     }
@@ -813,11 +991,12 @@ impl Daemon {
         if cause != WakeCause::Answered && !self.started_by_crown(worker, crown) {
             return;
         }
-        self.owe_crown_wake(crown, worker, cause, from, to);
+        self.owe_crown_wake(crown, worker, cause, from, to, false);
     }
 
     /// `note_crown_wake` past its guards: for a caller that judged the
-    /// crown's claim on the worker itself.
+    /// crown's claim on the worker itself. `finished`: the wake waited for
+    /// its merge step's turn to end (T-596), and a fold keeps saying so.
     fn owe_crown_wake(
         &mut self,
         crown: ulid::Ulid,
@@ -825,11 +1004,13 @@ impl Daemon {
         cause: WakeCause,
         from: Option<Told>,
         to: Option<Told>,
+        finished: bool,
     ) {
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
             w.fold(cause, from, to);
+            w.finished |= finished;
         } else {
-            self.crown_wakes.push(CrownWake { worker, cause, from, to });
+            self.crown_wakes.push(CrownWake { worker, cause, from, to, finished });
         }
         self.feed.crown_wake(crown, worker, cause.word());
         self.crown_touched(worker, crown, "woke");
@@ -862,7 +1043,7 @@ impl Daemon {
         for w in &self.crown_wakes {
             let Some(t) = self.board.ticket(w.worker) else { continue };
             let title = mesimon_core::text::scrub_text(&t.title);
-            let mut event = format!("{} \"{title}\" {}", t.short_key, w.cause.clause());
+            let mut event = format!("{} \"{title}\" {}", t.short_key, w.clause());
             let changed = w.changed();
             if !changed.is_empty() {
                 event.push_str(&format!(" ({})", changed.join(", ")));
@@ -891,22 +1072,32 @@ mod tests {
 
     const DELIVERED: Option<WakeCause> = Some(WakeCause::Delivered);
     const FINISHED: Option<WakeCause> = Some(WakeCause::Finished);
+    const MERGED: Option<WakeCause> = Some(WakeCause::Merged);
+    const IDLE: Pending = Pending {
+        train: false,
+        merge_step: false,
+        words: false,
+        turn: false,
+        hand: false,
+        dialog: false,
+    };
+    const TRAIN: Pending = Pending { train: true, ..IDLE };
+    const STEP: Pending = Pending { merge_step: true, ..IDLE };
 
     /// Once per delivery (T-469): a second idle at the same tip delivers
     /// nothing, and neither does an idle with nothing to merge. Each is a
-    /// finished turn (T-591) when the worker is done, and silent when it is
-    /// not — no turn ran since the last end looked at, or something is
-    /// pending on the ticket. A delivery is never gated on either.
+    /// finished turn (T-591) when a turn ran since the last end looked at,
+    /// and silent when none did. A delivery is never gated on it.
     #[test]
     fn a_second_idle_with_nothing_new_delivers_nothing() {
         let first = branch("aaa", "ahead", 1, "REVIEW");
         assert_eq!(verdict(None, &first, false, false, false), DELIVERED);
         assert_eq!(verdict(None, &first, false, false, true), DELIVERED);
         assert_eq!(verdict(Some(&first), &first, false, false, false), None, "same tip");
-        assert_eq!(verdict(Some(&first), &first, false, false, true), FINISHED, "same tip, done");
+        assert_eq!(verdict(Some(&first), &first, false, false, true), FINISHED, "same tip, fresh");
         let fresh = branch("base", "clean", 0, "IN PROGRESS");
         assert_eq!(verdict(None, &fresh, false, false, false), None, "nothing to merge");
-        assert_eq!(verdict(None, &fresh, false, false, true), FINISHED, "nothing to merge, done");
+        assert_eq!(verdict(None, &fresh, false, false, true), FINISHED, "nothing to merge, fresh");
         // A turn's end at a merged branch is not a delivery: the merge is
         // heard where the flags read it (`merge_verdict`).
         let merged = branch("bbb", "merged", 0, "DONE");
@@ -922,19 +1113,17 @@ mod tests {
 
     /// T-591's own case: a worker the crown started is done with a turn that
     /// left nothing new, and the crown hears it finished — once, since the
-    /// same idle re-entered with no turn between is not done again. A merge
-    /// step stays silent however done it reads; the crown hears at the
-    /// merge. Nothing to hold, the train is asked and lets it wake.
+    /// same idle re-entered with no turn between is not fresh again. A
+    /// merge step stays silent however fresh it reads; the crown hears at
+    /// the merge. Nothing pending, it wakes.
     #[test]
     fn a_finished_turn_with_nothing_new_wakes_once() {
         let idle = branch("base", "clean", 0, "REVIEW");
         let cause = verdict(None, &idle, false, false, true);
-        assert_eq!(with_train(cause, None, || false), Due::Wake(WakeCause::Finished));
-        // Not done: the same idle again (`turns_open` was taken by the
-        // first end), or a queued ask, words on their way, a turn running
-        // or a hand up — the turn those words run is judged on its own end.
+        assert_eq!(due(cause, None, &IDLE), Due::Wake(WakeCause::Finished));
+        // The same idle again: `turns_open` was taken by the first end.
         assert_eq!(verdict(Some(&idle), &idle, false, false, false), None);
-        assert_eq!(with_train(None, None, || panic!("the train was asked")), Due::Silent);
+        assert_eq!(due(None, None, &TRAIN), Due::Silent);
         // The train's rebase ask or the merged notice.
         let rebased = branch("bbb", "ahead", 1, "REVIEW");
         assert_eq!(verdict(Some(&rebased), &rebased, false, true, true), None, "merge step");
@@ -954,43 +1143,39 @@ mod tests {
     /// on a branch the train will take is held the same way and comes due
     /// as a finish; over a held delivery it is the delivery, which the
     /// crown has not heard of. An answer is never held, and a silent turn
-    /// with nothing held never asks the train.
+    /// with nothing held is silent whatever the train would do.
     #[test]
     fn a_delivery_the_train_will_take_is_held() {
         let behind = branch("aaa", "needs_rebase", 1, "REVIEW");
         let cause = verdict(None, &behind, false, false, true);
-        assert_eq!(with_train(cause, None, || true), Due::Hold(WakeCause::Delivered));
-        assert_eq!(with_train(cause, None, || false), Due::Wake(WakeCause::Delivered));
+        assert_eq!(due(cause, None, &TRAIN), Due::Hold(WakeCause::Delivered));
+        assert_eq!(due(cause, None, &IDLE), Due::Wake(WakeCause::Delivered));
         // The train's rebase ask: a merge step, silent by `verdict`.
         let rebased = branch("bbb", "ahead", 1, "REVIEW");
         let cause = verdict(Some(&behind), &rebased, false, true, true);
         assert_eq!(cause, None);
         assert_eq!(
-            with_train(cause, DELIVERED, || true),
+            due(cause, DELIVERED, &TRAIN),
             Due::Hold(WakeCause::Delivered),
             "the train merges it next"
         );
+        assert_eq!(due(cause, DELIVERED, &IDLE), Due::Wake(WakeCause::Delivered), "it gave up");
+        assert_eq!(due(None, None, &TRAIN), Due::Silent);
         assert_eq!(
-            with_train(cause, DELIVERED, || false),
-            Due::Wake(WakeCause::Delivered),
-            "the train gave up"
-        );
-        assert_eq!(with_train(None, None, || panic!("the train was asked")), Due::Silent);
-        assert_eq!(
-            with_train(Some(WakeCause::Answered), DELIVERED, || panic!("the train was asked")),
+            due(Some(WakeCause::Answered), DELIVERED, &TRAIN),
             Due::Wake(WakeCause::Answered)
         );
         // Delivered and heard, then a turn that left the same tip: held for
         // the train as a finish, and a finish if the train gives up.
         let cause = verdict(Some(&rebased), &rebased, false, false, true);
         assert_eq!(cause, FINISHED);
-        assert_eq!(with_train(cause, None, || true), Due::Hold(WakeCause::Finished));
-        assert_eq!(with_train(None, FINISHED, || false), Due::Wake(WakeCause::Finished));
+        assert_eq!(due(cause, None, &TRAIN), Due::Hold(WakeCause::Finished));
+        assert_eq!(due(None, FINISHED, &IDLE), Due::Wake(WakeCause::Finished));
         // A finish over a held delivery is that delivery, held or due.
-        assert_eq!(with_train(cause, DELIVERED, || true), Due::Hold(WakeCause::Delivered));
-        assert_eq!(with_train(cause, DELIVERED, || false), Due::Wake(WakeCause::Delivered));
+        assert_eq!(due(cause, DELIVERED, &TRAIN), Due::Hold(WakeCause::Delivered));
+        assert_eq!(due(cause, DELIVERED, &IDLE), Due::Wake(WakeCause::Delivered));
         // A delivery over a held finish is the delivery.
-        assert_eq!(with_train(DELIVERED, FINISHED, || false), Due::Wake(WakeCause::Delivered));
+        assert_eq!(due(DELIVERED, FINISHED, &IDLE), Due::Wake(WakeCause::Delivered));
         // What the train is judged on is what the line would say.
         let look = BranchLook {
             tip: "aaa".into(),
@@ -1008,12 +1193,12 @@ mod tests {
     fn an_answer_always_wakes_and_a_merge_step_never_does() {
         let before = branch("aaa", "needs_rebase", 1, "REVIEW");
         let rebased = branch("bbb", "ahead", 1, "REVIEW");
-        for done in [false, true] {
+        for fresh in [false, true] {
             let answered = Some(WakeCause::Answered);
-            assert_eq!(verdict(Some(&before), &rebased, true, false, done), answered);
-            assert_eq!(verdict(Some(&before), &before, true, false, done), answered);
-            assert_eq!(verdict(Some(&before), &rebased, false, true, done), None);
-            assert_eq!(verdict(Some(&before), &rebased, true, true, done), answered);
+            assert_eq!(verdict(Some(&before), &rebased, true, false, fresh), answered);
+            assert_eq!(verdict(Some(&before), &before, true, false, fresh), answered);
+            assert_eq!(verdict(Some(&before), &rebased, false, true, fresh), None);
+            assert_eq!(verdict(Some(&before), &rebased, true, true, fresh), answered);
         }
     }
 
@@ -1039,6 +1224,7 @@ mod tests {
             cause: WakeCause::Finished,
             from,
             to,
+            finished: false,
         };
         let head = checkout("1234567890abcdef", "REVIEW");
         assert_eq!(
@@ -1212,6 +1398,7 @@ mod tests {
             cause: WakeCause::Delivered,
             from: None,
             to: Some(delivered.clone()),
+            finished: false,
         };
         let h = heard(Some(delivered.clone()), Some(delivered.clone()));
         let cause = merge_verdict(true, &h, &landed).unwrap();
@@ -1256,5 +1443,118 @@ mod tests {
         let h = heard(Some(delivered.clone()), Some(delivered));
         assert_eq!(merge_verdict(false, &h, &landed), None);
         assert_eq!(merge_verdict(false, &Heard::default(), &landed), None);
+    }
+
+    /// The pending list (T-596), entry by entry: anything but the train
+    /// makes a finished turn silent — the turn those words run, the hand,
+    /// the question or the plan is its own news — and the train holds it.
+    /// None of them silences a delivery, a merge waits only for the merge
+    /// flow's own words, and nothing holds an answer, a hand, a question or
+    /// a plan.
+    #[test]
+    fn the_pending_list_weighs_every_wake() {
+        let busy = [
+            STEP,
+            Pending { words: true, ..IDLE },
+            Pending { turn: true, ..IDLE },
+            Pending { hand: true, ..IDLE },
+            Pending { dialog: true, ..IDLE },
+        ];
+        for p in &busy {
+            assert_eq!(due(FINISHED, None, p), Due::Silent, "{p:?}");
+        }
+        for p in &busy[1..] {
+            assert_eq!(due(DELIVERED, None, p), Due::Wake(WakeCause::Delivered), "{p:?}");
+            assert_eq!(due(MERGED, None, p), Due::Wake(WakeCause::Merged), "{p:?}");
+        }
+        assert_eq!(due(DELIVERED, None, &STEP), Due::Step(WakeCause::Delivered));
+        assert_eq!(due(MERGED, None, &STEP), Due::Step(WakeCause::Merged));
+        assert_eq!(due(FINISHED, None, &TRAIN), Due::Hold(WakeCause::Finished));
+        assert_eq!(due(MERGED, None, &TRAIN), Due::Wake(WakeCause::Merged), "no train's");
+        // The train first: it will merge, and the merge is heard then.
+        let both = Pending { train: true, merge_step: true, ..IDLE };
+        assert_eq!(due(DELIVERED, None, &both), Due::Hold(WakeCause::Delivered));
+        let causes = [WakeCause::Answered, WakeCause::Raised, WakeCause::Planned, WakeCause::Asked];
+        for cause in causes {
+            for p in busy.iter().chain([&TRAIN, &IDLE]) {
+                assert_eq!(due(Some(cause), DELIVERED, p), Due::Wake(cause), "{cause:?} {p:?}");
+            }
+        }
+    }
+
+    /// T-596's own case: the train merged a delivery the crown was told of
+    /// and pasted the merged notice. While the notice is on its way or its
+    /// turn runs, the merge is held — both baselines moved, so another
+    /// reading at `merged` is silent — and when that turn is over it is one
+    /// line, `merged and finished its turn`, in the column the turn left.
+    #[test]
+    fn a_merge_with_its_notice_turn_is_heard_at_that_turns_end_once() {
+        let delivered = branch("aaa", "ahead", 1, "REVIEW");
+        let landed = branch("aaa", "merged", 0, "REVIEW");
+        let mut h = heard(Some(delivered.clone()), Some(delivered));
+        let cause = merge_verdict(true, &h, &landed);
+        assert_eq!(cause, MERGED);
+        assert_eq!(due(cause, None, &STEP), Due::Step(WakeCause::Merged));
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed.clone()));
+        assert_eq!(merge_verdict(true, &h, &landed), None, "the flags again, mid-turn");
+        let wake = h.step_over(Some("DONE".into())).expect("the held merge");
+        assert_eq!(wake.clause(), "merged and finished its turn");
+        assert_eq!(wake.changed(), ["merge_state ahead → merged", "column DONE"]);
+        // Once: nothing more is held, and the crown has heard the landing
+        // in the column the line said.
+        assert!(h.step_over(Some("DONE".into())).is_none());
+        assert_eq!(merge_verdict(true, &h, &branch("aaa", "merged", 0, "DONE")), None);
+        assert!(delta(h.told.as_ref(), &branch("aaa", "merged", 0, "DONE")).is_empty());
+        // Folded into a stronger line owed to a working crown, the turn is
+        // that line's to say.
+        let mut w = wake.clone();
+        w.fold(WakeCause::Raised, None, None);
+        assert_eq!(w.clause(), "raised its hand");
+    }
+
+    /// A merge with no step in flight — no live agent, a merge the train
+    /// could not notify, a person's `m` whose notice is not sent yet — is
+    /// heard at once, as before, and says nothing of a turn.
+    #[test]
+    fn a_merge_with_no_notice_turn_is_heard_at_once() {
+        let delivered = branch("aaa", "ahead", 1, "REVIEW");
+        let landed = branch("aaa", "merged", 0, "REVIEW");
+        let h = heard(Some(delivered.clone()), Some(delivered.clone()));
+        let cause = merge_verdict(true, &h, &landed);
+        assert_eq!(due(cause, None, &IDLE), Due::Wake(WakeCause::Merged));
+        let wake = CrownWake {
+            worker: ulid::Ulid::nil(),
+            cause: WakeCause::Merged,
+            from: Some(delivered),
+            to: Some(landed),
+            finished: false,
+        };
+        assert_eq!(wake.clause(), "merged");
+    }
+
+    /// T-554's held delivery, landed by the train with its notice: the
+    /// merge reads a tip the crown never heard of, so the line is the
+    /// delivery with `merged` in its delta — held, like any landing, until
+    /// the notice turn is over, and said once. A ticket gone from the board
+    /// by then takes what was held with it.
+    #[test]
+    fn a_held_delivery_landed_by_the_train_is_heard_after_the_notice_turn() {
+        let behind = branch("aaa", "needs_rebase", 1, "REVIEW");
+        let held = Held { cause: WakeCause::Delivered, look: BranchLook::default() };
+        let mut h = Heard { deferred: Some(held), ..heard(Some(behind), None) };
+        let landed = branch("bbb", "merged", 0, "REVIEW");
+        let cause = merge_verdict(true, &h, &landed);
+        assert_eq!(cause, DELIVERED);
+        assert_eq!(due(cause, None, &STEP), Due::Step(WakeCause::Delivered));
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Delivered, landed.clone()));
+        assert!(h.deferred.is_none(), "the train's part is done");
+        assert!(h.awaits_merge());
+        assert_eq!(merge_verdict(true, &h, &landed), None, "heard once");
+        let wake = h.step_over(Some("DONE".into())).expect("the held delivery");
+        assert_eq!(wake.clause(), "delivered and finished its turn");
+        assert_eq!(wake.changed(), ["merge_state merged", "column DONE"]);
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed));
+        assert!(h.step_over(None).is_none(), "the ticket is gone");
+        assert!(h.stepped.is_none());
     }
 }

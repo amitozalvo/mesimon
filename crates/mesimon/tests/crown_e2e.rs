@@ -2375,6 +2375,202 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     assert_eq!(lines_with(&worker).len(), 3, "once");
 }
 
+/// The crown hears a landing when its worker is finished entirely (T-596):
+/// the train merges a crown-started worker's branch and pastes the merged
+/// notice, and the wake waits while the notice is on its way and while its
+/// turn runs. It arrives when that turn ends, saying so, and the crown's
+/// close-out — `sleep_agent`, then DONE — goes through right after it. A
+/// delivery held for the train (T-554) and landed with a notice waits the
+/// same way.
+#[test]
+fn the_merged_wake_waits_for_the_notice_turn() {
+    // The flags (and the train) every second rather than every ten.
+    let Some(h) = Harness::boot_with_env(
+        "crown_notice",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_notice");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-96 notified");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = format!("{kw} \"mesimon-probe-96 notified\"");
+    let merged = || {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&h.repo)
+            .args(["merge-base", "--is-ancestor", &branch, "main"])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let train = |c: &mut TestClient, on: bool| {
+        assert!(matches!(
+            c.request(Command::SetAutomation { merge_train: on, merge_notice: on }),
+            Response::Ok
+        ));
+    };
+    // The train merged and pasted its notice; nothing reaches the crown
+    // while the notice waits for the worker, nor while its turn runs. Then
+    // the turn ends and the one line comes.
+    let land = |c: &mut TestClient, notices: usize, heard: usize| {
+        wait_until(std::time::Duration::from_secs(15), "the train to merge it", merged);
+        wait_until(std::time::Duration::from_secs(10), "the train's merged notice", || {
+            lines_with("has been merged").len() == notices
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        assert_eq!(lines_with(&worker).len(), heard, "held while the notice is on its way");
+        start(c, ws);
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        assert_eq!(lines_with(&worker).len(), heard, "held while the notice turn runs");
+        stop(c, ws);
+        wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
+            lines_with(&worker).len() == heard + 1
+        });
+        lines_with(&worker).pop().unwrap()
+    };
+
+    // ---- 1. a delivery held for the train, landed with its notice ---------
+    train(&mut c, true);
+    commit(&path, "one.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    let line = land(&mut c, 1, 0);
+    assert!(
+        line.contains(&format!(
+            "{worker} delivered and finished its turn (merge_state merged, column "
+        )),
+        "{line}"
+    );
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert_eq!(feed.matches("\"crown_wake_deferred\"").count(), 1, "the train's hold");
+    assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 1, "the notice's");
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 2. a delivery heard, then merged with its notice -----------------
+    train(&mut c, false);
+    commit(&path, "two.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&worker).len() == 2
+    });
+    assert!(lines_with(&worker)[1].starts_with(&format!("{worker} delivered (")));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    train(&mut c, true);
+    let line = land(&mut c, 2, 2);
+    assert_eq!(
+        line,
+        format!(
+            "{worker} merged and finished its turn (merge_state ahead → merged) ∙ get_ticket \
+             key={kw} for state and notes"
+        )
+    );
+    wait_until(std::time::Duration::from_secs(5), "the merged feed line", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"worker\":\"{w}\""))
+                    && l.contains("\"cause\":\"merged\"")
+            })
+        })
+    });
+
+    // ---- 3. the crown's close-out, on the wake ----------------------------
+    start(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert_eq!(v.state.as_ref().map(|s| s.state.as_str()), Some("idle"), "finished entirely");
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
+    ) {
+        Response::AgentTicket { ticket } => {
+            assert_eq!(ticket.state.as_ref().map(|s| s.state.as_str()), Some("sleeping"));
+        }
+        other => panic!("sleep_agent on the wake: {other:?}"),
+    }
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentMoveTicket {
+            to_column: "DONE".into(),
+            idempotency_key: None,
+            key: Some(kw.clone()),
+            before: None,
+            seen: v.seen,
+        },
+    ) {
+        Response::AgentMoved { column, .. } => assert_eq!(column, "DONE"),
+        other => panic!("DONE on the wake: {other:?}"),
+    }
+    stop(&mut c, sa);
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(
+        lines_with(&worker).len(),
+        3,
+        "one wake per landing:\n{}",
+        std::fs::read_to_string(&got).unwrap()
+    );
+}
+
 /// T-566: a worker stopped on `AskUserQuestion` reads `needs-you` with the
 /// stop's reason and the question on `get_ticket` — off the projection
 /// Remote Control draws, on a board with no phone paired — and the crown's
