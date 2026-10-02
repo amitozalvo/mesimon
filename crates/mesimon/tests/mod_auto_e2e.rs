@@ -69,8 +69,9 @@ fn launch(h: &Harness) -> mesimon_core::board::SessionRecord {
 #[test]
 fn a_new_claude_code_is_probed_before_any_launch_and_launches_on_the_mod() {
     let Some(h) = boot("mod-auto-new", "2.1.287") else { return };
-    wait_until(Duration::from_secs(30), "the startup probe's verdict", || {
-        road_json(&h).is_some_and(|v| v["road"] == "mod")
+    // The verdict file is written at once; the feed line at the tick's end.
+    wait_until(Duration::from_secs(30), "the startup probe's verdict and feed line", || {
+        road_json(&h).is_some_and(|v| v["road"] == "mod") && !road_lines(&h).is_empty()
     });
     let v = road_json(&h).unwrap();
     assert_eq!(v["setting"], "auto");
@@ -86,8 +87,9 @@ fn a_new_claude_code_is_probed_before_any_launch_and_launches_on_the_mod() {
 #[test]
 fn a_claude_code_too_old_for_mods_launches_on_the_hook_set() {
     let Some(h) = boot("mod-auto-old", "2.1.286") else { return };
-    wait_until(Duration::from_secs(30), "the startup probe's verdict", || {
+    wait_until(Duration::from_secs(30), "the startup probe's verdict and feed line", || {
         road_json(&h).is_some_and(|v| v["probe"] == "claude 2.1.286 is older than 2.1.287")
+            && !road_lines(&h).is_empty()
     });
     assert_eq!(road_json(&h).unwrap()["road"], "hooks");
     let lines = road_lines(&h);
