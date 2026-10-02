@@ -73,6 +73,7 @@ cargo clippy --workspace --all-targets -- -D warnings # the release gate's exact
 cargo run                                             # TUI for cwd; `-- daemon --repo <p>` runs the daemon
 MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui     # remint goldens after a deliberate visual change
 python3 -B ci/test-run.py                             # bounded runner: 20-min deadline, lock, fixture audit, + the mod road pass
+python3 -B ci/rig.py [--lay|--only R3|--reset]        # in a ticket worktree: a board there drives the real claude (Sonnet) through its crown, tests in ci/rig/tests.toml
 ci/test-linux.sh                                      # whole suite on Debian 12 in Docker (~90 s warm)
 ci/sandbox.sh [up|tui|pair|build|relay]               # Docker sandbox: this tree's daemon + relay + Remote Control page
 ci/build-linux.sh                                     # the two Linux release binaries, cross-linked here

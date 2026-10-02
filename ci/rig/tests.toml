@@ -1,0 +1,144 @@
+# The rig's tests (T-588), in run order. `ci/rig.py` files one ticket per
+# test and drives them one at a time through the rig's crown.
+#
+# Per test:
+#   title      what it proves; the ticket's title.
+#   workspace  worktree | shared_checkout, said to the crown in its words.
+#   brief      the ticket's description: with the title, the worker's whole
+#              first prompt (a start's prompt is the title and description).
+#   expect     the acceptance, in words: the crown's brief carries it, and
+#              the verdict note repeats it.
+#   steps      in order. A `crown` step is words the rig sends the crown as a
+#              prompt ({key} is the test ticket's key); the rig then waits
+#              for `until` on the worker and for the crown to settle. A `rig`
+#              step is something the rig does itself: `ping` (the mod road,
+#              timed), `restart` (SIGTERM the rig's daemon and start it
+#              again), `restart_old_claude` (the same with MESIMON_CLAUDE_BIN
+#              naming a wrapper that says 2.1.286), `restart_plain` (back to
+#              the Claude Code on PATH), `doctor` (read its claude road line).
+#   until      for a crown step: `stops = N` (that many Stop frames from the
+#              worker since the step began) and/or `events = [...]`, then the
+#              worker's card word `state` (working | needs_you | idle |
+#              sleeping).
+#   checks     what the verdict reads, each a name `ci/rig.py` defines:
+#              road:<mod|hooks>, plugin_dir, no_plugin_dir, started_by_crown,
+#              cwd:<worktree|checkout>, first_prompt, words:<w1,w2,...> (the
+#              card words seen, in order), hooks:<E1,E2,...> (hook frames the
+#              daemon ingested), no_disagree, claude_road_mod, crown:<cmd>
+#              (a feed line of the crown's), pings, reply:<word> (the
+#              worker's last answer, from its transcript), doctor:<words>,
+#              final:<word>.
+#
+# The prompts are explicit and small, so the repository's CLAUDE.md does not
+# send a Sonnet worker off to work: a run is a few turns per test, cents.
+
+[[test]]
+id = "R1"
+title = "R1 · a worker starts in a worktree on the mod road"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "start_agent with workspace worktree; the brief is its first prompt; SessionRecord.road reads mod and argv carries --plugin-dir; the card goes working then idle; the feed has claude_road:mod and no road_disagree or no_mod_twin for its session."
+checks = ["road:mod", "plugin_dir", "started_by_crown", "cwd:worktree", "first_prompt", "words:working,idle", "hooks:SessionStart,UserPromptSubmit,Stop", "no_disagree", "claude_road_mod"]
+
+  [[test.steps]]
+  crown = "R1: call start_agent for {key} with workspace worktree, no tier and no plan. Its agent replies and ends its turn. When the board wakes you because {key}'s agent finished, end your turn with the single line: R1 seen."
+  until = { stops = 1, state = "idle" }
+
+[[test]]
+id = "R2"
+title = "R2 · a worker starts on the checkout on the mod road"
+workspace = "shared_checkout"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "start_agent with workspace shared_checkout; the same as R1, in the board's own checkout."
+checks = ["road:mod", "plugin_dir", "started_by_crown", "cwd:checkout", "first_prompt", "words:working,idle", "hooks:SessionStart,UserPromptSubmit,Stop", "no_disagree"]
+
+  [[test.steps]]
+  crown = "R2: call start_agent for {key} with workspace shared_checkout, no tier and no plan. Its agent replies and ends its turn. When the board wakes you because {key}'s agent finished, end your turn with the single line: R2 seen."
+  until = { stops = 1, state = "idle" }
+
+[[test]]
+id = "R3"
+title = "R3 · every hook-set event reaches the daemon on the mod road and the card follows"
+workspace = "worktree"
+brief = """Do these four things in order, and nothing else.
+1. Ask me one question with the AskUserQuestion tool: the question is "Which colour?" and the two options are "red" and "blue".
+2. Run the shell command `echo rig` with the Bash tool.
+3. Start one subagent with the Agent tool (also called Task) whose whole prompt is "Reply with the single word ok.", and wait for its answer.
+4. Reply with the single word done and end your turn.
+Read no file."""
+expect = "a question (AskUserQuestion: needs-you; the crown answers it with answer_agent, blue), a tool, a subagent (SubagentStart/SubagentStop) and the turn's end (Stop): zero disagreements for the session, so every paired event arrived on both roads, and the card's words working, needs-you and idle each seen."
+checks = ["road:mod", "words:working,needs_you,working,idle", "hooks:UserPromptSubmit,PreToolUse,PostToolUse,SubagentStart,SubagentStop,Stop", "no_disagree", "crown:answer_agent"]
+
+  [[test.steps]]
+  crown = "R3: call start_agent for {key} with workspace worktree, no tier and no plan. Its agent will stop on the question \"Which colour?\". When the board wakes you for that question, read it with get_ticket for {key} and answer it with answer_agent, choosing blue. When the board wakes you because {key}'s agent finished, end your turn with the single line: R3 seen."
+  until = { stops = 1, state = "idle" }
+
+[[test]]
+id = "R4"
+title = "R4 · a daemon restart mid-session loses no frame"
+workspace = "worktree"
+brief = "Reply with the single word ready and end your turn. Read no file and run no command."
+expect = "mesimon state ping answers before; the rig's daemon is stopped with SIGTERM and started again; ping answers after (the bridge reconnected with its backoff); the next turn, asked by the crown, arrives on both roads with zero disagreements."
+checks = ["road:mod", "pings", "hooks:UserPromptSubmit,Stop", "no_disagree", "crown:ask_agent"]
+
+  [[test.steps]]
+  crown = "R4: call start_agent for {key} with workspace worktree, no tier and no plan. When the board wakes you because {key}'s agent finished, end your turn with the single line: R4 started."
+  until = { stops = 1, state = "idle" }
+
+  [[test.steps]]
+  rig = "ping"
+
+  [[test.steps]]
+  rig = "restart"
+
+  [[test.steps]]
+  rig = "ping"
+
+  [[test.steps]]
+  crown = "R4, after the board's daemon restarted: call ask_agent for {key} with the text: Reply with the single word again and end your turn. When the board wakes you because {key}'s agent finished, end your turn with the single line: R4 seen."
+  until = { stops = 1, state = "idle" }
+
+[[test]]
+id = "R5"
+title = "R5 · sleep and wake keep the conversation on the mod road"
+workspace = "worktree"
+brief = "Remember the word mango. Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown parks the worker with sleep_agent once it is done and wakes it with start_agent; the woken session's road is decided again and reads mod; its next turn answers from the conversation it had (mango)."
+checks = ["road:mod", "plugin_dir", "words:working,idle,sleeping,working,idle", "no_disagree", "crown:sleep_agent", "crown:start_agent", "crown:ask_agent", "reply:mango"]
+
+  [[test.steps]]
+  crown = "R5: call start_agent for {key} with workspace worktree, no tier and no plan. When the board wakes you because {key}'s agent finished, do three things in order: call sleep_agent for {key}; then call start_agent for {key} with workspace worktree again, which wakes the parked agent; then call ask_agent for {key} with the text: Which word were you asked to remember? Reply with that word alone and end your turn. When the board wakes you because {key}'s agent finished that turn, end your turn with the single line: R5 seen."
+  until = { stops = 2, state = "idle" }
+
+[[test]]
+id = "R6"
+title = "R6 · pane-died still ends a session on the mod road"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown sends the worker /exit; the pane dies, tmux's pane-died ends the session and the record parks as sleeping, its worktree kept; SessionEnd arrives on both roads; nothing of the mod stands in the way."
+checks = ["road:mod", "hooks:SessionEnd,PaneDied", "no_disagree", "crown:ask_agent", "final:sleeping"]
+
+  [[test.steps]]
+  crown = "R6: call start_agent for {key} with workspace worktree, no tier and no plan. When the board wakes you because {key}'s agent finished, call ask_agent for {key} with the text /exit and then end your turn with the single line: R6 sent."
+  until = { events = ["SessionEnd"], state = "sleeping" }
+
+[[test]]
+id = "R7"
+title = "R7 · a Claude Code too old for mods gets the hook set with no visible difference"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the rig's daemon restarted with MESIMON_CLAUDE_BIN naming a wrapper that answers --version with 2.1.286 and otherwise runs the real Claude Code: the worker's road reads hooks, no --plugin-dir is passed, doctor says older than 2.1.287, and the turn runs as it did on the mod."
+checks = ["road:hooks", "no_plugin_dir", "started_by_crown", "words:working,idle", "hooks:SessionStart,UserPromptSubmit,Stop", "doctor:older than 2.1.287"]
+
+  [[test.steps]]
+  rig = "restart_old_claude"
+
+  [[test.steps]]
+  crown = "R7: call start_agent for {key} with workspace worktree, no tier and no plan. When the board wakes you because {key}'s agent finished, end your turn with the single line: R7 seen."
+  until = { stops = 1, state = "idle" }
+
+  [[test.steps]]
+  rig = "doctor"
+
+  [[test.steps]]
+  rig = "restart_plain"
