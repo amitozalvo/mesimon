@@ -4517,6 +4517,7 @@ impl App {
             crown_budget: self.board.crown_budget,
             crown_sends: self.board.crown_sends,
             crown_answers: self.board.crown_answers,
+            crown_archives: self.board.crown_archives,
             claude_road_word: self.prefs.claude_road.word(),
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
@@ -5755,6 +5756,21 @@ impl App {
                             "crown answers on ∙ agents it started may be answered by it".into()
                         } else {
                             "crown answers off ∙ every question and plan waits for you".into()
+                        };
+                    }
+                }
+            }
+            Verb::CrownArchives => {
+                let on = !self.board.crown_archives;
+                match self.client.request(Command::SetCrownArchives { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh()?;
+                        // Who takes a card off the board (T-590).
+                        self.status = if on {
+                            "crown archives on ∙ it may archive and restore tickets".into()
+                        } else {
+                            "crown archives off ∙ it moves finished tickets to DONE for you".into()
                         };
                     }
                 }
@@ -12148,6 +12164,10 @@ pub(crate) mod test_support {
                     self.board.crown_answers = on;
                     Ok(Response::Ok)
                 }
+                Command::SetCrownArchives { on } => {
+                    self.board.crown_archives = on;
+                    Ok(Response::Ok)
+                }
                 Command::SetFollowUpMode { mode } => {
                     self.board.follow_up_mode = mode;
                     Ok(Response::Ok)
@@ -15089,6 +15109,28 @@ mod tests {
         assert!(!app.board.crown_sends, "the sends switch is its own");
         assert!(app.status.contains("agents it started"), "{}", app.status);
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownAnswers")).count(), 2);
+    }
+
+    /// The crown's archive switch (T-590) is OFF on a fresh board, sits
+    /// under the answers row, and toggles through its own board command:
+    /// the row is the opt-in.
+    #[test]
+    fn crown_archives_setting_toggles_through_board_command() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Agents;
+        let idx = app.settings_row(Verb::CrownArchives);
+        assert_eq!(idx, app.settings_row(Verb::CrownAnswers) + 1, "under the answers row");
+        app.mode = Mode::Settings { idx };
+        assert!(!app.board.crown_archives && !app.ctx().crown_archives, "off by default");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.crown_archives && app.ctx().crown_archives);
+        assert!(app.status.contains("archive and restore"), "{}", app.status);
+        assert_eq!(app.mode, Mode::Settings { idx });
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.board.crown_archives && !app.ctx().crown_archives);
+        assert!(app.board.crown_answers, "the answers switch is its own");
+        assert!(app.status.contains("DONE"), "{}", app.status);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownArchives")).count(), 2);
     }
 
     /// The crown's lightning (T-544): a touch first seen fresh strikes once,

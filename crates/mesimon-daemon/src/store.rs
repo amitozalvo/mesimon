@@ -132,6 +132,17 @@ struct ColumnsFile {
     /// way, so an off survives the default.
     #[serde(default = "yes")]
     crown_answers: bool,
+    /// The crown archives and restores tickets (`Board::crown_archives`,
+    /// T-590). Absent means OFF — every file before the field, and every
+    /// board whose person never turned it on. Written either way, so an on
+    /// survives. No bump, argued against the `mcp_tools` doctrine above: an
+    /// older build that drops it does not misread this file into a widening
+    /// — its crown archives unconditionally because that build has no
+    /// switch, whatever the file says, and refusing the file there would
+    /// change nothing about its crown. Back on this build, the dropped key
+    /// reads off, which only takes authority away.
+    #[serde(default)]
+    crown_archives: bool,
     /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
     /// so it sits here, before the tables. Absent on every file written
     /// before 2026-09-04, which is what makes an existing board's first load
@@ -483,6 +494,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 crown_budget: cf.crown_budget,
                                 crown_sends: cf.crown_sends,
                                 crown_answers: cf.crown_answers,
+                                crown_archives: cf.crown_archives,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
                                 mcp_tools: cf.mcp_tools,
@@ -687,6 +699,8 @@ pub struct ColumnsScalars {
     pub crown_sends: bool,
     /// `Board::crown_answers` (T-569).
     pub crown_answers: bool,
+    /// `Board::crown_archives` (T-590).
+    pub crown_archives: bool,
     /// `Board::mcp_tools` (T-217).
     pub mcp_tools: bool,
     /// `Board::system_prompt` (T-224).
@@ -712,6 +726,7 @@ impl Default for ColumnsScalars {
             crown_budget: mesimon_core::board::DEFAULT_CROWN_BUDGET,
             crown_sends: false,
             crown_answers: true,
+            crown_archives: false,
             mcp_tools: true,
 
             system_prompt: false,
@@ -745,6 +760,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         crown_budget: cf.crown_budget,
         crown_sends: cf.crown_sends,
         crown_answers: cf.crown_answers,
+        crown_archives: cf.crown_archives,
         mcp_tools: cf.mcp_tools,
         system_prompt: cf.system_prompt,
         default_column,
@@ -769,6 +785,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         crown_budget: board.crown_budget,
         crown_sends: board.crown_sends,
         crown_answers: board.crown_answers,
+        crown_archives: board.crown_archives,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
         claude_md_ignored: board.claude_md_ignored,
@@ -1099,6 +1116,39 @@ mod tests {
         assert!(text.contains("crown_answers = false"), "{text}");
         assert!(!load(&paths).unwrap().board.crown_answers, "an off is kept");
         assert!(!read_columns_scalars(&paths).crown_answers);
+        cleanup(&dir, &paths);
+    }
+
+    /// T-590: a `columns.toml` that never carried `crown_archives` leaves
+    /// archiving to a person, in the daemon and in doctor alike; one that
+    /// says `true` keeps it on through a save, because the scalar is written
+    /// either way.
+    #[test]
+    fn crown_archives_is_off_unless_the_file_says_on() {
+        let (dir, paths) = scratch("crownarchives");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        write(
+            &cols,
+            &format!(
+                "schema_version = {COLUMNS_SCHEMA}\nnext_key = 2\ncrown_answers = false\n\n\
+                 [[columns]]\nname = \"TODO\"\norder = \"a0\"\n"
+            ),
+        );
+        assert!(!read_columns_scalars(&paths).crown_archives, "doctor reads it off");
+        let l = load(&paths).unwrap();
+        assert!(!l.board.crown_archives, "an older file leaves archiving to a person");
+        assert!(!l.board.crown_answers, "the scalar beside it survives");
+        let mut on = l.board;
+        on.crown_archives = true;
+        save_columns(&paths, &on).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("crown_archives = true"), "{text}");
+        assert!(load(&paths).unwrap().board.crown_archives, "an on is kept");
+        assert!(read_columns_scalars(&paths).crown_archives);
+        on.crown_archives = false;
+        save_columns(&paths, &on).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("crown_archives = false"), "written either way: {text}");
         cleanup(&dir, &paths);
     }
 
@@ -2130,6 +2180,7 @@ order = "a0"
             crown_budget: 5,
             crown_sends: true,
             crown_answers: true,
+            crown_archives: true,
             tags_seeded: true,
             mcp_tools: false,
             claude_md_ignored: true,
@@ -2215,6 +2266,9 @@ order = "a0"
         // T-569: the crown's answers switch is a scalar before the tables too.
         assert!(back.crown_answers, "{text}");
         assert!(text.find("crown_answers").unwrap() < text.find("[[columns]]").unwrap());
+        // T-590: and so is the crown's archive switch.
+        assert!(back.crown_archives, "{text}");
+        assert!(text.find("crown_archives").unwrap() < text.find("[[columns]]").unwrap());
         assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());
 
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");

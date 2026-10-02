@@ -576,6 +576,13 @@ pub enum Command {
     SetCrownAnswers {
         on: bool,
     },
+    /// Whether the crown may archive and restore tickets with
+    /// `archive_ticket` (`Board::crown_archives`, T-590). Local only: taking
+    /// a card off the board is the person's gesture, and only the person may
+    /// hand it over.
+    SetCrownArchives {
+        on: bool,
+    },
     /// Project default for newly accepted agent starts. Existing sessions
     /// retain their provider. Local only: agents cannot choose who runs
     /// subsequent sessions on the board.
@@ -1346,6 +1353,7 @@ impl Command {
             | SetCrownBudget { .. }
             | SetCrownSends { .. }
             | SetCrownAnswers { .. }
+            | SetCrownArchives { .. }
             | SetSystemPrompt { .. }
             | SetFollowUpMode { .. }
             | SetDefaultColumn { .. }

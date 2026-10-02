@@ -618,6 +618,8 @@ fn agents(repo: &Path, verbose: bool) -> Section {
                 .advice("Settings > Agents > Crown answers questions lets the crown answer the questions and accept the plans of the agents it started.")
         });
 
+        records.push(crown_archives(cols.crown_archives));
+
         // The columns and what each one DOES (T-117): every automation is a
         // column setting now, so this line is the whole answer to "why did
         // that card move". A board with no file prints nothing — doctor
@@ -688,6 +690,18 @@ fn agents(repo: &Path, verbose: bool) -> Section {
 /// seam is not in doctor's environment), and how often the shadow found the
 /// two roads disagreeing — zero is the bar the mod must hold before it
 /// carries the frames alone.
+/// Whether the crown takes a card off the board (T-590): a person's gesture,
+/// off by default, printed either way.
+fn crown_archives(on: bool) -> Record {
+    if on {
+        rec(Level::Note, "crown archives", "on - the crown may archive and restore tickets")
+            .advice("archive_ticket takes a ticket off the board and reclaims its merged worktree, and restores one; the card and the feed say what it did. It is refused while a session on the ticket is awake. Settings > Agents > Crown archives tickets turns it off.")
+    } else {
+        rec(Level::Ok, "crown archives", "off - the crown moves finished tickets to DONE and you archive them")
+            .advice("A DONE ticket keeps its merged worktree until you archive it. Settings > Agents > Crown archives tickets lets the crown archive and restore tickets.")
+    }
+}
+
 fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
     use mesimon_daemon::modroad::{read_setting, read_verdict, Source};
     let source_word = |s: Source| match s {
@@ -1198,6 +1212,21 @@ mod tests {
             super::tiers_line(&Book::new(&machine, &board)).as_deref(),
             Some("quick (docs, renames) ∙ deep (the daemon's writer) ∙ plain")
         );
+    }
+
+    /// T-590: doctor prints the crown's archive switch either way, naming
+    /// the row that turns it.
+    #[test]
+    fn the_crown_archives_line_names_the_row() {
+        let off = super::crown_archives(false);
+        assert_eq!(off.label, "crown archives");
+        assert!(off.value.starts_with("off - "), "{}", off.value);
+        let on = super::crown_archives(true);
+        assert!(on.value.starts_with("on - "), "{}", on.value);
+        for r in [off, on] {
+            let advice = r.advice.unwrap();
+            assert!(advice.contains("Settings > Agents > Crown archives tickets"), "{advice}");
+        }
     }
 
     /// Advice that is meant to be pasted keeps its shape. `wrap` reflows

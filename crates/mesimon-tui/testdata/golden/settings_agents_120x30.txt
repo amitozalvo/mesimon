@@ -1,11 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
-
-    Decay treatments      >╭─ AGENTS ───────────────────────────────────────────────────────╮
-                           │   Default tier: claude                                         │
-    Keymap validator      >│     Claude Code ∙ its own model ∙ what a ticket starts on unl~ │
-                           │   Tiers: none yet                                              │
+                           ╭─ AGENTS ───────────────────────────────────────────────────────╮
+    Decay treatments      >│   Default tier: claude                                         │
+                           │     Claude Code ∙ its own model ∙ what a ticket starts on unl~ │
+    Keymap validator      >│   Tiers: none yet                                              │
                            │     a name for a launch: provider, model, effort ∙ ^n cycles ~ │
                            │   Agent brief: off                                             │
                            │     one line: read the ticket first ∙ enter shows it first     │
@@ -21,10 +20,11 @@
                            │     its asks wait on the card for ^y ∙ enter lets it send to ~ │
                            │   Crown answers questions: on                                  │
                            │     a question or plan from an agent it started wakes it, and~ │
+                           │   Crown archives tickets: off                                  │
+                           │     it moves finished tickets to DONE and you archive them ∙ ~ │
                            │   Claude integration: hooks                                    │
                            │     the hook set mesimon generates ∙ enter: auto, from the ne~ │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
 
 
  SETTINGS                                                                                                        ? keys

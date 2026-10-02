@@ -1720,6 +1720,15 @@ pub struct Board {
     /// to a person again, which only takes authority away.
     #[serde(default = "yes")]
     pub crown_answers: bool,
+    /// The crown archives (T-590): `archive_ticket`, archive and restore
+    /// alike, is refused while this is off, and the crown closes a finished
+    /// ticket by moving it to DONE instead. Taking a card off the board is
+    /// a person's gesture unless the person says otherwise, per board (the
+    /// author: "gate crown ability to archive with a setting opt in"). OFF
+    /// by default. A build that drops it gives the crown its unconditional
+    /// archive back, which is that build's own behaviour, not a misread.
+    #[serde(default)]
+    pub crown_archives: bool,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
     /// The tag registry: the vocabulary each axis offers, in the order it was
@@ -1893,6 +1902,7 @@ impl Default for Board {
             crown_budget: DEFAULT_CROWN_BUDGET,
             crown_sends: false,
             crown_answers: true,
+            crown_archives: false,
             next_key: 0,
             tags: Vec::new(),
             tags_seeded: false,
@@ -2767,6 +2777,18 @@ mod tests {
         assert!(serde_json::from_value::<Board>(wire.clone()).unwrap().crown_answers);
         wire["crown_answers"] = serde_json::json!(false);
         assert!(!serde_json::from_value::<Board>(wire).unwrap().crown_answers);
+    }
+
+    /// T-590: a board from before the field leaves archiving to a person,
+    /// and one that turned it on keeps it on.
+    #[test]
+    fn crown_archives_defaults_off_and_an_on_is_kept() {
+        assert!(!Board::default().crown_archives);
+        let mut wire = serde_json::to_value(Board::default()).unwrap();
+        wire.as_object_mut().unwrap().remove("crown_archives");
+        assert!(!serde_json::from_value::<Board>(wire.clone()).unwrap().crown_archives);
+        wire["crown_archives"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Board>(wire).unwrap().crown_archives);
     }
 
     /// T-543: a column opts its tickets into the idle park, and each timer

@@ -18376,3 +18376,73 @@ fixture registers, and the spike's driver runs outside it by design.
 on the process that burns, and `wait()`s each so none is left a zombie. The rule, for any
 research driver here: a load generator is a direct child or a process group, never a command
 behind `sh -c`.
+
+## The crown archives only where a person lets it (T-590, 2026-10-02, filed by the crown on T-587; the author: "don't archive tickets, move them to done when done instead. I actually want to prevent crown from archiving tickets altogether", then "gate crown ability to archive with a setting opt in")
+
+**Seen.** The crown on T-587 folded four phase tickets into three and archived the four (T-576,
+T-578, T-579, T-580) with `archive_ticket`, as T-539's `CROWN_WAKES` told it to ("archive_ticket
+then takes its ticket off the board and reclaims a merged worktree"). The crown restored the four
+and moved them to DONE. Taking a card off the board is a person's gesture unless the person says
+otherwise, per board.
+
+**Refuted: removing the tool.** The first cut of this ticket took `archive_ticket` out of the
+agent tier altogether (sixteen tools). The author's second sentence replaced that brief before it
+merged: the tool stays, seventeen tools, behind a switch.
+
+**Shipped: `Board::crown_archives`**, the third crown switch beside `crown_sends` (T-550) and
+`crown_answers` (T-569, T-582), and like `crown_sends` OFF by default. `#[serde(default)]` false,
+the hand-written `Default` false, a `columns.toml` scalar written either way so an on survives.
+`Command::SetCrownArchives { on }` (mutate, logged; `agent_allows` refuses it: only the person
+hands the gesture over), the Settings → Agents row **Crown archives tickets: off|on** under
+**Crown answers questions** (`Verb::CrownArchives`, `Ctx::crown_archives`), and doctor's
+`crown archives` line, printed either way. The goldens `settings_agents_120x30`,
+`settings_agents_60x20`, `settings_agents_60x20_end` and `settings_codex_60x20` gained the row
+(or its count, 10 → 11).
+
+- **The gate is judged at each call**, in the daemon's `AgentArchiveTicket` arm right after the
+  key and the stamp resolve and before `authorize`, the awake check or any write: archive and
+  restore alike read `Settings → Agents → Crown archives tickets is off; move T-5 to DONE instead,
+  or a person archives` (a restore: `…; a person restores T-5`) and leave no feed line. A switch
+  turned off mid-session holds from the crown's next call. The tool stays in the list and in
+  `agent_allows` so the refusal can name the row; its description says it is gated ("if the board
+  lets it: Crown archives tickets, off unless a person turned it on").
+- **The words.** `CROWN_WAKES`: a merged worker is finished; `sleep_agent` parks it, freeing its
+  seat, and `move_ticket` to the board's done column closes it (its gate admits a merged branch);
+  where the row is on, `archive_ticket` also takes it off the board and reclaims its worktree;
+  otherwise a person archives. "The board's done column", not the brief's `DONE`: the tool-text
+  lint, which `CROWN_WAKES` and every description pass, reads a four-letter capital word as
+  shouting, and a column's name is the person's word, which the crown reads from
+  `allowed_columns`. The refusal, result data the lint does not reach, says `DONE`. `sleep_agent`
+  names the move first and the archive "where the board lets it". `docs/USING.md` says the same
+  and has a paragraph for the row; promise 3's list of the crown's edits says the archive is
+  where the person turns it on.
+- **No schema bump**, argued on `ColumnsFile::crown_archives` against the `mcp_tools` doctrine on
+  `COLUMNS_SCHEMA` ("a consent flag may not be lost by a downgrade"). T-582 did not bump because a
+  build that drops `crown_answers` only takes authority away. A build that drops `crown_archives`
+  hands its crown the unconditional archive, but that is the older build's own behaviour, not a
+  misread of this file: it has no switch to read, and refusing the file there would leave its
+  crown archiving all the same. Back on this build the dropped key reads off, which only takes
+  authority away.
+- **The worktree stays, on purpose.** With the row off, a ticket the crown moved to DONE keeps its
+  merged worktree until the person takes DONE's offer or archives it; the crown reclaims nothing.
+  The person decides when a card leaves the board and when its checkout goes. The brief called
+  `archive_all` never reclaiming worktrees a separate bug; T-481 already closed it
+  (`archive_all` goes through `archive_one`, which runs `reclaim_on_archive`).
+- **Left alone.** The `♛` touches (`archived` and `restored` still strike when the row is on),
+  `WakeCause`, the budget, the merge train, and `crown::judge`'s worktree refusal ("…or archive
+  it"), whose archive now meets the switch's refusal when the row is off.
+
+**Tests.** `board::tests::crown_archives_defaults_off_and_an_on_is_kept`;
+`store::tests::crown_archives_is_off_unless_the_file_says_on` (an older file reads off in the
+daemon and in doctor's `read_columns_scalars`, an on survives a save, an off is written) and the
+registry round-trip; `mcp::tests::the_crown_is_told_archiving_is_a_person_s_unless_let` (the
+three texts, cap and lint) and the never-tier list; `crown_archive_tests` (the two refusals'
+words); `doctor::tests::the_crown_archives_line_names_the_row`;
+`app::tests::crown_archives_setting_toggles_through_board_command`. `crown_e2e`: off by default,
+the crown's archive and restore refused with the row named and the ticket's stamp unchanged; a
+person turns it on (the board, `columns.toml` and doctor's reader say so); the T-411 archive and
+restore land, and the feed holds exactly one agent `archive_ticket` and one `unarchive_ticket`
+line; turned off again, the next call is refused. The wake test turns the row on before T-539's
+park-then-archive. The landing test's fifth step: with the row off, the crown's keyed move to DONE
+is refused by the DONE gate before the merge and lands after it, the card lit `moved`, not
+archived, its worktree on disk.

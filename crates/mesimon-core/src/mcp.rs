@@ -140,9 +140,11 @@ pub const CROWN_WAKES: &str = concat!(
      polling. A background task or monitor left running makes this session read as busy, and \
      the wake and every queued word wait until it ends. A worker whose branch is merged is \
      finished: sleep_agent parks it, which frees its seat in the crown's budget, and \
-     archive_ticket then takes its ticket off the board and reclaims a merged worktree. That \
-     is the crown's to do, not a person's to be asked for; a person's own agent is the one the \
-     crown may not park. The crown decides each ticket's workspace before it files or starts \
+     move_ticket to the board's done column closes it (its gate admits a merged branch). \
+     Where Settings → Agents → Crown archives tickets is on, archive_ticket also takes it off \
+     the board and reclaims its worktree; otherwise a person archives. The park and the move \
+     are the crown's to do, not a person's to be asked for; a person's own agent is the one \
+     the crown may not park. The crown decides each ticket's workspace before it files or starts \
      it: create_ticket and start_agent take workspace, worktree (the ticket's own branch, \
      merged later) or shared_checkout (the repository's own checkout). shared_checkout is \
      refused while another ticket's agent holds it, awake or parked (list_board's \
@@ -514,11 +516,12 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "archive_ticket",
-            "description": "Archives another mesimon ticket (crown only), or with restore \
-                            brings an archived one back to its column. Refused while a \
-                            session on it is awake; sleep_agent parks one the crown started. \
-                            Agents cannot delete a ticket; this is the reversible form, and \
-                            the person can restore it too.",
+            "description": "Archives another mesimon ticket (crown only, if the board lets \
+                            it: Crown archives tickets, off unless a person turned it on), or \
+                            with restore brings an archived one back to its column. Refused \
+                            while that is off, or while a session on it is awake; sleep_agent \
+                            parks one the crown started. Agents cannot delete a ticket; this \
+                            is the reversible form, and the person can restore it too.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -576,7 +579,8 @@ pub fn tools() -> Vec<Value> {
                             working agent, a person's agent and this session's own are \
                             refused in words. A parked agent holds no seat in the crown's \
                             budget until it is woken, so parking a finished worker frees its \
-                            seat; archive_ticket afterwards reclaims a merged worktree.",
+                            seat; move_ticket then closes its ticket in the done column, and \
+                            archive_ticket, where the board lets it, reclaims its worktree.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1125,6 +1129,9 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::AgentReadTicket { .. }
         | Command::AgentRenameTicket { .. }
         | Command::AgentSetWorkspace { .. }
+        // The crown's archive sits behind one more gate (T-590): the board's
+        // `crown_archives`, a person's opt-in, off by default and judged by
+        // the daemon at each call. Admitted here so a refusal names the row.
         | Command::AgentArchiveTicket { .. }
         // The crown's start (T-412): an ASK to spawn, judged by the daemon
         // against the spawn budget and the seat rule. `SpawnSession` itself
@@ -1309,6 +1316,9 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // T-569: the crown answering a worker's question is a decision made
         // for the person. Only the person may hand that over.
         | Command::SetCrownAnswers { .. }
+        // T-590: the crown taking a card off the board is the person's
+        // gesture handed over. Only the person may hand it over.
+        | Command::SetCrownArchives { .. }
         // Where the status line sits over the user's own panes: chrome, and
         // theirs. An agent moving it would be redecorating a screen it is
         // not looking at.
@@ -2216,6 +2226,36 @@ mod tests {
         lint_tool_text(description).unwrap();
     }
 
+    /// T-590: the crown archives only where a person lets it. The tool
+    /// stays, says it is gated, and the crown is told a finished worker's
+    /// ticket goes to the done column first; all three inside the cap and
+    /// the lint.
+    #[test]
+    fn the_crown_is_told_archiving_is_a_person_s_unless_let() {
+        let registry = tools();
+        let tool = |name: &str| registry.iter().find(|t| t["name"] == name).unwrap().clone();
+        let archive = tool("archive_ticket");
+        let description = archive["description"].as_str().unwrap();
+        for words in ["crown only", "Crown archives tickets", "off unless a person turned it on"] {
+            assert!(description.contains(words), "archive_ticket says {words:?}");
+        }
+        let sleep = tool("sleep_agent");
+        let sleep = sleep["description"].as_str().unwrap();
+        assert!(sleep.contains("move_ticket then closes its ticket in the done column"), "{sleep}");
+        assert!(sleep.contains("where the board lets it"), "{sleep}");
+        for words in [
+            "move_ticket to the board's done column closes it",
+            "its gate admits a merged branch",
+            "Settings → Agents → Crown archives tickets is on",
+            "otherwise a person archives",
+        ] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+        for text in [description, sleep, CROWN_WAKES] {
+            lint_tool_text(text).unwrap();
+        }
+    }
+
     /// T-568: the crown learns where an ask of its that never went is read.
     #[test]
     fn the_crown_is_told_where_a_dropped_ask_is_read() {
@@ -2553,6 +2593,7 @@ mod tests {
             Command::SetCrownBudget { budget: 3 },
             Command::SetCrownSends { on: true },
             Command::SetCrownAnswers { on: true },
+            Command::SetCrownArchives { on: true },
             Command::SetTicketTier { id: t, tier: Some("claude".into()) },
             Command::SaveTier {
                 scope: crate::tier::TierScope::Machine,

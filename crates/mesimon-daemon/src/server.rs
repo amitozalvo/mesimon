@@ -1721,6 +1721,18 @@ fn no_such_ticket() -> Response {
     Response::Err { message: "no such ticket".into() }
 }
 
+/// The crown's `archive_ticket` while the board's switch is off (T-590):
+/// result data, so it may instruct, and it names the row a person turns and
+/// the road the crown has instead.
+fn crown_archive_off(key: &str, restore: bool) -> String {
+    const ROW: &str = "Settings → Agents → Crown archives tickets is off";
+    if restore {
+        format!("{ROW}; a person restores {key}")
+    } else {
+        format!("{ROW}; move {key} to DONE instead, or a person archives")
+    }
+}
+
 /// The notice kind a failed shell-env capture stands under. One kind, replaced
 /// rather than appended, so a shell that fails on every reload leaves one row.
 const SHELL_ENV_NOTICE: &str = "shell_env";
@@ -2223,6 +2235,7 @@ impl Daemon {
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
             Command::SetCrownSends { on } => self.set_crown_sends(on),
             Command::SetCrownAnswers { on } => self.set_crown_answers(on),
+            Command::SetCrownArchives { on } => self.set_crown_archives(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetUsageWants { claude, codex } => {
                 if self.usage.set_wants(conn_key(stream), Wants { claude, codex }) {
@@ -4444,6 +4457,12 @@ impl Daemon {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
                 };
+                // The person's switch (T-590), judged at the call and before
+                // anything changes: off, a card leaves the board, and comes
+                // back, by a person's hand alone.
+                if !self.board.crown_archives {
+                    return Response::Err { message: crown_archive_off(&key, restore) };
+                }
                 let by = Principal::Agent { session };
                 if let Decision::Deny { reason } =
                     authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
@@ -10063,6 +10082,20 @@ impl Daemon {
         Response::Ok
     }
 
+    /// `Command::SetCrownArchives` (T-590): whether the crown's
+    /// `archive_ticket` archives and restores. Judged at each call, so an
+    /// off holds from the crown's next one.
+    fn set_crown_archives(&mut self, on: bool) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.crown_archives != on {
+            self.board.crown_archives = on;
+            self.persist_and_notify();
+        }
+        Response::Ok
+    }
+
     fn set_mcp_tools(&mut self, on: bool) -> Response {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
@@ -12965,5 +12998,26 @@ mod status_line_tests {
         // A title cannot open a tmux style: `#` doubles, quotes vanish.
         assert_eq!(ticket_crumb("T-2", "a #[fg=red] 'b'"), "#[bold]T-2#[nobold] a ##[fg=red] b");
         assert_eq!(tmux_text("T-2", 16), "T-2");
+    }
+}
+
+#[cfg(test)]
+mod crown_archive_tests {
+    use super::crown_archive_off;
+
+    /// T-590: while the board's switch is off, the crown reads the row a
+    /// person turns and its own road — the move to DONE for an archive, a
+    /// person for a restore.
+    #[test]
+    fn the_crown_s_archive_names_the_row_while_off() {
+        assert_eq!(
+            crown_archive_off("T-5", false),
+            "Settings → Agents → Crown archives tickets is off; move T-5 to DONE instead, or a \
+             person archives"
+        );
+        assert_eq!(
+            crown_archive_off("T-5", true),
+            "Settings → Agents → Crown archives tickets is off; a person restores T-5"
+        );
     }
 }

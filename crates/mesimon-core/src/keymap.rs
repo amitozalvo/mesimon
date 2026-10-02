@@ -687,6 +687,10 @@ pub enum Verb {
     /// its plan (`accept_plan`, T-582), and is woken by either. Board state
     /// like `CrownSends`, on by default; Enter toggles it.
     CrownAnswers,
+    /// The Settings row under it (T-590): whether the crown may archive and
+    /// restore tickets (`archive_ticket`). Board state like `CrownAnswers`,
+    /// off by default; Enter toggles it.
+    CrownArchives,
     /// The Agents settings' "Claude integration" row (T-574): how Claude
     /// sessions report to the board — `hooks`, `auto` or `mod` — a
     /// `prefs.json` key a board may override. The daemon reads it.
@@ -973,6 +977,7 @@ impl SettingsSection {
             | Verb::CrownBudget
             | Verb::CrownSends
             | Verb::CrownAnswers
+            | Verb::CrownArchives
             | Verb::ClaudeRoad
             | Verb::AgentPrompts => Self::Agents,
             _ => Self::Root,
@@ -1002,6 +1007,8 @@ pub struct Ctx {
     pub crown_sends: bool,
     /// `Board::crown_answers` (T-569), for the row under that.
     pub crown_answers: bool,
+    /// `Board::crown_archives` (T-590), for the row under that.
+    pub crown_archives: bool,
     /// The "Claude integration" setting's word (T-574): `hooks`, `auto` or
     /// `mod`. Empty in a bare `Ctx`; `App::ctx` always sets it.
     pub claude_road_word: &'static str,
@@ -4801,6 +4808,31 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // Whether the crown may take a card off the board (T-590). Off by
+    // default: the crown moves a finished ticket to DONE and the person
+    // archives it. On, `archive_ticket` archives and restores, and an
+    // archive reclaims a merged worktree.
+    MenuItem {
+        verb: Verb::CrownArchives,
+        label: |c| {
+            if c.crown_archives {
+                "Crown archives tickets: on".into()
+            } else {
+                "Crown archives tickets: off".into()
+            }
+        },
+        detail: |c| {
+            if c.crown_archives {
+                "it may archive and restore tickets, reclaiming a merged worktree ∙ enter turns off"
+                    .into()
+            } else {
+                "it moves finished tickets to DONE and you archive them ∙ enter lets it archive"
+                    .into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // How Claude sessions report to the board (T-574). The daemon reads
     // the files at every launch, so the row needs no push and `hooks`
     // holds with no board open.
@@ -5279,6 +5311,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::CrownBudget,
             Verb::CrownSends,
             Verb::CrownAnswers,
+            Verb::CrownArchives,
             Verb::ClaudeRoad,
         ],
     };
@@ -9090,6 +9123,7 @@ mod tests {
                     Verb::CrownBudget,
                     Verb::CrownSends,
                     Verb::CrownAnswers,
+                    Verb::CrownArchives,
                     Verb::ClaudeRoad,
                 ],
             ),

@@ -199,9 +199,10 @@ The queue holds one prompt per ticket in memory; daemon restarts discard it.
 ## The crown: one agent runs the board
 
 Press `ctrl-o` on a ticket to crown it. Its agent can then work on every other ticket through its
-board tools: move, retitle, tag and archive them, write their notes, set their workspace, start an
-agent on one, and leave words for another ticket's agent, which wait on that card until you send
-them. Each edit is checked against the ticket as the agent last read it, and the card it lands on
+board tools: move, retitle and tag them, write their notes, set their workspace, start an agent on
+one, and leave words for another ticket's agent, which wait on that card until you send them. It
+archives a ticket only where you let it (**Crown archives tickets**, below); otherwise it moves a
+finished ticket to DONE and you archive it. Each edit is checked against the ticket as the agent last read it, and the card it lands on
 lights with what was done (`♛ moved`, `♛ tagged`, `♛ started`). One ticket wears the crown at a
 time. Only you can give it, and `ctrl-o` on the crowned card takes it back.
 
@@ -252,6 +253,11 @@ the agent's. The crown is told that a plan it would change, or one that reaches 
 is yours: it raises its hand on its own card, and you answer the dialog. If you answer first, the
 crown presses nothing.
 
+**Settings › Agents › Crown archives tickets** (off by default) lets the crown archive a ticket and
+restore an archived one. While it is off, the crown is refused in words that name this row, and it
+moves a finished ticket to DONE instead; you decide when the card leaves the board and when its
+merged worktree is reclaimed. Turned off, it holds from the crown's next call.
+
 The crown picks the agent tier for each ticket it files or starts, and it picks by your words.
 Give each tier a description in **Settings › Agents › Tiers**: when to use it, in your own words
 (`docs, renames, one-file fixes`, `cross-crate refactors and anything touching the daemon`). The
@@ -269,8 +275,9 @@ the conversation is kept, `c` wakes it, and while it sleeps its seat is free for
 The crown chooses each ticket's workspace when it files or starts it, a worktree of its own or the
 shared checkout, is refused the shared checkout while another ticket's agent works or sleeps
 there, and wakes an agent it parked itself, in the workspace it was parked in.
-It may then archive the ticket, which reclaims a merged worktree, so a finished worker is
-cleared without asking you. An agent you started yourself is never slept by
+Once that agent's branch is merged, the crown moves its ticket to DONE, so a finished worker is
+closed without asking you. Where **Crown archives tickets** is on, it may also archive the ticket,
+which reclaims the merged worktree; otherwise the ticket and its worktree stay until you archive it. An agent you started yourself is never slept by
 the crown; it is told to leave that to you. Crowning types nothing into the agent's conversation: the crowned agent learns
 it through its tools. When an agent it started delivers, answers what it asked, or raises its
 hand, one sentence saying so is pasted into the crown's session, and so is a question, where the
@@ -399,8 +406,8 @@ MCP servers still load alongside.
 
 There is no tool, at any tier, to kill a session, delete a ticket, merge a branch, or read a
 session, a transcript or a cost. Those commands are refused by the daemon, not merely absent from
-the tool list. Starting an agent, choosing the tier a ticket it files or starts runs on, and
-archiving or renaming another ticket, belong to the ticket wearing
+the tool list. Starting an agent, choosing the tier a ticket it files or starts runs on, renaming
+another ticket and, where you turn it on, archiving one, belong to the ticket wearing
 [the crown](#the-crown-one-agent-runs-the-board) alone;
 [promise 3](PROMISES.md#3-zero-prompt-injection) says how the crown works.
 

@@ -11,6 +11,9 @@
 //! The crown's sleep (T-539) parks an idle agent it started and nobody
 //! else's, so the archive that was refused over the awake seat goes through,
 //! and the park alone frees that agent's budget seat (T-541). The crown
+//! archives only on a board whose person turned Settings → Agents → Crown
+//! archives tickets on (T-590); otherwise it closes a landed ticket by
+//! moving it to DONE. The crown
 //! names a workspace on every start and every filing (T-583): an unstarted
 //! ticket takes it, a worktree or a parked agent keeps its own, the shared
 //! checkout is refused while another ticket's agent holds it, and a start
@@ -310,6 +313,35 @@ fn the_crown_lets_one_agent_edit_the_others() {
         other => panic!("an unknown workspace word: {other:?}"),
     }
 
+    // ---- the crown archives only where a person lets it (T-590) --------------
+    // Off on a fresh board: archive and restore alike are refused in words
+    // naming the row, before anything changes and with no feed line.
+    assert!(!c.board().crown_archives, "off by default");
+    let dv = read(&mut c, sa, &kd).unwrap();
+    for (restore, says) in [
+        (false, format!("move {kd} to DONE instead, or a person archives")),
+        (true, format!("a person restores {kd}")),
+    ] {
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentArchiveTicket { key: kd.clone(), restore, seen: dv.seen.clone() },
+        ) {
+            Response::Err { message } => assert_eq!(
+                message,
+                format!("Settings → Agents → Crown archives tickets is off; {says}")
+            ),
+            other => panic!("the crown's archive while the row is off: {other:?}"),
+        }
+    }
+    assert!(!c.board().ticket(d).unwrap().is_archived());
+    assert_eq!(read(&mut c, sa, &kd).unwrap().seen, dv.seen, "nothing changed");
+    // A person turns the row on; the board and doctor read it on.
+    assert!(matches!(c.request(Command::SetCrownArchives { on: true }), Response::Ok));
+    assert!(c.board().crown_archives);
+    assert!(mesimon_daemon::store::read_columns_scalars(&h.paths).crown_archives);
+    let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
+    assert!(file.contains("crown_archives = true"), "{file}");
+
     // ---- archive is the reversible spelling of delete -------------------------
     let bv = read(&mut c, sa, &kb).unwrap();
     match c.send(
@@ -363,6 +395,35 @@ fn the_crown_lets_one_agent_edit_the_others() {
     ) {
         Response::AgentTicket { ticket } => assert_eq!(ticket.column, "IN PROGRESS"),
         other => panic!("restore: {other:?}"),
+    }
+    assert!(!c.board().ticket(d).unwrap().is_archived());
+    // The refusals wrote nothing to the feed: the archive and the restore
+    // that landed are its only two lines of the crown's.
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let crown_lines = |cmd: &str| {
+        std::fs::read_to_string(&feed_path).map_or(0, |feed| {
+            feed.lines()
+                .filter(|l| {
+                    l.contains(&format!("\"cmd\":\"{cmd}\"")) && l.contains("\"actor\":\"agent\"")
+                })
+                .count()
+        })
+    };
+    wait_until(std::time::Duration::from_secs(5), "the restore's feed line", || {
+        crown_lines("unarchive_ticket") == 1
+    });
+    assert_eq!(crown_lines("archive_ticket"), 1, "the refused calls left no line");
+    // Turned off mid-session, the next call is refused at once.
+    assert!(matches!(c.request(Command::SetCrownArchives { on: false }), Response::Ok));
+    let dv = read(&mut c, sa, &kd).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentArchiveTicket { key: kd.clone(), restore: false, seen: dv.seen },
+    ) {
+        Response::Err { message } => {
+            assert!(message.contains("Crown archives tickets is off"), "{message}")
+        }
+        other => panic!("the crown's archive after the row went off: {other:?}"),
     }
     assert!(!c.board().ticket(d).unwrap().is_archived());
 
@@ -558,7 +619,6 @@ fn the_crown_lets_one_agent_edit_the_others() {
         other => panic!("the checkout on a worktree ticket: {other:?}"),
     }
     // The feed says the agent started it (buffered; flushed on a later tick).
-    let feed_path = h.paths.state_dir.join("activity.jsonl");
     wait_until(std::time::Duration::from_secs(5), "the feed line", || {
         std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
             feed.lines().any(|l| l.contains("\"start_agent\"") && l.contains("\"actor\":\"agent\""))
@@ -1116,7 +1176,9 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     // an idle crown-started worker parks — the record Sleeping, `started_by`
     // kept, the card lit `♛ parked`, the feed line with the agent as actor
     // — and the park alone frees its budget seat (T-541): the start the
-    // full budget refused goes through. The archive then goes through too.
+    // full budget refused goes through. The archive then goes through too,
+    // on a board whose person let the crown archive (T-590).
+    assert!(matches!(c.request(Command::SetCrownArchives { on: true }), Response::Ok));
     let sleep = |c: &mut TestClient, key: &str, seen: Option<String>| {
         c.send(
             Principal::Agent { session: sa },
@@ -1505,6 +1567,48 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         "the rebase the person asked for is theirs, at a new tip or not:\n{}",
         std::fs::read_to_string(&got).unwrap()
     );
+
+    // ---- 5. the crown closes a landed ticket in DONE (T-590) ----------------
+    // The road its words name while the archive row is off: the keyed move,
+    // refused by the DONE gate while the branch is unmerged and admitted
+    // once a person merged it. The worktree stays — its reclaim is the
+    // person's, by DONE's offer or an archive.
+    assert!(!c.board().crown_archives);
+    let to_done = |c: &mut TestClient| {
+        let v = read(c, sa, &kw).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentMoveTicket {
+                to_column: "DONE".into(),
+                idempotency_key: None,
+                key: Some(kw.clone()),
+                before: None,
+                seen: v.seen,
+            },
+        )
+    };
+    match to_done(&mut c) {
+        Response::Err { message } => {
+            assert_eq!(message, "worktree unmerged — merge before DONE")
+        }
+        other => panic!("DONE before the merge: {other:?}"),
+    }
+    match c.request(Command::MergeTicket { id: w }) {
+        Response::Merge { outcome: mesimon_core::command::MergeOutcome::Merged, .. } => {}
+        other => panic!("the second merge: {other:?}"),
+    }
+    match to_done(&mut c) {
+        Response::AgentMoved { column, .. } => assert_eq!(column, "DONE"),
+        other => panic!("DONE after the merge: {other:?}"),
+    }
+    let t = c.board().ticket(w).cloned().unwrap();
+    assert_eq!(t.column, "DONE");
+    assert!(!t.is_archived(), "on the board until a person archives it");
+    assert_eq!(
+        touches(&mut c).iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
+        Some("moved")
+    );
+    assert!(path.exists(), "the crown reclaims nothing");
 }
 
 /// A worker's merge wakes the crown that started it (T-527), whoever made
