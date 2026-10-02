@@ -2,7 +2,11 @@
 # test and drives them one at a time through the rig's crown.
 #
 # Per test:
-#   title      what it proves; the ticket's title.
+#   title      what it proves, and the ask: the ticket's title. A start types
+#              the title and pastes the description, and Claude Code wraps a
+#              paste in <pasted_content> and follows instructions inside only
+#              where the person's own words ask (measured: a worker given a
+#              bare title declined R3's steps), so the title asks.
 #   workspace  worktree | shared_checkout, said to the crown in its words.
 #   brief      the ticket's description: with the title, the worker's whole
 #              first prompt (a start's prompt is the title and description).
@@ -44,7 +48,7 @@
 
 [[test]]
 id = "R1"
-title = "R1 · a worker starts in a worktree on the mod road"
+title = "R1 · a worker starts in a worktree on the mod road: do the steps below"
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
 expect = "start_agent with workspace worktree; the brief is its first prompt; SessionRecord.road reads mod and argv carries --plugin-dir; the card goes working then idle; the feed has claude_road:mod and no road_disagree or no_mod_twin for its session."
@@ -56,7 +60,7 @@ checks = ["road:mod", "plugin_dir", "started_by_crown", "cwd:worktree", "first_p
 
 [[test]]
 id = "R2"
-title = "R2 · a worker starts on the checkout on the mod road"
+title = "R2 · a worker starts on the checkout on the mod road: do the steps below"
 workspace = "shared_checkout"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
 expect = "start_agent with workspace shared_checkout; the same as R1, in the board's own checkout."
@@ -69,7 +73,7 @@ checks = ["road:mod", "plugin_dir", "started_by_crown", "cwd:checkout", "first_p
 
 [[test]]
 id = "R3"
-title = "R3 · every hook-set event reaches the daemon on the mod road and the card follows"
+title = "R3 · every hook-set event reaches the daemon on the mod road and the card follows: do the steps below"
 workspace = "worktree"
 brief = """Do these four things one at a time, each only once the one before has finished, and nothing else.
 1. Ask me one question with the AskUserQuestion tool, alone: the question is "Which colour?" and the two options are "red" and "blue". Wait for my answer.
@@ -86,7 +90,7 @@ checks = ["road:mod", "words:working,needs_you,working,idle", "hooks:UserPromptS
 
 [[test]]
 id = "R4"
-title = "R4 · a daemon restart mid-session loses no frame"
+title = "R4 · a daemon restart mid-session loses no frame: do the steps below"
 workspace = "worktree"
 brief = "Reply with the single word ready and end your turn. Read no file and run no command."
 expect = "mesimon state ping answers before; the rig's daemon is stopped with SIGTERM and started again; ping answers after (the bridge reconnected with its backoff); the next turn, asked by the crown, arrives on both roads with zero disagreements."
@@ -112,7 +116,7 @@ checks = ["road:mod", "pings", "hooks:UserPromptSubmit,Stop", "no_disagree", "cr
 
 [[test]]
 id = "R5"
-title = "R5 · sleep and wake keep the conversation on the mod road"
+title = "R5 · sleep and wake keep the conversation on the mod road: do the steps below"
 workspace = "worktree"
 brief = "Remember the word mango. Reply with the single word done and end your turn. Read no file and run no command."
 expect = "the crown parks the worker with sleep_agent once it is done and wakes it with start_agent; the woken session's road is decided again and reads mod; its next turn answers from the conversation it had (mango)."
@@ -129,7 +133,7 @@ checks = ["road:mod", "plugin_dir", "words:working,idle,sleeping,working,idle", 
 
 [[test]]
 id = "R6"
-title = "R6 · pane-died still ends a session on the mod road"
+title = "R6 · pane-died still ends a session on the mod road: do the steps below"
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
 expect = "the crown sends the worker /exit; the pane dies, tmux's pane-died ends the session and the record parks as sleeping, its worktree kept; SessionEnd arrives on both roads; nothing of the mod stands in the way."
@@ -145,7 +149,7 @@ checks = ["road:mod", "hooks:SessionEnd,PaneDied", "no_disagree", "crown:ask_age
 
 [[test]]
 id = "R7"
-title = "R7 · a Claude Code too old for mods gets the hook set with no visible difference"
+title = "R7 · a Claude Code too old for mods gets the hook set with no visible difference: do the steps below"
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
 expect = "the rig's daemon restarted with MESIMON_CLAUDE_BIN naming a wrapper that answers --version with 2.1.286 and otherwise runs the real Claude Code: the worker's road reads hooks, no --plugin-dir is passed, doctor says older than 2.1.287, and the turn runs as it did on the mod."

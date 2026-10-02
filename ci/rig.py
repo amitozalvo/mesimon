@@ -422,7 +422,9 @@ class Rig:
             test["ticket"] = tid
             test["key"] = self.ticket(self.board(), tid)["short_key"]
             say(f"  filed {test['key']}: {test['title']}")
-        crown = self.wire.create_ticket("TODO", f"Rig crown · run {self.run_id}")
+        # The title is the person's own words and the brief is pasted, so the
+        # title asks for it (see tests.toml on <pasted_content>).
+        crown = self.wire.create_ticket("TODO", f"Rig crown · run {self.run_id}: follow the brief below")
         self.wire.write_note(crown, self.crown_brief(tests))
         self.wire.set_manual_merge(crown, True)
         self.wire.set_workspace(crown, "shared_checkout")
@@ -443,7 +445,8 @@ class Rig:
         return "\n".join(lines)
 
     def crown_brief(self, tests):
-        order = "\n".join(f"- {t['id']} ({t['key']}): {t['title'].split(' · ', 1)[-1]}. "
+        order = "\n".join(f"- {t['id']} ({t['key']}): "
+                          f"{t['title'].split(' · ', 1)[-1].removesuffix(': do the steps below')}. "
                           f"{t['expect']}" for t in tests)
         return f"""You wear the crown of the rig: a mesimon board inside a ticket worktree, run by `ci/rig.py`, that tests mesimon's Claude Code mod road on the real Claude Code. You are the subject under test: each test proves a crown can drive a worker through the board while the mod relays every frame, with nothing read off a screen.
 
@@ -682,6 +685,14 @@ Reply with the single word ready and end your turn."""
                 self.run_step(test, step, record)
         time.sleep(SWEEP_WAIT)
         self.watch()
+        # Evidence, not a gate: is this worker's mod alive end to end now?
+        rec = self.agent_of(self.board(), test["ticket"])
+        if rec and rec.get("road") == "mod" and word_of(rec["state"]) not in ("sleeping", "exited"):
+            try:
+                record["alive"] = f"pong in {self.wire.mod_ping(rec['id'])} ms"
+            except (WireError, OSError) as e:
+                record["alive"] = f"no pong: {e}"
+            self.log(f"{test['key']} mod: {record['alive']}")
         verdict = self.judge(test, start_mark, record, time.time() - t0)
         if not ok:
             verdict["pass"] = False
@@ -772,6 +783,7 @@ Reply with the single word ready and end your turn."""
             "wakes": [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                       and l.get("worker") == test["ticket"]],
             "disagree": [f"{l.get('cmd')} {l.get('outcome')}×{l.get('count')}" for l in disagree],
+            "alive": record.get("alive"),
         }
 
     def timing(self, mine):
@@ -803,7 +815,8 @@ Reply with the single word ready and end your turn."""
         note += ["", f"**Frames the daemon ingested** (hook road, in order): {', '.join(v['hooks']) or 'none'}.",
                  f"**Card words seen:** {' → '.join(v['words']) or 'none'}.",
                  f"**The board woke the crown for it:** {', '.join(v['wakes']) or 'never'}.",
-                 f"**road_disagree for its session:** {', '.join(v['disagree']) or 'none'}."]
+                 f"**road_disagree for its session:** {', '.join(v['disagree']) or 'none'}.",
+                 f"**Its mod at the end:** {v['alive'] or 'no pane to ask'}."]
         self.wire.write_note(test["ticket"], "\n".join(note))
         rec = self.agent_of(self.board(), test["ticket"])
         if rec and word_of(rec["state"]) not in ("sleeping", "exited", "failed"):
