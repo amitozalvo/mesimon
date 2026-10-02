@@ -282,8 +282,11 @@ the crown; it is told to leave that to you. Crowning types nothing into the agen
 it through its tools. When an agent it started delivers, answers what it asked, or raises its
 hand, one sentence saying so is pasted into the crown's session, and so is a question, where the
 crown may answer it; the sentence never carries the question's words. So is the merge of that agent's
-worktree branch, whether `m`, the merge train or your own `git merge` made it. The crown is told
-this when it reads its own ticket and in every `start_agent` and `ask_agent` receipt, so it has
+worktree branch, whether `m`, the merge train or your own `git merge` made it. So is a turn that
+agent finishes with nothing new to merge, such as research written into notes, a review or an
+answer in words, once nothing is left pending on its ticket: no words queued for it, no raised
+hand, and no merge the merge train is about to make (the crown hears that one at the merge). The
+crown is told this when it reads its own ticket and in every `start_agent` and `ask_agent` receipt, so it has
 nothing to poll: a background monitor it runs makes its session read as busy, and the wake waits
 until the monitor ends. When an agent stops on a question, the crown reads the question and its
 options on that agent's ticket, and its words for that agent are refused until the question is

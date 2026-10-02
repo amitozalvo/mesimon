@@ -131,12 +131,17 @@ pub const CROWN_TIERS: &str = crown_tiers!();
 /// ticket it files or starts (T-584, `CROWN_TIERS`); and that the crown
 /// chooses where each agent it files or starts works and wakes what it
 /// parked (T-583): it started two agents on one checkout, having been told
-/// nothing of workspaces, and could not wake the one it then parked.
+/// nothing of workspaces, and could not wake the one it then parked. A
+/// finished turn wakes it too (T-591): a worker whose answer is words, not
+/// commits, used to finish unheard.
 pub const CROWN_WAKES: &str = concat!(
-    "The board wakes this session on its own: when an agent the crown started delivers, is \
-     merged, answers the crown's ask, raises its hand, asks a question or stops on a plan, one \
-     sentence naming the ticket and what changed arrives as this session's next prompt, once \
-     it is idle. Nothing needs \
+    "The board wakes this session on its own: when an agent the crown started delivers, \
+     finishes a turn with nothing pending on it (no words queued for it, no hand up, no merge \
+     the merge train will make), is merged, answers the crown's ask, raises its hand, asks a \
+     question or stops on a plan, one sentence naming the ticket and what changed arrives as \
+     this session's next prompt, once it is idle. A finished turn that left nothing new to \
+     merge says so: the agent is done with what it was asked, and what comes next is the \
+     crown's to decide. Nothing needs \
      polling. A background task or monitor left running makes this session read as busy, and \
      the wake and every queued word wait until it ends. A worker whose branch is merged is \
      finished: sleep_agent parks it, which frees its seat in the crown's budget, and \

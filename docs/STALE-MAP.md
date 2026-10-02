@@ -18446,3 +18446,77 @@ line; turned off again, the next call is refused. The wake test turns the row on
 park-then-archive. The landing test's fifth step: with the row off, the crown's keyed move to DONE
 is refused by the DONE gate before the merge and lands after it, the card lit `moved`, not
 archived, its worktree on disk.
+
+## A finished turn with nothing pending wakes the crown (T-591, 2026-10-02, filed by the crown on T-587; the author: "The board should wake the crown when its tickets finished a turn AND there's nothing else pending on them (merge train for example). I believe it was supposed to be considered a 'delivery'.")
+
+**Seen on the rig (T-588).** The rig's crown started a worker whose whole task was one turn
+with no commit ("reply with the single word done"). The turn ended idle, nothing woke the crown,
+and the run waited out a 30 s grace. `crownwake::verdict` (T-414, narrowed by T-469, T-527 and
+T-554) woke on a turn's end only when it left something new to merge, so a worker whose answer
+is words (notes, a review, a test) finished unheard. `a_second_idle_with_nothing_new_is_silent`
+was the test that said so. R's worker split the rig's R5 (sleep/wake) and R6 (pane-died) into
+rig-driven steps to get around it.
+
+**Shipped: `WakeCause::Finished`** ("finished its turn", feed word `finished`). A worker the
+crown started that ends a turn idle (`EndTurn`, Medium or better, as before) with nothing new to
+merge wakes the crown, unless something is pending on its ticket. A new cause, not
+`Delivered` with a delta, for three reasons. The clause would lie: nothing was delivered. The
+train's hold and `merge_verdict` read `Delivered` as "a tip the crown has not heard of". And the
+crown acts differently on the two. It ranks lowest, below `Merged`, so
+`coalesced_causes_keep_the_strongest` stays true: every other line about the worker already says
+its turn ended. The line says `T-17 "…" finished its turn (nothing new to merge, column
+REVIEW)`. It never names a checkout's HEAD, which the turn did not move (`changes(…, head:
+false)`). Where git could not say, the line is the finish alone.
+
+**One finish per turn.** `Daemon::turns_open` holds the tickets whose agent has entered a
+working state since its last end of turn. `apply_change` sets it on the edge, and `turn_ended`
+takes it on the next `EndTurn` and passes it in the probe (`ProbeWhy::Turn { asked, fresh }`).
+An idle re-entered with no turn between is no second finish: a stale demote, a `SessionStart`
+in a living pane, or a `Stop` after it. Taking the flag on the writer is what keeps the async
+probe from racing the next turn's start. A bare spawn or wake lands on `Idle{Unknown}` (no
+`EndTurn`), so it finishes nothing.
+
+**"Pending" is judged where the look lands** (`Daemon::pending_on`), after the queue has had the
+turn's end:
+- words queued for the agent (a person's, or the crown's held for `^y` or sent by the queue);
+- words pasted and not yet taken (`owed`);
+- a turn already running on the agent;
+- its hand up.
+
+Each makes the turn silent, and the turn those words run is judged on its own end: `Answered` for
+the crown's words, or this. A question or a plan is no `EndTurn` and is its own wake. A merge
+step (`TurnAsk::Merge`) stays silent. **The train**: `with_train` treats a finish like a
+delivery. A branch the train will take holds it (`Due::Hold(cause)`), and the crown hears it
+once, at the merge. `Heard.deferred` now keeps the held cause (`Held { cause, look }`), so a
+finish the train gives up on (`hear_deferred`, or the next turn's probe) comes due as a finish.
+A finish over a held delivery is that delivery, which the crown has not heard of. A delivery is
+never gated on "pending": a delivery with words queued behind it still wakes, as before.
+
+**Refuted/limits.** A finish on a misread idle (a Medium `EndTurn` that a later frame corrects
+back to Running) wakes the crown, and the real end wakes it again. A delivery had the same
+exposure. A pending tier switch is not "pending": its relaunch runs no turn. In memory like the
+rest of the crown's wakes: a restart empties `turns_open`, so the first end after a restart
+finishes only if a turn began after it. **The rig's steps**: `ci/rig/tests.toml`'s R5 and R6 go
+back to crown-driven once this lands. A's worker does that on the rig, not this ticket.
+
+**Tests.** `crownwake` (15):
+- `a_second_idle_with_nothing_new_delivers_nothing` (renamed): a same-tip or nothing-to-merge
+  idle is a finish when done and silent when not; a delivery is never gated.
+- `a_finished_turn_with_nothing_new_wakes_once`: once, then silent; silent on a merge step; a
+  checkout alike; an answer outranks it.
+- `a_delivery_the_train_will_take_is_held`: a finish is held and comes due as a finish, and over
+  a held delivery it is the delivery.
+- `a_finished_line_says_nothing_new_to_merge`: the words, no checkout HEAD, a fold into a
+  delivery names the HEAD.
+- `coalesced_causes_keep_the_strongest` gains `Merged > Finished`.
+
+`crown_e2e`:
+- `the_board_wakes_the_crown_when_a_started_worker_delivers`: W1's empty first turn finishes
+  with `(nothing new to merge, column …)` and feed cause `finished`. A `/clear`'s `SessionStart`
+  then a `Stop` is silent. The commit after it delivers `(commit …)` alone, since the column was
+  heard. A second whole turn at that HEAD finishes `(nothing new to merge)`. A person's ask
+  queued while W1 works makes that turn's end silent, and the queued turn's end finishes.
+- `one_landing…` and `a_hand_merge…`: the turn after a merge finishes; nothing else moved.
+- `the_crown_sends_its_asks…`: the crown takes W's and W2's finishes before the asks, and a
+  person's own agent wakes nobody.
+- The train's three cases pass unchanged.

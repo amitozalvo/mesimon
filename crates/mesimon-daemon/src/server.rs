@@ -615,10 +615,10 @@ pub struct Daemon {
     crown_wakes: Vec<CrownWake>,
     /// Each worker's work as its last judged turn left it and as the last
     /// wake about it described it (T-469): what the next turn's end is
-    /// compared with — a second idle at the same tip is silent — and where
-    /// a wake's delta runs from. In memory like the wakes; a restart forgets
-    /// it, and the first delivery after one wakes the crown again. A new
-    /// crown starts with it empty.
+    /// compared with — a second idle at the same tip delivers nothing —
+    /// and where a wake's delta runs from. In memory like the wakes; a
+    /// restart forgets it, and the first delivery after one wakes the crown
+    /// again. A new crown starts with it empty.
     crown_heard: HashMap<ulid::Ulid, crownwake::Heard>,
     /// Tickets whose branch the worktree flags just read `merged` after
     /// reading it unmerged, or on a first reading of a branch the crown was
@@ -630,6 +630,13 @@ pub struct Daemon {
     /// that turn's end: the crown's ask comes back as an answer, a
     /// merge-flow sentence as a merge step the crown is not woken for.
     turn_asks: HashMap<ulid::Ulid, TurnAsk>,
+    /// Tickets whose agent has worked since its last end of turn (T-591),
+    /// set on an edge into a working state and taken by the next `EndTurn`:
+    /// that end is a finished turn, and an idle re-entered with no turn
+    /// between — a stale demote, a `SessionStart` in a living pane — is not
+    /// a second one. On the writer, so the probe that runs off it cannot
+    /// race the next turn's start.
+    turns_open: std::collections::HashSet<ulid::Ulid>,
     /// The session whose dialog the `answer_agent` call in hand queued an
     /// answer for (T-569): the writer loop parks that call's reply with the
     /// delivery (`control_park_reply`), which answers it when it settles.
@@ -1090,6 +1097,7 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_heard: HashMap::new(),
         crown_landed: Vec::new(),
         turn_asks: HashMap::new(),
+        turns_open: std::collections::HashSet::new(),
         answer_waits: None,
         modroad,
         mod_park: None,
@@ -4088,14 +4096,17 @@ impl Daemon {
         // by construction: nothing here calls `place_ticket`. An agent's
         // turn only: a shell on the same ticket changing state must not take
         // its claude's mark.
-        if snapshot.kind.is_agent()
-            && change.from != change.to
-            && !mesimon_core::quiet::is_working(&snapshot)
-        {
-            let end_turn =
-                matches!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn })
-                    && matches!(change.confidence, Confidence::High | Confidence::Medium);
-            self.turn_ended(snapshot.ticket, end_turn);
+        // An edge into a working state opens a turn (T-591), so the next
+        // `EndTurn` is a finished one.
+        if snapshot.kind.is_agent() && change.from != change.to {
+            if mesimon_core::quiet::is_working(&snapshot) {
+                self.turns_open.insert(snapshot.ticket);
+            } else {
+                let end_turn =
+                    matches!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn })
+                        && matches!(change.confidence, Confidence::High | Confidence::Medium);
+                self.turn_ended(snapshot.ticket, end_turn);
+            }
         }
         // The agent stopped on a question (T-420): the answer may change
         // what a queued follow-up should say, so the words wait for a

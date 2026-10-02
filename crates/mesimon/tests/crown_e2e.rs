@@ -991,25 +991,32 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // A turn that leaves nothing new wakes nobody.
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
-    settle();
-    assert_eq!(lines_with(&kw1), 0, "an empty turn is not news");
-    assert!(wake_rows(&mut c, a).is_empty());
+    let crown_wake_fed = |cause: &str| {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"crown\":\"{a}\""))
+                    && l.contains(&format!("\"worker\":\"{w1}\""))
+                    && l.contains(&format!("\"cause\":\"{cause}\""))
+            })
+        })
+    };
 
-    // A commit, then the turn ends: one sentence, mesimon's template over
-    // the worker's key and title and what changed, in the crown's pane.
-    let h1 = commit(&h.repo, "w1.txt");
+    // A turn that leaves nothing new, with nothing pending on W1, finished
+    // (T-591): W1 is done with what it was asked, and the crown hears it —
+    // one sentence, mesimon's template over the worker's key and title and
+    // what changed, in the crown's pane. A checkout's HEAD is not named:
+    // the turn did not move it.
     start(&mut c, ws1);
     stop(&mut c, ws1);
-    let delivered1 = format!("{kw1} \"mesimon-probe-71 worker\" delivered");
-    wait_until(std::time::Duration::from_secs(10), "the wake to land on the crown", || {
-        lines_with(&delivered1) == 1
+    let finished1 = format!("{kw1} \"mesimon-probe-71 worker\" finished its turn");
+    wait_until(std::time::Duration::from_secs(10), "the finish to land on the crown", || {
+        lines_with(&finished1) == 1
     });
     let column = c.board().ticket(w1).unwrap().column.clone();
     let sentence = format!(
-        "{delivered1} (commit {h1}, column {column}) ∙ get_ticket key={kw1} for state and notes"
+        "{finished1} (nothing new to merge, column {column}) ∙ get_ticket key={kw1} for state \
+         and notes"
     );
     assert_eq!(lines_with(&sentence), 1, "{}", std::fs::read_to_string(&got).unwrap());
     assert!(wake_rows(&mut c, a).is_empty(), "delivered, so nothing is owed");
@@ -1018,16 +1025,39 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         Some("woke"),
         "the crown's card lights"
     );
+    wait_until(std::time::Duration::from_secs(5), "the finished feed line", || {
+        crown_wake_fed("finished")
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // The same idle re-entered with no turn between is no second finish: a
+    // `/clear`'s `SessionStart` in the living pane, then a `Stop`.
+    hook_send(&hook_sock, &ws1.to_string(), "SessionStart", r#"{"source":"clear"}"#);
+    c.await_state(ws1, "idle, unknown", |s| {
+        *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Unknown }
+    });
+    stop(&mut c, ws1);
+    settle();
+    assert!(wake_rows(&mut c, a).is_empty());
+    assert_eq!(lines_with(&finished1), 1, "one finish per turn");
+
+    // A commit, then the turn ends: it delivered. The column is what the
+    // finish already said, so only the commit is news.
+    let h1 = commit(&h.repo, "w1.txt");
+    start(&mut c, ws1);
+    stop(&mut c, ws1);
+    let delivered1 = format!("{kw1} \"mesimon-probe-71 worker\" delivered");
+    wait_until(std::time::Duration::from_secs(10), "the wake to land on the crown", || {
+        lines_with(&delivered1) == 1
+    });
+    assert_eq!(c.board().ticket(w1).unwrap().column, column);
+    let sentence = format!("{delivered1} (commit {h1}) ∙ get_ticket key={kw1} for state and notes");
+    assert_eq!(lines_with(&sentence), 1, "{}", std::fs::read_to_string(&got).unwrap());
+    assert!(wake_rows(&mut c, a).is_empty(), "delivered, so nothing is owed");
     // The feed names both tickets and the cause, never the sentence.
     wait_until(std::time::Duration::from_secs(5), "the crown_wake feed line", || {
-        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
-            feed.lines().any(|l| {
-                l.contains("\"kind\":\"crown_wake\"")
-                    && l.contains(&format!("\"crown\":\"{a}\""))
-                    && l.contains(&format!("\"worker\":\"{w1}\""))
-                    && l.contains("\"cause\":\"delivered\"")
-            })
-        })
+        crown_wake_fed("delivered")
     });
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert!(!feed.contains("mesimon-probe-71"), "the feed never carries the words:\n{feed}");
@@ -1036,14 +1066,51 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     start(&mut c, sa);
     stop(&mut c, sa);
 
-    // A second `Stop` on an idle worker is no edge, and a whole second turn
-    // at the same HEAD is nothing new: once per delivery.
+    // A second `Stop` on an idle worker is no edge; a whole second turn at
+    // the same HEAD delivers nothing — once per delivery — and finished.
     hook_send(&hook_sock, &ws1.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    settle();
+    assert_eq!(lines_with(&finished1), 1, "a second Stop is no edge");
     start(&mut c, ws1);
     stop(&mut c, ws1);
+    let again =
+        format!("{finished1} (nothing new to merge) ∙ get_ticket key={kw1} for state and notes");
+    wait_until(std::time::Duration::from_secs(10), "the second finish", || lines_with(&again) == 1);
+    assert_eq!(lines_with(&delivered1), 1, "a second idle with nothing new delivers nothing");
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- words queued on the worker: pending, so its turn end is silent ---
+    // A person's ask queued at W1's pane while it works goes when the turn
+    // ends; that end is not news, and the turn the words run is judged on
+    // its own end.
+    start(&mut c, ws1);
+    match c.request(Command::PromptSession {
+        ticket: w1,
+        text: "mesimon-probe-75 person".into(),
+        queued: true,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+    }) {
+        Response::Queued { .. } => {}
+        other => panic!("queue a person's ask on W1: {other:?}"),
+    }
+    stop(&mut c, ws1);
+    wait_until(std::time::Duration::from_secs(10), "the person's words to reach W1", || {
+        std::fs::read_to_string(&got).unwrap_or_default().contains("mesimon-probe-75 person")
+    });
     settle();
+    assert_eq!(lines_with(&finished1), 2, "a turn with words queued behind it is silent");
     assert!(wake_rows(&mut c, a).is_empty());
-    assert_eq!(lines_with(&delivered1), 1, "a second idle with nothing new is silent");
+    start(&mut c, ws1);
+    stop(&mut c, ws1);
+    wait_until(std::time::Duration::from_secs(10), "the queued turn's finish", || {
+        lines_with(&finished1) == 3
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
 
     // ---- two deliveries while the crown works: one row, one sentence ------
     start(&mut c, sa);
@@ -1520,9 +1587,6 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     });
     start(&mut c, ws);
     stop(&mut c, ws);
-    // And one more idle turn after it, with nothing new.
-    start(&mut c, ws);
-    stop(&mut c, ws);
     std::thread::sleep(std::time::Duration::from_millis(2000));
     assert_eq!(
         lines_with(&worker).len(),
@@ -1530,20 +1594,37 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         "the crown heard the delivery, its answer and the merge, nothing else:\n{}",
         std::fs::read_to_string(&got).unwrap()
     );
+    // And one more turn after it, with nothing new and nothing pending: the
+    // worker finished (T-591), and what to do with a merged worker is the
+    // crown's to decide.
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the finish's wake", || {
+        lines_with(&worker).len() == 4
+    });
+    assert_eq!(
+        lines_with(&worker)[3],
+        format!(
+            "{worker} finished its turn (nothing new to merge) ∙ get_ticket key={kw} for state \
+             and notes"
+        )
+    );
     let owed: Vec<_> = pending_of(&mut c, Some(a))
         .into_iter()
         .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
         .collect();
     assert!(owed.is_empty(), "{owed:?}");
+    start(&mut c, sa);
+    stop(&mut c, sa);
 
     // ---- 4. new work is a new delivery; a person's rebase ask is a step ----
     commit(&path, "more.txt");
     start(&mut c, ws);
     stop(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the second delivery's wake", || {
-        lines_with(&worker).len() == 4
+        lines_with(&worker).len() == 5
     });
-    assert!(lines_with(&worker)[3].starts_with(&format!("{worker} delivered")));
+    assert!(lines_with(&worker)[4].starts_with(&format!("{worker} delivered")));
     start(&mut c, sa);
     stop(&mut c, sa);
     commit(&h.repo, "elsewhere-again.txt");
@@ -1563,7 +1644,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     std::thread::sleep(std::time::Duration::from_millis(2000));
     assert_eq!(
         lines_with(&worker).len(),
-        4,
+        5,
         "the rebase the person asked for is theirs, at a new tip or not:\n{}",
         std::fs::read_to_string(&got).unwrap()
     );
@@ -1728,9 +1809,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     });
     start(&mut c, sa);
     stop(&mut c, sa);
-    // More refreshes at `merged`, and a turn that leaves it there: silent.
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    // More refreshes at `merged`: silent.
     std::thread::sleep(std::time::Duration::from_millis(2500));
     assert_eq!(
         lines_with(&worker).len(),
@@ -1738,6 +1817,16 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
         "one wake per merge:\n{}",
         std::fs::read_to_string(&got).unwrap()
     );
+    // A turn that leaves it there is no second merge; with nothing pending
+    // it finished (T-591).
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the finish's wake", || {
+        lines_with(&worker).len() == 3
+    });
+    assert!(lines_with(&worker)[2].starts_with(&format!("{worker} finished its turn")));
+    start(&mut c, sa);
+    stop(&mut c, sa);
 
     // ---- 3. delivered and merged while the crown works: one line ----------
     start(&mut c, sa);
@@ -1766,12 +1855,12 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     assert_eq!(owed(&mut c).len(), 1, "one row, not two");
     stop(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "the one line to land", || {
-        lines_with(&worker).len() == 3
+        lines_with(&worker).len() == 4
     });
     std::thread::sleep(std::time::Duration::from_millis(2000));
     let lines = lines_with(&worker);
-    assert_eq!(lines.len(), 3, "{lines:?}");
-    assert!(lines[2].starts_with(&format!("{worker} delivered (merge_state merged")), "{lines:?}");
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert!(lines[3].starts_with(&format!("{worker} delivered (merge_state merged")), "{lines:?}");
 }
 
 /// The crown sends its own asks (T-550), where the person lets it: off by
@@ -1864,6 +1953,14 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws);
     stop(&mut c, ws);
+    // W's first turn left nothing new: it finished (T-591). The crown takes
+    // that turn, so its pane no longer holds the checkout W shares.
+    wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
+        landed(&format!("{kw} \"mesimon-probe-91 worker\" finished its turn"))
+    });
+    assert!(!landed(&format!("{kp} \"the person's own\"")), "a person's agent wakes nobody");
+    start(&mut c, sa);
+    stop(&mut c, sa);
     let ask = |c: &mut TestClient, key: &str, text: &str| {
         let v = read(c, sa, key).unwrap();
         match c.send(
@@ -2034,6 +2131,11 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws2);
     stop(&mut c, ws2);
+    wait_until(std::time::Duration::from_secs(10), "W2's finish on the crown", || {
+        landed(&format!("{kw2} \"second worker\" finished its turn"))
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
     let (held, why) = ask(&mut c, &kw, "mesimon-probe-96 wake for this");
     assert!(held && why.contains("budget is spent") && why.contains(&kw2), "{why}");
     settle();
