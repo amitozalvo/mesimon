@@ -342,6 +342,7 @@ mod tests {
             (mesimon_core::road::MOD_ANSWER, "'answered'"),
             (mesimon_core::road::MOD_ANSWER, "'declined'"),
             (mesimon_core::road::MOD_ANSWER, "'nothing_held'"),
+            (mesimon_core::road::MOD_LOAD_FAILED, "'recovered'"),
         ] {
             assert!(src.contains(&format!("relay($, '{event}', {reason},")), "{event} {reason}");
         }

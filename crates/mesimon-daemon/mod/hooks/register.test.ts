@@ -98,6 +98,63 @@ test('without the pane\'s variables nothing is relayed', async ($, on) => {
   expect(runs.length).toBe(0)
 })
 
+/** `$.env.get` from ENV, but the first `fails` reads throw (an abandoned dispatch's). */
+function envFailing(on: any, fails: number) {
+  on('env.get', ($: any, e: any) => {
+    if (fails > 0) {
+      fails -= 1
+      throw new Error('the dispatch was abandoned')
+    }
+    return { value: (ENV as Record<string, string>)[e.name] }
+  })
+}
+
+test('a read of the variables that fails is not kept: the next event reads again and says so', async ($, on) => {
+  envFailing(on, 1)
+  const runs = recordRuns(on)
+  on('classic.SessionStart', () => ({}) as any)
+  on('classic.Stop', () => ({}) as any)
+  await $.classic.SessionStart({ source: 'startup' } as any)
+  await settle()
+  expect(runs.length).toBe(0)
+  await $.classic.Stop({ stop_hook_active: false } as any)
+  await settle()
+  const events = runs.map(r => r.argv[r.argv.indexOf('--event') + 1])
+  expect(events.sort()).toEqual(['ModLoadFailed', 'Stop'])
+  const report = runs.find(r => r.argv.includes('ModLoadFailed'))!
+  expect(report.argv[report.argv.indexOf('--reason') + 1]).toBe('recovered')
+  const body = JSON.parse(report.stdin)
+  expect(body.reads).toBe(1)
+  expect(body.at).toBe('SessionStart')
+  expect(typeof body.error).toBe('string')
+  await $.classic.Stop({ stop_hook_active: false } as any)
+  await settle()
+  expect(runs.filter(r => r.argv.includes('ModLoadFailed')).length).toBe(1)
+})
+
+test('a session.start whose read failed leaves the bridge to the next event that reads', async ($, on) => {
+  envFailing(on, 1)
+  mock.clock(on)
+  recordRuns(on)
+  let spawns = 0
+  on('process.spawn', async function* () {
+    spawns += 1
+    return { value: { code: 3, signal: null } }
+  } as any)
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  on('classic.Stop', () => ({}) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+  await settle()
+  expect(spawns).toBe(0)
+  await $.classic.Stop({ stop_hook_active: false } as any)
+  await settle()
+  expect(spawns).toBe(1)
+  // Refused for good: no later event starts another.
+  await $.classic.Stop({ stop_hook_active: false } as any)
+  await settle()
+  expect(spawns).toBe(1)
+})
+
 test('the bridge starts at session.start and a ping comes back as a pong, once', async ($, on) => {
   mock.env(on, ENV)
   mock.clock(on)

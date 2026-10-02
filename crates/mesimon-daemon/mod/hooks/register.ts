@@ -9,7 +9,8 @@
 //    `--road mod`. The daemon pairs it with the hook set's own frame of the
 //    same event and says when they disagree (shadow mode); it ingests only
 //    the hook set's.
-//  - BRIDGE: one `mesimon mod-bridge` per session, spawned at session.start,
+//  - BRIDGE: one `mesimon mod-bridge` per session, spawned at session.start
+//    (or by the first event after it, when its read of the variables failed),
 //    whose stdout is the daemon's commands to this session, one JSON line
 //    each: `ping`, answered with a `ModPong` relay; `submit`, a prompt the
 //    daemon delivers (a person's words, or the brief they wrote), submitted
@@ -20,6 +21,10 @@
 //  - HOLD: every `AskUserQuestion` call of the session's own (no subagent's)
 //    is raced between the native dialog, which is drawn as ever and which
 //    the person may answer first, and the board's `answer`.
+//  - LOAD: the pane's variables are read by the first event and kept once
+//    read whole; a read that fails is tried again by the next event, and the
+//    one that succeeds reports the failures before it as `ModLoadFailed`
+//    (T-594).
 //
 // It holds no policy. Every decision is the daemon's.
 //
@@ -76,25 +81,66 @@ const BACKOFF_MAX_MS = 60000
 const HEALTHY_MS = 60000
 const SEEN_MAX = 64
 
-let config: Promise<Config | undefined> | undefined
-let bridgeOn = false
+// The pane's variables once a read found all four. A read that threw or
+// came back short is never kept: the next event reads again (T-594).
+let config: Config | undefined
+let reading: Promise<Config> | undefined
+// The reads that failed before one succeeded, said to the daemon then
+// (`ModLoadFailed`): the one road that can say it is this one, once open.
+let failed: { reads: number; error: string; at: string } | undefined
+let bridge: 'off' | 'on' | 'refused' = 'off'
+let started = false
 const seen: string[] = []
 // The questions held for the board's answer, by tool_use_id: each settles
 // its race with the answer's labels.
 const holds = new Map<string, (answers: Record<string, string>) => void>()
 
-async function load($: any): Promise<Config | undefined> {
-  const bin = await $.env.get('MESIMON_MOD_BIN')
-  const hookSock = await $.env.get('MESIMON_MOD_HOOK_SOCK')
-  const orchSock = await $.env.get('MESIMON_MOD_ORCH_SOCK')
-  const session = await $.env.get('MESIMON_MOD_SESSION')
-  if (!bin || !hookSock || !orchSock || !session) return undefined
+/** The four variables, read at once; a short read throws, naming what is unset. */
+async function load($: any): Promise<Config> {
+  const [bin, hookSock, orchSock, session] = await Promise.all([
+    $.env.get('MESIMON_MOD_BIN'),
+    $.env.get('MESIMON_MOD_HOOK_SOCK'),
+    $.env.get('MESIMON_MOD_ORCH_SOCK'),
+    $.env.get('MESIMON_MOD_SESSION'),
+  ])
+  if (!bin || !hookSock || !orchSock || !session) {
+    const unset = Object.entries({ bin, hookSock, orchSock, session }).filter(([, v]) => !v)
+    throw new Error(`unset: ${unset.map(([k]) => k).join(', ')}`)
+  }
   return { bin, hookSock, orchSock, session }
 }
 
-/** The pane's variables, read once: they do not change for the process. */
-function settings($: any): Promise<Config | undefined> {
-  config ??= load($)
+/**
+ * The pane's variables, which do not change for the process: kept once read
+ * whole. A `$` call fails with the dispatch it rides when that dispatch is
+ * abandoned, and the first read rides the first event's, so a failed read
+ * is said in the debug log and tried again by the next event, never kept:
+ * a kept failure was a session whose mod relayed nothing for its whole
+ * life (T-594). The first read that succeeds after a failure reports it.
+ */
+async function settings($: any, at: string): Promise<Config | undefined> {
+  if (config) return config
+  reading ??= load($)
+  const read = reading
+  try {
+    config = await read
+  } catch (err) {
+    if (reading === read) reading = undefined
+    failed ??= { reads: 0, error: String(err), at }
+    failed.reads += 1
+    void $.ui.log(`mesimon: the pane's variables were not read at ${at} (${String(err)}); the next event reads them again`, {
+      to: 'debug',
+    })
+    return undefined
+  }
+  if (failed) {
+    const report = failed
+    failed = undefined
+    void relay($, 'ModLoadFailed', 'recovered', report, false)
+  }
+  // `session.start` starts the bridge; one whose read failed left it to the
+  // first event that reads them.
+  if (started) startBridge($, config)
   return config
 }
 
@@ -104,7 +150,7 @@ function settings($: any): Promise<Config | undefined> {
  * relay that fails is a missing twin the daemon reports, never an error here.
  */
 async function relay($: any, event: string, reason: string | undefined, body: unknown, wait: boolean) {
-  const c = await settings($)
+  const c = await settings($, event)
   if (!c) return
   const argv = [c.bin, 'hook', '--sock', c.hookSock, '--session', c.session, '--event', event]
   if (reason !== undefined) argv.push('--reason', reason)
@@ -232,29 +278,36 @@ async function bridgeLoop($: any, c: Config) {
   try {
     for (;;) {
       const born = await $.clock.now()
-      if ((await bridgeOnce($, c)) === BRIDGE_REFUSED_EXIT) return
+      if ((await bridgeOnce($, c)) === BRIDGE_REFUSED_EXIT) {
+        bridge = 'refused'
+        return
+      }
       if ((await $.clock.now()) - born >= HEALTHY_MS) backoff = BACKOFF_FIRST_MS
       await $.clock.sleep(backoff)
       backoff = Math.min(backoff * 2, BACKOFF_MAX_MS)
     }
   } catch {
     // The host went (the module unloading): so does the bridge.
-  } finally {
-    bridgeOn = false
   }
+  bridge = 'off'
+}
+
+/** The bridge, unless one runs or the daemon refused this session's for good. */
+function startBridge($: any, c: Config) {
+  if (bridge !== 'off') return
+  bridge = 'on'
+  void bridgeLoop($, c)
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    const started = await next(e)
+    const result = await next(e)
     // `session.start` may come again in the same process (a `/clear`); one
     // bridge serves them all.
-    const c = await settings($)
-    if (!bridgeOn && c) {
-      bridgeOn = true
-      void bridgeLoop($, c)
-    }
-    return started
+    started = true
+    const c = await settings($, 'session.start')
+    if (c) startBridge($, c)
+    return result
   })
 
   // ---- The relay, event by event: the hook set's names, not `classic.*`,

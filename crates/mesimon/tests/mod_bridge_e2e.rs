@@ -264,3 +264,42 @@ fn the_shadow_pairs_the_twins_and_names_a_frame_without_one() {
     );
     assert!(disagreements(&h).iter().all(|l| l["session"] == s.as_str()));
 }
+
+/// A mod whose reads of its pane variables failed before one succeeded says
+/// so (T-594): a feed line on its ticket, and a journal line with the error.
+/// A failed read was once kept for the process's life, and the mod relayed
+/// nothing.
+#[test]
+fn a_load_failure_the_mod_reports_is_a_feed_line_on_its_ticket() {
+    let Some(h) = boot("modbridge-loadfail") else { return };
+    let mut c = h.client("loadfail");
+    let (ticket, sid) = spawn(&mut c, "the load failure", SessionKind::Claude);
+    let body = r#"{"reads":2,"error":"Error: the dispatch was abandoned","at":"SessionStart"}"#;
+    hook_send_road(
+        &h.paths.hook_sock(),
+        &sid.to_string(),
+        "ModLoadFailed",
+        Some("recovered"),
+        None,
+        body,
+        Some("mod"),
+    );
+    let line = || {
+        std::fs::read_to_string(h.paths.activity_log())
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|l| l["cmd"] == "mod_load_failed")
+    };
+    wait_until(Duration::from_secs(10), "the feed line", || line().is_some());
+    let line = line().unwrap();
+    assert_eq!(line["ticket"], ticket.to_string());
+    let outcome = line["outcome"].as_str().unwrap();
+    assert!(outcome.contains("2 read(s)") && outcome.contains("at SessionStart"), "{outcome}");
+    assert!(outcome.contains("the dispatch was abandoned"), "{outcome}");
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap_or_default();
+    assert!(journal.contains(&format!("mod of session {sid}: 2 read(s)")), "{journal}");
+    // It is the mod's report alone: never a twin the shadow waits for.
+    std::thread::sleep(Duration::from_millis(2_600));
+    assert!(disagreements(&h).is_empty(), "{:?}", disagreements(&h));
+}

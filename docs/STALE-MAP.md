@@ -18939,3 +18939,78 @@ first's projection while Claude Code still shows the first: the projection holds
 session. No run has shown it. The relay's acceptance was not run: no wire changed, and a phone
 reads the projection `crown_e2e` now drives. Remote Control's permission wait has the same
 any-`PostToolUse` cancel (`control_cancel_permission` in `on_hook`); it is not this ticket.
+
+## A mod-road launch that relayed nothing: a failed read is no longer kept (T-594, 2026-10-02, filed by the crown on T-587 from R's rig run)
+
+**Seen.** On the T-588 rig board (`75061d84…`, build `0.1.0-alpha.36`, mod digest `396a5c42`),
+session `c649104a` (T-37, "R5 sleep and wake") started at 17:24:12.49Z. The hook set's
+`SessionStart` came 0.97 s later, the pasted brief's `UserPromptSubmit` 0.68 s after that, and
+`Stop` 2.0 s after that. Every frame of that life was `no_mod_twin`: `SessionStart`,
+`UserPromptSubmit`, `Stop`, and the park's `SessionEnd`. The wake at 17:24:30.70Z (same uuid,
+new pane, `--resume`) paired every frame, its `SessionEnd` included. The transcript has no
+plugin line, and no debug log exists for that process. Over both rig boards (`75061d84…`,
+`23d080e0…`) that is 1 silent launch in 84 `SessionStart` frames. The 7 lone
+`SessionEnd no_mod_twin` lines on parks are a different case: the park SIGTERMs the pane while
+the mod's awaited relay is in flight, and every other frame of those lives paired.
+
+**Ruled out, with what measured it.**
+- *The folder rewritten while loading.* The laid files' mtimes are those of their first lay
+  (16:43Z). `lay` writes only a file that differs, and atomically. The pane carries
+  `CLAUDE_CODE_PLUGIN_DIR_WATCH=0`. The engine's own writes (`.claude-plugin/types/`,
+  `tsconfig.json`) are not laid files.
+- *The variables empty at start.* They ride `mesimon exec --set` from `launch_vars`, in the same
+  block that stamps `road: mod` and adds `--plugin-dir`. Nothing about them varies per launch.
+- *A module that failed once and was cached, or a reload.* A no-cost driver (scratch, not
+  shipped) ran the real Claude Code 2.1.287 in a private tmux with the mod and a fake `mesimon`.
+  It made 120 launches: 60 serial with no prompt, 40 three at a time with a prompt pasted on the
+  hook set's `SessionStart` edge (27 full Haiku turns), and 20 of the new mod. All 120 debug logs
+  say `hooks module mesimon@inline loaded (worker, environment 1…)` and `plugin.register:
+  mesimon … admitted`, with no reload and no unload. 0 launches were silent.
+- *A `$` that dies when its hook settles.* A probe mod called `$.env.get` after
+  `classic.SessionStart` returned (at +0, 50, 300 and 1500 ms) and after `session.start`
+  returned (at +0, 300 and 1500 ms). All seven answered.
+
+**The one road to a silent life in the mod's code.** `settings()` was `config ??= load($)`. It
+kept the first read's promise for the process's life, whether that promise was rejected or
+short. That first read is four sequential `$.env.get` calls riding the first event's dispatch:
+`classic.SessionStart` in every launch measured, about 0.15 s long, with `session.start` about
+0.8 s later (one probe launch had them the other way round). The engine documents that a `$`
+call in flight is aborted when its dispatch is abandoned: the person interrupted, a hook above
+settled first, or the budget ran out. A dispatch that hit any of those (on a busy rig, with a
+paste and its repeated Enter arriving in that window) made `config` a rejected promise for good.
+Every relay's `await settings($)` then threw inside a `void` and was swallowed, so nothing went
+up, no line was written anywhere, and `session.start` never started the bridge. That matches
+every fact above. It was not reproduced in 120 launches: an instrumented copy of the mod logged
+no failed read. So this is the only mechanism the code allows, not a measured cause.
+
+**Shipped (the mod).**
+- A read that throws or comes back short is never kept. The next event reads again, with the
+  four variables read together (`Promise.all`, one round trip in place of four), and a short
+  read names what is unset.
+- Every failed read writes a debug-log line (`$.ui.log`, `to: 'debug'`, which the model never
+  sees).
+- The first read that succeeds after failures relays `ModLoadFailed` (`recovered`, body
+  `{ reads, error, at }`). The daemon writes `mod_load_failed` to the feed on the ticket and a
+  journal line with the error. That makes a mod that was silent for a while say so and say why.
+- When `session.start`'s own read failed, the next event to read the variables starts the bridge.
+  A bridge the daemon refused for good (exit 3) stays refused.
+
+A read that never succeeds cannot be relayed at all. Then the shadow's `no_mod_twin` lines are
+the only report.
+
+**For B (T-577).** The cause is not proven, so B must carry the watchdog the ticket names. Before
+B, the shadow's `road_disagree:SessionStart no_mod_twin` is that report. Once the mod carries
+frames alone, a mod-road launch whose `SessionStart` never arrives must be flagged or re-launched.
+The rig now pings each mod-road worker (`mesimon state ping`), so the next silent launch also says
+whether its bridge answered.
+
+**Tests.** `claude plugin test` holds 15 tests of the mod. Two are new: a failed first read
+relays nothing, the next event relays its own frame plus exactly one `ModLoadFailed`
+(`recovered`, `reads: 1`, `at: SessionStart`), and a third event adds no second report; and a
+`session.start` whose read failed spawns no bridge, the next event spawns one, and a refused
+bridge is not respawned. Both fail on the old `register.ts`.
+`hook_settings::the_mod_relays_exactly_what_the_hook_set_reports` now spells
+`relay($, 'ModLoadFailed', 'recovered',`.
+`mod_bridge_e2e::a_load_failure_the_mod_reports_is_a_feed_line_on_its_ticket` checks the feed
+line on the ticket and the journal line, and that the report is never a twin the shadow waits
+for. `mod_plugin` validates the laid mod and runs its tests on the real Claude Code.

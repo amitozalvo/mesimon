@@ -165,6 +165,15 @@ pub const MOD_SUBMIT: &str = "ModSubmit";
 /// answered or refused.
 pub const MOD_ANSWER: &str = "ModAnswer";
 
+/// The event the mod reports reads of its pane variables that failed with
+/// (T-594), relayed by the first read that succeeds after them, `recovered`
+/// as the reason and `{ "reads", "error", "at" }` as the body: how many
+/// failed, the first one's error, and the event it rode. A failed read was
+/// once kept for the process's life, and that session's mod relayed
+/// nothing; one that never succeeds cannot be relayed at all, and the
+/// shadow's `no_mod_twin` lines are then the only word of it.
+pub const MOD_LOAD_FAILED: &str = "ModLoadFailed";
+
 /// Whether words are a slash command for Claude Code's prompt box (`/exit`,
 /// `/compact`, a skill's `/name`): its first character, past blanks, is a
 /// slash. The engine rejects one as a plugin's `$.prompt.submit`, which

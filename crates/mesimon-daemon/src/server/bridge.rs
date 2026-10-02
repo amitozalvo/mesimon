@@ -22,7 +22,8 @@ use super::*;
 use crate::modroad::{self, Probe, RoadVerdict};
 use crate::shadow::{self, Shadow};
 use mesimon_core::road::{
-    ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_PONG, MOD_SUBMIT, PAIRED_EVENTS,
+    ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_LOAD_FAILED, MOD_PONG, MOD_SUBMIT,
+    PAIRED_EVENTS,
 };
 use std::collections::VecDeque;
 
@@ -461,7 +462,37 @@ impl Daemon {
             }
             return;
         }
+        if frame.event == MOD_LOAD_FAILED {
+            self.on_mod_load_failed(&frame);
+            return;
+        }
         self.shadow_offer(&frame, Road::Mod);
+    }
+
+    /// The mod's report that reads of its pane variables failed before one
+    /// succeeded (T-594): a feed line on the ticket and a journal line with
+    /// the error, so a mod that was silent for a while says why.
+    fn on_mod_load_failed(&mut self, frame: &HookFrame) {
+        let Ok(session) = frame.session.parse::<uuid::Uuid>() else { return };
+        let Some(ticket) = self
+            .board
+            .sessions
+            .iter()
+            .find(|s| s.id == session && s.road == Road::Mod)
+            .map(|s| s.ticket)
+        else {
+            return;
+        };
+        let reads = frame.payload["reads"].as_u64().unwrap_or(0);
+        let at = frame.payload["at"].as_str().unwrap_or("?");
+        let error = frame.payload["error"].as_str().unwrap_or("no error given");
+        let line = format!(
+            "{reads} read(s) of the pane variables failed, the first at {}: {}",
+            mesimon_core::text::cap_bytes(at, 40),
+            mesimon_core::text::cap_bytes(error, 200)
+        );
+        self.journal.line(&format!("mod of session {session}: {line}"));
+        self.feed.board_outcome("daemon", "mod_load_failed", Some(ticket), &line);
     }
 
     fn shadow_offer(&mut self, frame: &HookFrame, road: Road) {

@@ -488,6 +488,9 @@ will not show up in our tests until they break something.
   (`road::is_command`, T-575).
 - **A mod's `submit` fires `UserPromptSubmit` as a typed prompt does, but an answer the mod
   returns in a dialog's place fires no `PostToolUse`**: the mod's `ModAnswer` report is that edge.
+- **A mod's `$` call in flight fails with its dispatch when that dispatch is abandoned**
+  (interrupt, a hook above settled first, budget), and the first read rides the first event's:
+  the mod keeps a value only once read whole and never caches a failed read (T-594).
 - **macOS caps unix datagrams at 2 KB**, which is why the hook transport is SOCK_STREAM one-shot.
 - **A `connect()` on a unix socket path can still succeed for a few hundred microseconds after
   its listener's `close()` returned** — XNU routes it into the dying backlog. A liveness probe
