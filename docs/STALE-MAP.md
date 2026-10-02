@@ -19464,6 +19464,20 @@ mod's reports, each agreeing with its transcript`. C1–C3 stand in for the phon
 socket (above); C4's first run failed its quota check, which wanted the worker's own report
 while the crown's later turn had stamped the reading, and the check now takes any session's.
 
+**Mods off, since about 02:23 the same night.** The rows above ran from 01:43 to 02:20. Minutes
+later Claude Code's cached remote flag `tengu_plugin_hooks_modules` read `false` (fetched
+02:23:42): `claude plugin test` refuses ("hooks modules are turned off … installed mods are turned
+off remotely") while `claude plugin validate` still passes, so the probe still picks the mod road,
+and a launch then carries `--plugin-dir` and no hook set and reports nothing. Measured at 02:26:
+the rig's crown answered `ready` in its pane (B's `mod_silent` rescue pasted its brief) and the
+board never saw a frame; it read `spawning` until the rig gave up at 600 s. **Every rig row is
+blocked while mods are off, see T-598** (the fallback to the hook set when the mod does not load);
+a re-run of this group then reads "blocked: mods off, see T-598", never PASS. Until the flag or
+T-598 gives the rig a road, this ticket's proof is the stand-in engine, `claude plugin test` from
+before the switch, and the e2es under both roads (`mod_cost_e2e` with `MESIMON_TEST_ROAD` unset
+and `mod`). `ci/test-run.py` was not run as the release gate: its `mod_plugin` fails while mods
+are off, and T-598 turns that into a SKIPPED.
+
 **Built.** `register.ts`'s `turnComplete`/`usageBody` at the end of `register`, three
 `claude plugin test` tests (the report, a failed windows read, a hold released with no decision);
 `road::MOD_USAGE`; `core::cost::mod_turn`, `core::usage::merge_mod`; `daemon::cost`'s fence,
@@ -19473,7 +19487,8 @@ check, hint, `count_mod`, `disagreements`, `read_only`; `UsageState::merge_mod` 
 the transcript's on the hook set's, the quota on the snapshot and in the shared file); docs/USING.md's
 quota and cost paragraphs; a rule and a trap in CLAUDE.md.
 
-**Not done, written down.** The phone itself on the rig (a relay and a paired device; the daemon's
+**Not done, written down.** The release gate (`ci/test-run.py`) and the release, which wait for
+T-598. The phone itself on the rig (a relay and a paired device; the daemon's
 `RemotePermission` wait and its release are T-395's, unit-tested); the relay's acceptance was not
 run. The disagreement count over the first week is the author's to read off doctor. A
 compaction's summarizer request is reported by `session.compact`, not `turn.complete`; whether
