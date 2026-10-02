@@ -417,14 +417,27 @@ fn m2_attention_headless() {
     }
     // ...and because this stub never acks, mesimon must press AGAIN. That
     // retry is the whole fix: one press on the SessionStart edge is a race
-    // Claude's startup can win.
-    let deadline = Instant::now() + Duration::from_secs(4);
-    while cursor_y(&submit_sid16) == "1" {
-        assert!(
-            Instant::now() < deadline,
-            "an unacknowledged Enter was never retried — the delivery is one-shot again"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+    // Claude's startup can win. On the mod road (T-575) nothing is pressed:
+    // the title went down the session's mod once, as a `submit`.
+    if common::test_road() == "mod" {
+        let record = dir.join(format!("mod-{submit_sid}.ndjson"));
+        let submits = || {
+            std::fs::read_to_string(&record)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("\"kind\":\"submit\""))
+                .count()
+        };
+        assert_eq!(submits(), 1, "one submit, no retry");
+    } else {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while cursor_y(&submit_sid16) == "1" {
+            assert!(
+                Instant::now() < deadline,
+                "an unacknowledged Enter was never retried — the delivery is one-shot again"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
     let (board, _) = board_of(c.request(Command::Snapshot));
     let rec = board.sessions.iter().find(|s| s.id == submit_sid).unwrap();

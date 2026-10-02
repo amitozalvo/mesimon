@@ -11,6 +11,11 @@
 //! (`\e[?2004h`), and each stub asks exactly when it paints its composer —
 //! so a brief inside `\e[200~ … \e[201~` went in after the composer, and one
 //! outside them beat it.
+//!
+//! These are the paste road's own mechanics, so every daemon here runs on
+//! the hook set (`HOOKS`) under both passes: on the mod road a Claude
+//! launch's words go down its mod as a `submit` and no composer is read
+//! (T-575), which `mod_turns_e2e` holds.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
@@ -28,6 +33,9 @@ use mesimon_core::Principal;
 
 const BRIEF: &str = "## Brief\n\nmesimon-ready-11 the description waits for the composer\n\n\
                      - and arrives whole, mesimon-ready-12";
+
+/// The road these tests are about, whichever pass runs them.
+const HOOKS: (&str, &str) = ("MESIMON_CLAUDE_ROAD", "hooks");
 
 const OPEN: &str = "\x1b[200~";
 const CLOSE: &str = "\x1b[201~";
@@ -126,7 +134,7 @@ fn session_start(hook_sock: &Path, sid: uuid::Uuid) {
 /// the ack.
 #[test]
 fn the_brief_waits_for_the_composer_and_arrives_whole() {
-    let Some(h) = Harness::boot_bare("ready", Some(SLOW), &[]) else { return };
+    let Some(h) = Harness::boot_bare("ready", Some(SLOW), &[HOOKS]) else { return };
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("ready");
     let (ticket, sid) = composed(&mut c, &h, "ready me");
@@ -166,7 +174,7 @@ fn the_brief_waits_for_the_composer_and_arrives_whole() {
 /// and `unsent` where the crown would otherwise read `idle`.
 #[test]
 fn a_composer_that_never_paints_is_a_failed_start() {
-    let env = [("MESIMON_COMPOSER_WAIT_MS", "2000")];
+    let env = [("MESIMON_COMPOSER_WAIT_MS", "2000"), HOOKS];
     let Some(h) = Harness::boot_bare("notready", Some(NEVER), &env) else { return };
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("notready");
@@ -198,7 +206,7 @@ fn a_composer_that_never_paints_is_a_failed_start() {
 /// brief whole; the agent's ack clears the mark.
 #[test]
 fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
-    let Some(h) = Harness::boot_bare("resend", Some(STRAY), &[]) else { return };
+    let Some(h) = Harness::boot_bare("resend", Some(STRAY), &[HOOKS]) else { return };
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("resend");
     let (ticket, sid) = composed(&mut c, &h, "resend me");

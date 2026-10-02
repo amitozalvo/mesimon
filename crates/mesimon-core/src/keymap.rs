@@ -9097,7 +9097,7 @@ mod tests {
                     Verb::CrownSends,
                     Verb::CrownAnswers,
                     Verb::CrownArchives,
-                        ],
+                ],
             ),
         ] {
             let c = Ctx { settings_section: section, ..ctx.clone() };

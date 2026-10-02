@@ -1170,7 +1170,10 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert_eq!(rows[0].waits_on, vec![ka.clone()], "it waits on the crown's own turn");
     assert!(rows[0].by.is_none());
     settle();
-    assert_eq!(lines_with("mesimon-probe-72"), 0, "a working crown is not interrupted");
+    // The wake's words, not W2's own title: on the mod road W2's launch
+    // submits its title at once (T-575), into the same `got.txt`.
+    let w2_delivered = format!("{kw2} \"mesimon-probe-72 worker\" delivered");
+    assert_eq!(lines_with(&w2_delivered), 0, "a working crown is not interrupted");
     stop(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "the coalesced wake to land", || {
         lines_with(&both) == 1
@@ -2898,11 +2901,24 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     let call = std::thread::spawn(move || {
         TestClient::connect(&sock).send(Principal::Agent { session: sa }, cmd)
     });
-    wait_until(std::time::Duration::from_secs(5), "the answer's Enter in W's pane", || {
-        typed().lines().count() > lines
-    });
-    assert!(!call.is_finished(), "the receipt waits for the hook edge");
-    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &question("toolu_a2"));
+    if test_road() == "mod" {
+        // T-576: the answer goes down W's mod as one frame, by the label, and
+        // the mod's own report is the receipt: no key, no `PostToolUse`.
+        let record = h.dir.join(format!("mod-{ws}.ndjson"));
+        wait_until(std::time::Duration::from_secs(5), "the answer at W's mod", || {
+            std::fs::read_to_string(&record).unwrap_or_default().lines().any(|l| {
+                l.contains("\"kind\":\"answer\"")
+                    && l.contains("\"tool_use_id\":\"toolu_a2\"")
+                    && l.contains("\"Which auth provider?\":\"Okta\"")
+            })
+        });
+    } else {
+        wait_until(std::time::Duration::from_secs(5), "the answer's Enter in W's pane", || {
+            typed().lines().count() > lines
+        });
+        assert!(!call.is_finished(), "the receipt waits for the hook edge");
+        hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &question("toolu_a2"));
+    }
     match call.join().unwrap() {
         Response::AgentAnswered { key, outcome, reason, answer, seen } => {
             assert_eq!((key.as_str(), outcome.as_str()), (kw.as_str(), "answered"));
@@ -3144,9 +3160,16 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
         })
     );
     let walked = typed()[before.len()..].to_string();
-    assert_eq!(walked.matches("\\r").count(), 4, "three tabs and one Submit: {walked}");
-    assert!(!call.is_finished(), "the receipt waits for the hook edge");
-    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &frame);
+    if test_road() == "mod" {
+        // T-576: the whole answer went down W's mod in one frame, no key at
+        // all, and the mod's own report (no `PostToolUse` fires for it) is
+        // the receipt.
+        assert_eq!(walked, "", "no key reaches the pane");
+    } else {
+        assert_eq!(walked.matches("\\r").count(), 4, "three tabs and one Submit: {walked}");
+        assert!(!call.is_finished(), "the receipt waits for the hook edge");
+        hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &frame);
+    }
     match call.join().unwrap() {
         Response::AgentAnswered { key, outcome, reason, answer, .. } => {
             assert_eq!((key.as_str(), outcome.as_str(), reason), (kw.as_str(), "answered", None));

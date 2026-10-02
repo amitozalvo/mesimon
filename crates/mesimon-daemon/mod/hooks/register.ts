@@ -1,6 +1,7 @@
-// mesimon's mod (T-574, phase 1 of the road T-573 measured). The daemon lays
-// this folder under its state dir and passes it with `--plugin-dir` to a
-// Claude session it starts on the mod road; nothing installs it anywhere.
+// mesimon's mod (T-574, phase 1 of the road T-573 measured; the turn roads
+// T-575 and T-576). The daemon lays this folder under its state dir and
+// passes it with `--plugin-dir` to a Claude session it starts on the mod
+// road; nothing installs it anywhere.
 //
 // What it does, and all it does:
 //  - RELAY: each event the generated hook set reports, by the same names and
@@ -10,17 +11,27 @@
 //    the hook set's.
 //  - BRIDGE: one `mesimon mod-bridge` per session, spawned at session.start,
 //    whose stdout is the daemon's commands to this session, one JSON line
-//    each. Phase 1 has `ping`, answered with a `ModPong` relay.
+//    each: `ping`, answered with a `ModPong` relay; `submit`, a prompt the
+//    daemon delivers (a person's words, or the brief they wrote), submitted
+//    whole as the person's own (`asUser: true`) and reported with
+//    `ModSubmit`; `answer`, the answer a person or the crown chose for a
+//    question this session's model asked, returned in the native dialog's
+//    place and reported with `ModAnswer`.
+//  - HOLD: every `AskUserQuestion` call of the session's own (no subagent's)
+//    is raced between the native dialog, which is drawn as ever and which
+//    the person may answer first, and the board's `answer`.
 //
 // It holds no policy. Every decision is the daemon's.
 //
 // Never (README promise 3, the T-573 never-list): no `$.session.append`, no
 // `context` on any hook, no `prompt.compose` / `prompt.context` /
 // `prompt.section`, no rewrite of a prompt's words, no submit without
-// `asUser: true`, no rewrite of the model's tool arguments, no
-// `tool.check → allow` beyond the one-shot a person consented to, no
-// `$.model.*`, no `$.session.send`. Every hook here returns `next(e)` as it
-// came.
+// `asUser: true`, no rewrite of the model's tool arguments, no `deny` of a
+// tool (its text would reach the model), no `tool.check → allow` beyond the
+// one-shot a person consented to, no `$.model.*`, no `$.session.send`. Every
+// hook here returns `next(e)` as it came, but the question's: that one
+// returns the answer a person or the crown chose, by the dialog's own
+// labels, which is what the native dialog would have returned.
 //
 // Environment, set by the daemon on the pane (`mesimon exec --set`):
 //   MESIMON_MOD_BIN        the mesimon binary
@@ -50,6 +61,11 @@ const STOP_FAILURE_MATCHERS = [
 ]
 const PRE_TOOL_USE_TOOLS = ['AskUserQuestion', 'ExitPlanMode']
 
+// The kinds of command this mod reads, said to the daemon by the bridge
+// (`mesimon_core::road::SPEAKS`): a session keeps the mod it was launched
+// with, so a newer daemon sends it only these.
+const SPEAKS = ['ping', 'submit', 'answer']
+
 // `mesimon mod-bridge` exits so when the daemon refused it for good (the
 // session is gone, the pane is not its own, another bridge took the seat):
 // `mesimon_core::road::BRIDGE_REFUSED_EXIT`. Not respawned.
@@ -63,6 +79,9 @@ const SEEN_MAX = 64
 let config: Promise<Config | undefined> | undefined
 let bridgeOn = false
 const seen: string[] = []
+// The questions held for the board's answer, by tool_use_id: each settles
+// its race with the answer's labels.
+const holds = new Map<string, (answers: Record<string, string>) => void>()
 
 async function load($: any): Promise<Config | undefined> {
   const bin = await $.env.get('MESIMON_MOD_BIN')
@@ -112,6 +131,35 @@ export function preToolUseBody(e: any): Record<string, unknown> {
   return { hook_event_name: 'PreToolUse', tool_name: tool, tool_use_id, tool_input }
 }
 
+/** The `ModAnswer` report's body: a `PostToolUse` as the hook set spells it. */
+export function answeredBody(id: string, questions: unknown, response?: unknown): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    hook_event_name: 'PostToolUse',
+    tool_name: 'AskUserQuestion',
+    tool_use_id: id,
+    tool_input: { questions },
+  }
+  if (response !== undefined) body.tool_response = response
+  return body
+}
+
+/**
+ * A prompt the daemon delivers, submitted as the person's own words and
+ * whole: never framed by the plugin's name, never with context, never
+ * rewritten. Not awaited by the bridge (it resolves when the prompt's turn
+ * starts, a whole turn later behind a running one); its end is reported.
+ */
+async function submitPrompt($: any, id: string, text: string) {
+  let report: Record<string, unknown>
+  try {
+    const r: any = await $.prompt.submit({ text, asUser: true })
+    report = r && r.drop !== undefined ? { outcome: 'dropped', reason: String(r.drop) } : { outcome: 'entered' }
+  } catch (err) {
+    report = { outcome: 'rejected', error: String(err) }
+  }
+  await relay($, 'ModSubmit', id, report, false)
+}
+
 async function relaySingle($: any, e: any, next: any) {
   const event = String(next.event).replace(/^classic\./, '')
   void relay($, event, undefined, e, false)
@@ -133,6 +181,22 @@ async function handle($: any, line: string) {
     case 'ping':
       await relay($, 'ModPong', id, {}, false)
       break
+    case 'submit':
+      if (typeof frame.text === 'string' && frame.text) void submitPrompt($, id, frame.text)
+      break
+    case 'answer': {
+      const call = typeof frame.tool_use_id === 'string' ? frame.tool_use_id : ''
+      const answers = frame.answers && typeof frame.answers === 'object' ? frame.answers : undefined
+      const settle = holds.get(call)
+      if (settle && answers) {
+        holds.delete(call)
+        settle(answers)
+      } else {
+        // The person answered or refused first: the daemon settles on theirs.
+        await relay($, 'ModAnswer', 'nothing_held', { tool_use_id: call }, false)
+      }
+      break
+    }
     default:
       // A kind from a newer daemon than this mod: not ours to guess at.
       break
@@ -144,7 +208,7 @@ async function bridgeOnce($: any, c: Config): Promise<number | null> {
   let buf = ''
   try {
     const child = $.process.spawn({
-      argv: [c.bin, 'mod-bridge', '--sock', c.orchSock, '--session', c.session],
+      argv: [c.bin, 'mod-bridge', '--sock', c.orchSock, '--session', c.session, '--speaks', SPEAKS.join(',')],
     })
     for await (const { stream, text } of child) {
       if (stream !== 'stdout') continue
@@ -216,6 +280,50 @@ export const register: Register = on => {
     if (PRE_TOOL_USE_TOOLS.includes(tool)) void relay($, 'PreToolUse', undefined, preToolUseBody(e), false)
     return next(e)
   })
+  // ---- The question (T-576): the native dialog is drawn as ever, and the
+  // first of the person's answer and the board's wins. When the board's
+  // does, the mod returns it as the dialog would have (the model reads the
+  // tool's own text) and the engine fires no PostToolUse, so the mod says
+  // so; when the person refuses the dialog, no hook says that either.
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    const call = (e as any).tool_use_id
+    if (typeof call !== 'string' || (e as any).agentId) return next(e)
+    let settle: (answers: Record<string, string>) => void = () => undefined
+    const board = new Promise<Record<string, string>>(resolve => {
+      settle = resolve
+    })
+    holds.set(call, settle)
+    // An interrupt abandons the call: the dispatch goes on without this
+    // hook, and the dialog is gone with no answer, as a refusal's is.
+    const aborted = new Promise<{ who: 'aborted' }>(resolve => {
+      if (next.signal.aborted) resolve({ who: 'aborted' })
+      else next.signal.addEventListener('abort', () => resolve({ who: 'aborted' }), { once: true })
+    })
+    const native = next(e).then(
+      r => ({ who: 'native' as const, r }),
+      err => ({ who: 'failed' as const, err }),
+    )
+    const first = await Promise.race([
+      native,
+      aborted,
+      board.then(answers => ({ who: 'board' as const, answers })),
+    ])
+    holds.delete(call)
+    const questions = (e as any).questions
+    if (first.who === 'board') {
+      const result = { questions, answers: first.answers }
+      void relay($, 'ModAnswer', 'answered', answeredBody(call, questions, result), false)
+      void native.then(() => undefined)
+      return { result } as any
+    }
+    if (first.who === 'aborted' || (first.who === 'native' && (first.r as any)?.isError)) {
+      void relay($, 'ModAnswer', 'declined', answeredBody(call, questions), false)
+    }
+    if (first.who === 'aborted') throw new Error('the question was interrupted')
+    if (first.who === 'failed') throw first.err
+    return first.r
+  })
+
   on('classic.PostToolUse', relaySingle)
   on('classic.UserPromptSubmit', relaySingle)
   on('classic.Stop', relaySingle)

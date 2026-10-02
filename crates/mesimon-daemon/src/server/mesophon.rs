@@ -82,6 +82,11 @@ struct DialogDelivery {
     /// Set once the last key is in (T-567): until then the answer waits for
     /// the hook edge, and past it the keys were sent and not confirmed.
     confirm: Option<Instant>,
+    /// The `answer` frame the answer went down the session's mod in
+    /// (T-576), in place of every key: confirmed by the mod's own report
+    /// alone, since a dialog the mod closed fires no `PostToolUse`, and one
+    /// that does fire was the person's.
+    by_mod: Option<String>,
 }
 /// Whose answer a dialog delivery carries, and where its receipt goes.
 enum Deliverer {
@@ -126,7 +131,11 @@ const CROWN_ANSWER_LINE_BYTES: usize = 160;
 pub(super) enum DialogEdge {
     /// The dialog's own tool finished: it took an answer.
     Answered,
-    /// The next tool started with no answer taken, the refusal road (T-447).
+    /// The session's mod returned the board's answer in the dialog's place
+    /// (T-576): its `answered` report, never a `PostToolUse` of the engine's.
+    ModAnswered,
+    /// The next tool started with no answer taken, the refusal road (T-447),
+    /// or the mod saw the person refuse the dialog (T-576).
     Dismissed,
 }
 struct PermissionWait {
@@ -985,6 +994,7 @@ impl Daemon {
                 max_steps,
                 walk: Walk::default(),
                 confirm: None,
+                by_mod: None,
             },
         );
         Reply::delivery("awaiting_delivery")
@@ -1011,8 +1021,30 @@ impl Daemon {
             if let Some(until) = pending.confirm {
                 let edge = self.control_dialog_edge(id, &pending.request);
                 let reject = matches!(pending.response, api::DialogAnswer::Reject);
+                // An answer the mod carries (T-576) is confirmed by the mod's
+                // own report alone: the engine's `PostToolUse`, or a refusal,
+                // is the person's answer winning the race in the pane.
+                if pending.by_mod.is_some() {
+                    match edge {
+                        Some(DialogEdge::ModAnswered) => {
+                            self.control_settle_dialog(id, pending, "answered", None, "")
+                        }
+                        Some(DialogEdge::Answered | DialogEdge::Dismissed) => {
+                            let reason = Some("a_person_answered".into());
+                            self.control_settle_dialog(id, pending, "unknown", reason, "")
+                        }
+                        None if Instant::now() >= until => {
+                            self.control_settle_dialog(id, pending, "input_sent", None, "")
+                        }
+                        None => {
+                            pending.next = Instant::now() + Duration::from_millis(100);
+                            self.control.dialog_deliveries.insert(id, pending);
+                        }
+                    }
+                    continue;
+                }
                 match edge {
-                    Some(DialogEdge::Answered) => {
+                    Some(DialogEdge::Answered | DialogEdge::ModAnswered) => {
                         self.control_settle_dialog(id, pending, "answered", None, "")
                     }
                     Some(DialogEdge::Dismissed) if reject => {
@@ -1047,6 +1079,38 @@ impl Daemon {
                 }
             };
             let dialog = self.control.dialogs.get(&id).filter(|d| d.request == pending.request);
+            // A session whose mod speaks `answer` takes the whole answer in
+            // one frame (T-576): no screen is read, no key is sent, a batch
+            // or a several-choice question is answered whole, and the mod
+            // returns it in the dialog's place. A refusal stays the Escape
+            // key: the mod has no refusal of its own that puts no words of
+            // ours in front of the model.
+            let mod_answers = dialog
+                .filter(|_| allowed && Instant::now() < pending.deadline)
+                .filter(|_| self.mod_speaks(id, "answer"))
+                .and_then(|d| match (&d.content, dialog_plan(d, &pending.response)) {
+                    (api::DialogContent::Questions { questions }, Some(Plan::Single(a))) => {
+                        Some(mod_answers(questions, std::slice::from_ref(&a)))
+                    }
+                    (api::DialogContent::Questions { questions }, Some(Plan::Batch(a))) => {
+                        Some(mod_answers(questions, &a))
+                    }
+                    _ => None,
+                });
+            if let Some(answers) = mod_answers {
+                let tool_use_id = pending.request.clone();
+                let frame = self.mod_enqueue(id, ModCommand::Answer { tool_use_id, answers });
+                pending.by_mod = Some(frame);
+                pending.steps += 1;
+                pending.confirm = Some(Instant::now() + DIALOG_CONFIRM);
+                pending.next = Instant::now() + Duration::from_millis(100);
+                if let Deliverer::Crown { crown, prior, .. } = &mut pending.by {
+                    *prior = Some(self.turn_asks.get(&pending.ticket).copied());
+                    self.mark_turn(pending.ticket, TurnAsk::Crown(*crown));
+                }
+                self.control.dialog_deliveries.insert(id, pending);
+                continue;
+            }
             let screen = self.dialog_screen(id);
             let step = match dialog {
                 None => Err("state_changed"),
@@ -1116,6 +1180,35 @@ impl Daemon {
                     self.control_settle_dialog(id, pending, "unknown", Some(reason), &screen);
                 }
             }
+        }
+    }
+
+    /// The mod's report on a held question (T-576), its outcome the reason.
+    /// `answered`: the mod returned the board's answer and the engine fired
+    /// no `PostToolUse` for it, so the report is ingested as that frame, of
+    /// the mod's road (the shadow pairs nothing with it): the card leaves
+    /// needs-you on it and the answer's delivery is confirmed by it.
+    /// `declined`: the person refused the native dialog, which no hook says
+    /// (the trap T-447 measured), so it is the dialog's dismissal here.
+    /// `nothing_held`: an answer came after the person's own; the delivery
+    /// settles on the person's edge.
+    pub(super) fn on_mod_answer(&mut self, id: uuid::Uuid, frame: HookFrame) {
+        let request = frame.payload["tool_use_id"].as_str().unwrap_or("").to_string();
+        match frame.reason.as_deref() {
+            Some("answered") => {
+                self.on_hook(HookFrame { event: "PostToolUse".into(), reason: None, ..frame })
+            }
+            Some("declined") => {
+                if self.control.dialogs.get(&id).is_some_and(|d| d.request == request) {
+                    self.control.dialogs.remove(&id);
+                    self.control.dialog_edges.insert(id, (request, DialogEdge::Dismissed));
+                    self.control_changed();
+                }
+            }
+            other => self.journal.line(&format!(
+                "mod answer for session {id} ({request}): {}",
+                other.unwrap_or("no outcome")
+            )),
         }
     }
 
@@ -1317,6 +1410,7 @@ impl Daemon {
                 max_steps,
                 walk: Walk::default(),
                 confirm: None,
+                by_mod: None,
             },
         );
         Ok(id)
@@ -1379,7 +1473,16 @@ impl Daemon {
         standing: bool,
         prior: Option<Option<TurnAsk>>,
     ) {
+        // The mod's answer lost the race to the person's own (T-576): the
+        // turn is theirs, so it gets its mark back, as keys a dialog never
+        // took do.
         if status == "unknown" {
+            if let Some(prior) = prior {
+                match prior {
+                    Some(ask) => self.turn_asks.insert(ticket, ask),
+                    None => self.turn_asks.remove(&ticket),
+                };
+            }
             return;
         }
         if status == "input_sent" && standing {
@@ -3011,6 +3114,32 @@ fn crown_answers(
     Ok(answers)
 }
 
+/// An answer as the mod returns it in the dialog's place (T-576), the
+/// native dialog's own shape: each question's text to its label, its labels
+/// joined by `, ` (measured on 2.1.287: `"Cheese, Ham"`), or its words.
+fn mod_answers(
+    questions: &[api::Question],
+    answers: &[api::QuestionAnswer],
+) -> std::collections::BTreeMap<String, String> {
+    fn label(q: &api::Question, i: usize) -> &str {
+        q.options.get(i).map_or("", |o| o.label.as_str())
+    }
+    questions
+        .iter()
+        .zip(answers)
+        .map(|(q, a)| {
+            let said = match a {
+                api::QuestionAnswer::Choice { index } => label(q, *index).to_string(),
+                api::QuestionAnswer::Choices { indices } => {
+                    indices.iter().map(|i| label(q, *i)).collect::<Vec<_>>().join(", ")
+                }
+                api::QuestionAnswer::Text { text } => text.clone(),
+            };
+            (q.question.clone(), said)
+        })
+        .collect()
+}
+
 /// An answer as the feed and the card say it: each question's label, its
 /// labels joined by `, `, or its words, and the questions joined by `; `.
 fn answer_words(questions: &[api::Question], answers: &[api::QuestionAnswer]) -> String {
@@ -3624,6 +3753,15 @@ fn dialog_edge(frame: &HookFrame, dialog: &api::Dialog) -> Option<DialogEdge> {
     let name = frame.payload["tool_name"].as_str();
     let call = frame.payload["tool_use_id"].as_str();
     match frame.event.as_str() {
+        // The mod's `answered` report rides in as a `PostToolUse` of its own
+        // road (`on_mod_answer`), the only one a dialog the mod closed has.
+        "PostToolUse"
+            if name == Some(tool)
+                && call.is_none_or(|c| c == dialog.request)
+                && frame.road == mesimon_core::road::Road::Mod =>
+        {
+            Some(DialogEdge::ModAnswered)
+        }
         "PostToolUse" if name == Some(tool) && call.is_none_or(|c| c == dialog.request) => {
             Some(DialogEdge::Answered)
         }

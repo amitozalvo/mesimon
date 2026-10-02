@@ -1130,12 +1130,17 @@ pub enum Command {
     /// id of the last frame the bridge printed — every frame up to it is
     /// dropped, the rest come again — and `pane` is the bridge's tmux pane
     /// (`<server pid>:<pane id>`), refused when it is not the session's own,
-    /// so a straggler from an older pane never takes the seat.
+    /// so a straggler from an older pane never takes the seat. `speaks` is
+    /// what the session's mod declared it reads (`road::SPEAKS`, T-575): a
+    /// session keeps the mod it was launched with across a daemon upgrade,
+    /// and a T-574 mod declares nothing, so it is sent pings alone.
     ModNext {
         #[serde(default)]
         ack: Option<String>,
         #[serde(default)]
         pane: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        speaks: Vec<String>,
     },
 }
 

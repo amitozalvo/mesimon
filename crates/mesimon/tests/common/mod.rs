@@ -66,6 +66,7 @@ pub const DAEMON_SEAMS: &[&str] = &[
     "MESIMON_SLEEP_MIN_AGE_MS",
     "MESIMON_INACTIVITY_PARK_TICKS",
     "MESIMON_INACTIVITY_MINUTE_MS",
+    "MESIMON_MOD_BRIDGE_WAIT_MS",
     "MESIMON_WT_REFRESH_TICKS",
 ];
 
@@ -183,10 +184,14 @@ impl TestFixture {
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let wrap = self.dir.join(format!("claude-mod-wrap-{n}.sh"));
         let quote = |p: &str| format!("'{}'", p.replace('\'', "'\\''"));
+        // The engine types a `submit` into its own pane (T-575) through the
+        // tmux build the server runs: a client of another build is refused.
+        let tmux_bin = mesimon_backend_tmux::tmux_bin().display().to_string();
         std::fs::write(
             &wrap,
             format!(
-                "#!/bin/sh\npython3 {} >>{} 2>&1 </dev/null &\nexec {} \"$@\"\n",
+                "#!/bin/sh\nMESIMON_FAKE_TMUX={} python3 {} >>{} 2>&1 </dev/null &\nexec {} \"$@\"\n",
+                quote(&tmux_bin),
                 quote(&engine.display().to_string()),
                 quote(&self.dir.join("fake-mod.log").display().to_string()),
                 quote(stub),

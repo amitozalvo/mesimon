@@ -112,7 +112,10 @@ test('the bridge starts at session.start and a ping comes back as a pong, once',
   on('session.start', () => ({ cwd: '/repo' }) as any)
   await $.session.start({ cwd: '/repo' } as any)
   await settle()
-  expect(spawned).toEqual([['/bin/mesimon', 'mod-bridge', '--sock', '/rt/orch.sock', '--session', ENV.MESIMON_MOD_SESSION]])
+  expect(spawned).toEqual([[
+    '/bin/mesimon', 'mod-bridge', '--sock', '/rt/orch.sock', '--session', ENV.MESIMON_MOD_SESSION,
+    '--speaks', 'ping,submit,answer',
+  ]])
   const pongs = runs.filter(r => r.argv.includes('ModPong')).map(r => r.argv[r.argv.indexOf('--reason') + 1])
   expect(pongs).toEqual(['01A', '01B'])
 })
@@ -139,4 +142,115 @@ test('a bridge that dies is respawned after a second; one refused for good is no
   await clock.advance(120000)
   await settle()
   expect(spawns).toBe(2)
+})
+
+/** A bridge whose stdout is `lines`, then refused for good (not respawned). */
+function bridgeSaying(on: any, lines: string[]) {
+  mock.clock(on)
+  on('process.spawn', async function* () {
+    yield { stream: 'stdout', text: lines.map(l => l + '\n').join('') }
+    return { value: { code: 3, signal: null } }
+  } as any)
+}
+
+const reasonOf = (r: Run) => r.argv[r.argv.indexOf('--reason') + 1]
+
+test('a submit is the person\'s own prompt, whole, and its end is reported', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  const got: any[] = []
+  on('prompt.submit', ($: any, e: any) => {
+    got.push({ text: e.text, origin: e.origin, context: e.context })
+    return { text: e.text }
+  })
+  const brief = 'R1 · a title\n\nLine one of the brief.\n\nAnd its last line.'
+  bridgeSaying(on, [JSON.stringify({ id: '01S', kind: 'submit', text: brief })])
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+  await settle()
+  expect(got.length).toBe(1)
+  expect(got[0].text).toBe(brief)
+  expect(got[0].origin.asUser).toBe(true)
+  expect(got[0].context).toBe(undefined)
+  const reports = runs.filter(r => r.argv.includes('ModSubmit'))
+  expect(reports.map(reasonOf)).toEqual(['01S'])
+  expect(JSON.parse(reports[0].stdin)).toEqual({ outcome: 'entered' })
+})
+
+test('a submit the engine drops is reported dropped, with its reason', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  on('prompt.submit', () => ({ drop: 'blocked by a hook' }) as any)
+  bridgeSaying(on, [JSON.stringify({ id: '01D', kind: 'submit', text: 'go' })])
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+  await settle()
+  const reports = runs.filter(r => r.argv.includes('ModSubmit'))
+  expect(JSON.parse(reports[0].stdin)).toEqual({ outcome: 'dropped', reason: 'blocked by a hook' })
+})
+
+const QUESTIONS = [{
+  question: 'Which colour?', header: 'Colour', multiSelect: false,
+  options: [{ label: 'red', description: '' }, { label: 'blue', description: '' }],
+}]
+
+test('the board\'s answer closes a held question in the dialog\'s place, and says so', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  // The native dialog, standing until it is aborted: the board answers first.
+  on('tool.call', () => new Promise(() => undefined) as any)
+  bridgeSaying(on, [JSON.stringify({ id: '01Q', kind: 'answer', tool_use_id: 'toolu_9', answers: { 'Which colour?': 'blue' } })])
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  const call = $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'toolu_9', questions: QUESTIONS } as any)
+  await settle()
+  await $.session.start({ cwd: '/repo' } as any)
+  const r: any = await call
+  expect(r.result).toEqual({ questions: QUESTIONS, answers: { 'Which colour?': 'blue' } })
+  await settle()
+  const reports = runs.filter(r => r.argv.includes('ModAnswer'))
+  expect(reports.map(reasonOf)).toEqual(['answered'])
+  const body = JSON.parse(reports[0].stdin)
+  expect(body.hook_event_name).toBe('PostToolUse')
+  expect(body.tool_name).toBe('AskUserQuestion')
+  expect(body.tool_use_id).toBe('toolu_9')
+  expect(body.tool_response.answers).toEqual({ 'Which colour?': 'blue' })
+})
+
+test('the person\'s answer first wins, and a late answer finds nothing held', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  const native = { result: { questions: QUESTIONS, answers: { 'Which colour?': 'red' } } }
+  on('tool.call', () => native as any)
+  bridgeSaying(on, [JSON.stringify({ id: '01L', kind: 'answer', tool_use_id: 'toolu_7', answers: { 'Which colour?': 'blue' } })])
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  const r: any = await $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'toolu_7', questions: QUESTIONS } as any)
+  expect(r.result.answers).toEqual({ 'Which colour?': 'red' })
+  await $.session.start({ cwd: '/repo' } as any)
+  await settle()
+  const reports = runs.filter(r => r.argv.includes('ModAnswer'))
+  expect(reports.map(reasonOf)).toEqual(['nothing_held'])
+})
+
+test('a subagent\'s question is never held', async ($, on) => {
+  mock.env(on, ENV)
+  recordRuns(on)
+  let native = 0
+  on('tool.call', () => {
+    native += 1
+    return { result: { questions: QUESTIONS, answers: {} } } as any
+  })
+  await $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'toolu_5', agentId: 'a1', questions: QUESTIONS } as any)
+  expect(native).toBe(1)
+})
+
+test('a question the person refuses is reported declined, and its result stands', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  on('tool.call', () => ({ isError: true, result: undefined, text: 'The user declined.' }) as any)
+  const r: any = await $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'toolu_3', questions: QUESTIONS } as any)
+  expect(r.isError).toBe(true)
+  await settle()
+  const reports = runs.filter(r => r.argv.includes('ModAnswer'))
+  expect(reports.map(reasonOf)).toEqual(['declined'])
+  expect(JSON.parse(reports[0].stdin).tool_use_id).toBe('toolu_3')
 })

@@ -28,6 +28,7 @@ use mesimon_core::command::{
 use mesimon_core::crown;
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
+use mesimon_core::road::{ModCommand, Road};
 use mesimon_core::usage::{Provider, Wants};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
 
@@ -187,6 +188,13 @@ const SUBMIT_ATTEMPTS: u8 = 10;
 /// build took several, and a pane that has shown none by now is a failed
 /// start the card says out loud.
 const COMPOSER_WAIT_MS: u64 = 30_000;
+/// How long words parked for a Claude pane on the mod road wait for its
+/// mod's bridge to poll (T-575), from the `SessionStart` edge, before they
+/// take the paste road instead. A mod's bridge polls a few milliseconds after
+/// `session.start`; one that has not by now never loaded or is wedged (T-588
+/// measured one launch whose mod relayed nothing for its whole life), and the
+/// words are the person's: they go the way an older Claude Code takes them.
+const MOD_BRIDGE_WAIT_MS: u64 = 10_000;
 /// How long a plan-dialog Enter of ours (T-420) has to be confirmed by the
 /// harness's own hooks before the feed calls it unconfirmed.
 const PLAN_ACCEPT_CONFIRM_MS: u64 = 8_000;
@@ -1577,6 +1585,18 @@ struct Owed {
     /// A resend (T-570): one Ctrl+C into a composer holding stray text
     /// before the paste, never a second — two exit Claude.
     clear_first: bool,
+    /// Parked words wait for the session's mod (T-575): they go down its
+    /// bridge as a `submit` when it first polls, and take the paste road
+    /// only if it has not by `bridge_by`. `false` on the hooks road and once
+    /// they fell back.
+    mod_road: bool,
+    /// The mod-road wait's end, epoch ms: set with the first press.
+    bridge_by: Option<u64>,
+    /// The `submit` frame these words went down in (T-575): the bridge's
+    /// ack of it is the mod's receipt (`taken`), and a mod that reports it
+    /// refused lands the words on `unsent`.
+    frame: Option<String>,
+    taken: bool,
     ack: Ack,
     /// Why these words were sent, when that matters to the crown (T-469):
     /// its ack marks the turn that took them (`Daemon::turn_asks`).
@@ -1595,6 +1615,10 @@ impl Owed {
             ready_by: None,
             sent: None,
             clear_first: false,
+            mod_road: false,
+            bridge_by: None,
+            frame: None,
+            taken: false,
             ack,
             asked: None,
         }
@@ -1611,9 +1635,20 @@ impl Owed {
             ready_by: None,
             sent: None,
             clear_first: false,
+            mod_road: false,
+            bridge_by: None,
+            frame: None,
+            taken: false,
             ack,
             asked: None,
         }
+    }
+
+    /// Words that went down the session's mod as a `submit` (T-575): only
+    /// the ack is owed, as for a paste that carried its Enter, and the words
+    /// are kept until it comes.
+    fn submitted(ticket: ulid::Ulid, words: Parked, frame: String, ack: Ack, now: u64) -> Self {
+        Owed { sent: Some(words), frame: Some(frame), ..Owed::pasted(ticket, ack, now) }
     }
 }
 
@@ -3375,8 +3410,12 @@ impl Daemon {
         // payload (D11: prompt text is read, never stored).
         self.feed.hook_event(&frame.session, &frame.event, frame.reason.as_deref());
         // Held against the mod's twin when the session was handed the mod
-        // (T-574's shadow); ingested below exactly as before.
-        self.shadow_hooks_frame(&frame);
+        // (T-574's shadow); ingested below exactly as before. A frame of the
+        // mod's own road reaches here only where the mod is its one source
+        // (an answer the mod returned, T-576), so it has no twin to hold.
+        if frame.road == Road::Hooks {
+            self.shadow_hooks_frame(&frame);
+        }
         let Some(id) = self.resolve_session(&frame.session) else { return };
         // D32c invariant 2: the hook-driven path passes the chokepoint too.
         //
@@ -3604,7 +3643,9 @@ impl Daemon {
     /// only a Codex pane's paste carries its caller's word, as a Claude
     /// pane's does.
     fn park(&mut self, id: uuid::Uuid, ticket: ulid::Ulid, parked: Parked, ack: Ack) {
-        self.owed.insert(id, Owed::launch(ticket, parked, ack));
+        let mut owed = Owed::launch(ticket, parked, ack);
+        owed.mod_road = self.on_mod_road(id);
+        self.owed.insert(id, owed);
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pending_submit = true;
             rec.codex_submit_sent = false;
@@ -3682,6 +3723,18 @@ impl Daemon {
         }
         let now = now_ms();
         let parked = Parked { text: unsent.text, brief: unsent.brief, title: unsent.brief };
+        // A session whose mod is up takes the words by its `submit` (T-575):
+        // nothing is typed, so there is no stray text to clear first. One
+        // whose mod never came up — the reason its words went unsent, most
+        // likely — takes the paste road below.
+        if self.mod_speaks(id, "submit") {
+            if !self.mod_submit(id, ticket, parked, Ack::PROMPT) {
+                return Response::Err { message: "nothing to send".into() };
+            }
+            self.feed.board("local", "prompt_resent", Some(ticket));
+            self.persist_and_notify();
+            return Response::Ok;
+        }
         let mut owed = Owed::launch(ticket, parked, Ack::PROMPT);
         owed.next_press = Some(now);
         owed.ready_by = Some(now + composer_wait_ms());
@@ -3693,6 +3746,149 @@ impl Daemon {
         self.feed.board("local", "prompt_resent", Some(ticket));
         self.persist_and_notify();
         Response::Ok
+    }
+
+    /// The words a launch road delivers, as they stand NOW: a brief is the
+    /// ticket's description read at delivery (T-117), so a ticket described
+    /// after its spawn still gets it, and no description means the title
+    /// alone. The words a Shift+Enter carried into an empty seat (T-294) ride
+    /// UNDER the brief, in the order they were written: the ticket says what
+    /// the work is, the user says what to do about it first. `title` leads
+    /// with the ticket's title: a resend, whose Ctrl+C cleared the one the
+    /// spawn typed, and a mod launch, which types none (T-575); the spawn's
+    /// own paste goes under the one it typed.
+    fn launch_words(&self, ticket: ulid::Ulid, parked: &Parked) -> String {
+        let Parked { text, brief, title } = parked;
+        let text = if *brief {
+            let brief =
+                self.description_body(ticket).map(|b| format!("\n\n{b}")).unwrap_or_default();
+            match (brief.is_empty(), text.is_empty()) {
+                (_, true) => brief,
+                (true, false) => format!("\n\n{text}"),
+                (false, false) => format!("{brief}\n\n{text}"),
+            }
+        } else {
+            text.clone()
+        };
+        if *title {
+            let lead = self.board.ticket(ticket).map_or("", |t| t.title.trim());
+            format!("{lead}{text}").trim_start().to_string()
+        } else {
+            text
+        }
+    }
+
+    /// Whether this session is a Claude launch on the mod road (T-575): its
+    /// parked words wait for its mod's bridge rather than its composer.
+    fn on_mod_road(&self, id: uuid::Uuid) -> bool {
+        self.board
+            .sessions
+            .iter()
+            .any(|s| s.id == id && s.kind == SessionKind::Claude && s.road == Road::Mod)
+    }
+
+    /// Send words down the session's mod as a `submit` (T-575):
+    /// `$.prompt.submit({ text, asUser: true })` in the mod, a turn of its
+    /// own, never typed into the pane, so no composer is read and no Enter is
+    /// pressed. The ack is still `UserPromptSubmit`. `false` when the words
+    /// come to nothing.
+    fn mod_submit(&mut self, id: uuid::Uuid, ticket: ulid::Ulid, words: Parked, ack: Ack) -> bool {
+        let text = self.launch_words(ticket, &words);
+        if text.is_empty() {
+            return false;
+        }
+        // The brief went in with the first prompt, as a paste's does; a
+        // ticket with no description sent its title alone, and nothing was
+        // read.
+        let read = words.brief && self.description_body(ticket).is_some();
+        let frame = self.mod_enqueue(id, ModCommand::Submit { text });
+        self.owed.insert(id, Owed::submitted(ticket, words, frame, ack, now_ms()));
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.pending_submit = true;
+            if read {
+                rec.ticket_read = true;
+            }
+        }
+        self.feed.board("daemon", "prompt_by_mod", Some(ticket));
+        true
+    }
+
+    /// A session's mod came up (its bridge's first poll from this pane):
+    /// words a launch parked for it go down if the pane's `SessionStart` is
+    /// in too (T-575).
+    pub(super) fn mod_bridge_up(&mut self, id: uuid::Uuid) {
+        if self.mod_deliver_parked(id) {
+            self.persist_and_notify();
+        }
+    }
+
+    /// Words a launch parked for a mod session go down its bridge once both
+    /// edges are in: the pane's `SessionStart` (the entry is armed: nothing
+    /// reaches a pane being born, on either road, and a `UserPromptSubmit`
+    /// ahead of its `SessionStart` would be read as late startup) and the
+    /// mod's first poll. Either may come first; whichever is second sends
+    /// them. A mod that does not speak `submit` (a session still on an
+    /// older one) leaves them to the paste road, on the composer's clock.
+    /// `true` when the ledger changed.
+    fn mod_deliver_parked(&mut self, id: uuid::Uuid) -> bool {
+        let Some(owed) = self.owed.get(&id) else { return false };
+        if !owed.mod_road || owed.parked.is_none() || owed.next_press.is_none() {
+            return false;
+        }
+        if !self.mod_bridged(id) {
+            return false;
+        }
+        if !self.mod_speaks(id, "submit") {
+            if let Some(owed) = self.owed.get_mut(&id) {
+                owed.mod_road = false;
+            }
+            self.journal
+                .line(&format!("session {id}'s mod does not speak submit: its words are pasted"));
+            return true;
+        }
+        let Some(owed) = self.owed.remove(&id) else { return false };
+        let Some(words) = owed.parked else { return false };
+        let asked = owed.asked;
+        if !self.mod_submit(id, owed.ticket, words, owed.ack) {
+            self.drop_owed(id);
+            return true;
+        }
+        if let Some(o) = self.owed.get_mut(&id) {
+            o.asked = asked;
+        }
+        true
+    }
+
+    /// The session's bridge printed `frame` (its next poll acked it): the
+    /// mod has the words (T-575).
+    pub(super) fn mod_taken(&mut self, id: uuid::Uuid, frame: &str) {
+        if let Some(owed) = self.owed.get_mut(&id).filter(|o| o.frame.as_deref() == Some(frame)) {
+            owed.taken = true;
+        }
+    }
+
+    /// The mod's report on a `submit` (T-575), the frame's id as its reason.
+    /// `entered` is the receipt again; a submit the engine refused
+    /// (`dropped`: a hook beneath blocked it) or that threw (`rejected`)
+    /// keeps the words unsent, the card's `brief not sent` and its resend,
+    /// as a launch whose composer never painted does.
+    pub(super) fn on_mod_submit(&mut self, id: uuid::Uuid, frame: &HookFrame) {
+        let Some(fid) = frame.reason.as_deref() else { return };
+        let outcome = frame.payload["outcome"].as_str().unwrap_or("");
+        if outcome == "entered" {
+            self.mod_taken(id, fid);
+            return;
+        }
+        let ours = self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(fid));
+        if !ours {
+            self.journal
+                .line(&format!("mod submit {fid} for session {id}: {outcome}, nothing owed"));
+            return;
+        }
+        let Some(owed) = self.drop_owed(id) else { return };
+        self.mark_unsent(id, owed.sent);
+        self.feed.board_outcome("daemon", "prompt_submit_refused", Some(owed.ticket), outcome);
+        self.persist_and_notify();
     }
 
     /// Take the entry back and drop the record's owed mark with it.
@@ -3758,7 +3954,9 @@ impl Daemon {
                 let _ = self.backend.send_enter(&rec.sid16());
             }
         }
-        false
+        // A mod session whose bridge already polled takes its words now
+        // (T-575); otherwise its first poll sends them.
+        self.mod_deliver_parked(id)
     }
 
     /// The tick's pass over the ledger: expire the pastes whose ack never
@@ -3787,7 +3985,20 @@ impl Daemon {
             .collect();
         for id in expired {
             if let Some(owed) = self.drop_owed(id) {
-                self.feed.board("automation", "paste_unacked", Some(owed.ticket));
+                match &owed.frame {
+                    // The session's mod never took the words (T-575): they
+                    // are taken back and kept unsent, as a paste into a box
+                    // that never painted is.
+                    Some(frame) if !owed.taken => {
+                        self.mod_unqueue(id, frame);
+                        self.mark_unsent(id, owed.sent);
+                        self.feed.board("daemon", "prompt_submit_unreceived", Some(owed.ticket));
+                    }
+                    // Taken and queued behind a turn that is still running:
+                    // the checkout stops counting it, as a paste's does.
+                    Some(_) => self.feed.board("automation", "submit_unacked", Some(owed.ticket)),
+                    None => self.feed.board("automation", "paste_unacked", Some(owed.ticket)),
+                }
                 changed = true;
             }
         }
@@ -3822,6 +4033,33 @@ impl Daemon {
             let ticket = rec.ticket;
             let claude = rec.kind == SessionKind::Claude;
             let parked = self.owed.get(&id).is_some_and(|o| o.parked.is_some());
+            // Words for a mod session wait for its bridge (T-575), which
+            // takes them as a `submit` the moment it first polls
+            // (`mod_bridge_up`); one that has not polled by `bridge_by` never
+            // will, and the words take the paste road from here, title and
+            // all, with the composer's own wait.
+            if claude && parked && self.mod_deliver_parked(id) {
+                changed = true;
+                continue;
+            }
+            if claude && parked {
+                let Some(owed) = self.owed.get_mut(&id) else { continue };
+                if owed.mod_road {
+                    let bridge_by = *owed.bridge_by.get_or_insert(now + mod_bridge_wait_ms());
+                    if now < bridge_by {
+                        owed.next_press = Some(now + SUBMIT_RETRY_MS);
+                        continue;
+                    }
+                    owed.mod_road = false;
+                    owed.ready_by = Some(now + composer_wait_ms());
+                    self.journal.line(&format!(
+                        "no mod bridge for session {id} in {} ms: its launch words take the paste \
+                         road",
+                        mod_bridge_wait_ms()
+                    ));
+                    self.feed.board("daemon", "prompt_by_paste", Some(ticket));
+                }
+            }
             if claude && parked {
                 use crate::agents::claude::composer::{self, Composer};
                 let composer = self
@@ -3868,36 +4106,9 @@ impl Daemon {
                 owed.sent = Some(parked.clone());
             }
             match owed.parked.take() {
-                Some(Parked { text, brief, title }) => {
-                    // A brief is the ticket's description as it stands NOW
-                    // (T-117): a ticket described after its spawn still gets
-                    // it. No description means the title alone, the plain
-                    // Enter.
-                    // The words a Shift+Enter carried into an empty seat
-                    // (T-294) ride UNDER the brief, in the order they were
-                    // written: the ticket says what the work is, the user
-                    // says what to do about it first.
-                    let text = if brief {
-                        let brief = self
-                            .description_body(ticket)
-                            .map(|b| format!("\n\n{b}"))
-                            .unwrap_or_default();
-                        match (brief.is_empty(), text.is_empty()) {
-                            (_, true) => brief,
-                            (true, false) => format!("\n\n{text}"),
-                            (false, false) => format!("{brief}\n\n{text}"),
-                        }
-                    } else {
-                        text
-                    };
-                    // A resend leads with the title the Ctrl+C cleared; the
-                    // spawn's own paste goes under the one it typed.
-                    let text = if title {
-                        let lead = self.board.ticket(ticket).map_or("", |t| t.title.trim());
-                        format!("{lead}{text}").trim_start().to_string()
-                    } else {
-                        text
-                    };
+                Some(parked) => {
+                    let brief = parked.brief;
+                    let text = self.launch_words(ticket, &parked);
                     if text.is_empty() {
                         let _ = self.backend.send_enter(&sid16);
                     } else {
@@ -4225,14 +4436,14 @@ impl Daemon {
         // reads the delivery ledger of the caller's own session, which the
         // chokepoint hears as a read of its ticket — an agent is never
         // granted a session resource.
-        if let Command::ModNext { ack, pane } = cmd {
+        if let Command::ModNext { ack, pane, speaks } = cmd {
             let by = Principal::Agent { session };
             if let Decision::Deny { reason } =
                 authorize(&by, &Action::Read, &Resource::Ticket { id: ticket })
             {
                 return Response::Err { message: format!("denied: {reason}") };
             }
-            return self.mod_next(session, ack, pane);
+            return self.mod_next(session, ack, pane, speaks);
         }
         // The column's tier (T-117), against the ticket's column as it
         // stands NOW — the shim listed the tools of the column at spawn, and
@@ -8126,6 +8337,15 @@ impl Daemon {
             }
             return Ok(());
         }
+        // A Claude session whose mod is up takes the words by its `submit`
+        // (T-575): a turn of its own, held behind a running one, never typed.
+        if self.mod_speaks(id, "submit") {
+            let words = Parked { text: text.to_string(), brief: false, title: false };
+            if !self.mod_submit(id, ticket, words, ack) {
+                return Err("nothing to send".into());
+            }
+            return Ok(());
+        }
         self.backend.paste_text(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
         self.owed.insert(id, Owed::pasted(ticket, ack, now_ms()));
         Ok(())
@@ -10794,11 +11014,19 @@ impl Daemon {
         // title that happens to name a subcommand ("doctor", "update") to that
         // subcommand instead, silently, and `--` does not shield it (measured
         // 2026-08-31). Keystrokes have no such vocabulary.
+        //
+        // A Claude launch on the mod road whose prompt mesimon submits types
+        // nothing (T-575): the title, the brief and the words go down the
+        // mod's bridge as one `submit` the moment it polls, as the person's
+        // own words, so neither Claude's raw mode nor its paste detection
+        // nor its `<pasted_content>` wrapping (T-588) is in the way.
+        let by_mod = submit_prompt && kind == SessionKind::Claude && road == Road::Mod;
         if kind.is_agent() {
             if let Some(title) =
                 self.board.ticket(ticket).map(|t| t.title.trim()).filter(|t| !t.is_empty())
             {
                 if kind == SessionKind::Codex
+                    || by_mod
                     || self.backend.send_text(&rec.sid16(), &format!("{title} ")).is_ok()
                 {
                     rec.pending_submit = submit_prompt;
@@ -10823,14 +11051,13 @@ impl Daemon {
                         // composed spawn, whose prompt is the title and the
                         // description.
                         let text = prompt.unwrap_or_default();
-                        self.owed.insert(
-                            id,
-                            Owed::launch(
-                                ticket,
-                                Parked { text, brief: true, title: false },
-                                Ack::PROMPT,
-                            ),
+                        let mut owed = Owed::launch(
+                            ticket,
+                            Parked { text, brief: true, title: by_mod },
+                            Ack::PROMPT,
                         );
+                        owed.mod_road = by_mod;
+                        self.owed.insert(id, owed);
                     }
                 }
             }
@@ -12932,6 +13159,14 @@ fn composer_wait_ms() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(COMPOSER_WAIT_MS)
+}
+
+/// Test seam only — e2e cannot wait out the real 10 s bridge wait (T-575).
+fn mod_bridge_wait_ms() -> u64 {
+    std::env::var("MESIMON_MOD_BRIDGE_WAIT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(MOD_BRIDGE_WAIT_MS)
 }
 
 /// Test seam only — e2e cannot wait out the real hour.

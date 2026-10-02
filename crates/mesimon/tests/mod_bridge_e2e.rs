@@ -163,13 +163,17 @@ fn the_ledger_resends_until_acked_and_one_poll_holds_the_seat() {
     let agent = Principal::Agent { session: sid };
 
     // Only the session's own bridge polls, and only a person pings.
-    err_containing(c.request(Command::ModNext { ack: None, pane: None }), "agent principal");
+    err_containing(
+        c.request(Command::ModNext { ack: None, pane: None, speaks: vec![] }),
+        "agent principal",
+    );
     err_containing(c.send(agent.clone(), Command::ModPing { session: sid }), "not available");
 
     let mut person = h.client("person");
     write(&mut person, Principal::Local, Command::ModPing { session: sid });
     let mut a = h.client("a");
-    let first = frames(a.send(agent.clone(), Command::ModNext { ack: None, pane: None }));
+    let first =
+        frames(a.send(agent.clone(), Command::ModNext { ack: None, pane: None, speaks: vec![] }));
     assert_eq!(first.len(), 1);
     assert_eq!(first[0]["kind"], "ping");
     let id = first[0]["id"].as_str().unwrap().to_string();
@@ -177,24 +181,28 @@ fn the_ledger_resends_until_acked_and_one_poll_holds_the_seat() {
 
     // Never acked, so a new poll gets it again.
     let mut b = h.client("b");
-    let again = frames(b.send(agent.clone(), Command::ModNext { ack: None, pane: None }));
+    let again =
+        frames(b.send(agent.clone(), Command::ModNext { ack: None, pane: None, speaks: vec![] }));
     assert_eq!(again[0]["id"], id.as_str());
 
     // Acked, so the next poll waits.
-    write(&mut b, agent.clone(), Command::ModNext { ack: Some(id), pane: None });
+    write(&mut b, agent.clone(), Command::ModNext { ack: Some(id), pane: None, speaks: vec![] });
     assert!(read(&mut b, Duration::from_millis(400)).is_none(), "parked");
 
     // A poll from another pane is refused and takes nothing.
     let mut stray = h.client("stray");
     err_containing(
-        stray.send(agent.clone(), Command::ModNext { ack: None, pane: Some("1:%999".into()) }),
+        stray.send(
+            agent.clone(),
+            Command::ModNext { ack: None, pane: Some("1:%999".into()), speaks: vec![] },
+        ),
         "not this session's pane",
     );
     assert!(read(&mut b, Duration::from_millis(200)).is_none(), "still parked");
 
     // A newer poll takes the seat; the older is told.
     let mut newer = h.client("newer");
-    write(&mut newer, agent.clone(), Command::ModNext { ack: None, pane: None });
+    write(&mut newer, agent.clone(), Command::ModNext { ack: None, pane: None, speaks: vec![] });
     err_containing(read(&mut b, Duration::from_secs(5)).expect("superseded"), "superseded");
 
     // Nobody answered the ping: its sender hears so.

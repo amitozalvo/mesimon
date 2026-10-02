@@ -5,7 +5,9 @@
 //! It long-polls `orch.sock` as the session (`ModNext`), prints every frame
 //! the daemon addressed to the session as one JSON line, and acks it with
 //! the next poll. stdout carries frames and nothing else; anything to say
-//! goes to stderr.
+//! goes to stderr. `--speaks ping,submit,answer` is the kinds the mod that
+//! spawned it reads (T-575), said to the daemon on every poll: this binary
+//! is whatever build is on disk now, the mod the one the session loaded.
 //!
 //! It outlives nothing: it exits when its parent (Claude Code) is gone —
 //! nothing else kills a spawned child of a SIGKILLed host — when the mod
@@ -38,15 +40,22 @@ pub fn run(args: &[String]) -> ! {
     let sock = val(args, "--sock");
     let session = val(args, "--session").and_then(|s| s.parse::<uuid::Uuid>().ok());
     let (Some(sock), Some(session)) = (sock, session) else {
-        eprintln!("usage: mesimon mod-bridge --sock <orch.sock> --session <uuid>");
+        eprintln!(
+            "usage: mesimon mod-bridge --sock <orch.sock> --session <uuid> [--speaks <kind,…>]"
+        );
         std::process::exit(2);
     };
+    let speaks: Vec<String> = val(args, "--speaks")
+        .map(|v| {
+            v.split(',').map(str::trim).filter(|k| !k.is_empty()).map(str::to_string).collect()
+        })
+        .unwrap_or_default();
     watch_parent();
     let pane = crate::hook::pane_key_from_env();
     let mut ack: Option<String> = None;
     let mut backoff = BACKOFF_FIRST;
     loop {
-        match poll(sock, session, pane.as_deref(), &mut ack, &mut backoff) {
+        match poll(sock, session, pane.as_deref(), &speaks, &mut ack, &mut backoff) {
             Ended::Disconnected => {
                 std::thread::sleep(backoff);
                 backoff = (backoff * 2).min(BACKOFF_MAX);
@@ -65,6 +74,7 @@ fn poll(
     sock: &str,
     session: uuid::Uuid,
     pane: Option<&str>,
+    speaks: &[String],
     ack: &mut Option<String>,
     backoff: &mut Duration,
 ) -> Ended {
@@ -75,7 +85,11 @@ fn poll(
     loop {
         let envelope = Envelope {
             principal: Principal::Agent { session },
-            command: Command::ModNext { ack: ack.clone(), pane: pane.map(str::to_string) },
+            command: Command::ModNext {
+                ack: ack.clone(),
+                pane: pane.map(str::to_string),
+                speaks: speaks.to_vec(),
+            },
         };
         let Ok(mut line) = serde_json::to_vec(&envelope) else { return Ended::Disconnected };
         line.push(b'\n');

@@ -6,12 +6,16 @@
 //! (`mod`, T-573's measurements). Phase 1 runs the mod in SHADOW: it relays
 //! every hook-set event as a frame marked `road: mod`, the daemon pairs it
 //! with the hook set's frame and says when they disagree, and only the hook
-//! set's frame is ingested. `hooks` is the default until the soak passes and
-//! the kill switch after. Codex has no mods and ignores all of it.
+//! set's frame is ingested. The road is `auto` (T-588): the mod wherever the
+//! Claude Code is new enough and the laid mod validates, the hook set
+//! otherwise. Codex has no mods and ignores all of it.
 //!
 //! Down the other way, the daemon addresses [`ModFrame`]s to one session's
 //! mod; `mesimon mod-bridge`, spawned by the mod, long-polls them off
-//! `orch.sock` and prints each as one NDJSON line the mod reads.
+//! `orch.sock` and prints each as one NDJSON line the mod reads. Since T-575
+//! a prompt for a mod session goes down as a `submit`, and since T-576 a
+//! question's answer as an `answer`: the turn roads, which no longer read a
+//! screen or type into one.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -141,15 +145,67 @@ pub fn pre_tool_use_projection(payload: &Value) -> Value {
     })
 }
 
-/// A command the daemon addresses to one session's mod. Phase 1 has the
-/// ping alone; prompt delivery (`submit`, T-575) and the question's answer
-/// (`answer`, T-576) are the next phases'. Every `submit` will be
-/// `asUser: true` and nothing here may carry words for the model to read
-/// that the person did not write (README promise 3).
+/// The event the mod reports a [`ModCommand::Submit`]'s end with (T-575),
+/// relayed with the frame's id as its reason: `{ "outcome": "entered" }`
+/// when the prompt entered the session (its turn started, or it was queued
+/// behind the running one), `"dropped"` with the engine's `reason` when a
+/// hook beneath refused it, `"rejected"` with the `error` when the call
+/// threw. The ack is still `UserPromptSubmit`, which a mod's submit fires as
+/// a typed prompt does (T-573 row 2).
+pub const MOD_SUBMIT: &str = "ModSubmit";
+
+/// The event the mod reports a held question's end with (T-576), its
+/// outcome as the reason and a `PostToolUse`-shaped body (`tool_name`,
+/// `tool_use_id`, `tool_input`, and for `answered` the `tool_response`
+/// the mod returned): `answered` when the daemon's [`ModCommand::Answer`]
+/// closed the dialog (no `PostToolUse` fires then: the engine's own path
+/// was aborted, T-573 row 3), `declined` when the person refused the native
+/// dialog (the tool's error result: no hook fires for it either), and
+/// `nothing_held` when an answer came for a question the person had already
+/// answered or refused.
+pub const MOD_ANSWER: &str = "ModAnswer";
+
+/// The kinds of [`ModCommand`] a mod declares it speaks, by the word it
+/// passes its bridge (`mesimon mod-bridge --speaks ping,submit,answer`): a
+/// session keeps the mod it was launched with across a daemon upgrade, so
+/// the daemon never sends a kind the session's own mod would drop.
+pub const SPEAKS: [&str; 3] = ["ping", "submit", "answer"];
+
+/// A command the daemon addresses to one session's mod. Nothing here may
+/// carry words for the model to read that the person did not write (README
+/// promise 3): a `submit`'s text is a person's prompt or the brief they
+/// wrote, and the mod submits it `asUser: true`, whole; an `answer` is the
+/// answer a person or the crown chose, by the dialog's own labels.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ModCommand {
     Ping,
+    /// Submit `text` as the person's own prompt (T-575):
+    /// `$.prompt.submit({ text, asUser: true })`. A turn of its own once the
+    /// session is idle, never typed into the box.
+    Submit {
+        text: String,
+    },
+    /// Answer the held `AskUserQuestion` call `tool_use_id` (T-576): the
+    /// mod returns `{ result: { questions, answers } }` in place of the
+    /// native dialog's. `answers` maps each question's text to its label,
+    /// its labels joined by `, `, or the words typed for it, as the native
+    /// dialog's own result does.
+    Answer {
+        tool_use_id: String,
+        answers: std::collections::BTreeMap<String, String>,
+    },
+}
+
+impl ModCommand {
+    /// The word a mod declares in `--speaks` for this kind.
+    pub fn word(&self) -> &'static str {
+        match self {
+            ModCommand::Ping => "ping",
+            ModCommand::Submit { .. } => "submit",
+            ModCommand::Answer { .. } => "answer",
+        }
+    }
 }
 
 /// One line the bridge prints: the command and its id. The id is what the
@@ -216,6 +272,34 @@ mod tests {
         assert_eq!(serde_json::to_string(&f).unwrap(), r#"{"id":"01J","kind":"ping"}"#);
         let back: ModFrame = serde_json::from_str(r#"{"kind":"ping","id":"x"}"#).unwrap();
         assert_eq!(back.command, ModCommand::Ping);
+        // The two the mod's `handle` reads by name (`register.ts`).
+        let f =
+            ModFrame { id: "a".into(), command: ModCommand::Submit { text: "hi\nthere".into() } };
+        assert_eq!(
+            serde_json::to_string(&f).unwrap(),
+            r#"{"id":"a","kind":"submit","text":"hi\nthere"}"#
+        );
+        let answers = [("Which colour?".to_string(), "blue".to_string())].into_iter().collect();
+        let f = ModFrame {
+            id: "b".into(),
+            command: ModCommand::Answer { tool_use_id: "toolu_1".into(), answers },
+        };
+        assert_eq!(
+            serde_json::to_string(&f).unwrap(),
+            r#"{"id":"b","kind":"answer","tool_use_id":"toolu_1","answers":{"Which colour?":"blue"}}"#
+        );
+    }
+
+    #[test]
+    fn every_kind_is_a_word_the_mod_can_speak() {
+        let answers = Default::default();
+        for c in [
+            ModCommand::Ping,
+            ModCommand::Submit { text: String::new() },
+            ModCommand::Answer { tool_use_id: String::new(), answers },
+        ] {
+            assert!(SPEAKS.contains(&c.word()), "{c:?}");
+        }
     }
 
     #[test]

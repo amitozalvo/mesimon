@@ -9,14 +9,21 @@
 //! (T-569); the connection's thread does the write. A frame stays queued
 //! until the bridge's next poll acks it, so delivery is at least once and the
 //! mod drops a repeat by id. The ledger is memory-only — a queued pane ask
-//! is, on purpose, and a mod's `submit` will be its twin — and a frame
-//! belongs to the pane it was queued for: a wake drops what the old pane
-//! never took.
+//! is, on purpose, and a mod's `submit` is its twin — and a frame belongs to
+//! the pane it was queued for: a wake drops what the old pane never took.
+//!
+//! The turn roads (T-575, T-576) ride it: a prompt for a session whose mod
+//! speaks `submit` goes down as one (`Daemon::mod_submit`), never typed into
+//! the pane, and a question's answer as an `answer`. Each poll says what the
+//! session's mod speaks (`ModNext::speaks`), so a session still on an older
+//! mod is never sent a kind it would drop, and the paste road stays its road.
 
 use super::*;
 use crate::modroad::{self, Probe, RoadVerdict};
 use crate::shadow::{self, Shadow};
-use mesimon_core::road::{ModCommand, ModFrame, Road, RoadPref, MOD_PONG, PAIRED_EVENTS};
+use mesimon_core::road::{
+    ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_PONG, MOD_SUBMIT, PAIRED_EVENTS,
+};
 use std::collections::VecDeque;
 
 /// How long a ping waits for its pong.
@@ -41,6 +48,13 @@ struct Ping {
     at_ms: u64,
 }
 
+/// A session's bridge as its last poll described it: the pane it polls
+/// from and the kinds its mod reads. Kept while that pane is the record's.
+struct Bridge {
+    pane: Option<String>,
+    speaks: Vec<String>,
+}
+
 /// What the request in hand asked the writer to park (`Daemon::mod_park`).
 pub(super) enum Park {
     Next { session: uuid::Uuid },
@@ -58,6 +72,7 @@ pub(super) struct ModRoad {
     outbox: HashMap<uuid::Uuid, VecDeque<Queued>>,
     waiters: HashMap<uuid::Uuid, Waiter>,
     pings: HashMap<String, Ping>,
+    bridges: HashMap<uuid::Uuid, Bridge>,
     pub(super) shadow: Shadow,
 }
 
@@ -292,6 +307,7 @@ impl Daemon {
         session: uuid::Uuid,
         ack: Option<String>,
         pane: Option<String>,
+        speaks: Vec<String>,
     ) -> Response {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
             return Response::Err { message: "unknown session".into() };
@@ -304,15 +320,26 @@ impl Daemon {
                 return Response::Err { message: "not this session's pane".into() };
             }
         }
+        let mut taken = Vec::new();
         if let (Some(ack), Some(queue)) = (ack, self.modroad.outbox.get_mut(&session)) {
             if let Some(at) = queue.iter().position(|q| q.frame.id == ack) {
-                queue.drain(..=at);
+                taken.extend(queue.drain(..=at).map(|q| q.frame.id));
             }
         }
         // A newer poll takes the seat: the older one is told, and its bridge
         // (a straggler, or this bridge's own dead connection) goes.
         if let Some(old) = self.modroad.waiters.remove(&session) {
             reply_now(old.reply, Response::Err { message: "superseded".into() });
+        }
+        // The first poll from this pane is the mod come up: what a launch
+        // parked for it goes down now (T-575).
+        let first = self.modroad.bridges.get(&session).is_none_or(|b| b.pane != pane);
+        self.modroad.bridges.insert(session, Bridge { pane, speaks });
+        for id in taken {
+            self.mod_taken(session, &id);
+        }
+        if first {
+            self.mod_bridge_up(session);
         }
         let frames = self.mod_frames(session);
         if frames.is_empty() {
@@ -322,6 +349,45 @@ impl Daemon {
         } else {
             Response::ModFrames { frames }
         }
+    }
+
+    /// Whether the session's mod is up: its bridge has polled from the
+    /// record's own pane (T-575), whatever it speaks.
+    pub(super) fn mod_bridged(&self, session: uuid::Uuid) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+            return false;
+        };
+        rec.road == Road::Mod
+            && rec.state.has_pane()
+            && self.modroad.bridges.get(&session).is_some_and(|b| {
+                b.pane.is_none() || rec.pane_key.is_none() || b.pane == rec.pane_key
+            })
+    }
+
+    /// Whether the session's mod is up and reads `kind` (T-575): its bridge
+    /// has polled from the record's own pane and its mod declared the kind.
+    /// Every turn road asks this before it leaves the paste road and the
+    /// screen: a mod that never came up, or an older one, keeps them.
+    pub(super) fn mod_speaks(&self, session: uuid::Uuid, kind: &str) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+            return false;
+        };
+        rec.road == Road::Mod
+            && rec.state.has_pane()
+            && self.modroad.bridges.get(&session).is_some_and(|b| {
+                (b.pane.is_none() || rec.pane_key.is_none() || b.pane == rec.pane_key)
+                    && b.speaks.iter().any(|k| k == kind)
+            })
+    }
+
+    /// Take a frame back before its bridge printed it: a road that gave up
+    /// on the mod must not have it delivered late as well. `false` when it
+    /// was already gone.
+    pub(super) fn mod_unqueue(&mut self, session: uuid::Uuid, id: &str) -> bool {
+        let Some(queue) = self.modroad.outbox.get_mut(&session) else { return false };
+        let before = queue.len();
+        queue.retain(|q| q.frame.id != id);
+        before != queue.len()
     }
 
     /// `ModPing` from a person (or the harness): queue a ping and park the
@@ -380,6 +446,21 @@ impl Daemon {
             }
             return;
         }
+        // The mod's own reports (T-575, T-576): the only source of what they
+        // say, so they are read here and paired with nothing.
+        if frame.event == MOD_SUBMIT || frame.event == MOD_ANSWER {
+            let Ok(session) = frame.session.parse::<uuid::Uuid>() else { return };
+            if !self.board.sessions.iter().any(|s| s.id == session && s.road == Road::Mod) {
+                return;
+            }
+            self.feed.hook_event(&frame.session, &frame.event, frame.reason.as_deref());
+            if frame.event == MOD_SUBMIT {
+                self.on_mod_submit(session, &frame);
+            } else {
+                self.on_mod_answer(session, frame);
+            }
+            return;
+        }
         self.shadow_offer(&frame, Road::Mod);
     }
 
@@ -425,10 +506,16 @@ impl Daemon {
                 );
             }
         }
-        // A frame belongs to the pane it was queued for; a parked poll to a
-        // session that still has one.
-        let sessions: Vec<uuid::Uuid> =
-            self.modroad.outbox.keys().chain(self.modroad.waiters.keys()).copied().collect();
+        // A frame belongs to the pane it was queued for; a parked poll and a
+        // bridge to a session that still has one.
+        let sessions: Vec<uuid::Uuid> = self
+            .modroad
+            .outbox
+            .keys()
+            .chain(self.modroad.waiters.keys())
+            .chain(self.modroad.bridges.keys())
+            .copied()
+            .collect();
         for session in sessions {
             let rec = self.board.sessions.iter().find(|s| s.id == session);
             let pane = rec.filter(|r| r.state.has_pane()).map(|r| r.pane_key.clone());
@@ -437,6 +524,14 @@ impl Daemon {
                     self.mod_forget(session);
                 }
                 Some(pane) => {
+                    if self
+                        .modroad
+                        .bridges
+                        .get(&session)
+                        .is_some_and(|b| b.pane.is_some() && pane.is_some() && b.pane != pane)
+                    {
+                        self.modroad.bridges.remove(&session);
+                    }
                     if let Some(queue) = self.modroad.outbox.get_mut(&session) {
                         let before = queue.len();
                         queue.retain(|q| q.pane.is_none() || pane.is_none() || q.pane == pane);
@@ -467,6 +562,7 @@ impl Daemon {
         if let Some(w) = self.modroad.waiters.remove(&session) {
             reply_now(w.reply, Response::Err { message: "session has no pane".into() });
         }
+        self.modroad.bridges.remove(&session);
         self.modroad.shadow.forget(session);
     }
 }

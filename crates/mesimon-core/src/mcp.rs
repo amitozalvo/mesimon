@@ -2557,7 +2557,7 @@ mod tests {
     /// `tools/list`, and the daemon answers it before the tier check.
     #[test]
     fn the_bridge_poll_is_admitted_and_is_no_tool() {
-        let poll = Command::ModNext { ack: None, pane: None };
+        let poll = Command::ModNext { ack: None, pane: None, speaks: vec![] };
         assert!(agent_allows(&poll));
         assert_eq!(tier_needed_by(&poll), None);
         assert!(tools().iter().all(|t| t["name"] != "mod_next"));

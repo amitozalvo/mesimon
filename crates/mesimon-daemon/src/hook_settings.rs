@@ -334,6 +334,17 @@ mod tests {
             "const BRIDGE_REFUSED_EXIT = {}",
             mesimon_core::road::BRIDGE_REFUSED_EXIT
         )));
+        // What it says it speaks, and the reports the daemon reads (T-575,
+        // T-576), by the daemon's own names.
+        assert_eq!(ts_list("SPEAKS"), words(&mesimon_core::road::SPEAKS));
+        for (event, reason) in [
+            (mesimon_core::road::MOD_SUBMIT, "id"),
+            (mesimon_core::road::MOD_ANSWER, "'answered'"),
+            (mesimon_core::road::MOD_ANSWER, "'declined'"),
+            (mesimon_core::road::MOD_ANSWER, "'nothing_held'"),
+        ] {
+            assert!(src.contains(&format!("relay($, '{event}', {reason},")), "{event} {reason}");
+        }
         // The pane variables the daemon sets are the ones the mod reads.
         for var in [
             "MESIMON_MOD_BIN",
@@ -359,16 +370,24 @@ mod tests {
             "$.session.append",
             "$.session.send",
             "$.model.",
-            "$.prompt.",
             "'prompt.compose'",
             "'prompt.context'",
             "'prompt.section'",
             "'prompt.submit'",
             "'tool.check'",
             "context:",
+            // A deny's text reaches the model; a rewrite of an event's input
+            // is a rewrite of the model's arguments or the person's words.
+            "deny:",
+            "next({",
         ] {
             assert!(!code.contains(banned), "the mod spells {banned}");
         }
+        // The one `$.prompt` call is the turn road's submit (T-575), and it
+        // is the person's words, bare: `asUser: true`, the text as it came.
+        let calls: Vec<&str> = code.matches("$.prompt.").collect();
+        assert_eq!(calls.len(), 1, "one $.prompt call, the submit");
+        assert!(code.contains("$.prompt.submit({ text, asUser: true })"), "a submit is asUser");
     }
 
     fn rendered() -> Value {
