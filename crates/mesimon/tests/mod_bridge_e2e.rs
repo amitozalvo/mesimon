@@ -303,3 +303,46 @@ fn a_load_failure_the_mod_reports_is_a_feed_line_on_its_ticket() {
     std::thread::sleep(Duration::from_millis(2_600));
     assert!(disagreements(&h).is_empty(), "{:?}", disagreements(&h));
 }
+
+/// T-593: a park takes the pane at once, and the twins of the `SessionEnd`
+/// it causes land after it. Claude Code runs the mod's awaited relay before
+/// the hook set's command hook, so the mod's frame arrives first and the
+/// hook set's tens of milliseconds later; a tick between them used to forget
+/// the session's shadow with the mod's frame in it, and the hook set's
+/// read as `no_mod_twin`. The gap here spans several ticks.
+#[test]
+fn a_parks_session_end_twins_pair_across_the_tick_that_sees_the_pane_gone() {
+    let Some(h) = boot("modbridge-park") else { return };
+    let mut c = h.client("park");
+    let (_, sid) = spawn(&mut c, "the park", SessionKind::Claude);
+    let s = sid.to_string();
+    let sock = h.paths.hook_sock();
+    let mod_twin = |event: &str, reason: Option<&str>, body: &str| {
+        hook_send_road(&sock, &s, event, reason, None, body, Some("mod"));
+    };
+    let hooks = |event: &str, reason: Option<&str>, body: &str| {
+        hook_send_road(&sock, &s, event, reason, None, body, None);
+    };
+    for (event, body) in [("UserPromptSubmit", r#"{"prompt":"go"}"#), ("Stop", "{}")] {
+        mod_twin(event, None, body);
+        hooks(event, None, body);
+    }
+    c.await_state(sid, "idle", |s| matches!(s, mesimon_core::board::SessionState::Idle { .. }));
+    assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+    let end = r#"{"reason":"other","session_id":"x"}"#;
+    mod_twin("SessionEnd", Some("other"), end);
+    std::thread::sleep(Duration::from_millis(700));
+    hooks("SessionEnd", Some("other"), end);
+    std::thread::sleep(Duration::from_millis(2_600));
+    assert!(disagreements(&h).is_empty(), "{:?}", disagreements(&h));
+
+    // The window still holds after the pane: a lone frame of a parked
+    // session is reported, not dropped with it.
+    hooks("SessionEnd", Some("logout"), end);
+    wait_until(Duration::from_secs(10), "the lone frame's line", || {
+        !disagreements(&h).is_empty()
+    });
+    let lines = disagreements(&h);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["outcome"], "no_mod_twin");
+}

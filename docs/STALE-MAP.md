@@ -19014,3 +19014,62 @@ bridge is not respawned. Both fail on the old `register.ts`.
 `mod_bridge_e2e::a_load_failure_the_mod_reports_is_a_feed_line_on_its_ticket` checks the feed
 line on the ticket and the journal line, and that the report is never a twin the shadow waits
 for. `mod_plugin` validates the laid mod and runs its tests on the real Claude Code.
+
+## A park's `SessionEnd` twins pair: the shadow forgets by time, not by pane (T-593, 2026-10-02, filed by the crown on T-587 from T-588's rig run)
+
+**What the rig saw.** Over T-588's four runs, 4 of 27 parks wrote `road_disagree ∙ SessionEnd ∙
+no_mod_twin`; an `/exit` paired 3 of 3. The ticket read it as the daemon's SIGTERM racing the
+mod's awaited relay and offered three remedies: park by `/exit` and SIGTERM after a grace, make
+the relay synchronous, or pair a park's `SessionEnd` against `PaneDied`. **The measurement says
+the engine is not the cause, so none of the three was built.**
+
+**Measured on Claude Code 2.1.287** (a probe mod in a private tmux, the real `claude`, no model
+turn: on `classic.SessionEnd` the mod logs its entry and awaits a `$.process.run` of a script that
+stamps its start and end around a sleep; a `SessionEnd` command hook in `--settings` stamps the
+same; the pane's process group SIGTERMed as `signal_session` does; times from the signal):
+
+| exit | relay sleeps | mod's `SessionEnd` entered | relay start → done | command hook start → done | `session.end` | pane dead (status) |
+|---|---|---|---|---|---|---|
+| SIGTERM | 0 | 16 ms | 620 → 650 | 682 → 706 | 711 | 1450 (143) |
+| SIGTERM | 0.5 s | 11 | 41 → 574 | 607 → 1135 | 1139 | 2032 (143) |
+| SIGTERM | 1 s | 11 | 44 → 1075 | 1107 → 2142 | 2149 | 2885 (143) |
+| SIGTERM | 2 s | 11 | 37 → 2069 | 2100 → 4134 | 4141 | 4702 (143) |
+| SIGTERM | 4 s | 17 | 54 → 4091 | 4125 → cut | 5037 | 5572 (143) |
+| `/exit` | 0 | 363 | 391 → 424 | 453 → 478 | 483 | 1237 (0) |
+| `/exit` | 2 s | 363 | 390 → 2423 | 2463 → 4506 | 4520 | 5061 (0) |
+
+So a SIGTERM gives the mod everything: `classic.SessionEnd` fires within 20 ms, the engine waits
+for the mod's awaited relay (4 s and more), and **the mod's handler runs to its end before the
+command hook starts**, so on every exit the mod's frame reaches the daemon first and the hook
+set's some tens of milliseconds later. `session.end` fires after both, and the whole `SessionEnd`
+phase is cut at about 5 s (the 4 s row: the command hook started at 4.1 s and was killed with the
+process). The 620 ms in the first row is one cold spawn.
+
+**The cause was the daemon's.** `sleep_one` marks the record `Sleeping` before it signals, so
+the next 250 ms tick finds a mod session with no pane and `mod_forget` used to call
+`shadow.forget(session)`, dropping every waiting frame of it. A tick that fell between the
+mod's `SessionEnd` and the hook set's dropped the mod's, and the hook set's then waited out
+the window alone. In the rig's feed the hook set's park `SessionEnd` landed 73 to 131 ms after
+the park (27 parks); with the mod's about 30 ms ahead of it, a 250 ms tick falls in the gap
+about one park in eight, and the rig saw 4 in 27. An `/exit` paired because the record keeps
+its pane until a `SessionEnd` or `PaneDied` is ingested, by which time both frames are in.
+
+**The fix.** `mod_forget` (a pane or record gone) drops the session's outbox, parked poll and
+bridge and no longer touches the shadow; `Shadow::forget` is gone. The shadow empties by time
+only: a waiting frame is swept at 2 s (`TWIN_WINDOW_MS`) and a quiet tally in a minute, and a
+frame of a session with no record was never offered. A frame of a session whose pane just went
+still finds its twin, and a frame with no twin is still reported after a park instead of being
+dropped with it.
+
+**Tests.** E2e `mod_bridge_e2e::a_parks_session_end_twins_pair_across_the_tick_that_sees_the_pane_gone`
+(mod road): a session parked with `SleepSession`, its mod `SessionEnd`, 700 ms (several ticks),
+then the hook set's: no line; it wrote the rig's exact `no_mod_twin` line before the fix. A lone
+`SessionEnd` of the parked session afterwards is still reported. Unit
+`shadow::tests::the_cap_drops_the_oldest_and_time_empties_the_rest`.
+
+**Not done, written down.** The rig was not rerun: at about one park in eight a clean run proves
+little, and the e2e reproduces the mechanism deterministically. The rig's R5 (sleep and wake) is
+the park the live check rides; R6 is an `/exit`, which always paired. T-588's other kind, one
+launch whose mod relayed nothing for its whole life, is T-594's; that block's reading of the park
+lines (the SIGTERM landing while the mod's relay is in flight) is the hypothesis this block
+measured and set aside.

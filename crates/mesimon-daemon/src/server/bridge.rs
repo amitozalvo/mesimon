@@ -581,8 +581,11 @@ impl Daemon {
         }
     }
 
-    /// A session lost its pane or its record: its frames, its parked poll
-    /// and its shadow go.
+    /// A session lost its pane or its record: its frames and its parked poll
+    /// go. Its shadow stays and empties by time (T-593): the pane goes first
+    /// on a park, and the `SessionEnd` twins it causes land after, the mod's
+    /// a few tens of milliseconds before the hook set's, so a tick between
+    /// them that forgot the session read the hook set's as `no_mod_twin`.
     pub(super) fn mod_forget(&mut self, session: uuid::Uuid) {
         if let Some(q) = self.modroad.outbox.remove(&session) {
             if !q.is_empty() {
@@ -594,6 +597,5 @@ impl Daemon {
             reply_now(w.reply, Response::Err { message: "session has no pane".into() });
         }
         self.modroad.bridges.remove(&session);
-        self.modroad.shadow.forget(session);
     }
 }

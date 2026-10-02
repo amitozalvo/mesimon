@@ -9,7 +9,9 @@
 //!
 //! Pure and time-injected: frames are stamped when the hook socket accepted
 //! them and swept against the time the tick was SENT, so a writer stall that
-//! holds a twin in the channel cannot make it look late.
+//! holds a twin in the channel cannot make it look late. Nothing is
+//! forgotten by session, only by time: a park takes the pane before the
+//! `SessionEnd` twins it causes arrive (T-593).
 
 use std::collections::{HashMap, VecDeque};
 
@@ -194,12 +196,6 @@ impl Shadow {
         lines
     }
 
-    /// A session went away: nothing of it is waiting any more.
-    pub fn forget(&mut self, session: uuid::Uuid) {
-        self.pending.retain(|p| p.key.session != session);
-        self.tallies.retain(|(s, _, _), _| *s != session);
-    }
-
     #[cfg(test)]
     fn waiting(&self) -> usize {
         self.pending.len()
@@ -326,14 +322,16 @@ mod tests {
     }
 
     #[test]
-    fn the_cap_drops_the_oldest_and_forget_drops_a_session() {
+    fn the_cap_drops_the_oldest_and_time_empties_the_rest() {
         let mut s = Shadow::default();
         let d = digest("Stop", &json!({}));
         for i in 0..(PENDING_CAP as u64 + 10) {
             s.offer(key("Stop"), Road::Hooks, d, i);
         }
         assert_eq!(s.waiting(), PENDING_CAP);
-        s.forget(uuid::Uuid::nil());
+        let _ = s.sweep(PENDING_CAP as u64 + 10 + TWIN_WINDOW_MS);
         assert_eq!(s.waiting(), 0);
+        let _ = s.sweep(PENDING_CAP as u64 + 10 + TWIN_WINDOW_MS + REPORT_EVERY_MS);
+        assert!(s.tallies.is_empty(), "a quiet session is forgotten in a minute");
     }
 }
