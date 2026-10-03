@@ -1046,6 +1046,7 @@ fn golden_sharing_joining_120() {
 #[test]
 fn the_notifications_list_is_one_row_while_it_is_off() {
     let mut app = app_graphite(fixture_archived());
+    app.seed_pref(|p| p.notify = false);
     app.mode = Mode::Notifications { idx: 0 };
     let lines = render(&app, 120, 30);
     assert!(

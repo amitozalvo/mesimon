@@ -383,8 +383,8 @@ on the board behind the picker.
 
 **Settings › Appearance › Follow the OS appearance** makes the board switch between the two
 themes as macOS or your Linux desktop switches between light and dark, while the board is
-open. It is off by default. It asks the OS, never the terminal, so turn it on only if your
-terminal follows the OS appearance too: a terminal pinned to one profile would otherwise be
+open. It is on by default. It asks the OS, never the terminal, so turn it off if your
+terminal stays on one profile: a terminal pinned to one profile would otherwise be
 painted for the wrong background. `MESIMON_THEME=<name>` pins a theme for a launch and the
 switch does nothing until a pick in the menu lifts the pin. `mesimon doctor`'s `theme` line
 says which slot the OS would choose now.
@@ -414,7 +414,14 @@ cleanup after Mesimon is killed.
 **Settings › Appearance › Notifications** opens the list that chooses which events post a
 banner and whether a sound plays: banner on or off, whether a finished turn counts as well as a
 blocked agent, whether the agent's words are quoted, the two sounds, whether a focused board or
-the agent's own pane still speaks, and iTerm2's dock bounce.
+the agent's own pane still speaks, and iTerm2's dock bounce. The master switch is on by default;
+the rows under it keep their own defaults.
+
+**Settings › Terminal** names and marks the terminal's own tab: the title is `mesimon ∙ <project>`
+by default, without the needs-you count; iTerm2 also takes the theme colour, the whole-tab colour
+while a ticket needs you, a subtitle and the shin icon. The progress ring is off by default,
+because `OSC 9;4` reads as a notification in terminals that do not draw it. A terminal that cannot
+do a row ignores it. A `prefs.json` that already holds a value keeps it.
 
 On macOS the banner wears the mesimon mascot. mesimon never installs anything into your
 Notifications settings by hand. Where `terminal-notifier` is installed it posts through a signed

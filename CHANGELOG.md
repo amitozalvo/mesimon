@@ -10,6 +10,13 @@ in the Esc menu under `Release notes` and on GitHub.
 
 ### Changed
 
+- **New machine defaults: the terminal tab, notifications and the OS appearance
+  are on.** The tab title reads `mesimon ∙ <project>` without the needs-you
+  count; iTerm2 also takes the theme colour, colours the whole tab while a
+  ticket needs you, and shows the subtitle and the shin icon. OS notifications
+  and Follow the OS appearance are on. The progress ring stays off. A
+  `prefs.json` that already holds a key keeps its value; each row is in
+  Settings › Terminal, Notifications and Appearance.
 - **On Claude Code 2.1.287 or newer, mesimon talks to Claude through a
   plugin it loads for each session, instead of typing into the pane.**
   Prompts, briefs, the board's asks, Remote Control prompts and the crown's

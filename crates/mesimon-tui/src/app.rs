@@ -15862,6 +15862,7 @@ mod tests {
     #[test]
     fn follow_os_arms_the_watch_only_with_a_probe_and_no_pin() {
         let mut app = app_three_columns();
+        app.seed_pref(|p| p.follow_os = false);
         app.settings_section = keymap::SettingsSection::Appearance;
         let ctx = app.ctx();
         assert!(!ctx.follow_os);
@@ -20656,6 +20657,7 @@ mod tests {
     #[test]
     fn the_notifications_door_opens_and_pops_back() {
         let mut app = app_three_columns();
+        app.seed_pref(|p| p.notify = false);
         app.return_to_settings(Verb::Notifications);
         let enter = |app: &mut App| {
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
@@ -21058,6 +21060,14 @@ mod tests {
         let (mut app, _, _) = app_with_claude(SessionState::Running, false);
         let (machine, _) = pref_scratch("tabtitle");
         app.prefs_path = Some(machine.clone());
+        app.seed_pref(|p| {
+            p.tab_title = TabTitle::Off;
+            p.tab_title_needs_you = true;
+            p.tab_theme = false;
+            p.tab_color = TabColor::Off;
+            p.tab_subtitle = false;
+            p.tab_icon = false;
+        });
         assert_eq!(app.tab_frame(false), Frame::default(), "everything off: nothing is written");
         app.settings_section = keymap::SettingsSection::Terminal;
         app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTitle) };
@@ -21122,6 +21132,7 @@ mod tests {
         let (mut app, _, _) = app_with_claude(SessionState::Running, false);
         let (machine, _) = pref_scratch("tabtheme");
         app.prefs_path = Some(machine.clone());
+        app.seed_pref(|p| p.tab_theme = false);
         app.settings_section = keymap::SettingsSection::Terminal;
         app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTheme) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();

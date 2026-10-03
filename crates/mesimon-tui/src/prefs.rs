@@ -70,11 +70,11 @@ impl PeekLevel {
 /// name alone, or `mesimon ∙ <board>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TabTitle {
-    #[default]
     Off,
     /// `<board>`.
     Project,
     /// `mesimon ∙ <board>`.
+    #[default]
     Mesimon,
 }
 
@@ -124,9 +124,9 @@ impl TabTitle {
 /// all, its indicator dot, or the whole tab's chrome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TabColor {
-    #[default]
     Off,
     Dot,
+    #[default]
     Tab,
 }
 
@@ -438,22 +438,22 @@ impl Default for Prefs {
         Prefs {
             dark: Flavor::Graphite,
             light: Flavor::Chalk,
-            follow_os: false,
+            follow_os: true,
             snooze_needs_you: true,
             week_start: Weekday::Monday,
             merge_train: false,
             merge_train_notice: true,
             status_top: false,
-            tab_title: TabTitle::Off,
-            tab_title_needs_you: true,
+            tab_title: TabTitle::Mesimon,
+            tab_title_needs_you: false,
             tab_title_focus: true,
             tab_progress: false,
-            tab_theme: false,
-            tab_color: TabColor::Off,
-            tab_subtitle: false,
-            tab_icon: false,
+            tab_theme: true,
+            tab_color: TabColor::Tab,
+            tab_subtitle: true,
+            tab_icon: true,
             keep_awake: false,
-            notify: false,
+            notify: true,
             notify_done: true,
             notify_focused: false,
             notify_in_pane: false,
@@ -979,7 +979,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let slot = |key: &str, fallback: Flavor| {
         doc.get(key).and_then(Value::as_str).and_then(Flavor::from_name).unwrap_or(fallback)
     };
-    let follow_os = doc.get(FOLLOW_OS_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let follow_os = doc.get(FOLLOW_OS_KEY).and_then(Value::as_bool).unwrap_or(true);
     let snooze_needs_you = doc.get(SNOOZE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let merge_train = doc.get(MERGE_TRAIN_KEY).and_then(Value::as_bool).unwrap_or(false);
     let merge_train_notice =
@@ -997,16 +997,16 @@ pub(crate) fn load(path: &Path) -> Loaded {
         .unwrap_or_default();
     let flag =
         |key: &str, fallback: bool| doc.get(key).and_then(Value::as_bool).unwrap_or(fallback);
-    let tab_title_needs_you = flag(TAB_TITLE_NEEDS_YOU_KEY, true);
+    let tab_title_needs_you = flag(TAB_TITLE_NEEDS_YOU_KEY, false);
     let tab_title_focus = flag(TAB_TITLE_FOCUS_KEY, true);
     let tab_progress = flag(TAB_PROGRESS_KEY, false);
-    let tab_theme = flag(TAB_THEME_KEY, false);
-    let tab_subtitle = flag(TAB_SUBTITLE_KEY, false);
-    let tab_icon = flag(TAB_ICON_KEY, false);
+    let tab_theme = flag(TAB_THEME_KEY, true);
+    let tab_subtitle = flag(TAB_SUBTITLE_KEY, true);
+    let tab_icon = flag(TAB_ICON_KEY, true);
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
     let crown_lightning = flag(CROWN_LIGHTNING_KEY, true);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
-    let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_focused = doc.get(NOTIFY_FOCUSED_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify_in_pane = doc.get(NOTIFY_IN_PANE_KEY).and_then(Value::as_bool).unwrap_or(false);
@@ -1299,23 +1299,23 @@ mod tests {
         assert!(text.ends_with('\n'));
     }
 
-    /// The OS-appearance switch (T-485): off by default, round-trips, and a
+    /// The OS-appearance switch (T-485): on by default (T-612), round-trips, and a
     /// board may set it on its own.
     #[test]
     fn follow_os_round_trips_and_a_board_may_override_it() {
         let p = scratch("follow");
         let mut prefs = Prefs::default();
-        assert!(!prefs.follow_os);
-        prefs.follow_os = true;
+        assert!(prefs.follow_os);
+        prefs.follow_os = false;
         save(&p, &prefs).unwrap();
         let l = load(&p);
-        assert!(l.prefs.follow_os);
-        assert!(std::fs::read_to_string(&p).unwrap().contains("\"follow_os\":true"));
+        assert!(!l.prefs.follow_os);
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\"follow_os\":false"));
         let mut board = BoardPrefs::default();
-        board.set_bool(PrefKey::FollowOs, false);
-        assert!(!l.prefs.overlay(&board).follow_os);
+        board.set_bool(PrefKey::FollowOs, true);
+        assert!(l.prefs.overlay(&board).follow_os);
         assert!(board.is_set(PrefKey::FollowOs));
-        assert_eq!(l.prefs.word(PrefKey::FollowOs), "on");
+        assert_eq!(l.prefs.word(PrefKey::FollowOs), "off");
     }
 
     /// The notification group (T-282): every key round-trips, and the file
@@ -1324,12 +1324,12 @@ mod tests {
     fn the_notification_preferences_round_trip() {
         let p = scratch("notify");
         let mut prefs = Prefs::default();
-        assert!(!prefs.notify, "off by default, and deliberately");
+        assert!(prefs.notify, "on by default (T-612)");
         assert!(prefs.notify_done);
         assert!(!prefs.notify_focused);
         assert!(!prefs.notify_in_pane, "quiet inside the agent's own pane by default");
         assert!(prefs.notify_words, "the agent's words are quoted by default");
-        prefs.notify = true;
+        prefs.notify = false;
         prefs.notify_done = false;
         prefs.notify_focused = true;
         prefs.notify_in_pane = true;
@@ -1338,7 +1338,7 @@ mod tests {
         prefs.set_sound_done(Sound::Off);
         save(&p, &prefs).unwrap();
         let l = load(&p);
-        assert!(l.prefs.notify);
+        assert!(!l.prefs.notify);
         assert!(!l.prefs.notify_done);
         assert!(l.prefs.notify_focused);
         assert!(l.prefs.notify_in_pane);
@@ -1516,40 +1516,40 @@ mod tests {
     /// two shaping switches are on, a pick survives a save of something
     /// else, and a word this build does not know is kept.
     #[test]
-    fn the_terminal_integrations_default_off_and_round_trip() {
+    fn the_terminal_integrations_default_on_and_round_trip() {
         let p = scratch("tabtitle");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
         let mut l = load(&p);
-        assert_eq!(l.prefs.tab_title, TabTitle::Off, "absent is off");
-        assert!(l.prefs.tab_title_needs_you && l.prefs.tab_title_focus);
-        assert!(!l.prefs.tab_progress && !l.prefs.tab_subtitle && !l.prefs.tab_icon);
-        assert!(!l.prefs.tab_theme);
-        assert_eq!(l.prefs.tab_color, TabColor::Off);
+        assert_eq!(l.prefs.tab_title, TabTitle::Mesimon, "absent reads the default (T-612)");
+        assert!(!l.prefs.tab_title_needs_you && l.prefs.tab_title_focus);
+        assert!(l.prefs.tab_subtitle && l.prefs.tab_icon && l.prefs.tab_theme);
+        assert!(!l.prefs.tab_progress, "progress stays off: OSC 9;4 is a notification elsewhere");
+        assert_eq!(l.prefs.tab_color, TabColor::Tab);
         assert!(!l.prefs.notify_dock_bounce);
-        l.prefs.tab_title = TabTitle::Mesimon;
+        l.prefs.tab_title = TabTitle::Project;
         l.prefs.tab_title_focus = false;
         l.prefs.tab_progress = true;
-        l.prefs.tab_theme = true;
+        l.prefs.tab_theme = false;
         l.prefs.tab_color = TabColor::Dot;
         save(&p, &l.prefs).unwrap();
         let mut l = load(&p);
-        assert_eq!(l.prefs.tab_title, TabTitle::Mesimon);
+        assert_eq!(l.prefs.tab_title, TabTitle::Project);
         assert_eq!(l.prefs.tab_color, TabColor::Dot);
-        assert!(!l.prefs.tab_title_focus && l.prefs.tab_progress && l.prefs.tab_theme);
+        assert!(!l.prefs.tab_title_focus && l.prefs.tab_progress && !l.prefs.tab_theme);
         l.prefs.set(Ground::Dark, Flavor::Amber);
         save(&p, &l.prefs).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-        assert_eq!(v["tab_title"], "mesimon");
+        assert_eq!(v["tab_title"], "project");
         assert_eq!(v["tab_color"], "dot");
         assert_eq!(v["tab_progress"], true);
-        assert_eq!(v["tab_theme"], true);
+        assert_eq!(v["tab_theme"], false);
         assert_eq!(v["dark"], "amber");
         std::fs::write(&p, r#"{"schema_version":1,"tab_title":"badge","tab_color":"glow"}"#)
             .unwrap();
         let l = load(&p);
-        assert_eq!(l.prefs.tab_title, TabTitle::Off, "a foreign word reads as off");
-        assert_eq!(l.prefs.tab_color, TabColor::Off);
+        assert_eq!(l.prefs.tab_title, TabTitle::Mesimon, "a foreign word reads as the default");
+        assert_eq!(l.prefs.tab_color, TabColor::Tab);
         save(&p, &l.prefs).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["tab_title"], "badge", "and is not written over");
@@ -1762,7 +1762,7 @@ mod tests {
         assert!(l.prefs.overridden().is_empty());
         let r = Prefs::default().overlay(&l.prefs);
         assert!(!r.status_top);
-        assert_eq!(r.tab_title, TabTitle::Off);
+        assert_eq!(r.tab_title, TabTitle::Mesimon, "the board file's own value is not read");
         assert!(!r.tab_progress);
         assert_eq!(r.week_start, Weekday::Monday);
         assert_eq!(r.peek, PeekLevel::Off);

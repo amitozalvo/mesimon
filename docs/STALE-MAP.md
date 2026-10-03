@@ -20039,3 +20039,15 @@ build` and the `U` chip → `MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3 -B c
 (stamps HEAD, both roads) → the relay's lock commit (`85d2492`, `cargo update --workspace
 --offline`) and `deploy/ship.sh all --dry-run` → the author's `deploy/ship.sh all`. The manual
 test script (ten steps on the sandbox, Remote Control included) is the note on T-607.
+
+## Machine defaults: the terminal tab, notifications and the OS appearance on (T-612, 2026-10-03, the author's settings review for alpha.37)
+
+The defaults in `impl Default for Prefs` and the loader's fallbacks (a key absent from
+`prefs.json` reads the new value; a key present is untouched): `tab_title` `mesimon`,
+`tab_title_needs_you` off, `tab_theme`, `tab_subtitle`, `tab_icon`, `notify` and `follow_os` on,
+`tab_color` `tab`. `TabTitle` and `TabColor` carry the new `#[default]`, so a foreign word now reads
+as the default and not as off. **`tab_progress` stays off, on purpose:** `tab_frame` gates the
+dot, subtitle, icon, theme and colour on the terminal's detection, but `OSC 9;4` goes to every
+terminal, and one that does not draw it (iTerm2 before 3.6.6, others) may post it as an OS
+notification. Turning it on by default needs a detection first. Tests that need the old "off" state
+seed it. `doctor` spells values, not defaults, so it did not change.

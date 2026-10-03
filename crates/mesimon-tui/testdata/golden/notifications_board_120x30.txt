@@ -6,7 +6,7 @@
 
     Keymap validator      >╭─ NOTIFICATIONS ∙ THIS BOARD ───────────────────────────────────╮
                            │   Notifications: on                                            │
-                           │     set here ∙ machine: off ∙ an OS banner and a sound ∙ only~ │
+                           │     set here ∙ machine: on ∙ an OS banner and a sound ∙ only ~ │
                            │   Also when a turn finishes                                    │
                            │     inherited ∙ the card's ✔ ∙ enter keeps it to the blocked ~ │
                            │   The agent's words: quoted                                    │

@@ -7,19 +7,19 @@
     Keymap validator      >╭─ TERMINAL ─────────────────────────────────────────────────────╮
                            │   Tab title: mesimon ∙ project name                            │
                            │     enter cycles: off, project name, mesimon ∙ project name    │
-                           │   Tab title counts needs-you: on                               │
+                           │   Tab title counts needs-you: off                              │
                            │     2 need you ∙ project, while any ticket does                │
                            │   Tab title follows the open session: on                       │
                            │     the ticket's key and title while you are in its pane or s~ │
                            │   Tab progress ring: on                                        │
                            │     spins while an agent works, red while one needs you ∙ iTe~ │
-                           │   Tab colour from the theme: off                               │
+                           │   Tab colour from the theme: on                                │
                            │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
-                           │   Tab colour when needs you: off                               │
+                           │   Tab colour when needs you: the whole tab                     │
                            │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
-                           │   Tab subtitle: off                                            │
+                           │   Tab subtitle: on                                             │
                            │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
-                           │   Tab icon: off                                                │
+                           │   Tab icon: the shin                                           │
                            │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
 

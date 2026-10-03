@@ -10,10 +10,10 @@
                            ╭─ APPEARANCE & NOTIFICATIONS ───────────────────────────────────╮
                            │   Theme: graphite                                              │
                            │     dark, the default ∙ for a dark terminal                    │
-                           │   Follow the OS appearance: off                                │
-                           │     set at launch ∙ on: switches as the OS does, if the termi~ │
-                           │   Notifications: off                                           │
-                           │     the board says nothing outside its own window ∙ enter ope~ │
+                           │   Follow the OS appearance: on                                 │
+                           │     switches with the OS's light/dark ∙ the terminal is never~ │
+                           │   Notifications: on                                            │
+                           │     a banner and a sound when an agent needs you ∙ Glass ∙ en~ │
                            │   Status line at the bottom                                    │
                            │     tmux's bar over an agent's pane ∙ enter moves it up        │
                            │   Crown's actions: lightning                                   │
