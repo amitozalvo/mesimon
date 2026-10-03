@@ -138,7 +138,7 @@ pub(super) fn render_ask_field(
     app: &crate::app::App,
     ticket: ulid::Ulid,
     buffer: &EditBuffer,
-    queued: bool,
+    (queued, immediately): (bool, bool),
     accept_plan: bool,
     plan: bool,
     tier: Option<&str>,
@@ -165,7 +165,7 @@ pub(super) fn render_ask_field(
     if app.ask_queueable(ticket) || plan || tier_word.is_some() {
         rows.push(render_ask_mode(
             ctx,
-            crate::app::App::ask_mode_word(accept_plan, queued, plan),
+            crate::app::App::ask_mode_word(accept_plan, queued, immediately, plan),
             app.ask_queueable(ticket) && !app.ticket_plan_ready(ticket),
             tier_word.as_deref(),
         ));

@@ -227,6 +227,7 @@ fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
             ticket,
             text: String::new(),
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,

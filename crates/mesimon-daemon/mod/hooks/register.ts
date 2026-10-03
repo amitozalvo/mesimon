@@ -28,9 +28,12 @@
 //    each: `ping`, answered with a `ModPong` relay; `submit`, a prompt the
 //    daemon delivers (a person's words, or the brief they wrote), submitted
 //    whole as the person's own (`asUser: true`) and reported with
-//    `ModSubmit`; `answer`, the answer a person or the crown chose for a
-//    question this session's model asked, returned in the native dialog's
-//    place and reported with `ModAnswer`.
+//    `ModSubmit`; `fill`, the same words put in the session's EMPTY composer
+//    (never over a person's draft) for Claude Code's send-now, which the
+//    daemon presses on the `ModFill` this reports (T-601); `answer`, the
+//    answer a person or the crown chose for a question this session's model
+//    asked, returned in the native dialog's place and reported with
+//    `ModAnswer`.
 //  - HOLD: every `AskUserQuestion` call of the session's own (no subagent's)
 //    is raced between the native dialog, which is drawn as ever and which
 //    the person may answer first, and the board's `answer`.
@@ -48,7 +51,7 @@
 // Never (README promise 3, the T-573 never-list): no `$.session.append`, no
 // `context` on any hook, no `prompt.compose` / `prompt.context` /
 // `prompt.section`, no rewrite of a prompt's words, no submit without
-// `asUser: true`, no rewrite of the model's tool arguments, no `deny` of a
+// `asUser: true`, no fill but into an empty composer and whole, no rewrite of the model's tool arguments, no `deny` of a
 // tool but two: the gate's (its words are `mesimon gate`'s, which the hook
 // set already hands the model; deny or nothing, never allow) and a board
 // tool's refusal (the daemon's words, the shim's error result), no `tool.check →
@@ -122,7 +125,7 @@ const APPROVE_TIMEOUT_MS = 50000
 // The kinds of command this mod reads, said to the daemon by the bridge
 // (`mesimon_core::road::SPEAKS`): a session keeps the mod it was launched
 // with, so a newer daemon sends it only these.
-const SPEAKS = ['ping', 'submit', 'answer']
+const SPEAKS = ['ping', 'submit', 'answer', 'fill']
 
 // `mesimon mod-bridge` exits so when the daemon refused it for good (the
 // session is gone, the pane is not its own, another bridge took the seat):
@@ -467,6 +470,31 @@ async function submitPrompt($: any, id: string, text: string) {
   await relay($, 'ModSubmit', id, report, false)
 }
 
+/**
+ * Words for Claude Code's send-now (T-601): into the session's composer,
+ * whole, and only while the box is empty, so a person's draft is never
+ * replaced; the daemon presses the send-now keys on `filled`. A plugin's
+ * `submit` waits for the running turn's end, and the send-now sends only
+ * what stands in the composer, so this is the mod's road to it.
+ */
+async function fillPrompt($: any, id: string, text: string) {
+  let report: Record<string, unknown>
+  try {
+    const box: any = await $.prompt.read()
+    if (typeof box?.text === 'string' && box.text.trim() !== '') {
+      report = { outcome: 'refused', reason: 'draft' }
+    } else {
+      const r: any = await $.prompt.fill({ text, mode: 'replace' })
+      report = r?.isFilled
+        ? { outcome: 'filled' }
+        : { outcome: 'refused', reason: String(r?.refusal ?? 'not_filled') }
+    }
+  } catch (err) {
+    report = { outcome: 'refused', error: String(err) }
+  }
+  await relay($, 'ModFill', id, report, false)
+}
+
 async function relaySingle($: any, e: any, next: any) {
   const event = String(next.event).replace(/^classic\./, '')
   void relay($, event, undefined, e, false)
@@ -490,6 +518,9 @@ async function handle($: any, line: string) {
       break
     case 'submit':
       if (typeof frame.text === 'string' && frame.text) void submitPrompt($, id, frame.text)
+      break
+    case 'fill':
+      if (typeof frame.text === 'string' && frame.text) await fillPrompt($, id, frame.text)
       break
     case 'answer': {
       const call = typeof frame.tool_use_id === 'string' ? frame.tool_use_id : ''

@@ -21,7 +21,7 @@
 use serde_json::{json, Value};
 
 use crate::board::AgentTools;
-use crate::command::Command;
+use crate::command::{Command, Deliver};
 
 /// The server name, and therefore the `mcp__mesimon__*` tool prefix the model
 /// sees. Changing it renames every tool.
@@ -173,9 +173,13 @@ pub const CROWN_WAKES: &str = concat!(
      plan one stops on wakes it and accept_plan accepts it, after get_ticket shows the plan. \
      Every other stop, an agent a person started, and a board that does not let the crown \
      answer stay a person's. \
-     ask_agent's words wait for the agent's idle by default; with now they reach a working \
-     agent mid-turn, as a person's send-now does, unless it stands at a dialog, and the \
-     receipt's road says which (sent_now, queued or held_for_person); a new ask replaces the \
+     ask_agent's words wait for the agent's idle by default (deliver idle). With deliver now \
+     they go at once, as a person's send-now does: a working agent reads them at its running \
+     turn's next step, or after that turn ends on the mod road. With deliver immediately, \
+     Claude Code's own send-now, a working agent reads them before its running tool call \
+     ends, that call moved to the background and not stopped; a Claude agent only. Neither \
+     goes while the agent stands at a dialog, and the receipt's road says which \
+     (sent_now, sent_immediately, queued or held_for_person); a new ask replaces the \
      crown's last on that ticket. \
      An ask dropped before it was sent (a person replaced it, took it back or talked past it, \
      or its agent went first) reads asked: dropped on that ticket's get_ticket, with who \
@@ -632,18 +636,18 @@ pub fn tools() -> Vec<Value> {
             "name": "ask_agent",
             "description": "Queues words on another ticket's card for its agent (crown \
                             only). A person sends (^y) or takes back (^u); with crown sends \
-                            on, an agent the crown started gets them once idle, or mid-turn \
-                            with now (road says which). Refused with no agent, on this \
-                            session's ticket, or now at a dialog. The turn taking them wakes \
-                            this session at its end.",
+                            on, an agent the crown started gets them as deliver says (road says \
+                            which). Refused with no agent, on this session's ticket, or \
+                            at once at a dialog. The turn taking them wakes this session at \
+                            its end.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "key": { "type": "string", "description": "A key from list_board." },
-                    "text": { "type": "string", "description": "The words a person would type." },
+                    "key": { "type": "string", "description": "A list_board key." },
+                    "text": { "type": "string", "description": "Words a person would type." },
                     "seen": { "type": "string", "description": "get_ticket's seen stamp." },
                     "plan": { "type": "boolean", "description": "Optional. True: plan mode." },
-                    "now": { "type": "boolean", "description": "Optional. True: mid-turn." },
+                    "deliver": { "type": "string", "description": "Optional: idle (default), now, immediately." },
                 },
                 "required": ["key", "text", "seen"],
                 "additionalProperties": false,
@@ -788,8 +792,9 @@ pub enum ToolCall {
         text: String,
         seen: String,
         plan: bool,
-        /// Sent now, mid-turn, not queued for idle (T-600).
-        now: bool,
+        /// When the words go (T-600, T-601): the queue's idle, now, or
+        /// Claude Code's send-now.
+        deliver: Deliver,
     },
     /// Exactly one of `index`, `text` (T-569) and `answers` (T-571).
     AnswerAgent {
@@ -839,6 +844,18 @@ fn flag(args: &Value, name: &str) -> Result<bool, String> {
     match args.get(name) {
         None | Some(Value::Null) => Ok(false),
         Some(v) => v.as_bool().ok_or_else(|| format!("{name} must be a boolean, not {v}")),
+    }
+}
+
+/// `ask_agent`'s level (T-601). A crown session keeps the tool list it was
+/// launched with, and T-600's said `now: true`; it is read as `deliver:
+/// "now"` for as long as such a session lives.
+fn deliver(args: &Value) -> Result<Deliver, String> {
+    let legacy = if flag(args, "now")? { Deliver::Now } else { Deliver::Idle };
+    match opt_word(args, "deliver")? {
+        None => Ok(legacy),
+        Some(w) => Deliver::from_word(&w)
+            .ok_or_else(|| format!("deliver must be idle, now or immediately, not {w:?}")),
     }
 }
 
@@ -978,7 +995,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                 .to_string(),
             seen: word(args, "seen")?,
             plan: flag(args, "plan")?,
-            now: flag(args, "now")?,
+            deliver: deliver(args)?,
         }),
         "answer_agent" => {
             let (index, text) = one_answer(args, "")?;
@@ -1638,7 +1655,7 @@ mod tests {
                     text: "x".into(),
                     seen: None,
                     plan: false,
-                    now: false,
+                    deliver: Deliver::Idle,
                 },
                 "ask_agent",
             ),
@@ -1974,7 +1991,7 @@ mod tests {
                 text: "go".into(),
                 seen: "abc".into(),
                 plan: false,
-                now: false
+                deliver: Deliver::Idle
             })
         );
         assert_eq!(
@@ -1987,28 +2004,30 @@ mod tests {
                 text: "go".into(),
                 seen: "abc".into(),
                 plan: true,
-                now: false
+                deliver: Deliver::Idle
             })
         );
-        // T-600: `now` is the board's immediate send, a flag like `plan`.
-        assert_eq!(
-            parse_tool_call(
-                "ask_agent",
-                &json!({ "key": "T-4", "text": "go", "seen": "abc", "now": true })
-            ),
-            Ok(ToolCall::AskAgent {
-                key: "T-4".into(),
-                text: "go".into(),
-                seen: "abc".into(),
-                plan: false,
-                now: true
+        // T-601: `deliver` is the level, one of three words; T-600's `now:
+        // true`, from a session launched with that tool list, reads as now.
+        let ask = |extra: Value| {
+            let mut args = json!({ "key": "T-4", "text": "go", "seen": "abc" });
+            for (k, v) in extra.as_object().unwrap() {
+                args[k] = v.clone();
+            }
+            parse_tool_call("ask_agent", &args).map(|c| match c {
+                ToolCall::AskAgent { deliver, .. } => deliver,
+                other => panic!("{other:?}"),
             })
-        );
-        assert!(parse_tool_call(
-            "ask_agent",
-            &json!({ "key": "T-4", "text": "go", "seen": "abc", "now": "yes" })
-        )
-        .is_err());
+        };
+        assert_eq!(ask(json!({})), Ok(Deliver::Idle));
+        assert_eq!(ask(json!({ "deliver": "idle" })), Ok(Deliver::Idle));
+        assert_eq!(ask(json!({ "deliver": "now" })), Ok(Deliver::Now));
+        assert_eq!(ask(json!({ "deliver": "immediately" })), Ok(Deliver::Immediately));
+        assert_eq!(ask(json!({ "now": true })), Ok(Deliver::Now));
+        assert_eq!(ask(json!({ "now": true, "deliver": "immediately" })), Ok(Deliver::Immediately));
+        assert!(ask(json!({ "deliver": "later" })).is_err());
+        assert!(ask(json!({ "deliver": true })).is_err());
+        assert!(ask(json!({ "now": "yes" })).is_err());
         assert!(parse_tool_call("ask_agent", &json!({ "key": "T-4", "text": "go" })).is_err());
         assert_eq!(
             parse_tool_call("sleep_agent", &json!({ "key": " T-4 ", "seen": "abc" })),
@@ -2410,25 +2429,31 @@ mod tests {
         }
     }
 
-    /// T-600: the crown's ask reaches a working agent mid-turn with `now`,
-    /// and the default waits for idle; the tool and the receipt both say
-    /// so, inside the cap and the lint.
+    /// T-600, T-601: the crown's ask has three levels, `deliver`'s words,
+    /// and the default waits for idle; the tool and the wake text say what
+    /// each one does, inside the cap and the lint.
     #[test]
-    fn ask_agent_says_now_reaches_a_working_agent() {
+    fn ask_agent_says_what_each_level_does() {
         let registry = tools();
         let t = registry.iter().find(|t| t["name"] == "ask_agent").unwrap();
-        let now = &t["inputSchema"]["properties"]["now"];
-        assert_eq!(now["type"], "boolean");
-        assert_eq!(now["description"], "Optional. True: mid-turn.");
+        let deliver = &t["inputSchema"]["properties"]["deliver"];
+        assert_eq!(deliver["type"], "string");
+        for d in Deliver::ALL {
+            assert!(deliver["description"].as_str().unwrap().contains(d.word()), "{d:?}");
+        }
+        assert!(t["inputSchema"]["properties"].get("now").is_none(), "one shape: deliver");
         let required = t["inputSchema"]["required"].as_array().unwrap();
-        assert!(!required.iter().any(|r| r == "now"), "now is optional");
+        assert!(!required.iter().any(|r| r == "deliver"), "deliver is optional");
         let bytes = serde_json::to_vec(t).unwrap().len();
         assert!(bytes <= MAX_TOOL_BYTES, "ask_agent is {bytes} bytes");
         for words in [
-            "wait for the agent's idle by default",
-            "with now they reach a working agent mid-turn",
-            "unless it stands at a dialog",
-            "sent_now, queued or held_for_person",
+            "wait for the agent's idle by default (deliver idle)",
+            "With deliver now they go at once",
+            "at its running turn's next step, or after that turn ends on the mod road",
+            "With deliver immediately, Claude Code's own send-now",
+            "before its running tool call ends, that call moved to the background",
+            "Neither goes while the agent stands at a dialog",
+            "sent_now, sent_immediately, queued or held_for_person",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
@@ -2472,8 +2497,8 @@ mod tests {
                 "ask_agent",
                 vec![
                     "The turn taking them wakes this session",
-                    "once idle, or mid-turn with now (road says which)",
-                    "or now at a dialog",
+                    "gets them as deliver says (road says which)",
+                    "or at once at a dialog",
                 ],
             ),
         ] {
@@ -2657,7 +2682,7 @@ mod tests {
                 text: "x".into(),
                 seen: None,
                 plan: false,
-                now: false,
+                deliver: Deliver::Idle,
             },
             Command::AgentAnswerTicket {
                 key: "T-1".into(),
@@ -2830,6 +2855,7 @@ mod tests {
                 ticket: t,
                 text: "do the thing".into(),
                 queued: false,
+                immediately: false,
                 accept_plan: false,
                 plan: false,
                 tier: None,

@@ -1223,6 +1223,9 @@ pub struct Ctx {
     /// worktree ticket: its checkout is its own. A pane is NOT required
     /// since T-294 — the delivery wakes a parked claude, or starts one.
     pub ask_queueable: bool,
+    /// The ask field's ring has an `immediately` stop (T-601): its ticket's
+    /// agent is a Claude pane, where Claude Code's send-now can reach it.
+    pub ask_immediate_able: bool,
     /// The ask field's toggle sits at `queued` — Enter parks the words.
     pub ask_queued: bool,
     /// The ask field's toggle sits at `accept plan` (T-420): Enter accepts
@@ -6154,8 +6157,14 @@ static INPUT: &[Binding] = &[
         // and one gesture: shift+tab is "the other way" for whatever the
         // field is about.
         hint: |c| {
-            if c.prompting && c.ask_plan_able {
+            // `immediately` (T-601), Claude Code's send-now, where the field
+            // is on a Claude pane.
+            if c.prompting && c.ask_plan_able && c.ask_immediate_able {
+                "accept plan / queued / now / immediately"
+            } else if c.prompting && c.ask_plan_able {
                 "accept plan / queued / now"
+            } else if c.prompting && c.ask_immediate_able {
+                "now / queued / immediately"
             } else if c.prompting {
                 "now / queued"
             } else {

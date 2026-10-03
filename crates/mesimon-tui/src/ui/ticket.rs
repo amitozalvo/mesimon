@@ -649,19 +649,22 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 InputPurpose::Prompt {
                     target: AskTarget::Ticket(t),
                     queued,
+                    immediately,
                     accept_plan,
                     plan,
                     tier,
                     ..
                 },
             buffer,
-        } if *t == ticket_id => Some((buffer, *queued, *accept_plan, *plan, tier.as_deref())),
+        } if *t == ticket_id => {
+            Some((buffer, *queued, *immediately, *accept_plan, *plan, tier.as_deref()))
+        }
         _ => None,
     };
     // The field's rows at the width they will be drawn at: the zone's in the
     // two-zone layout, the page's where the rail is the screen.
     let field_w = if two_zone { area.width - RAIL_W - 3 } else { area.width.saturating_sub(2) };
-    let field = ask.map(|(buf, queued, accept_plan, plan, tier)| {
+    let field = ask.map(|(buf, queued, immediately, accept_plan, plan, tier)| {
         let ctx = CardCtx {
             theme,
             width: field_w,
@@ -669,7 +672,16 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             spin: app.spin_frame(),
             names_key: false,
         };
-        super::card::render_ask_field(&ctx, app, ticket_id, buf, queued, accept_plan, plan, tier)
+        super::card::render_ask_field(
+            &ctx,
+            app,
+            ticket_id,
+            buf,
+            (queued, immediately),
+            accept_plan,
+            plan,
+            tier,
+        )
     });
     // A field the body has no room for is not drawn; the mode word in the
     // footer still says ASK, and the keys still work.

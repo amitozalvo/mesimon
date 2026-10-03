@@ -171,7 +171,7 @@ test('the bridge starts at session.start and a ping comes back as a pong, once',
   await settle()
   expect(spawned).toEqual([[
     '/bin/mesimon', 'mod-bridge', '--sock', '/rt/orch.sock', '--session', ENV.MESIMON_MOD_SESSION,
-    '--speaks', 'ping,submit,answer',
+    '--speaks', 'ping,submit,answer,fill',
   ]])
   const pongs = runs.filter(r => r.argv.includes('ModPong')).map(r => r.argv[r.argv.indexOf('--reason') + 1])
   expect(pongs).toEqual(['01A', '01B'])
@@ -244,6 +244,60 @@ test('a submit the engine drops is reported dropped, with its reason', async ($,
   await settle()
   const reports = runs.filter(r => r.argv.includes('ModSubmit'))
   expect(JSON.parse(reports[0].stdin)).toEqual({ outcome: 'dropped', reason: 'blocked by a hook' })
+})
+
+test('a fill puts the words, whole, in an empty composer and says so (T-601)', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  const filled: any[] = []
+  on('prompt.read', () => ({ value: { text: '', cursor: 0 } }) as any)
+  on('prompt.fill', ($: any, e: any) => {
+    filled.push({ text: e.text, mode: e.mode })
+    return { isFilled: true } as any
+  })
+  const words = 'Stop: the rebrief.\n\nKeep the tests.'
+  bridgeSaying(on, [JSON.stringify({ id: '01F', kind: 'fill', text: words })])
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+  await settle()
+  expect(filled).toEqual([{ text: words, mode: 'replace' }])
+  const reports = runs.filter(r => r.argv.includes('ModFill'))
+  expect(reports.map(reasonOf)).toEqual(['01F'])
+  expect(JSON.parse(reports[0].stdin)).toEqual({ outcome: 'filled' })
+})
+
+test('a fill never replaces a person\'s draft (T-601)', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  let fills = 0
+  on('prompt.read', () => ({ value: { text: 'half a thought', cursor: 14 } }) as any)
+  on('prompt.fill', () => {
+    fills += 1
+    return { isFilled: true } as any
+  })
+  bridgeSaying(on, [JSON.stringify({ id: '01G', kind: 'fill', text: 'go' })])
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+  await settle()
+  expect(fills).toBe(0)
+  const reports = runs.filter(r => r.argv.includes('ModFill'))
+  expect(JSON.parse(reports[0].stdin)).toEqual({ outcome: 'refused', reason: 'draft' })
+})
+
+test('a fill the engine does not take is reported refused, with a reason (T-601)', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  on('prompt.read', () => ({ value: { text: '', cursor: 0 } }) as any)
+  // The engine's own refusal word (`dialog`, `no_composer`) is its core's;
+  // a test hook beneath can only say the box was not filled.
+  on('prompt.fill', () => ({ isFilled: false }) as any)
+  bridgeSaying(on, [JSON.stringify({ id: '01H', kind: 'fill', text: 'go' })])
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+  await settle()
+  const reports = runs.filter(r => r.argv.includes('ModFill'))
+  expect(reports.map(reasonOf)).toEqual(['01H'])
+  expect(JSON.parse(reports[0].stdin)).toEqual({ outcome: 'refused', reason: 'not_filled' })
 })
 
 const QUESTIONS = [{

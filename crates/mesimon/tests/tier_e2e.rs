@@ -229,6 +229,7 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
         ticket: t1,
         text: "mesimon-probe-443 after the switch".into(),
         queued: false,
+        immediately: false,
         accept_plan: false,
         plan: false,
         tier: Some("01CODER".into()),

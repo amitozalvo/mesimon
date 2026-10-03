@@ -3808,6 +3808,7 @@ fn golden_prompt_field_120() {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -3848,6 +3849,7 @@ fn golden_prompt_field_queued_120() {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: true,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -3881,6 +3883,7 @@ fn golden_column_prompt_field_120() {
             target: crate::app::AskTarget::Column("in progress".into()),
             walk: None,
             queued: true,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -3918,6 +3921,7 @@ fn golden_column_prompt_field_now_120() {
             target: crate::app::AskTarget::Column("in progress".into()),
             walk: None,
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -3956,6 +3960,7 @@ fn golden_column_prompt_field_start_120() {
             target: crate::app::AskTarget::Column("todo".into()),
             walk: None,
             queued: true,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -3983,6 +3988,7 @@ fn golden_prompt_field_start_120() {
             target: crate::app::AskTarget::Ticket(ulid_n(1)),
             walk: None,
             queued: true,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -4023,6 +4029,7 @@ fn the_prompt_field_offers_the_brief_to_a_seat_that_never_took_a_prompt() {
             target: crate::app::AskTarget::Ticket(ulid_n(1)),
             walk: None,
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -4059,7 +4066,7 @@ fn golden_queued_start_open_120() {
         accept_plan: false,
         plan: false,
         held: None,
-        now: false,
+        deliver: mesimon_core::command::Deliver::Idle,
     }];
     app.cursor_col = 0;
     app.cursor_row = Some(0);
@@ -4081,7 +4088,7 @@ fn pending_ask(ticket: u128, waits_on: &[&str]) -> mesimon_core::command::Pendin
         accept_plan: false,
         plan: false,
         held: None,
-        now: false,
+        deliver: mesimon_core::command::Deliver::Idle,
     }
 }
 
@@ -4245,6 +4252,7 @@ fn the_held_keys_row_is_gated_as_the_keys_are() {
             target: crate::app::AskTarget::Ticket(ulid_n(5)),
             walk: None,
             queued: true,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -4350,7 +4358,7 @@ fn golden_train_120() {
             accept_plan: false,
             plan: false,
             held: None,
-            now: false,
+            deliver: mesimon_core::command::Deliver::Idle,
         },
         mesimon_core::command::Pending {
             ticket: ulid_n(6),
@@ -4364,7 +4372,7 @@ fn golden_train_120() {
             accept_plan: false,
             plan: false,
             held: None,
-            now: false,
+            deliver: mesimon_core::command::Deliver::Idle,
         },
     ];
     app.cursor_col = 2;
@@ -4415,7 +4423,7 @@ fn golden_train_blocked_120() {
         accept_plan: false,
         plan: false,
         held: None,
-        now: false,
+        deliver: mesimon_core::command::Deliver::Idle,
     }];
     app.cursor_col = 2;
     app.cursor_row = Some(0);
@@ -4565,7 +4573,7 @@ fn golden_train_manual_120() {
         accept_plan: false,
         plan: false,
         held: None,
-        now: false,
+        deliver: mesimon_core::command::Deliver::Idle,
     };
     app.pending = vec![candidate.clone()];
     app.cursor_col = 2;
@@ -4680,13 +4688,14 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
         accept_plan: false,
         plan: false,
         held: None,
-        now: false,
+        deliver: mesimon_core::command::Deliver::Idle,
     }];
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: true,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -4723,6 +4732,7 @@ fn test_the_prompt_field_moves_no_text() {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -5847,6 +5857,7 @@ fn the_ask_room_at_accept_plan_says_what_the_send_does() {
             crate::app::EditorPurpose::Ask {
                 target: crate::app::AskTarget::Ticket(ulid_n(3)),
                 queued: true,
+                immediately: false,
                 accept_plan,
                 plan: false,
                 tier: None,
@@ -6064,6 +6075,7 @@ fn golden_editor_ask_120() {
         crate::app::EditorPurpose::Ask {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -6099,6 +6111,7 @@ fn golden_editor_ask_column_120() {
         crate::app::EditorPurpose::Ask {
             target: crate::app::AskTarget::Column("in progress".into()),
             queued: true,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -6583,6 +6596,7 @@ fn ticket_prompting(rail_idx: usize, text: &str) -> App {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -7000,6 +7014,7 @@ fn test_no_banned_sgr() {
                         target: crate::app::AskTarget::Ticket(ulid_n(3)),
                         walk: None,
                         queued: false,
+                        immediately: false,
                         accept_plan: false,
                         plan: false,
                         tier: None,
@@ -7307,6 +7322,7 @@ fn test_no_drawn_structure() {
                     target: crate::app::AskTarget::Ticket(ulid_n(3)),
                     walk: None,
                     queued: false,
+                    immediately: false,
                     accept_plan: false,
                     plan: false,
                     tier: None,
@@ -8350,6 +8366,7 @@ fn test_overflow_keeps_a_tall_cards_prompt_visible() {
             target: crate::app::AskTarget::Ticket(ulid_n(7)),
             walk: None,
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,

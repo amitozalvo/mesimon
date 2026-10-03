@@ -19769,3 +19769,94 @@ it.
 **Not done.** The real engine was not driven through the rig. The mod road's single Ctrl+C before
 the brief's `submit` was not measured on a live pane: it follows the paste road's rule (one press,
 only into a box read as holding text).
+
+## An immediate send reaches the model mid-turn: `deliver: idle | now | immediately` (T-601, 2026-10-03, filed by the crown on T-587; the author: "I know about a way to send it immediately in claude code by pressing ctrl+x ctrl+s … it's another flag: after idle | now | immediately")
+
+**Seen.** The author sent the crown's rebrief to T-599 "now" by hand. It went down the mod
+(`Prompt from the mesimon plugin`), and the worker read it only after it had finished the whole
+feature the rebrief was meant to change.
+
+**Measured on Claude Code 2.1.288**, in a private tmux on Sonnet, with a probe mod:
+
+- **The key.** `chat:sendNow` is bound to `ctrl+x ctrl+s` and `ctrl+enter` (with
+  `chat:queueSubmit` on `ctrl+x enter`). A person's plain Enter mid-turn queues the prompt, and
+  the model reads it at the running turn's next tool boundary as a `queued_command` attachment
+  (`origin: human`). The running tool is not cut. Ctrl+X Ctrl+S over a queued or typed prompt
+  delivers it at once. The running Bash call is not stopped: its result reads "Command was moved
+  to the background … so that a message that arrived while it was running can reach you; it was
+  not interrupted" (`backgroundedToDeliverMessage`), its end comes later as a task notification,
+  and the turn goes on. That is the binary's low-latency path (`deliverWithoutCancel`, flag
+  `tengu_velvet_panda`, on by default). Where it cannot move the running work, it falls back to
+  cancelling the turn and sending (`fell_back_to_cancel`).
+- **The mod, with no key: no road.** `$.prompt.submit` always enqueues at priority `later`
+  (`GMe = "later"`) and takes no option for another one. So a mod's prompt waits for the turn's
+  end, which is what the author saw, and why T-600's `now` on the mod road means "after this
+  turn". Ctrl+X Ctrl+S does not release a queued plugin prompt: the probe's prompt stayed held
+  behind all three sleeps. There is no `$.ui.press` for the composer. `$.turn.abort` only cuts
+  the turn. `$.session.send` and `$.session.append` are on the never-list.
+- **The mod with the key: a road.** `$.prompt.fill({ text, mode: 'replace' })` writes the
+  composer's value directly, with no paste and no `<pasted_content>` wrapper. It is refused only
+  while a dialog is open. Then Ctrl+X Ctrl+S, pressed by tmux, sends the composer as a person's
+  own send: delivered at once, `origin: human`, the running sleep moved to the background.
+- **The paste road with the key.** A bracketed paste, then `send-keys C-x C-s` in a separate
+  call, delivers mid-turn the same way (multi-line too).
+
+**Shipped.** One shape: T-600's `now: bool` never shipped (it landed after alpha.37), so the
+wire's `AgentAskTicket.now` is now `deliver: Deliver` (`idle | now | immediately`,
+`#[serde(default)]` idle). `mcp::parse_tool_call` still reads `now: true` as `deliver: "now"`,
+for a crown session whose tool list came from T-600's build. The schema carries no enum
+(`no_column_name_can_reach_a_schema`): `deliver` is a string the parser checks.
+
+- **The press** (`Daemon::paste_at`). `immediately` at a working Claude pane:
+  - On the mod road, the mod gets a new `fill` frame (`ModCommand::Fill`, `SPEAKS` gains
+    `fill`). The mod reads the composer first and fills it only when it is empty, so it never
+    replaces a person's draft. It reports `ModFill` `filled`, or `refused` with `draft`, the
+    engine's refusal word, or the error. On `filled`, `on_mod_fill` presses
+    `road::SEND_NOW_KEYS`.
+  - On the hook set, an older mod that does not speak `fill`, or a slash command:
+    `paste_input`, then `TmuxBackend::send_now` in its own call.
+  - An idle agent takes the plain send, which starts its turn at once anyway.
+  - A refused fill sends the words by the plain `submit` (so `now`), and the feed writes
+    `prompt_send_now_refused` with the reason.
+  - The ack is the `UserPromptSubmit` the send fires, owed as a submit's is (`Owed.fill`).
+- **Refusals.** At a dialog, as `now` is refused there. On a Codex agent
+  (`immediate_refusal`): the key is Claude Code's.
+- **The crown.** `AskRoad::SentImmediately` (`sent_immediately`). The feed's `ask_agent` outcome
+  is the road, and `ask_agent_sent` carries the level. A held ask keeps its level
+  (`QueuedAsk.deliver`, `Pending.deliver`, which replace T-600's `now`), reopens at it, and `^y`
+  sends at it.
+- **The board.** `PromptSession.immediately`. The ask field's ring on a Claude pane is
+  `now → queued → immediately → now`, and with a plan stop it is
+  `accept plan → queued → now → immediately → accept plan`. The new stop comes after the two
+  the key always toggled, so `now → queued` is still one press. The hint is
+  `now / queued / immediately` (`Ctx::ask_immediate_able`), and the receipt says
+  `asked immediately`. The room carries the flag both ways.
+- **The words.** The tool says "gets them as deliver says (road says which)". `deliver`'s
+  description is "Optional: idle (default), now, immediately." To fit the 820-byte cap, `key`
+  and `text` lost a word each. `CROWN_WAKES` says what each level does, including that `now`
+  waits for the turn's end on the mod road (`ask_agent_says_what_each_level_does`).
+
+**Not done.** Remote Control's steer. The phone's wire is a `queued` bool through
+`mesimon-web`'s API and the phone page, so a third level is its own change.
+
+**Found, not changed.** The `fill` road could give `now` on the mod road a person's semantics:
+fill, then Enter, and the model reads the words at the next tool boundary instead of after the
+turn. Every mod-road prompt goes through `submit` today, and changing that is a separate
+decision.
+
+**Tests.** `crown_e2e::the_crown_sends_immediately_into_a_working_turn`, on both roads (the
+stand-in engine's `fill` on the mod pass), on a stub that records raw bytes (`stty raw -ixon`:
+Ctrl+S is XOFF on a cooked tty). It checks that:
+
+- the crown's `immediately` lands as the words followed directly by Ctrl+X Ctrl+S, with no
+  Enter, while the worker stays `Running`, and the feed lines are right;
+- the turn's end wakes the crown with "answered your ask";
+- `immediately` at a dialog is refused and sends nothing;
+- a person's `PromptSession { immediately }` sends the same way;
+- on the mod pass, a fill over a draft (`mod-draft`) falls back to the submit, with no send-now
+  over it.
+
+Also: `register.test.ts` (fill into an empty box, never over a draft, a refusal reported),
+`the_mod_spells_nothing_on_the_never_list` (three `$.prompt` calls, the fill whole over an empty
+box), `the_ask_field_sends_immediately_on_a_claude_pane`, and three goldens whose footer hint
+gained `/ immediately`.

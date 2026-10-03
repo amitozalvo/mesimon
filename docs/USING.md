@@ -200,9 +200,15 @@ Follow-ups default to **Queue**: they wait for the current turn to end, includin
 approval stops. A question holds them instead: words queued before or while the agent asks one
 wait for your answer and then your Ctrl+Y (`agent asked ∙ you send`), and an ask behind another
 ticket's question says so (`queued ∙ after T-3's answer`). Choose **Steer** in
-**Settings › Behaviour › Follow-ups** to send immediately by default, or toggle a composer with
-Shift+Tab. A queued prompt appears on the ticket page; Ctrl+Y sends it now and Ctrl+U takes it
-back for editing. Remote Control defaults to Queue and offers the same two actions.
+**Settings › Behaviour › Follow-ups** to send now by default, or cycle a composer with
+Shift+Tab: `now`, `queued`, and on a Claude agent `immediately`. Sent `now`, a working agent
+reads your words at its next step (on the mod road, after its turn ends). Sent `immediately`,
+mesimon puts them in Claude Code's prompt box and presses its send-now (Ctrl+X Ctrl+S), so a
+working agent reads them before its running command ends. That command keeps running in the
+background, and the turn goes on. On the mod road a draft you are typing in the agent's own
+prompt box is never replaced: the words are then sent `now` instead. A queued prompt appears on
+the ticket page; Ctrl+Y sends it now and Ctrl+U takes it back for editing. Remote Control
+defaults to Queue and offers the same two actions.
 The queue holds one prompt per ticket in memory; daemon restarts discard it.
 
 ## The crown: one agent runs the board
@@ -236,10 +242,10 @@ lights `♛ sent`, and the activity feed records the send as the agent's. Words 
 started still wait for you, whatever the setting says. Words that would wake a sleeping agent need
 a free seat in the crown's budget and hold it while they wait. Turning the setting off, or taking
 the crown back, holds whatever had not gone yet on its card. The crown can also send its words
-now, as your Shift+Enter does with the send set to now: they reach a working agent mid-turn
-instead of waiting for it to go idle. It cannot send them now while that agent is at a dialog.
-Where its words are held for you, an ask meant for now opens at now when you edit it, and `^y`
-sends it at once either way.
+`now` or `immediately`, as your Shift+Enter does with the send set to either: they reach a
+working agent at once instead of waiting for it to go idle. It cannot send them that way while
+the agent is at a dialog. Where its words are held for you, the ask opens at the level the crown
+chose when you edit it, and `^y` sends it at that level.
 
 **Settings › Agents › Crown answers questions** (on by default, and separate from sending; turn it
 off there to keep every question and plan for yourself) lets the crown answer a question, and

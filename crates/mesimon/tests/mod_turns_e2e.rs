@@ -125,6 +125,7 @@ fn prompt(c: &mut TestClient, ticket: ulid::Ulid, text: &str, resend: bool) -> R
         ticket,
         text: text.into(),
         queued: false,
+        immediately: false,
         accept_plan: false,
         plan: false,
         tier: None,

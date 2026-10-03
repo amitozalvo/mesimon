@@ -443,7 +443,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         // the dialog's bottom edge does not repeat it. A ticket's ask names
         // the ticket by its key; a column's names the seats the words reach
         // — every seat in it, since T-405 starts the empty ones.
-        EditorPurpose::Ask { target, queued, accept_plan, plan, tier } => {
+        EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier } => {
             if !framed {
                 ctx_spans.push(Span::styled(format!("{} ∙ ", heading(app, ed)), dim2));
             }
@@ -465,7 +465,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 }
             }
             ctx_spans.push(Span::styled(
-                crate::app::App::ask_mode_word(*accept_plan, *queued, *plan),
+                crate::app::App::ask_mode_word(*accept_plan, *queued, *immediately, *plan),
                 dim1,
             ));
             // `^n` (T-443): the tier the words switch the agent to.

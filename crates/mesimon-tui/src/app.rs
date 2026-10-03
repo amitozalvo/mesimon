@@ -901,7 +901,14 @@ pub enum EditorPurpose {
     /// column's name.
     /// `plan` (T-434) is the field's `^p`, riding along like the rest.
     /// `tier` (T-443) is the field's `^n`, riding along the same way.
-    Ask { target: AskTarget, queued: bool, accept_plan: bool, plan: bool, tier: Option<String> },
+    Ask {
+        target: AskTarget,
+        queued: bool,
+        immediately: bool,
+        accept_plan: bool,
+        plan: bool,
+        tier: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1208,6 +1215,11 @@ pub enum InputPurpose {
         /// until the ticket's checkout is quiet (2026-09-04). Shift+Tab
         /// cycles it; `now` every time the field opens fresh.
         queued: bool,
+        /// The row says `immediately` (T-601): Enter sends the words now by
+        /// Claude Code's send-now, so a working agent reads them before its
+        /// running tool call ends. Shift+Tab's ring has this stop only on a
+        /// Claude pane (`App::immediate_able`); never with `queued`.
+        immediately: bool,
         /// The row says `accept plan` (T-420): Enter presses the harness's
         /// default on the agent's plan dialog — now if it is up, when it
         /// comes if the agent is still planning — and parks the words for
@@ -3932,15 +3944,60 @@ impl App {
     }
 
     /// The word on the ask field's delivery row (T-420 added the first).
-    pub(crate) fn ask_mode_word(accept_plan: bool, queued: bool, plan: bool) -> &'static str {
+    pub(crate) fn ask_mode_word(
+        accept_plan: bool,
+        queued: bool,
+        immediately: bool,
+        plan: bool,
+    ) -> &'static str {
         match (accept_plan, queued, plan) {
             (true, _, _) => "accept plan",
             // `^p` (T-434): the delivery word and the mode it launches in.
             (_, true, true) => "queued ∙ plan mode",
             (_, false, true) => "now ∙ plan mode",
             (_, true, false) => "queued",
+            // Claude Code's send-now (T-601).
+            (_, false, false) if immediately => "immediately",
             (_, false, false) => "now",
         }
+    }
+
+    /// The field's two flags for a level (T-601): how a held ask reopens.
+    pub(crate) fn field_level(deliver: mesimon_core::command::Deliver) -> (bool, bool) {
+        use mesimon_core::command::Deliver;
+        match deliver {
+            Deliver::Idle => (true, false),
+            Deliver::Now => (false, false),
+            Deliver::Immediately => (false, true),
+        }
+    }
+
+    /// Can the ask field send `immediately` here (T-601)? Claude Code's
+    /// send-now is a key in a Claude pane, so a ticket whose agent has one;
+    /// a parked agent's wake, an empty seat's start and a column's many
+    /// seats have no turn to cut into.
+    pub(crate) fn immediate_able(&self, target: &AskTarget) -> bool {
+        match target {
+            AskTarget::Ticket(t) => self
+                .board
+                .pane_target(*t)
+                .is_some_and(|s| s.kind == mesimon_core::board::SessionKind::Claude),
+            AskTarget::Column(_) => false,
+        }
+    }
+
+    /// The delivery ring without an `accept plan` stop: `now` → `queued` →
+    /// `immediately` (where `immediate_able`, T-601) → `now`. The new stop
+    /// comes after the two the key always toggled, so `now` → `queued` is
+    /// still one press.
+    fn cycle_delivery(&self, target: &AskTarget, queued: &mut bool, immediately: &mut bool) {
+        let (q, i) = match (*queued, *immediately) {
+            (false, false) => (true, false),
+            (true, _) if self.immediate_able(target) => (false, true),
+            _ => (false, false),
+        };
+        *queued = q;
+        *immediately = i;
     }
 
     /// Can the text field's launch take plan mode (T-434)? Composing: the
@@ -3987,6 +4044,7 @@ impl App {
         &self,
         target: &AskTarget,
         queued: &mut bool,
+        immediately: &mut bool,
         accept_plan: &mut bool,
     ) {
         // A column (T-429) keeps the three-stop ring even with a dialog up:
@@ -3998,17 +4056,22 @@ impl App {
         if ready {
             *accept_plan = true;
             *queued = true;
+            *immediately = false;
         } else if !able {
             *accept_plan = false;
-            *queued = !*queued;
+            self.cycle_delivery(target, queued, immediately);
         } else if *accept_plan {
             *accept_plan = false;
             *queued = true;
         } else if *queued {
             *queued = false;
+        } else if !*immediately && self.immediate_able(target) {
+            // `now` → `immediately` (T-601), then round to `accept plan`.
+            *immediately = true;
         } else {
             *accept_plan = true;
             *queued = true;
+            *immediately = false;
         }
     }
 
@@ -4695,6 +4758,13 @@ impl App {
                         AskTarget::Ticket(t) => self.ask_queueable(*t),
                         AskTarget::Column(name) => self.column_ask_queueable(name),
                     }
+                }
+                _ => false,
+            },
+            ask_immediate_able: match &self.mode {
+                Mode::Input { purpose: InputPurpose::Prompt { target, .. }, .. }
+                | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
+                    self.immediate_able(target)
                 }
                 _ => false,
             },
@@ -5828,14 +5898,16 @@ impl App {
                     // the plan.
                     let accept_plan = self.pending_of(ticket).is_some_and(|p| p.accept_plan);
                     let plan = self.pending_of(ticket).is_some_and(|p| p.plan);
-                    // So does the crown's `now` (T-600).
-                    let queued = !self.pending_of(ticket).is_some_and(|p| p.now);
+                    // So does the crown's level (T-600, T-601).
+                    let deliver = self.pending_of(ticket).map(|p| p.deliver).unwrap_or_default();
+                    let (queued, immediately) = Self::field_level(deliver);
                     match self.req(Command::TakeQueuedAsk { ticket }) {
                         Response::Err { message } => self.refuse(ticket, message),
                         Response::PromptTakenBack { text } => {
                             self.mode = Mode::Editor(self.ask_room(
                                 AskTarget::Ticket(ticket),
                                 queued,
+                                immediately,
                                 accept_plan,
                                 plan,
                                 None,
@@ -6194,6 +6266,7 @@ impl App {
                                 target: AskTarget::Column(name),
                                 walk: None,
                                 queued,
+                                immediately: false,
                                 accept_plan,
                                 plan: false,
                                 tier: None,
@@ -6218,13 +6291,21 @@ impl App {
                         // waiting to accept a plan keeps waiting to.
                         let accept_plan = self.pending_of(id).is_some_and(|p| p.accept_plan);
                         let plan = self.pending_of(id).is_some_and(|p| p.plan);
-                        // The crown's held `now` (T-600) reopens at `now`,
-                        // as the crown meant it.
-                        let queued = !self.pending_of(id).is_some_and(|p| p.now);
+                        // The crown's held level (T-600, T-601) reopens as
+                        // the crown meant it.
+                        let deliver = self.pending_of(id).map(|p| p.deliver).unwrap_or_default();
+                        let (queued, immediately) = Self::field_level(deliver);
                         let target = AskTarget::Ticket(id);
                         if text.contains('\n') {
-                            let mut ed =
-                                self.ask_room(target, queued, accept_plan, plan, None, &text);
+                            let mut ed = self.ask_room(
+                                target,
+                                queued,
+                                immediately,
+                                accept_plan,
+                                plan,
+                                None,
+                                &text,
+                            );
                             ed.grow = self.card_grow();
                             self.mode = Mode::Editor(ed);
                         } else {
@@ -6233,6 +6314,7 @@ impl App {
                                     target,
                                     walk: None,
                                     queued,
+                                    immediately,
                                     accept_plan,
                                     plan,
                                     tier: None,
@@ -6261,6 +6343,7 @@ impl App {
                                 target: AskTarget::Ticket(id),
                                 walk: None,
                                 queued,
+                                immediately: false,
                                 accept_plan,
                                 plan: false,
                                 tier: None,
@@ -6281,6 +6364,7 @@ impl App {
                                 target: AskTarget::Ticket(id),
                                 walk: None,
                                 queued: ctx.checkout_busy,
+                                immediately: false,
                                 accept_plan: false,
                                 plan: false,
                                 tier: None,
@@ -8489,9 +8573,23 @@ impl App {
                         }
                         editor
                     }
-                    InputPurpose::Prompt { target, queued, accept_plan, plan, tier, .. } => {
-                        self.ask_room(target, queued, accept_plan, plan, tier, buffer.as_str())
-                    }
+                    InputPurpose::Prompt {
+                        target,
+                        queued,
+                        immediately,
+                        accept_plan,
+                        plan,
+                        tier,
+                        ..
+                    } => self.ask_room(
+                        target,
+                        queued,
+                        immediately,
+                        accept_plan,
+                        plan,
+                        tier,
+                        buffer.as_str(),
+                    ),
                     other => {
                         self.mode = Mode::Input { purpose: other, buffer };
                         return Ok(());
@@ -8515,9 +8613,9 @@ impl App {
                 InputPurpose::Create { workspace, .. } => *workspace = cycled_workspace(*workspace),
                 // In the ask field the same key cycles the DELIVERY: now, or
                 // parked until the checkout is quiet (2026-09-04).
-                InputPurpose::Prompt { target, queued, accept_plan, .. } => {
+                InputPurpose::Prompt { target, queued, immediately, accept_plan, .. } => {
                     let target = target.clone();
-                    self.cycle_ask_mode(&target, queued, accept_plan)
+                    self.cycle_ask_mode(&target, queued, immediately, accept_plan)
                 }
                 InputPurpose::Rename { .. } | InputPurpose::RenameColumn { .. } => {}
             },
@@ -8828,8 +8926,11 @@ impl App {
                     self.mode = Mode::Editor(ed);
                     return self.set_ticket_workspace(ticket);
                 }
-                // The ask field's delivery toggle, in the bigger room.
-                EditorPurpose::Ask { queued, .. } => *queued = !*queued,
+                // The ask field's delivery ring, in the bigger room.
+                EditorPurpose::Ask { target, queued, immediately, .. } => {
+                    let target = target.clone();
+                    self.cycle_delivery(&target, queued, immediately)
+                }
             },
             Some(Verb::EditorNewline) => match ed.focus {
                 Field::Title => ed.focus = Field::Body,
@@ -8986,10 +9087,12 @@ impl App {
     /// title, or the column's name) and `text` as the body with the cursor
     /// at its end — pasted rather than opened on, so the sentence continues
     /// where the field left it.
+    #[allow(clippy::too_many_arguments)]
     fn ask_room(
         &self,
         target: AskTarget,
         queued: bool,
+        immediately: bool,
         accept_plan: bool,
         plan: bool,
         tier: Option<String>,
@@ -9004,7 +9107,7 @@ impl App {
         let mut body = TextArea::new(mesimon_core::command::PROMPT_MAX_BYTES);
         body.paste(text);
         Editor::new(
-            EditorPurpose::Ask { target, queued, accept_plan, plan, tier },
+            EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier },
             EditBuffer::from_text(title, mesimon_core::board::TITLE_MAX_BYTES),
             body,
             Field::Body,
@@ -9016,12 +9119,22 @@ impl App {
     /// field held, so nothing is lost on the way back — a body that grew
     /// lines is dirty, and dirty takes the two-press discard.
     fn fold_ask(&mut self, ed: Editor) {
-        let EditorPurpose::Ask { target, queued, accept_plan, plan, tier } = ed.purpose else {
+        let EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier } =
+            ed.purpose
+        else {
             self.mode = Mode::Normal;
             return;
         };
         self.mode = Mode::Input {
-            purpose: InputPurpose::Prompt { target, walk: None, queued, accept_plan, plan, tier },
+            purpose: InputPurpose::Prompt {
+                target,
+                walk: None,
+                queued,
+                immediately,
+                accept_plan,
+                plan,
+                tier,
+            },
             buffer: history_field(ed.body.as_str()),
         };
     }
@@ -9031,7 +9144,8 @@ impl App {
     /// seat's word, the receipt in the status — line breaks and all. A blank
     /// room sends nothing and stays open; the daemon would refuse it too.
     fn editor_send(&mut self, ed: Editor) -> Result<()> {
-        let EditorPurpose::Ask { target, queued, accept_plan, plan, tier } = ed.purpose.clone()
+        let EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier } =
+            ed.purpose.clone()
         else {
             self.mode = Mode::Normal;
             return Ok(());
@@ -9044,7 +9158,15 @@ impl App {
         }
         self.mode = Mode::Normal;
         self.commit_prompt(
-            InputPurpose::Prompt { target, walk: None, queued, accept_plan, plan, tier },
+            InputPurpose::Prompt {
+                target,
+                walk: None,
+                queued,
+                immediately,
+                accept_plan,
+                plan,
+                tier,
+            },
             text,
         )
     }
@@ -10670,6 +10792,7 @@ impl App {
             ticket,
             text: String::new(),
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -10689,7 +10812,9 @@ impl App {
     }
 
     fn commit_prompt(&mut self, purpose: InputPurpose, text: String) -> Result<()> {
-        let InputPurpose::Prompt { target, queued, accept_plan, plan, tier, .. } = purpose else {
+        let InputPurpose::Prompt { target, queued, immediately, accept_plan, plan, tier, .. } =
+            purpose
+        else {
             return Ok(());
         };
         if !text.is_empty() {
@@ -10735,10 +10860,12 @@ impl App {
         // The field's `^n` pick (T-443) rides every receipt: the words go
         // to the agent on that tier.
         let on_tier = tier.as_deref().map(|t| format!(" ∙ on {}", self.tier_name(t)));
+        let immediately = immediately && !queued && !accept_plan;
         let answer = self.req(Command::PromptSession {
             ticket,
             text,
             queued,
+            immediately,
             accept_plan,
             plan,
             tier,
@@ -10754,6 +10881,8 @@ impl App {
             // Sending now over a waiting ask drops the waiting one:
             // the daemon did, and the status says so.
             Response::Ok if !queued && had => format!("{ask} ∙ queued ask dropped"),
+            // Claude Code's send-now went over the words (T-601).
+            Response::Ok if immediately => format!("{ask} immediately"),
             Response::Ok => ask.into(),
             // Parked HELD (T-565): its agent is on a question, so the words,
             // and any accept they carry, wait for the answer and a person's
@@ -11917,7 +12046,7 @@ pub(crate) mod test_support {
                             accept_plan,
                             held: held.clone(),
                             plan,
-                            now: false,
+                            deliver: mesimon_core::command::Deliver::Idle,
                         });
                         return Ok(Response::Queued { behind: waits_on, asking, held });
                     }
@@ -14576,6 +14705,7 @@ mod tests {
                 target: AskTarget::Ticket(ulid::Ulid(1)),
                 walk: None,
                 queued: false,
+                immediately: false,
                 accept_plan: false,
                 plan: false,
                 tier: None,
@@ -16175,12 +16305,94 @@ mod tests {
         assert_eq!(app.status, "queued ∙ after T-9");
         assert_eq!(app.mode, Mode::Normal);
         // The refresh lists it, so the next press reopens the waiting ask at
-        // `queued`, and Shift+Tab puts it back to now.
+        // `queued`, and Shift+Tab takes it off the queue (to `immediately`
+        // on a Claude pane, T-601).
         assert!(app.ctx().ticket_queued);
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(app.ctx().ask_queued);
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(!app.ctx().ask_queued);
+    }
+
+    /// T-601: the ask field's third level. On a Claude pane the ring is
+    /// `now` → `queued` → `immediately` → `now`, the row and the hint say
+    /// so, and Enter at `immediately` sends now with Claude Code's
+    /// send-now; a Codex pane has no such stop. A crown's ask held at
+    /// `immediately` reopens there.
+    #[test]
+    fn the_ask_field_sends_immediately_on_a_claude_pane() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.client
+            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Steer })
+            .unwrap();
+        app.refresh().unwrap();
+        let level = |app: &App| match &app.mode {
+            Mode::Input { purpose: InputPurpose::Prompt { queued, immediately, .. }, .. } => {
+                (*queued, *immediately)
+            }
+            other => panic!("the field is up: {other:?}"),
+        };
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_immediate_able);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Input, Verb::CycleWorkspace, &app.ctx()),
+            Some(("shift+tab", "now / queued / immediately"))
+        );
+        assert_eq!(level(&app), (false, false), "now");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(level(&app), (true, false), "queued");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(level(&app), (false, true), "immediately");
+        assert_eq!(App::ask_mode_word(false, false, true, false), "immediately");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(level(&app), (false, false), "round to now");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        // It rides into the room and back, as `queued` does.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(matches!(
+            &app.mode,
+            Mode::Editor(Editor { purpose: EditorPurpose::Ask { immediately: true, .. }, .. })
+        ));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(level(&app), (false, true));
+        for c in "stop and rebase".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "immediately: true"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "asked immediately");
+
+        // A crown's ask held at `immediately` reopens at it.
+        app.pending = vec![mesimon_core::command::Pending {
+            ticket: app.board.sessions[0].ticket,
+            action: mesimon_core::command::PendingAction::Ask,
+            waits_on: vec![],
+            asking: vec![],
+            text: Some("the crown's words".into()),
+            in_flight: false,
+            by: Some("T-1".into()),
+            sends: false,
+            accept_plan: false,
+            plan: false,
+            held: None,
+            deliver: mesimon_core::command::Deliver::Immediately,
+        }];
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(level(&app), (false, true), "reopened as the crown meant it");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+
+        // A Codex pane has no send-now: two stops.
+        let (mut app, _, _) = app_with_session(SessionKind::Codex, SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_immediate_able);
+        let was = level(&app);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(level(&app), was, "now / queued and back");
+        assert!(!level(&app).1);
     }
 
     /// T-380: `Tab` in the ask field grows it into the composer's room on
@@ -16618,6 +16830,7 @@ mod tests {
                 purpose: InputPurpose::Prompt {
                     target: AskTarget::Column(n),
                     queued: true,
+                    immediately: false,
                     accept_plan: true,
                     ..
                 },
@@ -16674,7 +16887,7 @@ mod tests {
                 accept_plan: true,
                 plan: false,
                 held: None,
-                now: false,
+                deliver: mesimon_core::command::Deliver::Idle,
             }];
             app.pending_row(ulid::Ulid(1))
         };
@@ -16710,8 +16923,8 @@ mod tests {
             mesimon_core::keymap::hint_for(Scope::Input, Verb::PlanMode, &app.ctx()),
             Some(("^p", "plan mode off"))
         );
-        assert_eq!(App::ask_mode_word(false, false, true), "now ∙ plan mode");
-        assert_eq!(App::ask_mode_word(false, true, true), "queued ∙ plan mode");
+        assert_eq!(App::ask_mode_word(false, false, false, true), "now ∙ plan mode");
+        assert_eq!(App::ask_mode_word(false, true, false, true), "queued ∙ plan mode");
         // A second press takes it off, a third puts it back; then send.
         app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
         assert!(!app.ctx().plan_armed);
@@ -16886,15 +17099,21 @@ mod tests {
         assert!(app.ctx().ask_accepts_plan);
         assert_eq!(
             mesimon_core::keymap::hint_for(Scope::Input, Verb::CycleWorkspace, &app.ctx()),
-            Some(("shift+tab", "accept plan / queued / now"))
+            Some(("shift+tab", "accept plan / queued / now / immediately"))
         );
-        // accept plan → queued → now → accept plan.
+        // accept plan → queued → now → immediately (T-601) → accept plan.
+        let immediately = |app: &App| match &app.mode {
+            Mode::Input { purpose: InputPurpose::Prompt { immediately, .. }, .. } => *immediately,
+            _ => panic!("the field is up"),
+        };
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(app.ctx().ask_queued && !app.ctx().ask_accepts_plan);
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert!(!app.ctx().ask_queued && !app.ctx().ask_accepts_plan);
+        assert!(!app.ctx().ask_queued && !app.ctx().ask_accepts_plan && !immediately(&app));
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert!(app.ctx().ask_queued && app.ctx().ask_accepts_plan);
+        assert!(!app.ctx().ask_queued && immediately(&app));
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued && app.ctx().ask_accepts_plan && !immediately(&app));
         for ch in "after".chars() {
             app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
         }
@@ -16915,7 +17134,7 @@ mod tests {
             accept_plan: false,
             held: Some("agent asked".into()),
             plan: false,
-            now: false,
+            deliver: mesimon_core::command::Deliver::Idle,
         }];
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("agent asked ∙ you send"));
         assert!(app.ctx().ticket_queued, "a held ask is still edited and sent from the board");
@@ -16941,7 +17160,7 @@ mod tests {
             accept_plan: false,
             plan: false,
             held: None,
-            now: false,
+            deliver: mesimon_core::command::Deliver::Idle,
         }];
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         let ed = editor(&app);
@@ -16978,7 +17197,7 @@ mod tests {
             accept_plan: false,
             plan: false,
             held: None,
-            now: false,
+            deliver: mesimon_core::command::Deliver::Idle,
         }];
         assert!(app.ctx().ticket_queued);
         assert_eq!(
@@ -17085,7 +17304,7 @@ mod tests {
                 accept_plan: false,
                 plan: false,
                 held: None,
-                now: false,
+                deliver: mesimon_core::command::Deliver::Idle,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };
@@ -17110,7 +17329,7 @@ mod tests {
                 accept_plan: false,
                 plan: false,
                 held: None,
-                now: false,
+                deliver: mesimon_core::command::Deliver::Idle,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };
@@ -17136,7 +17355,7 @@ mod tests {
             accept_plan: false,
             plan: false,
             held: None,
-            now: false,
+            deliver: mesimon_core::command::Deliver::Idle,
         }];
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("T-411 asks ∙ you send"));
         assert!(app.ticket_queued(ulid::Ulid(1)), "^y and ^u apply to it");
@@ -17197,7 +17416,7 @@ mod tests {
                 accept_plan: false,
                 plan: false,
                 held: None,
-                now: false,
+                deliver: mesimon_core::command::Deliver::Idle,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };

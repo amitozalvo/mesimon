@@ -385,6 +385,16 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// Claude Code's send-now (`mesimon_core::road::SEND_NOW_KEYS`, T-601)
+    /// into a session's pane: the words in its composer go to the model at
+    /// once, a running tool call moved to the background. A SEPARATE call
+    /// after the words went in, as `send_enter` is.
+    pub fn send_now(&self, sid16: &str) -> Result<()> {
+        let [first, second] = mesimon_core::road::SEND_NOW_KEYS;
+        self.run(&["send-keys", "-t", sid16, first, second])?;
+        Ok(())
+    }
+
     /// One Ctrl+C into a session's pane: Claude Code clears a composer that
     /// holds text on it (T-570). The caller sends exactly one, and only into
     /// a composer it has seen holding text — a second press, or one into an

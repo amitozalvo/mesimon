@@ -144,6 +144,15 @@ pub const MOD_PONG: &str = "ModPong";
 /// a typed prompt does (T-573 row 2).
 pub const MOD_SUBMIT: &str = "ModSubmit";
 
+/// The event the mod reports a [`ModCommand::Fill`]'s end with (T-601),
+/// relayed with the frame's id as its reason: `{ "outcome": "filled" }` when
+/// the words stand in the session's empty composer, for the daemon's
+/// send-now keys; `"refused"` with the `reason` when they do not: `draft`,
+/// the person's own words were in the box, which a fill would replace;
+/// `dialog` or `no_composer`, the engine's refusals; or the `error` the call
+/// threw. The ack is still `UserPromptSubmit`.
+pub const MOD_FILL: &str = "ModFill";
+
 /// The event the mod reports a held question's end with (T-576), its
 /// outcome as the reason and a `PostToolUse`-shaped body (`tool_name`,
 /// `tool_use_id`, `tool_input`, and for `answered` the `tool_response`
@@ -193,10 +202,19 @@ pub fn is_command(text: &str) -> bool {
 }
 
 /// The kinds of [`ModCommand`] a mod declares it speaks, by the word it
-/// passes its bridge (`mesimon mod-bridge --speaks ping,submit,answer`): a
-/// session keeps the mod it was launched with across a daemon upgrade, so
+/// passes its bridge (`mesimon mod-bridge --speaks ping,submit,answer,fill`):
+/// a session keeps the mod it was launched with across a daemon upgrade, so
 /// the daemon never sends a kind the session's own mod would drop.
-pub const SPEAKS: [&str; 3] = ["ping", "submit", "answer"];
+pub const SPEAKS: [&str; 4] = ["ping", "submit", "answer", "fill"];
+
+/// Claude Code's send-now (`chat:sendNow`, 2.1.288's default binding), as
+/// tmux key names: over words in the composer of a working session it
+/// delivers them at once, the running tool call moved to the background,
+/// and over an idle one it submits as Enter does (T-601). `ctrl+enter` is
+/// the other default, and a terminal without extended keys cannot spell
+/// it. A queued plugin prompt is not one it sends: the words must be in
+/// the composer, typed, pasted or filled.
+pub const SEND_NOW_KEYS: [&str; 2] = ["C-x", "C-s"];
 
 /// A command the daemon addresses to one session's mod. Nothing here may
 /// carry words for the model to read that the person did not write (README
@@ -211,6 +229,16 @@ pub enum ModCommand {
     /// `$.prompt.submit({ text, asUser: true })`. A turn of its own once the
     /// session is idle, never typed into the box.
     Submit {
+        text: String,
+    },
+    /// Put `text` in the session's composer for Claude Code's send-now
+    /// (T-601): `$.prompt.fill({ text, mode: 'replace' })`, only into an
+    /// empty box (`$.prompt.read()`), never over a person's draft. The
+    /// daemon presses [`SEND_NOW_KEYS`] on the mod's `filled`: the words go
+    /// in as a person's own composer send, whole, `origin: human`. A
+    /// plugin's `submit` waits for the running turn's end, and the
+    /// send-now does not take one (measured, 2.1.288).
+    Fill {
         text: String,
     },
     /// Answer the held `AskUserQuestion` call `tool_use_id` (T-576): the
@@ -230,6 +258,7 @@ impl ModCommand {
         match self {
             ModCommand::Ping => "ping",
             ModCommand::Submit { .. } => "submit",
+            ModCommand::Fill { .. } => "fill",
             ModCommand::Answer { .. } => "answer",
         }
     }
@@ -306,6 +335,11 @@ mod tests {
             serde_json::to_string(&f).unwrap(),
             r#"{"id":"a","kind":"submit","text":"hi\nthere"}"#
         );
+        let f = ModFrame { id: "c".into(), command: ModCommand::Fill { text: "now\nthis".into() } };
+        assert_eq!(
+            serde_json::to_string(&f).unwrap(),
+            r#"{"id":"c","kind":"fill","text":"now\nthis"}"#
+        );
         let answers = [("Which colour?".to_string(), "blue".to_string())].into_iter().collect();
         let f = ModFrame {
             id: "b".into(),
@@ -332,6 +366,7 @@ mod tests {
         for c in [
             ModCommand::Ping,
             ModCommand::Submit { text: String::new() },
+            ModCommand::Fill { text: String::new() },
             ModCommand::Answer { tool_use_id: String::new(), answers },
         ] {
             assert!(SPEAKS.contains(&c.word()), "{c:?}");

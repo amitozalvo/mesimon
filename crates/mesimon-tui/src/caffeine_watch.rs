@@ -252,7 +252,7 @@ mod tests {
                     accept_plan: false,
                     held: None,
                     plan: false,
-                    now: false,
+                    deliver: mesimon_core::command::Deliver::Idle,
                 }]
             } else {
                 vec![]

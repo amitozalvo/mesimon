@@ -262,6 +262,12 @@ pub enum Command {
         /// Absent from an older client = send now.
         #[serde(default)]
         queued: bool,
+        /// Sent now by Claude Code's own send-now (T-601,
+        /// `Deliver::Immediately`): a working agent reads the words before
+        /// its running tool call ends. Meaningful only with `queued` false,
+        /// on a Claude pane. Absent from an older client = `now`.
+        #[serde(default)]
+        immediately: bool,
         /// Accept the agent's plan on the way (T-420): the daemon presses
         /// Enter on the harness's own plan dialog, at the row the harness
         /// highlights by default — it chooses no option label — and the
@@ -1014,15 +1020,17 @@ pub enum Command {
         /// field's `^p` would have — a wake or a restart into plan mode.
         #[serde(default)]
         plan: bool,
-        /// Send the words NOW (T-600): the road the ticket page's
-        /// Shift+Enter takes with its send set to `now` — into a working
-        /// agent mid-turn, a `submit` on the mod road and the composer's
-        /// paste on the hook set — instead of the queue's wait for idle.
-        /// Refused while the agent is at a dialog, as the person's send is.
-        /// Held for a person where the crown's asks are, with the send
-        /// preset to now. Absent from an older shim = the queue.
+        /// When the words go (T-600, T-601): `idle`, the queue's wait for
+        /// the agent's idle; `now`, the road the ticket page's Shift+Enter
+        /// takes with its send set to `now` — into a working agent at once,
+        /// a `submit` on the mod road and the composer's paste on the hook
+        /// set; `immediately`, Claude Code's own send-now over that
+        /// (`Deliver::Immediately`). Refused while the agent is at a dialog,
+        /// as the person's send is. Held for a person where the crown's
+        /// asks are, with the send preset to the level. Absent from an
+        /// older shim = the queue.
         #[serde(default)]
-        now: bool,
+        deliver: Deliver,
     },
     /// Answer the question another ticket's agent stopped on, by key
     /// (T-569): Remote Control's screen-verified dialog road, driven for the
@@ -1429,6 +1437,24 @@ mod meta_tests {
         assert_eq!(Command::ReloadShellEnv.wire_name(), "reload_shell_env");
     }
 
+    /// T-601: the three levels' words are the tool's, the feed's and the
+    /// wire's, and an older sender's missing level is the queue's.
+    #[test]
+    fn deliver_words_round_trip_and_default_to_idle() {
+        for d in Deliver::ALL {
+            assert_eq!(Deliver::from_word(d.word()), Some(d));
+            assert_eq!(serde_json::to_string(&d).unwrap(), format!("\"{}\"", d.word()));
+        }
+        assert_eq!(Deliver::from_word("soon"), None);
+        assert_eq!(Deliver::default(), Deliver::Idle);
+        assert!(!Deliver::Idle.at_once() && Deliver::Now.at_once());
+        assert!(Deliver::Immediately.at_once());
+        let ask: Command =
+            serde_json::from_str(r#"{"cmd":"agent_ask_ticket","key":"T-1","text":"x"}"#).unwrap();
+        assert!(matches!(ask, Command::AgentAskTicket { deliver: Deliver::Idle, .. }), "{ask:?}");
+        assert_eq!(AskRoad::SentImmediately.word(), "sent_immediately");
+    }
+
     #[test]
     fn reads_are_never_logged_and_subjects_ride_along() {
         assert_eq!(
@@ -1440,6 +1466,7 @@ mod meta_tests {
             ticket: id,
             text: "x".into(),
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,
@@ -2233,6 +2260,48 @@ pub enum PendingAction {
     Unknown,
 }
 
+/// When words reach an agent (T-601): the board's send has three levels,
+/// the ticket page's ring and the crown's `ask_agent { deliver }` alike.
+/// Measured on Claude Code 2.1.288 (STALE-MAP, T-601).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Deliver {
+    /// mesimon's queue: the words wait for the agent's idle.
+    #[default]
+    Idle,
+    /// Into Claude Code at once: a paste a working agent reads at its
+    /// running turn's next step, a mod's `submit` the turn after it (the
+    /// engine holds a plugin's prompt to the turn's end).
+    Now,
+    /// Claude Code's own send-now (`chat:sendNow`, Ctrl+X Ctrl+S) over the
+    /// words in its composer: a working agent reads them at once, its
+    /// running tool call moved to the background, not stopped, and the
+    /// turn goes on. Claude only.
+    Immediately,
+}
+
+impl Deliver {
+    pub const ALL: [Deliver; 3] = [Deliver::Idle, Deliver::Now, Deliver::Immediately];
+
+    /// The tool's word, the feed's and the receipt's.
+    pub fn word(self) -> &'static str {
+        match self {
+            Deliver::Idle => "idle",
+            Deliver::Now => "now",
+            Deliver::Immediately => "immediately",
+        }
+    }
+
+    pub fn from_word(word: &str) -> Option<Deliver> {
+        Deliver::ALL.into_iter().find(|d| d.word() == word)
+    }
+
+    /// Not the queue's: the words go at once.
+    pub fn at_once(self) -> bool {
+        self != Deliver::Idle
+    }
+}
+
 /// The road the crown's `ask_agent` words took (T-600), the receipt's word
 /// and the feed line's outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2240,6 +2309,9 @@ pub enum PendingAction {
 pub enum AskRoad {
     /// Delivered at once (`now`): into the agent mid-turn, or a wake.
     SentNow,
+    /// Delivered at once by Claude Code's send-now (`immediately`, T-601):
+    /// a working agent reads them before its running tool call ends.
+    SentImmediately,
     /// Parked for the queue, which delivers them once the agent is idle.
     Queued,
     /// Parked for a person's send (`^y` on the card).
@@ -2255,6 +2327,7 @@ impl AskRoad {
     pub fn word(self) -> &'static str {
         match self {
             AskRoad::SentNow => "sent_now",
+            AskRoad::SentImmediately => "sent_immediately",
             AskRoad::Queued => "queued",
             AskRoad::HeldForPerson => "held_for_person",
         }
@@ -2316,10 +2389,11 @@ pub struct Pending {
     /// `∙ plan mode`, and the field reopens on the flag.
     #[serde(default)]
     pub plan: bool,
-    /// The crown asked for these words NOW (T-600) and they are held for a
-    /// person: the field reopens at `now`, as the crown meant them.
+    /// The level the crown asked these words to go at (T-600, T-601) while
+    /// they are held for a person: the field reopens at it, as the crown
+    /// meant them. `idle` on every other row.
     #[serde(default)]
-    pub now: bool,
+    pub deliver: Deliver,
 }
 
 impl Pending {

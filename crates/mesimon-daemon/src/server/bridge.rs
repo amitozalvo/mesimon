@@ -27,8 +27,8 @@
 use super::*;
 use crate::modroad::{self, Probe, RoadVerdict, Verdict};
 use mesimon_core::road::{
-    ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_LOAD_FAILED, MOD_PONG, MOD_SUBMIT,
-    MOD_USAGE,
+    ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_FILL, MOD_LOAD_FAILED, MOD_PONG,
+    MOD_SUBMIT, MOD_USAGE,
 };
 use std::collections::VecDeque;
 
@@ -688,7 +688,7 @@ impl Daemon {
         let by_mod = rec.frames_by_mod();
         // The mod's own reports (T-575, T-576): the only source of what they
         // say, on every mod session.
-        if frame.event == MOD_SUBMIT || frame.event == MOD_ANSWER {
+        if frame.event == MOD_SUBMIT || frame.event == MOD_FILL || frame.event == MOD_ANSWER {
             self.feed.hook_event_by(
                 &frame.session,
                 &frame.event,
@@ -697,6 +697,8 @@ impl Daemon {
             );
             if frame.event == MOD_SUBMIT {
                 self.on_mod_submit(session, &frame);
+            } else if frame.event == MOD_FILL {
+                self.on_mod_fill(session, &frame);
             } else {
                 self.on_mod_answer(session, frame);
             }

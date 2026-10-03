@@ -188,8 +188,8 @@ fn tool_result(params: &Value, sock: &PathBuf, session: uuid::Uuid) -> Value {
             workspace: Some(workspace),
         },
         ToolCall::SleepAgent { key, seen } => Command::AgentSleepTicket { key, seen: Some(seen) },
-        ToolCall::AskAgent { key, text, seen, plan, now } => {
-            Command::AgentAskTicket { key, text, seen: Some(seen), plan, now }
+        ToolCall::AskAgent { key, text, seen, plan, deliver } => {
+            Command::AgentAskTicket { key, text, seen: Some(seen), plan, deliver }
         }
         ToolCall::AnswerAgent { key, seen, request, index, text, answers } => {
             Command::AgentAnswerTicket { key, seen: Some(seen), request, index, text, answers }
@@ -301,8 +301,9 @@ fn render(resp: Response) -> Value {
         }
         // The crown's ask (T-413): held on the card until a person sends it,
         // or, where the board lets the crown send (T-550), queued to go once
-        // the agent is idle, or sent at once with `now` (T-600). `road`
-        // names which; `held_because` says why a send was held.
+        // the agent is idle, or sent at once with `deliver` now (T-600) or
+        // immediately (T-601). `road` names which; `held_because` says why a
+        // send was held.
         Response::AgentAsked { key, replaced, seen, held_for_person, held_because, road } => {
             let mut body = json!({
                 "key": key,
@@ -614,6 +615,7 @@ mod tests {
             serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
         };
         assert_eq!(body(false, Some(AskRoad::SentNow))["road"], "sent_now");
+        assert_eq!(body(false, Some(AskRoad::SentImmediately))["road"], "sent_immediately");
         assert_eq!(body(false, Some(AskRoad::Queued))["road"], "queued");
         assert_eq!(body(true, Some(AskRoad::HeldForPerson))["road"], "held_for_person");
         assert_eq!(body(true, None)["road"], "held_for_person");

@@ -6,7 +6,7 @@ starts this beside the stub, inside the pane, where it inherits what the mod
 would read: the `MESIMON_MOD_*` variables the daemon sets on a mod launch,
 and tmux's `TMUX`/`TMUX_PANE`. It does what `register.ts`'s bridge loop does:
 
-- runs the REAL `mesimon mod-bridge --speaks ping,submit,answer`, stdin
+- runs the REAL `mesimon mod-bridge --speaks ping,submit,answer,fill`, stdin
   closed, and reads its stdout;
 - drops a frame it has seen (delivery is at least once), records each new
   one as a line in `<fixture dir>/mod-<session>.ndjson`, and answers a
@@ -16,6 +16,12 @@ and tmux's `TMUX`/`TMUX_PANE`. It does what `register.ts`'s bridge loop does:
   words go into its own pane (bracketed paste, then Enter, through the tmux
   the wrapper names) and a `ModSubmit` `entered` is relayed. It sends no
   `UserPromptSubmit`: a test acks a prompt itself, on both roads alike;
+- takes a `fill` (T-601) the way the mod puts words in an empty composer
+  for the daemon's send-now: the words go into its own pane (bracketed
+  paste, NO Enter) and a `ModFill` `filled` is relayed, after which the
+  daemon presses the send-now keys into the pane itself. A `mod-draft`
+  file next to it stands for a person's draft in the box: the fill is
+  refused (`draft`) and nothing is typed;
 - takes an `answer` (T-576) the way the mod returns one in the dialog's
   place: `fake_claude_dialog.py`'s dialog, when one stands, is closed with
   the answers it would have written, and a `ModAnswer` `answered` is relayed
@@ -81,8 +87,9 @@ def relay(event, reason, body):
     )
 
 
-def deliver(text):
-    """The words into this pane, as `paste_text` puts them there."""
+def deliver(text, enter=True):
+    """The words into this pane, as `paste_text` puts them there; without
+    the Enter, as a fill leaves them in the composer."""
     sock = ENV.get("TMUX", "").split(",")[0]
     pane = ENV.get("TMUX_PANE")
     if not sock or not pane:
@@ -95,6 +102,8 @@ def deliver(text):
         return False
     paste = subprocess.run(tmux + ["paste-buffer", "-p", "-b", buf, "-d", "-t", pane],
                            capture_output=True, check=False)
+    if not enter:
+        return paste.returncode == 0
     time.sleep(0.05)
     enter = subprocess.run(tmux + ["send-keys", "-t", pane, "Enter"], capture_output=True,
                            check=False)
@@ -136,7 +145,7 @@ def speaks():
         with open(os.path.join(HERE, "mod-speaks")) as f:
             return f.read().strip()
     except OSError:
-        return "ping,submit,answer"
+        return "ping,submit,answer,fill"
 
 
 def main():
@@ -181,6 +190,12 @@ def main():
                 ok = deliver(frame.get("text") or "")
                 relay("ModSubmit", frame_id,
                       {"outcome": "entered"} if ok else {"outcome": "rejected", "error": "no pane"})
+            elif kind == "fill" and switch("mod-draft"):
+                relay("ModFill", frame_id, {"outcome": "refused", "reason": "draft"})
+            elif kind == "fill":
+                ok = deliver(frame.get("text") or "", enter=False)
+                relay("ModFill", frame_id,
+                      {"outcome": "filled"} if ok else {"outcome": "refused", "error": "no pane"})
             elif kind == "answer":
                 answer(frame)
         code = child.wait()

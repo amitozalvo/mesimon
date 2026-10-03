@@ -113,20 +113,23 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // the title line the way a rename does: the ticket is not what is being
     // edited here, it is who the text is going to — so it has to stay whole
     // and stay on screen while the sentence is typed.
-    type Prompted<'a> = (&'a EditBuffer, bool, bool, bool, Option<&'a str>);
+    type Prompted<'a> = (&'a EditBuffer, bool, bool, bool, bool, Option<&'a str>);
     let prompt_of = |t: &Ticket| -> Option<Prompted> {
         match editing {
             Some((
                 InputPurpose::Prompt {
                     target: AskTarget::Ticket(ticket),
                     queued,
+                    immediately,
                     accept_plan,
                     plan,
                     tier,
                     ..
                 },
                 buf,
-            )) if *ticket == t.id => Some((buf, *queued, *accept_plan, *plan, tier.as_deref())),
+            )) if *ticket == t.id => {
+                Some((buf, *queued, *immediately, *accept_plan, *plan, tier.as_deref()))
+            }
             _ => None,
         }
     };
@@ -239,16 +242,25 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
-        let edit_cursor =
-            prompt_of(t).filter(|_| !left).map(|(buf, queued, accept_plan, plan, tier)| {
+        let edit_cursor = prompt_of(t).filter(|_| !left).map(
+            |(buf, queued, immediately, accept_plan, plan, tier)| {
                 // The prompt row and its delivery row, shared with the ticket
                 // page (T-476): the cursor is in the first of them.
-                let (rows, x_off) =
-                    card::render_ask_field(&ctx, app, t.id, buf, queued, accept_plan, plan, tier);
+                let (rows, x_off) = card::render_ask_field(
+                    &ctx,
+                    app,
+                    t.id,
+                    buf,
+                    (queued, immediately),
+                    accept_plan,
+                    plan,
+                    tier,
+                );
                 let at = lines.len();
                 lines.extend(rows);
                 (at, x_off)
-            });
+            },
+        );
         groups.push(Group {
             lines,
             cursor: selected || held,
@@ -596,7 +608,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         if column_ask_toggle {
             out.push(card::render_ask_mode(
                 &ctx,
-                crate::app::App::ask_mode_word(accept_plan, queued, false),
+                crate::app::App::ask_mode_word(accept_plan, queued, false, false),
                 true,
                 None,
             ));

@@ -88,6 +88,7 @@ fn asking_again_after_parking_by_hand_moves_the_card_to_in_progress() {
             ticket,
             text: "again".into(),
             queued: false,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,

@@ -95,6 +95,7 @@ fn codex_external_opaque_identity_survives_provider_switch_and_restart_without_f
             ticket,
             text: "Never silently park this external prompt".into(),
             queued,
+            immediately: false,
             accept_plan: false,
             plan: false,
             tier: None,

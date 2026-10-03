@@ -22,7 +22,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use mesimon_core::board::{SessionKind, SessionState, WorkspaceStrategy};
-use mesimon_core::command::{AgentTicketView, AskRoad, Command, CrownTouch, Response};
+use mesimon_core::command::{AgentTicketView, AskRoad, Command, CrownTouch, Deliver, Response};
 use mesimon_core::Principal;
 use serde_json::json;
 
@@ -648,7 +648,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
                     text: text.into(),
                     seen,
                     plan: false,
-                    now: false,
+                    deliver: Deliver::Idle,
                 },
             )
         };
@@ -733,6 +733,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         ticket: b,
         text: "mesimon-probe-64 the person's".into(),
         queued: true,
+        immediately: false,
         accept_plan: false,
         plan: false,
         tier: None,
@@ -1096,6 +1097,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         ticket: w1,
         text: "mesimon-probe-75 person".into(),
         queued: true,
+        immediately: false,
         accept_plan: false,
         plan: false,
         tier: None,
@@ -1216,6 +1218,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         ticket: a,
         text: "mesimon-probe-74 person".into(),
         queued: true,
+        immediately: false,
         accept_plan: false,
         plan: false,
         tier: None,
@@ -1541,7 +1544,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
             text: "mesimon-probe-82 rebase onto main".into(),
             seen: v.seen,
             plan: false,
-            now: false,
+            deliver: Deliver::Idle,
         },
     ) {
         Response::AgentAsked { .. } => {}
@@ -2107,7 +2110,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
                 text: text.into(),
                 seen: v.seen,
                 plan: false,
-                now: false,
+                deliver: Deliver::Idle,
             },
         ) {
             Response::AgentAsked { held_for_person, held_because, .. } => {
@@ -2211,7 +2214,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
             text: "mesimon-probe-90 over the question".into(),
             seen: v.seen,
             plan: false,
-            now: false,
+            deliver: Deliver::Idle,
         },
     ) {
         Response::Err { message } => assert!(message.contains("asking a question"), "{message}"),
@@ -2432,7 +2435,7 @@ fn the_crown_sends_now_into_a_working_turn() {
     stop(&mut c, sa);
     let answered = format!("{kw} \"mesimon-probe-81 worker\" answered your ask");
     let answers = || read_got().matches(answered.as_str()).count();
-    let ask = |c: &mut TestClient, text: &str, now: bool| {
+    let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
         let v = read(c, sa, &kw).unwrap();
         c.send(
             Principal::Agent { session: sa },
@@ -2441,7 +2444,7 @@ fn the_crown_sends_now_into_a_working_turn() {
                 text: text.into(),
                 seen: v.seen,
                 plan: false,
-                now,
+                deliver,
             },
         )
     };
@@ -2465,7 +2468,10 @@ fn the_crown_sends_now_into_a_working_turn() {
     // ---- now, at a working worker: the words land mid-turn ------------------
     start(&mut c, ws);
     let before = answers();
-    assert_eq!(road_of(ask(&mut c, "mesimon-probe-82 now", true)), (false, AskRoad::SentNow));
+    assert_eq!(
+        road_of(ask(&mut c, "mesimon-probe-82 now", Deliver::Now)),
+        (false, AskRoad::SentNow)
+    );
     wait_until(std::time::Duration::from_secs(5), "the words in W's running turn", || {
         landed("mesimon-probe-82 now")
     });
@@ -2484,7 +2490,10 @@ fn the_crown_sends_now_into_a_working_turn() {
 
     // ---- without now: the queue waits for idle, as before -------------------
     start(&mut c, ws);
-    assert_eq!(road_of(ask(&mut c, "mesimon-probe-83 later", false)), (false, AskRoad::Queued));
+    assert_eq!(
+        road_of(ask(&mut c, "mesimon-probe-83 later", Deliver::Idle)),
+        (false, AskRoad::Queued)
+    );
     feed_has("ask_agent", Some("queued"));
     settle();
     assert!(!landed("mesimon-probe-83"), "a working agent is not interrupted");
@@ -2502,9 +2511,12 @@ fn the_crown_sends_now_into_a_working_turn() {
     let permission = r#"{"tool_name":"Bash"}"#;
     hook_send(&hook_sock, &ws.to_string(), "PermissionRequest", permission);
     c.await_state(ws, "at the dialog", |s| matches!(s, SessionState::RequiresAction { .. }));
-    match ask(&mut c, "mesimon-probe-84 into the dialog", true) {
+    match ask(&mut c, "mesimon-probe-84 into the dialog", Deliver::Now) {
         Response::Err { message } => {
-            assert!(message.contains("at a dialog") && message.contains("without now"), "{message}")
+            assert!(
+                message.contains("at a dialog") && message.contains("deliver idle"),
+                "{message}"
+            )
         }
         other => panic!("now at a dialog: {other:?}"),
     }
@@ -2518,7 +2530,10 @@ fn the_crown_sends_now_into_a_working_turn() {
     // A long turn takes the words at its next step (a paste) or after it
     // ends (the mod's submit): the window's give-up is not the turn's end.
     let before = answers();
-    assert_eq!(road_of(ask(&mut c, "mesimon-probe-85 late", true)), (false, AskRoad::SentNow));
+    assert_eq!(
+        road_of(ask(&mut c, "mesimon-probe-85 late", Deliver::Now)),
+        (false, AskRoad::SentNow)
+    );
     wait_until(std::time::Duration::from_secs(5), "the late words in W's turn", || {
         landed("mesimon-probe-85 late")
     });
@@ -2537,11 +2552,11 @@ fn the_crown_sends_now_into_a_working_turn() {
     // ---- sends off: held for a person, the send preset to now ---------------
     assert!(matches!(c.request(Command::SetCrownSends { on: false }), Response::Ok));
     start(&mut c, ws);
-    let (held, road) = road_of(ask(&mut c, "mesimon-probe-86 held now", true));
+    let (held, road) = road_of(ask(&mut c, "mesimon-probe-86 held now", Deliver::Now));
     assert!(held && road == AskRoad::HeldForPerson);
     feed_has("ask_agent", Some("held_for_person"));
     let r = row(&mut c).expect("held on W's card");
-    assert!(r.is_held() && r.now && !r.sends, "{r:?}");
+    assert!(r.is_held() && r.deliver == Deliver::Now && !r.sends, "{r:?}");
     settle();
     assert!(!landed("mesimon-probe-86"), "held words do not go on their own");
     // The person's `^y` sends them at once, into the running turn.
@@ -2554,6 +2569,204 @@ fn the_crown_sends_now_into_a_working_turn() {
 
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert!(!feed.contains("mesimon-probe-8"), "the feed never carries the words");
+}
+
+/// A stub that records every byte its pane is sent, raw: no line
+/// discipline, so a key with no Enter after it (Claude Code's send-now,
+/// Ctrl+X Ctrl+S, which the tty's flow control would otherwise eat as
+/// XOFF) is on the record as it came.
+const RAW_STUB: &str = "#!/bin/sh\nstty raw -echo -ixon 2>/dev/null\n\
+                        exec cat >> \"$(dirname \"$0\")/got.txt\"\n";
+
+/// The crown's `immediately` (T-601): Claude Code's own send-now over the
+/// words, the third level above T-600's `now`. With crown sends on, the
+/// words reach a WORKING agent the crown started and go in by the send-now
+/// keys, with no Enter after them — pasted on the hook set, filled into
+/// the empty composer by the stand-in engine's `fill` on the mod pass —
+/// while the agent stays mid-turn; the turn that takes them wakes the
+/// crown at its end. A person's field sends the same way. On the mod pass a
+/// fill refused over a person's draft falls back to the plain `submit`,
+/// and the feed says why.
+#[test]
+fn the_crown_sends_immediately_into_a_working_turn() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_immediately",
+        Some(RAW_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_immediately");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
+    let landed = |probe: &str| read_got().contains(probe);
+    // The send-now keys right after the words, and no Enter between.
+    let sent_now = |probe: &str| read_got().contains(&format!("{probe}\u{18}\u{13}"));
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let feed_has = |actor: &str, cmd: &str, outcome: Option<&str>| {
+        wait_until(std::time::Duration::from_secs(5), &format!("the {cmd} feed line"), || {
+            std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+                feed.lines().any(|l| {
+                    l.contains(&format!("\"cmd\":\"{cmd}\""))
+                        && l.contains(&format!("\"actor\":\"{actor}\""))
+                        && outcome.is_none_or(|o| l.contains(&format!("\"outcome\":\"{o}\"")))
+                })
+            })
+        });
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-71 worker");
+    let kw = key_of(&mut c, w);
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(c.request(Command::SetCrownSends { on: true }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
+        landed(&format!("{kw} \"mesimon-probe-71 worker\" finished its turn"))
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let answered = format!("{kw} \"mesimon-probe-71 worker\" answered your ask");
+    let answers = || read_got().matches(answered.as_str()).count();
+    let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
+        let v = read(c, sa, &kw).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver,
+            },
+        )
+    };
+    let road_of = |r: Response| match r {
+        Response::AgentAsked { held_for_person, road, .. } => (held_for_person, road.unwrap()),
+        other => panic!("ask_agent: {other:?}"),
+    };
+
+    // ---- immediately, at a working worker: the send-now, mid-turn -----------
+    start(&mut c, ws);
+    let before = answers();
+    assert_eq!(
+        road_of(ask(&mut c, "mesimon-probe-72 at once", Deliver::Immediately)),
+        (false, AskRoad::SentImmediately)
+    );
+    wait_until(std::time::Duration::from_secs(5), "the words and the send-now", || {
+        sent_now("mesimon-probe-72 at once")
+    });
+    // The running turn is not lost: no Stop, the agent still working.
+    assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Running, "mid-turn");
+    feed_has("agent", "ask_agent", Some("sent_immediately"));
+    feed_has("agent", "ask_agent_sent", Some("immediately"));
+    feed_has("daemon", "prompt_sent_immediately", None);
+    // The send's ack, then the turn's end: the crown's answer.
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(20), "the answer's wake on the crown", || {
+        answers() > before
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- immediately at a dialog: refused, nothing sent ---------------------
+    start(&mut c, ws);
+    let permission = r#"{"tool_name":"Bash"}"#;
+    hook_send(&hook_sock, &ws.to_string(), "PermissionRequest", permission);
+    c.await_state(ws, "at the dialog", |s| matches!(s, SessionState::RequiresAction { .. }));
+    match ask(&mut c, "mesimon-probe-73 into the dialog", Deliver::Immediately) {
+        Response::Err { message } => assert!(
+            message.contains("at a dialog") && message.contains("sent immediately"),
+            "{message}"
+        ),
+        other => panic!("immediately at a dialog: {other:?}"),
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(!landed("mesimon-probe-73"));
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", permission);
+    c.await_state(ws, "past the dialog", |s| *s == SessionState::Running);
+
+    // ---- a person's field at `immediately`: the same send -------------------
+    assert!(matches!(
+        c.request(Command::PromptSession {
+            ticket: w,
+            text: "mesimon-probe-74 by hand".into(),
+            queued: false,
+            immediately: true,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+        }),
+        Response::Ok
+    ));
+    wait_until(std::time::Duration::from_secs(5), "the person's send-now", || {
+        sent_now("mesimon-probe-74 by hand")
+    });
+    assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Running, "mid-turn");
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+
+    // ---- the mod pass: a fill over a person's draft falls back --------------
+    if test_road() == "mod" {
+        std::fs::write(h.dir.join("mod-draft"), "").unwrap();
+        assert!(matches!(
+            c.request(Command::PromptSession {
+                ticket: w,
+                text: "mesimon-probe-75 over a draft".into(),
+                queued: false,
+                immediately: true,
+                accept_plan: false,
+                plan: false,
+                tier: None,
+                resend: false,
+            }),
+            Response::Ok
+        ));
+        feed_has("daemon", "prompt_send_now_refused", Some("draft"));
+        // The plain submit takes the words, and no send-now goes over them.
+        wait_until(std::time::Duration::from_secs(5), "the words by the submit", || {
+            landed("mesimon-probe-75 over a draft")
+        });
+        assert!(!sent_now("mesimon-probe-75 over a draft"), "the draft is not sent");
+        std::fs::remove_file(h.dir.join("mod-draft")).unwrap();
+        hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+    }
+    stop(&mut c, ws);
+
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert!(!feed.contains("mesimon-probe-7"), "the feed never carries the words");
 }
 
 /// A delivery the armed merge train will take does not wake the crown
@@ -2947,7 +3160,7 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
                 text: text.into(),
                 seen: v.seen,
                 plan: false,
-                now: false,
+                deliver: Deliver::Idle,
             },
         )
     };
@@ -3720,7 +3933,7 @@ fn the_crown_accepts_a_plan_by_default() {
         text: "also".into(),
         seen: v.seen,
         plan: false,
-        now: false,
+        deliver: Deliver::Idle,
     };
     match c.send(Principal::Agent { session: sa }, ask) {
         Response::Err { message } => assert!(
@@ -4113,6 +4326,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
         ticket: w,
         text: "mesimon-probe-94 person".into(),
         queued: true,
+        immediately: false,
         accept_plan: false,
         plan: false,
         tier: None,
@@ -4137,7 +4351,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
             text: "mesimon-probe-94 crown: are you done".into(),
             seen: v.seen,
             plan: false,
-            now: false,
+            deliver: Deliver::Idle,
         },
     ) {
         Response::AgentAsked { held_for_person: false, .. } => {}

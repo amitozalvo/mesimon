@@ -22,9 +22,9 @@ use mesimon_core::board::{
 use mesimon_core::command::{
     AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentNeedsYouView, AgentQuestionView,
     AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow, AgentTicketView, AskRoad, Command,
-    CrownTouch, DiffTarget, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Notice,
-    Pending, PendingAction, Resources, Response, TerminalItem, WorktreeItem, WorktreeRepoItem,
-    PROTOCOL_VERSION,
+    CrownTouch, Deliver, DiffTarget, Envelope, Event, ExternalItem, GraceItem, MergeOutcome,
+    Notice, Pending, PendingAction, Resources, Response, TerminalItem, WorktreeItem,
+    WorktreeRepoItem, PROTOCOL_VERSION,
 };
 use mesimon_core::crown;
 use mesimon_core::mcp;
@@ -966,7 +966,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 send_on_accept: false,
                 held: None,
                 plan: e.plan,
-                now: false,
+                deliver: Deliver::Idle,
             })
         })
         .collect();
@@ -1662,6 +1662,11 @@ struct Owed {
     /// refused lands the words on `unsent`.
     frame: Option<String>,
     taken: bool,
+    /// The frame is a `fill` (T-601): the mod puts the words in the empty
+    /// composer, and its `filled` is the daemon's cue to press Claude Code's
+    /// send-now (`road::SEND_NOW_KEYS`). A refused fill sends them as a
+    /// `submit` instead (`on_mod_fill`).
+    fill: bool,
     ack: Ack,
     /// Why these words were sent, when that matters to the crown (T-469):
     /// its ack marks the turn that took them (`Daemon::turn_asks`).
@@ -1684,6 +1689,7 @@ impl Owed {
             bridge_by: None,
             frame: None,
             taken: false,
+            fill: false,
             ack,
             asked: None,
         }
@@ -1704,6 +1710,7 @@ impl Owed {
             bridge_by: None,
             frame: None,
             taken: false,
+            fill: false,
             ack,
             asked: None,
         }
@@ -1770,11 +1777,12 @@ struct QueuedAsk {
     /// woken with it once idle. Rides `queue.json` (schema 2) on the
     /// seats that ride it.
     plan: bool,
-    /// The crown asked for these words NOW (T-600) and the board held them
-    /// for a person: the card's field reopens at `now`, and `^y` sends them
-    /// at once as it always does. Set by the crown's handler after
+    /// The level the crown asked these words to go at (T-600, T-601) and
+    /// the board held them for a person: the card's field reopens at it,
+    /// and `^y` sends them at once, by Claude Code's send-now where the
+    /// crown asked `immediately`. Set by the crown's handler after
     /// `park_ask`; never persisted, as no crown's ask is.
-    now: bool,
+    deliver: Deliver,
 }
 
 /// A crown's ask that left the queue unsent (T-568): whose crown it was,
@@ -2276,11 +2284,12 @@ impl Daemon {
                 ticket,
                 text,
                 queued,
+                immediately,
                 accept_plan,
                 plan,
                 tier,
                 resend: false,
-            } => self.prompt_session(ticket, text, queued, accept_plan, plan, tier),
+            } => self.prompt_session(ticket, text, queued, immediately, accept_plan, plan, tier),
             Command::PromptColumn { column, text, queued, accept_plan } => {
                 self.prompt_column(&column, text, queued, accept_plan)
             }
@@ -3967,6 +3976,71 @@ impl Daemon {
         true
     }
 
+    /// Words for Claude Code's send-now down the session's mod (T-601): a
+    /// `fill` puts them in its empty composer, and its `filled` is the cue
+    /// for the keys (`on_mod_fill`). Owed as a `submit` is: the ack is the
+    /// `UserPromptSubmit` the send fires. `false` when the words come to
+    /// nothing.
+    fn mod_fill(&mut self, id: uuid::Uuid, ticket: ulid::Ulid, words: Parked, ack: Ack) -> bool {
+        let text = self.launch_words(ticket, &words);
+        if text.is_empty() {
+            return false;
+        }
+        let frame = self.mod_enqueue(id, ModCommand::Fill { text });
+        let mut owed = Owed::submitted(ticket, words, frame, ack, now_ms());
+        owed.fill = true;
+        self.owed.insert(id, owed);
+        self.feed.board("daemon", "prompt_by_mod_fill", Some(ticket));
+        true
+    }
+
+    /// The mod's report on a `fill` (T-601), the frame's id as its reason.
+    /// `filled`: the words stand in the composer, and the send-now goes in.
+    /// Refused (the person's draft in the box, a dialog) or thrown: the words
+    /// still go at once, by the plain `submit`, which the engine holds to the
+    /// running turn's end, and the feed says why the level fell.
+    pub(super) fn on_mod_fill(&mut self, id: uuid::Uuid, frame: &HookFrame) {
+        let Some(fid) = frame.reason.as_deref() else { return };
+        let outcome = frame.payload["outcome"].as_str().unwrap_or("");
+        let ours = self.owed.get(&id).is_some_and(|o| o.fill && o.frame.as_deref() == Some(fid));
+        if !ours {
+            self.journal.line(&format!("mod fill {fid} for session {id}: {outcome}, nothing owed"));
+            return;
+        }
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return };
+        let sid = rec.sid16();
+        if outcome == "filled" {
+            self.mod_taken(id, fid);
+            let ticket = self.owed.get(&id).map(|o| o.ticket);
+            match self.backend.send_now(&sid) {
+                Ok(()) => self.feed.board("daemon", "prompt_sent_immediately", ticket),
+                Err(e) => {
+                    // The words stand in the box; the person sends them.
+                    self.journal.line(&format!("send-now for session {id} failed: {e}"));
+                    self.feed.board_outcome("daemon", "prompt_send_now_failed", ticket, "keys");
+                }
+            }
+            self.persist_and_notify();
+            return;
+        }
+        let said = frame.payload["reason"].as_str().or(frame.payload["error"].as_str());
+        let why = said.map(|s| mesimon_core::text::cap_bytes(s, 120)).unwrap_or("refused");
+        self.journal.line(&format!("mod fill {fid} for session {id}: {outcome}: {why}"));
+        let Some(owed) = self.owed.remove(&id) else { return };
+        let asked = owed.asked;
+        let ticket = owed.ticket;
+        let Some(words) = owed.sent else { return };
+        self.feed.board_outcome("daemon", "prompt_send_now_refused", Some(ticket), why);
+        if self.mod_submit(id, ticket, words, owed.ack) {
+            if let Some(o) = self.owed.get_mut(&id) {
+                o.asked = asked;
+            }
+        } else if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.pending_submit = false;
+        }
+        self.persist_and_notify();
+    }
+
     /// A session's mod came up (its bridge's first poll from this pane):
     /// words a launch parked for it go down if the pane's `SessionStart` is
     /// in too (T-575).
@@ -4196,11 +4270,12 @@ impl Daemon {
             if let Some(owed) = self.drop_owed(id) {
                 // Taken, and unacked only because a turn is still running
                 // (T-600): the crown's mark waits for the turn that takes
-                // the words, not for this window.
+                // the words, not for this window. A fill's send-now (T-601)
+                // went into the running turn, as a paste does.
                 if let (Some(ask @ TurnAsk::Crown(_)), true) =
                     (owed.asked, owed.frame.is_none() || owed.taken)
                 {
-                    self.ask_unacked(owed.ticket, ask, owed.frame.is_some());
+                    self.ask_unacked(owed.ticket, ask, owed.frame.is_some() && !owed.fill);
                 }
                 match &owed.frame {
                     // The session's mod never took the words (T-575): they
@@ -4961,7 +5036,7 @@ impl Daemon {
             // The crown's start (T-412): an ask to spawn, judged here. The
             // budget and the seat rule are the daemon's; the agent names a
             // ticket and nothing else — no kind, no prompt, no session.
-            Command::AgentAskTicket { key, text, seen, plan, now } => {
+            Command::AgentAskTicket { key, text, seen, plan, deliver } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -5038,16 +5113,18 @@ impl Daemon {
                 if let Some(message) = self.plan_refusal(target, plan) {
                     return Response::Err { message };
                 }
-                // `now` (T-600) is the person's send-now, refused where
-                // theirs is: at a dialog, whose keys a paste would answer;
-                // and with plan mode mid-turn, which restarts the agent.
-                if let (true, QueuedSeat::Pane(id)) = (now, &seat) {
+                // `now` and `immediately` (T-600, T-601) are the person's
+                // sends, refused where theirs are: at a dialog, whose keys a
+                // paste would answer; with plan mode mid-turn, which restarts
+                // the agent; and `immediately` at an agent with no send-now.
+                if let (true, QueuedSeat::Pane(id)) = (deliver.at_once(), &seat) {
+                    let level = deliver.word();
                     if self.pane_waits_on_you(*id) {
                         return Response::Err {
                             message: format!(
-                                "{key}'s agent is at a dialog; words sent now would land in it. \
-                                 A person answers it in the pane, and ask_agent without now \
-                                 queues the words for its idle."
+                                "{key}'s agent is at a dialog; words sent {level} would land in \
+                                 it. A person answers it in the pane, and ask_agent with deliver \
+                                 idle queues the words for its idle."
                             ),
                         };
                     }
@@ -5055,7 +5132,17 @@ impl Daemon {
                         return Response::Err {
                             message: format!(
                                 "{key}'s agent is mid-turn, and plan mode restarts it; \
-                                 ask_agent without now queues the words for its idle."
+                                 ask_agent with deliver idle queues the words for its idle."
+                            ),
+                        };
+                    }
+                }
+                if deliver == Deliver::Immediately {
+                    if let Some(why) = self.immediate_refusal(target) {
+                        return Response::Err {
+                            message: format!(
+                                "{key}'s agent {why}; ask_agent with deliver now sends the words \
+                                 at once without it."
                             ),
                         };
                     }
@@ -5072,7 +5159,7 @@ impl Daemon {
                 let mut held_for_person = !sends;
                 if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == target) {
                     q.sends = sends;
-                    q.now = now;
+                    q.deliver = deliver;
                     // Its agent is on a question (T-565): `park_ask` held
                     // the words, and the send stays a person's — after the
                     // answer, which may change them.
@@ -5085,10 +5172,11 @@ impl Daemon {
                             .to_string()
                     })
                 });
-                let road = match (held_for_person, now) {
+                let road = match (held_for_person, deliver) {
                     (true, _) => AskRoad::HeldForPerson,
-                    (false, true) => AskRoad::SentNow,
-                    (false, false) => AskRoad::Queued,
+                    (false, Deliver::Now) => AskRoad::SentNow,
+                    (false, Deliver::Immediately) => AskRoad::SentImmediately,
+                    (false, Deliver::Idle) => AskRoad::Queued,
                 };
                 self.feed.board_outcome(
                     "agent",
@@ -5103,11 +5191,19 @@ impl Daemon {
                     // them mid-turn (the mod's `submit`, or the composer's
                     // paste), a parked agent is woken with them. The turn
                     // that takes them is the crown's answer, as after `^y`.
-                    AskRoad::SentNow => {
+                    // Immediately (T-601) is the same send with Claude Code's
+                    // send-now over the words (`send_queued_ask` reads the
+                    // entry's level).
+                    AskRoad::SentNow | AskRoad::SentImmediately => {
                         if let err @ Response::Err { .. } = self.send_queued_ask(target) {
                             return err;
                         }
-                        self.feed.board("agent", "ask_agent_sent", Some(target));
+                        self.feed.board_outcome(
+                            "agent",
+                            "ask_agent_sent",
+                            Some(target),
+                            deliver.word(),
+                        );
                         self.crown_touched(ticket, target, "sent");
                     }
                     // An idle agent takes the words now, its touch turning
@@ -5955,7 +6051,7 @@ impl Daemon {
         }
         let text = self.crown_wake_text();
         let ack = Ack { by: "automation", word: "crown_wake_delivered" };
-        match self.deliver(crown, seat, text, ack, false) {
+        match self.deliver(crown, seat, text, ack, false, false) {
             Response::Err { message } => {
                 eprintln!("mesimon: crown wake failed: {message}");
                 self.crown_wakes.clear();
@@ -6988,7 +7084,7 @@ impl Daemon {
                 accept_plan: q.accept_plan || q.send_on_accept,
                 held: q.held.map(str::to_string),
                 plan: q.plan,
-                now: q.now,
+                deliver: q.deliver,
             })
             .collect();
         for o in self.owed.values() {
@@ -7005,7 +7101,7 @@ impl Daemon {
                     accept_plan: false,
                     held: None,
                     plan: false,
-                    now: false,
+                    deliver: Deliver::Idle,
                 });
             }
         }
@@ -7029,7 +7125,7 @@ impl Daemon {
                 accept_plan: false,
                 held: None,
                 plan: false,
-                now: false,
+                deliver: Deliver::Idle,
             });
         }
         // What the train will do once its gate is clear — said before it
@@ -7061,7 +7157,7 @@ impl Daemon {
                     accept_plan: false,
                     held: None,
                     plan: false,
-                    now: false,
+                    deliver: Deliver::Idle,
                 });
             }
             for t in plan.rebase {
@@ -7077,7 +7173,7 @@ impl Daemon {
                     accept_plan: false,
                     held: None,
                     plan: false,
-                    now: false,
+                    deliver: Deliver::Idle,
                 });
             }
         }
@@ -8636,6 +8732,25 @@ impl Daemon {
     /// Codex pane's is parked for `drive_codex_inputs`, which pastes on its
     /// own clock, and the record's hold is its clock.
     fn paste_to_ticket(&mut self, ticket: ulid::Ulid, text: &str, ack: Ack) -> Result<(), String> {
+        self.paste_at(ticket, text, ack, false)
+    }
+
+    /// `paste_to_ticket`, or with `immediately` (T-601) Claude Code's
+    /// send-now over the words: a WORKING Claude agent reads them at once,
+    /// its running tool call moved to the background, where a plain send
+    /// waits for the turn's next step (a paste) or its end (a mod's
+    /// `submit`). The words must stand in the composer for the key to send
+    /// them: the mod fills the empty box where it speaks `fill`
+    /// (`mod_fill`), and the paste road pastes; the keys go once they are
+    /// in. An idle agent takes the plain send, which starts its turn at
+    /// once anyway. Codex has no such key and takes the plain paste.
+    fn paste_at(
+        &mut self,
+        ticket: ulid::Ulid,
+        text: &str,
+        ack: Ack,
+        immediately: bool,
+    ) -> Result<(), String> {
         let Some(rec) = self.board.pane_target(ticket) else {
             return Err("no live agent session on this ticket — start or wake one first".into());
         };
@@ -8659,17 +8774,38 @@ impl Daemon {
             }
             return Ok(());
         }
+        let immediately = immediately && !self.session_idle(id);
+        // Immediately on the mod road (T-601): the words into the empty
+        // composer by the mod's `fill`, then the keys, on its `filled`.
+        if immediately && self.mod_speaks(id, "fill") && !road::is_command(text) {
+            let words = Parked { text: text.to_string(), brief: false, title: false };
+            if !self.mod_fill(id, ticket, words, ack) {
+                return Err("nothing to send".into());
+            }
+            return Ok(());
+        }
         // A Claude session whose mod is up takes the words by its `submit`
         // (T-575): a turn of its own, held behind a running one, never typed.
         // A slash command is for the box, and is typed into it.
-        if self.mod_speaks(id, "submit") && !road::is_command(text) {
+        if !immediately && self.mod_speaks(id, "submit") && !road::is_command(text) {
             let words = Parked { text: text.to_string(), brief: false, title: false };
             if !self.mod_submit(id, ticket, words, ack) {
                 return Err("nothing to send".into());
             }
             return Ok(());
         }
-        self.backend.paste_text(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
+        if immediately {
+            // The paste, then the send-now in its own call, as an Enter
+            // goes in its own (`paste_text`): keys in the paste's burst are
+            // read as pasted text.
+            self.backend
+                .paste_input(&sid, text)
+                .and_then(|()| self.backend.send_now(&sid))
+                .map_err(|e| format!("could not deliver: {e}"))?;
+            self.feed.board("daemon", "prompt_sent_immediately", Some(ticket));
+        } else {
+            self.backend.paste_text(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
+        }
         self.owed.insert(id, Owed::pasted(ticket, ack, now_ms()));
         Ok(())
     }
@@ -8989,11 +9125,13 @@ impl Daemon {
     /// (`sanitize_prompt`), so the README's zero-prompt-injection promise
     /// holds for it in the strongest form the promise has: mesimon does not
     /// add a token, and here it does not author one either.
+    #[allow(clippy::too_many_arguments)]
     fn prompt_session(
         &mut self,
         ticket: ulid::Ulid,
         text: String,
         queued: bool,
+        immediately: bool,
         accept_plan: bool,
         plan: bool,
         tier: Option<String>,
@@ -9075,11 +9213,34 @@ impl Daemon {
         if queued || accept_plan {
             return self.enqueue_ask(ticket, seat, text, accept_plan, plan);
         }
+        // Immediately (T-601) is Claude Code's send-now: refused at an agent
+        // that has none, and at a dialog, whose keys it would press.
+        if immediately {
+            if let Some(why) = self.immediate_refusal(ticket) {
+                return Response::Err {
+                    message: format!("{} {why}", mesimon_core::keymap::AGENT_WORD),
+                };
+            }
+            if let QueuedSeat::Pane(id) = seat {
+                if self.pane_waits_on_you(id) {
+                    return Response::Err {
+                        message: mesimon_core::command::ANSWER_IN_PANE_FIRST.into(),
+                    };
+                }
+            }
+        }
         // Sending now while an ask waits is the user talking to the agent
         // ahead of it: the waiting words are theirs to drop, and they just
         // did (the TUI's status says so).
         self.forget_queued(ticket, "queued_ask_dropped", "local", "person");
-        self.deliver(ticket, seat, text, Ack::PROMPT, plan)
+        self.deliver(ticket, seat, text, Ack::PROMPT, plan, immediately)
+    }
+
+    /// Why Claude Code's send-now (T-601) cannot reach this ticket's agent,
+    /// or `None`: it is Claude Code's key, and a Codex pane has none.
+    fn immediate_refusal(&self, ticket: ulid::Ulid) -> Option<&'static str> {
+        let rec = self.board.live_agent(ticket)?;
+        (rec.kind != SessionKind::Claude).then_some("has no send-now (Claude Code's alone)")
     }
 
     /// Why a plan-mode ask cannot reach this ticket (T-434), or `None`. The
@@ -9190,7 +9351,7 @@ impl Daemon {
                 continue;
             }
             self.forget_queued(ticket, "queued_ask_dropped", "local", "person");
-            match self.deliver(ticket, seat, text, Ack::PROMPT, false) {
+            match self.deliver(ticket, seat, text, Ack::PROMPT, false, false) {
                 Response::Err { message } => {
                     eprintln!("mesimon: column ask failed: {message}");
                     self.feed.board("local", "prompt_column_failed", Some(ticket));
@@ -9283,6 +9444,7 @@ impl Daemon {
         text: String,
         ack: Ack,
         plan: bool,
+        immediately: bool,
     ) -> Response {
         match seat {
             // Plan mode on a pane (T-434) is a relaunch, never a paste — and
@@ -9294,7 +9456,9 @@ impl Daemon {
             }
             // `ack` is a pane's alone: a wake and a start park their words
             // as the user's prompt (`park`), whichever road asked.
-            QueuedSeat::Pane(_) => match self.paste_to_ticket(ticket, &text, ack) {
+            // Immediately (T-601) is Claude Code's send-now over the words;
+            // a wake or a start below is a launch, which takes them first.
+            QueuedSeat::Pane(_) => match self.paste_at(ticket, &text, ack, immediately) {
                 // The board's own picture of the session is now a turn behind:
                 // the record still says `Idle` until the agent's `UserPromptSubmit`
                 // hook lands, and that is the hook's to say, not ours. What we
@@ -9591,8 +9755,8 @@ impl Daemon {
             q.send_on_accept = false;
             q.held = held;
             q.plan = plan && !accept_plan;
-            // So is `now` (T-600).
-            q.now = false;
+            // So is the crown's level (T-600, T-601).
+            q.deliver = Deliver::Idle;
             if by.is_none() {
                 self.feed.board("local", "queued_ask_replaced", Some(ticket));
             }
@@ -9609,7 +9773,7 @@ impl Daemon {
                 send_on_accept: false,
                 held,
                 plan: plan && !accept_plan,
-                now: false,
+                deliver: Deliver::Idle,
             });
             if by.is_none() {
                 self.feed.board("local", &fresh, Some(ticket));
@@ -9862,7 +10026,7 @@ impl Daemon {
             // (T-434) is a wake in all but its seat word.
             let sent = match seat {
                 seat @ QueuedSeat::Pane(pane) if !plan && !self.tier_owed(pane) => {
-                    match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, false) {
+                    match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, false, false) {
                         Response::Ok => true,
                         _ => {
                             self.feed.board("automation", "queued_ask_failed", Some(ticket));
@@ -9870,7 +10034,7 @@ impl Daemon {
                         }
                     }
                 }
-                seat => match self.deliver(ticket, seat, text, Ack::PROMPT, plan) {
+                seat => match self.deliver(ticket, seat, text, Ack::PROMPT, plan, false) {
                     Response::Err { message } => {
                         eprintln!("mesimon: queued {word} failed: {message}");
                         self.feed.board(
@@ -9998,6 +10162,7 @@ impl Daemon {
         text: String,
         ack: Ack,
         plan: bool,
+        immediately: bool,
     ) -> Response {
         let id = match seat {
             QueuedSeat::Pane(id) => Some(id),
@@ -10015,7 +10180,7 @@ impl Daemon {
                 return Response::Err { message: "prompt not authorized".into() };
             }
         }
-        let response = self.deliver(ticket, seat, text, ack, plan);
+        let response = self.deliver(ticket, seat, text, ack, plan, immediately);
         if let Some(id) = id {
             if self.control_delivery_principal(id).is_some() && self.parked(id) {
                 if let Some(rec) = self.board.sessions.iter_mut().find(|r| r.id == id) {
@@ -10228,7 +10393,7 @@ impl Daemon {
             self.feed.board("automation", "queued_ask_dropped_target_gone", Some(ticket));
             return true;
         }
-        match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, false) {
+        match self.deliver_queued_ask(ticket, seat, text, Ack::QUEUED, false, false) {
             Response::Ok => {
                 self.feed.board("automation", "queued_ask_sent_after_plan", Some(ticket));
             }
@@ -10261,7 +10426,9 @@ impl Daemon {
             self.broadcast();
             return Response::Err { message: "queued session changed".into() };
         }
-        let response = self.deliver_queued_ask(ticket, q.seat, q.text, Ack::QUEUED, q.plan);
+        let immediately = q.deliver == Deliver::Immediately;
+        let response =
+            self.deliver_queued_ask(ticket, q.seat, q.text, Ack::QUEUED, q.plan, immediately);
         // The crown's words, sent by a person: the turn that takes them is
         // the crown's answer (T-469).
         if let (Some(crown), false) = (q.by, matches!(response, Response::Err { .. })) {

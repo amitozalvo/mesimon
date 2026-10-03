@@ -340,6 +340,7 @@ mod tests {
         assert_eq!(ts_list("SPEAKS"), words(&mesimon_core::road::SPEAKS));
         for (event, reason) in [
             (mesimon_core::road::MOD_SUBMIT, "id"),
+            (mesimon_core::road::MOD_FILL, "id"),
             (mesimon_core::road::MOD_ANSWER, "'answered'"),
             (mesimon_core::road::MOD_ANSWER, "'declined'"),
             (mesimon_core::road::MOD_ANSWER, "'nothing_held'"),
@@ -427,11 +428,16 @@ mod tests {
         assert_eq!(code.matches("deny:").count(), 2, "the gate's and a tool's refusal");
         assert!(code.contains("return { deny: denial(rule) }"));
         assert!(code.contains("if (out?.isError === true) return { deny: text ||"));
-        // The one `$.prompt` call is the turn road's submit (T-575), and it
-        // is the person's words, bare: `asUser: true`, the text as it came.
+        // The `$.prompt` calls are the turn road's submit (T-575) and the
+        // send-now's fill (T-601), each the person's words, bare: the submit
+        // `asUser: true`, the fill the whole text over an EMPTY box, read
+        // first, so a person's draft is never replaced and nothing is added.
         let calls: Vec<&str> = code.matches("$.prompt.").collect();
-        assert_eq!(calls.len(), 1, "one $.prompt call, the submit");
+        assert_eq!(calls.len(), 3, "the submit, and the fill with its read");
         assert!(code.contains("$.prompt.submit({ text, asUser: true })"), "a submit is asUser");
+        assert!(code.contains("$.prompt.fill({ text, mode: 'replace' })"), "a fill is the text");
+        assert!(code.contains("const box: any = await $.prompt.read()"));
+        assert!(code.contains("box.text.trim() !== ''"), "a draft is never filled over");
         // The one allow is the consented one-shot (T-581): a permission
         // dialog's decision is returned in one place, and it is what `mesimon
         // approve` printed, which only a person's answer from Remote Control
