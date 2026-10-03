@@ -392,6 +392,9 @@ enum Msg {
     /// here, on the writer, in `teamglue`.
     Team(crate::team::sync::Done),
     Control(u64, crate::team::control_io::Event, Sender<()>),
+    /// A phone's transcript page was read off this thread (T-626): the
+    /// peer that asked, its grant, the command and the answer.
+    TranscriptRead(String, mesimon_team::crypto::BoardId, u64, mesimon_core::mesophon::Reply),
     /// A quota probe came back (T-327): whose, and what it said.
     UsageRead(Provider, crate::usage::Outcome),
     /// A pass over the tickets' transcripts landed (T-327): what each read
@@ -1296,6 +1299,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::TurnProbed(..) => "turn probed".into(),
             Msg::Team(_) => "team".into(),
             Msg::Control(..) => "mesophon".into(),
+            Msg::TranscriptRead(..) => "transcript read".into(),
         };
         d.tick_slowest = ("", Duration::ZERO);
         match msg {
@@ -1337,6 +1341,9 @@ pub fn run(paths: Paths) -> Result<()> {
             }
             Msg::TurnProbed(probe) => d.on_turn_probed(probe),
             Msg::Team(done) => d.on_team(done),
+            Msg::TranscriptRead(peer, grant, command, reply) => {
+                d.control_transcript_read(&peer, grant, command, reply)
+            }
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 // `answer_agent` (T-569) answers when its delivery settles:

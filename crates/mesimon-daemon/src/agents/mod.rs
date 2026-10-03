@@ -3,6 +3,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod transcript;
 
 use mesimon_core::board::{AgentTools, ColumnSettings, SessionKind, SessionRecord};
 use std::path::Path;
@@ -53,6 +54,17 @@ pub fn adapter(kind: SessionKind) -> Option<&'static dyn AgentAdapter> {
 /// Native history formats are interpreted only by their owning adapter.
 pub fn read_preview(provider: SessionKind, path: &Path) -> Option<AgentPreview> {
     adapter(provider)?.preview(path)
+}
+
+/// A page of a session's transcript for Remote Control (T-626), each record
+/// read by its provider's adapter.
+pub fn read_transcript(
+    provider: SessionKind,
+    path: &Path,
+    ask: transcript::Ask,
+) -> Option<transcript::Page> {
+    let adapter = adapter(provider)?;
+    transcript::page(path, ask, &|at, v| adapter.rows(at, v)).ok()
 }
 
 /// A bounded normalized artifact, independent of either native history format.
@@ -207,6 +219,13 @@ pub trait AgentAdapter {
         HookObservation::default()
     }
     fn preview(&self, path: &Path) -> Option<AgentPreview>;
+    /// What one transcript record at byte offset `at` shows a phone (T-626):
+    /// none, or its rows in order.
+    fn rows(
+        &self,
+        at: u64,
+        record: &serde_json::Value,
+    ) -> Vec<mesimon_core::mesophon::TranscriptRow>;
     fn conversation_key(&self, record: &SessionRecord) -> Option<String>;
     fn history_missing(&self, record: &SessionRecord) -> bool;
     /// Who else holds this record's conversation right now; no state

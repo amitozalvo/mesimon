@@ -207,7 +207,12 @@ pub(super) struct Control {
     dirty: bool,
     /// Each transcript's words as a phone sees them, keyed by path (T-497).
     words: RefCell<HashMap<String, Words>>,
+    /// Transcript pages being read off the writer thread (T-626).
+    reading: usize,
 }
+/// The most transcript pages read at once (T-626): a phone asks one at a
+/// time, so this is several phones, and a further ask is refused.
+const READING_MAX: usize = 4;
 /// An agent's step and latest reply line, read from its transcript, and the
 /// file's length and mtime when read: a browser asks for the board every two
 /// seconds, and a transcript is re-read only when it changed.
@@ -247,6 +252,7 @@ impl Control {
             retry: Instant::now(),
             dirty: false,
             words: RefCell::new(HashMap::new()),
+            reading: 0,
         }
     }
     fn send(&mut self, wire: Wire) {
@@ -630,6 +636,8 @@ impl Daemon {
                     // Pictures in notes, `Upload` and `WriteNote`'s
                     // `uploads` (T-629).
                     "pictures",
+                    // The conversation read from its transcript (T-626).
+                    "transcript",
                     // Tickets for an away host wait at the relay (T-497).
                     if self.control.mail { "mailbox" } else { "" },
                 ]
@@ -777,6 +785,22 @@ impl Daemon {
             }
             api::Request::Preview { ticket, session } => {
                 self.control_preview(&by, &ticket, &session)
+            }
+            api::Request::Transcript { ticket, session, before, after, conversation, limit } => {
+                let ask =
+                    crate::agents::transcript::Ask { before, after, limit: limit.map(usize::from) };
+                // A page is read off this thread and answered when it lands
+                // (`control_transcript_read`); a refusal is answered here.
+                match self.control_transcript(
+                    &by,
+                    (peer, grant, command.id),
+                    (&ticket, &session),
+                    ask,
+                    conversation,
+                ) {
+                    Some(reply) => reply,
+                    None => return,
+                }
             }
             api::Request::Prompt { ticket, session, text, queued } => self.control_prompt(
                 &by,
@@ -2635,6 +2659,85 @@ impl Daemon {
             }
             _ => Reply::Rejected { message: "preview unavailable".into() },
         }
+    }
+    /// A page of a session's transcript (T-626): any agent record of the
+    /// ticket's, asleep or gone too, since the file outlives the pane. Read
+    /// on its own thread; `None` when the read is on its way.
+    fn control_transcript(
+        &mut self,
+        by: &Principal,
+        asker: (&str, BoardId, u64),
+        target: (&str, &str),
+        mut ask: crate::agents::transcript::Ask,
+        conversation: Option<String>,
+    ) -> Option<Reply> {
+        let (ticket, session) = target;
+        let rec = ulid::Ulid::from_string(ticket)
+            .ok()
+            .zip(uuid::Uuid::parse_str(session).ok())
+            .and_then(|(ticket, id)| {
+                self.board
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == id && s.ticket == ticket && s.kind.is_agent())
+            });
+        let Some(rec) = rec else {
+            return Some(Reply::Rejected { message: "session is no longer available".into() });
+        };
+        if authorize(by, &Action::Read, &Resource::Session { id: rec.id }).denied() {
+            return Some(Reply::Revoked);
+        }
+        let Some(path) = crate::cost::transcript_of(rec).map(|(p, _)| p) else {
+            // Nothing written yet: an empty page, and the next ask reads on.
+            return Some(Reply::Transcript {
+                conversation: String::new(),
+                rows: Vec::new(),
+                from: 0,
+                end: 0,
+                next_before: None,
+            });
+        };
+        let name = crate::agents::transcript::conversation(&path.to_string_lossy());
+        // `after` is an offset in the file the phone holds; a new file
+        // (`/clear`, `/resume`) starts from its tail.
+        if conversation.as_deref() != Some(name.as_str()) {
+            ask.after = None;
+        }
+        if self.control.reading >= READING_MAX {
+            return Some(Reply::Rejected { message: "transcript busy; try again".into() });
+        }
+        self.control.reading += 1;
+        let (peer, grant, command) = (asker.0.to_string(), asker.1, asker.2);
+        let (kind, tx) = (rec.kind, self.control.tx.clone());
+        std::thread::spawn(move || {
+            let reply = match crate::agents::read_transcript(kind, &path, ask) {
+                Some(page) => Reply::Transcript {
+                    conversation: name,
+                    rows: page.rows,
+                    from: page.from,
+                    end: page.end,
+                    next_before: page.next_before,
+                },
+                None => Reply::Rejected { message: "transcript unavailable".into() },
+            };
+            let _ = tx.send(Msg::TranscriptRead(peer, grant, command, reply));
+        });
+        None
+    }
+    /// A transcript page landed (T-626): answered to the peer that asked,
+    /// while its grant still stands. Not kept as a receipt: a read is asked
+    /// again, and a page is the largest answer there is.
+    pub(super) fn control_transcript_read(
+        &mut self,
+        peer: &str,
+        grant: BoardId,
+        command: u64,
+        reply: Reply,
+    ) {
+        self.control.reading = self.control.reading.saturating_sub(1);
+        let Some(p) = self.control.peers.get(peer).filter(|p| p.grant == grant) else { return };
+        let reply = if self.control_granted(grant, p.device) { reply } else { Reply::Revoked };
+        self.control.answer(peer, command, reply);
     }
     #[allow(clippy::too_many_arguments)]
     fn control_prompt(

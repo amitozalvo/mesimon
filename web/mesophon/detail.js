@@ -9,6 +9,7 @@ import { StartButton, StartReceipt, Tags, stateAge } from "./lists.js";
 import { NotesCard, NoteReader } from "./notepad.js";
 import { receiptTick } from "./sessions.js";
 import { queueWords, sendRefused, waitsOnYou } from "./queue.js";
+import { Chat } from "./transcript.js";
 
 // The pane's width in cells, for drawing its lines as the screen they came
 // from (T-506). An older host names none: the longest line stands in, which
@@ -29,7 +30,22 @@ const screenRows = (text) => {
   );
 };
 
+// The conversation or the pane's screen (T-626), one toggle between them. A
+// parked agent's conversation is still its file; its screen is gone.
+function OutputView({ store, ticket }) {
+  const chat = store.chatShown;
+  const asleep = ticket?.agent?.state === "sleeping";
+  return html`<fieldset id="output-view" class="segmented segmented-small">
+    <legend class="sr-only">Show</legend>
+    <label class=${chat ? "on" : ""}><input type="radio" name="output-view" value="chat"
+      checked=${chat} onChange=${() => store.setOutputView("chat")} /><span>Chat</span></label>
+    <label class=${`${chat ? "" : "on"}${asleep ? " off" : ""}`}><input type="radio" name="output-view" value="raw"
+      checked=${!chat} disabled=${asleep} onChange=${() => store.setOutputView("raw")} /><span>Raw</span></label>
+  </fieldset>`;
+}
+
 function Output({ store, ticket, entry, live }) {
+  const chat = store.chatShown;
   const ref = useRef();
   const shown = useRef();
   useLayoutEffect(() => {
@@ -50,24 +66,28 @@ function Output({ store, ticket, entry, live }) {
         : ticket
           ? "No agent output."
           : "");
-  const received = entry?.receivedAt
-    ? `Last received ${new Date(entry.receivedAt).toLocaleTimeString()}`
-    : "Nothing received yet";
+  const at = chat ? entry?.chatAt : entry?.receivedAt;
+  const received = at ? `Last received ${new Date(at).toLocaleTimeString()}` : "Nothing received yet";
+  const following = chat ? entry?.chatFollowing !== false : entry?.following;
+  const unread = chat ? entry?.chatUnread : entry?.unread;
   // The screen (T-506): the lines at the pane's own width, the type sized by
   // CSS so that width fills the panel, and a line the capture joined wrapped
   // back where the pane had it. Where the pane is wider than the panel can
   // show legibly, the lines reflow at the panel's width and the rules stay
   // one row each (`.screen-lines`).
-  return html`<section class="output" aria-label="Output" hidden=${!ticket?.agent || ticket.agent.state === "sleeping"}>
+  return html`<section class="output" aria-label="Output" hidden=${!ticket?.agent || (ticket.agent.state === "sleeping" && !chat)}>
     <div class="output-head">
-      <h3 class="label">Output</h3>
+      <h3 class="label">${chat ? "Conversation" : "Output"}</h3>
+      ${store.chatCapable && html`<${OutputView} store=${store} ticket=${ticket} />`}
       <p id="freshness">${live ? html`<span class="dot" aria-hidden="true"></span>` : null}${received}${live ? "" : " · Stale / offline"}</p>
     </div>
     <div class="output-body">
-      <pre id="preview" ref=${ref} class="screen" style=${{ "--cols": screenCols(entry) }} aria-label="Agent output" tabindex="0"
-        onScroll=${(e) => store.outputScrolled(e.currentTarget)}><span class="screen-lines">${screenRows(text)}</span></pre>
-      <button id="latest" type="button" class="latest" hidden=${!entry || entry.following}
-        onClick=${() => store.latest()}><${Icon} name="down" size=${16} /><span>${entry?.unread ? "New preview · Jump to latest" : "Jump to latest"}</span></button>
+      ${chat
+        ? html`<${Chat} store=${store} entry=${entry} doing=${ticket?.agent?.doing} />`
+        : html`<pre id="preview" ref=${ref} class="screen" style=${{ "--cols": screenCols(entry) }} aria-label="Agent output" tabindex="0"
+        onScroll=${(e) => store.outputScrolled(e.currentTarget)}><span class="screen-lines">${screenRows(text)}</span></pre>`}
+      <button id="latest" type="button" class="latest" hidden=${!entry || following}
+        onClick=${() => store.latest()}><${Icon} name="down" size=${16} /><span>${unread ? `New ${chat ? "words" : "preview"} · Jump to latest` : "Jump to latest"}</span></button>
     </div>
   </section>`;
 }

@@ -4,7 +4,11 @@
 //! the progress note a Claude 5 model writes before a tool call (T-604).
 
 use crate::agents::{AgentActivity, AgentPreview};
-use mesimon_core::adopt::{assistant_text, tool_activity, user_prompt};
+use mesimon_core::adopt::{
+    assistant_text, is_interrupt, narration, record_ms, tool_activity, tool_label, user_prompt,
+};
+use mesimon_core::mesophon::{RowKind, TranscriptRow};
+use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -139,6 +143,73 @@ fn scan_window(path: &Path, len: u64, window: u64) -> Option<Tail> {
         }
     }
     Some(tail)
+}
+
+/// What one record shows on a phone's transcript (T-626): the person's
+/// words, the agent's (a text block or a progress note, as the peek reads
+/// them), one line per tool call, and what happened to the conversation.
+/// Tool results, latches, attachments, injected context and a subagent's
+/// records are not rows.
+pub(in crate::agents) fn rows(at: u64, v: &Value) -> Vec<TranscriptRow> {
+    let ms = record_ms(v);
+    let row = |kind, text: &str| TranscriptRow::new(at, kind, text, ms);
+    if v.get("uuid").is_none() || v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        return Vec::new();
+    }
+    match v.get("type").and_then(Value::as_str) {
+        Some("user") if is_interrupt(v) => {
+            row(RowKind::Notice, "interrupted").into_iter().collect()
+        }
+        // The summary a compaction opens the new context with is the
+        // harness's words; the boundary record above it is the row.
+        Some("user") if v.get("isCompactSummary").and_then(Value::as_bool) == Some(true) => {
+            Vec::new()
+        }
+        Some("user") => {
+            let Some(words) = user_prompt(v) else { return Vec::new() };
+            if let Some(command) = super::super::transcript::command_words(&words) {
+                let said = if command == "/clear" { "conversation cleared" } else { &command };
+                return row(RowKind::Notice, said).into_iter().collect();
+            }
+            if let Some(shell) = tagged(&words, "bash-input") {
+                return row(RowKind::Prompt, &format!("! {shell}")).into_iter().collect();
+            }
+            // A local command's or a shell's output: the terminal's, not words.
+            if ["<local-command-", "<bash-stdout>", "<bash-stderr>"]
+                .iter()
+                .any(|t| words.starts_with(t))
+            {
+                return Vec::new();
+            }
+            row(RowKind::Prompt, &words).into_iter().collect()
+        }
+        Some("assistant") => {
+            let Some(blocks) =
+                v.get("message").and_then(|m| m.get("content")).and_then(Value::as_array)
+            else {
+                return Vec::new();
+            };
+            blocks
+                .iter()
+                .filter_map(|b| match b.get("type").and_then(Value::as_str) {
+                    Some("text") => row(RowKind::Reply, b.get("text")?.as_str()?),
+                    Some("thinking") => row(RowKind::Reply, narration(b)?),
+                    Some("tool_use") => TranscriptRow::tool(at, &tool_label(b), ms),
+                    _ => None,
+                })
+                .collect()
+        }
+        Some("system") if v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") => {
+            row(RowKind::Notice, "conversation compacted").into_iter().collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The words between `<tag>` and `</tag>` when `text` opens with the tag.
+fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let rest = text.strip_prefix(&format!("<{tag}>"))?;
+    Some(rest.split(&format!("</{tag}>")).next().unwrap_or(rest).trim())
 }
 
 /// A record's identity as a number the board can compare and keep.
@@ -486,6 +557,78 @@ mod tests {
         assert_eq!(after.text.as_deref(), Some("Mod pass: all green."));
         assert_eq!(after.activity, None);
         assert_ne!(after.reply_key, Some(note_key));
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// T-626: a phone's transcript reads a session as its conversation —
+    /// the person's words, the agent's (a progress note among them, never a
+    /// private thought), one line per tool call, and what happened to the
+    /// conversation — and nothing of the harness's.
+    #[test]
+    fn a_transcript_page_is_the_conversation() {
+        const NARRATION: &str = "CAQSqAYKEQgSGAI4AUIJbmFycmF0aW9uEgz6RfzbZ3WGlSWDhZgaDMPYsCHMosTFaCYSbyIw5iwbGg2IIGHyFn57q3rfGqRCddO0A0KzShOu2yD3Wgv4piiOp8iViofNNe3nQo3IKsQFZ5FDP5BFYQVq";
+        const THINKING: &str = "CAQS3wcKEAgSGAI4AUIIdGhpbmtpbmcSDB8YT6rdRh3KJTjRCBoM8rfhnSQrS4xo2VnjIjBsRWkpUTlTCt34Y5LTY3S6oISt0dQYaNqT0JhKtJG1HNG+jGilr6Y19GRv6PC8VN4q/AZSXXadvsdJSprS54NXkquSYR2XI52WtTvAlJ1zRdHRspR2B4";
+        let user = |uuid: &str, extra: &str, content: &str| {
+            format!(
+                "{{\"uuid\":\"{uuid}\",\"type\":\"user\",\"timestamp\":\"2026-10-03T10:00:00.000Z\"{extra},\"message\":{{\"role\":\"user\",\"content\":{content}}}}}\n"
+            )
+        };
+        let said = |uuid: &str, blocks: &str| {
+            format!(
+                "{{\"uuid\":\"{uuid}\",\"type\":\"assistant\",\"message\":{{\"content\":[{blocks}]}}}}\n"
+            )
+        };
+        let text = |t: &str| format!("{{\"type\":\"text\",\"text\":\"{t}\"}}");
+        let thought = |t: &str, sig: &str| {
+            format!("{{\"type\":\"thinking\",\"thinking\":\"{t}  \",\"signature\":\"{sig}\"}}")
+        };
+        let tool = "{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"/r/src/main.rs\"}}";
+        let body = [
+            user("u1", "", "\"fix the bug\\nin main\""),
+            said("a1", &format!("{},{}", thought("private reasoning", THINKING), text("Looking."))),
+            said("a2", &format!("{},{tool}", thought("Reading main first.", NARRATION))),
+            user("r1", ",\"toolUseResult\":{}", "[{\"type\":\"tool_result\",\"content\":\"fn main\"}]"),
+            "{\"type\":\"last-prompt\",\"lastPrompt\":\"fix\"}\n".into(),
+            user("i1", "", "[{\"type\":\"text\",\"text\":\"[Request interrupted by user for tool use]\"}]"),
+            user("m1", ",\"isMeta\":true", "\"<local-command-caveat>x</local-command-caveat>\""),
+            user("c1", "", "\"<command-name>/effort</command-name><command-args>xhigh</command-args>\""),
+            user("o1", "", "\"<local-command-stdout>Set effort</local-command-stdout>\""),
+            user("t1", "", "\"<task-notification><task-id>x</task-id></task-notification>\""),
+            user("s1", ",\"isSidechain\":true", "\"a subagent's brief\""),
+            "{\"uuid\":\"b1\",\"type\":\"system\",\"subtype\":\"compact_boundary\",\"content\":\"Conversation compacted\"}\n".into(),
+            user("k1", ",\"isCompactSummary\":true", "\"This session is being continued\""),
+            user("x1", "", "\"<bash-input>ls</bash-input>\""),
+            said("a3", &text("Fixed in **main.rs**.")),
+        ]
+        .concat();
+        let p = tmp("page");
+        std::fs::write(&p, &body).unwrap();
+        let page = crate::agents::read_transcript(
+            mesimon_core::board::SessionKind::Claude,
+            &p,
+            crate::agents::transcript::Ask::default(),
+        )
+        .expect("page");
+        let rows: Vec<(RowKind, &str)> =
+            page.rows.iter().map(|r| (r.kind, r.text.as_str())).collect();
+        assert_eq!(
+            rows,
+            [
+                (RowKind::Prompt, "fix the bug\nin main"),
+                (RowKind::Reply, "Looking."),
+                (RowKind::Reply, "Reading main first."),
+                (RowKind::Tool, "Read main.rs"),
+                (RowKind::Notice, "interrupted"),
+                (RowKind::Notice, "/effort xhigh"),
+                (RowKind::Notice, "conversation compacted"),
+                (RowKind::Prompt, "! ls"),
+                (RowKind::Reply, "Fixed in **main.rs**."),
+            ]
+        );
+        assert_eq!(page.rows[0].ms, Some(1_791_021_600_000), "the record's own time");
+        assert_eq!(page.rows[0].at, 0);
+        assert_eq!(page.rows[2].at, page.rows[3].at, "one record, two rows");
+        assert_eq!((page.from, page.end, page.next_before), (0, body.len() as u64, None));
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 }

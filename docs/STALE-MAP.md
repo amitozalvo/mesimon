@@ -20465,3 +20465,54 @@ two or more pieces, and the reader names it. **Not verified:** a physical phone'
 from iOS, and the hosted relay, which serves the page and needs its `ship.sh`. **Owed:** a
 CHANGELOG line at the next bump — **Added:** Remote Control can add pictures to a note;
 they are kept with the ticket like pictures pasted at the desk.
+
+## Remote Control reads the conversation, a page at a time, from the transcript file (T-626, 2026-10-03, the author: "remote control transcript not readable … should be structured transcript and allow to switch to raw (current view)")
+
+**Before.** The ticket page's output was `Request::Preview`: the pane's last 50 screen lines, a
+tmux capture. Unreadable on a phone and cut at the screen's bottom edge. It stays, as **Raw**.
+
+**Shipped.** `Request::Transcript { ticket, session, before, after, conversation, limit }` →
+`Reply::Transcript { conversation, rows, from, end, next_before }`, feature word `transcript`.
+The source is the session's `.jsonl` (`transcript_path`, a Codex rollout too), never the mod's
+`$.session.messages()` (decided on T-621: the file is append-only, so a record's byte offset is
+a cursor that never moves; a page read costs the page; it covers a sleeping seat, a dead pane,
+an older Claude Code, Codex and the history before a compaction).
+- `agents/transcript.rs::page` walks back from `before` (or the last whole record) in 64 KiB
+  windows, keeps each record's rows together, stops at a record's start when the page would
+  pass 200 rows or 32 KiB serialized (a sealed answer over 48 KiB is refused whole), passes over
+  a record over 2 MiB without parsing it, and stops short after 8 MiB of rowless records. A
+  half-written last record waits for the next ask. With `after` it reads no further back than
+  that offset: a phone asks for only what was written since, and appends. `after` counts only
+  when `conversation` (sha256 of the path, 16 hex: the path never leaves the host) still names
+  the session's file; a new file (`/clear`, `/resume`) starts at its tail.
+- What a record shows is its adapter's (`AgentAdapter::rows`). Claude: `adopt::user_prompt` as
+  the prompt, `assistant_text`'s two kinds per block (a text, a narration note — T-604), one
+  `tool_label` line per `tool_use` (`adopt::tool_activity` now calls it), notices for the
+  interrupt, `compact_boundary` and slash commands (`/clear` reads "conversation cleared"); a
+  `!` shell line is a prompt; tool results, latches, `isMeta`, `isCompactSummary`, sidechains,
+  `<local-command-stdout>` and `<bash-stdout>` are not rows. Codex: the `response_item`
+  messages (a forked thread has no `event_msg` copies) minus the context Codex writes as the
+  person's (`<…>`, `# AGENTS.md`), `function_call`/`custom_tool_call`/`web_search_call`,
+  `turn_aborted` and `compacted`. Rows cross `scrub_lines` (multi-line: replies keep their
+  lines), capped at 8 KiB with an ellipsis; a tool row is `step_line`'s one line.
+- The read runs on its own thread and lands as `Msg::TranscriptRead`, answered to the asking
+  peer while its grant stands; at most four at once. A page is not kept as a receipt: it is the
+  largest answer there is, and a read is simply asked again. Any agent record of the ticket's
+  is readable (`Action::Read` on `Resource::Session`, as the preview), parked or gone.
+- The page (`web/mesophon/transcript.js`): `mergePage` joins pages by offset (an earlier page
+  only where the held part begins; a tail that reaches past what is held, or a new
+  conversation, starts over); the tail ask rides the two-second tick; scrolling near the top,
+  or a page too short to scroll, asks for the page before; a prepended page keeps the row under
+  the reader's eye in place. Replies are drawn by `markdown.js`. The chat/raw choice is
+  `localStorage` `mesophon-output`; Raw is off for a sleeping agent.
+
+**Tested.** `agents::transcript` (tail, join across boundaries at three record sizes, a full
+page's boundary, `after`, an oversized record), a Claude page and a Codex rollout page,
+`state.test.js`'s `mergePage`, `ux.test.js`'s `chatFlow` at three sizes in Chromium and WebKit,
+and the relay's `the_conversation_is_read_a_page_at_a_time` over the real control road
+(relay branch `msmn/T-626-…`). A 12 MB local transcript pages in ~250 ms (debug).
+
+**Seen on the way, not changed.** The relay's `browser_pair_preview_prompt_and_revoke` fails at
+the "agent-run" step on relay main: its handler is commit `d0ababb` on the relay's unmerged
+`msmn/T-498-…` branch. A subagent's file (`<session>/subagents/agent-*.jsonl`) and a "previous
+conversations" list from `started.json` are follow-ups.

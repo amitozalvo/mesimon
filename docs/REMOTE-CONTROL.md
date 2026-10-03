@@ -1,7 +1,7 @@
 # Remote Control (browser preview)
 
-Remote Control (Mesophon) lets your own browser **view tickets, preview an agent’s
-output, send a prompt, answer supported Claude dialogs, file new tickets, move, rename
+Remote Control (Mesophon) lets your own browser **view tickets, read an agent’s
+conversation or its screen, send a prompt, answer supported Claude dialogs, file new tickets, move, rename
 and tag tickets, start an agent on a ticket, and read and edit a ticket's notes**. It works on
 desktop and phone.
 Debug builds include Remote Control automatically. In release builds, set
@@ -130,6 +130,19 @@ outside the board (an import, or a teammate on a shared board): those start only
 terminal. An agent you start from the browser is yours like any other, and revoking the
 browser leaves it running. A terminal older than this version offers no button.
 
+## Reading an agent
+
+A ticket's page shows its agent's **conversation**: your prompts, the agent's replies and
+the progress notes it writes between steps, one line per tool call, and where the
+conversation was interrupted, compacted or cleared. The newest is at the bottom; scroll up
+for earlier, a page at a time. While the agent works, its current step sits under the last
+row. It is read from the session's transcript on your Mac, so a sleeping agent's
+conversation reads too. After `/clear` or `/resume` the page follows the new conversation.
+
+**Raw** shows the agent's terminal screen instead, its last 50 lines, as it looked at your
+desk; a sleeping agent has none. The page remembers which one you chose. A subagent's
+conversation is not shown.
+
 ## Sending a prompt
 
 A prompt targets the session shown when you send it. **Submitted** means delivery
@@ -137,8 +150,8 @@ to the agent’s input, not completion of its work. Waiting Codex prompts retain
 paired device’s authority and are cancelled if access is revoked or the target
 changes. Reconnects never resubmit prompts automatically. If a delivery result
 cannot be recovered, the browser shows **outcome unknown**; check the agent before
-sending again. Prompt text is limited to 4096 UTF-8 bytes; previews show the last
-50 lines, and oversized responses are rejected.
+sending again. Prompt text is limited to 4096 UTF-8 bytes, and oversized responses are
+rejected.
 
 **Queue** waits for the agent's turn to end; **Steer** goes in now. A ticket holds
 one set of queued words, from the browser, your terminal or the crowned agent. The
@@ -276,7 +289,7 @@ The notes kept are those of the 40 tickets whose notes were read most recently: 
 name, author and time, and the bodies read; a note edit is kept, with its words, until the
 terminal answers it. Revocation and **Forget this browser** delete all three. The page’s service worker keeps a
 copy of the page’s own files (HTML, scripts, styles, fonts, icons and the Wasm module)
-in the browser’s Cache Storage, and nothing of the board. Output and unsent prompts remain in memory. The relay routes encrypted content and stores routing metadata for
+in the browser’s Cache Storage, and nothing of the board. The conversation, the screen and unsent prompts remain in memory. The relay routes encrypted content and stores routing metadata for
 Mesophon, plus the tickets and note edits that wait for an away terminal and the terminal’s answers:
 sealed, with the board, device and ticket ids, deleted after 30 days. Browser assets are served by the relay, so the relay’s web
 deployment is part of the browser client’s trust boundary.

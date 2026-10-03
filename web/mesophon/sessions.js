@@ -80,6 +80,16 @@ export class Sessions {
         scroll: 0,
         following: true,
         unread: false,
+        // The conversation (T-626): the pages held, whether the page before
+        // is on its way, and the reader's place in it.
+        chat: undefined,
+        chatOlder: false,
+        chatWantsOlder: false,
+        chatError: "",
+        chatScroll: 0,
+        chatFollowing: true,
+        chatUnread: false,
+        chatAt: undefined,
       });
     }
     this.targets.set(target, key);

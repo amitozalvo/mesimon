@@ -185,6 +185,26 @@ function fixture() {
               promptable: true,
             },
     })),
+    // A transcript as the host reads it (T-626): rows oldest first, `at`
+    // ten bytes apart, eight to a page; held asks wait for `releaseTranscript`.
+    transcript: [],
+    conversation: "conversation-a",
+    transcriptAsks: [],
+    transcriptHold: false,
+    heldTranscript: [],
+    transcriptPage(r) {
+      const end = this.transcript.length ? this.transcript.at(-1).at + 10 : 0;
+      const top = r.before ?? end;
+      const floor = r.conversation === this.conversation && r.after != null && r.after <= top ? r.after : 0;
+      const within = this.transcript.filter((row) => row.at < top && row.at >= floor);
+      const rows = within.slice(-8);
+      const from = within.length > 8 ? rows[0].at : floor;
+      return { result: "transcript", conversation: this.conversation, rows, from, end: top,
+        ...(from > 0 ? { next_before: from } : {}) };
+    },
+    releaseTranscript() {
+      for (const release of this.heldTranscript.splice(0)) release();
+    },
     snapshot() {
       return {
         result: "board",
@@ -315,6 +335,12 @@ function fixture() {
           if (request.op === "snapshot") answer(state.snapshot());
           if (request.op === "preview")
             answer({ result: "preview", lines: state.lines, cols: 132 });
+          if (request.op === "transcript") {
+            state.transcriptAsks.push(request);
+            const reply = () => answer(state.transcriptPage(request));
+            if (state.transcriptHold) state.heldTranscript.push(reply);
+            else reply();
+          }
           if (request.op === "prompt") {
             state.prompts.push(request);
             if (state.disposition === "disconnect") this.close();
@@ -1562,6 +1588,118 @@ async function editFlow(browser, engineName, size, viewport) {
 // the ticket (T-571): radios and ticks, words in place of either, one Submit
 // carrying one answer per question, the T-567 receipts, the form kept through
 // a retry, and an older host leaving the dialog to the pane.
+// The conversation (T-626): a page at a time from the transcript, newest at
+// the bottom; scrolling up puts the page before on top without moving what
+// the reader looks at; the tail ask brings only what was written since; and
+// the pane's screen is one toggle away.
+async function chatFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => {
+    window.fixture.features.push("transcript");
+    // Tall enough that one page overflows the panel at every size: a page
+    // that does not is followed by the one before it by itself.
+    const words = (i) => `Reply ${i}: **done** with part ${i}.\n\n${"Long enough to wrap across the panel. ".repeat(16)}`;
+    window.fixture.transcript = Array.from({ length: 40 }, (_, i) => ({
+      at: i * 10,
+      kind: i % 4 === 0 ? "prompt" : i % 4 === 3 ? "tool" : "reply",
+      text: i % 4 === 0 ? `Prompt ${i}` : i % 4 === 3 ? `Bash cargo test ${i}` : words(i),
+    }));
+  });
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const chat = page.locator("#chat");
+  const rowCount = () => page.evaluate(() => document.querySelectorAll("#chat .chat-row:not(.chat-doing)").length);
+  const asks = () => page.evaluate(() => fixture.transcriptAsks);
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.doing = "Run the whole suite";
+      fixture.update();
+    });
+    await page.locator('.ticket[data-id="ticket-0"]').click();
+    await until(page, () => document.querySelector("#chat")?.textContent.includes("Bash cargo test 39"));
+    // The tail page: eight rows, the agent's step under the last, the
+    // reply's markdown drawn, and the page before waiting above.
+    assert.equal(await rowCount(), 8);
+    assert((await chat.locator(".chat-doing").textContent()).includes("Run the whole suite"));
+    assert(await chat.locator(".chat-reply strong").first().isVisible());
+    assert((await chat.textContent()).includes("Scroll up for earlier"));
+    assert.equal((await asks())[0].before, undefined);
+    assert.equal(await page.locator("#preview").count(), 0, "the conversation, not the screen");
+    assert(await chat.evaluate((n) => n.scrollHeight - n.clientHeight - n.scrollTop < 24), "newest at the bottom");
+    // Scrolling up asks for the page before; it lands on top, and the row
+    // the reader had in view stays where it was.
+    await page.evaluate(() => (fixture.transcriptHold = true));
+    const before = await chat.evaluate((n) => {
+      n.scrollTop = 0;
+      const first = n.querySelector(".chat-row");
+      first.dataset.mark = "kept";
+      return first.getBoundingClientRect().top - n.getBoundingClientRect().top;
+    });
+    await until(page, () => fixture.heldTranscript.length > 0);
+    await page.evaluate(() => {
+      fixture.transcriptHold = false;
+      fixture.releaseTranscript();
+    });
+    await until(page, () => document.querySelectorAll("#chat .chat-row:not(.chat-doing)").length >= 16);
+    const older = (await asks()).find((a) => a.before != null);
+    assert.equal(older.before, 320, "the page before the held one");
+    const after = await chat.evaluate((n) =>
+      n.querySelector('[data-mark="kept"]').getBoundingClientRect().top - n.getBoundingClientRect().top);
+    assert(Math.abs(after - before) < 2, `the row stayed put: ${before} → ${after}`);
+    // What was written since is asked by itself and appended; the rows held
+    // stay the same elements.
+    await chat.evaluate((n) => (n.scrollTop = n.scrollHeight));
+    const held = await rowCount();
+    await page.evaluate(() => {
+      fixture.transcript.push({ at: 400, kind: "reply", text: "The newest words" }, { at: 410, kind: "tool", text: "Read main.rs" });
+    });
+    await until(page, () => document.querySelector("#chat").textContent.includes("The newest words"));
+    const tail = (await asks()).filter((a) => a.after != null).at(-1);
+    assert.deepEqual([tail.after, tail.conversation], [400, "conversation-a"]);
+    assert.equal(await rowCount(), held + 2);
+    assert.equal(await chat.locator('[data-mark="kept"]').count(), 1, "the held rows were kept, not redrawn");
+    // A new conversation (`/clear`) starts over at its tail.
+    await page.evaluate(() => {
+      fixture.conversation = "conversation-b";
+      fixture.transcript = [{ at: 0, kind: "notice", text: "conversation cleared" }, { at: 10, kind: "prompt", text: "Fresh start" }];
+    });
+    await until(page, () => document.querySelector("#chat").textContent.includes("Fresh start"));
+    assert.equal(await rowCount(), 2);
+    assert((await chat.textContent()).includes("Start of the conversation"));
+    // The raw view is the pane's screen, and the choice is remembered.
+    await page.locator('input[name="output-view"][value="raw"]').check();
+    await until(page, () => document.querySelector("#preview")?.textContent.includes("line 49"));
+    assert.equal(await chat.count(), 0);
+    assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-output")), "raw");
+    await page.locator('input[name="output-view"][value="chat"]').check();
+    await chat.waitFor();
+    // A parked agent's conversation is still its file; its screen is gone.
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.state = "sleeping";
+      fixture.update();
+    });
+    await until(page, () => document.querySelector('#output-view input[value="raw"]')?.disabled);
+    assert(await chat.isVisible());
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: conversation pages, prepend, tail, new conversation and raw toggle passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-chat-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 async function batchFlow(browser, engineName, size, viewport) {
   const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
   await context.addInitScript(fixture);
@@ -2609,6 +2747,7 @@ try {
         await editFlow(browser, engineName, size, viewport);
         await batchFlow(browser, engineName, size, viewport);
         await notesFlow(browser, engineName, size, viewport);
+        await chatFlow(browser, engineName, size, viewport);
       }
       await pairLinkFlow(browser, engineName);
       await keptFlow(browser, engineName);

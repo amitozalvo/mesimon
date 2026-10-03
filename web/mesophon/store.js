@@ -12,6 +12,7 @@ import { Edits } from "./edits.js";
 import { NoteBook, NoteMail, NOTE_MAX_BYTES, nameOf } from "./notes.js";
 import { showAlert, clearAlerts } from "./awareness.js";
 import { insertToken, linked, nextNumber, picture, pieceOf, unlinked, withoutPicture } from "./pictures.js";
+import { mergePage, tailAsk } from "./transcript.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
 const receiptOps = ["prompt", "send_now", "take_back", "permission", "dialog", "status"];
@@ -76,6 +77,9 @@ export class Store {
     this.rail = false;
     this.focus = null;
     this.outputKey = undefined;
+    // The ticket page's output (T-626): the conversation (`chat`) or the
+    // pane's screen (`raw`); app.js reads the remembered choice in.
+    this.outputView = "chat";
     this.remembered = new Map(); // board id -> signature of the stored snapshot
     this.sent = new Sent();
     this.sentLoaded = new Set(); // boards whose stored Sent list is read
@@ -336,13 +340,63 @@ export class Store {
   }
 
   // ---- host requests -----------------------------------------------------
+  // The output's next ask: what the conversation gained since the last one,
+  // or the pane's screen in the raw view and from a host with no transcript.
   preview() {
     const current = this.board?.current;
-    if (!document.hidden && current?.agent && this.entry && !this.connection.has("preview"))
+    if (document.hidden || !current?.agent || !this.entry) return;
+    if (this.chatShown) {
+      if (!this.connection.has("transcript"))
+        this.connection.request(
+          { op: "transcript", ticket: current.id, session: current.agent.session, ...tailAsk(this.entry.chat) },
+          this.entry.key,
+        );
+    } else if (current.agent.state !== "sleeping" && !this.connection.has("preview"))
       this.connection.request(
         { op: "preview", ticket: current.id, session: current.agent.session },
         this.entry.key,
       );
+  }
+  // Does this host read the conversation (T-626)?
+  get chatCapable() {
+    return !!this.connection?.features?.includes("transcript");
+  }
+  get chatShown() {
+    return this.chatCapable && this.outputView !== "raw";
+  }
+  // The page before the held part of the conversation, one ask at a time;
+  // asked again once the ask in flight lands.
+  older() {
+    const entry = this.entry;
+    const current = this.board?.current;
+    if (!entry?.chat || entry.chat.floor == null || entry.chatOlder || !current?.agent || !this.live) return;
+    if (this.connection.has("transcript")) {
+      entry.chatWantsOlder = true;
+      return;
+    }
+    entry.chatWantsOlder = false;
+    const id = this.connection.request(
+      { op: "transcript", ticket: current.id, session: current.agent.session, before: entry.chat.floor },
+      entry.key,
+    );
+    if (id === undefined) return;
+    entry.chatOlder = true;
+    this.emit();
+  }
+  // `older`, from a render: after it.
+  olderSoon() {
+    queueMicrotask(() => this.older());
+  }
+  setOutputView(view) {
+    if (this.outputView === view) return;
+    this.outputView = view;
+    try {
+      localStorage.setItem("mesophon-output", view);
+    } catch {
+      /* The choice still holds for this page. */
+    }
+    this.sync();
+    this.preview();
   }
   foreground() {
     const c = this.connection;
@@ -1613,6 +1667,19 @@ export class Store {
       this.preview();
       this.foreground();
       this.loadNotes();
+    } else if (reply.result === "transcript" && original?.body.op === "transcript") {
+      const entry = this.sessions.entries.get(original.context);
+      if (entry) {
+        const before = entry.chat;
+        entry.chat = mergePage(before, original.body, reply);
+        entry.chatError = "";
+        if (original.body.before != null) entry.chatOlder = false;
+        else if (!entry.chatFollowing && before && entry.chat.rows.length !== before.rows.length)
+          entry.chatUnread = true;
+        entry.chatAt = Date.now();
+      }
+      this.sync();
+      if (entry?.chatWantsOlder) this.older();
     } else if (reply.result === "preview" && original?.body.op === "preview") {
       const session = this.sessions.entries.get(original.context);
       if (session) {
@@ -1632,7 +1699,10 @@ export class Store {
           : undefined;
       if (command !== undefined && [session?.receipt, session?.answer].some((r) => r?.id === command))
         this.sessions.reply(session, reply, command);
-      else if (reply.result === "rejected" && original?.body.op === "preview" && session) {
+      else if (reply.result === "rejected" && original?.body.op === "transcript" && session) {
+        session.chatOlder = false;
+        if (!session.chat) session.chatError = `Conversation unavailable: ${reply.message}`;
+      } else if (reply.result === "rejected" && original?.body.op === "preview" && session) {
         session.displayed = `Preview unavailable: ${reply.message}`;
         // A rejected preview can indicate session replacement; refresh identity.
         this.refresh();
@@ -1658,9 +1728,25 @@ export class Store {
     }
     if (wasFollowing !== entry.following || wasUnread !== entry.unread) this.emit();
   }
+  chatScrolled(node) {
+    const entry = this.entry;
+    if (!entry || !node.getClientRects().length) return;
+    const was = [entry.chatFollowing, entry.chatUnread];
+    entry.chatScroll = node.scrollTop;
+    entry.chatFollowing = node.scrollHeight - node.clientHeight - node.scrollTop < 24;
+    if (entry.chatFollowing) entry.chatUnread = false;
+    if (node.scrollTop < 240) this.older();
+    if (was[0] !== entry.chatFollowing || was[1] !== entry.chatUnread) this.emit();
+  }
   latest() {
     const entry = this.entry;
     if (!entry) return;
+    if (this.chatShown) {
+      entry.chatFollowing = true;
+      entry.chatUnread = false;
+      this.sync();
+      return;
+    }
     entry.following = true;
     entry.unread = false;
     entry.displayed = entry.output;

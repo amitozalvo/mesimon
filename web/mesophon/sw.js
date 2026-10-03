@@ -36,6 +36,7 @@ const PAGE = [
   "./shin.js",
   "./starts.js",
   "./store.js",
+  "./transcript.js",
   "./vendor/preact.module.js",
   "./vendor/hooks.module.js",
   "./vendor/htm.module.js",

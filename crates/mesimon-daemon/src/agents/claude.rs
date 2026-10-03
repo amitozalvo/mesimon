@@ -171,6 +171,14 @@ impl AgentAdapter for Claude {
         history::latest_preview(path)
     }
 
+    fn rows(
+        &self,
+        at: u64,
+        record: &serde_json::Value,
+    ) -> Vec<mesimon_core::mesophon::TranscriptRow> {
+        history::rows(at, record)
+    }
+
     fn conversation_key(&self, record: &SessionRecord) -> Option<String> {
         Some(record.claude_session_id.unwrap_or(record.id).to_string())
     }

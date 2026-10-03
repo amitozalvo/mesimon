@@ -222,6 +222,14 @@ impl AgentAdapter for Codex {
         super::read_preview_artifact(path).or_else(|| discovery::read_preview(path))
     }
 
+    fn rows(
+        &self,
+        at: u64,
+        record: &serde_json::Value,
+    ) -> Vec<mesimon_core::mesophon::TranscriptRow> {
+        discovery::rows(at, record)
+    }
+
     fn conversation_key(&self, record: &mesimon_core::board::SessionRecord) -> Option<String> {
         record.codex_thread_id.clone().filter(|id| !id.is_empty())
     }

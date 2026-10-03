@@ -100,10 +100,15 @@ for (const [name, engine] of [
         const card = page.locator(".ticket.card", { hasText: "private-ticket-canary" });
         await card.waitFor();
         await card.click();
+        // The conversation is the ticket page's first view (T-626); this
+        // pass reads the pane's screen through the sealed road, so it turns
+        // to the raw view, which the page then remembers.
+        await page.locator("#chat").waitFor();
+        await page.locator('input[name="output-view"][value="raw"]').check();
         await page.waitForFunction(() =>
           document
             .querySelector("#preview")
-            .textContent.includes("preview-canary"),
+            ?.textContent.includes("preview-canary"),
         );
         assert.equal(await page.locator("#preview script").count(), 0);
         assert(await page.getByRole("radio", { name: "Queue", exact: true }).isChecked());

@@ -160,6 +160,79 @@ fn tail(bytes: &[u8]) -> Tail {
     result
 }
 
+/// What one rollout record shows on a phone's transcript (T-626). Every
+/// rollout carries its conversation as `response_item`s (a forked or a
+/// resumed thread may carry no `event_msg` copy of them): a message from the
+/// person or the agent, and a tool call. The context Codex writes as the
+/// person's (`<environment_context>`, the AGENTS.md text) is not a row.
+pub fn rows(at: u64, v: &Value) -> Vec<mesimon_core::mesophon::TranscriptRow> {
+    use mesimon_core::mesophon::{RowKind, TranscriptRow};
+    let ms = v["timestamp"].as_str().and_then(mesimon_core::adopt::iso_ms);
+    let row = |kind, text: &str| TranscriptRow::new(at, kind, text, ms);
+    let tool = |text: &str| TranscriptRow::tool(at, text, ms);
+    let first_line = |t: &str| t.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string);
+    let p = &v["payload"];
+    let one = match (v["type"].as_str(), p["type"].as_str()) {
+        (Some("response_item"), Some("message")) => {
+            let parts = p["content"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            let text = parts
+                .iter()
+                .filter(|part| part["type"] == "output_text" || part["type"] == "input_text")
+                .filter_map(|part| part["text"].as_str())
+                .filter(|t| !t.starts_with("<image") && !t.starts_with("</image"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let text = text.trim();
+            match p["role"].as_str() {
+                Some("assistant") => row(RowKind::Reply, text),
+                Some("user") => {
+                    if let Some(command) = super::super::transcript::command_words(text) {
+                        row(RowKind::Notice, &command)
+                    } else if text.starts_with('<')
+                        || text.starts_with("# AGENTS.md")
+                        // `turn_aborted` is the interrupt's row.
+                        || text.starts_with("[Request interrupted by user")
+                    {
+                        None
+                    } else {
+                        row(RowKind::Prompt, text)
+                    }
+                }
+                _ => None,
+            }
+        }
+        (Some("response_item"), Some("function_call")) => {
+            let name = p["name"].as_str().unwrap_or("tool");
+            let args: Value = p["arguments"]
+                .as_str()
+                .and_then(|a| serde_json::from_str(a).ok())
+                .unwrap_or_default();
+            let what = match &args["command"] {
+                Value::Array(argv) => argv.last().and_then(Value::as_str).and_then(first_line),
+                Value::String(c) => first_line(c),
+                _ => args
+                    .as_object()
+                    .and_then(|o| o.values().find_map(Value::as_str))
+                    .and_then(first_line),
+            };
+            tool(&what.map_or(name.to_string(), |w| format!("{name} {w}")))
+        }
+        (Some("response_item"), Some("custom_tool_call")) => {
+            let name = p["name"].as_str().unwrap_or("tool");
+            let what = p["input"].as_str().and_then(first_line);
+            tool(&what.map_or(name.to_string(), |w| format!("{name} {w}")))
+        }
+        (Some("response_item"), Some("web_search_call")) => {
+            let query = p["action"]["query"].as_str().unwrap_or_default();
+            tool(&format!("web search {query}"))
+        }
+        (Some("event_msg"), Some("turn_aborted")) => row(RowKind::Notice, "interrupted"),
+        (Some("compacted"), _) => row(RowKind::Notice, "conversation compacted"),
+        _ => None,
+    };
+    one.into_iter().collect()
+}
+
 /// Read-only native history preview. No transcript event changes board state.
 pub fn read_preview(path: &Path) -> Option<super::super::AgentPreview> {
     let mut budget = HEAD_BYTES + TAIL_BYTES;
@@ -557,6 +630,68 @@ mod tests {
         )
         .is_empty());
         assert_eq!(read_preview(&a).unwrap().text.as_deref(), Some("Synthetic reply"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// T-626: a rollout reads as its conversation: the person's words and
+    /// the agent's from the `response_item`s, one line per tool call, the
+    /// interrupt and the compaction; Codex's injected context is not a row.
+    #[test]
+    fn a_rollout_page_is_the_conversation() {
+        let item = |payload: Value| {
+            json!({"timestamp":"2026-10-03T10:00:00.000Z","type":"response_item","payload":payload})
+                .to_string()
+        };
+        let msg = |role: &str, kind: &str, text: &str| {
+            item(json!({"type":"message","role":role,"content":[{"type":kind,"text":text}]}))
+        };
+        let lines = [
+            record("01a0", "/r"),
+            msg("developer", "input_text", "<permissions instructions>"),
+            msg("user", "input_text", "# AGENTS.md instructions for /r"),
+            msg("user", "input_text", "<environment_context>\n<cwd>/r</cwd>"),
+            msg("user", "input_text", "fix the bug"),
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"fix the bug"}})
+                .to_string(),
+            item(json!({"type":"reasoning","summary":[],"encrypted_content":"x"})),
+            item(json!({"type":"function_call","name":"shell",
+                "arguments":"{\"command\":[\"bash\",\"-lc\",\"cargo test\\nmore\"]}"})),
+            item(json!({"type":"function_call_output","output":"ok"})),
+            item(json!({"type":"custom_tool_call","name":"apply_patch",
+                "input":"*** Begin Patch\n*** Update File: a.rs"})),
+            msg("assistant", "output_text", "Fixed."),
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"Fixed."}})
+                .to_string(),
+            json!({"type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted"}})
+                .to_string(),
+            json!({"type":"compacted","payload":{"message":"","replacement_history":[]}})
+                .to_string(),
+        ];
+        let root = std::env::temp_dir().join(format!("msmn-codex-page-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let p = root.join("rollout.jsonl");
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let page = crate::agents::read_transcript(
+            mesimon_core::board::SessionKind::Codex,
+            &p,
+            crate::agents::transcript::Ask::default(),
+        )
+        .expect("page");
+        use mesimon_core::mesophon::RowKind;
+        let rows: Vec<(RowKind, &str)> =
+            page.rows.iter().map(|r| (r.kind, r.text.as_str())).collect();
+        assert_eq!(
+            rows,
+            [
+                (RowKind::Prompt, "fix the bug"),
+                (RowKind::Tool, "shell cargo test"),
+                (RowKind::Tool, "apply_patch *** Begin Patch"),
+                (RowKind::Reply, "Fixed."),
+                (RowKind::Notice, "interrupted"),
+                (RowKind::Notice, "conversation compacted"),
+            ]
+        );
+        assert_eq!(page.rows[0].ms, Some(1_791_021_600_000));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

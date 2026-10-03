@@ -371,6 +371,12 @@ pub fn classify_tail_record(v: &Value) -> TailEvent {
 pub fn tool_activity(v: &Value) -> Option<String> {
     let blocks = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_array)?;
     let b = blocks.iter().find(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))?;
+    Some(tool_label(b))
+}
+
+/// `tool_activity`'s label for one `tool_use` block (T-626: a transcript
+/// row per call).
+pub fn tool_label(b: &Value) -> String {
     let input = b.get("input");
     let field = |key: &str| {
         input
@@ -381,17 +387,17 @@ pub fn tool_activity(v: &Value) -> Option<String> {
             .filter(|t| !t.is_empty())
     };
     if let Some(d) = field("description") {
-        return Some(d.to_string());
+        return d.to_string();
     }
     let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
     // A path shows its last component only: the card has ~40 cells and the
     // directory is the least distinguishing part of a repo-relative path.
     if let Some(p) = field("file_path").or_else(|| field("notebook_path")) {
-        return Some(format!("{name} {}", p.rsplit('/').next().unwrap_or(p)));
+        return format!("{name} {}", p.rsplit('/').next().unwrap_or(p));
     }
     match ["pattern", "query", "url", "skill", "command"].iter().find_map(|k| field(k)) {
-        Some(t) => Some(format!("{name} {t}")),
-        None => Some(name.to_string()),
+        Some(t) => format!("{name} {t}"),
+        None => name.to_string(),
     }
 }
 
@@ -558,7 +564,7 @@ pub fn iso_ms(s: &str) -> Option<u64> {
     u64::try_from(secs).ok()?.checked_mul(1000)?.checked_add(millis)
 }
 
-fn is_interrupt(v: &Value) -> bool {
+pub fn is_interrupt(v: &Value) -> bool {
     if v.get("interruptedMessageId").is_some_and(|x| !x.is_null()) {
         return true;
     }

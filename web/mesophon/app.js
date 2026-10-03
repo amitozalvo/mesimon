@@ -10,6 +10,7 @@ const store = new Store(Browser);
 try {
   store.theme = localStorage.getItem("mesophon-theme") || "system";
   store.rail = localStorage.getItem("mesophon-sidebar") === "rail";
+  store.outputView = localStorage.getItem("mesophon-output") === "raw" ? "raw" : "chat";
 } catch {
   /* System appearance remains usable when preferences are unavailable. */
 }

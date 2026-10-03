@@ -1796,6 +1796,92 @@ select {
   box-shadow: var(--shadow);
 }
 
+/* ---- the conversation (T-626): the transcript as a chat, newest at the bottom -- */
+.segmented-small label {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 0.75rem;
+}
+.chat {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  overflow-anchor: none;
+  padding: 14px 14px 60px;
+  border-radius: 16px;
+  background: var(--s1);
+}
+.chat-row {
+  margin: 0;
+  min-width: 0;
+}
+.chat-prompt {
+  align-self: flex-end;
+  max-width: min(520px, 88%);
+  padding: 9px 13px;
+  border-radius: 18px 18px 6px 18px;
+  background: var(--s3);
+  color: var(--ink);
+  font-size: 0.90625rem;
+  line-height: 1.45;
+}
+.chat-prompt p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-reply .markdown {
+  color: var(--ink);
+}
+.chat-reply .markdown p,
+.chat-reply .markdown h4 {
+  margin: 0;
+}
+.chat-tool,
+.chat-doing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 0.71875rem;
+  line-height: 1.4;
+}
+.chat-tool svg {
+  flex: none;
+}
+.chat-tool span,
+.chat-doing span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Consecutive tool calls read as one block. */
+.chat-tool + .chat-tool {
+  margin-top: -6px;
+}
+.chat-notice {
+  align-self: center;
+  color: var(--ink3);
+  font-size: 0.75rem;
+}
+.chat-edge,
+.chat-empty {
+  margin: 0;
+  align-self: center;
+  color: var(--ink4);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+}
+.chat-empty {
+  margin: auto 0;
+  color: var(--ink3);
+}
+
 /* ---- notes (T-532): the description and note rows on the ticket page ---------- */
 .notes-card {
   display: flex;

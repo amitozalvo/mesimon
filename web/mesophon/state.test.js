@@ -4,6 +4,7 @@ import { Sessions, answerBusy, receiptTick, reasonText } from "./sessions.js";
 import { afterWords, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS } from "./board.js";
 import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
+import { mergePage, tailAsk } from "./transcript.js";
 const ticket = (id, session) => ({
   id,
   key: id,
@@ -746,4 +747,33 @@ test("a remembered board keeps each ticket's note count and digest", () => {
   board.update({ title: "B", columns: ["TODO"], tickets: [{ ...ticket("one"), notes: 2, noted: "abc" }, ticket("two")] });
   const [one, two] = JSON.parse(JSON.stringify(board.snapshot())).tickets;
   assert.deepEqual([one.notes, one.noted, two.notes, two.noted], [2, "abc", 0, ""]);
+});
+
+// T-626: the conversation's pages join by byte offset.
+test("transcript pages join: what was written since appends, an earlier page goes on top", () => {
+  const row = (at, text = `r${at}`) => ({ at, kind: "reply", text });
+  let chat = mergePage(undefined, {}, { conversation: "a", rows: [row(40), row(50)], from: 40, end: 60, next_before: 40 });
+  assert.deepEqual([chat.floor, chat.end, chat.rows.length], [40, 60, 2]);
+  assert.deepEqual(tailAsk(chat), { after: 60, conversation: "a" });
+  assert.deepEqual(tailAsk(undefined), {});
+  // Nothing new: the page stays as it was.
+  assert.deepEqual(mergePage(chat, tailAsk(chat), { conversation: "a", rows: [], from: 60, end: 60 }).rows, chat.rows);
+  // New rows append, and only rows past `from` are replaced.
+  chat = mergePage(chat, tailAsk(chat), { conversation: "a", rows: [row(60), row(70)], from: 60, end: 80 });
+  assert.deepEqual(chat.rows.map((r) => r.at), [40, 50, 60, 70]);
+  const replaced = mergePage(chat, { after: 50, conversation: "a" }, { conversation: "a", rows: [row(50, "again")], from: 50, end: 80 });
+  assert.deepEqual(replaced.rows.map((r) => r.text), ["r40", "again"]);
+  // The page before joins on top where the held part begins; one that does
+  // not end there is not this conversation's, and is dropped.
+  chat = mergePage(chat, { before: 40 }, { conversation: "a", rows: [row(10), row(20)], from: 10, end: 40, next_before: 10 });
+  assert.deepEqual([chat.floor, chat.rows.map((r) => r.at)], [10, [10, 20, 40, 50, 60, 70]]);
+  assert.equal(mergePage(chat, { before: 10 }, { conversation: "a", rows: [row(0)], from: 0, end: 5 }), chat);
+  chat = mergePage(chat, { before: 10 }, { conversation: "a", rows: [row(0)], from: 0, end: 10 });
+  assert.equal(chat.floor, null, "the file's start");
+  // More written than a page holds: a gap, so the tail starts over.
+  const gap = mergePage(chat, tailAsk(chat), { conversation: "a", rows: [row(900)], from: 900, end: 910, next_before: 900 });
+  assert.deepEqual([gap.rows.length, gap.floor], [1, 900]);
+  // A new conversation (`/clear`, `/resume`) starts over too.
+  const fresh = mergePage(chat, tailAsk(chat), { conversation: "b", rows: [row(0)], from: 0, end: 10 });
+  assert.deepEqual([fresh.conversation, fresh.rows.length, fresh.floor], ["b", 1, null]);
 });

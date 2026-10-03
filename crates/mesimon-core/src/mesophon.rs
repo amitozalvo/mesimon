@@ -74,6 +74,23 @@ pub enum Request {
         ticket: String,
         session: String,
     },
+    /// A page of the agent's conversation, read from its transcript file
+    /// (T-626): the newest page, the one ending at `before`, or with `after`
+    /// and the `conversation` it belongs to, only what was written since.
+    /// The pane's screen stays `Preview`, the page's raw view.
+    Transcript {
+        ticket: String,
+        session: String,
+        #[serde(default)]
+        before: Option<u64>,
+        #[serde(default)]
+        after: Option<u64>,
+        #[serde(default)]
+        conversation: Option<String>,
+        /// At most this many rows, and never more than `TRANSCRIPT_ROWS`.
+        #[serde(default)]
+        limit: Option<u16>,
+    },
     Prompt {
         ticket: String,
         session: String,
@@ -442,6 +459,63 @@ pub fn step_line(step: &str) -> Option<String> {
     crate::text::nonblank(crate::text::cap_bytes(&flat, LINE_MAX_BYTES))
 }
 
+/// One row of a transcript page (T-626).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptRow {
+    /// The byte offset of the record the row came from: its place in the
+    /// file, the same for good. One record may give several rows.
+    pub at: u64,
+    pub kind: RowKind,
+    pub text: String,
+    /// When the record was written, epoch ms, where it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowKind {
+    /// The person's words.
+    Prompt,
+    /// The agent's words: a reply, or a progress note between tool calls.
+    Reply,
+    /// One tool call, on one line.
+    Tool,
+    /// What happened to the conversation: interrupted, compacted, cleared.
+    Notice,
+}
+
+/// The most rows a transcript page carries (T-626).
+pub const TRANSCRIPT_ROWS: usize = 200;
+/// The longest row a phone is sent (T-626); a longer reply is cut and says so.
+pub const TRANSCRIPT_ROW_MAX_BYTES: usize = 8 * 1024;
+/// A page's rows, serialized, stay under this (T-626): a sealed answer over
+/// 48 KiB is refused whole.
+pub const TRANSCRIPT_PAGE_BYTES: usize = 32 * 1024;
+
+impl TranscriptRow {
+    /// A row's words as a phone is sent them (T-626): lines kept, controls
+    /// and format hazards gone, cut at `TRANSCRIPT_ROW_MAX_BYTES`. `None`
+    /// for words that say nothing.
+    pub fn new(at: u64, kind: RowKind, text: &str, ms: Option<u64>) -> Option<Self> {
+        let text = crate::text::scrub_lines(&text.replace('\t', "  "));
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let text = if text.len() > TRANSCRIPT_ROW_MAX_BYTES {
+            format!("{}…", crate::text::cap_bytes(text, TRANSCRIPT_ROW_MAX_BYTES - 3).trim_end())
+        } else {
+            text.to_string()
+        };
+        Some(TranscriptRow { at, kind, text, ms })
+    }
+    /// A tool call's row: one line, as `step_line` draws a working step.
+    pub fn tool(at: u64, label: &str, ms: Option<u64>) -> Option<Self> {
+        Some(TranscriptRow { at, kind: RowKind::Tool, text: step_line(label)?, ms })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum Reply {
@@ -471,6 +545,20 @@ pub enum Reply {
         /// as the screen they came from. Absent from an older host.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cols: Option<u16>,
+    },
+    /// A page of a transcript (T-626). `rows` are the records in
+    /// `[from, end)`, oldest first; the page before this one ends at
+    /// `next_before`, absent when this page reaches the file's start. A
+    /// page wholly before the file's end never changes, since the file is
+    /// only appended to. `conversation` names the file without spelling
+    /// its path, and changes when `/clear` or `/resume` starts a new one.
+    Transcript {
+        conversation: String,
+        rows: Vec<TranscriptRow>,
+        from: u64,
+        end: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_before: Option<u64>,
     },
     /// Where a command stands. A dialog answer (T-567) waits at
     /// `awaiting_delivery` until it settles as `answered` (the hook edge said
