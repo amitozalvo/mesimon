@@ -190,6 +190,7 @@ fn tool_result(params: &Value, sock: &PathBuf, session: uuid::Uuid) -> Value {
             workspace: Some(workspace),
         },
         ToolCall::SleepAgent { key, seen } => Command::AgentSleepTicket { key, seen: Some(seen) },
+        ToolCall::MergeTicket { key, seen } => Command::AgentMergeTicket { key, seen: Some(seen) },
         ToolCall::AskAgent { key, text, seen, plan, deliver } => {
             Command::AgentAskTicket { key, text, seen: Some(seen), plan, deliver }
         }
@@ -298,6 +299,17 @@ fn render(resp: Response) -> Value {
             }
             if !workspace.is_empty() {
                 body["workspace"] = json!(workspace);
+            }
+            text(&body)
+        }
+        // The crown's merge (T-613): the branch landed, in the merge's own
+        // words, and what became of the merged notice to the worker — a
+        // word, never a bool (T-466). Every refusal is `Err`.
+        Response::AgentMerged { key, detail, notice, seen } => {
+            let mut body =
+                json!({ "key": key, "outcome": "merged", "detail": detail, "notice": notice });
+            if let Some(seen) = seen {
+                body["seen"] = json!(seen);
             }
             text(&body)
         }

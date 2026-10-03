@@ -830,12 +830,14 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let touch = touch.expect("the crown's filing is a touch");
     assert_eq!((touch.action.as_str(), touch.from), ("created", Some(a)));
 
-    // ---- the shim: seventeen tools, and `get_ticket` with a key --------------
+    // ---- the shim: eighteen tools, and `get_ticket` with a key ---------------
     let mut shim = Shim::start(&sock, sa);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
     let listed = shim.rpc("tools/list", json!({}));
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 17);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 18);
+    let r = shim.call("merge_ticket", json!({ "key": kb }));
+    assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
     let r = shim.call("answer_agent", json!({ "key": kb, "seen": "x", "index": 0 }));
     assert_eq!(r["isError"], true, "request is required by the tool: {r}");
     let r = shim.call("accept_plan", json!({ "key": kb, "seen": "x" }));
@@ -1534,8 +1536,8 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     let delivered = lines_with(&worker).pop().unwrap();
     assert!(
         delivered.ends_with(&format!(
-            "{worker} delivered (merge_state needs_rebase, column {column}) ∙ get_ticket \
-             key={kw} for state and notes"
+            "{worker} delivered (merge_state needs_rebase, merge: person, column {column}) ∙ \
+             get_ticket key={kw} for state and notes"
         )),
         "{delivered}"
     );
@@ -1577,12 +1579,24 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     start(&mut c, sa);
     stop(&mut c, sa);
 
-    // ---- 3. the person merges: the crown hears it once (T-527); the notice
-    //         that tells the agent, and its turn, are the person's ----------
+    // ---- 3. the person merges: the board tells the crown's worker in the
+    //         same step (T-613), and the crown hears the landing once, when
+    //         that notice turn is over (T-596) -------------------------------
     match c.request(Command::MergeTicket { id: w }) {
-        Response::Merge { outcome: mesimon_core::command::MergeOutcome::Merged, .. } => {}
+        Response::Merge {
+            outcome: mesimon_core::command::MergeOutcome::Merged, notified, ..
+        } => {
+            assert!(notified, "a worker the crown started is told by the board");
+        }
         other => panic!("merge: {other:?}"),
     }
+    wait_until(std::time::Duration::from_secs(10), "the merged notice to reach the worker", || {
+        lines_with("has been merged").len() == 1
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(lines_with(&worker).len(), 2, "held while the notice is on its way");
+    start(&mut c, ws);
+    stop(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
         lines_with(&worker).len() == 3
     });
@@ -1590,24 +1604,12 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     assert_eq!(
         merged,
         format!(
-            "{worker} merged (merge_state ahead → merged) ∙ get_ticket key={kw} for state and \
-             notes"
+            "{worker} merged and finished its turn (merge_state ahead → merged) ∙ get_ticket \
+             key={kw} for state and notes"
         )
     );
     start(&mut c, sa);
     stop(&mut c, sa);
-    assert!(matches!(
-        c.request(Command::MergeToAgent {
-            id: w,
-            request: mesimon_core::command::MergeRequest::MergedNotice
-        }),
-        Response::Ok
-    ));
-    wait_until(std::time::Duration::from_secs(10), "the merged notice to reach the worker", || {
-        lines_with("has been merged").len() == 1
-    });
-    start(&mut c, ws);
-    stop(&mut c, ws);
     std::thread::sleep(std::time::Duration::from_millis(2000));
     assert_eq!(
         lines_with(&worker).len(),
@@ -4451,4 +4453,486 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     );
     let view = read(&mut c, sa, &kw).unwrap().background.expect("still background");
     assert!(view.since_secs.is_some_and(|s| s >= 6), "{view:?}");
+}
+
+/// T-613: the crown merges where the train will not. `get_ticket` on a
+/// worktree ticket says who merges its branch (`merge: by, why`) — the crown
+/// with the train off, the train once armed, the crown again once the
+/// ticket is taken off it by `t`, a person under supervised mode — and the
+/// delivered wake line carries the word. `merge_ticket` is refused in words
+/// on the crown's own ticket, with nothing to merge, under supervised mode
+/// and at `needs_rebase` (the rebase word), and otherwise takes the ff-only
+/// road: the branch lands, the card reads `♛ merged`, the feed names the
+/// agent's `merge_ticket` with its outcome, and the merged notice goes to
+/// the worker where the pref is on, so the crown's `merged` wake waits for
+/// that notice turn (T-596). With the pref off (this board's `prefs.json`,
+/// read by the daemon at the merge), no notice and the wake comes at once.
+#[test]
+fn the_crown_merges_where_the_train_will_not() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_merges",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_merges");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-97 merged by the crown");
+    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(v.merge.is_none(), "no branch yet, so nobody is named to merge it");
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = format!("{kw} \"mesimon-probe-97 merged by the crown\"");
+    let merged = || {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&h.repo)
+            .args(["merge-base", "--is-ancestor", &branch, "main"])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let merge = |c: &mut TestClient, key: &str, seen: Option<String>| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentMergeTicket { key: key.into(), seen },
+        )
+    };
+    let refused = |resp: Response, words: &[&str]| {
+        let Response::Err { message } = resp else { panic!("not refused: {resp:?}") };
+        for w in words {
+            assert!(message.contains(w), "the refusal names {w:?}: {message}");
+        }
+    };
+    let who = |c: &mut TestClient, key: &str| {
+        let v = read(c, sa, key).unwrap();
+        let m = v.merge.expect("a worktree ticket says who merges it");
+        (m.by, m.why, v.seen)
+    };
+    let wait_state = |c: &mut TestClient, word: &str| {
+        wait_until(
+            std::time::Duration::from_secs(10),
+            &format!("the flags to read the branch {word}"),
+            || read(c, sa, &kw).unwrap().merge_state.as_deref() == Some(word),
+        );
+    };
+    let notice = format!("Your branch {branch} has been merged into main");
+
+    // ---- 1. nothing to merge yet, and the crown's own ticket --------------
+    let (by, why, seen) = who(&mut c, &kw);
+    assert_eq!((by.as_str(), why.as_str()), ("crown", "the train is off"));
+    refused(merge(&mut c, &kw, seen), &[&kw, "no commits to merge"]);
+    let own = read(&mut c, sa, &ka).unwrap();
+    refused(merge(&mut c, &ka, own.seen), &["this session's own ticket"]);
+    // The worker reads who merges on its own ticket too.
+    let mine = read(&mut c, ws, &kw).unwrap();
+    assert_eq!(mine.merge.map(|m| m.by).as_deref(), Some("crown"));
+    // A turn with nothing new: the card lands in REVIEW, the train's column,
+    // and the crown hears the finish (T-591).
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the finish's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    // The crown's first line carries its typed title in front (no Enter
+    // was sent for it), so the first wake is matched inside it.
+    assert!(
+        lines_with(&worker)[0].contains(&format!("{worker} finished its turn")),
+        "{}",
+        lines_with(&worker)[0]
+    );
+    assert_eq!(c.board().ticket(w).unwrap().column, "REVIEW");
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 2. who merges, by the board's state ------------------------------
+    // Armed, the train has nothing to take yet (no commits), so nothing
+    // moves while the words are read.
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    let (by, why, _) = who(&mut c, &kw);
+    assert_eq!(by, "train", "{why}");
+    assert!(matches!(c.request(Command::SetManualMerge { id: w, on: true }), Response::Ok));
+    let (by, why, _) = who(&mut c, &kw);
+    assert_eq!((by.as_str(), why.as_str()), ("crown", "out of the train (t)"));
+    assert!(matches!(c.request(Command::SetManualMerge { id: w, on: false }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: false, merge_notice: false }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
+        Response::Ok
+    ));
+    let (by, why, seen) = who(&mut c, &kw);
+    assert_eq!((by.as_str(), why.as_str()), ("person", "crown mode is supervised"));
+    refused(merge(&mut c, &kw, seen), &["Crown mode is supervised", "m on the ticket's page"]);
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+
+    // ---- 3. the delivery: the wake line says who merges -------------------
+    // The pref off, in this board's own prefs.json: the daemon reads it at
+    // the merge, no board open.
+    std::fs::write(h.paths.prefs_file(), r#"{"merge_train_notice": false}"#).unwrap();
+    commit(&path, "one.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&worker).len() == 2
+    });
+    assert_eq!(
+        lines_with(&worker)[1],
+        format!(
+            "{worker} delivered (merge_state clean → ahead, merge: crown, ahead 0 → 1) ∙ \
+             get_ticket key={kw} for state and notes"
+        )
+    );
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 4. behind its base: the rebase word ------------------------------
+    std::fs::write(h.repo.join("base1.txt"), "base\n").unwrap();
+    git(&h.repo, &["add", "base1.txt"]);
+    git(&h.repo, &["commit", "-qm", "base1"]);
+    wait_state(&mut c, "needs_rebase");
+    let (_, _, seen) = who(&mut c, &kw);
+    refused(merge(&mut c, &kw, seen), &[&kw, "behind its base", "ask_agent", "merge_state ahead"]);
+    assert!(!merged());
+    // The worker rebases and ends its turn: delivered again, at the new tip.
+    start(&mut c, ws);
+    git(&path, &["rebase", "-q", "main"]);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the rebased delivery's wake", || {
+        lines_with(&worker).len() == 3
+    });
+    let line = lines_with(&worker)[2].clone();
+    assert!(line.starts_with(&format!("{worker} delivered (")), "{line}");
+    assert!(line.contains("merge: crown"), "{line}");
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    wait_state(&mut c, "ahead");
+
+    // ---- 5. the crown merges, pref off: no notice, the wake at once -------
+    let (by, _, seen) = who(&mut c, &kw);
+    assert_eq!(by, "crown");
+    match merge(&mut c, &kw, seen) {
+        Response::AgentMerged { key, detail, notice, seen } => {
+            assert_eq!(key, kw);
+            assert!(detail.contains(&format!("{branch} merged into main")), "{detail}");
+            assert_eq!(notice, "off");
+            assert!(seen.is_some(), "the receipt carries the fresh stamp");
+        }
+        other => panic!("merge_ticket: {other:?}"),
+    }
+    assert!(merged());
+    assert_eq!(
+        touches(&mut c).iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
+        Some("merged"),
+        "the card lights ♛ merged"
+    );
+    wait_until(std::time::Duration::from_secs(5), "the merge in the feed", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| {
+                l.contains("\"cmd\":\"merge_ticket\"")
+                    && l.contains("\"outcome\":\"merged\"")
+                    && l.contains("\"actor\":\"agent\"")
+            })
+        })
+    });
+    wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
+        lines_with(&worker).len() == 4
+    });
+    assert_eq!(
+        lines_with(&worker)[3],
+        format!(
+            "{worker} merged (merge_state ahead → merged) ∙ get_ticket key={kw} for state and \
+             notes"
+        )
+    );
+    assert!(lines_with(&notice).is_empty(), "the pref is off: no notice");
+    let (_, _, seen) = who(&mut c, &kw);
+    refused(merge(&mut c, &kw, seen), &[&kw, "already merged"]);
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 6. pref on (the default): the notice goes, the wake waits for it -
+    std::fs::remove_file(h.paths.prefs_file()).unwrap();
+    commit(&path, "two.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the second delivery's wake", || {
+        lines_with(&worker).len() == 5
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    wait_state(&mut c, "ahead");
+    let (_, _, seen) = who(&mut c, &kw);
+    match merge(&mut c, &kw, seen) {
+        Response::AgentMerged { notice, .. } => assert_eq!(notice, "sent"),
+        other => panic!("merge_ticket: {other:?}"),
+    }
+    assert!(merged());
+    wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
+        lines_with(&notice).len() == 1
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(lines_with(&worker).len(), 5, "held while the notice is on its way");
+    start(&mut c, ws);
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(lines_with(&worker).len(), 5, "held while the notice turn runs");
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
+        lines_with(&worker).len() == 6
+    });
+    assert_eq!(
+        lines_with(&worker)[5],
+        format!(
+            "{worker} merged and finished its turn (merge_state ahead → merged) ∙ get_ticket \
+             key={kw} for state and notes"
+        )
+    );
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 1, "{feed}");
+    assert!(feed.contains("\"merge_notified\""), "{feed}");
+}
+
+/// T-613: a person's `m` on a worker the crown started tells the worker by
+/// itself — the merged notice goes in the same step where the pref is on,
+/// the reply says `notified`, so the dialog offers no second press — and the
+/// crown's `merged` wake waits for that notice turn (T-596), so the person's
+/// gesture and the crown's close-out no longer collide. A person's own
+/// worker keeps the two steps: its merge reply is not `notified`, and no
+/// notice goes until the person's second `m`.
+#[test]
+fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_hand_merge",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_hand_merge");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-98 told by the board");
+    let p = create(&mut c, "mesimon-probe-99 a person's own");
+    let kw = key_of(&mut c, w);
+    for id in [w, p] {
+        assert!(matches!(
+            c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
+            Response::Ok
+        ));
+    }
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    // W: the crown's worker. P: the person's own, spawned by hand.
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket: p,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false
+        }),
+        Response::Provisioning
+    ));
+    let wt_w = wait_attached(&mut c, w);
+    let wt_p = wait_attached(&mut c, p);
+    let path_w = std::path::PathBuf::from(wt_w.path.expect("a path"));
+    let path_p = std::path::PathBuf::from(wt_p.path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "both parked starts to land", || {
+        c.board().live_agent(w).is_some() && c.board().live_agent(p).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let ps = c.board().live_agent(p).unwrap().id;
+    assert!(c.board().live_agent(w).unwrap().started_by.is_some());
+    assert!(c.board().live_agent(p).unwrap().started_by.is_none());
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = format!("{kw} \"mesimon-probe-98 told by the board\"");
+    let merged = |branch: &str| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&h.repo)
+            .args(["merge-base", "--is-ancestor", branch, "main"])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let wait_ahead = |c: &mut TestClient, id: ulid::Ulid| {
+        wait_until(
+            std::time::Duration::from_secs(10),
+            "the flags to read the branch ahead",
+            || wt_of(c, id).is_some_and(|w| w.ahead > 0 && !w.merged && !w.needs_rebase),
+        );
+    };
+
+    // ---- 1. the crown's worker delivers; the person presses m -------------
+    commit(&path_w, "work.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    wait_ahead(&mut c, w);
+    match c.request(Command::MergeTicket { id: w }) {
+        Response::Merge {
+            outcome: mesimon_core::command::MergeOutcome::Merged, notified, ..
+        } => {
+            assert!(notified, "the board told the crown's worker in the same step");
+        }
+        other => panic!("m on W: {other:?}"),
+    }
+    assert!(merged(&wt_w.branch));
+    let notice_w = format!("Your branch {} has been merged into main", wt_w.branch);
+    wait_until(std::time::Duration::from_secs(10), "the merged notice to W", || {
+        lines_with(&notice_w).len() == 1
+    });
+    // The crown's wake waits for the notice turn, then says so.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(lines_with(&worker).len(), 1, "held while the notice is on its way");
+    start(&mut c, ws);
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(lines_with(&worker).len(), 1, "held while the notice turn runs");
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
+        lines_with(&worker).len() == 2
+    });
+    assert_eq!(
+        lines_with(&worker)[1],
+        format!(
+            "{worker} merged and finished its turn (merge_state ahead → merged) ∙ get_ticket \
+             key={kw} for state and notes"
+        )
+    );
+
+    // ---- 2. the person's own worker keeps the two steps -------------------
+    // W's merge moved main under P: P rebases in its turn first.
+    commit(&path_p, "mine.txt");
+    start(&mut c, ps);
+    git(&path_p, &["rebase", "-q", "main"]);
+    stop(&mut c, ps);
+    wait_ahead(&mut c, p);
+    match c.request(Command::MergeTicket { id: p }) {
+        Response::Merge {
+            outcome: mesimon_core::command::MergeOutcome::Merged, notified, ..
+        } => {
+            assert!(!notified, "a person's worker is told by the person's second m");
+        }
+        other => panic!("m on P: {other:?}"),
+    }
+    assert!(merged(&wt_p.branch));
+    let notice_p = format!("Your branch {} has been merged into main", wt_p.branch);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(lines_with(&notice_p).is_empty(), "no notice until the second m");
+    assert!(matches!(
+        c.request(Command::MergeToAgent {
+            id: p,
+            request: mesimon_core::command::MergeRequest::MergedNotice,
+        }),
+        Response::Ok
+    ));
+    wait_until(std::time::Duration::from_secs(10), "the second m's notice to P", || {
+        lines_with(&notice_p).len() == 1
+    });
+    // P is nobody's worker under the crown: its merge woke nothing (a wake
+    // line quotes the title; P's own typed title carries no quotes).
+    assert!(lines_with("a person's own\" ").is_empty());
 }

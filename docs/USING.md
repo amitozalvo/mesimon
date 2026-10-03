@@ -119,7 +119,10 @@ worktree; that choice locks once a session exists. On a ticket page: `c` starts 
 `!` opens a terminal in the ticket's worktree or checkout, and `enter` steps into a live session:
 its own terminal takes over your whole screen. `ctrl-]` (or `ctrl-5`) steps back out to where you
 were. `v` shows the diff once there is a worktree, and `m` on the branch line merges it:
-fast-forward only, so mesimon never mints a merge commit.
+fast-forward only, so mesimon never mints a merge commit. A second `m` tells the agent its branch
+was merged; for an agent the crown started, the board tells it in the same step (where **Auto
+merge tells the agent after a merge** is on), the line reads `merged ∙ its agent was told`, and
+there is no second press.
 
 What you step into is the agent itself: Claude Code or Codex exactly as you run it without
 mesimon, with the same prompt, the same slash commands and the same permission dialogs. Type to
@@ -292,6 +295,16 @@ the conversation is kept, `c` wakes it, and while it sleeps its seat is free for
 The crown chooses each ticket's workspace when it files or starts it, a worktree of its own or the
 shared checkout, is refused the shared checkout while another ticket's agent works or sleeps
 there, and wakes an agent it parked itself, in the workspace it was parked in.
+Who merges a finished worker's branch depends on the board. The merge train lands it where the
+train is on and the ticket's column reaches a merge. Where the train will not — it is off, you
+took the ticket off it with `t`, or its column's train setting stops short of a merge — the crown
+merges it with `merge_ticket`, the same fast-forward `m` makes, and tells the worker where **Auto
+merge tells the agent after a merge** is on; the card reads `♛ merged`. Under **Crown mode**
+`supervised` the merge is yours: the crown is refused in words that name the row, and raises its
+hand to say which ticket waits for your `m`. The crown reads who merges on every worker's ticket
+(`merge: by train, crown or person`, with the reason), and the sentence that wakes it on a
+delivery carries the word. A branch behind its base is never merged by the crown: it asks the
+worker to rebase first.
 Once that agent's branch is merged, the crown moves its ticket to DONE, so a finished worker is
 closed without asking you. Where **Crown archives tickets** is on, it may also archive the ticket,
 which reclaims the merged worktree; otherwise the ticket and its worktree stay until you archive it. An agent you started yourself is never slept by

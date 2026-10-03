@@ -149,6 +149,15 @@ pub const CROWN_WAKES: &str = concat!(
      since_secs). The wait may be the work (a long suite, a build) or a loop that will not end, \
      and the board cannot tell which, so it merges, parks and ends nothing for it: ask_agent \
      reaches the worker while its tasks run, to ask whether it is done and what they wait on. \
+     A delivered worker's get_ticket says who merges its branch (merge: by train, crown or \
+     person, and why), and the delivered line carries the word. The train's is waited for: \
+     the crown hears it once, at the merge. The crown's — the train off, the ticket out of it \
+     by t, or a column the train stops short of, under autonomous mode — is merged with \
+     merge_ticket while merge_state reads ahead; at needs_rebase the agent is asked to rebase \
+     with ask_agent and merged once its turn ends with the branch ahead. A person's — crown \
+     mode supervised — is raised with raise_hand on the crown's own ticket, naming the ticket \
+     and that m on its page merges it. merge_ticket pastes the merged notice into the worker \
+     where the merged-notice pref is on, so the worker hears it from the board. \
      A worker whose branch is merged is \
      finished: sleep_agent parks it, which frees its seat in the crown's budget, and \
      move_ticket to the board's done column closes it (its gate admits a merged branch). \
@@ -250,11 +259,14 @@ pub fn lint_tool_text(s: &str) -> Result<(), String> {
 
 // ------------------------------------------------------------------- tools
 
-/// The complete tool surface. Eight tools, and there is deliberately no tool
-/// to spawn a session, kill a session, delete a ticket, archive a ticket,
-/// rename a ticket, change a workspace, merge a branch, read a transcript, read
-/// a cost, or grant anything. A tool that does not exist cannot be granted by
-/// accident at 11pm, and cannot be talked into firing by injected ticket text.
+/// The complete tool surface. Eight tools for every agent, and there is
+/// deliberately no tool to spawn a session, kill a session, delete a ticket,
+/// read a transcript, read a cost, or grant anything. A tool that does not
+/// exist cannot be granted by accident at 11pm, and cannot be talked into
+/// firing by injected ticket text. The crown's keyed tools (T-411 and after)
+/// are the named exceptions — archive, rename, workspace, start, sleep, ask,
+/// answer, accept and merge, each on another ticket, each refused for every
+/// caller the daemon does not find crowned.
 ///
 /// The two note tools are D10's T1 ANNOTATE tier — the one tier that names a
 /// home for text an agent writes about its own ticket, which is the argument
@@ -297,10 +309,11 @@ pub fn tools() -> Vec<Value> {
             "name": "get_ticket",
             "description": "Returns the mesimon ticket this session is attached to, or with \
                             key another ticket (crown only): key, title, column, workspace, \
-                            branch, merge state (per repo on a workspace), the column names \
+                            branch, merge state (per repo on a workspace), who merges \
+                            (merge), the column names \
                             move_ticket accepts and what each column is for, tags, \
-                            every tag the board knows (allowed_tags), the description (first \
-                            note), every note's id, name and author, the agent's state word \
+                            all tags the board knows (allowed_tags), the description (first \
+                            note), each note's id, name and author, the agent's state \
                             and a seen stamp keyed edits require. The prompt that starts a \
                             session is often the ticket's title alone; the description and \
                             notes are the rest of the brief, so this is a session's first call.",
@@ -715,6 +728,31 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        // The crown's merge (T-613): `m` on another ticket's page, for the
+        // branches the merge train will not land — the train off, the
+        // ticket out of it by `t`, a column the train stops short of. The
+        // same ff-only road, under the board's crown mode; the never-tier's
+        // `MergeTicket` stays where it is, since no agent names a ticket id.
+        json!({
+            "name": "merge_ticket",
+            "description": "Merges another mesimon ticket's worktree branch into its base \
+                            (crown only, if the board lets it: Crown mode autonomous), \
+                            fast-forward only, as m on its page does, then tells its agent \
+                            where the merged notice is on. For a ticket whose get_ticket merge \
+                            reads by: crown; the train's wait for the train, a person's for the \
+                            person. Refused on this session's ticket, at merge_state \
+                            needs_rebase (ask_agent asks the rebase first), merged or absent, \
+                            under a working agent, and in the train's rebase turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
+                    "seen": { "type": "string", "description": "get_ticket's seen stamp." },
+                },
+                "required": ["key", "seen"],
+                "additionalProperties": false,
+            },
+        }),
     ]
 }
 
@@ -793,6 +831,11 @@ pub enum ToolCall {
         workspace: String,
     },
     SleepAgent {
+        key: String,
+        seen: String,
+    },
+    /// The crown's merge (T-613).
+    MergeTicket {
         key: String,
         seen: String,
     },
@@ -995,6 +1038,9 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
         "sleep_agent" => {
             Ok(ToolCall::SleepAgent { key: word(args, "key")?, seen: word(args, "seen")? })
         }
+        "merge_ticket" => {
+            Ok(ToolCall::MergeTicket { key: word(args, "key")?, seen: word(args, "seen")? })
+        }
         "ask_agent" => Ok(ToolCall::AskAgent {
             key: word(args, "key")?,
             text: args
@@ -1179,7 +1225,7 @@ fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Seventeen tools, eighteen commands (`get_ticket` with a
+        // The tier. Eighteen tools, nineteen commands (`get_ticket` with a
         // key is its own command on the wire).
         Command::AgentGetTicket
         | Command::AgentListBoard
@@ -1206,6 +1252,13 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // stay below — no agent names a session id, and a person's agent is
         // parked by nobody but the person.
         | Command::AgentSleepTicket { .. }
+        // The crown's merge (T-613): the ff-only road a person's `m` and the
+        // train take, for the branches the train will not land, judged by
+        // the daemon against the board's `crown_mode` and the branch's
+        // state. `MergeTicket` itself stays below — no agent names a
+        // ticket id — and the merge is admitted here so a supervised
+        // board's refusal names its row.
+        | Command::AgentMergeTicket { .. }
         // The crown's ask (T-413): words HELD on another ticket's card until
         // a person sends them. `PromptSession` itself stays below: the
         // person's send is the road, and there is no other.
@@ -1259,8 +1312,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
 
         // Everything below is the never-tier. An agent may not spawn or kill a
         // session, delete or archive or rename a ticket, change a workspace,
-        // merge a branch, read a diff, take the focus token, or stop the
-        // daemon — and there is no tool that would let it try.
+        // merge a branch by id, read a diff, take the focus token, or stop the
+        // daemon — and there is no tool that would let it try. The crown's
+        // keyed forms above are the named exceptions, each judged by the
+        // daemon on every call.
         //
         // The six human tag commands (T-83) stay out, even now that
         // `AgentTagTicket` is in. Five of them mutate the REGISTRY, which is
@@ -1474,6 +1529,7 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
         | Command::AgentArchiveTicket { .. }
         | Command::AgentStartTicket { .. }
         | Command::AgentSleepTicket { .. }
+        | Command::AgentMergeTicket { .. }
         | Command::AgentAskTicket { .. }
         | Command::AgentAnswerTicket { .. }
         | Command::AgentAcceptPlan { .. } => AgentTools::Full,
@@ -1487,9 +1543,8 @@ pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
         "get_ticket" | "list_board" | "read_note" | "read_attachment" => AgentTools::Read,
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket" | "create_ticket" | "rename_ticket" | "set_workspace" | "archive_ticket"
-        | "start_agent" | "sleep_agent" | "ask_agent" | "answer_agent" | "accept_plan" => {
-            AgentTools::Full
-        }
+        | "start_agent" | "sleep_agent" | "merge_ticket" | "ask_agent" | "answer_agent"
+        | "accept_plan" => AgentTools::Full,
         _ => return None,
     })
 }
@@ -1661,6 +1716,7 @@ mod tests {
                 "start_agent",
             ),
             (Command::AgentSleepTicket { key: "T-1".into(), seen: None }, "sleep_agent"),
+            (Command::AgentMergeTicket { key: "T-1".into(), seen: None }, "merge_ticket"),
             (
                 Command::AgentAskTicket {
                     key: "T-1".into(),
@@ -1753,9 +1809,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_seventeen_tools() {
+    fn exactly_eighteen_tools() {
         let t = tools();
-        assert_eq!(t.len(), 17);
+        assert_eq!(t.len(), 18);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -1776,7 +1832,8 @@ mod tests {
                 "sleep_agent",
                 "ask_agent",
                 "answer_agent",
-                "accept_plan"
+                "accept_plan",
+                "merge_ticket"
             ]
         );
     }
@@ -2686,10 +2743,10 @@ mod tests {
 
     /// Every tool has a command, and every allowed command has a tool. A
     /// command an agent may send that no tool can reach would be a hole nobody
-    /// is looking at. Seventeen commands for sixteen tools: `get_ticket`
+    /// is looking at. Nineteen commands for eighteen tools: `get_ticket`
     /// with a key rides its own command (T-411).
     #[test]
-    fn the_tier_is_exactly_seventeen_commands() {
+    fn the_tier_is_exactly_nineteen_commands() {
         let allowed = [
             Command::AgentGetTicket,
             Command::AgentReadTicket { key: "T-1".into() },
@@ -2730,6 +2787,7 @@ mod tests {
                 workspace: None,
             },
             Command::AgentSleepTicket { key: "T-1".into(), seen: None },
+            Command::AgentMergeTicket { key: "T-1".into(), seen: None },
             Command::AgentAskTicket {
                 key: "T-1".into(),
                 text: "x".into(),
@@ -2751,6 +2809,62 @@ mod tests {
             assert!(agent_allows(c), "{c:?} should be in the tier");
         }
         assert_eq!(allowed.len(), tools().len() + 1);
+    }
+
+    /// T-613: the crown's merge is a keyed tool parsed like its siblings, on
+    /// the top rung, and the crown is told who merges each delivered branch
+    /// and what to do about each answer — in words the lint admits, since
+    /// `CROWN_WAKES` is result data that may instruct but is linted anyway.
+    #[test]
+    fn the_crown_merges_where_the_train_will_not() {
+        assert_eq!(
+            parse_tool_call("merge_ticket", &json!({ "key": " T-4 ", "seen": "abc" })),
+            Ok(ToolCall::MergeTicket { key: "T-4".into(), seen: "abc".into() })
+        );
+        assert!(parse_tool_call("merge_ticket", &json!({ "key": "T-4" }))
+            .unwrap_err()
+            .contains("seen is required"));
+        assert!(parse_tool_call("merge_ticket", &json!({ "seen": "abc" }))
+            .unwrap_err()
+            .contains("key is required"));
+        let registry = tools();
+        let tool = registry.iter().find(|t| t["name"] == "merge_ticket").unwrap();
+        let description = tool["description"].as_str().unwrap();
+        for words in [
+            "crown only",
+            "Crown mode autonomous",
+            "fast-forward only",
+            "needs_rebase",
+            "ask_agent",
+            "by: crown",
+            "under a working agent",
+        ] {
+            assert!(description.contains(words), "merge_ticket says {words:?}");
+        }
+        assert_eq!(tool["inputSchema"]["required"], json!(["key", "seen"]));
+        assert!(tool.get("annotations").is_none(), "a writer carries no read-only hint");
+        assert_eq!(tier_needed_by_tool("merge_ticket"), Some(AgentTools::Full));
+        assert!(agent_allows(&Command::AgentMergeTicket { key: "T-1".into(), seen: None }));
+        assert!(
+            !agent_allows(&Command::MergeTicket { id: ulid::Ulid::nil() }),
+            "the id form stays in the never-tier"
+        );
+        let get = registry.iter().find(|t| t["name"] == "get_ticket").unwrap();
+        assert!(get["description"].as_str().unwrap().contains("who merges (merge)"));
+        for words in [
+            "says who merges its branch (merge: by train, crown or person, and why)",
+            "the delivered line carries the word",
+            "The train's is waited for",
+            "the train off, the ticket out of it by t, or a column the train stops short of",
+            "merged with merge_ticket while merge_state reads ahead",
+            "at needs_rebase the agent is asked to rebase with ask_agent",
+            "A person's — crown mode supervised — is raised with raise_hand",
+            "m on its page merges it",
+            "merge_ticket pastes the merged notice into the worker",
+        ] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES says {words:?}");
+        }
+        assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
     }
 
     /// The mod's bridge polls as the session (T-574) and is admitted at every

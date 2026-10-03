@@ -10322,7 +10322,18 @@ impl App {
         };
         d.running = None;
         match reply {
-            Ok(Response::Merge { outcome, detail }) => match outcome {
+            // The board told the agent in the same step (T-613: a worker the
+            // crown started, the merged-notice pref on): there is no second
+            // press to offer, so the dialog closes and the identity line says
+            // why. The send is remembered as the notify stage's, so a later
+            // `m` reads "the agent was told already".
+            Ok(Response::Merge { outcome: MergeOutcome::Merged, notified: true, .. }) => {
+                let ticket = d.ticket;
+                self.merge_dialog = None;
+                self.merge_sent = Some((ticket, MergeStage::Notify, Instant::now()));
+                self.merge_note = "merged ∙ its agent was told".into();
+            }
+            Ok(Response::Merge { outcome, detail, .. }) => match outcome {
                 MergeOutcome::Merged => {
                     d.stage = MergeStage::Notify;
                     d.outstanding = false;
@@ -11796,6 +11807,7 @@ pub(crate) mod test_support {
                     return Ok(Response::Merge {
                         outcome: MergeOutcome::Merged,
                         detail: "merged 2 commit(s)".into(),
+                        notified: false,
                     });
                 }
                 // The checkout diff, so a test can press `v` on the board
@@ -18636,6 +18648,59 @@ mod tests {
         assert!(sent_contains(&sent, "MergedNotice"), "one m after the merge notifies");
         assert_eq!(app.merge_note, "agent notified");
         assert!(app.merge_dialog.is_none());
+    }
+
+    /// T-613: a merge the board already told the agent about (a worker the
+    /// crown started, the merged-notice pref on) has no second `m` to offer:
+    /// the dialog closes, the identity line says why, and a later `m` reads
+    /// the agent as told. A person's own worker (the test above) keeps the
+    /// two steps.
+    #[test]
+    fn a_merge_that_told_the_agent_offers_no_second_press() {
+        let (mut app, sent, _sid) = app_with_claude(
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn },
+            false,
+        );
+        let wt = |merged, ahead| WorktreeItem {
+            merged_in: String::new(),
+            merged_oid: String::new(),
+            ticket: ulid::Ulid(1),
+            branch: "msmn/T-1-work".into(),
+            status: "attached".into(),
+            merged,
+            conflict: false,
+            ahead,
+            needs_rebase: false,
+            detail: None,
+            path: None,
+            repos: vec![],
+        };
+        app.worktrees.push(wt(false, 2));
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        press(&mut app, 'm');
+        press(&mut app, 'm');
+        assert!(app.merge_in_flight());
+        // The daemon's reply says the notice went with the merge.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Ok(Response::Merge {
+            outcome: MergeOutcome::Merged,
+            detail: "msmn/T-1-work merged into main".into(),
+            notified: true,
+        }))
+        .unwrap();
+        app.merge_dialog.as_mut().unwrap().running = Some(rx);
+        assert!(app.poll_merge().unwrap());
+        assert!(app.merge_dialog.is_none(), "no 'tell the agent' stage");
+        assert_eq!(app.ctx().merge_confirm, "");
+        assert_eq!(app.merge_note, "merged ∙ its agent was told");
+        assert!(!sent_contains(&sent, "MergedNotice"), "the board sent it, not this press");
+        // The snapshot now reads the branch merged: `m` says the agent was
+        // told rather than asking blind.
+        app.worktrees.push(wt(true, 0));
+        assert_eq!(app.merge_outstanding(ulid::Ulid(1)), Some("agent notified"));
+        press(&mut app, 'm');
+        assert_eq!(app.ctx().merge_confirm, "tell it again");
+        assert_eq!(app.merge_dialog_rows()[1], "the agent was told already — tell it again?");
     }
 
     #[test]

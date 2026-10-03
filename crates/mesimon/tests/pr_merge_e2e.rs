@@ -127,12 +127,12 @@ fn a_squash_merged_branch_reads_merged() {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         match c.request(Command::MergeTicket { id }) {
-            Response::Merge { outcome: MergeOutcome::AlreadyMerged, detail } => {
+            Response::Merge { outcome: MergeOutcome::AlreadyMerged, detail, .. } => {
                 assert!(detail.contains("already in main"), "{detail}");
                 break;
             }
             // The session may still be winding down through the reaper.
-            Response::Merge { outcome: MergeOutcome::Refused, detail } => {
+            Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
                 assert!(Instant::now() < deadline, "never settled: {detail}");
                 std::thread::sleep(Duration::from_millis(250));
             }

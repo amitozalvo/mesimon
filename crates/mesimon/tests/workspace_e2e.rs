@@ -325,8 +325,8 @@ fn a_workspace_ticket_gets_a_worktree_per_repo() {
     let deadline = Instant::now() + Duration::from_secs(15);
     let detail = loop {
         match c.request(Command::MergeTicket { id }) {
-            Response::Merge { outcome: MergeOutcome::Merged, detail } => break detail,
-            Response::Merge { outcome: MergeOutcome::Refused, detail } => {
+            Response::Merge { outcome: MergeOutcome::Merged, detail, .. } => break detail,
+            Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
                 assert!(Instant::now() < deadline, "merge never accepted: {detail}");
                 std::thread::sleep(Duration::from_millis(300));
             }
@@ -356,7 +356,7 @@ fn a_workspace_ticket_gets_a_worktree_per_repo() {
     git(&container.join("web"), &["add", "."]);
     git(&container.join("web"), &["commit", "-qm", "web work"]);
     match c.request(Command::MergeTicket { id }) {
-        Response::Merge { outcome: MergeOutcome::NeedsRebase, detail } => {
+        Response::Merge { outcome: MergeOutcome::NeedsRebase, detail, .. } => {
             assert!(detail.contains("web"), "{detail}");
             assert!(!detail.contains("api"), "api has landed and is not named: {detail}");
         }

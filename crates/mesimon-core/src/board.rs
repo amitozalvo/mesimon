@@ -1715,6 +1715,12 @@ impl CrownMode {
         self == Self::Autonomous
     }
 
+    /// The crown merges a worker's branch where the train will not
+    /// (`merge_ticket`, T-613); supervised keeps the merge a person's.
+    pub fn merges(self) -> bool {
+        self == Self::Autonomous
+    }
+
     /// The setting's value in the words the row and `doctor` show.
     pub fn word(self) -> &'static str {
         match self {

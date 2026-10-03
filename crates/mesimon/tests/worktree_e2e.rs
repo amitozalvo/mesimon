@@ -264,7 +264,7 @@ fn m4_worktree_lifecycle() {
     loop {
         match c.request(Command::MergeTicket { id: t1 }) {
             Response::Merge { outcome: MergeOutcome::Merged, .. } => break,
-            Response::Merge { outcome: MergeOutcome::Refused, detail } => {
+            Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
                 // Session may still be winding down through the reaper.
                 assert!(Instant::now() < deadline, "merge never went through: {detail}");
                 std::thread::sleep(Duration::from_millis(300));

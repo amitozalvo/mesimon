@@ -208,14 +208,20 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
 /// converted to Local by an adapter; Local retains the existing same-UID boundary.
 /// The owner's paired phone (T-498) passes where automation does: a ticket
 /// whose words came from outside (an import, a teammate) waits for the
-/// keyboard, whoever asks.
+/// keyboard, whoever asks. So does an agent (T-613): the one execution an
+/// agent reaches is the crown's `merge_ticket`, the merge train's own road
+/// under a person's grant, and it is held to the train's floor — a ticket
+/// that waits for the keyboard waits for it whoever asks. A teammate never
+/// executes here.
 pub fn authorize_execution(
     principal: &Principal,
     policy: crate::board::ExecutionPolicy,
 ) -> Decision {
     match principal {
         Principal::Local => Decision::Allow,
-        Principal::Automation { .. } | Principal::Paired { .. } if policy.allows_automation() => {
+        Principal::Automation { .. } | Principal::Paired { .. } | Principal::Agent { .. }
+            if policy.allows_automation() =>
+        {
             Decision::Allow
         }
         Principal::Automation { .. }
@@ -409,7 +415,8 @@ mod tests {
         assert_eq!(authorize_execution(&automation(), LocalAutomation), Decision::Allow);
         assert!(authorize_execution(&automation(), OwnerOnly).denied());
         assert!(authorize_execution(&agent(), OwnerOnly).denied());
-        assert!(authorize_execution(&agent(), LocalAutomation).denied());
+        // T-613: the crown's merge takes the train's road and its floor.
+        assert_eq!(authorize_execution(&agent(), LocalAutomation), Decision::Allow);
     }
 
     #[test]

@@ -243,9 +243,10 @@ fn agent_board_tools_tier_and_collisions() {
             "tag_ticket",
             "raise_hand",
             // The crown's three (T-411), its start (T-412), its sleep
-            // (T-539), its ask (T-413), its answer (T-569) and its plan
-            // accept (T-582): listed on every full-tier session, refused by
-            // the daemon on every ticket but the crowned one.
+            // (T-539), its ask (T-413), its answer (T-569), its plan
+            // accept (T-582) and its merge (T-613): listed on every
+            // full-tier session, refused by the daemon on every ticket but
+            // the crowned one.
             "rename_ticket",
             "set_workspace",
             "archive_ticket",
@@ -253,7 +254,8 @@ fn agent_board_tools_tier_and_collisions() {
             "sleep_agent",
             "ask_agent",
             "answer_agent",
-            "accept_plan"
+            "accept_plan",
+            "merge_ticket"
         ]
     );
 

@@ -95,6 +95,12 @@ in the Esc menu under `Release notes` and on GitHub.
 - **The crown is woken when a worker finishes a turn with nothing to
   merge**, and, after a merge, only once the worker's merged-notice turn has
   ended.
+- **Pressing `m` on a ticket whose agent the crown started tells that agent
+  in the same step**, where `Settings › Behaviour › Auto merge tells the
+  agent after a merge` is on: the merge dialog closes with `merged ∙ its
+  agent was told` and offers no second press, and the crown is woken once
+  that notice turn ends. A ticket whose agent you started keeps the two
+  presses.
 - **The crown's words can reach a working agent at once.** `ask_agent`
   takes `deliver`: `idle` (the default) waits for the agent's turn to end,
   `now` sends the way your `^y` does, and `immediately` uses Claude Code's
@@ -142,6 +148,15 @@ in the Esc menu under `Release notes` and on GitHub.
   is never replaced; the words are then sent `now`. Codex has no such key.
 - The crown can read a picture on another ticket: `read_attachment` takes
   `key`.
+- **The crown can merge a worker's branch where the merge train will not**
+  with the new `merge_ticket` tool: the train off, the ticket taken off it
+  with `t`, or a column whose train setting stops short of a merge. The same
+  fast-forward `m` makes; the worker is told where `Auto merge tells the
+  agent after a merge` is on, and the card reads `♛ merged`. Refused under
+  `Crown mode: supervised`, on a branch behind its base (the crown asks the
+  worker to rebase first), and under a working agent. `get_ticket` says who
+  merges each branch (`merge: by train, crown or person`, with the reason),
+  and the sentence that wakes the crown on a delivery carries the word.
 
 ### Fixed
 

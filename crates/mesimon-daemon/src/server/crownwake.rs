@@ -1392,7 +1392,10 @@ impl Daemon {
     /// changed in brackets. A worker's title and a column's name are user
     /// text headed for another process, so they cross `scrub_text`. A worker
     /// no longer on the board contributes nothing. A hand's reason never
-    /// rides it (T-414): the crown reads it through `get_ticket`.
+    /// rides it (T-414): the crown reads it through `get_ticket`. A delivered
+    /// branch that is not yet merged says who merges it (T-613, `merge:
+    /// crown`), read as the sentence goes — the board's mode and train as
+    /// they stand now, not as they stood when the wake was owed.
     pub(super) fn crown_wake_text(&self) -> String {
         let mut events: Vec<String> = Vec::new();
         let mut keys: Vec<String> = Vec::new();
@@ -1400,7 +1403,15 @@ impl Daemon {
             let Some(t) = self.board.ticket(w.worker) else { continue };
             let title = mesimon_core::text::scrub_text(&t.title);
             let mut event = format!("{} \"{title}\" {}", t.short_key, w.clause());
-            let changed = w.changed();
+            let mut changed = w.changed();
+            let unmerged_branch =
+                w.to.as_ref().is_some_and(|to| to.merge.is_some_and(|m| m != "merged"));
+            if w.cause == WakeCause::Delivered && unmerged_branch {
+                let word = format!("merge: {}", self.merge_by(w.worker).by);
+                let at =
+                    changed.iter().position(|c| c.starts_with("merge_state")).map_or(0, |i| i + 1);
+                changed.insert(at, word);
+            }
             if !changed.is_empty() {
                 event.push_str(&format!(" ({})", changed.join(", ")));
             }

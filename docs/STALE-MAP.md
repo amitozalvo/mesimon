@@ -20117,3 +20117,70 @@ test. **The train on by default.** `Prefs::default().merge_train` and an absent 
 `prefs.json` are on; `save` writes every key, so a machine that ever saved its prefs carries the
 `false` it was given then and keeps it. Goldens that drew the off train (`t merge by hand` in
 three footers, the Behaviour list) moved with it; three TUI tests about the off state seed it.
+
+## The crown merges where the train will not (T-613, 2026-10-03, filed by the crown on T-607 from the author's review)
+
+**Seen.** With the merge train off, or a ticket taken out of it by `t`, a crown-started worker
+delivered and nothing merged it: the crown had no merge tool and was not told whose move the
+merge was. And a person's `m` on such a worker woke the crown at the merge while the person's
+second `m` (the notice) was still to come, so the crown's close-out (a park of a worker it read
+as idle) collided with the person's gesture.
+
+**Decided.** `merge_ticket { key, seen }`, the ninth keyed crown tool, under `Board::crown_mode`
+autonomous only. The road is `Daemon::merge_ticket` under `Principal::Agent { session }` — the
+same ff-only road a person's `m` and the train take — then the merged notice through
+`merge_to_agent(MergedNotice)` where the pref is on, as the train's pass pastes it. `get_ticket`
+says who merges beside `merge_state` (`merge: { by: train | crown | person, why }`), the
+delivered wake line carries `merge: <by>`, and `CROWN_WAKES` gains the rule: the train's is
+waited for, the crown's is merged at `ahead` and asked to rebase at `needs_rebase`, a person's is
+raised with `raise_hand`. A hand merge of a crown-started worker delivers the notice itself
+(`Response::Merge.notified`), so the dialog skips its Notify stage.
+
+**Built.** Core: `Command::AgentMergeTicket`, `Response::AgentMerged { key, detail, notice,
+seen }`, `Response::Merge.notified` (`#[serde(default)]`), `AgentTicketView.merge:
+AgentMergeView`, `CrownMode::merges`, the tool at the end of `tools()` (eighteen tools, nineteen
+agent commands), `ToolCall::MergeTicket`, the Full rung. **`authorize_execution` admits `Agent`
+where it admits `Automation`** (`LocalAutomation` only): the floor denied every agent because no
+tool reached an execution; now one does, behind the crown check and the mode, and an `OwnerOnly`
+ticket still waits for the keyboard whoever asks. Daemon: the handler judges in order — the
+crown's own ticket, `crown_merge_refusal` (supervised → "Settings → Agents → Crown mode is
+supervised: a person merges, m on the ticket's page"; no branch; `merged`; `clean`;
+`needs_rebase` → `rebase_first()`; the train's rebase turn via `Train::in_rebase_turn`) — then
+`merge_ticket`, the feed's `board_outcome("merge_ticket", merged | needs_rebase | refused)`,
+`notice_after_merge` (`sent | off | no_pane | failed`, feed `merge_notified` /
+`merge_notice_failed`), `crown_touched(…, "merged")` (`LandKind::of` falls to `Lit`, so the
+card's `♛ merged` runs as a move's). `merge_by`: supervised → person; `OwnerOnly` → person; the
+train unarmed → crown "the train is off"; `manual_merge` → crown "out of the train (t)"; a column
+whose reach is not Merge → crown "the train's reach in X is off|rebase"; a raised hand → crown;
+else train. **The merged-notice pref with no train armed is read from the prefs files**
+(`merged_notice_wanted`: this board's `prefs.json` override first, then the machine's, on by
+default): `Train::notice()` knows it only while a board arms the train (`reconcile_train` pushes
+nothing when the train pref is off), and the crown merges with no board open. `hand_merge` wraps
+the Local `MergeTicket`: a `Merged` outcome on a ticket whose live agent carries `started_by`
+delivers the notice and answers `notified: true`, and the crown's `merged` wake then waits for
+that turn on T-596's road unchanged. `crown_wake_text` inserts `merge: <by>` after the
+`merge_state` clause of a Delivered wake whose branch is not yet merged, read as the sentence
+goes (the board's mode and train as they stand). TUI: `poll_merge` on `Merged + notified`
+closes the dialog, `merge_note = "merged ∙ its agent was told"`, `merge_sent = Notify` so a later
+`m` reads "the agent was told already"; a person's own worker keeps the two presses. Shim: the
+mapping and the receipt (`outcome: merged`, `notice`). The mod's register list is
+`registered_for(tools_for(..))`, so nothing else moves; `get_ticket`'s description lost five
+words to fit "who merges (merge)" under the 820-byte cap.
+
+**Not built.** No `train_busy` refusal beyond the rebase turn: a worktree ticket is never a
+checkout holder, and a working worker is refused by `merge_ticket`'s own quiet rule, in its
+words. `started_by.is_some()` rather than the current crown decides a hand merge's notice: a
+worker a former crown started is still the board's worker, and the notice is the board's words.
+
+**Tests.** `crown_e2e::the_crown_merges_where_the_train_will_not`: who merges under the train
+armed, `t`, and supervised mode; refusals in words (nothing to merge, the own ticket, supervised,
+`needs_rebase` with the rebase word, already merged); the delivered line's `merge: crown`; the
+merge with the pref off (no notice, the wake at once) and on (the notice, the wake held until
+its turn ends); the card's `merged` touch and the feed line.
+`crown_e2e::a_hand_merge_of_a_crown_started_worker_tells_it_by_itself`: `notified`, the notice,
+the held wake, and a person's own worker merged with `notified: false` and no notice until the
+second `m`. `one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask` moved to the new
+road (the person's `m` tells the worker; the wake says `merged and finished its turn`). TUI
+`a_merge_that_told_the_agent_offers_no_second_press`. Core
+`mcp::the_crown_merges_where_the_train_will_not` (parse, rung, the tool's and `CROWN_WAKES`'s
+words, the lint) and the `authorize_execution` floor test flipped for `Agent`.

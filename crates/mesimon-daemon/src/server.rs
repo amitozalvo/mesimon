@@ -20,11 +20,11 @@ use mesimon_core::board::{
     PICKED_AT_DESK, PICKED_BY_AGENT,
 };
 use mesimon_core::command::{
-    AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentNeedsYouView, AgentQuestionView,
-    AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow, AgentTicketView, AskRoad, Command,
-    CrownTouch, Deliver, DiffTarget, Envelope, Event, ExternalItem, GraceItem, MergeOutcome,
-    Notice, Pending, PendingAction, Resources, Response, TerminalItem, WorktreeItem,
-    WorktreeRepoItem, PROTOCOL_VERSION,
+    AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentMergeView, AgentNeedsYouView,
+    AgentQuestionView, AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow,
+    AgentTicketView, AskRoad, Command, CrownTouch, Deliver, DiffTarget, Envelope, Event,
+    ExternalItem, GraceItem, MergeOutcome, Notice, Pending, PendingAction, Resources, Response,
+    TerminalItem, WorktreeItem, WorktreeRepoItem, PROTOCOL_VERSION,
 };
 use mesimon_core::crown;
 use mesimon_core::mcp;
@@ -1855,6 +1855,22 @@ fn crown_archive_off(key: &str, restore: bool) -> String {
     }
 }
 
+/// The crown's next step at a branch behind its base (T-613): the words
+/// `merge_ticket`'s refusal ends on, the same whether the flags read it
+/// before the merge or the merge itself answered `NeedsRebase`.
+fn rebase_first() -> &'static str {
+    "ask the agent to rebase first (ask_agent), and merge_ticket once its turn ends with \
+     merge_state ahead"
+}
+
+/// One boolean key of a `prefs.json` (T-613): `None` where the file, the
+/// key or the type is not there, so the next file is asked. The TUI owns
+/// the file; this reads one flag of it at the moment the daemon decides.
+fn pref_flag(path: &std::path::Path, key: &str) -> Option<bool> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text).ok()?.get(key)?.as_bool()
+}
+
 /// The notice kind a failed shell-env capture stands under. One kind, replaced
 /// rather than appended, so a shell that fails on every reload leaves one row.
 const SHELL_ENV_NOTICE: &str = "shell_env";
@@ -2275,7 +2291,7 @@ impl Daemon {
             Command::MoveTag { group, name, to_group, to_index } => {
                 self.move_tag(group, name, to_group, to_index)
             }
-            Command::MergeTicket { id } => self.merge_ticket(id, &Principal::Local),
+            Command::MergeTicket { id } => self.hand_merge(id),
             Command::MergeToAgent { id, request } => {
                 self.merge_to_agent(id, request, &Principal::Local, Ack::PROMPT)
             }
@@ -2564,6 +2580,7 @@ impl Daemon {
             | Command::AgentArchiveTicket { .. }
             | Command::AgentStartTicket { .. }
             | Command::AgentSleepTicket { .. }
+            | Command::AgentMergeTicket { .. }
             | Command::AgentAskTicket { .. }
             | Command::AgentAnswerTicket { .. }
             | Command::AgentAcceptPlan { .. }
@@ -5520,6 +5537,74 @@ impl Daemon {
                 self.agent_ticket_view(target)
                     .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
             }
+            // The crown's merge (T-613): `m` on a worker's page, for the
+            // branches the train will not land. The road is `merge_ticket`'s
+            // own — ff-only, refused under a working agent — under the
+            // agent principal; what is judged here first is whose merge it
+            // is (the board's crown mode) and whether the branch is one a
+            // merge can take, each refusal in words naming the next step.
+            Command::AgentMergeTicket { key, seen } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                if target == ticket {
+                    return Response::Err {
+                        message: format!(
+                            "{key} is this session's own ticket; merge_ticket is for a worker's \
+                             branch, and this one is the board's to merge"
+                        ),
+                    };
+                }
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                if let Some(message) = self.crown_merge_refusal(target, &key) {
+                    return Response::Err { message };
+                }
+                match self.merge_ticket(target, &by) {
+                    Response::Merge { outcome: MergeOutcome::Merged, detail, .. } => {
+                        self.feed.board_outcome(by.actor(), "merge_ticket", Some(target), "merged");
+                        let notice = self.notice_after_merge(target, &by);
+                        self.crown_touched(ticket, target, "merged");
+                        Response::AgentMerged {
+                            key: self
+                                .board
+                                .ticket(target)
+                                .map(|t| t.short_key.clone())
+                                .unwrap_or(key),
+                            detail,
+                            notice: notice.to_string(),
+                            seen: Some(self.seen_token(target)),
+                        }
+                    }
+                    Response::Merge { outcome: MergeOutcome::NeedsRebase, detail, .. } => {
+                        self.feed.board_outcome(
+                            by.actor(),
+                            "merge_ticket",
+                            Some(target),
+                            "needs_rebase",
+                        );
+                        Response::Err { message: format!("{key}: {detail}: {}", rebase_first()) }
+                    }
+                    Response::Merge { outcome: MergeOutcome::AlreadyMerged, detail, .. } => {
+                        Response::Err { message: format!("{key}: {detail}") }
+                    }
+                    Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
+                        self.feed.board_outcome(
+                            by.actor(),
+                            "merge_ticket",
+                            Some(target),
+                            "refused",
+                        );
+                        Response::Err { message: format!("{key}: {detail}") }
+                    }
+                    other => other,
+                }
+            }
             Command::AgentCreateTicket {
                 title,
                 column,
@@ -6460,6 +6545,158 @@ impl Daemon {
     /// The ticket's merge state as a word — the same four the `m` flow derives
     /// from git, and a word rather than an enum for the same reason
     /// `WorktreeItem.status` is one.
+    /// Who merges `id`'s branch when it is ready (T-613), and the one
+    /// clause that decides it — `get_ticket`'s `merge` and the delivered
+    /// wake's word. A person's: crown mode supervised, or a ticket whose
+    /// words came from outside, which waits for the keyboard whoever asks
+    /// (`authorize_execution`). The train's: it is armed, the ticket is on
+    /// it and its column reaches a merge, as `train::lane` reads them. The
+    /// crown's otherwise, under autonomous mode: the train off, the ticket
+    /// out of it by `t`, a column the train stops short of, a raised hand
+    /// the train leaves alone.
+    fn merge_by(&self, id: ulid::Ulid) -> AgentMergeView {
+        let view = |by: &str, why: &str| AgentMergeView { by: by.into(), why: why.into() };
+        if !self.board.crown_mode.merges() {
+            return view("person", "crown mode is supervised");
+        }
+        let Some(t) = self.board.ticket(id) else {
+            return view("person", "no such ticket");
+        };
+        if !t.effective_execution_policy().allows_automation() {
+            return view("person", "this ticket's words came from outside; a person merges it");
+        }
+        if !self.train.is_armed() {
+            return view("crown", "the train is off");
+        }
+        if t.manual_merge {
+            return view("crown", "out of the train (t)");
+        }
+        let reach = self.board.column(&t.column).map(|c| c.settings.train).unwrap_or_default();
+        if reach != mesimon_core::board::TrainReach::Merge {
+            return AgentMergeView {
+                by: "crown".into(),
+                why: format!(
+                    "the train's reach in {} is {}",
+                    mesimon_core::text::scrub_text(&t.column),
+                    reach.word()
+                ),
+            };
+        }
+        if t.hand_raised() {
+            return view("crown", "its hand is up, which the train leaves alone");
+        }
+        view("train", "the train is armed and reaches this column")
+    }
+
+    /// Why the crown's `merge_ticket` on `target` is refused before the
+    /// merge road is taken (T-613), or `None`: the mode, then the branch as
+    /// the flags read it — nothing to merge, merged, behind its base — and
+    /// the rebase turn the train asked for, which the train holds for.
+    fn crown_merge_refusal(&self, target: ulid::Ulid, key: &str) -> Option<String> {
+        if !self.board.crown_mode.merges() {
+            return Some(format!(
+                "Settings → Agents → Crown mode is supervised: a person merges {key}, m on \
+                 the ticket's page"
+            ));
+        }
+        if self.worktrees_barred {
+            return Some(self.barred_message("worktrees"));
+        }
+        let Some(state) = self.merge_state_word(target) else {
+            let ws = self.board.ticket(target).map(|t| t.workspace_strategy());
+            return Some(match ws {
+                Some(WorkspaceStrategy::Worktree) => {
+                    format!("{key} has no branch yet: its worktree is not cut")
+                }
+                _ => format!(
+                    "{key} has no branch to merge: its workspace is the shared checkout, whose \
+                     commits are on the base the moment they exist"
+                ),
+            });
+        };
+        match state {
+            "merged" => Some(format!("{key}'s branch is already merged")),
+            "clean" => Some(format!("{key}'s branch has no commits to merge yet")),
+            "needs_rebase" => Some(format!(
+                "{key}'s branch is behind its base ({}): {}",
+                self.base_branch.as_deref().unwrap_or("main"),
+                rebase_first()
+            )),
+            _ => {
+                let base_tip = self.base_tip_of(target).to_string();
+                self.train.in_rebase_turn(target, &base_tip).then(|| {
+                    format!(
+                        "{key} is in the rebase turn the merge train asked for; the board wakes \
+                         this session when that turn ends, and merge_ticket is for after it"
+                    )
+                })
+            }
+        }
+    }
+
+    /// Paste the merged notice into `id`'s agent after a merge the board
+    /// made for a person or the crown (T-613), where the merged-notice pref
+    /// is on, as the train's pass does. The word is the receipt's: `sent`,
+    /// `off`, `no_pane` or `failed`.
+    fn notice_after_merge(&mut self, id: ulid::Ulid, by: &Principal) -> &'static str {
+        if !self.merged_notice_wanted() {
+            return "off";
+        }
+        if self.board.pane_target(id).is_none() {
+            return "no_pane";
+        }
+        let req = mesimon_core::command::MergeRequest::MergedNotice;
+        let ack = Ack { by: "automation", word: "merge_notice_landed" };
+        match self.merge_to_agent(id, req, by, ack) {
+            Response::Ok => {
+                self.feed.board("automation", "merge_notified", Some(id));
+                "sent"
+            }
+            _ => {
+                self.feed.board("automation", "merge_notice_failed", Some(id));
+                "failed"
+            }
+        }
+    }
+
+    /// Whether a merge the board makes tells the agent (T-613): the
+    /// merged-notice pref. The board that armed the train said it
+    /// (`Train::notice`); with no train armed — the crown merges where the
+    /// train will not, and a board need not be open — it is read from the
+    /// prefs files at the moment it is needed, this board's override first
+    /// (T-361), then the machine's, and on by default as the pref is.
+    fn merged_notice_wanted(&self) -> bool {
+        if self.train.is_armed() {
+            return self.train.notice();
+        }
+        let key = mesimon_core::prefs::PrefKey::MergeTrainNotice.name();
+        pref_flag(&self.paths.prefs_file(), key)
+            .or_else(|| {
+                let machine = crate::paths::state_root().ok()?.join("prefs.json");
+                pref_flag(&machine, key)
+            })
+            .unwrap_or(true)
+    }
+
+    /// A person's `m` (T-613): the merge, and for a worker the crown started
+    /// the merged notice in the same step where the pref is on, so the
+    /// crown's `merged` wake waits for that notice turn (T-596) and the
+    /// person's second `m` is not owed — the dialog reads `notified` and
+    /// skips its "tell the agent" stage. A person's own worker keeps the
+    /// two steps: the one who started it is the one who tells it.
+    fn hand_merge(&mut self, id: ulid::Ulid) -> Response {
+        let by = Principal::Local;
+        match self.merge_ticket(id, &by) {
+            Response::Merge { outcome: MergeOutcome::Merged, detail, .. } => {
+                let crown_started =
+                    self.board.live_agent(id).is_some_and(|rec| rec.started_by.is_some());
+                let notified = crown_started && self.notice_after_merge(id, &by) == "sent";
+                Response::Merge { outcome: MergeOutcome::Merged, detail, notified }
+            }
+            other => other,
+        }
+    }
+
     fn merge_state_word(&self, id: ulid::Ulid) -> Option<&'static str> {
         let b = self.worktrees.get(&id)?;
         if b.branch.is_empty() {
@@ -6483,6 +6720,7 @@ impl Daemon {
             branch: self.worktrees.get(&id).map(|b| b.branch.clone()).filter(|b| !b.is_empty()),
             merge_state: self.merge_state_word(id).map(str::to_string),
             repos: self.agent_repo_views(id),
+            merge: self.merge_state_word(id).is_some().then(|| self.merge_by(id)),
             allowed_columns: self.agent_allowed_columns(id),
             column_descriptions: self.agent_column_descriptions(),
             automove: self
@@ -8511,6 +8749,7 @@ impl Daemon {
             return Response::Merge {
                 outcome: MergeOutcome::Refused,
                 detail: "not allowed".into(),
+                notified: false,
             };
         }
         if let Some(ticket) = self.board.ticket(id) {
@@ -8520,6 +8759,7 @@ impl Daemon {
                 return Response::Merge {
                     outcome: MergeOutcome::Refused,
                     detail: "this ticket requires a human to merge it".into(),
+                    notified: false,
                 };
             }
         }
@@ -8532,12 +8772,14 @@ impl Daemon {
             return Response::Merge {
                 outcome: MergeOutcome::Refused,
                 detail: "no worktree on this ticket".into(),
+                notified: false,
             };
         };
         if b.branch.is_empty() {
             return Response::Merge {
                 outcome: MergeOutcome::Refused,
                 detail: "worktree has no branch yet".into(),
+                notified: false,
             };
         }
         let branch = b.branch.clone();
@@ -8554,6 +8796,7 @@ impl Daemon {
             return Response::Merge {
                 outcome: MergeOutcome::Refused,
                 detail: "sessions still working — wait for them to finish".into(),
+                notified: false,
             };
         }
         if self.base_branch.is_none() {
@@ -8563,6 +8806,7 @@ impl Daemon {
             return Response::Merge {
                 outcome: MergeOutcome::Refused,
                 detail: "no default branch found".into(),
+                notified: false,
             };
         };
         let legs = self.legs_of(id);
@@ -8578,6 +8822,7 @@ impl Daemon {
             return Response::Merge {
                 outcome: MergeOutcome::Refused,
                 detail: "no commits on the branch yet — nothing to merge".into(),
+                notified: false,
             };
         }
         // The gate's own oracle, so `m` never offers to merge — or to rebase
@@ -8594,6 +8839,7 @@ impl Daemon {
             return Response::Merge {
                 outcome: MergeOutcome::AlreadyMerged,
                 detail: format!("{branch} is already in {landed}"),
+                notified: false,
             };
         }
         // ff-only policy, leg by leg (T-368): every touched leg is judged
@@ -8606,10 +8852,12 @@ impl Daemon {
             worktree::LegMerge::Nothing => Response::Merge {
                 outcome: MergeOutcome::Refused,
                 detail: "no commits on the branch yet — nothing to merge".into(),
+                notified: false,
             },
             worktree::LegMerge::Already => Response::Merge {
                 outcome: MergeOutcome::AlreadyMerged,
                 detail: format!("{branch} is already in {base}"),
+                notified: false,
             },
             worktree::LegMerge::NeedsRebase(moved) => Response::Merge {
                 outcome: MergeOutcome::NeedsRebase,
@@ -8620,6 +8868,7 @@ impl Daemon {
                 } else {
                     format!("{base} moved — rebase first")
                 },
+                notified: false,
             },
             worktree::LegMerge::Merged(landed) => {
                 self.refresh_worktree_flags();
@@ -8634,6 +8883,7 @@ impl Daemon {
                     } else {
                         format!("{branch} merged into {base}")
                     },
+                    notified: false,
                 }
             }
             worktree::LegMerge::Refused { landed, leg, base: leg_base, error } => {
@@ -8651,6 +8901,7 @@ impl Daemon {
                     } else {
                         detail
                     },
+                    notified: false,
                 }
             }
         }
@@ -8969,7 +9220,7 @@ impl Daemon {
                     }
                     return true;
                 }
-                Response::Merge { outcome: MergeOutcome::Refused, detail } => {
+                Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
                     let base_tip = self.base_tip_of(t).to_string();
                     self.train.refuse(t, tip, base_tip, detail);
                     self.feed.board("automation", "merge_train_refused:merge", Some(t));

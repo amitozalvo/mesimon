@@ -999,6 +999,21 @@ pub enum Command {
         #[serde(default)]
         seen: Option<String>,
     },
+    /// Merge another ticket's worktree branch, by key (T-613): the ff-only
+    /// road a person's `m` and the merge train take (`Daemon::merge_ticket`),
+    /// then the merged notice into its agent where the merged-notice pref is
+    /// on, as the train's pass pastes it. Crown only, under
+    /// `Board::crown_mode` autonomous — supervised keeps the merge a person's
+    /// (`m` on the ticket's page). Refused on the crown's own ticket, on a
+    /// branch behind its base (the agent rebases first: `ask_agent`), merged
+    /// or absent, and inside the rebase turn the train asked for.
+    /// `MergeTicket` itself stays in the never-tier: no agent names a ticket
+    /// id, and an uncrowned caller reads how a person grants the crown.
+    AgentMergeTicket {
+        key: String,
+        #[serde(default)]
+        seen: Option<String>,
+    },
     /// Queue words for another ticket's agent, by key (T-413): the crown's
     /// road into the T-390 follow-up queue. The entry is HELD — never
     /// drained by the daemon's own clock — until a person presses send
@@ -1408,6 +1423,7 @@ impl Command {
             | AgentArchiveTicket { .. }
             | AgentStartTicket { .. }
             | AgentSleepTicket { .. }
+            | AgentMergeTicket { .. }
             | AgentAskTicket { .. }
             | AgentAnswerTicket { .. }
             | AgentAcceptPlan { .. }
@@ -1699,10 +1715,15 @@ pub enum Response {
     /// worktree is being created off-thread; a BoardChanged follows when the
     /// session actually spawns.
     Provisioning,
-    /// MergeTicket's receipt.
+    /// MergeTicket's receipt. `notified` (T-613): the merge delivered the
+    /// merged notice to the ticket's agent in the same step — a worker the
+    /// crown started, with the merged-notice pref on — so the `m` flow has
+    /// no second press to offer. Absent from an older daemon: not told.
     Merge {
         outcome: MergeOutcome,
         detail: String,
+        #[serde(default)]
+        notified: bool,
     },
     /// argv the client should exec for the focus handover.
     Attach {
@@ -1865,6 +1886,18 @@ pub enum Response {
         #[serde(default)]
         workspace: String,
     },
+    /// AgentMergeTicket's receipt (T-613): the branch landed. `detail` is
+    /// the merge's own words (`<branch> merged into <base>`), `notice` what
+    /// became of the merged notice to the worker — `sent`, `off` (the pref),
+    /// `no_pane` (no live agent to tell), `failed` — and `seen` the target's
+    /// fresh stamp. Every refusal is `Err`, in words.
+    AgentMerged {
+        key: String,
+        detail: String,
+        notice: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<String>,
+    },
     /// AgentAskTicket's receipt (T-413): which ticket holds the words,
     /// whether they replaced an earlier ask of the crown's, and the
     /// target's fresh stamp. `held_for_person` is the road: true, the
@@ -1943,6 +1976,13 @@ pub struct AgentTicketView {
     /// single repo.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<AgentRepoView>,
+    /// Who merges this branch when it is ready (T-613), beside
+    /// `merge_state`: the merge train, the crown or a person, with the one
+    /// clause that decides it. Absent with no branch. The crown reads it
+    /// on a worker's ticket and acts by it (`mcp::CROWN_WAKES`); a worker
+    /// reads it on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge: Option<AgentMergeView>,
     /// Where `move_ticket` will accept a move to, right now. This is why
     /// `to_column` needs no schema enum: the valid set travels as transient
     /// result data instead of permanent context.
@@ -2108,7 +2148,7 @@ pub struct AgentQuestionView {
 /// One of the crown's recent edits (T-411), for the board to light the
 /// touched card: which ticket, what was done (a WORD — `moved`, `renamed`,
 /// `tagged`, `note`, `workspace`, `archived`, `restored`, `started`,
-/// `asked`, `parked`, `created`, `answered`, `accepted plan`, and `woke`
+/// `asked`, `parked`, `merged`, `created`, `answered`, `accepted plan`, and `woke`
 /// on the crown itself — so an
 /// older client drops what it cannot read), and when. In memory only,
 /// pruned after ten seconds; the feed is the record.
@@ -2143,6 +2183,20 @@ pub struct AgentRepoView {
     pub base: String,
     /// The same words as `merge_state`, for this repository alone.
     pub merge_state: String,
+}
+
+/// Who merges a worktree branch (T-613), as `get_ticket` says it beside
+/// `merge_state`. `by` is `train` (the armed merge train will land it:
+/// the ticket is on the train and its column's reach is merge), `crown`
+/// (the crown's `merge_ticket`: the train is off, the ticket is out of it
+/// by `t`, or its column's train setting stops short of a merge) or
+/// `person` (crown mode is supervised, or the ticket's words came from
+/// outside and a person executes for it). `why` is the one clause that
+/// decided it, in words a crown relays.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentMergeView {
+    pub by: String,
+    pub why: String,
 }
 
 /// One note as an agent lists it. No body: that is `read_note`'s answer.
@@ -3048,6 +3102,7 @@ mod tests {
             branch: Some("msmn/T-1-x".into()),
             merge_state: Some("ahead".into()),
             repos: vec![],
+            merge: None,
             allowed_columns: vec![],
             column_descriptions: Default::default(),
             automove: AgentAutomoveView::default(),

@@ -84,7 +84,7 @@ fn merge(c: &mut TestClient, id: ulid::Ulid) {
     loop {
         match c.request(Command::MergeTicket { id }) {
             Response::Merge { outcome: MergeOutcome::Merged, .. } => return,
-            Response::Merge { outcome: MergeOutcome::Refused, detail } => {
+            Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
                 assert!(Instant::now() < deadline, "merge never went through: {detail}");
                 std::thread::sleep(Duration::from_millis(250));
             }
