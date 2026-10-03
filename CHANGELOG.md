@@ -25,6 +25,13 @@ in the Esc menu under `Release notes` and on GitHub.
   the plugin stops validating after a Claude Code update, launches go back
   to the old way on their own; the feed says `claude_road_fallback` and
   `mesimon doctor` warns.
+- **A Claude Code that turns mods off keeps working on the hook set.**
+  Before choosing the plugin, mesimon checks that Claude Code will load it;
+  when Claude Code reports mods turned off, sessions start the old way, and a
+  session whose plugin never comes up is restarted the old way once, with its
+  brief. `mesimon doctor`'s `claude road` line
+  says so (`mods are off in this Claude Code … the hook set is used`), and the
+  check is repeated at the next daemon start and every 6 hours.
 - **On that road a session carries no generated `--settings`, MCP server or
   `--allowedTools`.** The plugin reports the session's events, refuses
   writes to `.mesimon` and mesimon's state directory in the same words as
