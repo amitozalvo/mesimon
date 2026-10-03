@@ -119,6 +119,8 @@ in the Esc menu under `Release notes` and on GitHub.
   running command ends. That command is moved to the background and not
   stopped. Through the plugin a draft you are typing in the agent's own box
   is never replaced; the words are then sent `now`. Codex has no such key.
+- The crown can read a picture on another ticket: `read_attachment` takes
+  `key`.
 
 ### Fixed
 

@@ -95,11 +95,25 @@ fn pictures_survive_duplicate_delete_undo_archive_and_daemon_restart() {
     let mut c = TestClient::connect(&paths.orch_sock());
     picture(&mut c, id, attachment);
     picture(&mut c, copy, attachment);
-    // Plain shared-note references are readable even when their picture isn't here.
+    // A picture a note links whose bytes are not here (a team board joined
+    // without them) is unavailable on this machine; an id no note links is
+    // simply not this ticket's (T-609).
     let absent = ulid::Ulid::new();
+    assert!(matches!(
+        c.request(Command::WriteNote {
+            ticket: id,
+            note: Some(note),
+            text: format!("[Image #1]({})", mesimon_core::attachment::target(absent)),
+        }),
+        Response::NoteWritten { .. }
+    ));
     err_containing(
         c.request(Command::ReadAttachment { ticket: id, attachment: absent }),
         "image unavailable on this machine",
+    );
+    err_containing(
+        c.request(Command::ReadAttachment { ticket: id, attachment: ulid::Ulid::new() }),
+        "no picture with that id on this ticket",
     );
     c.request(Command::Shutdown);
 }
@@ -155,9 +169,18 @@ fn images_are_read_only_mcp_content_bound_to_the_agents_own_ticket() {
         response => panic!("{response:?}"),
     };
     picture(&mut c, other, foreign);
-    assert!(shim
-        .call_err("read_attachment", json!({ "attachment": foreign.to_string() }))
-        .contains("image unavailable"));
+    let miss = shim.call_err("read_attachment", json!({ "attachment": foreign.to_string() }));
+    assert!(miss.contains("no picture with that id on this ticket"), "{miss}");
+    // With a key (T-609): refused until this ticket wears the crown, then
+    // the other ticket's picture, whole.
+    let key = c.board().ticket(other).unwrap().short_key.clone();
+    let keyed = json!({ "attachment": foreign.to_string(), "key": key });
+    let refusal = shim.call_err("read_attachment", keyed.clone());
+    assert!(refusal.contains("no ticket wears the crown"), "{refusal}");
+    assert!(matches!(c.request(Command::CrownTicket { id: ticket }), Response::Ok));
+    let result = shim.call("read_attachment", keyed);
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["content"][0]["data"], PNG);
     assert!(shim
         .call_err("read_attachment", json!({ "attachment": "../../secret" }))
         .contains("not an attachment id"));

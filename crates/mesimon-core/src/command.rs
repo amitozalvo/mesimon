@@ -911,12 +911,17 @@ pub enum Command {
         #[serde(default)]
         seen: Option<String>,
     },
+    /// One picture on the caller's own ticket. An id no note of that ticket
+    /// links reads as "no picture with that id on this ticket".
+    AgentReadAttachment {
+        attachment: ulid::Ulid,
+        /// A picture on another ticket, by key (T-609): the crown's road.
+        #[serde(default)]
+        key: Option<String>,
+    },
     /// One of the caller's own ticket's notes, whole. A `note` id off the
     /// ticket reads as "no such note" — the binding, not the id, is the
     /// authority.
-    AgentReadAttachment {
-        attachment: ulid::Ulid,
-    },
     AgentReadNote {
         note: ulid::Ulid,
         /// Another ticket's note, by key (T-411): the crown's road.

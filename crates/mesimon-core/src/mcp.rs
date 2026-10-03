@@ -380,10 +380,18 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "read_attachment",
-            "description": "Returns one PNG picture on this session's ticket as image content. Attachment ids appear in mesimon-attachment links in the description and notes.",
-            "inputSchema": { "type": "object", "properties": {
-                "attachment": { "type": "string", "description": "An attachment id from a note's image link." }
-            }, "required": ["attachment"], "additionalProperties": false },
+            "description": "Returns one PNG picture on this session's ticket, or with key \
+                            another ticket's (crown only), as image content. Attachment ids \
+                            appear in mesimon-attachment links in the description and notes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "attachment": { "type": "string", "description": "An attachment id from a note's image link." },
+                    "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
+                },
+                "required": ["attachment"],
+                "additionalProperties": false,
+            },
             "annotations": { "readOnlyHint": true },
         }),
         json!({
@@ -749,6 +757,7 @@ pub enum ToolCall {
     },
     ReadAttachment {
         attachment: ulid::Ulid,
+        key: Option<String>,
     },
     ReadNote {
         note: ulid::Ulid,
@@ -1038,6 +1047,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                 .ok_or("read_attachment requires an attachment id")?
                 .parse()
                 .map_err(|_| "not an attachment id")?,
+            key: opt_word(args, "key")?,
         }),
         "read_note" => Ok(ToolCall::ReadNote {
             note: note_id(args, true)?.ok_or("read_note requires a note id")?,
@@ -1212,7 +1222,9 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // T1 ANNOTATE: notes on the caller's OWN ticket. Unlike a tag, a
         // note is what D10 enumerated a tier for, and it is the one channel
         // through which the ticket's description reaches the agent without
-        // a token entering its conversation.
+        // a token entering its conversation. A `key` on these three is the
+        // crown's road (T-411, T-609): the daemon's `crown_target` refuses
+        // it for every caller not wearing the crown.
         | Command::AgentReadAttachment { .. }
         | Command::AgentReadNote { .. }
         | Command::AgentWriteNote { .. }
@@ -1605,7 +1617,10 @@ mod tests {
             (Command::AgentReadTicket { key: "T-1".into() }, "get_ticket"),
             (Command::AgentListBoard, "list_board"),
             (Command::AgentReadNote { note: ulid::Ulid::nil(), key: None }, "read_note"),
-            (Command::AgentReadAttachment { attachment: ulid::Ulid::nil() }, "read_attachment"),
+            (
+                Command::AgentReadAttachment { attachment: ulid::Ulid::nil(), key: None },
+                "read_attachment",
+            ),
             (Command::AgentWriteNote { note: None, text: "x".into(), key: None }, "write_note"),
             (
                 Command::AgentTagTicket { name: "x".into(), group: None, remove: false, key: None },
@@ -1885,6 +1900,47 @@ mod tests {
             v.as_object_mut().unwrap().remove(missing);
             assert!(parse_tool_call("answer_agent", &v).is_err(), "{missing} is required");
         }
+    }
+
+    /// A picture on another ticket (T-609): `read_attachment` takes `key` as
+    /// `read_note` does, spelled the same in the one list both roads read
+    /// (the hook set's shim and the mod's `--list`), and parses it trimmed.
+    #[test]
+    fn read_attachment_takes_a_key() {
+        let registry = tools();
+        let schema = |name: &str| {
+            registry.iter().find(|t| t["name"] == name).unwrap()["inputSchema"].clone()
+        };
+        let picture = schema("read_attachment");
+        assert_eq!(picture["properties"]["key"], schema("read_note")["properties"]["key"]);
+        assert_eq!(picture["required"], json!(["attachment"]));
+        let description = registry.iter().find(|t| t["name"] == "read_attachment").unwrap()
+            ["description"]
+            .as_str()
+            .unwrap();
+        assert!(description.contains("with key another ticket's (crown only)"), "{description}");
+        lint_tool_text(description).unwrap();
+        assert!(registered_for(AgentTools::Read)
+            .iter()
+            .any(|t| t["name"] == "read_attachment" && t["inputSchema"] == picture));
+        let id = ulid::Ulid::nil();
+        assert_eq!(
+            parse_tool_call("read_attachment", &json!({ "attachment": id.to_string() })),
+            Ok(ToolCall::ReadAttachment { attachment: id, key: None })
+        );
+        assert_eq!(
+            parse_tool_call(
+                "read_attachment",
+                &json!({ "attachment": id.to_string(), "key": " T-4 " })
+            ),
+            Ok(ToolCall::ReadAttachment { attachment: id, key: Some("T-4".into()) })
+        );
+        assert!(parse_tool_call(
+            "read_attachment",
+            &json!({ "attachment": id.to_string(), "key": 4 })
+        )
+        .is_err());
+        assert!(parse_tool_call("read_attachment", &json!({ "key": "T-4" })).is_err());
     }
 
     /// The crown's arguments (T-411): a key is a trimmed word, `seen` is
@@ -2649,7 +2705,7 @@ mod tests {
                 seen: None,
             },
             Command::AgentReadNote { note: ulid::Ulid::nil(), key: None },
-            Command::AgentReadAttachment { attachment: ulid::Ulid::nil() },
+            Command::AgentReadAttachment { attachment: ulid::Ulid::nil(), key: None },
             Command::AgentWriteNote { note: None, text: "x".into(), key: None },
             Command::AgentCreateTicket {
                 title: "x".into(),

@@ -168,7 +168,9 @@ fn tool_result(params: &Value, sock: &PathBuf, session: uuid::Uuid) -> Value {
                 seen,
             }
         }
-        ToolCall::ReadAttachment { attachment } => Command::AgentReadAttachment { attachment },
+        ToolCall::ReadAttachment { attachment, key } => {
+            Command::AgentReadAttachment { attachment, key }
+        }
         ToolCall::ReadNote { note, key } => Command::AgentReadNote { note, key },
         ToolCall::WriteNote { note, text, key } => Command::AgentWriteNote { note, text, key },
         ToolCall::RenameTicket { key, title, seen } => {

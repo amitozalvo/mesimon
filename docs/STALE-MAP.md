@@ -19916,3 +19916,29 @@ later ones were, as with the terminal-notifier copy's first-run permission.
 `the_applet_is_reused_and_a_failed_build_publishes_nothing`,
 `the_applet_takes_the_osascript_words_and_none_can_read_as_a_flag`,
 `without_terminal_notifier_the_banner_comes_from_the_mesimon_applet`.
+
+## `read_attachment` takes a key, and a miss is named as a miss (T-609, 2026-10-03, filed by the crown on T-607)
+
+**Seen.** The crown on T-607, planning the release, called `read_attachment` with the id from
+T-604's description and read "could not read picture: image unavailable on this machine: No such
+file or directory (os error 2)". Two faults. The tool had no `key`, unlike `get_ticket`,
+`read_note` and `write_note` (T-411), so it looked under the caller's own ticket. And the words
+were wrong: "unavailable on this machine" is for a picture whose bytes live elsewhere (a team
+board joined without them), and this picture was simply not on that ticket.
+
+**Shipped.** `read_attachment` takes `key` (optional, crown only), spelled in `mcp::tools` as
+`read_note` spells it; the hook set's shim and the mod's `mesimon mcp --list` read that one list,
+so the mod registers it with no change of its own. `Command::AgentReadAttachment` carries
+`key: Option<String>` (`#[serde(default)]`, so an older shim still parses) and the daemon resolves
+it through `crown_target` with archived tickets readable, as `read_note` does: an uncrowned caller
+with another ticket's key reads the crown refusal. `agent_allows` was already admitting the
+command; its comment now names the key. On a failed read, `Daemon::read_attachment` asks the
+ticket's own notes: an id one of them links keeps "image unavailable on this machine", and any
+other id reads "no picture with that id on this ticket". The TUI's links dialog still says
+"unavailable" on its own, because every link it lists is one a note holds.
+
+**Tests.** `read_attachment_takes_a_key` (the schema's `key` is `read_note`'s, the registered
+list carries it, the lint, the parse trimmed and refused); `attachments_e2e`: the agent's own
+call for another ticket's id reads the miss, the keyed call is refused uncrowned and returns the
+picture once the caller's ticket wears the crown, and a linked-but-absent id and an unlinked id
+read their two words.

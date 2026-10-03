@@ -4889,15 +4889,22 @@ impl Daemon {
             // The note tools: the ticket is the binding's — or the key's, for
             // the crown (T-411) — and a note id off it reads as "no such
             // note" inside the handlers.
-            Command::AgentReadAttachment { attachment } => {
+            Command::AgentReadAttachment { attachment, key } => {
+                let target = match key {
+                    None => ticket,
+                    Some(k) => match self.crown_target(ticket, &k, true) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    },
+                };
                 if let Decision::Deny { reason } = authorize(
                     &Principal::Agent { session },
                     &Action::Read,
-                    &Resource::Ticket { id: ticket },
+                    &Resource::Ticket { id: target },
                 ) {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
-                self.read_attachment(ticket, attachment)
+                self.read_attachment(target, attachment)
             }
             Command::AgentReadNote { note, key } => {
                 let target = match key {
