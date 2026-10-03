@@ -20034,6 +20034,20 @@ already says a merge step's mark ends with its window; this is that case, observ
 train's pass holds while any worker on the shared checkout is busy (`train_busy`), the crown
 included, so a crown that investigates a stalled merge is what stalls it. Going idle is the fix.
 
+**Round 2, the author's review (16:40 to 18:45).** Settings: one *Crown mode*
+(autonomous | supervised) in place of two switches, a *Crown* subtitle, no board-wide sleep timer,
+the train on by default (T-610); machine defaults for the terminal tab, notifications and the OS
+appearance (T-612, the progress ring kept off for want of a detection); a raised hand that comes
+down with its dialog (T-611); and the crown's merge where the train will not, with `get_ticket`
+saying who merges and a hand merge of a crown-started worker telling it by itself (T-613, the
+gap the author named as the product's, not this repository's CLAUDE.md). Their blocks are their
+own. Filed for after the release: T-614, a worktree init command in the user's own words, after
+the author's "tickets take ages": six worktrees each built the workspace cold (10 to 27 min of
+each ticket), and the first draft's APFS clone of `target/` was redrawn general when the author
+asked ("not all boards are a rust codebase … we need something general"): a board setting, run
+in the worktree before its agent starts, with `MESIMON_CHECKOUT` and `MESIMON_WORKTREE` set and
+no default, the clone one documented example among `npm ci` and `uv sync`.
+
 **The release, in order.** Notes complete → the three fixes merged by the train → `cargo
 build` and the `U` chip → `MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3 -B ci/test-run.py`
 (stamps HEAD, both roads) → the relay's lock commit (`85d2492`, `cargo update --workspace
