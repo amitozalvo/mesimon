@@ -1758,6 +1758,46 @@ try {
           await mode("board");
           if (size === "phone") await page.locator('[data-column="IN PROGRESS"]').click();
           assert.deepEqual(await anatomy(), inNow);
+          if (size === "phone") {
+            // A swipe across the Board steps the columns (T-624): left for
+            // the next, right for the previous, nothing past either end, and
+            // a mostly vertical drag is a scroll.
+            const swipe = (dx, dy = 0) =>
+              page.locator("#tickets").evaluate(
+                (node, [dx, dy]) => {
+                  const box = node.getBoundingClientRect();
+                  const x = box.left + box.width / 2;
+                  const y = box.top + 120;
+                  const touch = (cx, cy) => ({ clientX: cx, clientY: cy, identifier: 1, target: node });
+                  const fire = (type, touches, changed) => {
+                    const e = new Event(type, { bubbles: true, cancelable: true });
+                    Object.defineProperty(e, "touches", { value: touches });
+                    Object.defineProperty(e, "changedTouches", { value: changed });
+                    node.dispatchEvent(e);
+                  };
+                  const start = touch(x, y);
+                  fire("touchstart", [start], [start]);
+                  fire("touchend", [], [touch(x + dx, y + dy)]);
+                },
+                [dx, dy],
+              );
+            const pressed = () => page.locator('.column-tab[aria-pressed="true"]').getAttribute("data-column");
+            assert.equal(await page.locator("#tickets").evaluate((n) => getComputedStyle(n).touchAction), "pan-y pinch-zoom");
+            await swipe(-120);
+            await until(page, () => document.querySelector('.column-tab[aria-pressed="true"]')?.dataset.column === "DONE");
+            await swipe(-120);
+            await swipe(30, -200);
+            await swipe(-20);
+            assert.equal(await pressed(), "DONE", "no column past the last, and a scroll or a nudge is not a swipe");
+            await swipe(120);
+            await swipe(120);
+            await until(page, () => document.querySelector('.column-tab[aria-pressed="true"]')?.dataset.column === "TODO");
+            await swipe(120);
+            assert.equal(await pressed(), "TODO", "no column before the first");
+            await swipe(-120);
+            await until(page, () => document.querySelector('.column-tab[aria-pressed="true"]')?.dataset.column === "IN PROGRESS");
+            assert.deepEqual(await anatomy(), inNow);
+          }
           assert.equal(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), "T-0");
           assert.equal(await page.locator('.ticket[data-id="ticket-6"] .card-agent').textContent(), "claude · idle · 2h");
           await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-board.png`) });

@@ -286,6 +286,13 @@ export class Store {
     this.board.scroll.board = 0;
     this.sync();
   }
+  // A phone's swipe on the Board (T-624): the next or the previous column,
+  // stopping at either end.
+  stepColumn(step) {
+    const columns = this.board?.columns || [];
+    const next = columns[columns.indexOf(this.board?.column) + step];
+    if (next !== undefined) this.setColumn(next);
+  }
   openSheet(open) {
     this.sheetOpen = open;
     this.boardMenuOpen = false;

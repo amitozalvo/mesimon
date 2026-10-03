@@ -3089,6 +3089,10 @@ button.sent-sys:hover {
   #shell:not([data-mode="sent"]) #tickets {
     padding-bottom: 88px;
   }
+  /* sideways is the swipe to the next column (T-624), never a pan */
+  #shell[data-mode="board"] #tickets {
+    touch-action: pan-y pinch-zoom;
+  }
   dialog.compose {
     width: 100%;
     max-height: calc(var(--viewport-height, 100dvh) - 12px);

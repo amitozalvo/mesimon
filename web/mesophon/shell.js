@@ -278,6 +278,34 @@ function Sidebar({ store, bp }) {
     </aside>`;
 }
 
+// A swipe across the phone's Board (T-624): mostly sideways and long enough
+// to mean it, one finger. A swipe to the left brings the next column.
+const SWIPE = 56;
+function useSwipe(on, step) {
+  const from = useRef(null);
+  if (!on) return {};
+  // Spelled in lowercase: Preact lowercases an event's name only where the
+  // element has the `on…` property, and a browser without touch lacks it.
+  return {
+    ontouchstart: (e) => {
+      const t = e.touches.length === 1 ? e.touches[0] : null;
+      from.current = t && { x: t.clientX, y: t.clientY };
+    },
+    ontouchend: (e) => {
+      const start = from.current;
+      from.current = null;
+      const t = e.changedTouches[0];
+      if (!start || !t || e.touches.length) return;
+      const dx = t.clientX - start.x;
+      const dy = t.clientY - start.y;
+      if (Math.abs(dx) >= SWIPE && Math.abs(dx) > 2 * Math.abs(dy)) step(dx < 0 ? 1 : -1);
+    },
+    ontouchcancel: () => {
+      from.current = null;
+    },
+  };
+}
+
 function WorkList({ store, bp }) {
   const board = store.board;
   const mode = board?.mode || "agents";
@@ -300,6 +328,7 @@ function WorkList({ store, bp }) {
         ? plural(board.visible().length, "ticket")
         : `${sent.length} sent`;
   const loading = store.screen === "shell" && store.active && !board;
+  const swipe = useSwipe(mode === "board" && bp === "phone" && !!board, (step) => store.stepColumn(step));
   return html`<section id="work-list" aria-label="Work list">
     <div class="list-tools">
       <div class="list-heading">
@@ -315,7 +344,7 @@ function WorkList({ store, bp }) {
               onInput=${(e) => store.setSearch(e.currentTarget.value)} /></label>`}
       ${mode === "board" && bp === "phone" && board && html`<${ColumnTabs} store=${store} board=${board} />`}
     </div>
-    <nav id="tickets" aria-label=${mode === "sent" ? "Sent tickets" : "Tickets"} ref=${list}
+    <nav id="tickets" aria-label=${mode === "sent" ? "Sent tickets" : "Tickets"} ref=${list} ...${swipe}
       onScroll=${(e) => {
         if (board && e.currentTarget.getClientRects().length) board.scroll[mode] = e.currentTarget.scrollTop;
       }}>

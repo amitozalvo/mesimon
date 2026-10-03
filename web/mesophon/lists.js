@@ -2,7 +2,7 @@
 // one only for an hour; T-560), Board (every ticket, by column) and Sent
 // (the tickets this browser filed). A ticket is the same card in Now and on
 // the Board (T-533); a card is a button, and the pressed one is selected.
-import { html, useState } from "./html.js";
+import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { answerable, requestSummary } from "./dialogs.js";
@@ -413,7 +413,19 @@ export function SentList({ store, board }) {
 }
 
 export function ColumnTabs({ store, board }) {
-  return html`<div class="column-tabs" role="group" aria-label="Column">${board.columns.map((column) => {
+  // A swipe can bring a column whose tab is out of sight: keep it in view.
+  const strip = useRef();
+  useLayoutEffect(() => {
+    const node = strip.current;
+    const tab = node?.querySelector('[aria-pressed="true"]');
+    if (!tab) return;
+    const left = tab.getBoundingClientRect().left - node.getBoundingClientRect().left + node.scrollLeft;
+    const pad = 16;
+    if (left - pad < node.scrollLeft) node.scrollLeft = left - pad;
+    else if (left + tab.offsetWidth + pad > node.scrollLeft + node.clientWidth)
+      node.scrollLeft = left + tab.offsetWidth + pad - node.clientWidth;
+  }, [board.column]);
+  return html`<div class="column-tabs" role="group" aria-label="Column" ref=${strip}>${board.columns.map((column) => {
     const count = board.visible().filter((t) => t.column === column).length;
     return html`<button type="button" class="column-tab" data-column=${column} aria-pressed=${String(column === board.column)}
       title=${board.columnDescriptions[column] || undefined}

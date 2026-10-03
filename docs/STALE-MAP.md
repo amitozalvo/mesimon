@@ -20291,3 +20291,20 @@ false`). Daemon `worktree::tests::the_init_script_runs_in_the_worktree_and_repor
 (absent, `sh`, the shebang, exit 2, the timeout's kill, the seam's default). Core
 `workspace::an_init_run_has_one_word_and_a_detail_only_when_it_failed`; the lint over
 `WORKTREE_INIT_ABOUT`; TUI `the_workspace_row_says_when_the_init_script_failed`.
+
+## Remote Control: a swipe across the phone's Board steps the columns (T-624, 2026-10-03)
+
+On a phone the Board shows one column at a time behind a row of column tabs. A one-finger swipe
+across the ticket list now brings the next column (swipe left) or the previous one (swipe
+right), stopping at either end with no wrap; the tab row scrolls so the pressed tab stays in
+view. A swipe is at least 56 px sideways and more than twice as sideways as vertical, so a
+scroll that drifts is still a scroll and a card's tap is still a tap. The phone's Board list
+carries `touch-action: pan-y pinch-zoom`: nothing on it pans sideways, and the browser never
+claims a sideways gesture the page means as a swipe. The handlers are spelled `ontouchstart`
+in lowercase, because Preact lowercases an event's name only where the element has the
+`on…` property, and a browser without touch lacks it (a desktop Chromium, the test's). No
+slide animation: the column changes in place, as a tab press does. Now and Sent do not swipe.
+
+**Tests.** `ux.test.js`'s main phone flow, both engines: left from IN PROGRESS to DONE, nothing
+past DONE, a mostly vertical drag and a 20 px nudge change nothing, right twice to TODO, nothing
+before it, and the card anatomy unchanged on the way back.
