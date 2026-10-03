@@ -19446,37 +19446,33 @@ from `mesimon approve` on is the real road. New steps `still_waiting` and checks
 docstring no longer claims it leaves `usage.json` alone: its sessions' mods refresh the machine's
 reading with the account's real windows, as any board's do.
 
-**Acceptance on the rig** (`python3 -B ci/rig.py`, one full run of all 24 tests, Sonnet 5.5 at
-low effort, Claude Code 2.1.288, `msmn/T-581…@97061e20`, after the rebase onto B). Every earlier
-group passed again (R1–R7, P1–P5, D1–D4, T1–T3); D5 failed in the full run exactly as in B's
-(the worker called `ExitPlanMode {}` with no plan, so the board kept no projection and the
-crown had no request to accept) and passed on its `--failed` re-run. The group's last rows:
+**Acceptance on the rig** (`python3 -B ci/rig.py`, Sonnet 5.5 at low effort, Claude Code
+2.1.288). The rows below are the final full run, all 25 tests in one run, on
+`msmn/T-581…@7ea777a9` (rebased onto T-598 at 94fd6e70, mods back on): every group passed, R1–R7,
+T-598's R9, P1–P5, D1–D5, T1–T3 and C1–C4, D5 in the full run this time. The first full run
+(97061e20, before T-598) passed 23 of 24 with C1–C4 green; its D5 failed as B's did (the worker
+called `ExitPlanMode {}` with no plan) and passed on its `--failed` re-run. The group's rows:
 
 | test | expected | observed | build |
 |---|---|---|---|
-| C1 the phone's one-shot allow | a manual-mode Bash asks; the mod relays PermissionRequest and holds in `mesimon approve`; the phone allows after 4 s; the dialog closes and the tool runs | PASS: PermissionRequest, PostToolUse 4.5 s later, Stop; phone `Bash → allow`; `c1-allowed.txt` exists; 7 frames, all by the mod; replied `done` | 2.1.288 ∙ 97061e20 |
-| C2 the phone's deny | the dialog closes, the tool does not run, the model reads the refusal as the transcript records it, no plugin's name | PASS: phone `Bash → deny`; no `c2-denied.txt`; the model read `Permission denied by hook` and quoted it | 2.1.288 ∙ 97061e20 |
-| C3 the crown cannot allow | with no phone the dialog stands; the crown answers nothing; 20 s later the command has not run; the person's Enter runs it | PASS: needs you; after 20 s still needs you, `c3.txt` absent; no `answer_agent`; Enter → PostToolUse, `c3.txt` exists, replied `done` | 2.1.288 ∙ 97061e20 |
-| C4 cost and quota by the mod | two turns: the first fences, the second is the mod's; the check holds both counts within 2%; the quota reading written at a ModUsage | PASS: ModUsage ×2; mod 56,050 and transcript 56,050 tokens past the fence, 112,079 on the ticket; the reading (5h, week, Fable) stamped at a ModUsage of the board's | 2.1.288 ∙ 97061e20 |
+| C1 the phone's one-shot allow | a manual-mode Bash asks; the mod relays PermissionRequest and holds in `mesimon approve`; the phone allows after 4 s; the dialog closes and the tool runs | PASS: PermissionRequest, PostToolUse, Stop; phone `Bash → allow`; `c1-allowed.txt` exists; 7 frames, all by the mod; replied `done` | 2.1.288 ∙ 7ea777a9 |
+| C2 the phone's deny | the dialog closes, the tool does not run, the model reads the refusal as the transcript records it, no plugin's name | PASS: phone `Bash → deny`; no `c2-denied.txt`; the model read `Permission denied by hook` and quoted it | 2.1.288 ∙ 7ea777a9 |
+| C3 the crown cannot allow | with no phone the dialog stands; the crown answers nothing; 20 s later the command has not run; the person's Enter runs it | PASS: needs you; after 20 s still needs you, `c3.txt` absent; no `answer_agent`; Enter → PostToolUse, `c3.txt` exists, replied `done` | 2.1.288 ∙ 7ea777a9 |
+| C4 cost and quota by the mod | two turns: the first fences, the second is the mod's; the check holds both counts within 2%; the quota reading written at a ModUsage | PASS: ModUsage ×2; mod 56,512 and transcript 56,512 tokens past the fence, 113,003 on the ticket; the reading (5h, week, Fable) stamped at a ModUsage of the board's | 2.1.288 ∙ 7ea777a9 |
 
-After the run, `mesimon doctor --verbose` on the rig's board: `costs  9 tickets counted from the
+After the first run, `mesimon doctor --verbose` on the rig's board: `costs  9 tickets counted from the
 mod's reports, each agreeing with its transcript`. C1–C3 stand in for the phone at approve's
 socket (above); C4's first run failed its quota check, which wanted the worker's own report
 while the crown's later turn had stamped the reading, and the check now takes any session's.
 
-**Mods off, since about 02:23 the same night.** The rows above ran from 01:43 to 02:20. Minutes
-later Claude Code's cached remote flag `tengu_plugin_hooks_modules` read `false` (fetched
-02:23:42): `claude plugin test` refuses ("hooks modules are turned off … installed mods are turned
-off remotely") while `claude plugin validate` still passes, so the probe still picks the mod road,
-and a launch then carries `--plugin-dir` and no hook set and reports nothing. Measured at 02:26:
-the rig's crown answered `ready` in its pane (B's `mod_silent` rescue pasted its brief) and the
-board never saw a frame; it read `spawning` until the rig gave up at 600 s. **Every rig row is
-blocked while mods are off, see T-598** (the fallback to the hook set when the mod does not load);
-a re-run of this group then reads "blocked: mods off, see T-598", never PASS. Until the flag or
-T-598 gives the rig a road, this ticket's proof is the stand-in engine, `claude plugin test` from
-before the switch, and the e2es under both roads (`mod_cost_e2e` with `MESIMON_TEST_ROAD` unset
-and `mod`). `ci/test-run.py` was not run as the release gate: its `mod_plugin` fails while mods
-are off, and T-598 turns that into a SKIPPED.
+**Mods off, 02:23 to 02:40 the same night.** Minutes after the first run Claude Code's cached
+remote flag `tengu_plugin_hooks_modules` read `false`: `claude plugin test` refused while `claude
+plugin validate` still passed, so the probe still picked the mod road, and a launch carried
+`--plugin-dir`, no hook set, and reported nothing (measured 02:26: the rig's crown answered
+`ready` in its pane and the board never saw a frame). That finding is T-598: the probe now proves
+the mod loads and a silent launch is relaunched on the hook set. The rig was blocked until the
+flag came back; the final run above is on T-598's build with mods on, and its R9 is T-598's own
+mods-off acceptance.
 
 **Built.** `register.ts`'s `turnComplete`/`usageBody` at the end of `register`, three
 `claude plugin test` tests (the report, a failed windows read, a hold released with no decision);
@@ -19487,8 +19483,8 @@ check, hint, `count_mod`, `disagreements`, `read_only`; `UsageState::merge_mod` 
 the transcript's on the hook set's, the quota on the snapshot and in the shared file); docs/USING.md's
 quota and cost paragraphs; a rule and a trap in CLAUDE.md.
 
-**Not done, written down.** The release gate (`ci/test-run.py`) and the release, which wait for
-T-598. The phone itself on the rig (a relay and a paired device; the daemon's
+**Not done, written down.** The release itself (the tag, the push, `ci/release.sh` and the
+relay's `deploy/ship.sh all` are the author's). The phone itself on the rig (a relay and a paired device; the daemon's
 `RemotePermission` wait and its release are T-395's, unit-tested); the relay's acceptance was not
 run. The disagreement count over the first week is the author's to read off doctor. A
 compaction's summarizer request is reported by `session.compact`, not `turn.complete`; whether
