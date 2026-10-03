@@ -93,6 +93,8 @@ export class Store {
     this.notesLoaded = new Set(); // boards whose stored notes are read
     this.reading = undefined;
     this.noteDraft = undefined;
+    // The sheet listing every note of a ticket past two (T-627).
+    this.notesSheet = undefined;
     this.toast = undefined;
     this.depositing = new Set(); // ids handed to the mailbox socket, unanswered
     // True when this page came from the service worker's kept copy (T-497):
@@ -973,7 +975,23 @@ export class Store {
     }
     this.emit();
   }
+  // Every note of a ticket, in a sheet (T-627): the ticket page shows only
+  // the latest once it has more than two.
+  openNotesSheet(ticket) {
+    if (!this.board?.tickets.some((t) => t.id === ticket)) return;
+    this.notesSheet = ticket;
+    this.loadNotes();
+    this.emit();
+  }
+  closeNotesSheet() {
+    if (!this.notesSheet) return;
+    this.notesSheet = undefined;
+    this.focus = "all-notes";
+    this.emit();
+  }
+  // A note opened, or one written, from the sheet closes it first.
   openNote(ticket, note) {
+    this.notesSheet = undefined;
     this.reading = { ticket, note };
     if (narrow() && !history.state?.note) history.pushState({ detail: true, note: true }, "");
     this.focus = "note";
@@ -1004,6 +1022,7 @@ export class Store {
     const board = this.active?.pin.board;
     const t = this.board?.tickets.find((x) => x.id === ticket);
     if (!board || !t || !this.canWriteNotes) return;
+    this.notesSheet = undefined;
     const pending = note ? this.noteMail.pending(board, ticket, note) : undefined;
     if (pending && ["local", "relay"].includes(pending.status)) return this.retractNote(pending.id, true);
     if (pending?.status === "sending") return;
@@ -1289,7 +1308,7 @@ export class Store {
     this.boardMenuOpen = false;
     this.composer.open = false;
     this.startAsk = undefined;
-    this.renaming = this.cardSheet = undefined;
+    this.renaming = this.cardSheet = this.notesSheet = undefined;
     clearAlerts();
     this.identity.lastBoard = chosen.pin.board;
     this.persist();
@@ -1323,7 +1342,7 @@ export class Store {
     this.sentLoaded.clear();
     this.starts = new Starts();
     this.edits = new Edits();
-    this.renaming = this.cardSheet = undefined;
+    this.renaming = this.cardSheet = this.notesSheet = undefined;
     this.noteBooks.clear();
     this.noteMail = new NoteMail();
     this.notesLoaded.clear();

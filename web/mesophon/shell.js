@@ -7,7 +7,7 @@ import { Shin } from "./shin.js";
 import { NowList, BoardList, SentList, ColumnTabs, lastSeen } from "./lists.js";
 import { Detail } from "./detail.js";
 import { NewTicket, QuickNew, StartSheet, CardSheet } from "./compose.js";
-import { NoteSheet } from "./notepad.js";
+import { NoteSheet, NotesSheet } from "./notepad.js";
 
 // Subscribe during the commit, not after paint: a fast boot can emit before
 // a deferred effect runs, and that change would never reach the page.
@@ -403,7 +403,13 @@ export function App({ store }) {
         : want === "row"
           ? document.querySelector('#tickets .ticket[aria-pressed="true"]')
           : document.getElementById(
-              { prompt: "prompt", pair: "pair", rename: "rename-title", "card-line": "card-line" }[want] || "code",
+              {
+                prompt: "prompt",
+                pair: "pair",
+                rename: "rename-title",
+                "card-line": "card-line",
+                "all-notes": "all-notes",
+              }[want] || "code",
             );
     if (target?.getClientRects().length) target.focus({ preventScroll: true });
   });
@@ -413,6 +419,7 @@ export function App({ store }) {
     <${NewTicket} store=${store} />
     <${StartSheet} store=${store} />
     <${CardSheet} store=${store} />
+    <${NotesSheet} store=${store} />
     <${NoteSheet} store=${store} />
     <${Settings} store=${store} />
     <${Toast} store=${store} />`;

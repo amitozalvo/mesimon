@@ -20358,3 +20358,39 @@ reason): **Changed:** Settings › Appearance opens on this board's settings, an
 to every board's; the theme picker sets one theme for dark and light terminals unless Tab picks
 one of them; the board follows the system's light and dark appearance whenever the two themes
 differ, and the Follow the OS appearance row is gone; Notifications is its own row in Settings.
+
+## Remote Control lists the latest note past two, and All opens the rest (T-627, 2026-10-03, "remote control notes section takes too much vertical space on >2 notes ∙ requires design first")
+
+**Measured first.** At 390×844 with six notes besides the description, T-532's card was 524 px
+tall and the agent's output kept 54 px above the composer; with two it kept 251 px. Each note
+row is 52 px, and the card listed every one.
+
+**Designed first, then decided.** The canvas (the owner's private artifact, linked from the
+ticket's note) drew three: A, the two newest notes and an "N earlier notes" row opening the rest
+in place; B, the latest note alone and **All** in the Notes heading opening a sheet with every
+note; C, a sideways strip of note chips. The owner chose **B**. Rejected: A still gives the notes
+two rows and grows back to today's height when opened; C drops author and age, cuts names at
+about twenty characters, and hides notes past the edge behind a swipe.
+
+**Built.** Past two notes besides the description (`ROWS` in `notepad.js`) the card lists one
+row, the note written last by its `at` (a tie goes to the later in the list), its meta led by
+`latest`, plus any note whose own edit is on its way or did not save, so that is never out of
+sight; new notes on their way stay on the card as before. **All** (`#all-notes`, beside
+**Note**) opens `NotesSheet` (`#notes-sheet`, the card sheet's frame): every note but the
+description in list order, **Note** at its left when this browser writes notes, **Done** at its
+right. A row opens the reader in place of the page as the card's rows do, and opening a note or
+the edit sheet closes the list first (`openNote`, `editNote`); Done, Escape or the scrim returns
+focus to All. The rule holds whether an agent is awake or not: one place for the list, not a
+card that changes shape when the agent wakes. Phone, six notes: the card is 264 px and the
+output keeps 303 px; with two notes nothing changed.
+
+**Tests.** The UX notes flow grows a "listed" step: two more notes arrive, the card shows one
+row reading `latest`, All lists all three in order, a row opens Note 3 of 3 and closes the
+sheet, Done gives focus back to All, and the card returns to rows when the notes go. Every UX
+flow passed in Chromium and WebKit at desktop, tablet and phone, as did the 32 state tests;
+screenshots read by eye at phone and desktop.
+
+**Not verified:** a physical phone, and the hosted relay, which serves the page and needs its
+`ship.sh` (`ci/check-relay.sh` holds the release until it does). **Owed:** a CHANGELOG line at
+the next bump — **Changed:** on Remote Control, a ticket with more than two notes lists only
+the latest under its description; All opens every note.

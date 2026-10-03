@@ -2006,6 +2006,16 @@ button.note-row:hover {
   justify-content: space-between;
   gap: 8px;
 }
+/* The sheet of every note (T-627): the card's rows, scrolled in the sheet. */
+.notes-sheet .notes-add {
+  justify-self: start;
+}
+.notes-sheet-rows {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0 18px;
+}
 .note-bytes[data-over="true"] {
   color: var(--err);
 }

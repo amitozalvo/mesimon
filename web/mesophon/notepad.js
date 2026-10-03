@@ -1,6 +1,7 @@
 // A ticket's notes on its page (T-532): the description and the note rows
-// under the title, a note read in place of the agent's output, and the edit
-// sheet. Bodies render as text nodes through `Markdown`, never as HTML.
+// under the title (past two, the latest and a sheet of all, T-627), a note
+// read in place of the agent's output, and the edit sheet. Bodies render as
+// text nodes through `Markdown`, never as HTML.
 import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Markdown } from "./markdown.js";
@@ -10,6 +11,9 @@ const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", min
 const waitTick = { sending: "clock", local: "clock", relay: "one" };
 // A description longer than this many lines or characters gets Show all.
 const LONG = { lines: 3, chars: 240 };
+// Past this many notes besides the description, the page lists only the
+// latest, and All opens the rest in a sheet (T-627).
+const ROWS = 2;
 
 // What one note's own edit, if any, says about it.
 function PendingMark({ item }) {
@@ -18,11 +22,11 @@ function PendingMark({ item }) {
   return html`<span class="note-flag">Not saved</span>`;
 }
 
-function NoteRowButton({ store, ticket, row, pending }) {
+function NoteRowButton({ store, ticket, row, pending, latest = false }) {
   return html`<li><button type="button" class="note-row" onClick=${() => store.openNote(ticket.id, row.id)}>
     <${Icon} name="file" size=${18} />
     <span class="note-row-text"><span class="note-name" dir="auto">${row.name || "Untitled"}</span>
-      <span class="note-meta">${row.by} · ${ago(row.at)}</span></span>
+      <span class="note-meta">${latest ? "latest · " : ""}${row.by} · ${ago(row.at)}</span></span>
     <${PendingMark} item=${pending} />
     <${Icon} name="chevronRight" size=${16} cls="note-go" />
   </button></li>`;
@@ -44,6 +48,12 @@ export function NotesCard({ store, ticket }) {
   const awake = ticket.agent && ticket.agent.state !== "sleeping";
   const long = !!body && (body.split("\n").length > LONG.lines || body.length > LONG.chars);
   const others = rows.slice(1);
+  // Past ROWS, the latest written stays, and any whose own edit is on its
+  // way or did not save, so that is never out of sight.
+  const pendingOf = (row) => store.noteMail.pending(board, ticket.id, row.id);
+  const brief = others.length > ROWS;
+  const latest = brief ? others.reduce((a, b) => ((b.at || 0) >= (a.at || 0) ? b : a)) : undefined;
+  const shown = brief ? others.filter((row) => row === latest || pendingOf(row)) : others;
   return html`<section id="notes" class="notes-card" aria-label="Description and notes" data-awake=${String(!!awake)}>
     ${description
       ? html`<div class="notes-head">
@@ -68,10 +78,12 @@ export function NotesCard({ store, ticket }) {
         <h3 class="label">Notes${others.length ? ` · ${others.length}` : ""}</h3>
         ${writes && description && html`<button id="add-note" type="button" class="btn btn-quiet notes-add"
           onClick=${() => store.editNote(ticket.id)}><${Icon} name="plus" size=${16} /><span>Note</span></button>`}
+        ${brief && html`<button id="all-notes" type="button" class="btn btn-quiet notes-add" aria-haspopup="dialog"
+          onClick=${() => store.openNotesSheet(ticket.id)}><span>All</span><${Icon} name="chevronRight" size=${16} /></button>`}
       </div>
       <ul class="note-rows">
-        ${others.map((row) => html`<${NoteRowButton} key=${row.id} store=${store} ticket=${ticket} row=${row}
-          pending=${store.noteMail.pending(board, ticket.id, row.id)} />`)}
+        ${shown.map((row) => html`<${NoteRowButton} key=${row.id} store=${store} ticket=${ticket} row=${row}
+          pending=${pendingOf(row)} latest=${row === latest} />`)}
         ${fresh.map((item) => html`<li key=${item.id}><div class="note-row note-row-fresh">
           <${Icon} name="file" size=${18} />
           <span class="note-row-text"><span class="note-name" dir="auto">${item.name || "New note"}</span>
@@ -87,6 +99,47 @@ export function NotesCard({ store, ticket }) {
       </ul>
     </div>`}
   </section>`;
+}
+
+// Every note of a ticket past ROWS (T-627), the description aside, in their
+// order: a row opens the note in place of the page, as the card's rows do.
+export function NotesSheet({ store }) {
+  const ref = useRef();
+  const ticket = store.notesSheet && store.board?.tickets.find((t) => t.id === store.notesSheet);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (ticket && !dialog.open) dialog.showModal();
+    if (!ticket && dialog.open) dialog.close();
+  });
+  if (!ticket) return html`<dialog id="notes-sheet" class="compose" ref=${ref}></dialog>`;
+  const board = store.active.pin.board;
+  const others = (store.noteBook().entry(ticket.id)?.rows || []).slice(1);
+  const writes = store.canWriteNotes;
+  return html`<dialog id="notes-sheet" class="compose notes-sheet" ref=${ref} aria-labelledby="notes-heading"
+      onCancel=${(e) => {
+        e.preventDefault();
+        store.closeNotesSheet();
+      }}
+      onClose=${() => store.closeNotesSheet()}
+      onClick=${(e) => {
+        if (e.target === e.currentTarget) store.closeNotesSheet();
+      }}>
+    <div class="compose-form">
+      <header class="compose-head">
+        ${writes
+          ? html`<button id="notes-sheet-add" type="button" class="btn btn-quiet notes-add" onClick=${() => store.editNote(ticket.id)}>
+              <${Icon} name="plus" size=${16} /><span>Note</span></button>`
+          : html`<span></span>`}
+        <h2 id="notes-heading">Notes · ${ticket.key}</h2>
+        <button id="notes-done" type="button" class="btn btn-quiet compose-send-top" onClick=${() => store.closeNotesSheet()}>Done</button>
+      </header>
+      <ul class="note-rows notes-sheet-rows">
+        ${others.map((row) => html`<${NoteRowButton} key=${row.id} store=${store} ticket=${ticket} row=${row}
+          pending=${store.noteMail.pending(board, ticket.id, row.id)} />`)}
+      </ul>
+    </div>
+  </dialog>`;
 }
 
 // One's own edit of the open note, as it stands: on its way, or not saved.

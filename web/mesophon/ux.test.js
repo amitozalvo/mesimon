@@ -944,6 +944,44 @@ async function notesFlow(browser, engineName, size, viewport) {
     await sheet.getByRole("button", { name: "Cancel" }).click();
     await sheet.waitFor({ state: "hidden" });
 
+    // Past two notes the page lists the latest written, and All opens a
+    // sheet of every one (T-627); a row there opens the note.
+    await page.evaluate(() => {
+      const hour = 3_600_000;
+      fixture.notes["ticket-0"].push(
+        { id: "old-1", name: "Older thoughts", by: "you", at: Date.now() - 3 * hour, rev: 1, text: "# Older thoughts" },
+        { id: "old-2", name: "Oldest thoughts", by: "agent", at: Date.now() - 4 * hour, rev: 1, text: "# Oldest thoughts" },
+      );
+      fixture.stampNotes();
+    });
+    const notesSheet = page.locator("#notes-sheet");
+    await page.locator("#all-notes").waitFor();
+    assert.equal(await notes.locator(".note-row").count(), 1);
+    assert.match(await notes.locator(".note-row").textContent(), /Plan: retry the train.*latest · /);
+    await page.locator("#all-notes").click();
+    await notesSheet.waitFor({ state: "visible" });
+    assert.deepEqual(await notesSheet.locator(".note-name").allTextContents(), [
+      "Plan: retry the train",
+      "Older thoughts",
+      "Oldest thoughts",
+    ]);
+    await shot("notes-all");
+    await notesSheet.locator(".note-row").filter({ hasText: "Oldest thoughts" }).click();
+    await notesSheet.waitFor({ state: "hidden" });
+    await reader.waitFor();
+    assert.match(await reader.locator(".label").first().textContent(), /Note 3 of 3/);
+    await page.locator("#note-back").click();
+    await page.locator("#all-notes").click();
+    await notesSheet.waitFor({ state: "visible" });
+    await page.locator("#notes-done").click();
+    await notesSheet.waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => document.activeElement?.id), "all-notes");
+    await page.evaluate(() => {
+      fixture.notes["ticket-0"].splice(2);
+      fixture.stampNotes();
+    });
+    await page.locator("#all-notes").waitFor({ state: "detached" });
+
     // A ticket without notes offers a description.
     await open("ticket-4");
     await page.locator("#add-description").waitFor();
@@ -994,7 +1032,7 @@ async function notesFlow(browser, engineName, size, viewport) {
     const live = await page.evaluate(() => fixture.noteWrites.at(-1));
     assert.deepEqual([live.op, live.note, live.text.includes("Live op.")], ["write_note", "plan-0", true]);
     assert.deepEqual(errors, []);
-    console.log(`${engineName} ${size}: notes read, walked, edited, told, stale, added, deleted, away, kept and live passed`);
+    console.log(`${engineName} ${size}: notes read, walked, edited, told, stale, added, deleted, listed, away, kept and live passed`);
   } catch (error) {
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-notes-failure.png`) });
     throw error;
