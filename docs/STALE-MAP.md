@@ -20418,7 +20418,10 @@ piece and measures it.
 **Decided: an upload belongs to the grant, not the connection.** The desk's staging is owned by
 its socket and dies with it; a phone reconnects whenever it sleeps, so `attachments::Owner` is
 `Stream` or `Grant`, and a grant's uploads go by the same ten-minute idle rule, the 50 MiB
-shared cap, or a revoke (`discard_all` in `control_revoke`). A refused pictured write lets its
+shared cap, or a revoke (`discard_all` in `control_revoke`). Because they outlive the
+connection, one grant gets half the staging and eight uploads at most (found by the commit's
+security review: a paired browser could otherwise fill the staging and refuse the desk's saves
+for ten minutes), which a note of several phone photos still fits. A refused pictured write lets its
 uploads go and the page uploads afresh on retry; a stale answer keeps them, so **Save mine**
 can name them again inside the ten minutes.
 
@@ -20452,7 +20455,8 @@ at your desk"), and inside a line a small chip, where the raw link text showed b
 **Tests.** Core: `WriteNote`'s `uploads` defaults empty. Team:
 `a_whole_picture_piece_fits_one_frame`. Daemon:
 `a_grant_owns_its_uploads_across_reconnects_until_revoked` (another grant or the desk cannot
-add or commit, a prune keeps it, `discard_all`), the two desk upload tests over `Owner`, and
+add or commit, a prune keeps it, `discard_all`),
+`one_grant_cannot_fill_the_staging_the_desk_saves_through`, the two desk upload tests over `Owner`, and
 `attachments_e2e` for the refactored desk save. Page: `pictures.js`'s naming, linking,
 removal, insertion and piece cutting in `state.test.js`, the desk's link in `blocks`; the UX
 suite's notes flow in Chromium and WebKit at desktop, tablet and phone picks two noise PNGs,

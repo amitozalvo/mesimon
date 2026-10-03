@@ -42,6 +42,14 @@ impl Owner {
     }
 }
 
+/// One grant's share of the staging (T-629): half of it, a few uploads. A
+/// phone sends a note's pictures and then commits them with the note, so a
+/// note of several phone photos fits; the share keeps one paired browser
+/// from filling the staging the desk saves through, since a grant's
+/// uploads outlive its connection.
+const GRANT_MAX_BYTES: usize = DRAFT_MAX_BYTES / 2;
+const GRANT_MAX_UPLOADS: usize = 8;
+
 struct Upload {
     owner: Owner,
     bytes: Vec<u8>,
@@ -76,6 +84,17 @@ impl Uploads {
             self.0.values().map(|u| u.bytes.len()).sum::<usize>() + bytes.len() <= DRAFT_MAX_BYTES,
             "attachment staging is full; retry after other uploads finish"
         );
+        if let Owner::Grant(_) = owner {
+            let mine = || self.0.values().filter(|u| u.owner.is(owner));
+            anyhow::ensure!(
+                mine().map(|u| u.bytes.len()).sum::<usize>() + bytes.len() <= GRANT_MAX_BYTES,
+                "too many pictures waiting; save the note first"
+            );
+            anyhow::ensure!(
+                id.is_some() || mine().count() < GRANT_MAX_UPLOADS,
+                "too many pictures waiting; save the note first"
+            );
+        }
         let id = match id {
             Some(id) => id,
             None => {
@@ -359,6 +378,44 @@ mod tests {
         assert!(uploads.0.contains_key(&id));
         uploads.discard_all(&phone);
         assert!(uploads.0.is_empty());
+    }
+
+    /// A grant's uploads outlive its connection, so one paired browser
+    /// gets a share of the staging, never all of it: the desk still saves.
+    #[test]
+    fn one_grant_cannot_fill_the_staging_the_desk_saves_through() {
+        let mut uploads = Uploads::default();
+        let phone = Owner::Grant("aa".into());
+        let piece = STANDARD.encode(vec![0; CHUNK_BYTES]);
+        let mut staged = 0;
+        let refused = loop {
+            let id = match uploads.chunk(&phone, None, 0, &piece, false) {
+                Ok(id) => id,
+                Err(e) => break e,
+            };
+            staged += CHUNK_BYTES;
+            let mut offset = CHUNK_BYTES;
+            while offset + CHUNK_BYTES <= MAX_BYTES && staged + CHUNK_BYTES <= GRANT_MAX_BYTES {
+                uploads.chunk(&phone, Some(id), offset, &piece, false).unwrap();
+                (offset, staged) = (offset + CHUNK_BYTES, staged + CHUNK_BYTES);
+            }
+        };
+        assert!(refused.to_string().contains("too many pictures waiting"), "{refused:#}");
+        assert_eq!(staged, GRANT_MAX_BYTES);
+        let desk_stream = stream();
+        let desk = Owner::stream(&desk_stream);
+        let id = uploads.chunk(&desk, None, 0, &piece, false).unwrap();
+        let mut offset = CHUNK_BYTES;
+        while offset + CHUNK_BYTES <= MAX_BYTES {
+            uploads.chunk(&desk, Some(id), offset, &piece, false).unwrap();
+            offset += CHUNK_BYTES;
+        }
+        uploads.discard_all(&phone);
+        for _ in 0..GRANT_MAX_UPLOADS {
+            uploads.chunk(&phone, None, 0, "AA==", false).unwrap();
+        }
+        assert!(uploads.chunk(&phone, None, 0, "AA==", false).is_err(), "past the count");
+        uploads.chunk(&Owner::Grant("bb".into()), None, 0, "AA==", false).unwrap();
     }
 
     #[test]
