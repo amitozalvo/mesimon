@@ -34,7 +34,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use mesimon_core::board::AgentTools;
-use mesimon_core::command::{Command, Envelope, Response};
+use mesimon_core::command::{AskRoad, Command, Envelope, Response};
 use mesimon_core::mcp::{self, ToolCall};
 use mesimon_core::Principal;
 use serde_json::{json, Value};
@@ -188,8 +188,8 @@ fn tool_result(params: &Value, sock: &PathBuf, session: uuid::Uuid) -> Value {
             workspace: Some(workspace),
         },
         ToolCall::SleepAgent { key, seen } => Command::AgentSleepTicket { key, seen: Some(seen) },
-        ToolCall::AskAgent { key, text, seen, plan } => {
-            Command::AgentAskTicket { key, text, seen: Some(seen), plan }
+        ToolCall::AskAgent { key, text, seen, plan, now } => {
+            Command::AgentAskTicket { key, text, seen: Some(seen), plan, now }
         }
         ToolCall::AnswerAgent { key, seen, request, index, text, answers } => {
             Command::AgentAnswerTicket { key, seen: Some(seen), request, index, text, answers }
@@ -301,11 +301,13 @@ fn render(resp: Response) -> Value {
         }
         // The crown's ask (T-413): held on the card until a person sends it,
         // or, where the board lets the crown send (T-550), queued to go once
-        // the agent is idle. `held_because` says why a send was held.
-        Response::AgentAsked { key, replaced, seen, held_for_person, held_because } => {
+        // the agent is idle, or sent at once with `now` (T-600). `road`
+        // names which; `held_because` says why a send was held.
+        Response::AgentAsked { key, replaced, seen, held_for_person, held_because, road } => {
             let mut body = json!({
                 "key": key,
                 "replaced": replaced,
+                "road": AskRoad::of(road, held_for_person).word(),
                 "held_for_person": held_for_person,
                 "wakes": mcp::CROWN_WAKES
             });
@@ -595,6 +597,30 @@ mod tests {
 
     /// A start parked behind a worktree cut is accepted, and its receipt
     /// must not read as a refusal (T-466): the crown told a person to press
+    /// T-600: the ask's receipt names the road the words took, and reads
+    /// it from the flag when an older daemon sent none.
+    #[test]
+    fn an_ask_receipt_names_its_road() {
+        let body = |held_for_person, road| {
+            let v = render(Response::AgentAsked {
+                key: "T-7".into(),
+                replaced: false,
+                seen: None,
+                held_for_person,
+                held_because: None,
+                road,
+            });
+            assert_eq!(v["isError"], false);
+            serde_json::from_str::<Value>(v["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        assert_eq!(body(false, Some(AskRoad::SentNow))["road"], "sent_now");
+        assert_eq!(body(false, Some(AskRoad::Queued))["road"], "queued");
+        assert_eq!(body(true, Some(AskRoad::HeldForPerson))["road"], "held_for_person");
+        assert_eq!(body(true, None)["road"], "held_for_person");
+        assert_eq!(body(false, None)["road"], "queued");
+        assert_eq!(body(false, None)["wakes"], mcp::CROWN_WAKES);
+    }
+
     /// Shift+Enter on a start that landed thirty seconds later.
     #[test]
     fn a_start_receipt_says_started_or_waiting_never_false() {

@@ -1014,6 +1014,15 @@ pub enum Command {
         /// field's `^p` would have — a wake or a restart into plan mode.
         #[serde(default)]
         plan: bool,
+        /// Send the words NOW (T-600): the road the ticket page's
+        /// Shift+Enter takes with its send set to `now` — into a working
+        /// agent mid-turn, a `submit` on the mod road and the composer's
+        /// paste on the hook set — instead of the queue's wait for idle.
+        /// Refused while the agent is at a dialog, as the person's send is.
+        /// Held for a person where the crown's asks are, with the send
+        /// preset to now. Absent from an older shim = the queue.
+        #[serde(default)]
+        now: bool,
     },
     /// Answer the question another ticket's agent stopped on, by key
     /// (T-569): Remote Control's screen-verified dialog road, driven for the
@@ -1840,7 +1849,9 @@ pub enum Response {
     /// words wait for a person's send, and `held_because` says why when
     /// the board lets the crown send (T-550); false, the queue delivers
     /// them once the agent is idle. A daemon from before T-550 sends no
-    /// flag and always held, so the flag's default is true.
+    /// flag and always held, so the flag's default is true. `road` names
+    /// the road in one word (T-600); a daemon from before it sends none,
+    /// and `AskRoad::of` reads it from the flag.
     AgentAsked {
         key: String,
         #[serde(default)]
@@ -1851,6 +1862,8 @@ pub enum Response {
         held_for_person: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         held_because: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        road: Option<AskRoad>,
     },
     /// AgentAnswerTicket's receipt (T-569), sent once the delivery settles:
     /// `outcome` is `answered` only when the dialog's own hook edge came,
@@ -2220,6 +2233,34 @@ pub enum PendingAction {
     Unknown,
 }
 
+/// The road the crown's `ask_agent` words took (T-600), the receipt's word
+/// and the feed line's outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskRoad {
+    /// Delivered at once (`now`): into the agent mid-turn, or a wake.
+    SentNow,
+    /// Parked for the queue, which delivers them once the agent is idle.
+    Queued,
+    /// Parked for a person's send (`^y` on the card).
+    HeldForPerson,
+}
+
+impl AskRoad {
+    /// The receipt's road, from the flag where an older daemon sent none.
+    pub fn of(road: Option<AskRoad>, held_for_person: bool) -> AskRoad {
+        road.unwrap_or(if held_for_person { AskRoad::HeldForPerson } else { AskRoad::Queued })
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            AskRoad::SentNow => "sent_now",
+            AskRoad::Queued => "queued",
+            AskRoad::HeldForPerson => "held_for_person",
+        }
+    }
+}
+
 /// One thing mesimon owes a ticket and will do on its own clock — the
 /// card's slow mark and the cursor card's `queued ∙ after T-12` row read this.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2275,6 +2316,10 @@ pub struct Pending {
     /// `∙ plan mode`, and the field reopens on the flag.
     #[serde(default)]
     pub plan: bool,
+    /// The crown asked for these words NOW (T-600) and they are held for a
+    /// person: the field reopens at `now`, as the crown meant them.
+    #[serde(default)]
+    pub now: bool,
 }
 
 impl Pending {

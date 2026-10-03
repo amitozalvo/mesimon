@@ -5828,12 +5828,14 @@ impl App {
                     // the plan.
                     let accept_plan = self.pending_of(ticket).is_some_and(|p| p.accept_plan);
                     let plan = self.pending_of(ticket).is_some_and(|p| p.plan);
+                    // So does the crown's `now` (T-600).
+                    let queued = !self.pending_of(ticket).is_some_and(|p| p.now);
                     match self.req(Command::TakeQueuedAsk { ticket }) {
                         Response::Err { message } => self.refuse(ticket, message),
                         Response::PromptTakenBack { text } => {
                             self.mode = Mode::Editor(self.ask_room(
                                 AskTarget::Ticket(ticket),
-                                true,
+                                queued,
                                 accept_plan,
                                 plan,
                                 None,
@@ -6216,10 +6218,13 @@ impl App {
                         // waiting to accept a plan keeps waiting to.
                         let accept_plan = self.pending_of(id).is_some_and(|p| p.accept_plan);
                         let plan = self.pending_of(id).is_some_and(|p| p.plan);
+                        // The crown's held `now` (T-600) reopens at `now`,
+                        // as the crown meant it.
+                        let queued = !self.pending_of(id).is_some_and(|p| p.now);
                         let target = AskTarget::Ticket(id);
                         if text.contains('\n') {
                             let mut ed =
-                                self.ask_room(target, true, accept_plan, plan, None, &text);
+                                self.ask_room(target, queued, accept_plan, plan, None, &text);
                             ed.grow = self.card_grow();
                             self.mode = Mode::Editor(ed);
                         } else {
@@ -6227,7 +6232,7 @@ impl App {
                                 purpose: InputPurpose::Prompt {
                                     target,
                                     walk: None,
-                                    queued: true,
+                                    queued,
                                     accept_plan,
                                     plan,
                                     tier: None,
@@ -11882,6 +11887,7 @@ pub(crate) mod test_support {
                             accept_plan,
                             held: held.clone(),
                             plan,
+                            now: false,
                         });
                         return Ok(Response::Queued { behind: waits_on, asking, held });
                     }
@@ -16638,6 +16644,7 @@ mod tests {
                 accept_plan: true,
                 plan: false,
                 held: None,
+                now: false,
             }];
             app.pending_row(ulid::Ulid(1))
         };
@@ -16878,6 +16885,7 @@ mod tests {
             accept_plan: false,
             held: Some("agent asked".into()),
             plan: false,
+            now: false,
         }];
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("agent asked ∙ you send"));
         assert!(app.ctx().ticket_queued, "a held ask is still edited and sent from the board");
@@ -16903,6 +16911,7 @@ mod tests {
             accept_plan: false,
             plan: false,
             held: None,
+            now: false,
         }];
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         let ed = editor(&app);
@@ -16939,6 +16948,7 @@ mod tests {
             accept_plan: false,
             plan: false,
             held: None,
+            now: false,
         }];
         assert!(app.ctx().ticket_queued);
         assert_eq!(
@@ -17045,6 +17055,7 @@ mod tests {
                 accept_plan: false,
                 plan: false,
                 held: None,
+                now: false,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };
@@ -17069,6 +17080,7 @@ mod tests {
                 accept_plan: false,
                 plan: false,
                 held: None,
+                now: false,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };
@@ -17094,6 +17106,7 @@ mod tests {
             accept_plan: false,
             plan: false,
             held: None,
+            now: false,
         }];
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("T-411 asks ∙ you send"));
         assert!(app.ticket_queued(ulid::Ulid(1)), "^y and ^u apply to it");
@@ -17154,6 +17167,7 @@ mod tests {
                 accept_plan: false,
                 plan: false,
                 held: None,
+                now: false,
             }];
             app.pending_row(ulid::Ulid(1)).unwrap()
         };

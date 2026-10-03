@@ -173,6 +173,10 @@ pub const CROWN_WAKES: &str = concat!(
      plan one stops on wakes it and accept_plan accepts it, after get_ticket shows the plan. \
      Every other stop, an agent a person started, and a board that does not let the crown \
      answer stay a person's. \
+     ask_agent's words wait for the agent's idle by default; with now they reach a working \
+     agent mid-turn, as a person's send-now does, unless it stands at a dialog, and the \
+     receipt's road says which (sent_now, queued or held_for_person); a new ask replaces the \
+     crown's last on that ticket. \
      An ask dropped before it was sent (a person replaced it, took it back or talked past it, \
      or its agent went first) reads asked: dropped on that ticket's get_ticket, with who \
      dropped it. ",
@@ -627,18 +631,19 @@ pub fn tools() -> Vec<Value> {
         json!({
             "name": "ask_agent",
             "description": "Queues words on another ticket's card for its agent (crown \
-                            only), marked as this agent's. A person sends them (^y) or takes \
-                            them back (^u); with crown sends on, an agent the crown started \
-                            gets them once idle (held_for_person says which). A second ask \
-                            replaces the first. Refused with no agent or on this session's \
-                            ticket. The turn that takes them wakes this session when it ends.",
+                            only). A person sends (^y) or takes back (^u); with crown sends \
+                            on, an agent the crown started gets them once idle, or mid-turn \
+                            with now (road says which). Refused with no agent, on this \
+                            session's ticket, or now at a dialog. The turn taking them wakes \
+                            this session at its end.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
-                    "text": { "type": "string", "description": "The words, as a person types them." },
+                    "key": { "type": "string", "description": "A key from list_board." },
+                    "text": { "type": "string", "description": "The words a person would type." },
                     "seen": { "type": "string", "description": "get_ticket's seen stamp." },
                     "plan": { "type": "boolean", "description": "Optional. True: plan mode." },
+                    "now": { "type": "boolean", "description": "Optional. True: mid-turn." },
                 },
                 "required": ["key", "text", "seen"],
                 "additionalProperties": false,
@@ -783,6 +788,8 @@ pub enum ToolCall {
         text: String,
         seen: String,
         plan: bool,
+        /// Sent now, mid-turn, not queued for idle (T-600).
+        now: bool,
     },
     /// Exactly one of `index`, `text` (T-569) and `answers` (T-571).
     AnswerAgent {
@@ -971,6 +978,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                 .to_string(),
             seen: word(args, "seen")?,
             plan: flag(args, "plan")?,
+            now: flag(args, "now")?,
         }),
         "answer_agent" => {
             let (index, text) = one_answer(args, "")?;
@@ -1630,6 +1638,7 @@ mod tests {
                     text: "x".into(),
                     seen: None,
                     plan: false,
+                    now: false,
                 },
                 "ask_agent",
             ),
@@ -1964,7 +1973,8 @@ mod tests {
                 key: "T-4".into(),
                 text: "go".into(),
                 seen: "abc".into(),
-                plan: false
+                plan: false,
+                now: false
             })
         );
         assert_eq!(
@@ -1976,9 +1986,29 @@ mod tests {
                 key: "T-4".into(),
                 text: "go".into(),
                 seen: "abc".into(),
-                plan: true
+                plan: true,
+                now: false
             })
         );
+        // T-600: `now` is the board's immediate send, a flag like `plan`.
+        assert_eq!(
+            parse_tool_call(
+                "ask_agent",
+                &json!({ "key": "T-4", "text": "go", "seen": "abc", "now": true })
+            ),
+            Ok(ToolCall::AskAgent {
+                key: "T-4".into(),
+                text: "go".into(),
+                seen: "abc".into(),
+                plan: false,
+                now: true
+            })
+        );
+        assert!(parse_tool_call(
+            "ask_agent",
+            &json!({ "key": "T-4", "text": "go", "seen": "abc", "now": "yes" })
+        )
+        .is_err());
         assert!(parse_tool_call("ask_agent", &json!({ "key": "T-4", "text": "go" })).is_err());
         assert_eq!(
             parse_tool_call("sleep_agent", &json!({ "key": " T-4 ", "seen": "abc" })),
@@ -2380,6 +2410,31 @@ mod tests {
         }
     }
 
+    /// T-600: the crown's ask reaches a working agent mid-turn with `now`,
+    /// and the default waits for idle; the tool and the receipt both say
+    /// so, inside the cap and the lint.
+    #[test]
+    fn ask_agent_says_now_reaches_a_working_agent() {
+        let registry = tools();
+        let t = registry.iter().find(|t| t["name"] == "ask_agent").unwrap();
+        let now = &t["inputSchema"]["properties"]["now"];
+        assert_eq!(now["type"], "boolean");
+        assert_eq!(now["description"], "Optional. True: mid-turn.");
+        let required = t["inputSchema"]["required"].as_array().unwrap();
+        assert!(!required.iter().any(|r| r == "now"), "now is optional");
+        let bytes = serde_json::to_vec(t).unwrap().len();
+        assert!(bytes <= MAX_TOOL_BYTES, "ask_agent is {bytes} bytes");
+        for words in [
+            "wait for the agent's idle by default",
+            "with now they reach a working agent mid-turn",
+            "unless it stands at a dialog",
+            "sent_now, queued or held_for_person",
+        ] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+        assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
+    }
+
     #[test]
     fn ticket_creation_guidance_is_bounded_and_descriptive() {
         let registry = tools();
@@ -2415,7 +2470,11 @@ mod tests {
             // T-550: which road the words take is the receipt's to say.
             (
                 "ask_agent",
-                vec!["The turn that takes them wakes this session", "held_for_person says which"],
+                vec![
+                    "The turn taking them wakes this session",
+                    "once idle, or mid-turn with now (road says which)",
+                    "or now at a dialog",
+                ],
             ),
         ] {
             let tool = registry.iter().find(|t| t["name"] == name).unwrap();
@@ -2598,6 +2657,7 @@ mod tests {
                 text: "x".into(),
                 seen: None,
                 plan: false,
+                now: false,
             },
             Command::AgentAnswerTicket {
                 key: "T-1".into(),

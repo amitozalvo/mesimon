@@ -19557,3 +19557,74 @@ the daemon's `session_takes_words`, `ask_holders`, `agent_background`, `hear_lin
 queued prompt and the crown's ask land while three backgrounded commands run, the answer wakes the
 crown, the lingering wake comes once under a 6 s seam and not again without a turn, the seat stays
 `Idle{Background}` and `Busy` to the train).
+
+## The crown's `ask_agent` takes `now` (T-600, 2026-10-03, filed by the crown on T-587; the author: "this is an example of an immediate prompt that should have happened, does mesimon allow the crown to do it?")
+
+**Seen.** The crown rebriefed T-599 mid-turn with `ask_agent`. The words queued "after its turn",
+which for a worker in a long first turn means hours. The author opened the ticket, pressed
+Shift+Enter, set the send to "now" and sent it by hand. The worker took it at once, through the
+mod (the pane showed the plugin's queued-prompt label). The crown had no way to do the same.
+
+**Shipped.** `ask_agent { key, seen, text, plan?, now? }`, `AgentAskTicket.now` (serde default:
+an older shim queues). The words are parked by `park_ask` as before, so every refusal, the
+replace rule and the feed are unchanged. With `now`, and where the crown may send
+(`crown_ask_hold`), the handler then does what a person's `^y` does (`send_queued_ask`): a pane
+takes the words mid-turn (the mod's `submit`, or the paste into the composer), and a parked agent
+is woken with them. The entry leaves the queue, the feed writes `ask_agent_sent`, the card lights
+`♛ sent`, and `tag_owed(TurnAsk::Crown)` marks the turn that takes them.
+
+- **Refused where the person's send is refused.** If the agent is at a dialog
+  (`pane_waits_on_you`, any `RequiresAction`), the words would land in the dialog. A question or a
+  plan was already refused for every ask (T-566, T-582), so this adds a permission dialog. `now`
+  with `plan` at a working pane is refused too, because plan mode restarts the agent (the
+  person's field has the same refusal). Both refusals queue nothing.
+- **Held for a person, preset to now.** Where crown sends are off, or a person started the agent,
+  or the budget is spent, the ask is held as before and the entry carries `QueuedAsk.now`
+  (memory-only, like every crown ask). It reaches the snapshot as `Pending.now`, and the card's
+  field reopens at `now`, by Shift+Enter or by take-back (`^u`). `^y` already sends at once.
+- **The receipt names the road.** `AgentAsked.road: Option<AskRoad>` is `sent_now`, `queued` or
+  `held_for_person`, and the shim prints it as `road`. An older daemon sends none, and
+  `AskRoad::of` reads the road from `held_for_person`. The crown's `ask_agent` /
+  `ask_agent_replaced` feed line now comes from the handler with the road as its `outcome`, so
+  `park_ask` writes only a person's line.
+- **The words.** The tool says "once idle, or mid-turn with now (road says which)" and "or now at
+  a dialog". To fit the 820-byte cap it lost "marked as this agent's" and "A second ask replaces
+  the first", and two field descriptions are shorter. `CROWN_WAKES` now carries the replace rule
+  and the paragraph on now and the default (`ask_agent_says_now_reaches_a_working_agent`).
+
+**Found on the way: a mid-turn ack can outlive the window.** A crown ask's turn mark rides the
+owed entry until its `UserPromptSubmit` ack (`ack_owed` → `mark_turn`). That entry gives up after
+`INFLIGHT_MS` (10 s). On the mod road a `submit` sent mid-turn is held until the running turn's
+`Stop` and runs as a turn of its own (T-575's P2). A paste is shown to the running turn at its
+next step. Either way, in a long turn the ack comes after the give-up, the mark was lost, and the
+turn that took the crown's words woke it as a plain "finished its turn". `^y` into a working
+agent had the same gap. Now the give-up keeps a taken entry's crown mark as a
+`crownwake::LateAsk` (`Daemon::late_asks`, by ticket):
+
+- the next prompt that reaches that agent with nothing owed takes it (`late_ask_acked`);
+- a paste's is also taken by the end of the running turn (`turn_ended`), which took the words.
+
+Only the crown's mark is kept. A merge step's mark still ends with its window, which is today's
+behaviour.
+
+**Tests.** `crown_e2e::the_crown_sends_now_into_a_working_turn`, on both roads (the mod pass
+through the stand-in engine's `submit`):
+
+- `now` to a working worker lands at once while it is still `Running`, nothing is parked, the
+  feed says `sent_now`, and the turn's end wakes the crown with "answered your ask";
+- without `now` the words wait for idle;
+- `now` at a permission dialog is refused and queues nothing;
+- an ack held past the window still wakes the crown: the turn's end on the paste road, and the
+  next turn on the mod road. With the carry disabled this step fails ("timed out waiting for the
+  answer's wake");
+- with sends off the ask is held (`Pending.now`), and `^y` sends it into the running turn.
+
+Unit tests: the field and the words in `mcp`, and the receipt's road in the shim
+(`an_ask_receipt_names_its_road`). Full nextest on the hook set (2,088 passed). The crown,
+ask-queue, MCP and plan-mode e2es also passed on the mod pass.
+
+**Not done.** The real engine was not driven through the rig with `now`. P2 measured the mod's
+mid-turn hold, and the paste road's mid-turn display is T-420's. Whether Claude Code fires
+`UserPromptSubmit` when it folds a pasted mid-turn prompt into the running turn was not
+measured. If it does, the mark lands on that turn through `ack_owed`. If it does not, the
+`LateAsk` paste branch covers it.

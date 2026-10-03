@@ -21,7 +21,7 @@ use mesimon_core::board::{
 };
 use mesimon_core::command::{
     AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentNeedsYouView, AgentQuestionView,
-    AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow, AgentTicketView, Command,
+    AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow, AgentTicketView, AskRoad, Command,
     CrownTouch, DiffTarget, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Notice,
     Pending, PendingAction, Resources, Response, TerminalItem, WorktreeItem, WorktreeRepoItem,
     PROTOCOL_VERSION,
@@ -661,6 +661,10 @@ pub struct Daemon {
     /// that turn's end: the crown's ask comes back as an answer, a
     /// merge-flow sentence as a merge step the crown is not woken for.
     turn_asks: HashMap<ulid::Ulid, TurnAsk>,
+    /// The crown's words that went in mid-turn and whose ack outlived the
+    /// in-flight window (T-600), by ticket: the mark the ack would have
+    /// set, kept for the turn that takes them (`crownwake::LateAsk`).
+    late_asks: HashMap<ulid::Ulid, crownwake::LateAsk>,
     /// Tickets whose agent has worked since its last end of turn (T-591),
     /// set on an edge into a working state and taken by the next `EndTurn`:
     /// that end is a finished turn, and an idle re-entered with no turn
@@ -949,6 +953,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 send_on_accept: false,
                 held: None,
                 plan: e.plan,
+                now: false,
             })
         })
         .collect();
@@ -1131,6 +1136,7 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_heard: HashMap::new(),
         crown_landed: Vec::new(),
         turn_asks: HashMap::new(),
+        late_asks: HashMap::new(),
         turns_open: std::collections::HashSet::new(),
         lingered: std::collections::HashSet::new(),
         answer_waits: None,
@@ -1742,6 +1748,11 @@ struct QueuedAsk {
     /// woken with it once idle. Rides `queue.json` (schema 2) on the
     /// seats that ride it.
     plan: bool,
+    /// The crown asked for these words NOW (T-600) and the board held them
+    /// for a person: the card's field reopens at `now`, and `^y` sends them
+    /// at once as it always does. Set by the crown's handler after
+    /// `park_ask`; never persisted, as no crown's ask is.
+    now: bool,
 }
 
 /// A crown's ask that left the queue unsent (T-568): whose crown it was,
@@ -3963,10 +3974,13 @@ impl Daemon {
         let mut changed = rec.unsent.take().is_some();
         if let Some(owed) = self.drop_owed(id) {
             self.feed.board(owed.ack.by, owed.ack.word, Some(ticket));
+            self.late_asks.remove(&ticket);
             if let Some(ask) = owed.asked {
                 self.mark_turn(ticket, ask);
             }
             changed = true;
+        } else {
+            self.late_ask_acked(ticket);
         }
         changed | self.forget_queued(ticket, "queued_ask_dropped_by_hand", "local", "person")
     }
@@ -4075,6 +4089,14 @@ impl Daemon {
             .collect();
         for id in expired {
             if let Some(owed) = self.drop_owed(id) {
+                // Taken, and unacked only because a turn is still running
+                // (T-600): the crown's mark waits for the turn that takes
+                // the words, not for this window.
+                if let (Some(ask @ TurnAsk::Crown(_)), true) =
+                    (owed.asked, owed.frame.is_none() || owed.taken)
+                {
+                    self.ask_unacked(owed.ticket, ask, owed.frame.is_some());
+                }
                 match &owed.frame {
                     // The session's mod never took the words (T-575): they
                     // are taken back and kept unsent, as a paste into a box
@@ -4834,7 +4856,7 @@ impl Daemon {
             // The crown's start (T-412): an ask to spawn, judged here. The
             // budget and the seat rule are the daemon's; the agent names a
             // ticket and nothing else — no kind, no prompt, no session.
-            Command::AgentAskTicket { key, text, seen, plan } => {
+            Command::AgentAskTicket { key, text, seen, plan, now } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -4911,6 +4933,28 @@ impl Daemon {
                 if let Some(message) = self.plan_refusal(target, plan) {
                     return Response::Err { message };
                 }
+                // `now` (T-600) is the person's send-now, refused where
+                // theirs is: at a dialog, whose keys a paste would answer;
+                // and with plan mode mid-turn, which restarts the agent.
+                if let (true, QueuedSeat::Pane(id)) = (now, &seat) {
+                    if self.pane_waits_on_you(*id) {
+                        return Response::Err {
+                            message: format!(
+                                "{key}'s agent is at a dialog; words sent now would land in it. \
+                                 A person answers it in the pane, and ask_agent without now \
+                                 queues the words for its idle."
+                            ),
+                        };
+                    }
+                    if plan && !self.session_idle(*id) {
+                        return Response::Err {
+                            message: format!(
+                                "{key}'s agent is mid-turn, and plan mode restarts it; \
+                                 ask_agent without now queues the words for its idle."
+                            ),
+                        };
+                    }
+                }
                 // The road (T-550): held for a person's send, unless the
                 // board lets the crown send and the crown started this agent.
                 let held_because = self.crown_ask_hold(ticket, target, &seat);
@@ -4923,6 +4967,7 @@ impl Daemon {
                 let mut held_for_person = !sends;
                 if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == target) {
                     q.sends = sends;
+                    q.now = now;
                     // Its agent is on a question (T-565): `park_ask` held
                     // the words, and the send stays a person's — after the
                     // answer, which may change them.
@@ -4935,14 +4980,41 @@ impl Daemon {
                             .to_string()
                     })
                 });
+                let road = match (held_for_person, now) {
+                    (true, _) => AskRoad::HeldForPerson,
+                    (false, true) => AskRoad::SentNow,
+                    (false, false) => AskRoad::Queued,
+                };
+                self.feed.board_outcome(
+                    "agent",
+                    if replaced { "ask_agent_replaced" } else { "ask_agent" },
+                    Some(target),
+                    road.word(),
+                );
                 self.crown_touched(ticket, target, "asked");
-                // An idle agent takes the words now, its touch turning to
-                // `sent`; a busy one when its turn ends, as a person's
-                // queued ask would. The stamp is read after: a wake moves
-                // the agent's state, which the stamp covers.
-                if !held_for_person {
-                    self.drain_queue();
+                match road {
+                    // Sent now (T-600): the person's `^y` on the parked words,
+                    // made by the board on the crown's say-so — a pane takes
+                    // them mid-turn (the mod's `submit`, or the composer's
+                    // paste), a parked agent is woken with them. The turn
+                    // that takes them is the crown's answer, as after `^y`.
+                    AskRoad::SentNow => {
+                        if let err @ Response::Err { .. } = self.send_queued_ask(target) {
+                            return err;
+                        }
+                        self.feed.board("agent", "ask_agent_sent", Some(target));
+                        self.crown_touched(ticket, target, "sent");
+                    }
+                    // An idle agent takes the words now, its touch turning
+                    // to `sent`; a busy one when its turn ends, as a
+                    // person's queued ask would.
+                    AskRoad::Queued => {
+                        self.drain_queue();
+                    }
+                    AskRoad::HeldForPerson => {}
                 }
+                // The stamp is read after: a wake moves the agent's state,
+                // which the stamp covers.
                 self.broadcast();
                 Response::AgentAsked {
                     key: self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key),
@@ -4950,6 +5022,7 @@ impl Daemon {
                     seen: Some(self.seen_token(target)),
                     held_for_person,
                     held_because,
+                    road: Some(road),
                 }
             }
             // The crown's answer (T-569): a question an agent the crown
@@ -6807,6 +6880,7 @@ impl Daemon {
                 accept_plan: q.accept_plan || q.send_on_accept,
                 held: q.held.map(str::to_string),
                 plan: q.plan,
+                now: q.now,
             })
             .collect();
         for o in self.owed.values() {
@@ -6823,6 +6897,7 @@ impl Daemon {
                     accept_plan: false,
                     held: None,
                     plan: false,
+                    now: false,
                 });
             }
         }
@@ -6846,6 +6921,7 @@ impl Daemon {
                 accept_plan: false,
                 held: None,
                 plan: false,
+                now: false,
             });
         }
         // What the train will do once its gate is clear — said before it
@@ -6877,6 +6953,7 @@ impl Daemon {
                     accept_plan: false,
                     held: None,
                     plan: false,
+                    now: false,
                 });
             }
             for t in plan.rebase {
@@ -6892,6 +6969,7 @@ impl Daemon {
                     accept_plan: false,
                     held: None,
                     plan: false,
+                    now: false,
                 });
             }
         }
@@ -9363,11 +9441,9 @@ impl Daemon {
             _ => None,
         };
         // The feed names the author and never the words: a person's ask is
-        // `queued_ask`, the crown's is `ask_agent` with actor `agent`.
-        let (actor, fresh, replaced) = match by {
-            Some(_) => ("agent", "ask_agent".to_string(), "ask_agent_replaced"),
-            None => ("local", format!("queued_{word}"), "queued_ask_replaced"),
-        };
+        // `queued_ask`; the crown's is `ask_agent` with actor `agent`,
+        // written by its handler with the road the words took (T-600).
+        let fresh = format!("queued_{word}");
         // A person's words over the crown's (T-568): the crown's are dropped,
         // and its `get_ticket` says so. The crown's own new ask supersedes
         // whatever became of its last.
@@ -9402,7 +9478,11 @@ impl Daemon {
             q.send_on_accept = false;
             q.held = held;
             q.plan = plan && !accept_plan;
-            self.feed.board(actor, replaced, Some(ticket));
+            // So is `now` (T-600).
+            q.now = false;
+            if by.is_none() {
+                self.feed.board("local", "queued_ask_replaced", Some(ticket));
+            }
         } else {
             self.queued.push(QueuedAsk {
                 ticket,
@@ -9416,8 +9496,11 @@ impl Daemon {
                 send_on_accept: false,
                 held,
                 plan: plan && !accept_plan,
+                now: false,
             });
-            self.feed.board(actor, &fresh, Some(ticket));
+            if by.is_none() {
+                self.feed.board("local", &fresh, Some(ticket));
+            }
         }
         if held.is_some() {
             self.feed.board("automation", "queued_ask_held_question", Some(ticket));

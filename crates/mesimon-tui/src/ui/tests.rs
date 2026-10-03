@@ -4017,6 +4017,7 @@ fn golden_queued_start_open_120() {
         accept_plan: false,
         plan: false,
         held: None,
+        now: false,
     }];
     app.cursor_col = 0;
     app.cursor_row = Some(0);
@@ -4038,6 +4039,7 @@ fn pending_ask(ticket: u128, waits_on: &[&str]) -> mesimon_core::command::Pendin
         accept_plan: false,
         plan: false,
         held: None,
+        now: false,
     }
 }
 
@@ -4306,6 +4308,7 @@ fn golden_train_120() {
             accept_plan: false,
             plan: false,
             held: None,
+            now: false,
         },
         mesimon_core::command::Pending {
             ticket: ulid_n(6),
@@ -4319,6 +4322,7 @@ fn golden_train_120() {
             accept_plan: false,
             plan: false,
             held: None,
+            now: false,
         },
     ];
     app.cursor_col = 2;
@@ -4369,6 +4373,7 @@ fn golden_train_blocked_120() {
         accept_plan: false,
         plan: false,
         held: None,
+        now: false,
     }];
     app.cursor_col = 2;
     app.cursor_row = Some(0);
@@ -4518,6 +4523,7 @@ fn golden_train_manual_120() {
         accept_plan: false,
         plan: false,
         held: None,
+        now: false,
     };
     app.pending = vec![candidate.clone()];
     app.cursor_col = 2;
@@ -4632,6 +4638,7 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
         accept_plan: false,
         plan: false,
         held: None,
+        now: false,
     }];
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {

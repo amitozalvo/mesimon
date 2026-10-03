@@ -235,7 +235,11 @@ your `^y` to an agent the crown started: the queue delivers them once that agent
 lights `♛ sent`, and the activity feed records the send as the agent's. Words for an agent you
 started still wait for you, whatever the setting says. Words that would wake a sleeping agent need
 a free seat in the crown's budget and hold it while they wait. Turning the setting off, or taking
-the crown back, holds whatever had not gone yet on its card.
+the crown back, holds whatever had not gone yet on its card. The crown can also send its words
+now, as your Shift+Enter does with the send set to now: they reach a working agent mid-turn
+instead of waiting for it to go idle. It cannot send them now while that agent is at a dialog.
+Where its words are held for you, an ask meant for now opens at now when you edit it, and `^y`
+sends it at once either way.
 
 **Settings › Agents › Crown answers questions** (on by default, and separate from sending; turn it
 off there to keep every question and plan for yourself) lets the crown answer a question, and

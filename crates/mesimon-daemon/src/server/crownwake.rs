@@ -84,6 +84,20 @@ pub(super) enum TurnAsk {
     Merge,
 }
 
+/// The crown's words that went into a running turn and were not acked
+/// inside `INFLIGHT_MS` (T-600): a `now` ask, or a person's `^y`, at a
+/// worker in a long turn. Claude Code takes them either way, and the mark
+/// their ack would have set (`mark_turn`) is kept for the turn that does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct LateAsk {
+    pub(super) ask: TurnAsk,
+    /// Down the mod as a `submit`: held until the running turn ends and
+    /// run as a turn of its own, whose `UserPromptSubmit` takes the mark.
+    /// A paste is shown to the running turn at its next step, so with no
+    /// ack before that turn's end, the turn took it.
+    pub(super) by_mod: bool,
+}
+
 /// A worker's work at one turn's end: the baseline the next turn is judged
 /// against and the two sides of a wake's delta.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -654,6 +668,20 @@ impl Daemon {
         }
     }
 
+    /// Words that carried `ask` went in and their ack did not come inside
+    /// the window (T-600): the mark waits for the turn that takes them.
+    pub(super) fn ask_unacked(&mut self, ticket: ulid::Ulid, ask: TurnAsk, by_mod: bool) {
+        self.late_asks.insert(ticket, LateAsk { ask, by_mod });
+    }
+
+    /// A prompt reached `ticket`'s agent with nothing owed: the words that
+    /// outlived their window, if any, are what this turn runs on.
+    pub(super) fn late_ask_acked(&mut self, ticket: ulid::Ulid) {
+        if let Some(late) = self.late_asks.remove(&ticket) {
+            self.mark_turn(ticket, late.ask);
+        }
+    }
+
     /// The owed words reached the agent: the turn now running is theirs.
     pub(super) fn mark_turn(&mut self, ticket: ulid::Ulid, ask: TurnAsk) {
         match ask {
@@ -673,7 +701,9 @@ impl Daemon {
     /// Only while a crown is worn, never for the crown's own ticket, and
     /// only for a worker this crown started or a turn that took its ask.
     pub(super) fn turn_ended(&mut self, worker: ulid::Ulid, end_turn: bool) {
-        let asked = self.turn_asks.remove(&worker);
+        let pasted = self.late_asks.get(&worker).is_some_and(|l| !l.by_mod);
+        let late = if pasted { self.late_asks.remove(&worker).map(|l| l.ask) } else { None };
+        let asked = self.turn_asks.remove(&worker).or(late);
         if end_turn {
             let fresh = self.turns_open.remove(&worker);
             self.probe_turn(worker, ProbeWhy::Turn { asked, fresh });
