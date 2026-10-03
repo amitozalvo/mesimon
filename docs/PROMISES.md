@@ -53,10 +53,13 @@ a ticket the crown started can never itself be crowned, and an agent you started
 alone to sleep. Words the crown leaves for another ticket's agent wait on that card until you
 send them, unless you turn on *Settings › Agents › Crown sends its asks* (off by default): then
 words for an agent the crown started reach it once it is idle, and an agent you started still
-waits for you. Questions wait for you too, unless you turn on *Settings › Agents › Crown answers
-questions* (off by default): then the crown may answer a question an agent it started
-stops on, typed into that agent's dialog and shown on its card and in the activity feed, while
-every other stop, and every question from an agent you started, still waits for you. Only you can
+waits for you. The crown also answers by default (*Settings › Agents › Crown answers
+questions*, on; turn it off to keep every question and plan for yourself): it may answer a
+question an agent it started stops on, typed into that agent's dialog, or accept a plan that
+agent stops on, with one Enter on the plan dialog's first row (`♛ accepted plan`), each shown
+on its card and in the activity feed. A plan it would change, a question about secrets, spend,
+anything destructive or beyond the brief is raised to you, and every other stop, and every
+question or plan from an agent you started, still waits for you. Only you can
 crown a ticket; an agent that asks for it is told to ask you.
 `mesimon doctor --mcp` prints the current tool registry verbatim.
 

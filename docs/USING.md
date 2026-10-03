@@ -310,7 +310,11 @@ nothing to poll: a background monitor it runs makes its session read as busy, an
 until the monitor ends. When an agent stops on a question, the crown reads the question and its
 options on that agent's ticket, and its words for that agent are refused until the question is
 answered: by you, in the pane or from Remote Control, or by the crown where the setting above lets
-it.
+it. A worker the crown started that sits idle with background tasks still takes words, yours and
+the crown's, and its card reads `idle ∙ 3 tasks ∙ 2h`. After 30 minutes the crown is told once
+(`has been idle with 3 background tasks for 30 min`) and `get_ticket` on that ticket carries the
+count. Nothing is merged, parked or ended by time, because the wait may be the work (a long
+suite) and the board cannot tell.
 
 ## Sleeping idle agents
 
@@ -404,6 +408,21 @@ its sleep lock can also block explicit suspend requests, depending on desktop po
 path) uses a guarded macOS subprocess. Any other custom program named by this variable must
 release its hold and terminate its children on stdin EOF; that contract is necessary for
 cleanup after Mesimon is killed.
+
+## Notifications
+
+**Settings › Appearance › Notifications** opens the list that chooses which events post a
+banner and whether a sound plays: banner on or off, whether a finished turn counts as well as a
+blocked agent, whether the agent's words are quoted, the two sounds, whether a focused board or
+the agent's own pane still speaks, and iTerm2's dock bounce (T-492).
+
+On macOS the banner wears the mesimon mascot. mesimon never installs anything into your
+Notifications settings by hand. Where `terminal-notifier` is installed it posts through a signed
+private copy under `~/.local/state/mesimon/notifications/`; where it is not, through a small
+"Mesimon" applet it builds there once with the system's `osacompile` (T-605). A Mac that later
+gains terminal-notifier shows a second "Mesimon" under System Settings › Notifications, and the
+first banners from a new identity may not show until macOS has asked you to allow them. On Linux
+the notifier is `notify-send`, where present.
 
 ## Pictures in notes
 

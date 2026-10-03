@@ -57,7 +57,8 @@ While the relay answers, the page is always the relay’s current one.
 
 **Now** puts what needs you first: a permission request or a single-choice
 question can be answered right on its card, and anything else opens the ticket.
-Below it are the agents that are working, then the idle ones. A ticket is the same
+Below it are the agents that are working, then the idle ones; an agent that has
+stopped stays on Now for an hour under "Recently idle", and older ones are on Board. A ticket is the same
 card in Now and on the Board: its title, its tags and key, how long the agent has been
 in its state and, while live, the step it is on (a tool call, in mono) or the first
 line of its latest reply. In Now the card also names the ticket’s column. **Board**
@@ -171,8 +172,10 @@ Claude permission requests can be approved once or denied while their remote
 window is open. Claude’s local dialog remains available while the hook waits;
 unanswered requests leave its native permission flow unchanged.
 The write-protection gate remains deny-only; remote approval never installs rules
-or changes the permission mode. Existing sessions need refreshed hook settings
-before they offer remote approvals.
+or changes the permission mode. A session on the hook set (Claude Code below
+2.1.287) needs refreshed hook settings before it offers remote approvals. On the plugin
+road (Claude Code 2.1.287 or newer, where mesimon loads its own mod with `--plugin-dir`)
+there are no hook settings: the mod runs the approval itself, in the same words.
 
 ## Questions and plans
 
@@ -183,20 +186,29 @@ A question that takes one choice is answered by tapping it, on the ticket or
 on its Now card. A question that takes several choices, or a dialog that asks
 up to four questions at once, is answered on the ticket: tick the options
 (or pick one, for a one-choice question), or type your own words in place of
-them, then press one Submit. Your terminal walks the dialog question by
-question, ticking each option and checking the mark, and presses the dialog's
-own Submit only after its review lists exactly the answers you sent. If your
+them, then press one Submit. On the keyed road your
+terminal walks the dialog question by question, ticking each option and checking
+the mark, and presses the dialog's own Submit only after its review lists exactly
+the answers you sent. If your
 terminal runs an older mesimon, the ticket says the dialog needs a local
 answer. Unrecognized forms require a local answer too. An answer is never
 retried automatically, and keys already typed are never undone.
 
+Which road a session is on decides how the answer gets in. On the plugin road
+(Claude Code 2.1.287 or newer) the answer goes down to the mod as one frame and
+lands straight in Claude's dialog, with no screen read and no keys; the mod's own
+report confirms it. On the hook set it is the keyed road above. Declining a
+question or rejecting a plan presses Escape on either road, and a plan is accepted
+by a press on either.
+
 An answer's receipt says how far it got:
 
-- **A clock, "Sending…"**: your terminal is choosing and typing the keys.
+- **A clock, "Sending…"**: your terminal is sending the answer (on the keyed
+  road, choosing and typing the keys).
 - **Two ticks, "Answered."**: the agent reported that its dialog took the
   answer. Only the agent's own report shows two ticks.
-- **One tick, "Keys sent, not confirmed · check the pane."**: the keys went
-  in, and the agent did not report the dialog closing within five seconds.
+- **One tick, "Keys sent, not confirmed · check the pane."**: the answer or
+  its keys went in, and the agent did not report the dialog closing within five seconds.
   If the question is still on screen, the card still offers it. Declining a
   question or rejecting a plan presses Escape, which the agent usually does
   not report, so it usually ends here.
