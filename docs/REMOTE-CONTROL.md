@@ -139,14 +139,19 @@ for earlier, a page at a time. While the agent works, its current step sits unde
 row. It is read from the session's transcript on your Mac, so a sleeping agent's
 conversation reads too. After `/clear` or `/resume` the page follows the new conversation.
 
-**Raw** shows the agent's terminal screen instead, its last 50 lines, as it looked at your
-desk; a sleeping agent has none. The page remembers which one you chose. A subagent's
-conversation is not shown.
+Replies read as they do at your desk: headings, lists and task lists, quotes, code blocks,
+tables, bold, emphasis, struck text and links.
+
+**Raw**, in the panel's corner, shows the agent's terminal screen instead, its last 50 lines,
+as it looked at your desk; a sleeping agent has none. The page remembers which one you
+chose. A subagent's conversation is not shown.
 
 ## Sending a prompt
 
-A prompt targets the session shown when you send it. **Submitted** means delivery
-to the agent’s input, not completion of its work. Waiting Codex prompts retain the
+A prompt targets the session shown when you send it. In the conversation, a prompt you
+sent shows faded under the last message, with its ticks, until the conversation holds it.
+On the Raw screen the line under the composer says **Submitted**: delivery to the agent’s
+input, not completion of its work. Waiting Codex prompts retain the
 paired device’s authority and are cancelled if access is revoked or the target
 changes. Reconnects never resubmit prompts automatically. If a delivery result
 cannot be recovered, the browser shows **outcome unknown**; check the agent before

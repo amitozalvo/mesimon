@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Sessions, answerBusy, receiptTick, reasonText } from "./sessions.js";
+import { Sessions, answerBusy, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
 import { afterWords, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS } from "./board.js";
 import { crownTouch } from "./lists.js";
@@ -730,20 +730,21 @@ test("a note edit settles once on the host's word and keeps its words until then
 });
 test("notes read as text: fences, pictures and markers never become markup", async () => {
   const { blocks } = await import("./markdown.js");
+  const text = (rs) => rs.map((r) => r.text).join("");
   const out = blocks("# Plan\n\n- one\n- two\n\n```\n<script>x</script>\n```\n![shot](mesimon-attachment:01J)\n> quoted <b>");
-  assert.deepEqual(out, [
-    { heading: "Plan" },
-    { ordered: false, items: ["one", "two"] },
-    { code: true, lines: ["<script>x</script>"] },
-    { picture: "Picture" },
-    { text: "quoted <b>" },
-  ]);
+  assert.deepEqual(
+    out.map((b) => Object.keys(b)[0]),
+    ["head", "blank", "item", "item", "blank", "code", "picture", "quote"],
+  );
+  assert.equal(text(out[0].runs), "Plan");
+  assert.deepEqual(out[5].code, ["<script>x</script>"]);
+  assert.equal(out[6].picture, "Picture");
+  assert.equal(text(out[7].quote[0].para), "quoted <b>", "a tag stays text");
   // The desk's own picture link, alone on a line or inside one (T-629).
   const id = "01JZZZZZZZZZZZZZZZZZZZZZZZ";
-  assert.deepEqual(blocks(`[Image #2](mesimon-attachment:${id})\nsee [Image #3](mesimon-attachment:${id}) here`), [
-    { picture: "Image #2" },
-    { text: `see [Image #3](mesimon-attachment:${id}) here` },
-  ]);
+  const pics = blocks(`[Image #2](mesimon-attachment:${id})\n\nsee [Image #3](mesimon-attachment:${id}) here`);
+  assert.equal(pics[0].picture, "Image #2");
+  assert.deepEqual(pics[2].para.map((r) => [r.text, !!r.pic]), [["see ", false], ["Image #3", true], [" here", false]]);
   const { nameOf, ago } = await import("./notes.js");
   assert.equal(nameOf("\n\n## Plan: retry\nmore"), "Plan: retry");
   assert.equal(ago(0), "");
@@ -807,4 +808,77 @@ test("transcript pages join: what was written since appends, an earlier page goe
   // A new conversation (`/clear`, `/resume`) starts over too.
   const fresh = mergePage(chat, tailAsk(chat), { conversation: "b", rows: [row(0)], from: 0, end: 10 });
   assert.deepEqual([fresh.conversation, fresh.rows.length, fresh.floor], ["b", 1, null]);
+});
+
+// T-626: the phone reads markdown as the desk does (`tui/src/rich.rs`).
+test("markdown reads as the desk reads it: tables, quotes, lists, fences and inline marks", async () => {
+  const { blocks, inline } = await import("./markdown.js");
+  const text = (rs) => rs.map((r) => r.text).join("");
+  // A pipe table: alignment from the delimiter row, cells parsed inline,
+  // every row the header's width, an escaped pipe kept in its cell.
+  const [table] = blocks("| Name | Count | Note |\n|:-----|------:|:----:|\n| `a` | 1 | x \\| y |\n| b |\n\nafter");
+  assert.deepEqual(table.table.align, ["left", "right", "center"]);
+  assert.deepEqual(table.table.head.map(text), ["Name", "Count", "Note"]);
+  assert.deepEqual(table.table.rows.map((r) => r.map(text)), [["a", "1", "x | y"], ["b", "", ""]]);
+  assert.equal(table.table.rows[0][0][0].code, true);
+  // A pipe line with no delimiter row is kept as written; text over `---`
+  // is no table.
+  assert.deepEqual(blocks("| a | b |"), [{ raw: "| a | b |" }]);
+  assert.deepEqual(blocks("text\n---").map((b) => Object.keys(b)[0]), ["para", "rule"]);
+  // A quote holds blocks, and an alert names itself.
+  const [quote] = blocks("> [!WARNING]\n> mind it\n> - a list\n> ```\n> code\n> ```");
+  assert.deepEqual(quote.quote.map((b) => Object.keys(b)[0]), ["para", "item", "code"]);
+  assert.equal(text(quote.quote[0].para), "Warning\nmind it");
+  // Lists: ordered markers as written, a level per two spaces, task boxes,
+  // a ticked task read last, lazy continuation.
+  const items = blocks("1. one\n  - nested\n2) two\n- [ ] todo\n- [x] done\ncontinued");
+  assert.deepEqual(items.map((b) => [b.item.marker, b.item.depth, b.item.task]),
+    [["1.", 0, undefined], [undefined, 1, undefined], ["2)", 0, undefined], [undefined, 0, false], [undefined, 0, true]]);
+  assert.equal(text(items[4].runs), "done continued");
+  assert(items[4].runs.every((r) => r.dead));
+  // Fences: tildes, longer runs, an info string, an unterminated one.
+  assert.deepEqual(blocks("~~~~rust\nlet x;\n```\n~~~~").map((b) => b.code), [["let x;", "```"]]);
+  assert.deepEqual(blocks("```\nleft open"), [{ code: ["left open"] }]);
+  // Paragraphs: a newline is a space for an agent, a break for a person, and
+  // a hard break either way.
+  assert.equal(text(blocks("one\ntwo")[0].para), "one two");
+  assert.equal(text(blocks("one\ntwo", true)[0].para), "one\ntwo");
+  assert.equal(text(blocks("one  \ntwo\\\nthree")[0].para), "one\ntwo\nthree");
+  // Inline: strong, emphasis, both, struck, code with ticks inside, escapes,
+  // `<br>`, snake_case left alone, a lone star literal.
+  const marks = (s) => inline(s).map((r) => [r.text, ["strong", "em", "code", "dead"].filter((k) => r[k]).join("+")]);
+  assert.deepEqual(marks("**b** *e* ***be*** ~~gone~~"), [
+    ["b", "strong"], [" ", ""], ["e", "em"], [" ", ""], ["be", "strong+em"], [" ", ""], ["gone", "dead"]]);
+  assert.deepEqual(marks("``a `b` c`` \\*x\\*"), [["a `b` c", "code"], [" *x*", ""]]);
+  assert.deepEqual(marks("snake_case_name and 5 * 3"), [["snake_case_name and 5 * 3", ""]]);
+  assert.deepEqual(marks("a<br>b"), [["a\nb", ""]]);
+  // Links: the label, the target after it; only a web target is followed.
+  const [label, target] = inline("[docs](https://example.com/a)");
+  assert.deepEqual([label.text, label.href, target.text, target.url], ["docs", "https://example.com/a", " https://example.com/a", true]);
+  assert.equal(inline("[x](javascript:alert(1))")[0].href, undefined);
+});
+
+// T-626: a sent prompt is a ghost until the conversation holds it.
+test("a sent prompt is a ghost until a row the person wrote lands past where the chat ended", () => {
+  const sessions = new Sessions();
+  const entry = sessions.get("board-a", ticket("one", "session-a"));
+  entry.chat = { conversation: "c", rows: [{ at: 0, kind: "prompt", text: "old" }], end: 50, floor: null };
+  entry.draft = "fix it";
+  sessions.sent(entry, 7, "inc");
+  assert.equal(ghostOf(entry)?.text, "fix it");
+  assert.equal(entry.receipt.from, 50);
+  assert.equal(landed(entry), false, "an older prompt is not this one");
+  sessions.reply(entry, { result: "delivery", status: "queued" });
+  assert.equal(ghostOf(entry), undefined, "queued words are the queued row's");
+  sessions.reply(entry, { result: "delivery", status: "submitted" });
+  assert.equal(ghostOf(entry)?.text, "fix it");
+  entry.chat.rows.push({ at: 60, kind: "reply", text: "an answer to before" });
+  assert.equal(landed(entry), false);
+  entry.chat.rows.push({ at: 70, kind: "prompt", text: "fix it" });
+  assert.equal(landed(entry), true);
+  entry.receipt.landed = true;
+  assert.equal(ghostOf(entry), undefined);
+  sessions.sent(entry, 8, "inc", "prompt", "again");
+  sessions.reply(entry, { result: "rejected", message: "no" });
+  assert.equal(ghostOf(entry), undefined, "a refusal is the delivery line's");
 });

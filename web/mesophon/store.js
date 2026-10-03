@@ -3,7 +3,7 @@
 // requests and the theme attribute. Transport stays in connection.js.
 import { Connection } from "./connection.js";
 import { BoardState } from "./board.js";
-import { Sessions, answerBusy } from "./sessions.js";
+import { Sessions, answerBusy, landed } from "./sessions.js";
 import { sendRefused, waitsOnYou } from "./queue.js";
 import { Sent } from "./sent.js";
 import { Mailbox } from "./mailbox.js";
@@ -1679,10 +1679,10 @@ export class Store {
         const before = entry.chat;
         entry.chat = mergePage(before, original.body, reply);
         entry.chatError = "";
+        if (landed(entry)) entry.receipt.landed = true;
         if (original.body.before != null) entry.chatOlder = false;
         else if (!entry.chatFollowing && before && entry.chat.rows.length !== before.rows.length)
           entry.chatUnread = true;
-        entry.chatAt = Date.now();
       }
       this.sync();
       if (entry?.chatWantsOlder) this.older();

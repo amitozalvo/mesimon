@@ -7,7 +7,7 @@ import { Shin } from "./shin.js";
 import { Attention } from "./dialogs.js";
 import { CrownMark, StartButton, StartReceipt, Tags, ageWords, crownTouch, stateAge } from "./lists.js";
 import { NotesCard, NoteReader } from "./notepad.js";
-import { receiptTick } from "./sessions.js";
+import { receiptTick, sentPrompt } from "./sessions.js";
 import { queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Chat } from "./transcript.js";
 
@@ -30,21 +30,19 @@ const screenRows = (text) => {
   );
 };
 
-// The conversation or the pane's screen (T-626), one toggle between them. A
-// parked agent's conversation is still its file; its screen is gone.
+// The conversation or the pane's screen (T-626): one small switch in the
+// panel's corner, naming the view it turns to. A parked agent's
+// conversation is still its file; its screen is gone, so it has no switch.
 function OutputView({ store, ticket }) {
   const chat = store.chatShown;
-  const asleep = ticket?.agent?.state === "sleeping";
-  return html`<fieldset id="output-view" class="segmented segmented-small">
-    <legend class="sr-only">Show</legend>
-    <label class=${chat ? "on" : ""}><input type="radio" name="output-view" value="chat"
-      checked=${chat} onChange=${() => store.setOutputView("chat")} /><span>Chat</span></label>
-    <label class=${`${chat ? "" : "on"}${asleep ? " off" : ""}`}><input type="radio" name="output-view" value="raw"
-      checked=${!chat} disabled=${asleep} onChange=${() => store.setOutputView("raw")} /><span>Raw</span></label>
-  </fieldset>`;
+  if (!store.chatCapable || ticket?.agent?.state === "sleeping") return null;
+  return html`<button id="output-view" type="button" class="view-toggle" aria-pressed=${String(!chat)}
+    aria-label=${chat ? "Show the terminal screen" : "Show the conversation"}
+    onClick=${() => store.setOutputView(chat ? "raw" : "chat")}>
+    <${Icon} name=${chat ? "terminal" : "inbox"} size=${13} /><span>${chat ? "Raw" : "Chat"}</span></button>`;
 }
 
-function Output({ store, ticket, entry, live }) {
+function Output({ store, ticket, entry }) {
   const chat = store.chatShown;
   const ref = useRef();
   const shown = useRef();
@@ -66,8 +64,6 @@ function Output({ store, ticket, entry, live }) {
         : ticket
           ? "No agent output."
           : "");
-  const at = chat ? entry?.chatAt : entry?.receivedAt;
-  const received = at ? `Last received ${new Date(at).toLocaleTimeString()}` : "Nothing received yet";
   const following = chat ? entry?.chatFollowing !== false : entry?.following;
   const unread = chat ? entry?.chatUnread : entry?.unread;
   // The screen (T-506): the lines at the pane's own width, the type sized by
@@ -76,12 +72,8 @@ function Output({ store, ticket, entry, live }) {
   // show legibly, the lines reflow at the panel's width and the rules stay
   // one row each (`.screen-lines`).
   return html`<section class="output" aria-label="Output" hidden=${!ticket?.agent || (ticket.agent.state === "sleeping" && !chat)}>
-    <div class="output-head">
-      <h3 class="label">${chat ? "Conversation" : "Output"}</h3>
-      ${store.chatCapable && html`<${OutputView} store=${store} ticket=${ticket} />`}
-      <p id="freshness">${live ? html`<span class="dot" aria-hidden="true"></span>` : null}${received}${live ? "" : " · Stale / offline"}</p>
-    </div>
     <div class="output-body">
+      <${OutputView} store=${store} ticket=${ticket} />
       ${chat
         ? html`<${Chat} store=${store} entry=${entry} doing=${ticket?.agent?.doing} />`
         : html`<pre id="preview" ref=${ref} class="screen" style=${{ "--cols": screenCols(entry) }} aria-label="Agent output" tabindex="0"
@@ -104,6 +96,9 @@ function Composer({ store, ticket, entry, live }) {
   const sendOff = !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting ||
     !!entry?.answer?.waiting || !entry?.draft.trim();
   const tick = receiptTick(entry?.latest?.status);
+  // In the conversation a sent prompt is its ghost, then its own row
+  // (T-626): no line says it was submitted.
+  const ghost = store.chatShown && !!sentPrompt(entry) && entry.latest === entry.receipt;
   return html`<footer class="composer-area">
     <section id="queued-row" class="bubble-row" aria-label="Queued prompt" hidden=${ticket?.queued == null}>
       <div class="bubble">
@@ -153,7 +148,7 @@ function Composer({ store, ticket, entry, live }) {
         </div>
         <p id="steer-why" class="steer-why" hidden=${!steerOff}>Steer is off while the agent waits on you · answer it first. Queue still works.</p>
       </div>
-      <p id="delivery" role="status" hidden=${!tick && !entry?.delivery}>${tick && html`<${Tick} state=${tick} />`}<span>${entry?.delivery || ""}</span></p>
+      <p id="delivery" role="status" hidden=${ghost || (!tick && !entry?.delivery)}>${tick && html`<${Tick} state=${tick} />`}<span>${entry?.delivery || ""}</span></p>
     </form>
   </footer>`;
 }
@@ -302,7 +297,7 @@ export function Detail({ store, bp }) {
       ${ticket && !started && html`<${StartReceipt} item=${start} agent=${agent} />`}
       <${Attention} store=${store} ticket=${ticket} entry=${entry} live=${live} />
       <${NotesCard} store=${store} ticket=${ticket} />
-      <${Output} store=${store} ticket=${ticket} entry=${entry} live=${live} />
+      <${Output} store=${store} ticket=${ticket} entry=${entry} />
       ${!ticket && html`<div class="detail-empty"><${Shin} size="medium" scale=${4} /><p>Pick a ticket to read its agent’s output and send it a prompt.</p></div>`}
     </div>
     <${Composer} store=${store} ticket=${ticket} entry=${entry} live=${live} />

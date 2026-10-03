@@ -3,7 +3,8 @@
 // offset) is its place for good: a page wholly before the tail never
 // changes, and only what was written since the last ask is asked again.
 import { html, useLayoutEffect, useRef } from "./html.js";
-import { Icon } from "./icons.js";
+import { Icon, Tick } from "./icons.js";
+import { ghostOf, receiptTick } from "./sessions.js";
 import { Markdown } from "./markdown.js";
 
 // What the page holds of one conversation: its rows oldest first, where the
@@ -53,6 +54,7 @@ export function Chat({ store, entry, doing }) {
   const ref = useRef();
   const seen = useRef({});
   const chat = entry?.chat;
+  const ghost = ghostOf(entry);
   useLayoutEffect(() => {
     const node = ref.current;
     if (!node || !node.getClientRects().length) return;
@@ -79,6 +81,8 @@ export function Chat({ store, entry, doing }) {
     ${chat && chat.floor == null && rows.length > 0 && html`<p class="chat-edge">Start of the conversation</p>`}
     ${empty && html`<p class="chat-empty">${empty}</p>`}
     ${rows.map((row, i) => html`<${Row} key=${rowKey(rows, i)} row=${row} />`)}
+    ${ghost && html`<div class="chat-row chat-prompt chat-ghost" aria-label="Sent, not yet in the conversation">
+      <p dir="auto">${ghost.text}</p><${Tick} state=${receiptTick(ghost.status) || "clock"} /></div>`}
     ${doing && html`<p class="chat-row chat-doing" dir="auto"><span class="dot" aria-hidden="true"></span><span>${doing}</span></p>`}
   </div>`;
 }

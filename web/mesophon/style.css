@@ -1734,12 +1734,113 @@ select {
   color: var(--ink);
   font-size: 0.9375rem;
 }
-.markdown ul,
-.markdown ol {
+.markdown p,
+.markdown h4 {
   margin: 0;
-  padding-left: 20px;
+}
+.markdown .md-h1 {
+  font-size: 1.0625rem;
+}
+.markdown .md-h3 {
+  color: var(--ink2);
+}
+.markdown code {
+  padding: 0 4px;
+  border-radius: 5px;
+  background: var(--s2);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+.markdown a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown del,
+.markdown .md-url {
+  color: var(--ink4);
+}
+/* The desk's lists (T-626): its own marker per item, a level per two
+   source spaces, a task's box. */
+.md-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
   display: grid;
   gap: 6px;
+}
+.md-item {
+  display: flex;
+  gap: 8px;
+}
+.md-d1 {
+  padding-left: 18px;
+}
+.md-d2 {
+  padding-left: 36px;
+}
+.md-d3 {
+  padding-left: 54px;
+}
+.md-mark,
+.md-task {
+  flex: none;
+  min-width: 1ch;
+  color: var(--ink3);
+  font-variant-numeric: tabular-nums;
+}
+.md-text {
+  min-width: 0;
+}
+.md-quote {
+  margin: 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--line2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--ink3);
+}
+.md-rule {
+  width: 100%;
+  margin: 2px 0;
+  border: 0;
+  border-top: 1px solid var(--line2);
+}
+.md-raw {
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  white-space: pre;
+}
+/* A table scrolls sideways inside its own box; the page never does. */
+.md-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.md-table table {
+  border-collapse: collapse;
+  font-size: 0.84375rem;
+}
+.md-table th,
+.md-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  text-align: left;
+}
+.md-table th {
+  color: var(--ink);
+  font-weight: 600;
+  border-bottom-color: var(--line2);
+  white-space: nowrap;
+}
+.md-table .md-center {
+  text-align: center;
+}
+.md-table .md-right {
+  text-align: right;
 }
 .output {
   flex: 1;
@@ -1747,22 +1848,6 @@ select {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-.output-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-}
-#freshness {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--ink3);
-  font-family: var(--mono);
-  font-size: 0.6875rem;
 }
 .output-body {
   position: relative;
@@ -1830,13 +1915,27 @@ select {
   font-weight: 500;
   box-shadow: var(--shadow);
 }
+/* Chat or the screen (T-626): a pill in the panel's corner, over the text. */
+.view-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--s3);
+  color: var(--ink2);
+  font-size: 0.75rem;
+  font-weight: 500;
+  box-shadow: var(--shadow);
+}
 
 /* ---- the conversation (T-626): the transcript as a chat, newest at the bottom -- */
-.segmented-small label {
-  min-height: 32px;
-  padding: 0 10px;
-  font-size: 0.75rem;
-}
 .chat {
   flex: 1;
   min-width: 0;
@@ -1845,7 +1944,8 @@ select {
   gap: 10px;
   overflow: auto;
   overflow-anchor: none;
-  padding: 14px 14px 60px;
+  /* No room kept for Jump to latest: it shows only while scrolled up. */
+  padding: 14px;
   border-radius: 16px;
   background: var(--s1);
 }
@@ -1868,12 +1968,16 @@ select {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* Sent, and not yet in the conversation (T-626): the words as they will
+   read, faded, with the receipt's tick. */
+.chat-ghost {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  opacity: 0.55;
+}
 .chat-reply .markdown {
   color: var(--ink);
-}
-.chat-reply .markdown p,
-.chat-reply .markdown h4 {
-  margin: 0;
 }
 .chat-tool,
 .chat-doing {

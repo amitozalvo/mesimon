@@ -5,6 +5,10 @@
 import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Markdown } from "./markdown.js";
+
+// A person's note reads a newline as a break, an agent's as a space, as the
+// desk's `Newline::of_note` reads them (T-626).
+const byPerson = (row) => !!row && row.by !== "agent";
 import { NOTE_MAX_BYTES, ago } from "./notes.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -34,7 +38,7 @@ function NoteRowButton({ store, ticket, row, pending, latest = false }) {
 // whole of it is one press that opens it in the reader, where Edit is. It
 // fades out at the foot exactly when the clamp hides some of it, measured,
 // since a line count cannot know the width.
-function Description({ body, onOpen }) {
+function Description({ body, breaks, onOpen }) {
   const ref = useRef();
   useLayoutEffect(() => {
     const box = ref.current;
@@ -49,7 +53,7 @@ function Description({ body, onOpen }) {
     return () => watch.disconnect();
   });
   return html`<div class="notes-description" ref=${ref}>
-    <${Markdown} text=${body} />
+    <${Markdown} text=${body} breaks=${breaks} />
     <button id="open-description" type="button" class="notes-description-open" aria-label="Open the description"
       onClick=${onOpen}></button>
   </div>`;
@@ -83,7 +87,7 @@ export function NotesCard({ store, ticket }) {
           <span class="label">${asOf}</span><${PendingMark} item=${descPending} />
         </div>`}
         ${body !== undefined
-          ? html`<${Description} body=${body} onOpen=${() => store.openNote(ticket.id, description.id)} />`
+          ? html`<${Description} body=${body} breaks=${byPerson(description)} onOpen=${() => store.openNote(ticket.id, description.id)} />`
           : html`<p class="notes-empty">${away ? "Needs your terminal." : "Loading…"}</p>`}`
       : !count && writes && !fresh.length &&
         html`<button id="add-description" type="button" class="btn btn-quiet notes-add-first"
@@ -208,7 +212,7 @@ export function NoteReader({ store, ticket }) {
       <h2 id="note-title" tabindex="-1" class="sr-only">${row?.name || what}</h2>
       <${PendingStrip} store=${store} item=${pending} />
       ${body !== undefined
-        ? html`<${Markdown} text=${body} />`
+        ? html`<${Markdown} text=${body} breaks=${byPerson(row)} />`
         : html`<p class="notes-empty">${row ? (away ? "Needs your terminal." : "Loading…") : "This note is gone."}</p>`}
     </div>
     ${rows.length > 1 && at >= 0 && html`<footer class="note-reader-foot">

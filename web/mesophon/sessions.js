@@ -43,6 +43,26 @@ export const reasonText = (reason) =>
     .map((word) => reasonWords[word] || word.replaceAll("_", " "))
     .join("; ");
 
+// A prompt this page sent that the conversation does not hold yet (T-626):
+// drawn as a ghost under the last row until a row the person wrote lands
+// past where the conversation ended when it was sent. Queued words are the
+// queued row's; a refused or lost prompt is the delivery line's.
+const GHOSTLY = ["awaiting_delivery", "submitted", "input_sent"];
+export const sentPrompt = (entry) => {
+  const r = entry?.receipt;
+  return r && ["prompt", "send_now"].includes(r.op) && GHOSTLY.includes(r.status) ? r : undefined;
+};
+export const ghostOf = (entry) => {
+  const r = sentPrompt(entry);
+  return r && !r.landed ? r : undefined;
+};
+// Has the conversation taken the ghost in? A prompt or a notice (a slash
+// command) at or past `from`.
+export const landed = (entry) => {
+  const r = ghostOf(entry);
+  return !!r && !!entry.chat?.rows.some((row) => row.at >= r.from && ["prompt", "notice"].includes(row.kind));
+};
+
 export class Sessions {
   constructor() {
     this.entries = new Map();
@@ -89,7 +109,6 @@ export class Sessions {
         chatScroll: 0,
         chatFollowing: true,
         chatUnread: false,
-        chatAt: undefined,
       });
     }
     this.targets.set(target, key);
@@ -123,6 +142,8 @@ export class Sessions {
       status: "awaiting_delivery",
       waiting: true,
       unresolved: true,
+      // Where the conversation ended when this was sent (T-626).
+      from: entry.chat?.end ?? 0,
     };
     entry[slotOf(op)] = entry.latest = receipt;
     entry.delivery = "Sending…";

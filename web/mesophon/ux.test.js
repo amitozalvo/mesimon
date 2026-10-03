@@ -1669,7 +1669,9 @@ async function chatFlow(browser, engineName, size, viewport) {
     window.fixture.features.push("transcript");
     // Tall enough that one page overflows the panel at every size: a page
     // that does not is followed by the one before it by itself.
-    const words = (i) => `Reply ${i}: **done** with part ${i}.\n\n${"Long enough to wrap across the panel. ".repeat(16)}`;
+    const words = (i) => i === 37
+      ? `Reply ${i}: the table.\n\n| Check | Result |\n|:--|--:|\n| \`cargo ut\` | **green** |\n| clippy | ~~red~~ green |\n\n> [!NOTE]\n> quoted\n\n- [x] built\n  - nested\n\n${"Long enough to wrap across the panel. ".repeat(16)}`
+      : `Reply ${i}: **done** with part ${i}.\n\n${"Long enough to wrap across the panel. ".repeat(16)}`;
     window.fixture.transcript = Array.from({ length: 40 }, (_, i) => ({
       at: i * 10,
       kind: i % 4 === 0 ? "prompt" : i % 4 === 3 ? "tool" : "reply",
@@ -1702,6 +1704,17 @@ async function chatFlow(browser, engineName, size, viewport) {
     assert.equal(await rowCount(), 8);
     assert((await chat.locator(".chat-doing").textContent()).includes("Run the whole suite"));
     assert(await chat.locator(".chat-reply strong").first().isVisible());
+    // A reply's markdown reads as at the desk: a table, a quote, a list.
+    assert.deepEqual(await chat.locator(".md-table th").allTextContents(), ["Check", "Result"]);
+    assert.equal(await chat.locator(".md-table td.md-right").first().textContent(), "green");
+    assert.equal(await chat.locator(".md-table td code").textContent(), "cargo ut");
+    assert.equal(await chat.locator(".md-quote strong").textContent(), "Note");
+    assert.equal(await chat.locator(".md-item.md-d1").textContent(), "•nested");
+    // The newest row sits on the panel's floor, no gap under it.
+    assert(await chat.evaluate((n) => {
+      const last = [...n.querySelectorAll(".chat-row")].at(-1).getBoundingClientRect();
+      return n.getBoundingClientRect().bottom - last.bottom < 24;
+    }), "no gap under the newest row");
     assert((await chat.textContent()).includes("Scroll up for earlier"));
     assert.equal((await asks())[0].before, undefined);
     assert.equal(await page.locator("#preview").count(), 0, "the conversation, not the screen");
@@ -1738,6 +1751,17 @@ async function chatFlow(browser, engineName, size, viewport) {
     assert.deepEqual([tail.after, tail.conversation], [400, "conversation-a"]);
     assert.equal(await rowCount(), held + 2);
     assert.equal(await chat.locator('[data-mark="kept"]').count(), 1, "the held rows were kept, not redrawn");
+    // A prompt sent from here is a ghost under the last row, with no
+    // "submitted" line, until the conversation holds it.
+    await page.locator("#prompt").fill("ghost-canary");
+    await page.locator('input[name="prompt-mode"][value="steer"]').check();
+    await page.locator("#send").click();
+    await until(page, () => document.querySelector("#chat .chat-ghost")?.textContent.includes("ghost-canary"));
+    assert(await page.locator("#delivery").isHidden());
+    await page.evaluate(() => fixture.transcript.push({ at: 420, kind: "prompt", text: "ghost-canary" }));
+    await until(page, () => !document.querySelector("#chat .chat-ghost"));
+    assert.equal(await chat.locator(".chat-prompt").last().textContent(), "ghost-canary");
+    assert(await page.locator("#delivery").isHidden());
     // A new conversation (`/clear`) starts over at its tail.
     await page.evaluate(() => {
       fixture.conversation = "conversation-b";
@@ -1747,18 +1771,20 @@ async function chatFlow(browser, engineName, size, viewport) {
     assert.equal(await rowCount(), 2);
     assert((await chat.textContent()).includes("Start of the conversation"));
     // The raw view is the pane's screen, and the choice is remembered.
-    await page.locator('input[name="output-view"][value="raw"]').check();
+    assert.equal(await page.locator("#output-view").textContent(), "Raw");
+    await page.locator("#output-view").click();
     await until(page, () => document.querySelector("#preview")?.textContent.includes("line 49"));
     assert.equal(await chat.count(), 0);
     assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-output")), "raw");
-    await page.locator('input[name="output-view"][value="chat"]').check();
+    assert.equal(await page.locator("#output-view").textContent(), "Chat");
+    await page.locator("#output-view").click();
     await chat.waitFor();
     // A parked agent's conversation is still its file; its screen is gone.
     await page.evaluate(() => {
       fixture.tickets[0].agent.state = "sleeping";
       fixture.update();
     });
-    await until(page, () => document.querySelector('#output-view input[value="raw"]')?.disabled);
+    await until(page, () => !document.querySelector("#output-view"));
     assert(await chat.isVisible());
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: conversation pages, prepend, tail, new conversation and raw toggle passed`);
@@ -2164,11 +2190,10 @@ try {
           assert.equal(await page.locator("#preview .screen-rule").count(), 1);
           assert.equal(await page.locator("#wrap").count(), 0);
           await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-ticket.png`) });
-          assert.doesNotMatch(await page.locator("#freshness").textContent(), /Periodic|50 lines/);
-          assert.match(
-            await page.locator("#freshness").textContent(),
-            /^Last received/,
-          );
+          // No legend over the output (T-626): the connection strip says
+          // when it is stale, and an older host has no view switch.
+          assert.equal(await page.locator(".output .label").count(), 0);
+          assert.equal(await page.locator("#output-view").count(), 0);
           await page.locator("#prompt").fill("draft for the first agent");
           await select(1);
           assert.equal(await page.locator("#prompt").inputValue(), "");
@@ -2252,7 +2277,6 @@ try {
               .textContent.includes("Delivery unknown"),
           );
           assert(await page.locator("#send").isDisabled());
-          assert.match(await page.locator("#freshness").textContent(), /Stale/);
           assert(await page.locator("#preview").isVisible());
           await until(
             page,
@@ -2275,10 +2299,6 @@ try {
                 .textContent.includes("Disconnected"),
             );
             assert(await page.locator("#send").isDisabled());
-            assert.match(
-              await page.locator("#freshness").textContent(),
-              /Stale/,
-            );
             await page.evaluate(() => {
               fixture.holdAll = false;
             });

@@ -20663,3 +20663,25 @@ the state tests; screenshots read by eye at phone and desktop. **Not verified:**
 phone, and the hosted relay, which serves the page and needs its `ship.sh`. **Owed:** a
 CHANGELOG line at the next bump — **Changed:** on Remote Control, a ticket's description sits
 under its title with no heading; press it to read it whole and edit it.
+
+## Remote Control's chat after the author's review: the desk's markdown, no head row, a ghost for a sent prompt (T-626, 2026-10-03)
+
+"table not rendered from MD (make
+sure it supports everything the TUI supports from transcripts MD)": `web/mesophon/markdown.js`
+is now a port of `tui/src/rich.rs`'s parse, block for block and rule for rule (pipe tables
+with alignment and escaped pipes, a pipe line kept raw, quotes holding blocks and GitHub
+alerts, nested and task lists with a ticked item read last, `~~~` and longer fences, thematic
+breaks, hard breaks, `***`/`_`/`~~` with `_` never inside a word, multi-tick code spans,
+escapes, `<br>`, links with their target read last). It differs where the page can do more:
+a web link is followed (`http(s)` only), a rule is drawn, a table scrolls in its own box, and
+a picture is named rather than drawn. A note a person wrote reads a newline as a break, an
+agent's as a space, as `Newline::of_note` reads them; plans and replies as a space. Then:
+"a small gap in the bottom of transcript" (the chat had kept the screen's 60 px for Jump to
+latest, which shows only while scrolled up), "remove the conversation title section … no need
+to indicate last received" (the head row is gone in both views; the connection strip says when
+the view is stale; Chat/Raw is one pill in the panel's corner, absent for a sleeping agent),
+and "remove 'Submitted to the agent …' and simply put a ghost message on the transcript": in
+the chat, a prompt or Send-now this page sent is drawn faded with its ticks under the last row
+(`sessions.js::ghostOf`) until a prompt or notice row lands at or past where the chat ended
+when it was sent (`receipt.from`, `landed`), and the delivery line stays hidden for it; a
+refusal, an unknown outcome and the Raw view keep the line.

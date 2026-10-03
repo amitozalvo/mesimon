@@ -104,7 +104,7 @@ for (const [name, engine] of [
         // pass reads the pane's screen through the sealed road, so it turns
         // to the raw view, which the page then remembers.
         await page.locator("#chat").waitFor();
-        await page.locator('input[name="output-view"][value="raw"]').check();
+        await page.locator("#output-view").click();
         await page.waitForFunction(() =>
           document
             .querySelector("#preview")
