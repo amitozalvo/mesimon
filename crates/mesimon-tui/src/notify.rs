@@ -8,7 +8,8 @@
 //! `App::new`, so no test app and no golden reaches a real program.
 //!
 //! **The banner ladder** is `MESIMON_NOTIFY` (`off`, `osc`, or a program) →
-//! `terminal-notifier` → `osascript` on macOS → `notify-send` on Linux →
+//! `terminal-notifier` → `osascript` on macOS (posted by a Mesimon applet, so
+//! the banner wears the mascot, T-605) → `notify-send` on Linux →
 //! **OSC 9**, written to our own terminal. The last rung cannot fail to
 //! resolve, which is why it is last: on a terminal that draws it (iTerm2,
 //! WezTerm, ghostty, kitty) the banner comes from the terminal itself, and on
@@ -865,6 +866,15 @@ fn post_with(
                             }
                         }
                     }
+                    // No terminal-notifier: `osascript`'s banner would wear
+                    // Script Editor's icon (T-605). The same words go to a
+                    // Mesimon applet; a failed build keeps `osascript`.
+                    if cfg!(target_os = "macos") && ch.banner == Banner::Osascript {
+                        match crate::notification_app::prepare_applet(dir) {
+                            Ok(program) => argv = applet_argv(&program, &f),
+                            Err(e) => icon_error = Some(io_error_without_icon(e)),
+                        }
+                    }
                     // The app icon is stable. Only an attention post needs
                     // an extra amber image; Linux and unbranded helpers keep
                     // the per-post PNG on both kinds of banner.
@@ -906,6 +916,19 @@ fn post_with(
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+/// The applet's argv: the `osascript` rung's words in the same order, each
+/// behind the `=` that `notification_app::APPLET_SCRIPT` strips.
+fn applet_argv(program: &std::path::Path, f: &Fields) -> Vec<String> {
+    let mut argv = vec![program.to_string_lossy().into_owned(), format!("={}", f.title)];
+    if f.subtitle.is_empty() {
+        argv.push(format!("={}", f.folded));
+    } else {
+        argv.push(format!("={}", f.subtitle));
+        argv.push(format!("={}", f.body));
+    }
+    argv
 }
 
 fn io_error_without_icon(error: std::io::Error) -> std::io::Error {
@@ -1170,6 +1193,60 @@ mod tests {
         assert!(calls[0].windows(2).any(|pair| pair == ["-activate", ITERM2_ID]));
         assert!(calls[0].iter().any(|arg| arg == "-contentImage"));
         assert!(!calls[0].iter().any(|arg| arg == "-appIcon"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_applet_takes_the_osascript_words_and_none_can_read_as_a_flag() {
+        let program = std::path::Path::new("/s/Mesimon.app/Contents/MacOS/applet");
+        let f = fields("-board", "-T-1", "-needs you");
+        assert_eq!(
+            applet_argv(program, &f),
+            vec![program.to_str().unwrap(), "=-board", "=-T-1", "=-needs you"]
+        );
+        let f = plain("board", "2 agents finished");
+        assert_eq!(
+            applet_argv(program, &f),
+            vec![program.to_str().unwrap(), "=board", "=2 agents finished"]
+        );
+        // The applet's words are the osascript rung's, in its order.
+        for f in [fields("b", "T-1", "done"), plain("b", "done")] {
+            let osa = Banner::Osascript.argv(None, None, &f).unwrap();
+            let words: Vec<String> = osa[7..].iter().map(|w| format!("={w}")).collect();
+            assert_eq!(applet_argv(program, &f)[1..], words[..]);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn without_terminal_notifier_the_banner_comes_from_the_mesimon_applet() {
+        let root =
+            std::env::temp_dir().join(format!("msmn-notify-applet-{}", uuid::Uuid::new_v4()));
+        let ch = Channels {
+            banner: Banner::Osascript,
+            player: Player::Off,
+            group: None,
+            click: None,
+            icon_dir: Some(root.join("notifications")),
+            notifier_app: None,
+        };
+        let p = Post {
+            needs_you: true,
+            title: "board".into(),
+            subtitle: "T-1".into(),
+            body: "needs you".into(),
+            sound: Sound::Off,
+        };
+        let calls = std::cell::RefCell::new(Vec::new());
+        post_with(&ch, &p, &Console::default(), false, |argv| {
+            calls.borrow_mut().push(argv.to_vec());
+            Ok(())
+        })
+        .unwrap();
+        let calls = calls.into_inner();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0][0].ends_with("Mesimon.app/Contents/MacOS/applet"), "{:?}", calls[0]);
+        assert_eq!(calls[0][1..], ["=board", "=T-1", "=needs you"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 

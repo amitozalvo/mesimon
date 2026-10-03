@@ -19888,3 +19888,31 @@ the page and is overlay-only (`prio: 0`), as on the board.
 
 **Tests.** `golden_ticket_crowned_120` (mark before the title, no "crown" word anywhere on the
 page) and 30 reminted ticket goldens whose footer lost `∙ ^o crown`.
+
+## A Mac without terminal-notifier gets the mascot too (T-605, 2026-10-03, the author: "friends computer mesimon OS notifications icon shows script instead of mascot")
+
+The mascot icon (2026-09-08) came only from a private, re-signed copy of terminal-notifier. A Mac
+without it fell to the `osascript` rung, and macOS attributes `display notification` to Script
+Editor, so the banner wore its scroll icon. That rung now posts through a Mesimon applet: the
+constant `notification_app::APPLET_SCRIPT` compiled by the system's `osacompile`, its asset
+catalog and stock icon removed (the catalog's `CFBundleIconName` outranks `CFBundleIconFile`), the
+mascot ICNS written in, `LSUIElement` set so no Dock icon flashes, ad-hoc signed as
+`io.mesimon.notifications.applet`. It lives beside the terminal-notifier copy under
+`~/.local/state/mesimon/notifications/` as an immutable `applet-<digest>` generation, built through
+the same stage-and-publish path, and only on an actual banner.
+
+**The words still ride argv.** The applet reads `NSProcessInfo`'s arguments in the `osascript`
+rung's order (title, subtitle, body; or title and folded body). Each word is passed behind a `=`
+the script strips, because AppKit reads a launch argument beginning with `-` as a defaults key. A
+failed build keeps plain `osascript` and reports the lost icon, as the terminal-notifier copy does.
+A separate bundle id from that copy, so LaunchServices never has two bundles under one id; a Mac
+that later gains terminal-notifier shows a second "Mesimon" in Notifications settings.
+
+**Measured by the author on macOS 26.** The applet banner showed the shin with the words intact,
+including a body beginning with `-`. The first banners from a new identity were not seen;
+later ones were, as with the terminal-notifier copy's first-run permission.
+
+**Tests.** `the_real_osacompile_builds_a_mascot_applet_without_posting`,
+`the_applet_is_reused_and_a_failed_build_publishes_nothing`,
+`the_applet_takes_the_osascript_words_and_none_can_read_as_a_flag`,
+`without_terminal_notifier_the_banner_comes_from_the_mesimon_applet`.
