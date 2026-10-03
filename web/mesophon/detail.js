@@ -5,7 +5,7 @@ import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { Attention } from "./dialogs.js";
-import { StartButton, StartReceipt, Tags, ageWords, crownTouch, stateAge } from "./lists.js";
+import { CrownMark, StartButton, StartReceipt, Tags, ageWords, crownTouch, stateAge } from "./lists.js";
 import { NotesCard, NoteReader } from "./notepad.js";
 import { receiptTick } from "./sessions.js";
 import { queueWords, sendRefused, waitsOnYou } from "./queue.js";
@@ -190,12 +190,12 @@ function Title({ store, ticket }) {
       </div>
     </form>`;
   const renames = !!ticket && store.canEdit("rename") && !store.editWaiting(ticket, "rename");
-  return html`<h2 id="selection" tabindex="-1" dir="auto">${!ticket
+  return html`<h2 id="selection" class=${ticket?.crown ? "crowned" : undefined} tabindex="-1" dir="auto">${!ticket
     ? "Select a ticket"
     : renames
       ? html`<button id="rename" type="button" class="title-button" aria-describedby="rename-hint"
-          onClick=${() => store.startRename()}>${ticket.title}<${Icon} name="pencil" size=${16} cls="title-pencil" /></button>`
-      : ticket.title}</h2>
+          onClick=${() => store.startRename()}><${CrownMark} ticket=${ticket} size=${20} />${ticket.title}<${Icon} name="pencil" size=${16} cls="title-pencil" /></button>`
+      : html`<${CrownMark} ticket=${ticket} size=${20} />${ticket.title}`}</h2>
     ${renames && html`<span id="rename-hint" class="sr-only">Rename</span>`}`;
 }
 
@@ -237,19 +237,14 @@ export function crownSentence(touch) {
   return touch.by ? `${touch.by}’s agent ${did}` : `The crown ${did}`;
 }
 
-// The crown on the ticket page (T-623): the ticket that wears it says so, as
-// the TUI's page does, and a ticket the crown touched says what it did.
+// A ticket the crown touched says what it did, on its page (T-623).
 function CrownLine({ store, ticket }) {
-  if (!ticket) return null;
-  const touch = crownTouch(store.board, ticket);
-  if (!ticket.crown && !touch) return null;
-  const age = touch && ageWords(store.board, touch.at);
+  const touch = ticket && crownTouch(store.board, ticket);
+  if (!touch) return null;
+  const age = ageWords(store.board, touch.at);
   return html`<div id="crown-line" class="crown-line">
     <${Icon} name="crown" size=${15} width=${2.2} />
-    <div>
-      ${ticket.crown && html`<p>Wears the crown · its agent edits every ticket</p>`}
-      ${touch && html`<p>${crownSentence(touch)}${age && ` · ${age === "now" ? "just now" : `${age} ago`}`}</p>`}
-    </div>
+    <p>${crownSentence(touch)}${age && ` · ${age === "now" ? "just now" : `${age} ago`}`}</p>
   </div>`;
 }
 

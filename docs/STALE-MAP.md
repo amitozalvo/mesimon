@@ -20536,14 +20536,17 @@ marks the phone's board dirty.
 a light that is out before the page is opened says nothing. The page drops a touch past the
 hour too, so a page left open does not keep it.
 
-**The page.** A card's meta row starts with the crown in the TUI's crown ink (`--tag-5`, the
-tint `Theme::crown_text` uses; never the needs-you amber): the touch's word and its age
-(`moved · 2m`), or on the holder the icon alone with "Wears the crown" for a screen reader. The
-ticket page opens with one `#crown-line`: the holder's "Wears the crown · its agent edits every
-ticket" (the TUI page's state row), and a touched ticket's sentence, "T-0's agent moved this
-ticket · 2m ago" (`crownSentence`, a word it does not know said as the host spells it). The
-icon is Lucide's crown, inlined like the rest. **A remembered board keeps who wears the crown
-and never the touch**: the seat is a fact of the board, the touch is news.
+**The page.** The ticket that wears the crown has the crown before its title and its title in
+the crown's ink (`--tag-5`, the tint `Theme::crown_text` uses; never the needs-you amber), on its
+card and on its page (`CrownMark`, `.crowned`), as the TUI's card draws its holder. A ticket the
+crown touched says it twice: its card's meta row starts with the touch's word and its age
+(`♛ moved · 2m`), and its page opens with one `#crown-line`, "T-0's agent moved this ticket ·
+2m ago" (`crownSentence`, a word it does not know said as the host spells it). The icon is
+Lucide's crown, inlined like the rest. **A remembered board keeps who wears the crown and never
+the touch**: the seat is a fact of the board, the touch is news. **Refuted after review** (the
+author: "the crown should be before the title, and the title should be blue … remove the
+'Wears the crown · its agent edits every ticket' section"): the holder's mark in the meta row
+and a line on its page saying it wears the crown; the blue title says it.
 
 **Not built.** A crown-started agent's `started_by` on the phone (the `started` touch says it
 for the hour), and the TUI's bolt between the doer's card and the touched one.
@@ -20553,9 +20556,11 @@ fields round-trip); daemon `a_phone_reads_the_crown_s_last_touch_for_an_hour` (i
 the hour, a doer gone from the board named by nobody); browser state tests for the remembered
 board and the sentences; the UX edit flow in Chromium and WebKit at three sizes (the card's
 word and the page's line, the holder's card off the phone, gone past the hour, gone when
-cleared). Screenshots of the touched ticket read by eye at desktop and phone. **Owed:** a
-CHANGELOG line at the next bump — **Added:** Remote Control marks the ticket that wears the
-crown and says what the crown last did to a ticket, and whose agent did it, for an hour — and
+cleared; the holder's mark first in its title on card and page, the title in the crown's ink,
+no line about it). Screenshots of the touched and the crowned ticket read by eye at desktop and
+phone. **Owed:** a
+CHANGELOG line at the next bump — **Added:** Remote Control shows the ticket that wears the
+crown with a crown before its title, in blue, and says what the crown last did to a ticket, and whose agent did it, for an hour — and
 the relay's `ship.sh` after it merges, since the hosted relay serves this page.
 
 ## Remote Control's notices go with a swipe (T-628, 2026-10-03, the author: "remote control notifications dismissable with swipe on phone")

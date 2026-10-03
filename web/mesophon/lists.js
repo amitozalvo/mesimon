@@ -37,15 +37,20 @@ export function crownTouch(board, ticket) {
   return touch;
 }
 
-// The crown's mark on a card (T-623), the TUI's: the ticket that wears it,
-// or the word for what the crown last did to this one, and how long ago.
+// The word for what the crown last did to a ticket (T-623), and how long
+// ago, where the TUI's card says it.
 function CrownWord({ board, ticket }) {
   const touch = crownTouch(board, ticket);
-  if (!touch && !ticket.crown) return null;
-  const age = touch && ageWords(board, touch.at);
-  return html`<span class="crown-word"><${Icon} name="crown" size=${13} width=${2.2} />${touch
-    ? html`<span>${touch.action}${age && ` · ${age}`}</span>`
-    : html`<span class="sr-only">Wears the crown</span>`}</span>`;
+  if (!touch) return null;
+  const age = ageWords(board, touch.at);
+  return html`<span class="crown-word"><${Icon} name="crown" size=${13} width=${2.2} /><span>${touch.action}${age && ` · ${age}`}</span></span>`;
+}
+
+// The ticket that wears the crown has it before its title, and its title in
+// the crown's ink (T-623), as the TUI's card draws its holder.
+export function CrownMark({ ticket, size }) {
+  if (!ticket?.crown) return null;
+  return html`<${Icon} name="crown" size=${size} width=${2.2} cls="crown-mark" /><span class="sr-only">Wears the crown: </span>`;
 }
 
 // The ticket's tags as the TUI paints them (T-506): the name on a ground of
@@ -129,7 +134,7 @@ function stateWord(agent) {
 function Face({ store, ticket, board, column }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
-  return html`<span class="ticket-title" dir="auto">${ticket.title}</span>
+  return html`<span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
     <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta"><${CrownWord} board=${board} ticket=${ticket} />${column && html`<span>${ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
     ${agent && html`<span class=${`card-agent${agent.state === "needs attention" ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${stateWord(agent)}${since && ` · ${since}`}</span></span>`}
     <${Headline} agent=${agent} />`;

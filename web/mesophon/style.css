@@ -1444,6 +1444,17 @@ select {
   gap: 4px;
   color: var(--tag-5);
 }
+/* The ticket that wears the crown: the mark before its title, and the
+   title in the crown's ink, on its card and its page. */
+.ticket-title.crowned,
+#selection.crowned {
+  color: var(--tag-5);
+}
+.crown-mark {
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: -0.12em;
+}
 .crown-line {
   display: flex;
   align-items: flex-start;

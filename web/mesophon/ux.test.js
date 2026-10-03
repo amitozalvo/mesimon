@@ -1482,8 +1482,23 @@ async function editFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator('.ticket.card[data-id="ticket-3"] .crown-word').textContent(), "moved · 2m");
     // A phone draws one column at a time, and the crown's is the other one.
     if (size !== "phone")
-      assert.equal(await page.locator('.ticket.card[data-id="ticket-0"] .crown-word').textContent(), "Wears the crown");
+      assert.equal(await page.locator('.ticket.card[data-id="ticket-0"] .ticket-title.crowned > .crown-mark:first-child').count(), 1);
     await shot("crown-touched");
+    // The ticket that wears it: the crown before its title on its card and
+    // its page, the title in the crown's ink, and no line about it.
+    await page.evaluate(() => {
+      fixture.tickets[3].crown = true;
+      fixture.update();
+    });
+    await until(page, () => !!document.querySelector("#selection.crowned #rename > .crown-mark:first-child"));
+    assert.equal(await page.locator('.ticket.card[data-id="ticket-3"] .ticket-title.crowned > .crown-mark:first-child').count(), 1);
+    assert.equal(
+      await page.locator("#selection").evaluate((n) => getComputedStyle(n).color),
+      await page.locator("#crown-line > .icon").evaluate((n) => getComputedStyle(n).color),
+      "the title is in the crown's ink",
+    );
+    assert.doesNotMatch(await page.locator("#detail").textContent(), /Wears the crown ·/);
+    await shot("crown-worn");
     await page.evaluate(() => {
       fixture.tickets[3].crowned.at = Date.now() - 2 * 3600000;
       fixture.update();
@@ -1492,10 +1507,11 @@ async function editFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator('.ticket.card[data-id="ticket-3"] .crown-word').count(), 0, "an hour on, it is not news");
     await page.evaluate(() => {
       delete fixture.tickets[0].crown;
+      delete fixture.tickets[3].crown;
       delete fixture.tickets[3].crowned;
       fixture.update();
     });
-    await until(page, () => !document.querySelector(".crown-word"));
+    await until(page, () => !document.querySelector(".crown-word, .crown-mark, .crowned"));
 
     // The title writes over itself: Escape puts it back and sends nothing.
     await page.locator("#rename").click();
