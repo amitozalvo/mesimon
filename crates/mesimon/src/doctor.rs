@@ -693,7 +693,7 @@ fn crown_archives(on: bool) -> Record {
         rec(Level::Note, "crown archives", "on - the crown may archive and restore tickets")
             .advice("archive_ticket takes a ticket off the board and reclaims its merged worktree, and restores one; the card and the feed say what it did. It is refused while a session on the ticket is awake. Settings > Agents > Crown archives tickets turns it off.")
     } else {
-        rec(Level::Ok, "crown archives", "off - the crown moves finished tickets to DONE and you archive them")
+        rec(Level::Ok, "crown archives", "off - the crown may not archive or restore tickets")
             .advice("A DONE ticket keeps its merged worktree until you archive it. Settings > Agents > Crown archives tickets lets the crown archive and restore tickets.")
     }
 }

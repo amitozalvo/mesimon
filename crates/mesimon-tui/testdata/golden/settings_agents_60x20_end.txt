@@ -15,6 +15,6 @@
   │   Crown answers questions: on                        │
   │     a question or plan from an agent it started wak~ │
   │   Crown archives tickets: off                        │
-  │     it moves finished tickets to DONE and you archi~ │
+  │     it may not archive or restore tickets ∙ enter l~ │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
  SETTINGS                                            ? keys

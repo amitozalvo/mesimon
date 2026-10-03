@@ -19860,3 +19860,19 @@ Also: `register.test.ts` (fill into an empty box, never over a draft, a refusal 
 `the_mod_spells_nothing_on_the_never_list` (three `$.prompt` calls, the fill whole over an empty
 box), `the_ask_field_sends_immediately_on_a_claude_pane`, and three goldens whose footer hint
 gained `/ immediately`.
+
+## The crown-archives row says what it gates and nothing more (T-592, 2026-10-03, the author: "it just enables / disables the crowns ability to archive tickets, doesn't tell the crown what to do otherwise")
+
+The off wording of `Settings → Agents → Crown archives tickets` (T-590) — the row's detail, the
+status after the toggle and doctor's `crown archives` line — said "it moves finished tickets to
+DONE and you archive them". The switch does no such thing: it only refuses `archive_ticket`
+(archive and restore) while off. Where the crown puts a finished ticket is its own judgement and
+the board's columns, which this row does not touch. The off wording is now "it may not archive
+or restore tickets". The on wording was already accurate.
+
+**Found, not changed.** The crown's refusal while the switch is off still reads "move T-5 to DONE
+instead, or a person archives". That is the one place the switch still gives the crown an
+instruction, and it names a column the board may not have.
+
+**Tests.** `crown_archives_setting_toggles_through_board_command` checks the new status, and two
+reminted goldens (`settings_agents_120x30`, `settings_agents_60x20_end`) show the new detail.

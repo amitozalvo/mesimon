@@ -4804,9 +4804,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         key: "",
     },
     // Whether the crown may take a card off the board (T-590). Off by
-    // default: the crown moves a finished ticket to DONE and the person
-    // archives it. On, `archive_ticket` archives and restores, and an
-    // archive reclaims a merged worktree.
+    // default: `archive_ticket` is refused and only the person archives.
+    // On, it archives and restores, and an archive reclaims a merged
+    // worktree. The row gates that one tool and says nothing else.
     MenuItem {
         verb: Verb::CrownArchives,
         label: |c| {
@@ -4821,8 +4821,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 "it may archive and restore tickets, reclaiming a merged worktree ∙ enter turns off"
                     .into()
             } else {
-                "it moves finished tickets to DONE and you archive them ∙ enter lets it archive"
-                    .into()
+                "it may not archive or restore tickets ∙ enter lets it".into()
             }
         },
         avail: always,

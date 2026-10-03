@@ -22,7 +22,7 @@
                            │   Crown answers questions: on                                  │
                            │     a question or plan from an agent it started wakes it, and~ │
                            │   Crown archives tickets: off                                  │
-                           │     it moves finished tickets to DONE and you archive them ∙ ~ │
+                           │     it may not archive or restore tickets ∙ enter lets it      │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
 
 

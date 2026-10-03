@@ -1746,8 +1746,8 @@ pub struct Board {
     #[serde(default = "yes")]
     pub crown_answers: bool,
     /// The crown archives (T-590): `archive_ticket`, archive and restore
-    /// alike, is refused while this is off, and the crown closes a finished
-    /// ticket by moving it to DONE instead. Taking a card off the board is
+    /// alike, is refused while this is off; nothing else of the crown's
+    /// changes. Taking a card off the board is
     /// a person's gesture unless the person says otherwise, per board (the
     /// author: "gate crown ability to archive with a setting opt in"). OFF
     /// by default. A build that drops it gives the crown its unconditional

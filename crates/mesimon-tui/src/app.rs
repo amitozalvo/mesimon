@@ -5836,7 +5836,7 @@ impl App {
                         self.status = if on {
                             "crown archives on ∙ it may archive and restore tickets".into()
                         } else {
-                            "crown archives off ∙ it moves finished tickets to DONE for you".into()
+                            "crown archives off ∙ it may not archive or restore tickets".into()
                         };
                     }
                 }
@@ -15291,7 +15291,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!app.board.crown_archives && !app.ctx().crown_archives);
         assert!(app.board.crown_answers, "the answers switch is its own");
-        assert!(app.status.contains("DONE"), "{}", app.status);
+        assert!(app.status.contains("may not archive"), "{}", app.status);
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownArchives")).count(), 2);
     }
 
