@@ -28,7 +28,7 @@ pub fn run() -> Result<()> {
     let resolved = prefs.overlay(&board.prefs);
     // The board's own order (T-485): the OS first where it is followed, the
     // terminal otherwise, and once.
-    let known = resolved.follow_os.then(crate::appearance::probe).flatten();
+    let known = resolved.follows_os().then(crate::appearance::probe).flatten();
     let detected = crate::detect::detect(known);
     let theme = Theme::new(
         detected.forced.unwrap_or(resolved.for_ground(detected.ground)),

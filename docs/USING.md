@@ -411,19 +411,19 @@ read beside it as a check; `mesimon doctor`'s `costs` line says where the two di
 
 ## Light and dark themes
 
-The board has two theme slots, one for a dark terminal and one for a light one. At launch it
-asks the terminal which it is and wears that slot's theme. **Settings › Appearance › Theme**
-opens on the state you are in; Tab switches the pick to the other state, then to both, so
-both slots can be set without changing the terminal. Moving the cursor previews the theme
-on the board behind the picker.
+The board has two theme slots, one for a dark terminal and one for a light one.
+**Settings › Appearance** opens on this board's settings, so a theme picked there is this
+board's alone; `b` switches the list to the machine's, which every board without its own
+pick wears. **Theme** opens saving one theme for both states; Tab switches the pick to the
+state you are in, then to the other, so the two slots can hold different themes. Moving the
+cursor previews the theme on the board behind the picker.
 
-**Settings › Appearance › Follow the OS appearance** makes the board switch between the two
-themes as macOS or your Linux desktop switches between light and dark, while the board is
-open. It is on by default. It asks the OS, never the terminal, so turn it off if your
-terminal stays on one profile: a terminal pinned to one profile would otherwise be
-painted for the wrong background. `MESIMON_THEME=<name>` pins a theme for a launch and the
-switch does nothing until a pick in the menu lifts the pin. `mesimon doctor`'s `theme` line
-says which slot the OS would choose now.
+While the two slots hold different themes, the board switches between them as macOS or your
+Linux desktop switches between light and dark, while the board is open. It asks the OS,
+never the terminal, so if your terminal stays on one profile, pick one theme for both. With
+one theme for both, the OS is not asked. `MESIMON_THEME=<name>` pins a theme for a launch
+until a pick in the menu lifts the pin. `mesimon doctor`'s `theme` line says which slot the
+OS would choose now.
 
 ## Keeping the machine awake
 
@@ -447,7 +447,7 @@ cleanup after Mesimon is killed.
 
 ## Notifications
 
-**Settings › Appearance › Notifications** opens the list that chooses which events post a
+**Settings › Notifications** opens the list that chooses which events post a
 banner and whether a sound plays: banner on or off, whether a finished turn counts as well as a
 blocked agent, whether the agent's words are quoted, the two sounds, whether a focused board or
 the agent's own pane still speaks, and iTerm2's dock bounce. The master switch is on by default;

@@ -137,11 +137,11 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let resolved = loaded.prefs.overlay(&board.prefs);
     // Capability detection runs exactly once, before raw mode and before any
     // PTY exists (06 §2.9 query hygiene; handovers reuse the cached answers).
-    // A board that follows the OS appearance (T-485) asks the OS first — a
-    // subprocess, no tty — and with an answer the terminal is not asked at
-    // all. Nothing re-asks the terminal later, ever: `appearance::Watch`
+    // A board that follows the OS appearance (T-485) — one whose two theme
+    // slots differ (T-625) — asks the OS first: a subprocess, no tty, and
+    // with an answer the terminal is not asked at all. Nothing re-asks the terminal later, ever: `appearance::Watch`
     // is the live half, and it asks the OS on a thread of its own.
-    let known = resolved.follow_os.then(appearance::probe).flatten();
+    let known = resolved.follows_os().then(appearance::probe).flatten();
     let detected = detect::detect(known);
     // The pin outranks the slot; the slot is the ground's.
     let flavor = detected.forced.unwrap_or(resolved.for_ground(detected.ground));

@@ -1773,20 +1773,21 @@ pub struct App {
     /// a shell already on a ticket is listed, previewed and slept as before.
     pub ticket_shells: bool,
     /// The OS appearance watch (T-485): a thread asking the OS, never the
-    /// terminal. Armed by `arm_appearance` exactly while `prefs.follow_os`
-    /// holds, nothing is pinned and a probe exists; None otherwise, and the
-    /// ground is settled for the process.
+    /// terminal. Armed by `arm_appearance` exactly while the two theme
+    /// slots differ (`Prefs::follows_os`), nothing is pinned and a probe
+    /// exists; None otherwise, and the ground is settled for the process.
     pub appearance: Option<crate::appearance::Watch>,
     /// What asks the OS. Set by `lib.rs::run`, never here, so no test app
     /// runs a subprocess; None means the switch is a saved preference and
     /// nothing more.
     pub appearance_probe: Option<crate::appearance::Probe>,
-    /// The switch is on but the OS gave no answer when it was armed: the
-    /// row says so instead of promising a follow that cannot happen.
+    /// The slots differ but the OS gave no answer when the watch was armed:
+    /// the Theme row says so instead of promising a follow that cannot
+    /// happen.
     pub appearance_barred: bool,
     /// The ground the board is on: what the terminal said at launch, or,
-    /// under `follow_os`, what the OS last said — the slot the Theme row
-    /// sets.
+    /// while the slots differ, what the OS last said — the slot the Theme
+    /// row names.
     pub ground: Ground,
     /// `MESIMON_THEME`, while it holds: cleared by a pick, which is the more
     /// recent explicit choice.
@@ -3311,12 +3312,12 @@ impl App {
     }
 
     /// Start or stop the OS appearance watch so that it runs exactly while
-    /// the resolved preference says so, nothing is pinned, and there is a
+    /// the resolved slots differ (T-625), nothing is pinned, and there is a
     /// probe to run (`lib.rs` hands one over; a test app has none). Arming
     /// asks once, now — the first answer moves the board straight away,
     /// and no answer is what the row reports as barred.
     pub(crate) fn arm_appearance(&mut self) {
-        let want = self.prefs.follow_os && self.forced.is_none();
+        let want = self.prefs.follows_os() && self.forced.is_none();
         match (want, self.appearance.is_some(), self.appearance_probe) {
             (true, false, Some(probe)) => {
                 let first = probe();
@@ -3373,10 +3374,11 @@ impl App {
         }
     }
 
-    /// Open the picker on the state the board is in.
+    /// Open the picker on the state the board is in, saving for both
+    /// grounds (T-625): one theme everywhere is the common ask, and Tab
+    /// reaches the terminal's ground, then the other, to set two.
     fn open_theme_picker(&mut self) {
-        self.mode =
-            Mode::Theme { idx: self.theme_cursor(self.ground), slot: Slot::One(self.ground) };
+        self.mode = Mode::Theme { idx: self.theme_cursor(self.ground), slot: Slot::Both };
     }
 
     /// Tab in the picker (T-485): the next state. Landing on a ground moves
@@ -3478,7 +3480,9 @@ impl App {
     /// In board scope, Enter on a preference row cycles this board's
     /// override instead of the machine's value (T-361): true when it did,
     /// so the caller does not also dispatch. The theme row is the one row
-    /// that still opens its picker, which knows the scope itself.
+    /// that still opens its picker, which knows the scope itself. A key the
+    /// machine keeps is set as the machine's (T-625): Appearance opens in
+    /// board scope, and its `(machine)` rows must still answer Enter.
     fn board_scope_takes(&mut self, verb: Verb, ctx: &Ctx) -> bool {
         if !self.settings_board_scope || verb == Verb::ThemePick {
             return false;
@@ -3486,6 +3490,9 @@ impl App {
         let Some(key) = keymap::pref_key(verb, ctx) else {
             return false;
         };
+        if !key.board_overridable() {
+            return false;
+        }
         self.cycle_board_pref(key);
         true
     }
@@ -4662,8 +4669,9 @@ impl App {
                 Mode::Theme { slot, .. } => slot.next(self.ground).word(),
                 _ => "",
             },
-            follow_os: self.prefs.follow_os,
-            follow_os_barred: self.appearance_barred,
+            theme_dark: self.prefs.dark.name(),
+            theme_light: self.prefs.light.name(),
+            theme_os_barred: self.appearance_barred,
             crown_lightning: self.prefs.crown_lightning,
             preview_scrolls: self.preview.view.get().max > 0,
             update_ready: self.update_ready(),
@@ -5321,7 +5329,9 @@ impl App {
                 // Every section opens on the machine's, as the dialog does
                 // (T-559): the scope is the list's that `b` flipped it in,
                 // and Terminal and Usage have no row a board can set.
-                self.settings_board_scope = false;
+                // Appearance is the one that opens on this board's (T-625):
+                // how a board looks is the setting most often its own.
+                self.settings_board_scope = verb == Verb::SettingsAppearance;
                 self.settings_section = match verb {
                     Verb::SettingsAppearance => keymap::SettingsSection::Appearance,
                     Verb::SettingsBehaviour => keymap::SettingsSection::Behaviour,
@@ -6515,20 +6525,6 @@ impl App {
             }
             Verb::ThemePick => self.open_theme_picker(),
             Verb::ThemeSlot => self.cycle_theme_slot(),
-            Verb::FollowOs => {
-                let on = !self.prefs.follow_os;
-                let word = if !on {
-                    "the theme is set once at launch".to_string()
-                } else if self.forced.is_some() {
-                    "follow the OS appearance on ∙ pinned by MESIMON_THEME until a pick".to_string()
-                } else {
-                    "the board follows the OS appearance".to_string()
-                };
-                self.set_pref(&word, |p| p.follow_os = on);
-                if on && self.appearance_barred {
-                    self.status = "follow the OS appearance on ∙ this OS did not say light or dark ∙ saved".into();
-                }
-            }
             // ---- columns (T-117) -----------------------------------------
             Verb::ColumnSettings => self.open_column_settings()?,
             Verb::AddColumn => {
@@ -7112,7 +7108,12 @@ impl App {
                     self.mode = Mode::Settings { idx: self.settings_row(opener) };
                 }
             }
-            Scope::Notifications => self.return_to_settings(Verb::Notifications),
+            // Back to the root, which offers no `b` and so is never THIS
+            // BOARD whatever the list was flipped to.
+            Scope::Notifications => {
+                self.settings_board_scope = false;
+                self.return_to_settings(Verb::Notifications);
+            }
             Scope::Usage => self.mode = Mode::Menu { idx: self.menu_row(Verb::Usage) },
             Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
             Scope::Tiers => self.return_to_settings(Verb::Tiers),
@@ -14772,9 +14773,13 @@ mod tests {
     }
 
     /// The theme picker is a settings row, one level further down.
+    /// The picker in the machine's scope: Appearance opens on this
+    /// board's (T-625), and `b` flips it back.
     fn open_theme_picker(app: &mut App) {
         open_settings(app);
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap(); // Appearance & notifications
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap(); // Appearance
+        press(app, 'b');
+        assert!(!app.settings_board_scope);
         let items = keymap::settings_items(&app.ctx());
         let idx = items.iter().position(|m| m.verb == Verb::ThemePick).expect("the theme row");
         for _ in 0..idx {
@@ -14816,14 +14821,12 @@ mod tests {
     fn settings_groups_return_to_their_parent_and_brief_returns_to_agents() {
         let mut app = app_three_columns();
         open_settings(&mut app);
-        for (idx, section) in [
+        for section in [
             keymap::SettingsSection::Appearance,
             keymap::SettingsSection::Behaviour,
             keymap::SettingsSection::Agents,
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        ] {
+            let idx = app.settings_row(section.opener());
             app.mode = Mode::Settings { idx };
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
             assert_eq!(app.settings_section, section);
@@ -15695,24 +15698,21 @@ mod tests {
         // Under the picker the preview stays and the picker keeps its slot;
         // Esc then rests on the NEW ground's pick.
         open_theme_picker(&mut app);
-        assert_eq!(app.mode, Mode::Theme { idx: 1, slot: Slot::One(Ground::Light) });
+        assert_eq!(app.mode, Mode::Theme { idx: 1, slot: Slot::Both });
         press(&mut app, 'j');
         assert_eq!(app.theme.flavor, Flavor::Blue);
         tx.send(Ground::Dark).unwrap();
         app.follow_appearance();
         assert_eq!(app.theme.flavor, Flavor::Blue, "the preview stays under the picker");
-        assert_eq!(
-            app.mode,
-            Mode::Theme { idx: 2, slot: Slot::One(Ground::Light) },
-            "and so does the slot"
-        );
+        assert_eq!(app.mode, Mode::Theme { idx: 2, slot: Slot::Both }, "and so does the slot");
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.theme.flavor, Flavor::Graphite, "esc rests on the dark slot's pick");
         assert_eq!(app.mode, Mode::Settings { idx: app.settings_row(Verb::ThemePick) });
     }
 
-    /// Tab in the picker (T-485) cycles the state a pick is for: the
-    /// board's own ground, the other, both, and round again. Landing on a
+    /// Tab in the picker (T-485) cycles the state a pick is for: both,
+    /// where it opens (T-625), the board's own ground, the other, and round
+    /// again. Landing on a
     /// ground shows that ground's saved pick; Enter saves for the state
     /// shown, and the ground itself never moves.
     #[test]
@@ -15724,8 +15724,11 @@ mod tests {
         app.prefs_path = Some(path.clone());
         app.seed_pref(|p| p.set(Ground::Light, Flavor::Blue));
         open_theme_picker(&mut app);
+        assert_eq!(app.mode, Mode::Theme { idx: 0, slot: Slot::Both });
+        assert_eq!(app.ctx().theme_tab_word, "dark", "the hint names the next stop");
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Theme { idx: 0, slot: Slot::One(Ground::Dark) });
-        assert_eq!(app.ctx().theme_tab_word, "light", "the hint names the next stop");
+        assert_eq!(app.ctx().theme_tab_word, "light");
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Theme { idx: 2, slot: Slot::One(Ground::Light) }, "on blue");
         assert_eq!(app.theme.flavor, Flavor::Blue, "the light state's pick is previewed");
@@ -15745,8 +15748,9 @@ mod tests {
             app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
         };
         reopen(&mut app);
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        for _ in 0..3 {
+            app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        }
         assert_eq!(app.mode, Mode::Theme { idx: 3, slot: Slot::Both }, "the cursor stays on amber");
         assert_eq!(app.ctx().theme_tab_word, "dark", "and round again");
         press(&mut app, 'k');
@@ -15756,11 +15760,10 @@ mod tests {
         assert_eq!(app.theme.flavor, Flavor::Blue);
         let back = crate::prefs::load(&path).prefs;
         assert_eq!((back.dark, back.light), (Flavor::Blue, Flavor::Blue));
-        // Round trip: both → current.
+        // Both → current.
         reopen(&mut app);
-        for _ in 0..3 {
-            app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        }
+        assert_eq!(app.mode, Mode::Theme { idx: 2, slot: Slot::Both });
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Theme { idx: 2, slot: Slot::One(Ground::Dark) });
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         // Board scope: Tab to the other state opens on inherit when the
@@ -15772,7 +15775,8 @@ mod tests {
         app.resolve_prefs();
         let ctx = app.ctx();
         app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
-        assert_eq!(app.mode, Mode::Theme { idx: 4, slot: Slot::One(Ground::Dark) }, "the board's");
+        assert_eq!(app.mode, Mode::Theme { idx: 4, slot: Slot::Both }, "the board's");
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Theme { idx: 0, slot: Slot::One(Ground::Light) }, "inherit");
         assert_eq!(app.theme.flavor, Flavor::Blue, "inherit previews the machine's light pick");
@@ -15800,55 +15804,56 @@ mod tests {
         None
     }
 
-    /// The Follow row (T-485) is a saved switch; the watch runs exactly
-    /// while it is on, unpinned and a probe exists. Arming asks once and
+    /// The OS is followed exactly while the two slots differ (T-625): the
+    /// watch runs then, unpinned and with a probe. Arming asks once and
     /// moves the board on the answer; no answer is reported as barred.
     #[test]
-    fn follow_os_arms_the_watch_only_with_a_probe_and_no_pin() {
+    fn the_watch_runs_while_the_slots_differ() {
         let mut app = app_three_columns();
-        app.seed_pref(|p| p.follow_os = false);
-        app.settings_section = keymap::SettingsSection::Appearance;
-        let ctx = app.ctx();
-        assert!(!ctx.follow_os);
-        // No probe (every test app): the preference is saved, nothing runs.
-        app.dispatch(Verb::FollowOs, Key::Enter, Scope::Settings, &ctx).unwrap();
-        assert!(app.prefs.follow_os);
+        app.seed_pref(|p| p.light = p.dark);
+        // No probe (every test app): nothing runs whatever the slots say.
+        app.arm_appearance();
         assert!(app.appearance.is_none());
-        assert_eq!(app.status, "the board follows the OS appearance for this session");
-        assert!(app.ctx().follow_os);
-        // A probe that answers: arming moves the board to the light slot.
+        // One theme for both: a probe is not even asked.
         app.appearance_probe = Some(says_light);
         app.arm_appearance();
+        assert!(app.appearance.is_none(), "nothing to follow");
+        assert_eq!(app.ground, Ground::Dark);
+        // Two themes: arming moves the board to the light slot.
+        app.set_pref("chalk for light terminals", |p| p.light = Flavor::Chalk);
         assert!(app.appearance.is_some());
         assert_eq!(app.ground, Ground::Light);
         assert_eq!(app.theme.flavor, Flavor::Chalk);
-        assert!(!app.ctx().follow_os_barred);
-        // Off: the thread's handle goes; the ground stays where it is.
-        let ctx = app.ctx();
-        app.dispatch(Verb::FollowOs, Key::Enter, Scope::Settings, &ctx).unwrap();
-        assert!(!app.prefs.follow_os);
+        assert!(!app.ctx().theme_os_barred);
+        let items = keymap::settings_items(&Ctx {
+            settings_section: keymap::SettingsSection::Appearance,
+            ..app.ctx()
+        });
+        let row = items.iter().find(|m| m.verb == Verb::ThemePick).unwrap();
+        let detail = (row.detail)(&app.ctx());
+        assert!(detail.contains("switches with the OS"), "{detail}");
+        // One again: the thread's handle goes; the ground stays where it is.
+        app.set_pref("graphite for light terminals", |p| p.light = Flavor::Graphite);
         assert!(app.appearance.is_none());
         assert_eq!(app.ground, Ground::Light);
+        assert!((row.detail)(&app.ctx()).contains("for dark and light terminals"));
         // A pin keeps the watch down; the pick that clears the pin arms it.
         app.forced = Some(Flavor::Green);
-        let ctx = app.ctx();
-        app.dispatch(Verb::FollowOs, Key::Enter, Scope::Settings, &ctx).unwrap();
-        assert!(app.prefs.follow_os);
+        app.set_pref("chalk for light terminals", |p| p.light = Flavor::Chalk);
         assert!(app.appearance.is_none(), "pinned");
-        assert!(app.status.contains("pinned by MESIMON_THEME"), "{}", app.status);
         open_theme_picker(&mut app);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap(); // the light slot alone
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.forced.is_none());
         assert!(app.appearance.is_some(), "the pick lifted the pin and the watch is up");
-        // An OS that does not answer: on, but barred, and the row says so.
+        // An OS that does not answer: barred, and the Theme row says so.
         app.appearance = None;
         app.appearance_probe = Some(says_nothing);
         app.arm_appearance();
         assert!(app.appearance.is_some(), "the thread still asks, in case it starts answering");
-        assert!(app.ctx().follow_os_barred);
-        let items = keymap::settings_items(&app.ctx());
-        let row = items.iter().find(|m| m.verb == Verb::FollowOs).unwrap();
-        assert!((row.detail)(&app.ctx()).contains("did not say"), "{}", (row.detail)(&app.ctx()));
+        assert!(app.ctx().theme_os_barred);
+        let detail = (row.detail)(&app.ctx());
+        assert!(detail.contains("did not say"), "{detail}");
     }
 
     #[test]
@@ -15858,8 +15863,8 @@ mod tests {
         open_theme_picker(&mut app);
         assert_eq!(
             app.mode,
-            Mode::Theme { idx: 2, slot: Slot::One(Ground::Dark) },
-            "the cursor starts on blue"
+            Mode::Theme { idx: 2, slot: Slot::Both },
+            "the cursor starts on blue, saving for both grounds"
         );
         assert_eq!(app.scope(), Scope::Theme);
         assert_eq!(app.theme.flavor, Flavor::Blue, "opening previews nothing");
@@ -15869,7 +15874,7 @@ mod tests {
     fn moving_the_cursor_previews_and_esc_puts_it_back() {
         let mut app = app_three_columns();
         open_theme_picker(&mut app);
-        assert_eq!(app.mode, Mode::Theme { idx: 0, slot: Slot::One(Ground::Dark) });
+        assert_eq!(app.mode, Mode::Theme { idx: 0, slot: Slot::Both });
         press(&mut app, 'j');
         assert_eq!(app.theme.flavor, Flavor::Chalk, "the cursor is the preview");
         press(&mut app, 'j');
@@ -15890,6 +15895,7 @@ mod tests {
         app.prefs_path = Some(path.clone());
         app.ground = Ground::Light;
         open_theme_picker(&mut app);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap(); // from both to light alone
         press(&mut app, 'j');
         press(&mut app, 'j');
         press(&mut app, 'j');
@@ -21162,8 +21168,10 @@ mod tests {
         assert_eq!(app.tab_frame(false).tint, None, "off");
     }
 
+    /// Appearance opens in board scope (T-625), so its `(machine)` rows
+    /// answer Enter on the machine's file rather than sit inert.
     #[test]
-    fn a_machine_only_row_is_inert_in_board_scope() {
+    fn a_machine_only_row_sets_the_machine_in_board_scope() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         let (machine, board) = pref_scratch("inert");
         app.prefs_path = Some(machine.clone());
@@ -21172,10 +21180,10 @@ mod tests {
         app.settings_board_scope = true;
         app.mode = Mode::Settings { idx: app.settings_row(Verb::StatusLine) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(!app.prefs.status_top);
-        assert!(!machine.exists() && !board.exists());
-        assert!(!sent_contains(&sent, "SetStatusLine"));
-        assert!(app.status.contains("machine"), "{}", app.status);
+        assert!(app.prefs.status_top);
+        assert!(machine.exists() && !board.exists());
+        assert!(sent_contains(&sent, "SetStatusLine"), "the daemon is told");
+        assert!(app.settings_board_scope, "the list stays on this board");
     }
 
     /// The picker grows an inherit row first in board scope; Enter on a
@@ -21195,7 +21203,7 @@ mod tests {
         app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
         assert_eq!(
             app.mode,
-            Mode::Theme { idx: 0, slot: Slot::One(Ground::Dark) },
+            Mode::Theme { idx: 0, slot: Slot::Both },
             "opens on inherit while nothing is set"
         );
         assert_eq!(app.theme_at(0), None);
@@ -21210,7 +21218,7 @@ mod tests {
         // Reopen: the cursor sits on the board's pick, one past inherit.
         let ctx = app.ctx();
         app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
-        assert_eq!(app.mode, Mode::Theme { idx: blue, slot: Slot::One(Ground::Dark) });
+        assert_eq!(app.mode, Mode::Theme { idx: blue, slot: Slot::Both });
         app.mode = Mode::Theme { idx: 0, slot: Slot::One(Ground::Dark) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(json(&board).get("dark").is_none(), "inherit drops the slot");
@@ -21239,6 +21247,35 @@ mod tests {
         let ctx = app.ctx();
         app.dispatch(Verb::SettingsAgents, Key::Enter, Scope::Settings, &ctx).unwrap();
         assert!(app.ctx().pref_scope_offered, "the tier rows have two scopes");
+    }
+
+    /// Appearance opens on this board's settings (T-625) and `b` reaches
+    /// the machine's; Notifications is a root row of its own, opening on
+    /// the machine's, and its Esc lands on the root in the machine's scope.
+    #[test]
+    fn appearance_opens_on_this_board_and_notifications_sit_at_the_root() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        open_settings(&mut app);
+        let ctx = app.ctx();
+        app.dispatch(Verb::SettingsAppearance, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(app.settings_board_scope && app.ctx().pref_scope_offered);
+        let rows: Vec<Verb> = keymap::settings_items(&app.ctx()).iter().map(|m| m.verb).collect();
+        assert!(!rows.contains(&Verb::Notifications), "{rows:?}");
+        press(&mut app, 'b');
+        assert!(!app.settings_board_scope, "b goes to the machine's");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        let idx = app.settings_row(Verb::Notifications);
+        assert_eq!(idx, 1, "beside Appearance");
+        app.mode = Mode::Settings { idx };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Notifications { .. }));
+        assert!(!app.settings_board_scope);
+        press(&mut app, 'b');
+        assert!(app.settings_board_scope);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.settings_section, keymap::SettingsSection::Root);
+        assert_eq!(app.mode, Mode::Settings { idx });
+        assert!(!app.settings_board_scope, "the root offers no b");
     }
 
     /// The scope is the list's that `b` flipped it in (T-559): back at the

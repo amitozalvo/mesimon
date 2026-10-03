@@ -3,9 +3,10 @@
 //! Two slots — the theme for a DARK terminal and the theme for a LIGHT one —
 //! because that is how the author already runs their editor (one scheme when
 //! macOS is dark, another when it is light). Which slot is worn is the
-//! ground: the terminal's answer at launch, or, for a board that opts into
-//! `follow_os` (T-485), the OS's appearance for as long as the board is
-//! open. The Settings rows edit both slots; a pick never changes the ground.
+//! ground: the terminal's answer at launch, or, while the two slots hold
+//! different themes (`Prefs::follows_os`, T-625), the OS's appearance for
+//! as long as the board is open. The Settings rows edit both slots; a pick
+//! never changes the ground.
 //!
 //! It sits at the state ROOT beside `update-check.json`: one binary per
 //! machine, so one preference per machine, and README promise 1 already
@@ -300,12 +301,6 @@ impl UsageResets {
 pub(crate) struct Prefs {
     pub dark: Flavor,
     pub light: Flavor,
-    /// Follow the OS's light/dark appearance while the board is open
-    /// (T-485): a flip moves the board to the other slot's theme. OFF by
-    /// default and deliberately — the OS is asked, never the terminal, so
-    /// a terminal pinned to one profile would be painted for the wrong
-    /// ground; the row is the consent that this terminal follows the OS.
-    pub follow_os: bool,
     /// A ticket back from a snooze wears needs-you until looked at (T-74).
     /// On by default; the Esc menu's row flips it. Same file, no schema
     /// move: an absent key reads as the default and a save keeps it.
@@ -440,7 +435,6 @@ impl Default for Prefs {
         Prefs {
             dark: Flavor::Graphite,
             light: Flavor::Chalk,
-            follow_os: true,
             snooze_needs_you: true,
             week_start: Weekday::Monday,
             merge_train: true,
@@ -479,7 +473,6 @@ impl Default for Prefs {
 }
 
 // The JSON keys are `PrefKey::name()`, one list for both files (T-361).
-const FOLLOW_OS_KEY: &str = PrefKey::FollowOs.name();
 const SNOOZE_KEY: &str = PrefKey::SnoozeNeedsYou.name();
 const WEEK_START_KEY: &str = PrefKey::WeekStart.name();
 const MERGE_TRAIN_KEY: &str = PrefKey::MergeTrain.name();
@@ -559,6 +552,14 @@ impl Prefs {
         }
     }
 
+    /// The board follows the OS's light/dark appearance exactly while the
+    /// two slots differ (T-625). T-485's switch is gone: two themes are the
+    /// ask to follow, and with one for both there is nothing to follow. A
+    /// `follow_os` an older build wrote stays in the file, unread.
+    pub(crate) fn follows_os(&self) -> bool {
+        self.dark != self.light
+    }
+
     pub(crate) fn set(&mut self, g: Ground, f: Flavor) {
         match g {
             Ground::Dark => self.dark = f,
@@ -582,7 +583,6 @@ impl Prefs {
             p.light = f;
         }
         for (key, slot) in [
-            (PrefKey::FollowOs, &mut p.follow_os),
             (PrefKey::SnoozeNeedsYou, &mut p.snooze_needs_you),
             (PrefKey::MergeTrain, &mut p.merge_train),
             (PrefKey::MergeTrainNotice, &mut p.merge_train_notice),
@@ -615,7 +615,6 @@ impl Prefs {
         match key {
             PrefKey::Dark => self.dark.name(),
             PrefKey::Light => self.light.name(),
-            PrefKey::FollowOs => onoff(self.follow_os),
             PrefKey::SnoozeNeedsYou => onoff(self.snooze_needs_you),
             PrefKey::WeekStart => self.week_start.name(),
             PrefKey::MergeTrain => onoff(self.merge_train),
@@ -671,7 +670,6 @@ impl Prefs {
                 doc.insert(key.into(), Value::from(f.name()));
             }
         }
-        doc.insert(FOLLOW_OS_KEY.into(), Value::from(self.follow_os));
         doc.insert(SNOOZE_KEY.into(), Value::from(self.snooze_needs_you));
         doc.insert(MERGE_TRAIN_KEY.into(), Value::from(self.merge_train));
         doc.insert(MERGE_TRAIN_NOTICE_KEY.into(), Value::from(self.merge_train_notice));
@@ -981,7 +979,6 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let slot = |key: &str, fallback: Flavor| {
         doc.get(key).and_then(Value::as_str).and_then(Flavor::from_name).unwrap_or(fallback)
     };
-    let follow_os = doc.get(FOLLOW_OS_KEY).and_then(Value::as_bool).unwrap_or(true);
     let snooze_needs_you = doc.get(SNOOZE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let merge_train = doc.get(MERGE_TRAIN_KEY).and_then(Value::as_bool).unwrap_or(true);
     let merge_train_notice =
@@ -1048,7 +1045,6 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
-        follow_os,
         snooze_needs_you,
         week_start,
         merge_train,
@@ -1122,14 +1118,13 @@ pub fn doctor_line() -> String {
     let loaded = load_home();
     let mut line =
         format!("dark: {} ∙ light: {}", loaded.prefs.dark.name(), loaded.prefs.light.name());
-    if loaded.prefs.follow_os {
+    if loaded.prefs.follows_os() {
         line = match crate::appearance::probe() {
             Some(g) => format!("{line} ∙ follows the OS appearance (now {})", g.word()),
             None => format!("{line} ∙ follows the OS appearance (which did not answer)"),
         };
     } else {
-        line =
-            format!("{line} ∙ set at launch by the terminal (Settings ∙ Follow the OS appearance)");
+        line = format!("{line} ∙ one theme for both, so the OS is not asked");
     }
     if let Some(f) = std::env::var("MESIMON_THEME").ok().as_deref().and_then(Flavor::from_name) {
         line = format!("pinned to {} by MESIMON_THEME ∙ {line}", f.name());
@@ -1301,23 +1296,22 @@ mod tests {
         assert!(text.ends_with('\n'));
     }
 
-    /// The OS-appearance switch (T-485): on by default (T-612), round-trips, and a
-    /// board may set it on its own.
+    /// The OS is followed exactly while the slots differ (T-625), and a
+    /// `follow_os` an older build wrote survives a save unread.
     #[test]
-    fn follow_os_round_trips_and_a_board_may_override_it() {
+    fn the_os_is_followed_while_the_slots_differ() {
         let p = scratch("follow");
-        let mut prefs = Prefs::default();
-        assert!(prefs.follow_os);
-        prefs.follow_os = false;
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"follow_os":false}"#).unwrap();
+        let mut prefs = load(&p).prefs;
+        assert!(prefs.follows_os(), "graphite and chalk differ");
+        prefs.set(Ground::Light, Flavor::Graphite);
+        assert!(!prefs.follows_os(), "one theme for both");
         save(&p, &prefs).unwrap();
-        let l = load(&p);
-        assert!(!l.prefs.follow_os);
         assert!(std::fs::read_to_string(&p).unwrap().contains("\"follow_os\":false"));
         let mut board = BoardPrefs::default();
-        board.set_bool(PrefKey::FollowOs, true);
-        assert!(l.prefs.overlay(&board).follow_os);
-        assert!(board.is_set(PrefKey::FollowOs));
-        assert_eq!(l.prefs.word(PrefKey::FollowOs), "off");
+        board.set_flavor(Ground::Dark, Flavor::Blue);
+        assert!(prefs.overlay(&board).follows_os(), "a board's pick reads resolved");
     }
 
     /// The notification group (T-282): every key round-trips, and the file

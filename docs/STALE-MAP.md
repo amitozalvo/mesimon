@@ -20308,3 +20308,53 @@ slide animation: the column changes in place, as a tab press does. Now and Sent 
 **Tests.** `ux.test.js`'s main phone flow, both engines: left from IN PROGRESS to DONE, nothing
 past DONE, a mostly vertical drag and a 20 px nudge change nothing, right twice to TODO, nothing
 before it, and the card anatomy unchanged on the way back.
+
+## Appearance is this board's first, and two themes are the ask to follow the OS (T-625, 2026-10-03)
+
+The author's settings pass, four lines: notifications out of appearance; appearance per board by
+default, `b` to the machine's; the theme picker on both grounds by default, Tab still cycling;
+and no follow-the-OS switch, the board following exactly when the two slots differ.
+
+**Notifications is a root row.** `Verb::Notifications` moved from the Appearance list to
+`SettingsSection::Root`, right under Appearance, and `for_verb` maps it to the root, so Esc out
+of the list lands on its row there. The list keeps its own scope behaviour (it opens on the
+machine's, `b` flips it), and its Esc drops the board scope because the root offers no `b`.
+Appearance is now Theme, Status line and Crown's actions; its title lost `& NOTIFICATIONS`.
+
+**Appearance opens in board scope.** The section dispatch sets `settings_board_scope = verb ==
+SettingsAppearance`; every other section still opens on the machine's (T-559), and
+`return_to_settings` keeps whatever scope the list was in, so a theme pick comes back to the
+same scope. Two of the three rows are machine-only keys, and in board scope they were inert
+("is the machine's ∙ b returns to its settings") — fine behind a `b` a person pressed, a trap
+as the list's default. `board_scope_takes` now passes a key that is not `board_overridable` to
+its ordinary dispatch, so a `(machine)` row's Enter sets the machine's file and the row's
+detail already says so. `cycle_board_pref` keeps its guard for any other caller.
+
+**The picker opens on `Slot::Both`.** One theme everywhere is the common ask; Tab goes both →
+the terminal's ground → the other → both (`Slot::next` unchanged). The cursor still opens on
+the current ground's pick (`theme_cursor(self.ground)`), the inherit row first in board scope.
+
+**`PrefKey::FollowOs` is gone, and `Prefs::follows_os()` is `dark != light`** on the resolved
+view. `arm_appearance`, `lib.rs::run`'s launch probe, the detach guide's and `doctor`'s line read
+it; T-485's watch, probe and barred word are untouched. A `follow_os` key in either file is left
+where it is and read by nothing: the machine file's save merges into the loaded document, and
+the board file's `overridden()` walks `PrefKey::ALL`. An older build reading the file still sees
+the value it wrote. The Theme row's detail carries what the switch row said: one theme reads
+`<blurb> ∙ for dark and light terminals`, two read `dark: X ∙ light: Y ∙ switches with the OS's
+light/dark`, and an OS that did not answer says so first (`Ctx::theme_os_barred`, renamed from
+`follow_os_barred`; `theme_dark`/`theme_light` replace `follow_os`). The cost T-485 named — a
+terminal pinned to one profile painted for the wrong ground — now has one remedy, a single
+theme for both, which USING says.
+
+**Tests.** TUI `the_watch_runs_while_the_slots_differ` (no probe, equal slots, differing slots,
+back to equal, the pin, the barred row), `appearance_opens_on_this_board_and_notifications_sit_at_the_root`,
+`a_machine_only_row_sets_the_machine_in_board_scope` (was `…_is_inert_…`), the picker tests on
+`Slot::Both`; prefs `the_os_is_followed_while_the_slots_differ` (an old `follow_os` survives a
+save, a board pick reads resolved); the keymap's section lists. Goldens: the menu's Settings
+detail, the settings root, and both Appearance lists.
+
+The CHANGELOG line is owed to the next bump (the top entry must be the build's version, T-614's
+reason): **Changed:** Settings › Appearance opens on this board's settings, and `b` switches it
+to every board's; the theme picker sets one theme for dark and light terminals unless Tab picks
+one of them; the board follows the system's light and dark appearance whenever the two themes
+differ, and the Follow the OS appearance row is gone; Notifications is its own row in Settings.

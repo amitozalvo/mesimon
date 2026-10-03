@@ -2,18 +2,18 @@
 
     TODO                               2   2   2   0
 
-  ╭─ APPEARANCE & NOTIFICATIONS ∙ THIS BOARD ────────────╮
+    Decay treatments                 >1y   I   R   D
+                                           N   E   O
+  ╭─ APPEARANCE ∙ THIS BOARD ────────────────────────────╮
   │   Theme: graphite                                    │
-  │     inherited ∙ dark, the default ∙ for a dark term~ │
-  │   Follow the OS appearance: on                       │
-  │     inherited ∙ switches with the OS's light/dark ∙~ │
-  │   Notifications: on                                  │
-  │     a banner and a sound when an agent needs you ∙ ~ │
+  │     inherited ∙ dark: graphite ∙ light: chalk ∙ swi~ │
   │   Status line at the bottom                          │
   │     (machine) ∙ tmux's bar over an agent's pane ∙ e~ │
   │   Crown's actions: lightning                         │
   │     (machine) ∙ a bolt to each card the crown touch~ │
   ╰──── jk select ∙ enter choose ∙ b machine ∙ esc back ─╯
+
+
 
 
 

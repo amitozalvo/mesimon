@@ -11,9 +11,10 @@
 //! terminal: a subprocess on a thread of its own, whose answer arrives on a
 //! channel, and nothing is ever written to or read from the terminal. The
 //! cost is the one the design record named — a terminal pinned to a dark
-//! profile does not follow the OS — which is why the watch is OPT-IN
-//! (`Prefs::follow_os`, the Settings row) and the row says so: you turn it
-//! on because your terminal follows the OS.
+//! profile does not follow the OS. The watch runs exactly while the two
+//! theme slots differ (`Prefs::follows_os`, T-625, which replaced T-485's
+//! opt-in row): two themes are the ask to follow, and one theme for both
+//! is the way to hold still.
 //!
 //! The one-shot startup query to the terminal stays for a board that does
 //! not follow the OS; a board that does skips it (the OS answered, and a

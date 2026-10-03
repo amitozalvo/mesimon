@@ -16,7 +16,7 @@
                            │   Usage                                                        │
                            │     your plan's quota windows, and when each resets            │
                            │   Settings                                                     │
-                           │     appearance & notifications, behaviour, agents              │
+                           │     appearance, notifications, behaviour, agents               │
                            │   Release notes                                                │
                            │     what changed in each version, newest first                 │
                            │   Quit mesimon                                               q │
