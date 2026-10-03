@@ -20685,3 +20685,14 @@ the chat, a prompt or Send-now this page sent is drawn faded with its ticks unde
 (`sessions.js::ghostOf`) until a prompt or notice row lands at or past where the chat ended
 when it was sent (`receipt.from`, `landed`), and the delivery line stays hidden for it; a
 refusal, an unknown outcome and the Raw view keep the line.
+
+## alpha.38 shipped (T-636, 2026-10-03, "ship next version")
+
+**Shipped 2026-10-03** by the author's `deploy/ship.sh all`: the relay first (core `e30d46d5`,
+alpha.38), then the tag at `e30d46d5`, the GitHub release, mesimon.dev and the tap formula. The
+release carries T-614 and the day's Remote Control work (T-623 to T-633). The gate ran once, on
+the bump commit, after one run that passed but was not stamped: the repo's own untracked
+`.mesimon-worktree-init.sh` read as a dirty tree to `ci/test-run.py` and to `ship.sh`'s
+preflight. It was set aside for the gate and the ship, and on the author's word committed after
+the tag (`1af9d0dc`). **An untracked file at the root blocks both the stamp and the ship**:
+commit or exclude it before the gate, never after.
