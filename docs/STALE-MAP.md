@@ -19328,3 +19328,29 @@ cache says off (nothing under `~/.claude` was written: promise 1).
    user. R9 stands in for the flag whatever it says today: `restart_mods_off` names a wrapper
    that runs the real Claude Code for `--version` and `plugin`, and starts a session without its
    `--plugin-dir`.
+
+**Acceptance on the rig** (run `20261003-030531`, build `claude 2.1.288 ∙
+msmn/T-598-auto-falls-back-to-the-hook-set@82f875aa`, crown and workers on `claude-sonnet-5-5`,
+the remote flag on; the verdict is a note on the rig's ticket):
+
+| test | expected | observed | build |
+|---|---|---|---|
+| R9 mods off | a wrapper that validates and passes the load probe but starts each session without `--plugin-dir`: the first launch relaunched on the hook set within 25 s, its brief once, the card follows; `claude_road_fallback`; doctor says mods are off; the next launch on the hook set at once | PASS: relaunched once, 11.0 s after `start_agent`; one prompt, title and brief whole; SessionStart, UserPromptSubmit, Stop; doctor `hooks ∙ claude 2.1.288: mods are off in this Claude Code (seen 03:06); the hook set is used`; the second worker never relaunched; `restart_plain` re-probed and took the mod again | 2.1.288 ∙ 82f875aa |
+
+**Tests.** Daemon `modroad::tests::the_probe_proves_the_mod_loads_and_reads_mods_off_from_the_refusal`,
+`a_mods_off_verdict_expires_and_no_other_does` (the expiry),
+`the_load_probe_is_laid_beside_the_mod_and_never_inside_it`; binary
+`doctor::tests::the_road_line_says_which_road_and_why` (the mods-off line). E2e `mod_auto_e2e`'s
+`a_mod_launch_that_never_reports_is_relaunched_on_the_hook_set` (a stub that validates and paints
+its composer but runs no mod: relaunched with `--settings` and `--mcp-config`, `probe.json` reads
+`mods_off`, the brief pasted once after the hook set's `SessionStart`, the next launch on the hook
+set) and `a_probe_that_finds_mods_off_launches_on_the_hook_set`; `mod_plugin` checked against a
+scratch `CLAUDE_CONFIG_DIR` whose cache says off (SKIPPED with the refusal, under
+`MESIMON_REQUIRE_CLAUDE=1`). `ci/test-run.py`: 2,079 of 2,079, the mod road's pass 145 of 145,
+fixture audit clean.
+
+**Not done, written down.** The whole rig under `--flags-off` was not run: the flag came back on
+before it could be, and `DISABLE_GROWTHBOOK=1` pins every flag to its default, so whether R1–T3
+pass under it is unmeasured. C's (T-581) release heading `v0.1.0-alpha.37` is on C's branch, not
+main, when this lands: the CHANGELOG line ("a Claude Code that turns mods off keeps working on the
+hook set; `mesimon doctor` says so") goes under it on the rebase after C.
