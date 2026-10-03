@@ -8,14 +8,15 @@ import { Shin } from "./shin.js";
 import { answerable, requestSummary } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
 import { answerBusy, receiptTick } from "./sessions.js";
+import { RECENT_MS } from "./board.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 export const lastSeen = (board) => (board?.receivedAt ? clock(board.receivedAt) : "");
-// How long an agent has been in its state (T-497), by the host's clock, in
-// the board's short words. A remembered board says none: it is not now.
-export function stateAge(board, agent) {
-  if (board.cached || !Number.isFinite(agent?.since)) return "";
-  const seconds = Math.max(0, (Date.now() - agent.since) / 1000);
+// How long ago `at` was, by the host's clock, in the board's short words. A
+// remembered board says none: it is not now.
+export function ageWords(board, at) {
+  if (board.cached || !Number.isFinite(at)) return "";
+  const seconds = Math.max(0, (Date.now() - at) / 1000);
   return seconds < 60
     ? "now"
     : seconds < 3600
@@ -23,6 +24,28 @@ export function stateAge(board, agent) {
       : seconds < 86400
         ? `${Math.floor(seconds / 3600)}h`
         : `${Math.floor(seconds / 86400)}d`;
+}
+// How long an agent has been in its state (T-497).
+export const stateAge = (board, agent) => ageWords(board, agent?.since);
+
+// What the crown last did to a ticket (T-623), while it is news: the host
+// keeps it an hour, and so does a page left open. A remembered board has
+// none.
+export function crownTouch(board, ticket) {
+  const touch = ticket?.crowned;
+  if (board.cached || !touch?.action || !(Date.now() - touch.at < RECENT_MS)) return undefined;
+  return touch;
+}
+
+// The crown's mark on a card (T-623), the TUI's: the ticket that wears it,
+// or the word for what the crown last did to this one, and how long ago.
+function CrownWord({ board, ticket }) {
+  const touch = crownTouch(board, ticket);
+  if (!touch && !ticket.crown) return null;
+  const age = touch && ageWords(board, touch.at);
+  return html`<span class="crown-word"><${Icon} name="crown" size=${13} width=${2.2} />${touch
+    ? html`<span>${touch.action}${age && ` · ${age}`}</span>`
+    : html`<span class="sr-only">Wears the crown</span>`}</span>`;
 }
 
 // The ticket's tags as the TUI paints them (T-506): the name on a ground of
@@ -107,7 +130,7 @@ function Face({ store, ticket, board, column }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
   return html`<span class="ticket-title" dir="auto">${ticket.title}</span>
-    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta">${column && html`<span>${ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
+    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta"><${CrownWord} board=${board} ticket=${ticket} />${column && html`<span>${ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
     ${agent && html`<span class=${`card-agent${agent.state === "needs attention" ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${stateWord(agent)}${since && ` · ${since}`}</span></span>`}
     <${Headline} agent=${agent} />`;
 }

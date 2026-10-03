@@ -355,6 +355,26 @@ pub struct Ticket {
     /// it changes.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub noted: String,
+    /// The ticket wears the crown (T-623): its agent edits every ticket.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub crown: bool,
+    /// The crown's latest edit of this ticket, within the hour (T-623).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crowned: Option<Crowned>,
+}
+
+/// What the crown last did to a ticket (T-623), as the TUI's card says it
+/// for a beat: `action` is the card's word (`moved`, `started`, `woke`…),
+/// never an enum, so a newer host's word does not fail an older page; `by`
+/// is the key of the ticket whose agent did it, or for `woke` the worker
+/// whose news woke the crown.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Crowned {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// Milliseconds since the epoch, the host's clock.
+    pub at: u64,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -911,6 +931,8 @@ mod tests {
             picked: None,
             notes: 0,
             noted: String::new(),
+            crown: false,
+            crowned: None,
         };
         let json = serde_json::to_value(&bare).unwrap();
         assert_eq!(
@@ -924,6 +946,8 @@ mod tests {
             picked: Some(Picked { by: "desk".into(), at: 1_790_000_000_000 }),
             notes: 2,
             noted: "00ff00ff00ff00ff".into(),
+            crown: true,
+            crowned: Some(Crowned { action: "moved".into(), by: Some("T-9".into()), at: 1 }),
             agent: bare.agent.clone().map(|a| Agent {
                 since: Some(1_790_000_000_000),
                 doing: Some("Bash(cargo test)".into()),
@@ -936,6 +960,8 @@ mod tests {
         assert_eq!(back.tags, full.tags);
         assert_eq!(back.picked, full.picked);
         assert_eq!((back.notes, back.noted.as_str()), (2, "00ff00ff00ff00ff"));
+        assert!(back.crown);
+        assert_eq!(back.crowned, full.crowned);
         let agent = back.agent.unwrap();
         assert_eq!(
             (agent.since, agent.doing.as_deref(), agent.said.as_deref()),
@@ -1066,6 +1092,8 @@ mod tests {
             picked: None,
             notes: 0,
             noted: String::new(),
+            crown: false,
+            crowned: None,
         };
         let json = serde_json::to_value(ticket(Some(Queue::default()))).unwrap();
         assert_eq!((&json["queued"], &json["queue"]), (&"next".into(), &serde_json::json!({})));

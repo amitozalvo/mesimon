@@ -110,6 +110,10 @@ const GRACE_SECS: u64 = 9;
 /// board to light the card and leave its residue, short enough that a burst
 /// of edits never accumulates. The feed is the record.
 const CROWN_TOUCH_MS: u64 = 10_000;
+/// How long a ticket keeps the crown's last touch for a phone (T-623): a
+/// phone is glanced at, not watched, so it says what the crown did for the
+/// hour Now keeps a stopped agent (T-560). One per ticket, in memory.
+const CROWN_TOUCH_KEPT_MS: u64 = 3_600_000;
 const GATE_SESSION: &str = "msmn-gate";
 
 /// Who holds the exclusive focus token (D22): a ticket's session, or the
@@ -644,10 +648,11 @@ pub struct Daemon {
     /// hands the model the literal string `Connection closed` AFTER the move
     /// has been persisted; without this the retry moves the card twice.
     agent_replay: HashMap<(uuid::Uuid, String), AgentReplay>,
-    /// The crown's edits of the last `CROWN_TOUCH_MS` (T-411), one per
-    /// touched ticket, so the board can light the card an agent just
-    /// changed. In memory on purpose, like the move gate's: the feed is the
-    /// record, this is what the next frame needs.
+    /// The crown's latest edit of each ticket it touched (T-411), so the
+    /// board can light the card an agent just changed: the snapshot carries
+    /// those of the last `CROWN_TOUCH_MS`, a phone's board those of the last
+    /// `CROWN_TOUCH_KEPT_MS` (T-623). In memory on purpose, like the move
+    /// gate's: the feed is the record, this is what the next frame needs.
     crown_touches: HashMap<ulid::Ulid, CrownTouch>,
     /// The crown's asks dropped before they were sent (T-568), by the
     /// ticket they were for: what the crown's `get_ticket` on it reads as
@@ -6019,7 +6024,7 @@ impl Daemon {
             return None;
         }
         let now = mesimon_core::clock::now_ms();
-        self.crown_touches.retain(|_, t| now.saturating_sub(t.at_ms) < CROWN_TOUCH_MS);
+        self.crown_touches.retain(|_, t| now.saturating_sub(t.at_ms) < CROWN_TOUCH_KEPT_MS);
         self.crown_touches.insert(
             target,
             CrownTouch { ticket: target, action: action.to_string(), at_ms: now, from: Some(own) },

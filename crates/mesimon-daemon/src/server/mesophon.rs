@@ -2503,6 +2503,12 @@ impl Daemon {
                     picked: projected_pickup(t),
                     notes: u32::try_from(t.notes.len()).unwrap_or(u32::MAX),
                     noted: api::notes_stamp(&t.notes),
+                    crown: self.board.is_crowned(t.id),
+                    crowned: projected_crown_touch(
+                        &self.board,
+                        self.crown_touches.get(&t.id),
+                        mesimon_core::clock::now_ms(),
+                    ),
                     agent: self.board.live_agent(t.id).map(|s| {
                         let (doing, said) = self.control_words(s);
                         self.control_agent(t, s, doing, said)
@@ -3193,6 +3199,18 @@ fn projected_tags(board: &Board, t: &Ticket) -> Vec<api::TagOption> {
         .iter()
         .map(|g| api::TagOption { group: g.group, name: g.name.clone(), tint: board.tint_of(g) })
         .collect()
+}
+
+/// The crown's latest edit of a ticket for a phone (T-623), while it is
+/// kept: the card's word, whose agent did it by key, and when.
+fn projected_crown_touch(
+    board: &Board,
+    touch: Option<&CrownTouch>,
+    now: u64,
+) -> Option<api::Crowned> {
+    let t = touch.filter(|t| now.saturating_sub(t.at_ms) < CROWN_TOUCH_KEPT_MS)?;
+    let by = t.from.and_then(|from| board.ticket(from)).map(|f| f.short_key.clone());
+    Some(api::Crowned { action: t.action.clone(), by, at: t.at_ms })
 }
 
 /// A phone's ticket once it was picked up (T-497), on the browser's clock
@@ -5141,6 +5159,53 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert_eq!(
             projected_pickup(&t),
             Some(api::Picked { by: "desk".into(), at: 1_790_000_000_000 })
+        );
+    }
+
+    /// A phone hears what the crown last did to a ticket for the hour it is
+    /// kept (T-623), with the doer by its key, and nothing past it.
+    #[test]
+    fn a_phone_reads_the_crown_s_last_touch_for_an_hour() {
+        let mut board = Board::with_default_columns();
+        let (crown, worker) = (ulid::Ulid(1), ulid::Ulid(2));
+        board.tickets.push(Ticket {
+            id: crown,
+            short_key: "T-1".into(),
+            title: "the crown".into(),
+            column: "TODO".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
+            entered_at: None,
+            woke_at: None,
+            manual_merge: false,
+            execution_policy: Default::default(),
+            tier: None,
+            envelope: None,
+            workspace: None,
+            import_origin: None,
+            raised: None,
+            previous_column: None,
+            picked: None,
+            tags: Vec::new(),
+            notes: Vec::new(),
+            archived: None,
+        });
+        let touch =
+            CrownTouch { ticket: worker, action: "moved".into(), at_ms: 1_000, from: Some(crown) };
+        let key = Some("T-1".to_string());
+        assert_eq!(
+            projected_crown_touch(&board, Some(&touch), 1_000 + CROWN_TOUCH_KEPT_MS - 1),
+            Some(api::Crowned { action: "moved".into(), by: key, at: 1_000 })
+        );
+        assert_eq!(projected_crown_touch(&board, Some(&touch), 1_000 + CROWN_TOUCH_KEPT_MS), None);
+        assert_eq!(projected_crown_touch(&board, None, 1_000), None);
+        let gone = CrownTouch { from: Some(ulid::Ulid(9)), ..touch };
+        assert_eq!(
+            projected_crown_touch(&board, Some(&gone), 1_000).and_then(|c| c.by),
+            None,
+            "a doer no longer on the board is named by nobody"
         );
     }
 

@@ -20516,3 +20516,44 @@ and the relay's `the_conversation_is_read_a_page_at_a_time` over the real contro
 the "agent-run" step on relay main: its handler is commit `d0ababb` on the relay's unmerged
 `msmn/T-498-…` branch. A subagent's file (`<session>/subagents/agent-*.jsonl`) and a "previous
 conversations" list from `started.json` are follow-ups.
+
+## Remote Control shows the crown and what it did (T-623, 2026-10-03, "remote indicate crown and crown actions")
+
+**Built.** The phone's board (`mesophon::Ticket`) carries two fields beside the rest, both
+skipped at their default so an older page reads nothing new: `crown: bool`, the ticket that
+wears it (`Board::is_crowned`), and `crowned: Option<Crowned { action, by, at }>`, the crown's
+latest edit of that ticket. `action` is the TUI card's own word (`moved`, `started`, `woke`…),
+never an enum, so a newer host's word does not fail an older page; `by` is the doer's key (for
+`woke`, the worker whose news woke the crown, as `CrownTouch::from` has it); `at` is the host's
+milliseconds. The daemon's `crown_touches` map now keeps each ticket's last touch for
+`CROWN_TOUCH_KEPT_MS` (one hour, Now's window for a stopped agent, T-560) instead of ten
+seconds; the snapshot still carries only the last `CROWN_TOUCH_MS`, so the TUI's light and
+residue are unchanged. It stays one entry per ticket, in memory, and a restart forgets it: the
+feed is the record. No new push: every crown touch rides a broadcast, and `broadcast` already
+marks the phone's board dirty.
+
+**Decided: an hour, not the TUI's two seconds.** A desk is watched and a phone is glanced at;
+a light that is out before the page is opened says nothing. The page drops a touch past the
+hour too, so a page left open does not keep it.
+
+**The page.** A card's meta row starts with the crown in the TUI's crown ink (`--tag-5`, the
+tint `Theme::crown_text` uses; never the needs-you amber): the touch's word and its age
+(`moved · 2m`), or on the holder the icon alone with "Wears the crown" for a screen reader. The
+ticket page opens with one `#crown-line`: the holder's "Wears the crown · its agent edits every
+ticket" (the TUI page's state row), and a touched ticket's sentence, "T-0's agent moved this
+ticket · 2m ago" (`crownSentence`, a word it does not know said as the host spells it). The
+icon is Lucide's crown, inlined like the rest. **A remembered board keeps who wears the crown
+and never the touch**: the seat is a fact of the board, the touch is news.
+
+**Not built.** A crown-started agent's `started_by` on the phone (the `started` touch says it
+for the hour), and the TUI's bolt between the doer's card and the touched one.
+
+**Tests.** Core `a_ticket_carries_tags_pickup_and_the_agent_s_step_only_when_known` (the bare JSON unchanged, the
+fields round-trip); daemon `a_phone_reads_the_crown_s_last_touch_for_an_hour` (inside and at
+the hour, a doer gone from the board named by nobody); browser state tests for the remembered
+board and the sentences; the UX edit flow in Chromium and WebKit at three sizes (the card's
+word and the page's line, the holder's card off the phone, gone past the hour, gone when
+cleared). Screenshots of the touched ticket read by eye at desktop and phone. **Owed:** a
+CHANGELOG line at the next bump — **Added:** Remote Control marks the ticket that wears the
+crown and says what the crown last did to a ticket, and whose agent did it, for an hour — and
+the relay's `ship.sh` after it merges, since the hosted relay serves this page.

@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { Sessions, answerBusy, receiptTick, reasonText } from "./sessions.js";
 import { afterWords, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS } from "./board.js";
+import { crownTouch } from "./lists.js";
+import { crownSentence } from "./detail.js";
 import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
 import { mergePage, tailAsk } from "./transcript.js";
 const ticket = (id, session) => ({
@@ -562,6 +564,35 @@ test("a remembered board keeps tags and since, never the agent's step or reply",
   restored.update(JSON.parse(JSON.stringify(board.snapshot())), { cached: true });
   restored.search = "bug";
   assert.equal(restored.visible().length, 1, "a tag's name finds its ticket, remembered too");
+});
+test("a remembered board keeps who wears the crown, never what it last did (T-623)", () => {
+  const board = new BoardState();
+  const now = Date.now();
+  board.update({
+    title: "Board",
+    columns: ["TODO"],
+    tickets: [
+      { id: "crown", key: "T-1", title: "Crown", column: "TODO", crown: true, agent: null },
+      { id: "worker", key: "T-2", title: "Worker", column: "TODO", agent: null,
+        crowned: { action: "moved", by: "T-1", at: now - 60000 } },
+    ],
+  });
+  assert.equal(crownTouch(board, board.tickets[1])?.action, "moved");
+  assert.equal(crownTouch(board, { ...board.tickets[1], crowned: { action: "moved", at: now - RECENT_MS } }), undefined,
+    "an hour on, the touch is not news");
+  const [crown, worker] = JSON.parse(JSON.stringify(board.snapshot())).tickets;
+  assert.equal(crown.crown, true);
+  assert.equal("crown" in worker, false);
+  assert.equal("crowned" in worker, false);
+  const restored = new BoardState();
+  restored.update(JSON.parse(JSON.stringify(board.snapshot())), { cached: true });
+  assert.equal(crownTouch(restored, { ...restored.tickets[1], crowned: worker.crowned }), undefined);
+});
+test("the crown's words name whose agent did what, and a word it does not know as spelled (T-623)", () => {
+  assert.equal(crownSentence({ action: "moved", by: "T-9" }), "T-9’s agent moved this ticket");
+  assert.equal(crownSentence({ action: "woke", by: "T-4" }), "T-4’s news woke this agent");
+  assert.equal(crownSentence({ action: "accepted plan" }), "The crown accepted this agent’s plan");
+  assert.equal(crownSentence({ action: "levitated", by: "T-9" }), "T-9’s agent levitated");
 });
 test("a start goes clock to two ticks, settles once, and never crosses boards", async () => {
   const { Starts, startWaiting } = await import("./starts.js");

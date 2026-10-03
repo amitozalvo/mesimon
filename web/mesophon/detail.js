@@ -5,7 +5,7 @@ import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { Attention } from "./dialogs.js";
-import { StartButton, StartReceipt, Tags, stateAge } from "./lists.js";
+import { StartButton, StartReceipt, Tags, ageWords, crownTouch, stateAge } from "./lists.js";
 import { NotesCard, NoteReader } from "./notepad.js";
 import { receiptTick } from "./sessions.js";
 import { queueWords, sendRefused, waitsOnYou } from "./queue.js";
@@ -212,6 +212,47 @@ function TicketLine({ store, ticket }) {
     <span id="card-line-hint" class="sr-only">${moves && tags ? "Move or tag this ticket" : moves ? "Move this ticket" : "Tag this ticket"}</span>`;
 }
 
+// What the crown did, in a sentence (T-623), by the card's word. A word
+// this page does not know is said as the host spells it.
+const CROWN_DID = {
+  moved: "moved this ticket",
+  renamed: "renamed this ticket",
+  tagged: "tagged this ticket",
+  note: "wrote a note here",
+  workspace: "set this ticket’s workspace",
+  created: "filed this ticket",
+  started: "started this agent",
+  woken: "woke this agent",
+  parked: "parked this agent",
+  asked: "queued words for this agent",
+  sent: "sent this agent words",
+  answered: "answered this agent",
+  "accepted plan": "accepted this agent’s plan",
+  merged: "merged this ticket",
+};
+export function crownSentence(touch) {
+  // A worker's news woke the crown: `by` is the worker.
+  if (touch.action === "woke") return touch.by ? `${touch.by}’s news woke this agent` : "A worker’s news woke this agent";
+  const did = CROWN_DID[touch.action] || touch.action;
+  return touch.by ? `${touch.by}’s agent ${did}` : `The crown ${did}`;
+}
+
+// The crown on the ticket page (T-623): the ticket that wears it says so, as
+// the TUI's page does, and a ticket the crown touched says what it did.
+function CrownLine({ store, ticket }) {
+  if (!ticket) return null;
+  const touch = crownTouch(store.board, ticket);
+  if (!ticket.crown && !touch) return null;
+  const age = touch && ageWords(store.board, touch.at);
+  return html`<div id="crown-line" class="crown-line">
+    <${Icon} name="crown" size=${15} width=${2.2} />
+    <div>
+      ${ticket.crown && html`<p>Wears the crown · its agent edits every ticket</p>`}
+      ${touch && html`<p>${crownSentence(touch)}${age && ` · ${age === "now" ? "just now" : `${age} ago`}`}</p>`}
+    </div>
+  </div>`;
+}
+
 // What the ticket page says over an empty or a parked seat (T-498, T-510).
 function seatWords(store, agent) {
   const what = agent ? `${agent.provider} is asleep on this ticket.` : "No agent on this ticket.";
@@ -258,6 +299,7 @@ export function Detail({ store, bp }) {
       </div>
     </header>
     <div class="detail-scroll">
+      <${CrownLine} store=${store} ticket=${ticket} />
       ${seatOpen && html`<div class="agent-line" role="group" aria-label="Agent">
         <p id="agent-state">${seatWords(store, agent)}</p>
         ${store.startsAgents && html`<${StartButton} store=${store} ticket=${ticket} />`}

@@ -1443,6 +1443,33 @@ async function editFlow(browser, engineName, size, viewport) {
     await page.locator('.ticket[data-id="ticket-3"]').click();
     await page.locator("#rename").waitFor();
 
+    // The crown (T-623): a ticket it touched says what was done and whose
+    // agent did it, on its card and its page, for an hour; the ticket that
+    // wears it says so.
+    await page.evaluate(() => {
+      fixture.tickets[0].crown = true;
+      fixture.tickets[3].crowned = { action: "moved", by: "T-0", at: Date.now() - 120000 };
+      fixture.update();
+    });
+    await until(page, () => document.querySelector("#crown-line")?.textContent.includes("T-0’s agent moved this ticket · 2m ago"));
+    assert.equal(await page.locator('.ticket.card[data-id="ticket-3"] .crown-word').textContent(), "moved · 2m");
+    // A phone draws one column at a time, and the crown's is the other one.
+    if (size !== "phone")
+      assert.equal(await page.locator('.ticket.card[data-id="ticket-0"] .crown-word').textContent(), "Wears the crown");
+    await shot("crown-touched");
+    await page.evaluate(() => {
+      fixture.tickets[3].crowned.at = Date.now() - 2 * 3600000;
+      fixture.update();
+    });
+    await until(page, () => !document.querySelector("#crown-line"));
+    assert.equal(await page.locator('.ticket.card[data-id="ticket-3"] .crown-word').count(), 0, "an hour on, it is not news");
+    await page.evaluate(() => {
+      delete fixture.tickets[0].crown;
+      delete fixture.tickets[3].crowned;
+      fixture.update();
+    });
+    await until(page, () => !document.querySelector(".crown-word"));
+
     // The title writes over itself: Escape puts it back and sends nothing.
     await page.locator("#rename").click();
     assert.equal(await page.evaluate(() => document.activeElement.id), "rename-title");

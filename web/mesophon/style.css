@@ -1436,6 +1436,30 @@ select {
   margin-left: auto;
   flex-wrap: nowrap;
 }
+/* The crown (T-623), in the TUI's crown ink (its tag tint 5): never the
+   needs-you colour, since the crown is status. */
+.crown-word {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--tag-5);
+}
+.crown-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 18px;
+  background: var(--s1);
+  color: var(--ink2);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+.crown-line > .icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--tag-5);
+}
 .card-agent {
   display: flex;
   align-items: center;
