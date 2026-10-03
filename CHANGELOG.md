@@ -6,6 +6,46 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.38 — 2026-10-03
+
+### Added
+
+- **A `.mesimon-worktree-init.sh` at your repository's root runs in each new
+  worktree before its agent starts**, so a worktree can begin with its build
+  cache seeded or its dependencies installed. The agent starts anyway; the
+  ticket page reads `init script running`, then `init failed ∙ exit 2` or
+  `init timed out` (after ten minutes) beside the branch if it went wrong.
+- **Remote Control reads the agent's conversation** on the ticket page: your
+  prompts, the agent's replies and progress notes, and one line per tool
+  call, formatted as the desk formats them. Scroll up for older pages; Raw in
+  the panel's corner shows the screen as before.
+- **Remote Control can add pictures to a note**, picked or pasted, and keeps
+  them with the ticket as the desk does.
+- **Remote Control marks the ticket that wears the crown** with `♛` before
+  its title, and a ticket the crown changed in the last hour says what it did
+  (`♛ moved · 2m`).
+- **On the phone, a swipe across the Board steps to the next or previous
+  column**, and a swipe dismisses a banner or a toast.
+
+### Changed
+
+- **Appearance opens on this board's settings**, and its Theme row picks one
+  theme for dark and light terminals by default (Tab still picks each
+  separately). The `follow the OS appearance` row is gone: two different themes
+  are what makes the board follow the OS. Notifications is now its own row in
+  Settings.
+- **Remote Control's ticket page lists only the latest note past two;** All
+  opens every note in a sheet. The description has no heading, and a press
+  opens it whole.
+
+### Fixed
+
+- **A permission request stays answerable from the phone until it is
+  answered**, including after the page slept and reconnected. It had lost its
+  buttons after about a minute while the ticket still read needs-you.
+- **A phone adding pictures can no longer make the desk's own picture saves
+  fail.**
+
 ## v0.1.0-alpha.37 — 2026-10-03
 
 ### Added
