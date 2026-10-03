@@ -933,7 +933,11 @@ async function notesFlow(browser, engineName, size, viewport) {
     assert.match(await notes.locator(".notes-description").textContent(), /read well on a phone/);
     assert.equal(await notes.locator("script").count(), 0);
     assert.equal(await notes.getAttribute("data-awake"), "true");
-    assert(await notes.getByRole("button", { name: "Show all" }).isVisible());
+    // No heading and no pen (T-633): the description itself is the press,
+    // faded at the foot because the clamp cut it.
+    assert.equal(await notes.locator("h3").filter({ hasText: "Description" }).count(), 0);
+    assert.equal(await notes.locator("#edit-description").count(), 0);
+    assert.equal(await notes.locator(".notes-description").getAttribute("data-clipped"), "true");
     const row = notes.locator(".note-row").filter({ hasText: "Plan: retry the train" });
     assert.match(await row.textContent(), /agent · 14m/);
     if (size === "phone") {
@@ -1019,13 +1023,19 @@ async function notesFlow(browser, engineName, size, viewport) {
     await fresh.waitFor({ state: "detached" });
     assert.equal(await page.evaluate(() => fixture.notes["ticket-0"].length), 2);
 
-    // The description's own sheet has no delete.
-    await page.locator("#edit-description").click();
+    // A press on the description opens it whole, and its own sheet, from
+    // there, has no delete.
+    await page.locator("#open-description").click();
+    await reader.waitFor();
+    assert.match(await reader.locator(".label").first().textContent(), /Description/);
+    await page.locator("#edit-note").click();
     await sheet.waitFor({ state: "visible" });
     assert.equal(await page.locator("#note-heading").textContent(), "Description · T-0");
     assert.equal(await page.locator("#delete-note").count(), 0);
     await sheet.getByRole("button", { name: "Cancel" }).click();
     await sheet.waitFor({ state: "hidden" });
+    await page.locator("#note-back").click();
+    await notes.waitFor();
 
     // Past two notes the page lists the latest written, and All opens a
     // sheet of every one (T-627); a row there opens the note.

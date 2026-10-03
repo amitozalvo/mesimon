@@ -9,8 +9,6 @@ import { NOTE_MAX_BYTES, ago } from "./notes.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const waitTick = { sending: "clock", local: "clock", relay: "one" };
-// A description longer than this many lines or characters gets Show all.
-const LONG = { lines: 3, chars: 240 };
 // Past this many notes besides the description, the page lists only the
 // latest, and All opens the rest in a sheet (T-627).
 const ROWS = 2;
@@ -32,6 +30,31 @@ function NoteRowButton({ store, ticket, row, pending, latest = false }) {
   </button></li>`;
 }
 
+// The description under the title, with no heading of its own (T-633): the
+// whole of it is one press that opens it in the reader, where Edit is. It
+// fades out at the foot exactly when the clamp hides some of it, measured,
+// since a line count cannot know the width.
+function Description({ body, onOpen }) {
+  const ref = useRef();
+  useLayoutEffect(() => {
+    const box = ref.current;
+    if (!box) return;
+    const measure = () => {
+      box.dataset.clipped = String(box.scrollHeight > box.clientHeight + 1);
+    };
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(box);
+    if (box.firstElementChild) watch.observe(box.firstElementChild);
+    return () => watch.disconnect();
+  });
+  return html`<div class="notes-description" ref=${ref}>
+    <${Markdown} text=${body} />
+    <button id="open-description" type="button" class="notes-description-open" aria-label="Open the description"
+      onClick=${onOpen}></button>
+  </div>`;
+}
+
 export function NotesCard({ store, ticket }) {
   if (!ticket || !store.notesHere) return null;
   const board = store.active.pin.board;
@@ -44,9 +67,9 @@ export function NotesCard({ store, ticket }) {
   const description = rows[0];
   const body = description && store.noteBook().body(ticket.id, description.id);
   const away = !store.live;
-  const asOf = away && entry?.at ? ` · as of ${clock(entry.at)}` : "";
+  const asOf = away && entry?.at ? `as of ${clock(entry.at)}` : "";
   const awake = ticket.agent && ticket.agent.state !== "sleeping";
-  const long = !!body && (body.split("\n").length > LONG.lines || body.length > LONG.chars);
+  const descPending = description && store.noteMail.pending(board, ticket.id, description.id);
   const others = rows.slice(1);
   // Past ROWS, the latest written stays, and any whose own edit is on its
   // way or did not save, so that is never out of sight.
@@ -56,22 +79,15 @@ export function NotesCard({ store, ticket }) {
   const shown = brief ? others.filter((row) => row === latest || pendingOf(row)) : others;
   return html`<section id="notes" class="notes-card" aria-label="Description and notes" data-awake=${String(!!awake)}>
     ${description
-      ? html`<div class="notes-head">
-          <h3 class="label">Description${asOf}</h3>
-          ${writes && html`<button id="edit-description" type="button" class="icon-btn" aria-label="Edit the description"
-            disabled=${body === undefined} onClick=${() => store.editNote(ticket.id, description.id)}>
-            <${Icon} name="pencil" size=${18} /></button>`}
-          <${PendingMark} item=${store.noteMail.pending(board, ticket.id, description.id)} />
-        </div>
+      ? html`${(asOf || descPending) && html`<div class="notes-meta">
+          <span class="label">${asOf}</span><${PendingMark} item=${descPending} />
+        </div>`}
         ${body !== undefined
-          ? html`<div class="notes-description" data-long=${String(long)}><${Markdown} text=${body} /></div>
-            ${long && html`<button type="button" class="btn btn-quiet notes-all"
-              onClick=${() => store.openNote(ticket.id, description.id)}>Show all</button>`}`
+          ? html`<${Description} body=${body} onOpen=${() => store.openNote(ticket.id, description.id)} />`
           : html`<p class="notes-empty">${away ? "Needs your terminal." : "Loading…"}</p>`}`
-      : !count &&
-        html`<div class="notes-head"><h3 class="label">Description</h3></div>
-        ${writes && !fresh.length && html`<button id="add-description" type="button" class="btn btn-quiet notes-add-first"
-          onClick=${() => store.editNote(ticket.id)}><${Icon} name="plus" size=${16} /><span>Add a description</span></button>`}`}
+      : !count && writes && !fresh.length &&
+        html`<button id="add-description" type="button" class="btn btn-quiet notes-add-first"
+          onClick=${() => store.editNote(ticket.id)}><${Icon} name="plus" size=${16} /><span>Add a description</span></button>`}
     ${!description && count > 0 && html`<p class="notes-empty">${count} ${count === 1 ? "note" : "notes"} · ${away ? "needs your terminal" : "loading…"}</p>`}
     ${(others.length > 0 || fresh.length > 0 || (description && writes)) && html`<div class="notes-list">
       <div class="notes-head">

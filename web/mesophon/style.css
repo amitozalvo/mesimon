@@ -1925,31 +1925,52 @@ select {
   flex: 1;
   min-width: 0;
 }
+.notes-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px 0;
+}
+.notes-meta .label {
+  flex: 1;
+  min-width: 0;
+}
+/* The description has no heading (T-633): the whole of it opens the reader.
+   Clamped while an agent works so the output stays on the first screen;
+   longer on an empty seat. Half a line shows past the clamp, under the
+   fade, which is drawn only when the clamp cut something. */
 .notes-description {
-  padding: 0 16px 4px;
+  position: relative;
+  max-height: calc(0.90625rem * 1.5 * 8.5 + 8px);
+  padding: 8px 16px 8px;
   overflow: hidden;
 }
-/* Clamped while an agent works so the output stays on the first screen;
-   longer on an empty seat. Show all opens the whole note. */
-.notes-description[data-long="true"] {
-  max-height: calc(0.90625rem * 1.5 * 8);
-  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
-  mask-image: linear-gradient(to bottom, #000 70%, transparent);
+.notes-card[data-awake="true"] .notes-description {
+  max-height: calc(0.90625rem * 1.5 * 3.5 + 8px);
 }
-.notes-card[data-awake="true"] .notes-description[data-long="true"] {
-  max-height: calc(0.90625rem * 1.5 * 3);
+.notes-description[data-clipped="true"] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5em), transparent);
 }
-.notes-all,
+.notes-description-open {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  border: 0;
+  border-radius: 18px 18px 0 0;
+  background: transparent;
+  cursor: pointer;
+}
+.notes-description-open:active {
+  background: var(--s2);
+  opacity: 0.4;
+}
 .notes-add-first {
   align-self: flex-start;
-  margin: 0 6px;
-  color: var(--ink);
-  font-size: 0.8125rem;
-}
-.notes-add-first {
   gap: 6px;
-  margin-bottom: 4px;
+  margin: 2px 6px;
   color: var(--ink2);
+  font-size: 0.8125rem;
 }
 .notes-add {
   min-height: 44px;
@@ -1957,7 +1978,7 @@ select {
   font-size: 0.8125rem;
 }
 .notes-empty {
-  padding: 0 16px 10px;
+  padding: 10px 16px;
   color: var(--ink3);
   font-size: 0.875rem;
 }

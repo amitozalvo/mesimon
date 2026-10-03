@@ -20632,3 +20632,29 @@ through `claude plugin test` (`mod_plugin`); `hook_settings` pins the mod's roun
 the core's. **Owed:** a CHANGELOG line at the next bump — **Fixed:** a permission request on
 Remote Control stays answerable until it is answered, instead of for 40 seconds, including
 after the phone's page reconnects.
+
+## Remote Control's description has no heading, and opens on a press (T-633, 2026-10-03, "remote control don't render the "description" title")
+
+**Asked.** No "Description" heading over the ticket page's description, no pen beside it; the
+description itself is the press that edits it and opens the bigger view as Show all did; a fade
+says it is cut and there is more.
+
+**Built.** `notepad.js`'s `Description` is the Markdown under the title with one transparent
+button laid over it (`#open-description`, "Open the description"), so the body stays a document
+to a screen reader and the press stays a button. It opens the reader, where **Edit** opens the
+description's sheet: the bigger view first, and editing one press from it, as a note row does.
+`#edit-description` and **Show all** are gone. The clamp now always applies (3½ lines while an
+agent works, 8½ on an empty seat), so half a line shows past it, and the fade at its foot is
+drawn only when `scrollHeight` says the clamp cut something (`data-clipped`, measured in a
+layout effect and on resize), replacing T-532's guess from line and character counts, which
+could not know the width. "As of" and the description's own pending tick, which sat in the
+heading, take a meta row of their own only while there is one to show. A ticket without notes
+shows **Add a description** alone.
+
+**Tests.** The UX notes flow asserts no heading and no pen, `data-clipped` on the clamped
+description, and a press on it opening the reader at Description, whose Edit opens the sheet
+with no Delete. Every UX flow passed in Chromium and WebKit at desktop, tablet and phone, as did
+the state tests; screenshots read by eye at phone and desktop. **Not verified:** a physical
+phone, and the hosted relay, which serves the page and needs its `ship.sh`. **Owed:** a
+CHANGELOG line at the next bump — **Changed:** on Remote Control, a ticket's description sits
+under its title with no heading; press it to read it whole and edit it.
