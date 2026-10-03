@@ -20054,6 +20054,16 @@ build` and the `U` chip → `MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3 -B c
 --offline`) and `deploy/ship.sh all --dry-run` → the author's `deploy/ship.sh all`. The manual
 test script (ten steps on the sandbox, Remote Control included) is the note on T-607.
 
+**Shipped 2026-10-03 19:45** by the author's `deploy/ship.sh all`: the relay first (its `/version`
+reads core `274261b3`, alpha.37), then the tag at `274261b3`, the GitHub release with its six
+assets, mesimon.dev and the tap formula. The notes were rewritten once before the tag on the
+author's review ("release notes leak technical data … the added section is 2nd (usually first)
+… many things can be shorten"): Added before Changed and Fixed, only words a person sees on
+screen, one bold change sentence and at most two more per bullet, 180 lines to 109. The gate ran
+three times in all (`1c7ec6d4`, `8d00d804`, `274261b3`), each about eight minutes, because the
+notes are compiled into the core and a docs commit still moves HEAD; the ship skipped its own
+suite on the stamp. T-614 landed after the tag and belongs to the next release.
+
 ## Machine defaults: the terminal tab, notifications and the OS appearance on (T-612, 2026-10-03, the author's settings review for alpha.37)
 
 The defaults in `impl Default for Prefs` and the loader's fallbacks (a key absent from
