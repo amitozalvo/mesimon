@@ -4585,8 +4585,24 @@ impl Daemon {
         // guesses, and only at High, because `SubagentStop` promotes an
         // inferred idle back to Running as a CORRECTION of a misread rather
         // than as a new turn. A hand may not come down on an inference.
+        // And by the dialog it stood for going away (T-611): an agent that
+        // raised its hand and then asked in its own pane went on working once
+        // the person answered there, and no prompt came to take the mark
+        // down. A dialog's leave into `Running` is the person's doing either
+        // way — the accept's `PostToolUse` (the mod's `ModAnswer` is ingested
+        // as one) or T-447's refusal road, the agent's next own call — and
+        // only High, for the same reason as above. A shell's state is not the
+        // agent's, and a quota or a startup modal is not a person's answer.
+        let dialog_left = matches!(
+            change.from,
+            SessionState::RequiresAction {
+                reason: Reason::Question | Reason::Plan | Reason::Permission | Reason::Elicitation
+            }
+        );
+        let turn_began =
+            matches!(change.from, SessionState::Idle { stop_reason: StopReason::EndTurn });
         if change.confidence == Confidence::High
-            && matches!(change.from, SessionState::Idle { stop_reason: StopReason::EndTurn })
+            && (turn_began || (dialog_left && snapshot.kind.is_agent()))
             && matches!(change.to, SessionState::Running)
         {
             self.lower_hand_on(snapshot.ticket);
@@ -10788,6 +10804,8 @@ impl Daemon {
     /// `UserPromptSubmit` is the road a typed line takes; `apply_change`'s
     /// `Idle{EndTurn}` → `Running` is the road a `!` bash command takes, which
     /// fires no prompt hook at all (T-311, and see T-228 for the measurement).
+    /// The same edge from a held dialog into `Running` is the answer given in
+    /// the pane (T-611): the turn goes on, so no next turn ever starts.
     ///
     /// The daemon cannot tell its own paste's ack from a line the user typed
     /// (the queued ask states the same limit), so a prompt mesimon delivers

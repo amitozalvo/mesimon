@@ -167,6 +167,12 @@ in the Esc menu under `Release notes` and on GitHub.
   writes between tool calls.** Those notes are stored as thinking blocks and
   were skipped, so while a turn ran the preview was one reply behind the
   pane. Private thinking is still never shown.
+- **A raised hand comes down when the question behind it is answered in
+  the agent's pane.** An agent that raised its hand and then asked a
+  question, a plan or a permission kept the mark after the answer until its
+  next prompt; a refused dialog lowers it too. A hand raised with no dialog
+  behind it still stays until you open the ticket or the next prompt
+  arrives.
 
 ## v0.1.0-alpha.36 — 2026-10-01
 

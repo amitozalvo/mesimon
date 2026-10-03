@@ -1,8 +1,9 @@
 //! `raise_hand` (T-107) end to end: an agent asks for a person on its own
 //! ticket through the real shim, the mark lands on the ticket FILE and in the
-//! board's `!N`, the words come back scrubbed and capped, and the three roads
-//! down — the person's `LowerHand`, a prompt reaching the agent, and a turn
-//! that starts with no prompt at all (T-311) — each put it out.
+//! board's `!N`, the words come back scrubbed and capped, and the four roads
+//! down — the person's `LowerHand`, a prompt reaching the agent, a turn that
+//! starts with no prompt at all (T-311), and the dialog the agent asked in
+//! its own pane going away (T-611) — each put it out.
 //!
 //! The point of the file is the LIFETIME. Raising is one call; what makes the
 //! mark worth having is that the `Stop` which ends the turn moments later
@@ -202,4 +203,98 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn
         Response::Err { message } => assert!(message.contains("archived"), "{message}"),
         other => panic!("an archived ticket refuses the ask: {other:?}"),
     }
+}
+
+/// T-611: a hand raised and then asked in the agent's own pane comes down
+/// with the answer there. The turn goes on, so no prompt and no new turn
+/// would ever take it down. Both ways out of a dialog count — the answer's
+/// `PostToolUse` (the mod's `ModAnswer` is ingested as one, and the mod pass
+/// twins every frame) and the refusal road, the agent's next own call
+/// (T-447) — and a tool finishing with no dialog before it does not.
+#[test]
+fn a_raised_hand_comes_down_with_the_dialog_it_stood_for() {
+    use mesimon_core::board::{Reason, SessionState};
+    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+    let Some(h) = Harness::boot("raisedialog", Some(STUB)) else { return };
+    let sock = h.paths.orch_sock();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("raisedialog");
+
+    let ticket = match c.request(Command::CreateTicket {
+        column: "IN PROGRESS".into(),
+        title: "pick a login".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    };
+    let mut shim = Shim::start(&sock, sid);
+    shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
+    shim.notify("notifications/initialized");
+
+    let s = sid.to_string();
+    let state_is = |c: &mut TestClient, want: &SessionState| {
+        c.board().sessions.iter().any(|r| r.id == sid && r.state == *want)
+    };
+    let asking = SessionState::RequiresAction { reason: Reason::Question };
+    let raised = |c: &mut TestClient| c.board().ticket(ticket).unwrap().hand_raised();
+    let question = |request: &str| {
+        json!({
+            "tool_name": "AskUserQuestion",
+            "tool_use_id": request,
+            "tool_input": { "questions": [{
+                "question": "Auth0, or the session cookie?", "header": "Login",
+                "multiSelect": false,
+                "options": [{ "label": "Auth0", "description": "" },
+                            { "label": "cookie", "description": "" }]
+            }]}
+        })
+        .to_string()
+    };
+
+    hook_send(&hook_sock, &s, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    wait_until(Duration::from_secs(6), "running", || state_is(&mut c, &SessionState::Running));
+
+    // ---- a tool finishing mid-turn is not an answer ----------------------
+    shim.call_ok("raise_hand", json!({ "reason": "Auth0, or the session cookie?" }));
+    hook_send(
+        &hook_sock,
+        &s,
+        "PostToolUse",
+        r#"{"tool_name":"Read","tool_use_id":"toolu_r1","tool_response":{}}"#,
+    );
+    // The dialog opening is the sync point: frames are taken in order.
+    hook_send(&hook_sock, &s, "PreToolUse", &question("toolu_q1"));
+    wait_until(Duration::from_secs(6), "the question", || state_is(&mut c, &asking));
+    assert!(raised(&mut c), "neither the plain completion nor the dialog opening answers");
+
+    // ---- the person answers in the pane ----------------------------------
+    hook_send(&hook_sock, &s, "PostToolUse", &question("toolu_q1"));
+    wait_until(Duration::from_secs(6), "the answer lowers the hand", || !raised(&mut c));
+    assert!(state_is(&mut c, &SessionState::Running), "and the turn goes on");
+    assert_eq!(c.board().needs_you_count(), 0);
+
+    // ---- or refuses it: the agent's next own call -------------------------
+    shim.call_ok("raise_hand", json!({ "reason": "which one, then?" }));
+    hook_send(&hook_sock, &s, "PreToolUse", &question("toolu_q2"));
+    wait_until(Duration::from_secs(6), "asking again", || state_is(&mut c, &asking));
+    assert!(raised(&mut c));
+    hook_send(
+        &hook_sock,
+        &s,
+        "PreToolUse",
+        r#"{"tool_name":"Read","tool_use_id":"toolu_r2","tool_input":{}}"#,
+    );
+    wait_until(Duration::from_secs(6), "the refusal lowers the hand", || !raised(&mut c));
+    assert!(state_is(&mut c, &SessionState::Running));
 }

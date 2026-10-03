@@ -20051,3 +20051,25 @@ dot, subtitle, icon, theme and colour on the terminal's detection, but `OSC 9;4`
 terminal, and one that does not draw it (iTerm2 before 3.6.6, others) may post it as an OS
 notification. Turning it on by default needs a detection first. Tests that need the old "off" state
 seed it. `doctor` spells values, not defaults, so it did not change.
+
+## A raised hand comes down with the dialog it stood for (T-611, 2026-10-03, filed by the crown on T-607 from the author's review)
+
+**Seen.** The crown called `raise_hand`, then asked with AskUserQuestion in its own pane. The
+person answered there, the turn went on, and the `!` stayed on the card until the next prompt:
+the hand's roads down were the person's `LowerHand`, `UserPromptSubmit` (and Codex's new turn),
+and T-311's `Idle{EndTurn}` → `Running`, and an answer inside a turn is none of them.
+
+**Shipped.** `apply_change` lowers the hand on one more committed edge: from
+`RequiresAction{Question | Plan | Permission | Elicitation}` into `Running`, at High, for an
+agent's session. That edge is every way a dialog ends in a living turn — the answer's
+`PostToolUse` (the mod's `ModAnswer` `answered` is ingested as one), a permission's accept
+(`ToolCompleted`), and T-447's refusal road (the agent's next own `PreToolUse`) — and the
+1500 ms leave-settle has already passed, so a re-asserted dialog does not drop it. A quota, auth,
+trust or startup modal leaving is not a person answering the agent and keeps the mark. A hand
+raised with no dialog behind it is unchanged: a finished turn is still not an answer. The tool's
+description is unchanged (no room under the 820-byte cap worth spending on it).
+
+**Tests.** `raise_hand_e2e::a_raised_hand_comes_down_with_the_dialog_it_stood_for`: a plain
+`PostToolUse` mid-turn and the question opening leave the hand up; the question's `PostToolUse`
+takes it down with the session `Running`; a second hand comes down on the refusal road. Both
+roads (`MESIMON_TEST_ROAD=mod` twins every frame); it fails with the edge removed.
