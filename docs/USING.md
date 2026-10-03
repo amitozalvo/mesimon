@@ -481,6 +481,13 @@ pictures per draft. Discarding a draft discards its new pictures. Shared boards
 currently synchronize the note text only: a picture absent on another machine is
 reported as unavailable there.
 
+Remote Control takes pictures too: **Picture** in a note's edit sheet picks a photo or a
+screenshot (a desktop browser also takes a pasted one), and it appears as `[Image #N]` with
+a thumbnail. The page saves it as a PNG, its long edge at most 2048 pixels and without the
+photo's location or other metadata, so it is the same picture the board keeps. A note with
+pictures saves only while your terminal is online; one without them still waits at the relay
+as before. The page names a saved picture and does not show it.
+
 ## What your agents can see
 
 An agent session mesimon starts gets the scoped board tools shown by `mesimon doctor --mcp`, so it

@@ -11,6 +11,7 @@ import { Starts, startWaiting } from "./starts.js";
 import { Edits } from "./edits.js";
 import { NoteBook, NoteMail, NOTE_MAX_BYTES, nameOf } from "./notes.js";
 import { showAlert, clearAlerts } from "./awareness.js";
+import { insertToken, linked, nextNumber, picture, pieceOf, unlinked, withoutPicture } from "./pictures.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
 const receiptOps = ["prompt", "send_now", "take_back", "permission", "dialog", "status"];
@@ -936,6 +937,11 @@ export class Store {
   get canWriteNotes() {
     return this.notesHere && (this.collects || (this.live && !!this.connection?.features?.includes("notes")));
   }
+  // Whether a picture can go into a note now (T-629): it goes up over the
+  // live channel, never through the mailbox, to a host that takes it.
+  get canAddPictures() {
+    return this.canWriteNotes && this.live && !!this.connection?.features?.includes("pictures");
+  }
   // The notes of the ticket on screen, asked for again only when the board's
   // digest of them moved; then the body the page shows and does not hold.
   loadNotes() {
@@ -1046,18 +1052,115 @@ export class Store {
       confirmDelete: false,
       description: !!note && rows[0]?.id === note,
       replaces: pending?.id,
+      pictures: [],
+      reading: 0,
+      sending: "",
     };
     this.emit();
   }
   closeNoteSheet() {
     if (!this.noteDraft) return;
+    for (const p of this.noteDraft.pictures || []) p.thumb?.close?.();
     this.noteDraft = undefined;
     this.emit();
   }
   setNoteText(text) {
-    if (!this.noteDraft) return;
+    if (!this.noteDraft || this.noteDraft.sending) return;
     Object.assign(this.noteDraft, { text, error: "", confirmDelete: false });
     this.emit();
+  }
+  // Pictures picked or pasted into the sheet (T-629), each named
+  // `[Image #N]` at `at` in the words (the end without one), as the
+  // desk's editor names one. Answers where the next one would go.
+  async addPictures(files, at) {
+    const draft = this.noteDraft;
+    if (!draft || draft.sending || !this.canAddPictures) return;
+    for (const file of files) {
+      draft.reading += 1;
+      this.emit();
+      let made;
+      try {
+        made = await picture(file);
+      } catch (e) {
+        draft.error = e.message;
+      }
+      draft.reading -= 1;
+      if (this.noteDraft !== draft || draft.sending) {
+        made?.thumb.close?.();
+        return undefined;
+      }
+      if (made) {
+        const n = nextNumber(draft.text, draft.pictures.map((p) => p.n));
+        const placed = insertToken(draft.text, at, n);
+        Object.assign(draft, { text: placed.text, error: "", confirmDelete: false });
+        at = placed.at;
+        draft.pictures.push({ n, ...made });
+      }
+      this.emit();
+    }
+    return at;
+  }
+  removePicture(n) {
+    const draft = this.noteDraft;
+    if (!draft || draft.sending) return;
+    const at = draft.pictures.findIndex((p) => p.n === n);
+    if (at < 0) return;
+    draft.pictures[at].thumb?.close?.();
+    draft.pictures.splice(at, 1);
+    draft.text = withoutPicture(draft.text, n);
+    this.emit();
+  }
+  // One request answered as a promise, for an upload's pieces in turn. A
+  // dropped connection answers nothing, so it rejects the one waiting.
+  ask(body) {
+    return new Promise((resolve, reject) => {
+      const id = this.connection?.request(body, (reply) => {
+        this.asking = undefined;
+        resolve(reply);
+      });
+      if (id === undefined) reject(new Error("the connection dropped"));
+      else this.asking = reject;
+    });
+  }
+  async uploadPicture(draft, bytes) {
+    let upload;
+    let offset = 0;
+    while (offset < bytes.length) {
+      if (this.noteDraft !== draft) throw new Error("cancelled");
+      const { data, end } = pieceOf(bytes, offset);
+      const reply = await this.ask({ op: "upload", ticket: draft.ticket, ...(upload ? { upload } : {}), offset, data,
+        complete: end >= bytes.length });
+      if (reply.result !== "uploaded") throw new Error(reply.message || "the terminal refused it");
+      upload = reply.upload;
+      offset = end;
+    }
+    return upload;
+  }
+  // The pictures the words name go up one by one, then the note that
+  // links them, in one write the host keeps whole or not at all.
+  async savePictured(draft, pictures) {
+    const words = draft.text;
+    const ids = new Map();
+    const fail = (error) => {
+      draft.sending = "";
+      draft.error = error;
+      this.emit();
+    };
+    try {
+      for (const [i, p] of pictures.entries()) {
+        draft.sending = pictures.length > 1 ? `Sending picture ${i + 1} of ${pictures.length}…` : "Sending picture…";
+        this.emit();
+        ids.set(p.n, await this.uploadPicture(draft, p.bytes));
+      }
+    } catch (e) {
+      if (this.noteDraft === draft) fail(`Picture not sent: ${e.message}.`);
+      return;
+    }
+    if (this.noteDraft !== draft) return;
+    const text = linked(words, ids);
+    if (new TextEncoder().encode(text).length > NOTE_MAX_BYTES) return fail("Notes must fit in 32 KiB.");
+    draft.sending = "";
+    this.finishSave(draft, text, [...ids.values()]);
   }
   // Delete asks once more, in place.
   deleteNote() {
@@ -1072,7 +1175,7 @@ export class Store {
   }
   saveNote(deleting = false) {
     const draft = this.noteDraft;
-    if (!draft) return;
+    if (!draft || draft.sending || draft.reading) return;
     const text = deleting ? "" : draft.text;
     const fail = (error) => {
       draft.error = error;
@@ -1081,6 +1184,17 @@ export class Store {
     if (!deleting && !text.trim()) return fail(draft.note ? "Empty. Delete the note instead." : "Nothing to save.");
     if (new TextEncoder().encode(text).length > NOTE_MAX_BYTES) return fail("Notes must fit in 32 KiB.");
     if (!this.canWriteNotes) return fail("Saving needs your terminal.");
+    const held = new Map(draft.pictures.map((p) => [p.n, p]));
+    const pictures = deleting ? [] : unlinked(text).filter((n) => held.has(n)).map((n) => held.get(n));
+    if (pictures.length) {
+      if (!this.canAddPictures) return fail("Pictures need your terminal online.");
+      draft.error = "";
+      return this.savePictured(draft, pictures);
+    }
+    this.finishSave(draft, text);
+  }
+  finishSave(draft, text, uploads = []) {
+    const deleting = !text;
     const error = this.sendNote(draft.board, {
       ticket: draft.ticket,
       key: draft.key,
@@ -1088,8 +1202,13 @@ export class Store {
       name: nameOf(text),
       rev: draft.rev,
       text,
+      uploads,
     });
-    if (error) return fail(error);
+    if (error) {
+      draft.error = error;
+      return this.emit();
+    }
+    for (const p of draft.pictures) p.thumb?.close?.();
     if (draft.replaces) this.noteMail.remove(draft.replaces);
     this.noteDraft = undefined;
     if (deleting && this.reading?.note === draft.note) this.closeNote();
@@ -1098,7 +1217,9 @@ export class Store {
   }
   // Sealed for the mailbox, or over the live channel: an error, or nothing.
   sendNote(board, words) {
-    if (this.collects) {
+    const uploads = words.uploads || [];
+    if (uploads.length && !this.canAddPictures) return "Pictures need your terminal online.";
+    if (this.collects && !uploads.length) {
       let envelope;
       try {
         const body = { kind: "note", ticket: words.ticket, note: words.note, text: words.text, rev: words.rev,
@@ -1116,7 +1237,8 @@ export class Store {
     const c = this.connection;
     const item = this.noteMail.add(board, words);
     const id = c.request(
-      { op: "write_note", ticket: words.ticket, note: words.note, text: words.text, rev: words.rev },
+      { op: "write_note", ticket: words.ticket, note: words.note, text: words.text, rev: words.rev,
+        ...(uploads.length ? { uploads } : {}) },
       noteContext(item),
     );
     if (id === undefined) {
@@ -1169,8 +1291,8 @@ export class Store {
   saveMine(id) {
     const item = this.noteMail.get(id);
     if (item?.status !== "stale" || !this.canWriteNotes) return;
-    const { ticket, key, note, name, text } = item;
-    const error = this.sendNote(item.board, { ticket, key, note, name, text, rev: item.stale.rev });
+    const { ticket, key, note, name, text, uploads } = item;
+    const error = this.sendNote(item.board, { ticket, key, note, name, text, uploads, rev: item.stale.rev });
     if (error) this.say(error);
     else this.noteMail.remove(id);
     this.persistNotes(item.board);
@@ -1433,6 +1555,8 @@ export class Store {
   }
   onLost() {
     this.live = false;
+    this.asking?.(new Error("the connection dropped"));
+    this.asking = undefined;
     this.sessions.lost();
     // Whatever took, the next board says; nothing is sent again.
     this.edits.lost();
@@ -1440,6 +1564,7 @@ export class Store {
   }
   onReply(reply, original, id) {
     if (original?.body.op === "foreground") return;
+    if (typeof original?.context === "function") return original.context(reply);
     if (typeof original?.context === "string" && original.context.startsWith("sent:")) {
       this.onSentReply(original.context.slice("sent:".length), reply);
       return;

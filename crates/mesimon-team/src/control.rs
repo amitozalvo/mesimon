@@ -443,6 +443,40 @@ mod tests {
         assert_eq!(text, r#"{"kind":"error","code":"lapsed"}"#);
         assert!(matches!(serde_json::from_str(&text), Ok(Wire::Error { code }) if code == LAPSED));
     }
+    /// A phone's largest picture piece (T-629), sealed and framed as the
+    /// relay carries it, stays under the frame cap: base64 and then hex
+    /// nearly triple it, which is what `PICTURE_CHUNK_BYTES` was cut for.
+    #[test]
+    fn a_whole_picture_piece_fits_one_frame() {
+        use mesimon_core::mesophon::{Request, PICTURE_CHUNK_BYTES};
+        let host = DeviceKeys::generate();
+        let browser = DeviceKeys::generate();
+        let (_, w) = Channel::host(
+            BoardId::random(),
+            BoardId::random(),
+            ObjectId::random(),
+            browser.public(),
+            &host,
+            serde_json::json!({}),
+            ObjectId::random(),
+        )
+        .unwrap();
+        let (mut b, _) = Channel::client(&w, &browser).unwrap();
+        let request = Request::Upload {
+            ticket: "01JZZZZZZZZZZZZZZZZZZZZZZZ".into(),
+            upload: Some("01JZZZZZZZZZZZZZZZZZZZZZZZ".into()),
+            offset: 9 * 1024 * 1024,
+            data: "A".repeat(PICTURE_CHUNK_BYTES.div_ceil(3) * 4),
+            complete: true,
+        };
+        let command = serde_json::json!({
+            "incarnation": "f".repeat(64), "id": 9_007_199_254_740_000u64, "request": request,
+        });
+        let record = b.seal(&browser, command).unwrap();
+        let frame = Wire::Packet { peer: "p".repeat(64), record };
+        let bytes = serde_json::to_vec(&frame).unwrap().len();
+        assert!(bytes < MAX_BYTES - 16 * 1024, "{bytes} bytes");
+    }
     #[test]
     fn connection_binds_identity_scope_direction_and_sequence() {
         let host = DeviceKeys::generate();

@@ -20394,3 +20394,70 @@ screenshots read by eye at phone and desktop.
 `ship.sh` (`ci/check-relay.sh` holds the release until it does). **Owed:** a CHANGELOG line at
 the next bump — **Changed:** on Remote Control, a ticket with more than two notes lists only
 the latest under its description; All opens every note.
+## Remote Control puts pictures in notes (T-629, 2026-10-03, "remote control accept images in notes")
+
+**Asked.** The title alone. Read as: a phone writing a note can attach a picture, and the
+picture lands where the desk's do (T-402): `attachments/<id>.png` beside the ticket's notes,
+linked `[Image #N](mesimon-attachment:<id>)`, so the links menu, `read_attachment`, duplicate,
+archive and delete treat it as theirs. Viewing a picture on the phone is not in it (below).
+
+**Built: the wire.** A `pictures` feature. `Request::Upload { ticket, upload?, offset, data,
+complete }` is the desk's `UploadAttachment` from a phone, answered `Reply::Uploaded { upload }`;
+`WriteNote` gains `uploads` (`skip_serializing_if` empty), committed through the desk's own
+`save_note_with_attachments`, now taking an owner and a principal, so the pictures are kept
+only once the note that links them is written. Both are authorized `Annotate` on the ticket,
+and a team viewer's copy refuses. The request enum is `deny_unknown_fields`, and a host drops
+a peer on a frame it cannot parse, so the page sends `upload` and `uploads` only to a host
+whose handshake said `pictures`.
+
+**Decided: a piece is 80 KiB** (`mesophon::PICTURE_CHUNK_BYTES`), not the desk's 256 KiB. A
+sealed packet is base64 and then hex, nearly three times the bytes, and the control channel's
+frame is 256 KiB; `control::tests::a_whole_picture_piece_fits_one_frame` seals the largest
+piece and measures it.
+
+**Decided: an upload belongs to the grant, not the connection.** The desk's staging is owned by
+its socket and dies with it; a phone reconnects whenever it sleeps, so `attachments::Owner` is
+`Stream` or `Grant`, and a grant's uploads go by the same ten-minute idle rule, the 50 MiB
+shared cap, or a revoke (`discard_all` in `control_revoke`). A refused pictured write lets its
+uploads go and the page uploads afresh on retry; a stale answer keeps them, so **Save mine**
+can name them again inside the ten minutes.
+
+**Decided: pictures go over the live channel, never the mailbox.** T-532 sends every note edit
+through the relay's mailbox whenever the host collects; a letter is capped at 128 KiB and has
+nowhere to put picture bytes. A note naming an unsent picture saves only while the terminal
+is online ("Pictures need your terminal online."); a note without one is unchanged.
+
+**Decided: the page makes the PNG.** The host keeps PNG only, and a phone's camera gives
+JPEG or HEIC. `pictures.js` decodes the file with `createImageBitmap` (upright, from its EXIF),
+cuts the long edge to 2048 and within 25 megapixels, encodes PNG on a canvas, and shrinks by
+a quarter until it is under 10 MiB. Re-encoding also drops the photo's metadata, location
+included. Upload is at save, as at the desk: the draft holds `[Image #N]` and the bytes, the
+words are linked only once every piece is answered, and Cancel uploads nothing.
+
+**Trap: the relay's CSP is `default-src 'self'`**, so a `blob:` or `data:` thumbnail is
+refused. The sheet draws each picture's small `ImageBitmap` on a `<canvas>`, which no fetch
+directive governs; no relay change.
+
+**Built: the page.** The note sheet's **Picture** (a file input, `accept="image/*"`, several
+at once; a pasted image on a desktop browser too) puts `[Image #N]` at the cursor and a
+thumbnail with a remove button under the words; Save sends the pictures one piece at a time
+("Sending picture 1 of 2…", the words read-only meanwhile), then the write. `Store.ask` answers
+one request as a promise and a lost connection rejects it. The reader names the desk's links:
+`[Image #N](mesimon-attachment:…)` alone on a line is the picture block ("Image #1 · open it
+at your desk"), and inside a line a small chip, where the raw link text showed before.
+
+**Not built: seeing a picture on the phone.** It needs a chunked download (10 MiB against a
+256 KiB frame) and a way to show bytes under that CSP (a canvas again); a ticket of its own.
+
+**Tests.** Core: `WriteNote`'s `uploads` defaults empty. Team:
+`a_whole_picture_piece_fits_one_frame`. Daemon:
+`a_grant_owns_its_uploads_across_reconnects_until_revoked` (another grant or the desk cannot
+add or commit, a prune keeps it, `discard_all`), the two desk upload tests over `Owner`, and
+`attachments_e2e` for the refactored desk save. Page: `pictures.js`'s naming, linking,
+removal, insertion and piece cutting in `state.test.js`, the desk's link in `blocks`; the UX
+suite's notes flow in Chromium and WebKit at desktop, tablet and phone picks two noise PNGs,
+removes one, saves, and asserts the live `write_note` names the one upload, which went up in
+two or more pieces, and the reader names it. **Not verified:** a physical phone's camera, HEIC
+from iOS, and the hosted relay, which serves the page and needs its `ship.sh`. **Owed:** a
+CHANGELOG line at the next bump — **Added:** Remote Control can add pictures to a note;
+they are kept with the ticket like pictures pasted at the desk.

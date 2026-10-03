@@ -1,10 +1,13 @@
 // A small markdown reading for plans and notes: headings, lists, fenced code,
 // code spans and bold become elements whose children are plain text, never
-// HTML. A picture is named, not fetched (T-532). Anything else is a paragraph.
+// HTML. A picture is named, not fetched (T-532): a markdown image, or the
+// desk's `[Image #N](mesimon-attachment:…)` (T-629), alone on its line or
+// inside one. Anything else is a paragraph.
 import { html } from "./html.js";
 import { Icon } from "./icons.js";
 
-const PICTURE = /^!\[[^\]]*\]\([^)]*\)$/;
+const PICTURE = /^!\[[^\]]*\]\([^)]*\)$|^\[Image #\d+\]\(mesimon-attachment:[^)]*\)$/;
+const ATTACHED = /^\[(Image #\d+)\]\(mesimon-attachment:[^)]*\)$/;
 
 export function blocks(text) {
   const out = [];
@@ -32,19 +35,21 @@ export function blocks(text) {
     list = undefined;
     const heading = line.match(/^#{1,6}\s+(.*)$/);
     if (heading) out.push({ heading: heading[1] });
-    else if (PICTURE.test(line.trim())) out.push({ picture: true });
+    else if (PICTURE.test(line.trim())) out.push({ picture: line.trim().match(ATTACHED)?.[1] || "Picture" });
     else if (line.trim()) out.push({ text: line.replace(/^\s*>\s?/, "") });
   }
   return out;
 }
 
 const inline = (text) =>
-  text.split(/(`[^`]+`|\*\*[^*]+\*\*)/).map((part) =>
+  text.split(/(`[^`]+`|\*\*[^*]+\*\*|\[Image #\d+\]\(mesimon-attachment:[^)]*\))/).map((part) =>
     part.length > 2 && part.startsWith("`") && part.endsWith("`")
       ? html`<code>${part.slice(1, -1)}</code>`
       : part.length > 4 && part.startsWith("**") && part.endsWith("**")
         ? html`<strong>${part.slice(2, -2)}</strong>`
-        : part,
+        : ATTACHED.test(part)
+          ? html`<span class="markdown-pic"><${Icon} name="image" size=${14} />${part.match(ATTACHED)[1]}</span>`
+          : part,
   );
 
 export function Markdown({ text }) {
@@ -52,7 +57,7 @@ export function Markdown({ text }) {
     b.code
       ? html`<pre class="markdown-code">${b.lines.join("\n")}</pre>`
       : b.picture
-        ? html`<p class="markdown-picture"><${Icon} name="image" size=${16} /><span>Picture · open it at your desk</span></p>`
+        ? html`<p class="markdown-picture"><${Icon} name="image" size=${16} /><span>${b.picture} · open it at your desk</span></p>`
         : b.heading !== undefined
           ? html`<h4>${inline(b.heading)}</h4>`
           : b.items

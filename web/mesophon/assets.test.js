@@ -73,6 +73,7 @@ test("the deployable browser package contains every referenced file and no test 
       "edits.js",
       "notes.js",
       "notepad.js",
+      "pictures.js",
       "markdown.js",
       "vendor/preact.module.js",
       "vendor/hooks.module.js",

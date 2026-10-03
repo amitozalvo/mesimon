@@ -12,8 +12,38 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use mesimon_core::attachment::{Attachment, CHUNK_BYTES, DRAFT_MAX_BYTES, MAX_BYTES, MAX_PIXELS};
 use ulid::Ulid;
 
+/// Who may add to an upload and commit it: the desk's connection, gone with
+/// its socket, or a paired browser's grant (T-629), which outlives the
+/// browser's reconnects and is let go by the ten-minute idle rule or a revoke.
+#[derive(Clone)]
+pub(crate) enum Owner {
+    Stream(Weak<Mutex<UnixStream>>),
+    Grant(String),
+}
+
+impl Owner {
+    pub fn stream(stream: &Arc<Mutex<UnixStream>>) -> Self {
+        Self::Stream(Arc::downgrade(stream))
+    }
+
+    fn alive(&self) -> bool {
+        match self {
+            Self::Stream(s) => s.strong_count() > 0,
+            Self::Grant(_) => true,
+        }
+    }
+
+    fn is(&self, other: &Owner) -> bool {
+        match (self, other) {
+            (Self::Stream(a), Self::Stream(b)) => a.ptr_eq(b),
+            (Self::Grant(a), Self::Grant(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 struct Upload {
-    owner: Weak<Mutex<UnixStream>>,
+    owner: Owner,
     bytes: Vec<u8>,
     meta: Option<Attachment>,
     touched: Instant,
@@ -24,14 +54,12 @@ pub(crate) struct Uploads(HashMap<Ulid, Upload>);
 
 impl Uploads {
     pub fn prune(&mut self) {
-        self.0.retain(|_, u| {
-            u.owner.strong_count() > 0 && u.touched.elapsed() < Duration::from_secs(600)
-        });
+        self.0.retain(|_, u| u.owner.alive() && u.touched.elapsed() < Duration::from_secs(600));
     }
 
     pub fn chunk(
         &mut self,
-        owner: &Arc<Mutex<UnixStream>>,
+        owner: &Owner,
         id: Option<Ulid>,
         offset: usize,
         data: &str,
@@ -57,7 +85,7 @@ impl Uploads {
                 self.0.insert(
                     id,
                     Upload {
-                        owner: Arc::downgrade(owner),
+                        owner: owner.clone(),
                         bytes: Vec::new(),
                         meta: None,
                         touched: Instant::now(),
@@ -67,10 +95,7 @@ impl Uploads {
             }
         };
         let u = self.0.get_mut(&id).context("attachment upload expired; retry the save")?;
-        anyhow::ensure!(
-            u.owner.ptr_eq(&Arc::downgrade(owner)),
-            "attachment upload belongs to another connection"
-        );
+        anyhow::ensure!(u.owner.is(owner), "attachment upload belongs to another connection");
         anyhow::ensure!(
             u.meta.is_none() && offset == u.bytes.len(),
             "attachment upload offset mismatch"
@@ -92,7 +117,7 @@ impl Uploads {
 
     pub fn prepare(
         &self,
-        owner: &Arc<Mutex<UnixStream>>,
+        owner: &Owner,
         ids: &[Ulid],
         text: &str,
     ) -> Result<Vec<(Attachment, Vec<u8>)>> {
@@ -105,10 +130,7 @@ impl Uploads {
                 "duplicate attachment handle"
             );
             let u = self.0.get(id).context("attachment upload expired; retry the save")?;
-            anyhow::ensure!(
-                u.owner.ptr_eq(&Arc::downgrade(owner)),
-                "attachment upload belongs to another connection"
-            );
+            anyhow::ensure!(u.owner.is(owner), "attachment upload belongs to another connection");
             result.push((
                 u.meta.clone().context("attachment upload is incomplete")?,
                 u.bytes.clone(),
@@ -117,12 +139,17 @@ impl Uploads {
         Ok(result)
     }
 
-    pub fn discard(&mut self, owner: &Arc<Mutex<UnixStream>>, ids: &[Ulid]) {
+    pub fn discard(&mut self, owner: &Owner, ids: &[Ulid]) {
         for id in ids {
-            if self.0.get(id).is_some_and(|u| u.owner.ptr_eq(&Arc::downgrade(owner))) {
+            if self.0.get(id).is_some_and(|u| u.owner.is(owner)) {
                 self.0.remove(id);
             }
         }
+    }
+
+    /// Every upload `owner` holds: a revoked grant's.
+    pub fn discard_all(&mut self, owner: &Owner) {
+        self.0.retain(|_, u| !u.owner.is(owner));
     }
 
     pub fn committed(&mut self, ids: &[Ulid]) {
@@ -260,7 +287,7 @@ mod tests {
         bytes.into_inner()
     }
 
-    fn owner() -> Arc<Mutex<UnixStream>> {
+    fn stream() -> Arc<Mutex<UnixStream>> {
         let (a, _b) = UnixStream::pair().unwrap();
         Arc::new(Mutex::new(a))
     }
@@ -268,14 +295,15 @@ mod tests {
     #[test]
     fn upload_is_ordered_owned_and_validated_before_it_can_be_saved() {
         let mut uploads = Uploads::default();
-        let owner = owner();
+        let stream = stream();
+        let owner = Owner::stream(&stream);
         let bytes = png();
         let id = uploads.chunk(&owner, None, 0, &STANDARD.encode(&bytes[..12]), false).unwrap();
         let text = format!("[Image #1]({})", mesimon_core::attachment::target(id));
         assert!(uploads.prepare(&owner, &[id], &text).is_err());
         assert!(uploads.chunk(&owner, Some(id), 0, "AA==", false).is_err());
-        let (a, _b) = UnixStream::pair().unwrap();
-        let other = Arc::new(Mutex::new(a));
+        let other_stream = self::stream();
+        let other = Owner::stream(&other_stream);
         assert!(uploads.chunk(&other, Some(id), 12, "AA==", false).is_err());
         uploads.discard(&other, &[id]);
         assert!(uploads.0.contains_key(&id));
@@ -292,7 +320,8 @@ mod tests {
     #[test]
     fn malformed_oversized_abandoned_and_expired_uploads_are_bounded() {
         let mut uploads = Uploads::default();
-        let owner = owner();
+        let stream = stream();
+        let owner = Owner::stream(&stream);
         assert!(uploads.chunk(&owner, None, 0, "not base64", true).is_err());
         assert!(uploads.chunk(&owner, None, 0, "AA==", true).is_err());
         assert!(uploads.0.is_empty());
@@ -304,10 +333,32 @@ mod tests {
         uploads.prune();
         assert!(uploads.0.is_empty());
         uploads.chunk(&owner, None, 0, "AA==", false).unwrap();
-        drop(owner);
+        drop(stream);
         uploads.prune();
         assert!(uploads.0.is_empty());
         assert!(validate(Ulid::new(), &vec![0; MAX_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn a_grant_owns_its_uploads_across_reconnects_until_revoked() {
+        let mut uploads = Uploads::default();
+        let phone = Owner::Grant("aa".into());
+        let other = Owner::Grant("bb".into());
+        let desk_stream = stream();
+        let desk = Owner::stream(&desk_stream);
+        let bytes = png();
+        let id = uploads.chunk(&phone, None, 0, &STANDARD.encode(&bytes[..12]), false).unwrap();
+        uploads.prune();
+        assert!(uploads.chunk(&other, Some(id), 12, "AA==", false).is_err());
+        assert!(uploads.chunk(&desk, Some(id), 12, "AA==", false).is_err());
+        uploads.chunk(&phone, Some(id), 12, &STANDARD.encode(&bytes[12..]), true).unwrap();
+        let text = format!("[Image #1]({})", mesimon_core::attachment::target(id));
+        assert!(uploads.prepare(&other, &[id], &text).is_err());
+        assert_eq!(uploads.prepare(&phone, &[id], &text).unwrap().len(), 1);
+        uploads.discard_all(&other);
+        assert!(uploads.0.contains_key(&id));
+        uploads.discard_all(&phone);
+        assert!(uploads.0.is_empty());
     }
 
     #[test]

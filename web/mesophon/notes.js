@@ -124,9 +124,12 @@ export class NoteMail {
   forBoard(board) {
     return this.items.filter((i) => i.board === board).sort((a, b) => a.at - b.at);
   }
-  // `envelope` sealed for the mailbox, or none for the live op.
-  add(board, { ticket, key = "", note, name = "", rev, text }, at = Date.now(), envelope = undefined) {
+  // `envelope` sealed for the mailbox, or none for the live op. `uploads`
+  // are the pictures the host holds for it (T-629), kept in memory only:
+  // the host lets them go ten minutes after, so a reload has none to name.
+  add(board, { ticket, key = "", note, name = "", rev, text, uploads = [] }, at = Date.now(), envelope = undefined) {
     const item = {
+      uploads,
       id: envelope?.id ?? newId(),
       board,
       ticket,

@@ -703,14 +703,43 @@ test("notes read as text: fences, pictures and markers never become markup", asy
     { heading: "Plan" },
     { ordered: false, items: ["one", "two"] },
     { code: true, lines: ["<script>x</script>"] },
-    { picture: true },
+    { picture: "Picture" },
     { text: "quoted <b>" },
+  ]);
+  // The desk's own picture link, alone on a line or inside one (T-629).
+  const id = "01JZZZZZZZZZZZZZZZZZZZZZZZ";
+  assert.deepEqual(blocks(`[Image #2](mesimon-attachment:${id})\nsee [Image #3](mesimon-attachment:${id}) here`), [
+    { picture: "Image #2" },
+    { text: `see [Image #3](mesimon-attachment:${id}) here` },
   ]);
   const { nameOf, ago } = await import("./notes.js");
   assert.equal(nameOf("\n\n## Plan: retry\nmore"), "Plan: retry");
   assert.equal(ago(0), "");
   assert.equal(ago(1000, 1000 + 30_000), "now");
   assert.equal(ago(1000, 1000 + 3 * 3_600_000), "3h");
+});
+test("a note's pictures are named in the draft and linked only once sent", async () => {
+  const { unlinked, nextNumber, linked, withoutPicture, insertToken, pieceOf, PICTURE_CHUNK_BYTES } = await import("./pictures.js");
+  const id = "01JZZZZZZZZZZZZZZZZZZZZZZZ";
+  const text = `Before [Image #1](mesimon-attachment:${id}) then [Image #3] and [Image #2], [Image #3] again.`;
+  assert.deepEqual(unlinked(text), [3, 2]);
+  assert.equal(nextNumber(text), 4);
+  assert.equal(nextNumber("none", [7]), 8);
+  assert.equal(
+    linked(text, new Map([[3, "A"]])),
+    `Before [Image #1](mesimon-attachment:${id}) then [Image #3](mesimon-attachment:A) and [Image #2], [Image #3](mesimon-attachment:A) again.`,
+  );
+  assert.equal(withoutPicture(text, 3), `Before [Image #1](mesimon-attachment:${id}) then and [Image #2], again.`);
+  assert.equal(withoutPicture(text, 1), text, "a sent picture's link stays");
+  assert.deepEqual(insertToken("ab", 1, 4), { text: "a [Image #4] b", at: 13 });
+  assert.deepEqual(insertToken("", undefined, 1), { text: "[Image #1]", at: 10 });
+  assert.deepEqual(insertToken("line\n", 5, 2), { text: "line\n[Image #2]", at: 15 });
+  const bytes = Uint8Array.from({ length: PICTURE_CHUNK_BYTES + 5 }, (_, i) => i % 251);
+  const first = pieceOf(bytes, 0);
+  assert.equal(first.end, PICTURE_CHUNK_BYTES);
+  assert.deepEqual(Uint8Array.from(Buffer.from(first.data, "base64")), bytes.subarray(0, PICTURE_CHUNK_BYTES));
+  const last = pieceOf(bytes, first.end);
+  assert.deepEqual([last.end, Buffer.from(last.data, "base64").length], [bytes.length, 5]);
 });
 test("a remembered board keeps each ticket's note count and digest", () => {
   const board = new BoardState();

@@ -204,9 +204,59 @@ export function NoteReader({ store, ticket }) {
   </article>`;
 }
 
+// A picked picture as the sheet shows it (T-629): its bitmap drawn on a
+// canvas, which the relay's CSP admits where a `blob:` image is refused.
+function Thumb({ bitmap }) {
+  const ref = useRef();
+  useLayoutEffect(() => {
+    const c = ref.current;
+    if (!c || !bitmap) return;
+    c.width = bitmap.width;
+    c.height = bitmap.height;
+    c.getContext("2d").drawImage(bitmap, 0, 0);
+  }, [bitmap]);
+  return html`<canvas ref=${ref} class="note-pic-thumb" aria-hidden="true"></canvas>`;
+}
+
+function Pictures({ store, draft, caret }) {
+  const can = store.canAddPictures;
+  if (!can && !draft.pictures.length) return null;
+  const busy = !!draft.sending;
+  return html`<div class="note-pics">
+    ${draft.pictures.length > 0 && html`<ul class="note-pic-list" aria-label="Pictures">
+      ${draft.pictures.map((p) => html`<li key=${p.n} class="note-pic">
+        <${Thumb} bitmap=${p.thumb} />
+        <span class="note-pic-name">Image #${p.n}</span>
+        <button type="button" class="note-pic-drop" aria-label=${`Remove Image #${p.n}`} disabled=${busy}
+          onClick=${() => store.removePicture(p.n)}><${Icon} name="x" size=${14} /></button>
+      </li>`)}
+    </ul>`}
+    ${can && html`<label class="btn btn-quiet note-pic-add" data-busy=${String(busy || draft.reading > 0)}>
+      <input id="note-picture" type="file" accept="image/*" multiple class="sr-only" disabled=${busy}
+        onChange=${async (e) => {
+          const files = [...e.currentTarget.files];
+          e.currentTarget.value = "";
+          const at = await store.addPictures(files, caret.current);
+          if (at !== undefined) caret.current = at;
+        }} />
+      <${Icon} name="image" size=${17} /><span>${draft.reading > 0 ? "Reading…" : "Picture"}</span></label>`}
+  </div>`;
+}
+
 export function NoteSheet({ store }) {
   const ref = useRef();
+  // Where the person last left the cursor in this draft's words, which a
+  // picked picture goes to; none yet, and it goes at the end.
+  const caret = useRef();
+  const opened = useRef();
   const draft = store.noteDraft;
+  if (opened.current !== draft) {
+    opened.current = draft;
+    caret.current = undefined;
+  }
+  const mark = (e) => {
+    caret.current = e.currentTarget.selectionStart;
+  };
   useLayoutEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
@@ -233,13 +283,25 @@ export function NoteSheet({ store }) {
       <header class="compose-head">
         <button type="button" class="btn btn-quiet" onClick=${() => store.closeNoteSheet()}>Cancel</button>
         <h2 id="note-heading">${heading} · ${draft.key}</h2>
-        <button id="save-note" type="submit" class="btn btn-quiet compose-send-top" disabled=${!draft.text.trim()}>Save</button>
+        <button id="save-note" type="submit" class="btn btn-quiet compose-send-top"
+          disabled=${!draft.text.trim() || !!draft.sending || draft.reading > 0}>Save</button>
       </header>
       <div class="compose-body note-sheet-body">
         ${away && html`<p class="compose-dest"><${Icon} name="moon" size=${16} /><span>Saves when your terminal is back.</span></p>`}
         <label class="field note-field"><span class="sr-only">Note</span><textarea id="note-text" dir="auto" autofocus
+          readOnly=${!!draft.sending} onClick=${mark} onKeyUp=${mark} onSelect=${mark}
           aria-invalid=${String(bytes > NOTE_MAX_BYTES)} placeholder="Markdown works."
-          value=${draft.text} onInput=${(e) => store.setNoteText(e.currentTarget.value)}
+          value=${draft.text} onInput=${(e) => {
+            mark(e);
+            store.setNoteText(e.currentTarget.value);
+          }}
+          onPaste=${async (e) => {
+            const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
+            if (!files.length || !store.canAddPictures) return;
+            e.preventDefault();
+            const at = await store.addPictures(files, e.currentTarget.selectionStart);
+            if (at !== undefined) caret.current = at;
+          }}
           onKeyDown=${(e) => {
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
               e.preventDefault();
@@ -248,6 +310,8 @@ export function NoteSheet({ store }) {
           }}></textarea></label>
       </div>
       <footer class="compose-foot note-sheet-foot">
+        <${Pictures} store=${store} draft=${draft} caret=${caret} />
+        ${draft.sending && html`<p class="note-sending" role="status"><${Tick} state="clock" /><span>${draft.sending}</span></p>`}
         ${draft.error && html`<p class="compose-error" role="alert">${draft.error}</p>`}
         <div class="note-sheet-row">
           ${draft.note && !draft.description

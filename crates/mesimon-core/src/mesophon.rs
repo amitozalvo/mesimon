@@ -162,6 +162,26 @@ pub enum Request {
         text: String,
         #[serde(default)]
         rev: Option<u64>,
+        /// Pictures this browser uploaded for the note (T-629), each linked
+        /// from `text` as the desk links one. They are kept only with it.
+        /// Sent only to a host that says `pictures`: an older one refuses
+        /// the field.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        uploads: Vec<String>,
+    },
+    /// One piece of a picture for a note on `ticket` (T-629), in order: no
+    /// `upload` begins one at offset zero and the answer names it, and
+    /// `complete` ends it, when the host checks it is a whole PNG. `data`
+    /// is base64 of at most `PICTURE_CHUNK_BYTES`. An upload that waits ten
+    /// minutes unsaved is let go.
+    Upload {
+        ticket: String,
+        #[serde(default)]
+        upload: Option<String>,
+        offset: usize,
+        data: String,
+        #[serde(default)]
+        complete: bool,
     },
     /// Point the ticket's awake agent at a note (T-532): the desk's second
     /// `^s`, mesimon's own sentence naming the note.
@@ -507,6 +527,10 @@ pub enum Reply {
         #[serde(default)]
         rev: u64,
     },
+    /// A picture piece was taken (T-629): the upload it belongs to.
+    Uploaded {
+        upload: String,
+    },
     /// The note moved on since the browser opened it (T-532): nothing was
     /// written, and this is the note as it stands.
     NoteStale {
@@ -545,6 +569,11 @@ pub struct Answer {
     pub id: u64,
     pub reply: Reply,
 }
+
+/// The most picture bytes one `Upload` carries (T-629). Sealed, a piece is
+/// base64 and then hex, so 80 KiB is about 214 KiB on the wire, under the
+/// control channel's 256 KiB frame.
+pub const PICTURE_CHUNK_BYTES: usize = 80 * 1024;
 
 fn queue_by_default() -> bool {
     true
@@ -671,12 +700,13 @@ mod tests {
     /// revision, and a field the host does not know is refused.
     #[test]
     fn a_note_write_needs_a_ticket_and_text_and_defaults_the_rest() {
-        let Request::WriteNote { ticket, note, text, rev } =
+        let Request::WriteNote { ticket, note, text, rev, uploads } =
             serde_json::from_str(r#"{"op":"write_note","ticket":"01J","text":"hi"}"#).unwrap()
         else {
             panic!("write_note")
         };
         assert_eq!((ticket.as_str(), note, text.as_str(), rev), ("01J", None, "hi", None));
+        assert!(uploads.is_empty());
         for bad in [
             r#"{"op":"write_note","ticket":"01J"}"#,
             r#"{"op":"write_note","text":"hi"}"#,

@@ -6,6 +6,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 const root = path.dirname(fileURLToPath(import.meta.url));
 // No network at all while set: every request's connection is dropped, as a
 // phone with no signal sees it, service worker's requests included.
@@ -66,6 +67,7 @@ function fixture() {
     incarnation: "incarnation-a",
     prompts: [],
     requests: [],
+    uploads: {},
     creates: [],
     answers: {},
     disposition: "submitted",
@@ -399,6 +401,18 @@ function fixture() {
             state.noteWrites.push(request);
             answer(state.writeNote(request));
           }
+          // The host's upload (T-629): pieces in order, each answered
+          // with the upload it belongs to.
+          if (request.op === "upload") {
+            const id = request.upload || `pic-${Object.keys(state.uploads).length}`;
+            const u = (state.uploads[id] ||= { bytes: 0, pieces: 0, complete: false });
+            if (request.offset !== u.bytes || u.complete)
+              answer({ result: "rejected", message: "attachment upload offset mismatch" });
+            else {
+              Object.assign(u, { bytes: u.bytes + atob(request.data).length, pieces: u.pieces + 1, complete: request.complete });
+              answer({ result: "uploaded", upload: id });
+            }
+          }
           if (request.op === "tell_agent") {
             state.told.push(request);
             answer({ result: "delivery", status: "submitted" });
@@ -427,6 +441,32 @@ function fixture() {
 // predicate returns; `waitForFunction` does not (a pending Promise is
 // truthy), which made every "until it is on disk" wait a no-op (T-497). A
 // poll that throws, or that a reload cut short, is a no for now.
+// A PNG of noise, which no encoder shrinks: a picture several upload
+// pieces long once the page has made it its own PNG again.
+function noisePng(width, height) {
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(zlib.crc32(body), 8 + data.length);
+    return out;
+  };
+  const head = Buffer.alloc(13);
+  head.writeUInt32BE(width, 0);
+  head.writeUInt32BE(height, 4);
+  head.set([8, 2, 0, 0, 0], 8);
+  const rows = Buffer.alloc((width * 3 + 1) * height);
+  let seed = 7;
+  for (let i = 0; i < rows.length; i++) rows[i] = i % (width * 3 + 1) === 0 ? 0 : (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) >>> 24;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", head),
+    chunk("IDAT", zlib.deflateSync(rows)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
 async function until(page, fn, arg, timeout = 30000) {
   const deadline = Date.now() + timeout;
   let last;
@@ -815,7 +855,7 @@ async function notesFlow(browser, engineName, size, viewport) {
         ],
       };
     }
-    window.fixture.features.push("notes");
+    window.fixture.features.push("notes", "pictures");
     window.fixture.stampNotes();
     addEventListener("beforeunload", () => localStorage.setItem("fixture-notes", JSON.stringify(window.fixture.notes)));
   });
@@ -982,6 +1022,55 @@ async function notesFlow(browser, engineName, size, viewport) {
     });
     await page.locator("#all-notes").waitFor({ state: "detached" });
 
+    // A picture in a new note (T-629): picked, named [Image #1] in the
+    // words, shown as a thumbnail; a second one removed again; then sent
+    // in pieces over the live channel ahead of the note that links it.
+    await notes.waitFor();
+    await page.locator("#add-note").click();
+    await sheet.waitFor({ state: "visible" });
+    await page.locator("#note-text").fill("Screenshot of the bug\n\n");
+    const png = noisePng(240, 160);
+    await page.locator("#note-picture").setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: png });
+    await sheet.locator(".note-pic").first().waitFor();
+    assert.match(await page.locator("#note-text").inputValue(), /^Screenshot of the bug\n\n\[Image #1\]$/);
+    await page.locator("#note-picture").setInputFiles({ name: "two.png", mimeType: "image/png", buffer: png });
+    await until(page, () => document.querySelectorAll("#note-sheet .note-pic").length === 2);
+    assert.match(await page.locator("#note-text").inputValue(), /\[Image #1\] \[Image #2\]$/);
+    await shot("notes-picture");
+    await page.getByRole("button", { name: "Remove Image #2" }).click();
+    await until(page, () => document.querySelectorAll("#note-sheet .note-pic").length === 1);
+    assert.doesNotMatch(await page.locator("#note-text").inputValue(), /Image #2/);
+    await page.locator("#save-note").click();
+    await sheet.waitFor({ state: "hidden" });
+    await toast("Saved");
+    const pictured = await page.evaluate(() => fixture.noteWrites.at(-1));
+    assert.deepEqual([pictured.op, pictured.uploads], ["write_note", ["pic-0"]]);
+    assert.match(pictured.text, /\[Image #1\]\(mesimon-attachment:pic-0\)/);
+    const upload = await page.evaluate(() => fixture.uploads["pic-0"]);
+    assert(upload.complete && upload.pieces >= 2, JSON.stringify(upload));
+    assert.equal(Object.keys(await page.evaluate(() => fixture.uploads)).length, 1, "the removed picture never went up");
+    const withPicture = notes.locator(".note-row").filter({ hasText: "Screenshot of the bug" });
+    await withPicture.click();
+    await reader.waitFor();
+    assert.match(await reader.locator(".markdown-picture").textContent(), /Image #1 · open it at your desk/);
+    // Picked before the cursor was ever placed, a picture goes at the end;
+    // Cancel sends nothing.
+    await page.locator("#edit-note").click();
+    await sheet.waitFor({ state: "visible" });
+    await page.locator("#note-picture").setInputFiles({ name: "three.png", mimeType: "image/png", buffer: png });
+    await sheet.locator(".note-pic").first().waitFor();
+    assert.match(await page.locator("#note-text").inputValue(), /\(mesimon-attachment:pic-0\) \[Image #2\]$/);
+    await sheet.getByRole("button", { name: "Cancel" }).click();
+    await sheet.waitFor({ state: "hidden" });
+    assert.equal(Object.keys(await page.evaluate(() => fixture.uploads)).length, 1);
+    await page.locator("#note-back").click();
+    await notes.waitFor();
+    await page.evaluate(() => {
+      fixture.notes["ticket-0"].splice(2);
+      fixture.stampNotes();
+    });
+    await withPicture.waitFor({ state: "detached" });
+
     // A ticket without notes offers a description.
     await open("ticket-4");
     await page.locator("#add-description").waitFor();
@@ -1032,7 +1121,7 @@ async function notesFlow(browser, engineName, size, viewport) {
     const live = await page.evaluate(() => fixture.noteWrites.at(-1));
     assert.deepEqual([live.op, live.note, live.text.includes("Live op.")], ["write_note", "plan-0", true]);
     assert.deepEqual(errors, []);
-    console.log(`${engineName} ${size}: notes read, walked, edited, told, stale, added, deleted, listed, away, kept and live passed`);
+    console.log(`${engineName} ${size}: notes read, walked, edited, told, stale, added, deleted, listed, pictured, away, kept and live passed`);
   } catch (error) {
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-notes-failure.png`) });
     throw error;

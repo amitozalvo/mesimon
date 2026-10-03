@@ -2331,11 +2331,12 @@ impl Daemon {
                 self.set_automation(merge_train, merge_notice, stream)
             }
             Command::DiscardAttachmentUploads { uploads } => {
-                self.uploads.discard(stream, &uploads);
+                self.uploads.discard(&crate::attachments::Owner::stream(stream), &uploads);
                 Response::Ok
             }
             Command::UploadAttachment { upload, offset, data, complete } => {
-                match self.uploads.chunk(stream, upload, offset, &data, complete) {
+                let owner = crate::attachments::Owner::stream(stream);
+                match self.uploads.chunk(&owner, upload, offset, &data, complete) {
                     Ok(upload) => Response::AttachmentUploaded { upload },
                     Err(e) => Response::Err { message: format!("could not upload picture: {e:#}") },
                 }
@@ -2344,7 +2345,8 @@ impl Daemon {
                 self.read_attachment(ticket, attachment)
             }
             Command::SaveNoteWithAttachments { ticket, note, text, uploads } => {
-                self.save_note_with_attachments(stream, ticket, note, text, uploads)
+                let owner = crate::attachments::Owner::stream(stream);
+                self.save_note_with_attachments(&owner, ticket, note, text, uploads, &Principal::Local)
             }
             Command::CreateTicketWithNote {
                 column,
@@ -8095,7 +8097,8 @@ impl Daemon {
         let images = if text.trim().is_empty() {
             Vec::new()
         } else {
-            match self.uploads.prepare(stream, &uploads, &text) {
+            match self.uploads.prepare(&crate::attachments::Owner::stream(stream), &uploads, &text)
+            {
                 Ok(images) => images,
                 Err(e) => {
                     return Response::Err { message: format!("could not save pictures: {e:#}") }

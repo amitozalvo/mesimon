@@ -2019,6 +2019,77 @@ button.note-row:hover {
 .note-bytes[data-over="true"] {
   color: var(--err);
 }
+/* Pictures in a note (T-629): the sheet's thumbnails, drawn on a canvas */
+.note-pics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.note-pic-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.note-pic {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+}
+.note-pic-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  background: var(--s2);
+  object-fit: cover;
+}
+.note-pic-name {
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+}
+.note-pic-drop {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--s1);
+  color: var(--ink2);
+}
+.note-pic-drop::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
+}
+.note-pic-add {
+  min-height: 44px;
+  cursor: pointer;
+}
+.note-pic-add:has(:focus-visible) {
+  outline: 2px solid var(--ink2);
+  outline-offset: 2px;
+}
+.note-pic-add[data-busy="true"] {
+  opacity: 0.6;
+  pointer-events: none;
+}
+.note-sending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink2);
+  font-size: 0.875rem;
+}
 .markdown-code {
   margin: 0;
   overflow-x: auto;
@@ -2030,6 +2101,17 @@ button.note-row:hover {
   font-size: 0.78125rem;
   line-height: 1.5;
   white-space: pre;
+}
+.markdown-pic {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--s2);
+  color: var(--ink3);
+  font-size: 0.8125rem;
+  vertical-align: baseline;
 }
 .markdown-picture {
   display: flex;

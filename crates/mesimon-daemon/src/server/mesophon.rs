@@ -627,6 +627,9 @@ impl Daemon {
                     // A batch or several-choice question answered whole,
                     // `DialogAnswer::Answers` (T-571).
                     "dialog_multi",
+                    // Pictures in notes, `Upload` and `WriteNote`'s
+                    // `uploads` (T-629).
+                    "pictures",
                     // Tickets for an away host wait at the relay (T-497).
                     if self.control.mail { "mailbox" } else { "" },
                 ]
@@ -812,8 +815,16 @@ impl Daemon {
             }
             api::Request::Notes { ticket } => self.control_notes(&by, &ticket),
             api::Request::Note { ticket, note } => self.control_note(&by, &ticket, &note),
-            api::Request::WriteNote { ticket, note, text, rev } => {
-                self.control_write_note(&by, &ticket, note.as_deref(), text, rev)
+            api::Request::WriteNote { ticket, note, text, rev, uploads } => {
+                if uploads.is_empty() {
+                    self.control_write_note(&by, &ticket, note.as_deref(), text, rev)
+                } else {
+                    let pictures = (grant, uploads);
+                    self.control_write_pictured(&by, &ticket, note.as_deref(), text, rev, pictures)
+                }
+            }
+            api::Request::Upload { ticket, upload, offset, data, complete } => {
+                self.control_upload(&by, grant, &ticket, upload.as_deref(), offset, &data, complete)
             }
             api::Request::TellAgent { ticket, note } => {
                 self.control_tell_agent(&by, &ticket, &note)
@@ -2282,6 +2293,122 @@ impl Daemon {
         }
     }
 
+    /// One piece of a picture from a phone (T-629), staged under its grant
+    /// the way the desk's is staged under its connection, so a reconnect
+    /// mid-upload carries on. Asked as the note write it is for.
+    #[allow(clippy::too_many_arguments)]
+    fn control_upload(
+        &mut self,
+        by: &Principal,
+        grant: BoardId,
+        ticket: &str,
+        upload: Option<&str>,
+        offset: usize,
+        data: &str,
+        complete: bool,
+    ) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_note_ticket(ticket) else {
+            return reject("ticket unavailable");
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::Annotate, &Resource::Ticket { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        if data.len() > api::PICTURE_CHUNK_BYTES.div_ceil(3) * 4 {
+            return reject("picture piece too large");
+        }
+        let upload = match upload.map(ulid::Ulid::from_string).transpose() {
+            Ok(upload) => upload,
+            Err(_) => return reject("unknown picture"),
+        };
+        let owner = crate::attachments::Owner::Grant(grant.to_hex());
+        match self.uploads.chunk(&owner, upload, offset, data, complete) {
+            Ok(upload) => Reply::Uploaded { upload: upload.to_string() },
+            Err(e) => reject(&format!("{e:#}")),
+        }
+    }
+
+    /// A note write that links pictures this phone uploaded (T-629): the
+    /// same gates as `control_write_note`, then the desk's own save, which
+    /// keeps the pictures only once the note that links them is written.
+    /// A refusal lets the uploads go, and a retry uploads afresh; a stale
+    /// answer keeps them for Save mine, inside the ten-minute idle rule.
+    fn control_write_pictured(
+        &mut self,
+        by: &Principal,
+        ticket: &str,
+        note: Option<&str>,
+        text: String,
+        rev: Option<u64>,
+        (grant, uploads): (BoardId, Vec<String>),
+    ) -> Reply {
+        let owner = crate::attachments::Owner::Grant(grant.to_hex());
+        let ids: Vec<ulid::Ulid> =
+            uploads.iter().filter_map(|u| ulid::Ulid::from_string(u).ok()).collect();
+        let reply = if ids.len() == uploads.len() {
+            self.control_write_pictured_inner(by, ticket, note, text, rev, &owner, &ids)
+        } else {
+            Reply::Rejected { message: "unknown picture".into() }
+        };
+        if matches!(reply, Reply::Rejected { .. }) {
+            self.uploads.discard(&owner, &ids);
+        }
+        reply
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn control_write_pictured_inner(
+        &mut self,
+        by: &Principal,
+        ticket: &str,
+        note: Option<&str>,
+        text: String,
+        rev: Option<u64>,
+        owner: &crate::attachments::Owner,
+        ids: &[ulid::Ulid],
+    ) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_note_ticket(ticket) else {
+            return reject("ticket unavailable");
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::Annotate, &Resource::Ticket { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        if text.trim().is_empty() {
+            return reject("a note with pictures needs words");
+        }
+        if let Some(message) = mesimon_core::board::note_size_error(&text) {
+            return reject(&message);
+        }
+        let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
+        let note = match note_gate(t, note, false, rev) {
+            Ok(note) => note,
+            Err(gate) => return gate.reply(ticket, |meta| self.control_author(meta)),
+        };
+        let text = mesimon_core::board::sanitize_note(&text);
+        match self.save_note_with_attachments(owner, id, note, text, ids.to_vec(), by) {
+            Response::NoteWritten { note } => {
+                self.feed.board(by.actor(), "mesophon_write_note", Some(id));
+                let rev = note
+                    .and_then(|n| self.board.ticket(id).and_then(|t| t.note(n)))
+                    .map_or(0, |m| m.rev);
+                Reply::NoteWritten { ticket: ticket.into(), note: note.map(|n| n.to_string()), rev }
+            }
+            Response::Err { message } => reject(&message),
+            other => reject(&format!("unexpected note answer: {other:?}")),
+        }
+    }
+
     /// The desk's second `^s` (T-532): mesimon's own sentence, naming the
     /// note, pasted to the ticket's awake agent. A prompt into a session the
     /// phone may already send, so it is authorized as one.
@@ -2805,6 +2932,7 @@ impl Daemon {
         for id in pending {
             self.control_cancel(id);
         }
+        self.uploads.discard_all(&crate::attachments::Owner::Grant(grant.to_hex()));
     }
     fn control_revoke_all(&mut self) {
         self.control.permissions.clear();

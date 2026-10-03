@@ -28,13 +28,16 @@ impl Daemon {
         })
     }
 
+    /// Commit `owner`'s finished uploads and then the note that links them:
+    /// the desk's save, and a paired browser's (T-629) as `by`.
     pub(super) fn save_note_with_attachments(
         &mut self,
-        stream: &Arc<Mutex<UnixStream>>,
+        owner: &attachments::Owner,
         ticket: ulid::Ulid,
         note: Option<ulid::Ulid>,
         text: String,
         uploads: Vec<ulid::Ulid>,
+        by: &Principal,
     ) -> Response {
         let prepared = (|| -> Result<_> {
             let t = self.board.ticket(ticket).ok_or_else(|| anyhow::anyhow!("no such ticket"))?;
@@ -43,7 +46,7 @@ impl Daemon {
                 mesimon_core::board::sanitize_note(&text) == text,
                 "note must fit within its text limit"
             );
-            Ok((t.short_key.clone(), self.uploads.prepare(stream, &uploads, &text)?))
+            Ok((t.short_key.clone(), self.uploads.prepare(owner, &uploads, &text)?))
         })();
         let (key, images) = match prepared {
             Ok(prepared) => prepared,
@@ -57,7 +60,7 @@ impl Daemon {
             }
         }
         if matches!(response, Response::Ok) {
-            response = self.write_note(ticket, note, text, &Principal::Local);
+            response = self.write_note(ticket, note, text, by);
         }
         if matches!(response, Response::NoteWritten { .. }) {
             self.uploads.committed(&uploads);
