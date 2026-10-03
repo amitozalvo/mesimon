@@ -16,6 +16,16 @@
 //! updated itself is probed again before it is trusted. The seam
 //! `MESIMON_CLAUDE_ROAD` (`hooks|mod|auto`) is for the tests: `TestFixture`
 //! sets `hooks` so no stub is ever probed as Claude Code.
+//!
+//! Validating is not loading (T-598): Claude Code 2.1.288 turned mods off by
+//! a remote flag while `claude plugin validate` still passed and the laid mod
+//! still rode `--plugin-dir`, so the probe's third step runs `claude plugin
+//! test` on a one-test folder laid beside the mod ([`LOAD_PROBE`]), which
+//! Claude Code refuses in the flag's words while mods are off. A launch whose
+//! mod never reports is relaunched on the hook set and writes the same
+//! verdict ([`Verdict::ModsOff`]); that verdict expires
+//! ([`Probe::recheck_due`]), so a Claude Code that turns mods back on gets
+//! the mod again with nobody asked.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -53,14 +63,58 @@ pub fn folder(paths: &Paths) -> PathBuf {
     paths.mod_root().join(format!("{}-{}", env!("CARGO_PKG_VERSION"), &digest()[..8]))
 }
 
+/// The load probe (T-598): a mod whose module registers nothing and whose
+/// one test passes. `claude plugin test` on it answers in a third of a
+/// second with no model turn (measured on 2.1.288), and refuses before any
+/// test runs while Claude Code has mods off. Its own folder, so the probe
+/// never runs the real mod's tests, whose clocks a loaded machine can miss.
+pub const LOAD_PROBE: [(&str, &str); 4] = [
+    (
+        ".claude-plugin/plugin.json",
+        "{\n  \"name\": \"mesimon-load-probe\",\n  \"version\": \"1.0.0\",\n  \"description\": \"mesimon's check that this Claude Code loads mods. Registers nothing; never passed to a session.\"\n}\n",
+    ),
+    ("hooks/hooks.json", "{ \"modules\": [\"./load.ts\"] }\n"),
+    (
+        "hooks/load.ts",
+        "// Registers nothing: mesimon's check that this Claude Code loads mods.\nexport const register = (_on: any) => {}\n",
+    ),
+    (
+        "hooks/load.test.ts",
+        "import { expect, test } from 'claude-code/testing'\n\ntest('a mod loads here', () => {\n  expect(true).toBe(true)\n})\n",
+    ),
+];
+
+/// `<state>/mod/load-probe`.
+pub fn load_probe_folder(paths: &Paths) -> PathBuf {
+    paths.mod_root().join("load-probe")
+}
+
+/// The words `claude plugin test` refuses in while mods are off: by the
+/// remote flag ("… in this process: …") or by a setting or a policy
+/// ("… here (disableAllHooks, …)"), measured on 2.1.288.
+const MODS_OFF_WORDS: &str = "hooks modules are turned off";
+
+/// How long a mods-off verdict stands before the probe asks again (T-598).
+/// A daemon start asks at once, and so does a Claude Code that changed.
+pub const MODS_OFF_TTL_MS: u64 = 6 * 60 * 60 * 1000;
+
 /// Lay the mod (dirs 0700, files 0600), writing only what is missing or
 /// differs: the startup lay and the check before each mod launch are the
 /// same call, and the second also repairs a folder something rewrote.
 pub fn lay(paths: &Paths) -> anyhow::Result<PathBuf> {
-    let root = folder(paths);
+    lay_files(paths, &folder(paths), &FILES)
+}
+
+/// Lay the load probe, the same way.
+pub fn lay_load_probe(paths: &Paths) -> anyhow::Result<PathBuf> {
+    lay_files(paths, &load_probe_folder(paths), &LOAD_PROBE)
+}
+
+fn lay_files(paths: &Paths, root: &Path, files: &[(&str, &str)]) -> anyhow::Result<PathBuf> {
+    let root = root.to_path_buf();
     crate::paths::own_private_dir(&paths.mod_root())?;
     crate::paths::own_private_dir(&root)?;
-    for (rel, text) in FILES {
+    for &(rel, text) in files {
         let path = root.join(rel);
         if let Some(dir) = path.parent() {
             if dir != root {
@@ -151,6 +205,14 @@ pub enum Verdict {
     /// New enough, and `claude plugin validate` refused the mod — a Claude
     /// Code update changed the surface under it.
     ValidateFailed { version: String, error: String },
+    /// The mod validates and this Claude Code does not load mods (T-598):
+    /// `claude plugin test` refused in the flag's words, or a launch's mod
+    /// never reported and was relaunched on the hook set. `seen_at` (epoch
+    /// ms) is when; the verdict is asked again after [`MODS_OFF_TTL_MS`].
+    ModsOff { version: String, seen_at: u64 },
+    /// The mod validates and `claude plugin test` failed on the load probe
+    /// in other words: the mod is not proven to load.
+    LoadFailed { version: String, error: String },
     /// The binary could not be run, or ran out of time.
     Failed { error: String },
 }
@@ -164,7 +226,9 @@ impl Verdict {
         match self {
             Verdict::Passed { version }
             | Verdict::TooOld { version }
-            | Verdict::ValidateFailed { version, .. } => Some(version),
+            | Verdict::ValidateFailed { version, .. }
+            | Verdict::ModsOff { version, .. }
+            | Verdict::LoadFailed { version, .. } => Some(version),
             _ => None,
         }
     }
@@ -178,9 +242,30 @@ impl Verdict {
             Verdict::ValidateFailed { version, error } => {
                 format!("claude plugin validate failed on {version}: {error}")
             }
+            Verdict::ModsOff { version, seen_at } => format!(
+                "claude {version}: mods are off in this Claude Code (seen {}); the hook set is used",
+                clock_of(*seen_at)
+            ),
+            Verdict::LoadFailed { version, error } => {
+                format!("claude plugin test failed on {version}: {error}")
+            }
             Verdict::Failed { error } => error.clone(),
         }
     }
+}
+
+/// `HH:MM` local, for a verdict's line (`--:--` where libc cannot say).
+fn clock_of(ms: u64) -> String {
+    // `t`'s type is inferred from `localtime_r`'s parameter and never spelled
+    // (the libc crate deprecates the `time_t` alias on musl).
+    let Ok(t) = (ms / 1000).try_into() else { return "--:--".into() };
+    // SAFETY: `localtime_r` writes only into the zeroed `tm` it is handed,
+    // which lives for the call; nothing is read on a null return.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&t, &mut tm).is_null() } {
+        return "--:--".into();
+    }
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
 }
 
 /// One cached probe: `<state>/mod/probe.json`.
@@ -189,6 +274,24 @@ pub struct Probe {
     pub key: ProbeKey,
     #[serde(flatten)]
     pub verdict: Verdict,
+}
+
+impl Probe {
+    /// Whether this verdict is to be asked again (T-598): a mods-off one
+    /// [`MODS_OFF_TTL_MS`] after it was seen. A verdict about a binary that
+    /// changed since is asked by the key, and every other verdict stands
+    /// until then: it was read off the binary and the mod, which a key
+    /// names.
+    pub fn recheck_due(&self, now_ms: u64) -> bool {
+        match &self.verdict {
+            Verdict::ModsOff { seen_at, .. } => now_ms.saturating_sub(*seen_at) >= MODS_OFF_TTL_MS,
+            _ => false,
+        }
+    }
+
+    pub fn mods_off(&self) -> bool {
+        matches!(self.verdict, Verdict::ModsOff { .. })
+    }
 }
 
 pub fn load_probe(paths: &Paths) -> Option<Probe> {
@@ -208,11 +311,21 @@ pub fn save_probe(paths: &Paths, probe: &Probe) {
 
 const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 const VALIDATE_TIMEOUT: Duration = Duration::from_secs(60);
+const LOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Run the probe. `version` and `validate` are whole command lines, the
-/// launcher included (the pane's environment, as a launch gets it). Runs on a
-/// worker: a cold Claude Code takes seconds to answer.
-pub fn probe(version: &[String], validate: &[String], cwd: &Path) -> Verdict {
+/// Run the probe. `version`, `validate` and `load` (`claude plugin test` on
+/// the load probe) are whole command lines, the launcher included (the
+/// pane's environment, as a launch gets it: an environment that turns
+/// Claude Code's flags service off loads mods, and the probe must see what
+/// the pane will). Runs on a worker: a cold Claude Code takes seconds to
+/// answer. `now_ms` stamps a mods-off verdict.
+pub fn probe(
+    version: &[String],
+    validate: &[String],
+    load: &[String],
+    cwd: &Path,
+    now_ms: u64,
+) -> Verdict {
     let out = match run_bounded(version, cwd, VERSION_TIMEOUT) {
         Ok(out) => out,
         Err(error) => return Verdict::Failed { error },
@@ -226,9 +339,17 @@ pub fn probe(version: &[String], validate: &[String], cwd: &Path) -> Verdict {
         return Verdict::TooOld { version };
     }
     match run_bounded(validate, cwd, VALIDATE_TIMEOUT) {
+        Ok(out) if out.code == Some(0) => {}
+        Ok(out) => return Verdict::ValidateFailed { version, error: first_error(&out) },
+        Err(error) => return Verdict::ValidateFailed { version, error },
+    }
+    match run_bounded(load, cwd, LOAD_TIMEOUT) {
         Ok(out) if out.code == Some(0) => Verdict::Passed { version },
-        Ok(out) => Verdict::ValidateFailed { version, error: first_error(&out) },
-        Err(error) => Verdict::ValidateFailed { version, error },
+        Ok(out) if format!("{}\n{}", out.stdout, out.stderr).contains(MODS_OFF_WORDS) => {
+            Verdict::ModsOff { version, seen_at: now_ms }
+        }
+        Ok(out) => Verdict::LoadFailed { version, error: first_error(&out) },
+        Err(error) => Verdict::LoadFailed { version, error },
     }
 }
 
@@ -315,6 +436,10 @@ pub struct RoadVerdict {
     /// `auto` fell back after a passing probe: say so loudly.
     #[serde(default)]
     pub fallback: bool,
+    /// The fallback is Claude Code's own: it turned mods off (T-598), and
+    /// nothing is asked of the person.
+    #[serde(default)]
+    pub mods_off: bool,
 }
 
 pub fn read_verdict(paths: &Paths) -> Option<RoadVerdict> {
@@ -410,7 +535,9 @@ mod tests {
             "fail",
             "echo 'Validating hooks'; echo '✘ Found 1 error:'; echo '  ❯ modules./x.ts: $ is assigned'; exit 1",
         );
-        let v = |a: &str, b: &str| probe(&[a.to_string()], &[b.to_string()], d);
+        let v = |a: &str, b: &str| {
+            probe(&[a.to_string()], &[b.to_string()], std::slice::from_ref(&pass), d, 7)
+        };
         assert_eq!(v(&new, &pass), Verdict::Passed { version: "2.1.287".into() });
         assert_eq!(v(&old, &pass), Verdict::TooOld { version: "2.1.286".into() });
         assert_eq!(v(&odd, &pass), Verdict::Unreadable { output: "Claude Code".into() });
@@ -422,9 +549,107 @@ mod tests {
             }
         );
         assert!(matches!(
-            probe(&[d.join("missing").display().to_string()], &[pass], d),
+            probe(
+                &[d.join("missing").display().to_string()],
+                std::slice::from_ref(&pass),
+                std::slice::from_ref(&pass),
+                d,
+                7
+            ),
             Verdict::Failed { .. }
         ));
+    }
+
+    /// T-598: validating is not loading. The load probe's refusal, in the
+    /// words 2.1.288 gives while its remote flag has mods off, is a mods-off
+    /// verdict stamped with the probe's clock; any other failure of it is
+    /// not proof the mod loads either.
+    #[test]
+    fn the_probe_proves_the_mod_loads_and_reads_mods_off_from_the_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let new = script(d, "new", "echo '2.1.288 (Claude Code)'");
+        let pass = script(d, "pass", "echo '✔ Validation passed'");
+        let off = script(
+            d,
+            "off",
+            "echo 'claude plugin test: hooks modules are turned off in this process: the rollout switch was saved off by an earlier session and is not refreshed yet.' >&2; exit 1",
+        );
+        let policy = script(
+            d,
+            "policy",
+            "echo 'claude plugin test: hooks modules are turned off here (disableAllHooks, allowManagedHooksOnly or a policy)' >&2; exit 1",
+        );
+        let broken = script(d, "broken", "echo ' 0 pass'; echo ' 1 fail'; exit 1");
+        let v = |load: &str| {
+            probe(
+                std::slice::from_ref(&new),
+                std::slice::from_ref(&pass),
+                &[load.to_string()],
+                d,
+                42,
+            )
+        };
+        assert_eq!(v(&pass), Verdict::Passed { version: "2.1.288".into() });
+        let mods_off = Verdict::ModsOff { version: "2.1.288".into(), seen_at: 42 };
+        assert_eq!(v(&off), mods_off);
+        assert_eq!(v(&policy), mods_off);
+        assert_eq!(
+            v(&broken),
+            Verdict::LoadFailed { version: "2.1.288".into(), error: "0 pass".into() }
+        );
+        assert!(!v(&broken).passed());
+        let line = mods_off.line();
+        assert!(
+            line.starts_with("claude 2.1.288: mods are off in this Claude Code (seen "),
+            "{line}"
+        );
+        assert!(line.ends_with("); the hook set is used"), "{line}");
+    }
+
+    /// T-598: a mods-off verdict is asked again six hours after it was seen;
+    /// a passing one, or one the binary's version settles, is not.
+    #[test]
+    fn a_mods_off_verdict_expires_and_no_other_does() {
+        let key = ProbeKey { path: "/c".into(), mtime_ms: 1, len: 1, digest: digest() };
+        let at = |verdict| Probe { key: key.clone(), verdict };
+        let seen = 1_000_000;
+        let off = at(Verdict::ModsOff { version: "2.1.288".into(), seen_at: seen });
+        assert!(off.mods_off());
+        assert!(!off.recheck_due(seen));
+        assert!(!off.recheck_due(seen + MODS_OFF_TTL_MS - 1));
+        assert!(off.recheck_due(seen + MODS_OFF_TTL_MS));
+        assert!(!off.recheck_due(0), "a clock behind the stamp is not past it");
+        for verdict in [
+            Verdict::Passed { version: "2.1.288".into() },
+            Verdict::TooOld { version: "2.1.286".into() },
+            Verdict::LoadFailed { version: "2.1.288".into(), error: "x".into() },
+        ] {
+            assert!(!at(verdict).recheck_due(seen + 10 * MODS_OFF_TTL_MS));
+        }
+        // It round-trips through the cache file.
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        save_probe(&p, &off);
+        assert_eq!(load_probe(&p), Some(off));
+    }
+
+    #[test]
+    fn the_load_probe_is_laid_beside_the_mod_and_never_inside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        let root = lay_load_probe(&p).unwrap();
+        assert_eq!(root, load_probe_folder(&p));
+        assert!(!root.starts_with(folder(&p)) && !folder(&p).starts_with(&root));
+        assert_eq!(mode(&root), 0o700);
+        for (rel, text) in LOAD_PROBE {
+            assert_eq!(std::fs::read_to_string(root.join(rel)).unwrap(), text);
+            assert_eq!(mode(&root.join(rel)), 0o600, "{rel}");
+        }
+        let manifest: serde_json::Value = serde_json::from_str(LOAD_PROBE[0].1).unwrap();
+        assert_eq!(manifest["name"], "mesimon-load-probe");
+        let hooks: serde_json::Value = serde_json::from_str(LOAD_PROBE[1].1).unwrap();
+        assert_eq!(hooks["modules"][0], "./load.ts");
     }
 
     #[test]

@@ -15,7 +15,7 @@ use common::*;
 
 use std::time::Duration;
 
-use mesimon_core::board::SessionKind;
+use mesimon_core::board::{SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 use mesimon_core::road::Road;
 
@@ -94,6 +94,164 @@ fn a_claude_code_too_old_for_mods_launches_on_the_hook_set() {
     assert_eq!(road_json(&h).unwrap()["road"], "hooks");
     let lines = road_lines(&h);
     assert!(lines.iter().all(|l| l.contains("claude_road:hooks")), "{lines:?}");
+    let rec = launch(&h);
+    assert_eq!(rec.road, Road::Hooks);
+    assert!(!rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
+}
+
+/// A stand-in for a Claude Code whose mods are off (T-598): it answers the
+/// probe as `stub` does (`plugin test` with `test`'s words), and as a
+/// session paints its composer and keeps every line it reads. It loads no
+/// mod, so on the mod road it reports nothing, as 2.1.288 did with its
+/// remote flag off.
+fn silent_stub(test: &str) -> String {
+    format!(
+        "#!/bin/sh\ncase \"$1 $2\" in\n  --version*) echo '2.1.288 (Claude Code)'; exit 0 ;;\n  \
+         'plugin validate') echo '✔ Validation passed'; exit 0 ;;\n  \
+         'plugin test') {test} ;;\nesac\n{COMPOSER}stty -icanon 2>/dev/null\n\
+         while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n"
+    )
+}
+
+const TEST_PASSES: &str = "echo ' 1 pass'; exit 0";
+const TEST_MODS_OFF: &str = "echo 'claude plugin test: hooks modules are turned off in this \
+     process: the rollout switch was saved off by an earlier session and is not refreshed yet.' \
+     >&2; exit 1";
+
+fn feed_has(h: &Harness, cmd: &str) -> bool {
+    std::fs::read_to_string(h.paths.activity_log())
+        .unwrap_or_default()
+        .contains(&format!("\"cmd\":\"{cmd}\""))
+}
+
+fn probe_json(h: &Harness) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(h.paths.state_dir.join("mod/probe.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn ticket_with_brief(c: &mut TestClient, title: &str, brief: &str) -> ulid::Ulid {
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+    assert!(matches!(
+        c.request(Command::WriteNote { ticket, note: None, text: brief.into() }),
+        Response::NoteWritten { .. }
+    ));
+    ticket
+}
+
+fn composed(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
+    match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: true,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    }
+}
+
+fn record(c: &mut TestClient, sid: uuid::Uuid) -> mesimon_core::board::SessionRecord {
+    c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record")
+}
+
+/// T-598: Claude Code 2.1.288 turned mods off by a remote flag that
+/// `claude plugin validate` cannot see. A launch on the mod alone then
+/// reports nothing; under `auto` it is relaunched on the hook set, its words
+/// kept for the new pane, the probe learns that mods are off, and the next
+/// launch takes the hook set at once.
+#[test]
+fn a_mod_launch_that_never_reports_is_relaunched_on_the_hook_set() {
+    let env = [("MESIMON_CLAUDE_ROAD", "auto"), ("MESIMON_MOD_BRIDGE_WAIT_MS", "1500")];
+    let Some(h) = Harness::boot_bare("mod-auto-off", Some(&silent_stub(TEST_PASSES)), &env) else {
+        return;
+    };
+    // The probe passes: this Claude Code's flag is still cached on.
+    wait_until(Duration::from_secs(30), "the startup probe", || {
+        road_json(&h).is_some_and(|v| v["road"] == "mod")
+    });
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("auto-off");
+    let ticket =
+        ticket_with_brief(&mut c, "mods off", "## Brief\n\nmesimon-598-brief arrives once");
+    let sid = composed(&mut c, ticket);
+    let first = record(&mut c, sid);
+    assert_eq!(first.road, Road::Mod);
+    assert!(first.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", first.argv);
+    assert!(!first.argv.iter().any(|a| a == "--settings"), "{:?}", first.argv);
+
+    // No SessionStart and no bridge: the pane shows its composer, so the
+    // relaunch comes a bridge wait after the launch, on the hook set.
+    wait_until(Duration::from_secs(10), "the relaunch on the hook set", || {
+        let rec = record(&mut c, sid);
+        rec.road == Road::Hooks && rec.argv.iter().any(|a| a == "--settings")
+    });
+    let rec = record(&mut c, sid);
+    assert!(!rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
+    assert!(rec.argv.iter().any(|a| a == "--mcp-config"), "{:?}", rec.argv);
+    assert_eq!(rec.state, SessionState::Spawning);
+    assert!(rec.pending_submit, "the words are still owed");
+    wait_until(Duration::from_secs(5), "the feed's two lines", || {
+        feed_has(&h, "claude_road_relaunch") && feed_has(&h, "claude_road_fallback")
+    });
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap_or_default();
+    assert!(journal.contains("relaunched on the hook set"), "{journal}");
+    let probe = probe_json(&h).expect("probe.json");
+    assert_eq!(probe["verdict"], "mods_off", "{probe}");
+    assert_eq!(probe["version"], "2.1.288", "{probe}");
+    let road = road_json(&h).unwrap();
+    assert_eq!(road["road"], "hooks");
+    assert_eq!(road["mods_off"], true, "{road}");
+    assert!(road["probe"].as_str().unwrap().contains("mods are off"), "{road}");
+
+    // The hook set's SessionStart arms the words, which go once.
+    hook_send_with(
+        &hook_sock,
+        &sid.to_string(),
+        "SessionStart",
+        Some("startup"),
+        r#"{"session_id":"x","transcript_path":"/tmp/t-598.jsonl","cwd":"/tmp"}"#,
+    );
+    let got = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
+    wait_until(Duration::from_secs(10), "the brief by paste", || {
+        got().contains("mesimon-598-brief")
+    });
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    assert_eq!(got().matches("mesimon-598-brief").count(), 1, "{}", got());
+
+    // The next launch takes the hook set at once.
+    let other = ticket_with_brief(&mut c, "the next one", "## Brief\n\nmesimon-598-next");
+    let next = composed(&mut c, other);
+    let rec = record(&mut c, next);
+    assert_eq!(rec.road, Road::Hooks);
+    assert!(rec.argv.iter().any(|a| a == "--settings"), "{:?}", rec.argv);
+    let _ = c.request(Command::KillSession { id: sid });
+    let _ = c.request(Command::KillSession { id: next });
+}
+
+/// T-598: the probe's load step. A Claude Code that refuses `claude plugin
+/// test` in the flag's words has mods off, and every launch takes the hook
+/// set from the first.
+#[test]
+fn a_probe_that_finds_mods_off_launches_on_the_hook_set() {
+    let stub = silent_stub(TEST_MODS_OFF);
+    let env = [("MESIMON_CLAUDE_ROAD", "auto")];
+    let Some(h) = Harness::boot_bare("mod-auto-probe-off", Some(&stub), &env) else { return };
+    wait_until(Duration::from_secs(30), "the startup probe's verdict", || {
+        road_json(&h).is_some_and(|v| v["mods_off"] == true)
+    });
+    let v = road_json(&h).unwrap();
+    assert_eq!(v["road"], "hooks");
+    assert!(v["probe"].as_str().unwrap().starts_with("claude 2.1.288: mods are off"), "{v}");
+    assert_eq!(probe_json(&h).unwrap()["verdict"], "mods_off");
     let rec = launch(&h);
     assert_eq!(rec.road, Road::Hooks);
     assert!(!rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);

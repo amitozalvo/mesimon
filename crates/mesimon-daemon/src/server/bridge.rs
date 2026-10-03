@@ -18,9 +18,14 @@
 //! the pane, and a question's answer as an `answer`. Each poll says what the
 //! session's mod speaks (`ModNext::speaks`), so a session still on an older
 //! mod is never sent a kind it would drop, and the paste road stays its road.
+//!
+//! `auto` takes the mod only where the mod is proven to load (T-598): a
+//! launch whose mod never reports is relaunched on the hook set
+//! (`relaunch_silent_mods`), and the probe learns that this Claude Code has
+//! mods off, so the launches after it take the hook set at once.
 
 use super::*;
-use crate::modroad::{self, Probe, RoadVerdict};
+use crate::modroad::{self, Probe, RoadVerdict, Verdict};
 use mesimon_core::road::{
     ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_LOAD_FAILED, MOD_PONG, MOD_SUBMIT,
 };
@@ -73,13 +78,21 @@ pub(super) struct ModRoad {
     waiters: HashMap<uuid::Uuid, Waiter>,
     pings: HashMap<String, Ping>,
     bridges: HashMap<uuid::Uuid, Bridge>,
+    /// The records relaunched on the hook set this daemon life (T-598):
+    /// each once, and each stays on the hook set until the daemon restarts.
+    relaunched: std::collections::HashSet<uuid::Uuid>,
+    /// A mods-off verdict this daemon read at start: asked again once, before
+    /// its six hours are up (T-598).
+    recheck: bool,
 }
 
 impl ModRoad {
     /// At startup: the probe cache. The mod itself is laid the first time a
     /// launch or a probe needs it, so a board on `hooks` writes nothing.
     pub(super) fn start(paths: &Paths) -> Self {
-        ModRoad { probe: modroad::load_probe(paths), ..Default::default() }
+        let probe = modroad::load_probe(paths);
+        let recheck = probe.as_ref().is_some_and(Probe::mods_off);
+        ModRoad { probe, recheck, ..Default::default() }
     }
 }
 
@@ -91,8 +104,14 @@ impl Daemon {
     /// The road this launch takes, and the folder `--plugin-dir` names when
     /// it is the mod. Decided once per launch and stamped on the record in
     /// the same block (`spawn_session`, `resume_session`). Claude only, and
-    /// nothing is laid or probed for a launch the seam sends on `hooks`.
-    pub(super) fn launch_road(&mut self, kind: SessionKind) -> (Road, Option<std::path::PathBuf>) {
+    /// nothing is laid or probed for a launch the seam sends on `hooks`. A
+    /// record relaunched on the hook set this daemon life stays there
+    /// (T-598), whatever a probe has said since.
+    pub(super) fn launch_road(
+        &mut self,
+        kind: SessionKind,
+        session: uuid::Uuid,
+    ) -> (Road, Option<std::path::PathBuf>) {
         if kind != SessionKind::Claude {
             return (Road::Hooks, None);
         }
@@ -102,6 +121,15 @@ impl Daemon {
             RoadPref::Mod => (Road::Mod, None),
             RoadPref::Auto => self.auto_road(),
         };
+        if road == Road::Mod
+            && setting.pref == RoadPref::Auto
+            && self.modroad.relaunched.contains(&session)
+        {
+            road = Road::Hooks;
+            self.journal.line(&format!(
+                "session {session} stays on the hook set: its mod never reported once this daemon life"
+            ));
+        }
         let mut folder = None;
         if road == Road::Mod {
             folder = self.lay_mod();
@@ -116,6 +144,9 @@ impl Daemon {
             probe: probe_line,
             lay_error: self.modroad.lay_error.clone(),
             fallback: false,
+            mods_off: self.modroad.probe.as_ref().is_some_and(Probe::mods_off)
+                && road == Road::Hooks
+                && setting.pref == RoadPref::Auto,
         });
         (road, folder)
     }
@@ -143,16 +174,21 @@ impl Daemon {
     /// `auto`: the mod once a probe of the Claude Code a launch would run
     /// passed for this binary and this mod; `hooks` until then, and a probe
     /// is started. A binary that changed since (Claude Code updates itself)
-    /// is probed again before it is trusted.
+    /// is probed again before it is trusted, and a mods-off verdict is asked
+    /// again when it is due (T-598) while this launch takes the hook set.
     fn auto_road(&mut self) -> (Road, Option<String>) {
         let bin = modroad::claude_binary(self.shell_env.path.as_deref());
         let key = bin.as_deref().and_then(modroad::probe_key);
         let cached = self.modroad.probe.as_ref().filter(|p| Some(&p.key) == key.as_ref());
         if let Some(p) = cached {
-            return (
-                if p.verdict.passed() { Road::Mod } else { Road::Hooks },
-                Some(p.verdict.line()),
-            );
+            let answer =
+                (if p.verdict.passed() { Road::Mod } else { Road::Hooks }, Some(p.verdict.line()));
+            if self.mods_off_due(p) {
+                if let (Some(bin), Some(key)) = (bin, key) {
+                    self.start_road_probe(bin, key);
+                }
+            }
+            return answer;
         }
         let line = match (bin, key) {
             (Some(bin), Some(key)) => {
@@ -175,10 +211,16 @@ impl Daemon {
         let bin = modroad::claude_binary(self.shell_env.path.as_deref());
         let key = bin.as_deref().and_then(modroad::probe_key);
         if let (Some(bin), Some(key)) = (bin, key) {
-            if self.modroad.probe.as_ref().is_none_or(|p| p.key != key) {
+            if self.modroad.probe.as_ref().is_none_or(|p| p.key != key || self.mods_off_due(p)) {
                 self.start_road_probe(bin, key);
             }
         }
+    }
+
+    /// A mods-off verdict to ask again (T-598): one read at this daemon's
+    /// start, or one older than `MODS_OFF_TTL_MS`.
+    fn mods_off_due(&self, probe: &Probe) -> bool {
+        probe.mods_off() && (self.modroad.recheck || probe.recheck_due(now_ms()))
     }
 
     fn start_road_probe(&mut self, bin: std::path::PathBuf, key: modroad::ProbeKey) {
@@ -191,23 +233,41 @@ impl Daemon {
             return;
         }
         let Some(folder) = self.lay_mod() else { return };
+        let load_probe = match modroad::lay_load_probe(&self.paths) {
+            Ok(folder) => folder,
+            Err(e) => {
+                self.journal.line(&format!("the mod's load probe not laid: {e:#}"));
+                return;
+            }
+        };
         let bin = bin.display().to_string();
         let version = self.launch(&[bin.clone(), "--version".into()], &[]);
-        let validate = self
-            .launch(&[bin, "plugin".into(), "validate".into(), folder.display().to_string()], &[]);
+        let validate = self.launch(
+            &[bin.clone(), "plugin".into(), "validate".into(), folder.display().to_string()],
+            &[],
+        );
+        let load = self
+            .launch(&[bin, "plugin".into(), "test".into(), load_probe.display().to_string()], &[]);
         let cwd = self.paths.state_dir.clone();
         let tx = self.tx.clone();
         self.modroad.probing = true;
+        self.modroad.recheck = false;
         std::thread::spawn(move || {
-            let verdict = modroad::probe(&version, &validate, &cwd);
+            let verdict = modroad::probe(&version, &validate, &load, &cwd, now_ms());
             let _ = tx.send(Msg::RoadProbed(Probe { key, verdict }));
         });
     }
 
-    /// A probe came back: cached, said in the feed when it changed what
-    /// `auto` takes, and loudly when a Claude Code that passed before fails.
+    /// A probe came back.
     pub(super) fn on_road_probed(&mut self, probe: Probe) {
         self.modroad.probing = false;
+        self.learn_road(probe);
+    }
+
+    /// A verdict, from a probe or a relaunch: cached, said in the feed when
+    /// it changed what `auto` takes, and loudly when a Claude Code that
+    /// passed before fails.
+    fn learn_road(&mut self, probe: Probe) {
         let had_passed = self.modroad.probe.as_ref().is_some_and(|p| p.verdict.passed());
         let passes = probe.verdict.passed();
         modroad::save_probe(&self.paths, &probe);
@@ -220,6 +280,7 @@ impl Daemon {
             self.feed.board_outcome("automation", &format!("claude_road:{word}"), None, &line);
         }
         let setting = modroad::read_setting();
+        let mods_off = probe.mods_off();
         self.modroad.probe = Some(probe);
         if setting.pref == RoadPref::Auto {
             self.note_road(RoadVerdict {
@@ -229,8 +290,178 @@ impl Daemon {
                 probe: Some(line),
                 lay_error: self.modroad.lay_error.clone(),
                 fallback: had_passed && !passes,
+                mods_off,
             });
         }
+    }
+
+    /// Mod launches that never reported (T-598), relaunched on the hook set.
+    ///
+    /// A launch on the mod alone carries no hook set, so a Claude Code that
+    /// does not load the mod (2.1.288's remote flag turned mods off with
+    /// `claude plugin validate` still passing) leaves a session that reports
+    /// nothing: no attention, no automove, no cost. Under `auto` such a
+    /// launch is judged silent while it is still `spawning` and its mod's
+    /// bridge has not polled from its pane, once its pane shows Claude Code's
+    /// composer a bridge wait or more after the launch: a mod that loads
+    /// brings its bridge up at `session.start`, before the composer paints.
+    /// Never without the composer: a pane held by a startup dialog (a folder
+    /// to trust) has loaded nothing yet, and ending it would take the
+    /// person's dialog and teach the probe a mods-off it never saw; such a
+    /// launch is judged once the person answered. It is ended and relaunched through
+    /// the wake road on the hook set (`--resume` where a conversation exists,
+    /// a fresh start where none does), its launch words kept for the new
+    /// pane's `SessionStart`, and the probe learns that this Claude Code has
+    /// mods off. Once per record per daemon life.
+    ///
+    /// The order against `rescue_silent_mods` (T-577), which arms a silent
+    /// mod launch's words for the paste road at twice the bridge wait: this
+    /// is judged first in the tick, at the bridge wait, and a relaunched
+    /// record is on the hook set, so the rescue never sees it. The rescue
+    /// stays for the `mod` seam, for a launch whose bridge polled and whose
+    /// `SessionStart` still never came, for a pane a dialog held past it
+    /// (its words then wait on the composer, and a relaunch that follows
+    /// takes them back), and for a relaunch that failed.
+    pub(super) fn relaunch_silent_mods(&mut self, now: u64) -> bool {
+        if modroad::read_setting().pref != RoadPref::Auto {
+            return false;
+        }
+        let wait = mod_bridge_wait_ms();
+        let due: Vec<(uuid::Uuid, u64)> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| {
+                r.kind == SessionKind::Claude
+                    && r.frames_by_mod()
+                    && r.state == SessionState::Spawning
+                    && !self.modroad.relaunched.contains(&r.id)
+            })
+            .map(|r| (r.id, now.saturating_sub(r.state_changed_at.unwrap_or(now))))
+            .filter(|(_, age)| *age >= wait)
+            .collect();
+        let mut changed = false;
+        for (id, age) in due {
+            if self.mod_bridged(id) {
+                continue;
+            }
+            if !self.composer_shown(id) {
+                continue;
+            }
+            changed |= self.relaunch_on_hooks(id, age, now);
+        }
+        changed
+    }
+
+    /// Whether a Claude pane shows its composer (`composer::read`).
+    fn composer_shown(&self, id: uuid::Uuid) -> bool {
+        use crate::agents::claude::composer::{self, Composer};
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
+        self.backend
+            .capture_input_screen(&rec.sid16())
+            .is_ok_and(|screen| composer::read(&screen) != Composer::Absent)
+    }
+
+    /// End a silent mod launch and launch it again on the hook set.
+    fn relaunch_on_hooks(&mut self, id: uuid::Uuid, age: u64, now: u64) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
+        let ticket = rec.ticket;
+        let prior = rec.state.clone();
+        let pending_submit = rec.pending_submit;
+        let conversed = rec.transcript_path.is_some() || rec.claude_session_id.is_some();
+        let plan = rec.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan");
+        let reason = format!(
+            "no SessionStart and no bridge from its mod {} s after the launch",
+            age.div_ceil(1000)
+        );
+        self.modroad.relaunched.insert(id);
+        self.journal.line(&format!("session {id}: {reason}; relaunched on the hook set"));
+        // This Claude Code does not load the mod: every later `auto` launch
+        // takes the hook set at once, until a probe says it loads again.
+        if let Some(p) = self.modroad.probe.clone().filter(|p| p.verdict.passed()) {
+            let version = p.verdict.version().unwrap_or_default().to_string();
+            self.learn_road(Probe {
+                key: p.key,
+                verdict: Verdict::ModsOff { version, seen_at: now },
+            });
+        }
+        // The words are the new pane's (a wake drops what the old one owed),
+        // and its own `SessionStart` arms them, on the paste road.
+        let owed = self.owed.remove(&id);
+        self.mod_forget(id);
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.state = SessionState::Sleeping;
+        }
+        match self.resume_session_with_cleanup_ack(id, true, false, plan) {
+            Response::Spawned { fresh, .. } => {
+                match owed {
+                    Some(mut owed) => {
+                        // Words the rescue pasted into the old pane are the
+                        // new pane's to receive.
+                        if owed.parked.is_none() {
+                            owed.parked = owed.sent.take();
+                        }
+                        owed.mod_road = false;
+                        owed.next_press = None;
+                        owed.ready_by = None;
+                        owed.bridge_by = None;
+                        owed.frame = None;
+                        owed.taken = false;
+                        owed.sent = None;
+                        self.owed.insert(id, owed);
+                        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                            rec.pending_submit = pending_submit;
+                        }
+                    }
+                    // A composed spawn types nothing; a plain one typed the
+                    // title for the person to edit, and a fresh pane gets it
+                    // again (typed, never submitted).
+                    None if fresh && !conversed => {
+                        let title = self
+                            .board
+                            .ticket(ticket)
+                            .map(|t| t.title.trim().to_string())
+                            .filter(|t| !t.is_empty());
+                        let sid16 =
+                            self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16());
+                        if let (Some(title), Some(sid16)) = (title, sid16) {
+                            let _ = self.backend.send_text(&sid16, &format!("{title} "));
+                        }
+                    }
+                    None => {}
+                }
+                self.feed.board_outcome(
+                    "automation",
+                    "claude_road_relaunch",
+                    Some(ticket),
+                    &reason,
+                );
+            }
+            other => {
+                // Nothing was relaunched: the launch stands as it was, and
+                // the paste rescue still nets its words.
+                let why = match other {
+                    Response::Err { message } => message,
+                    _ => "its directory is being provisioned".into(),
+                };
+                self.pending_resumes.retain(|p| p.session != id);
+                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    rec.state = prior;
+                }
+                if let Some(owed) = owed {
+                    self.owed.insert(id, owed);
+                }
+                self.journal
+                    .line(&format!("session {id}: the relaunch on the hook set failed: {why}"));
+                self.feed.board_outcome(
+                    "automation",
+                    "claude_road_relaunch_failed",
+                    Some(ticket),
+                    &why,
+                );
+            }
+        }
+        true
     }
 
     /// Write `road.json` for `doctor` when what it would say changed; a

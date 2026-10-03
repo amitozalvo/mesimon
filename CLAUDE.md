@@ -354,6 +354,11 @@ registers the board's tools with `$.tool.register`, serving each through `mesimo
 A registered tool asks no permission in any mode, so the daemon's tier check is the only gate.
 A mod-alone launch with no `SessionStart` twice the bridge wait after its spawn has its words
 armed on the paste road (`rescue_silent_mods`, feed `mod_silent`): no hook set would ever send one.
+**`auto` means the mod only where it is proven to load (T-598):** the probe's third step is
+`claude plugin test` on a one-test folder (`modroad::LOAD_PROBE`), whose refusal is a `ModsOff`
+verdict; and under `auto` a silent mod launch whose bridge never polled is relaunched on the hook
+set first (`relaunch_silent_mods`, feed `claude_road_relaunch`), once per record per daemon life,
+writing `ModsOff` too. `ModsOff` is asked again at the next daemon start and after 6 h.
 The hook set, `mesimon gate` and `mesimon mcp`'s server stay whole for an older Claude Code and
 Codex. The daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`),
 never a push from the writer thread. The mod spells nothing on promise 3's never-list (a unit
@@ -495,6 +500,11 @@ will not show up in our tests until they break something.
 - **`$.prompt.submit` refuses a text that begins with `/`**, leading blanks included ("would run
   a command as the user", 2.1.287): a slash command keeps the paste road on the mod road too
   (`road::is_command`, T-575).
+- **Claude Code's remote flag `tengu_plugin_hooks_modules` turns mods off with nothing local
+  changing** (2.1.288): `claude plugin validate` passes and `--plugin-dir` is taken, and the mod
+  never loads. `claude plugin test` refuses in its words ("hooks modules are turned off"). No
+  local override exists in the public build; `DISABLE_GROWTHBOOK=1` reads every flag's default,
+  this one's on, and is the rig's pin alone (`MESIMON_RIG_NO_FLAGS`). Never write `~/.claude.json`.
 - **A mod's `submit` fires `UserPromptSubmit` as a typed prompt does, but an answer the mod
   returns in a dialog's place fires no `PostToolUse`**: the mod's `ModAnswer` report is that edge.
 - **A mod's `$` call in flight fails with its dispatch when that dispatch is abandoned**
@@ -623,7 +633,8 @@ road, T-575), `MESIMON_CLAUDE_ROAD` (`hooks|mod|auto`, a test seam over the `aut
 sets it, `hooks` unless the test process has `MESIMON_TEST_ROAD=mod`, the mod road's pass that
 wraps every stub with `tests/common/fake_claude_mod.py` and twins every `hook_send`),
 `MESIMON_REQUIRE_CLAUDE` (turns `mod_plugin`'s skip without `claude` into a failure; the release
-sets it).
+sets it; a mods-off refusal stays a named skip), `MESIMON_RIG_NO_FLAGS` (the rig's `--flags-off`:
+every launch gets `DISABLE_GROWTHBOOK=1`; never a user's).
 
 The e2e pattern is an in-process daemon thread + real tmux + the real built binary via
 `env!("CARGO_BIN_EXE_mesimon")`, which is only available in `crates/mesimon/tests/`.

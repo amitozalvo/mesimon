@@ -18,12 +18,16 @@
 #              step is something the rig does itself: `ping` (the mod road,
 #              timed), `restart` (SIGTERM the rig's daemon and start it
 #              again), `restart_old_claude` (the same with MESIMON_CLAUDE_BIN
-#              naming a wrapper that says 2.1.286), `restart_plain` (back to
-#              the Claude Code on PATH), `doctor` (read its claude road line).
+#              naming a wrapper that says 2.1.286), `restart_mods_off` (the
+#              same with a wrapper that starts every session without its
+#              `--plugin-dir`: a Claude Code whose mods are off, T-598),
+#              `restart_plain` (back to the Claude Code on PATH), `doctor`
+#              (read its claude road line).
 #   until      for a crown step: `stops = N` (that many Stop frames from the
 #              worker since the step began) and/or `events = [...]`, then the
 #              worker's card word `state` (working | needs_you | idle |
-#              sleeping).
+#              sleeping). `all = true` waits on every ticket of the test,
+#              `on = "key2"` on that sibling alone.
 #   settle     for a crown step: false where the next step must follow at
 #              once, without waiting for the crown's turn to end (P2).
 #   wake       for a crown step: true where the board will wake the crown
@@ -40,7 +44,10 @@
 #              daemon ingested), mod_alone, claude_road_mod, crown:<cmd>
 #              (a feed line of the crown's), pings, reply:<word> (the
 #              worker's last answer, from its transcript), doctor:<words>,
-#              final:<word>. `mod_alone` (T-577): no hook set, no MCP server
+#              final:<word>, board_fed:<cmd> (a board line about no
+#              ticket since the test began), relaunched:<secs> (T-598: the
+#              test's ticket relaunched on the hook set once, that soon after
+#              its start_agent; a sibling never). `mod_alone` (T-577): no hook set, no MCP server
 #              and no allow rule on argv, and every frame the daemon took for
 #              the session came by the mod; it is a check only where a test's
 #              acceptance names it; every verdict lists the session's lines.
@@ -190,6 +197,34 @@ checks = ["road:hooks", "no_plugin_dir", "started_by_crown", "words:working,idle
   [[test.steps]]
   crown = "R7: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R7 started. When the board wakes you for {key}, end your turn with the single line: R7 seen."
   until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "doctor"
+
+  [[test.steps]]
+  rig = "restart_plain"
+
+[[test]]
+id = "R9"
+title = "R9 · a Claude Code with mods off gets the hook set by itself: do the steps below"
+siblings = ["R9 · the next worker after mods were found off"]
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the rig's daemon restarted with MESIMON_CLAUDE_BIN naming a wrapper that validates the mod and passes the load probe but starts each session without its --plugin-dir, as 2.1.288 did with its remote flag off: the first worker's launch on the mod never reports, is relaunched on the hook set within 25 s (claude_road_relaunch), its brief arrives once and its card follows the turn; the feed has claude_road_fallback; doctor says mods are off; the second worker, started after, takes the hook set at once."
+checks = ["road:hooks", "no_plugin_dir", "started_by_crown", "first_prompt", "prompts:1", "words:working,idle", "hooks:SessionStart,UserPromptSubmit,Stop", "relaunched:25", "board_fed:claude_road_fallback", "doctor:mods are off"]
+
+  [[test.steps]]
+  rig = "restart_mods_off"
+
+  [[test.steps]]
+  crown = "R9: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: R9 started. When the board wakes you for {key}, end your turn with the single line: R9 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "R9: call start_agent for {key2} with workspace worktree, no tier and no plan, then end your turn with the single line: R9 next started. When the board wakes you for {key2}, end your turn with the single line: R9 next seen."
+  until = { stops = 1, state = "idle", on = "key2" }
   wake = true
 
   [[test.steps]]

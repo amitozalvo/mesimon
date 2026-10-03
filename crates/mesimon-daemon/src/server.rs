@@ -1399,6 +1399,10 @@ impl Daemon {
             "--env".into(),
             self.paths.shell_env_file().display().to_string(),
         ];
+        if rig_no_flags() {
+            out.push("--set".into());
+            out.push("DISABLE_GROWTHBOOK=1".into());
+        }
         for (k, v) in vars {
             out.push("--set".into());
             out.push(format!("{k}={v}"));
@@ -2577,6 +2581,7 @@ impl Daemon {
             // is the clock (a paste that never got its ack, a target that
             // went without a state change of its own).
             changed |= stage!("sweep_queue", self.sweep_queue());
+            changed |= stage!("relaunch_silent_mods", self.relaunch_silent_mods(now));
             changed |= stage!("rescue_silent_mods", self.rescue_silent_mods(now));
             changed |= stage!("settle_owed", self.settle_owed(now));
             changed |= stage!("settle_plan_accepts", self.settle_plan_accepts(now));
@@ -11030,7 +11035,7 @@ impl Daemon {
         let id = uuid::Uuid::new_v4();
         // The road (T-574), decided once and stamped below with the argv it
         // shaped.
-        let (road, mod_folder) = self.launch_road(kind);
+        let (road, mod_folder) = self.launch_road(kind, id);
         let spec = if let Some(adapter) = crate::agents::adapter(kind) {
             match adapter.start(
                 &self.launch_context(id, ticket, kind, &cwd, plan, mod_folder),
@@ -12126,7 +12131,7 @@ impl Daemon {
             None
         };
         // A wake re-decides the road (T-574), as it re-reads the tier.
-        let (road, mod_folder) = self.launch_road(rec.kind);
+        let (road, mod_folder) = self.launch_road(rec.kind, rec.id);
         let spec = if startup_retry {
             match adapter.start(
                 &self.launch_context(
@@ -13284,6 +13289,18 @@ fn now_iso() -> String {
 /// `--plugin-dir`, or nothing. Off by default; a spike, not a feature.
 fn mod_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("MESIMON_MOD_DIR").filter(|v| !v.is_empty()).map(std::path::PathBuf::from)
+}
+
+/// The rig's seam (T-598), never a user's: `MESIMON_RIG_NO_FLAGS=1` launches
+/// every command (panes and the road probe alike) with Claude Code's flags
+/// service off, `DISABLE_GROWTHBOOK=1`, so each flag reads its built-in
+/// default. It is the only local pin of `tengu_plugin_hooks_modules`, whose
+/// default is on (measured on 2.1.288: the local override hooks are stubbed
+/// out of the public build), and it pins every other flag to its default
+/// with it. `ci/rig.py --flags-off` sets it, so the rig's acceptance can run
+/// while the remote flag has mods off.
+fn rig_no_flags() -> bool {
+    std::env::var("MESIMON_RIG_NO_FLAGS").as_deref() == Ok("1")
 }
 
 #[cfg(test)]

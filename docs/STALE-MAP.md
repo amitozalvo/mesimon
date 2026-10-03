@@ -19261,3 +19261,70 @@ rig (it needs a paired phone) nor by an e2e (the stand-in engine runs no TypeScr
 acceptance (`mesimon-relay`) was not run. A writer tool in plan mode now runs unasked on the mod
 road; whether the board should refuse writers to a session in plan mode is the author's call and
 is not built.
+
+## `auto` falls back to the hook set when the mod does not load (T-598, 2026-10-03, filed by the crown on T-587 from C's finding on T-581)
+
+**Seen.** Claude Code 2.1.288 switched mods off by a remote flag (`tengu_plugin_hooks_modules`,
+cached in `~/.claude.json`'s `cachedGrowthBookFeatures`): the binary unchanged, `claude plugin
+validate` passing, the laid mod still taken with `--plugin-dir`, and the mod never loaded. Since
+B (T-577) a mod launch carries no hook set, so such a session reported nothing; B's
+`rescue_silent_mods` saved only its words. The flag was back on at 02:40 the same night, which
+is why everything below that needs it off was measured in a scratch `CLAUDE_CONFIG_DIR` whose
+cache says off (nothing under `~/.claude` was written: promise 1).
+
+**Measured on 2.1.288.**
+- `claude plugin test <folder>` checks the flag before any test runs and refuses, exit 1, in
+  0.1 s: `hooks modules are turned off in this process: …` (the remote flag, saved or served) or
+  `… turned off here (disableAllHooks, allowManagedHooksOnly or a policy)`. With mods on, a folder
+  holding one module that registers nothing and one trivial test passes in 0.3 s. No model turn,
+  no network, no sign-in. That is the load probe.
+- The flag's local override hooks (`getEnvironmentOverrides`, `readConfigOverrides`) return
+  nothing in the public build. With GrowthBook off for the process (`DISABLE_GROWTHBOOK=1`, or
+  `DISABLE_TELEMETRY=1`) a flag reads its built-in default, and this one's default is on: `claude
+  plugin test` ran the mod's 13 tests under a cache that said off. It pins every other flag to its
+  default too, so it is not a per-flag pin.
+
+**Decided.**
+1. *The probe proves the mod loads.* After `--version` and `validate`, `claude plugin test` on
+   `<state>/mod/load-probe/` (`modroad::LOAD_PROBE`: its own folder, so the probe never runs the
+   mod's timing-sensitive tests). Exit 0 is `Passed`; the refusal's words are `ModsOff { version,
+   seen_at }`; any other failure is `LoadFailed` (not proven to load, so the hook set).
+2. *A silent mod launch is relaunched, not just rescued.* Under `auto`, a Claude record on the mod
+   alone, still `spawning`, whose bridge has never polled from its pane, is judged silent once its
+   pane shows Claude Code's composer a bridge wait (10 s) or more after the launch. A mod that
+   loads brings its bridge up at `session.start`, before the composer paints, so the composer with
+   no bridge is the sign. The ticket offered "20 s in any case" too; it is not built: a pane held
+   by a startup dialog (a folder to trust) has loaded nothing yet, and ending it at 20 s would take
+   the person's dialog and write a mods-off nobody saw. That launch is judged once the person
+   answered and the composer paints. The record's pane is ended
+   and it is woken through `resume_session` on the hook set (`--resume` where a conversation
+   exists, a fresh start where none does, `--permission-mode plan` kept), its owed launch words
+   put back on the paste road for the new pane's `SessionStart`, a plain spawn's typed title typed
+   again. Feed `claude_road_relaunch` (the ticket, with the reason) and a journal line. Once per
+   record per daemon life: a relaunched record takes the hook set at every later launch until the
+   daemon restarts, and the journal says so.
+3. *The order against B's rescue.* `relaunch_silent_mods` runs before `rescue_silent_mods` in each
+   tick and judges at the bridge wait, the rescue at twice it; a relaunched record is on the hook
+   set, so the rescue never sees it. The rescue stays for the `mod` seam, for a launch whose bridge
+   polled and whose `SessionStart` still never came, for a pane a dialog held past 20 s (its words
+   wait on the composer; a relaunch that follows takes them back, from `sent` if the rescue's paste
+   went first), and for a relaunch that failed (the record is put back as it was).
+4. *The relaunch teaches the probe.* It writes `ModsOff` over the passing verdict for the binary's
+   key, so the feed says `claude_road_fallback` and every later `auto` launch takes the hook set
+   with no wait; `road.json` carries `mods_off`.
+5. *The verdict expires.* `ModsOff` is asked again by the load probe at the next daemon start
+   (`ModRoad::recheck`) and once it is 6 h old (`MODS_OFF_TTL_MS`), at the shell environment's
+   capture or at the next launch, which takes the hook set meanwhile; a binary whose stamp changed
+   is probed by its key as before. If the probe passes while sessions still do not load, the next
+   launch is relaunched once again: one 10–20 s delay per 6 h at most.
+6. *`doctor`* reads `hooks ∙ claude 2.1.288: mods are off in this Claude Code (seen 02:00); the
+   hook set is used`, level ok, advice "Nothing is needed from you …".
+7. *`mod_plugin`* runs validate always; while mods are off its test half says `SKIPPED:` with
+   Claude Code's refusal, `MESIMON_REQUIRE_CLAUDE=1` included (the release prints it with
+   `--nocapture`); a missing `claude` is still a failure there. It also runs the load probe.
+8. *The rig.* `--flags-off` starts the rig's daemon with `MESIMON_RIG_NO_FLAGS=1`, which adds
+   `DISABLE_GROWTHBOOK=1` to every launch (panes and the probe): the acceptance can run while the
+   remote flag is off, with every flag at its default. The rig's alone; nothing sets it for a
+   user. R9 stands in for the flag whatever it says today: `restart_mods_off` names a wrapper
+   that runs the real Claude Code for `--version` and `plugin`, and starts a session without its
+   `--plugin-dir`.

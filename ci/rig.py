@@ -13,6 +13,14 @@ real Claude Code on the mod road, one test at a time, through its own crown.
     python3 -B ci/rig.py --reset    park and archive the rig's tickets, stop its
                                     daemon and its private tmux
     --no-build                      skip `cargo build -p mesimon`
+    --flags-off                     the rig's daemon launches every Claude Code
+                                    with its flags service off (the seam
+                                    MESIMON_RIG_NO_FLAGS=1, which sets
+                                    DISABLE_GROWTHBOOK=1), so each flag reads
+                                    its built-in default: the run's acceptance
+                                    while Claude Code's remote flag has mods
+                                    off (T-598). Every other flag is pinned to
+                                    its default with it. The rig's alone.
 
 Watch it with the command it prints: `cd <worktree> && target/debug/mesimon`.
 
@@ -301,6 +309,8 @@ class Rig:
         self.claude_version = None
         self.build = None
         self.branch = None
+        # The rig's seams on every start of its daemon (`--flags-off`).
+        self.seams = {"MESIMON_RIG_NO_FLAGS": "1"} if getattr(args, "flags_off", False) else {}
 
     # ---- the daemon
 
@@ -323,7 +333,7 @@ class Rig:
     def start_daemon(self, extra_env=None):
         os.makedirs(self.paths.state_dir, mode=0o700, exist_ok=True)
         log = open(self.paths.daemon_log, "ab")
-        env = terminal_env({"MESIMON_DETACHED": "1", **(extra_env or {})})
+        env = terminal_env({"MESIMON_DETACHED": "1", **self.seams, **(extra_env or {})})
         subprocess.Popen(
             [self.bin, "daemon", "--repo", self.repo],
             stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env,
@@ -363,10 +373,13 @@ class Rig:
             same = stamp.get("len") == st.st_size and abs(
                 stamp.get("mtime_ms", 0) - st.st_mtime_ns // 1_000_000
             ) <= 1
-            if same:
+            env = self.env_of(hello["daemon_pid"])
+            seamed = all(f"{k}={v}" in env for k, v in self.seams.items())
+            if same and seamed:
                 say(f"  found the rig's daemon: pid {hello['daemon_pid']}, this build")
                 return
-            say(f"  the rig's daemon (pid {hello['daemon_pid']}) runs another build: restarting it")
+            why = "another build" if not same else "without --flags-off's seam"
+            say(f"  the rig's daemon (pid {hello['daemon_pid']}) runs {why}: restarting it")
             self.stop_daemon()
         self.start_daemon()
 
@@ -379,7 +392,8 @@ class Rig:
         for attempt in range(1, 11):
             self.stop_daemon()
             hello = self.start_daemon(extra_env)
-            if all(f"{k}={v}" in self.env_of(hello["daemon_pid"]) for k, v in (extra_env or {}).items()):
+            want = {**self.seams, **(extra_env or {})}
+            if all(f"{k}={v}" in self.env_of(hello["daemon_pid"]) for k, v in want.items()):
                 break
             say(f"  pid {hello['daemon_pid']} lacks the rig's seam: another client respawned "
                 f"it first; again ({attempt}/10)")
@@ -801,6 +815,10 @@ Reply with the single word ready and end your turn."""
         self.restarted = False
         until = step.get("until", {})
         tickets = [t for t, _, _ in self.test_tickets(test)] if until.get("all") else [test["ticket"]]
+        if until.get("on"):
+            # One sibling's turn (R9's second worker): `on` names its key.
+            on = self.keys_of(test)[until["on"]]
+            tickets = [t for t, k, _ in self.test_tickets(test) if k == on]
 
         def one_done(tid):
             rec = self.agent_of(self.board(), tid)
@@ -954,6 +972,30 @@ Reply with the single word ready and end your turn."""
             self.restarted = True
             if not ok:
                 record["failures"].append("the daemon never came up with the old Claude Code")
+            return ok
+        if what == "restart_mods_off":
+            # R9 (T-598): a Claude Code whose mods are off. It runs the real
+            # one, which validates the mod and passes the load probe, and
+            # starts a session with no `--plugin-dir`, so the mod never
+            # loads: what 2.1.288's remote flag did to the mod road, whether
+            # or not that flag is off today.
+            wrapper = os.path.join(self.out, "claude-mods-off")
+            with open(wrapper, "w") as f:
+                f.write("#!/bin/sh\n# The rig's R9 (T-598): a Claude Code whose mods are off.\n"
+                        'case "$1" in --version|plugin) exec "' + self.claude + '" "$@" ;; esac\n'
+                        "skip=0\n"
+                        "for a do\n"
+                        "  shift\n"
+                        '  if [ "$skip" = 1 ]; then skip=0; continue; fi\n'
+                        '  if [ "$a" = "--plugin-dir" ]; then skip=1; continue; fi\n'
+                        '  set -- "$@" "$a"\n'
+                        "done\n"
+                        f'exec "{self.claude}" "$@"\n')
+            os.chmod(wrapper, 0o755)
+            ok = self.restart({"MESIMON_CLAUDE_BIN": wrapper}, want_probe="the mod validated")
+            self.restarted = True
+            if not ok:
+                record["failures"].append("the daemon never came up on the mods-off Claude Code")
             return ok
         if what == "restart_plain":
             ok = self.restart(want_probe="the mod validated")
@@ -1151,6 +1193,28 @@ Reply with the single word ready and end your turn."""
                 check(c, arg in crown_cmds, f"{arg}×{crown_cmds.count(arg)}")
             elif name == "fed":
                 check(c, arg in fed, f"{arg}×{fed.count(arg)}")
+            elif name == "board_fed":
+                # A board line about no ticket (the road's verdict), since
+                # the test began.
+                said = [l for l in lines if l.get("kind") == "board" and l.get("cmd") == arg]
+                check(c, said, f"{arg}: {said[-1].get('outcome')}" if said else f"no {arg} line")
+            elif name == "relaunched":
+                # T-598: the test's own ticket was relaunched on the hook set
+                # once, within `arg` seconds of the crown's start_agent; a
+                # sibling started after it took the hook set at once and was
+                # never relaunched.
+                again = [l for l in lines if l.get("cmd") == "claude_road_relaunch"
+                         and l.get("ticket") == tid]
+                started = next((l["at_ms"] for l in lines if l.get("cmd") == "start_agent"
+                                and l.get("ticket") == tid and l.get("actor") == "agent"), None)
+                if tid == test["ticket"]:
+                    secs = (again[0]["at_ms"] - started) / 1000 if again and started else None
+                    ok = len(again) == 1 and secs is not None and secs <= float(arg)
+                    check(c, ok, f"relaunched {len(again)}× , {secs:.1f} s after start_agent"
+                          if secs is not None else f"relaunched {len(again)}×; start_agent at {started}")
+                else:
+                    check(c, not again, "never relaunched: the hook set at once"
+                          if not again else f"relaunched {len(again)}×")
             elif name == "not_fed":
                 check(c, arg not in fed, f"{arg}×{fed.count(arg)}")
             elif name == "mod_report":
@@ -1396,6 +1460,8 @@ def main():
                     help="only the tests the last run's verdicts.md lists as FAIL")
     ap.add_argument("--reset", action="store_true", help="park and archive everything, stop the daemon and tmux")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--flags-off", action="store_true",
+                    help="Claude Code's flags service off for the rig's sessions (T-598's seam)")
     args = ap.parse_args()
 
     repo = git(os.getcwd(), "rev-parse", "--show-toplevel") or git(HERE, "rev-parse", "--show-toplevel")

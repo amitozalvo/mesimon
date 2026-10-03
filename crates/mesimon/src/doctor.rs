@@ -703,7 +703,7 @@ fn crown_archives(on: bool) -> Record {
 /// (T-588), and since T-577 the mod carries a session alone.
 fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
     use mesimon_daemon::modroad::{read_verdict, Source};
-    let advice = "mesimon loads its mod where Claude Code is 2.1.287 or newer and `claude plugin validate` passes on it: the mod reports the session's events, refuses writes to the board's files and serves the board's tools. Below that, the hook set and the MCP server mesimon generates. Each launch decides; `mesimon state ping <KEY>` times one session's mod.";
+    let advice = "mesimon loads its mod where Claude Code is 2.1.287 or newer, `claude plugin validate` passes on it and Claude Code loads mods: the mod reports the session's events, refuses writes to the board's files and serves the board's tools. Below that, the hook set and the MCP server mesimon generates. Each launch decides; `mesimon state ping <KEY>` times one session's mod.";
     let Some(v) = read_verdict(paths) else {
         return rec(Level::Note, "claude road", "auto ∙ no Claude launch yet").advice(advice);
     };
@@ -718,9 +718,17 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
         return rec(Level::Warn, "claude road", value)
             .advice(format!("The mod could not be laid, so launches take the hook set: {e}"));
     }
+    // Claude Code turning mods off (T-598) is its own call and costs the
+    // board nothing: the hook set carries every session as it did before
+    // 2.1.287, and the probe asks again by itself.
+    if v.mods_off {
+        return rec(Level::Ok, "claude road", value).advice(format!(
+            "Nothing is needed from you: Claude Code has mods turned off, so launches take the hook set, which reports and serves the board as before. mesimon asks again at its next start and every 6 hours, and takes the mod once Claude Code loads it. {advice}"
+        ));
+    }
     let level = if v.fallback { Level::Warn } else { Level::Ok };
     let advice = if v.fallback {
-        format!("The mod stopped validating after a Claude Code update, so launches take the hook set. {advice}")
+        format!("The mod stopped passing its checks after a Claude Code update (`claude plugin validate`, or `claude plugin test` on the load probe), so launches take the hook set. {advice}")
     } else {
         advice.into()
     };
@@ -1203,6 +1211,7 @@ mod tests {
                 probe: probe.map(Into::into),
                 lay_error: None,
                 fallback: false,
+                mods_off: false,
             };
             write_verdict(&paths, &verdict);
             super::claude_road(&paths).value
@@ -1229,6 +1238,27 @@ mod tests {
             line(Road::Hooks, "hooks", Source::Seam, None),
             "hooks ∙ MESIMON_CLAUDE_ROAD=hooks"
         );
+        // T-598: Claude Code turned mods off. The line says so in the
+        // verdict's words, and the advice asks nothing of the person.
+        let off =
+            "claude 2.1.288: mods are off in this Claude Code (seen 02:00); the hook set is used";
+        write_verdict(
+            &paths,
+            &RoadVerdict {
+                road: Road::Hooks,
+                setting: "auto".into(),
+                source: auto,
+                probe: Some(off.into()),
+                lay_error: None,
+                fallback: true,
+                mods_off: true,
+            },
+        );
+        let r = super::claude_road(&paths);
+        assert_eq!(r.value, format!("hooks ∙ {off}"));
+        assert!(matches!(r.level, super::Level::Ok), "nothing to fix");
+        let advice = r.advice.unwrap_or_default();
+        assert!(advice.starts_with("Nothing is needed from you"), "{advice}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

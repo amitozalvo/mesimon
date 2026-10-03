@@ -190,8 +190,9 @@ step "the mod against this machine's Claude Code"
 # `claude plugin validate` and `claude plugin test` on the mod exactly as the
 # daemon lays it (T-574). Elsewhere the test says SKIPPED without `claude`;
 # a release is cut where it exists, so here a skip is a failure. Seconds,
-# and no model is asked anything.
-MESIMON_REQUIRE_CLAUDE=1 cargo test -p mesimon --test mod_plugin
+# and no model is asked anything. While Claude Code has mods turned off
+# (T-598) the test half says SKIPPED with Claude Code's words, shown here.
+MESIMON_REQUIRE_CLAUDE=1 cargo test -p mesimon --test mod_plugin -- --nocapture
 
 step "tests on Linux (Docker, the distro's own tmux)"
 # The same suite on the platform the Linux artifacts are for, driven by the
