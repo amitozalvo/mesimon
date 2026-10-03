@@ -1,5 +1,7 @@
 //! Read-only Claude transcript previews. The bounded reverse scan preserves
 //! assistant identity, current-prompt fallback, and post-reply tool activity.
+//! "What the agent said" is `adopt::assistant_text`'s word: a text block, or
+//! the progress note a Claude 5 model writes before a tool call (T-604).
 
 use crate::agents::{AgentActivity, AgentPreview};
 use mesimon_core::adopt::{assistant_text, tool_activity, user_prompt};
@@ -127,7 +129,9 @@ fn scan_window(path: &Path, len: u64, window: u64) -> Option<Tail> {
         // agent's last words live — answers `TurnComplete` there. Reading the
         // words out of the classifier meant every idle session's peek walked
         // straight past the reply to the prompt above it and showed the user
-        // their own words back (T-350).
+        // their own words back (T-350). Mid-turn, the newest words are as
+        // often a progress note as a text block (T-604): `assistant_text`
+        // reads both, and the walk still stops at the first it meets.
         if let Some(text) = assistant_text(&v) {
             tail.assistant = Some(text.to_string());
             tail.assistant_key = v.get("uuid").and_then(serde_json::Value::as_str).map(record_key);
@@ -409,5 +413,79 @@ mod tests {
         record.transcript_path = Some(exact.display().to_string());
         assert!(!missing(&record, &projects));
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// T-604 (the author: "transcript not showing latest … showing 1 before"):
+    /// the records of T-601's session between two replies, Claude Code
+    /// 2.1.288 on the mod road, one block per record. The pane printed the
+    /// progress note at `n2` as prose; the walk read `thinking` as private
+    /// and showed the text block before the tool run — one reply behind. The
+    /// note is a `thinking` block whose signature's block kind is `narration`
+    /// (`adopt::narration`); the prefix here is T-601's own.
+    #[test]
+    fn a_progress_update_before_a_tool_call_is_the_newest_words() {
+        const NARRATION: &str = "CAQSqAYKEQgSGAI4AUIJbmFycmF0aW9uEgz6RfzbZ3WGlSWDhZgaDMPYsCHMosTFaCYSbyIw5iwbGg2IIGHyFn57q3rfGqRCddO0A0KzShOu2yD3Wgv4piiOp8iViofNNe3nQo3IKsQFZ5FDP5BFYQVq";
+        const THINKING: &str = "CAQS3wcKEAgSGAI4AUIIdGhpbmtpbmcSDB8YT6rdRh3KJTjRCBoM8rfhnSQrS4xo2VnjIjBsRWkpUTlTCt34Y5LTY3S6oISt0dQYaNqT0JhKtJG1HNG+jGilr6Y19GRv6PC8VN4q/AZSXXadvsdJSprS54NXkquSYR2XI52WtTvAlJ1zRdHRspR2B4";
+        let thought = |uuid: &str, words: &str, sig: &str| {
+            format!(
+                "{{\"uuid\":\"{uuid}\",\"type\":\"assistant\",\"message\":{{\"stop_reason\":\"tool_use\",\"content\":[\
+                 {{\"type\":\"thinking\",\"thinking\":\"{words}\",\"signature\":\"{sig}\"}}]}}}}\n"
+            )
+        };
+        let call = |uuid: &str, what: &str| {
+            format!(
+                "{{\"uuid\":\"{uuid}\",\"type\":\"assistant\",\"message\":{{\"stop_reason\":\"tool_use\",\"content\":[\
+                 {{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{{\"command\":\"cargo test\",\"description\":\"{what}\"}}}}]}}}}\n"
+            )
+        };
+        let result = |uuid: &str| {
+            format!(
+                "{{\"uuid\":\"{uuid}\",\"type\":\"user\",\"toolUseResult\":{{}},\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"content\":\"ok\"}}]}}}}\n"
+            )
+        };
+        let latches =
+            "{\"type\":\"last-prompt\",\"lastPrompt\":\"the prompt\"}\n{\"type\":\"mode\"}\n";
+        let p = tmp("narration");
+        std::fs::write(
+            &p,
+            format!(
+                "{}{}{}{}{}{}{}{}{}",
+                reply("a1", "Alone it passes, so it was a flake. Re-running the suite."),
+                call("a2", "Rerun the bounded full suite"),
+                result("r1"),
+                latches,
+                thought("n1", "All passed, but one e2e failed on the second pass.  ", THINKING),
+                thought(
+                    "n2",
+                    "The first pass finished clean, but the second stopped on one test; rerunning it alone.  ",
+                    NARRATION
+                ),
+                call("a3", "Rerun the e2e three times"),
+                result("r2"),
+                call("a4", "Run the whole pass without fail-fast"),
+            ),
+        )
+        .unwrap();
+        let before = latest_preview(&p).expect("peek");
+        assert_eq!(
+            before.text.as_deref(),
+            Some("The first pass finished clean, but the second stopped on one test; rerunning it alone."),
+            "the note, not the text block before the tool run, and not the private thought"
+        );
+        assert_eq!(
+            before.activity,
+            Some(AgentActivity::Tool("Run the whole pass without fail-fast".into()))
+        );
+        let note_key = before.reply_key.expect("a note is the agent's words, and has a key");
+
+        // The turn's closing reply is newer than every note, and its own record.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(format!("{}{}", result("r3"), reply("a5", "Mod pass: all green.")).as_bytes())
+            .unwrap();
+        let after = latest_preview(&p).expect("peek");
+        assert_eq!(after.text.as_deref(), Some("Mod pass: all green."));
+        assert_eq!(after.activity, None);
+        assert_ne!(after.reply_key, Some(note_key));
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 }

@@ -19942,3 +19942,53 @@ list carries it, the lint, the parse trimmed and refused); `attachments_e2e`: th
 call for another ticket's id reads the miss, the keyed call is refused uncrowned and returns the
 picture once the caller's ticket wears the crown, and a linked-but-absent id and an unlinked id
 read their two words.
+
+## The preview reads a progress note as the agent's words (T-604, 2026-10-03, the author: "transcript not showing latest … showing 1 before for some reason, example from T-601")
+
+**Seen.** T-601's card mid-turn: the preview said "Alone it passes 3 of 3 … Re-running the full
+bounded suite" under the step `Run the whole mod pass without fail-fast`, while the pane had
+printed a newer sentence ("The hook-set pass finished clean at 2,095/2,095, but the mod pass
+stopped on `interrupt_e2e` … I'll rerun it in isolation"). Claude Code 2.1.288, Opus 5.5, the
+mod road. The crown's brief asked whether the newer reply was persisted at all. It was.
+
+**Measured.** `latest_preview` over a copy of the transcript cut at that moment returned the
+text block the card showed; between it and the step were a tool result, two `thinking` records
+of one `message.id`, and the tool call. The second of the two is the sentence the pane printed:
+a `thinking` block with `type`, `thinking` and `signature` and nothing else, in its own record
+like every block since 2.1.28x. The first is the model's private reasoning in the same shape.
+The one difference is inside the signature — base64 of a protobuf whose header (field 2 → field
+1 → field 8) spells `thinking` or `narration`. That is the progress update of
+`thinking.display: "updates"` (the `thinking-display-updates-2026-08-18` beta: a note written
+for a person, at most one per tool call, immediately before it, as a distinct thinking block
+with its own signature), which Claude Code asks for and its CLI prints as ordinary prose, and
+which Claude Code's stream-json schema names `narration_block_indexes`, "the thinking blocks
+whose signature the server tagged block_kind 'narration'" (claude-code issue #95764). Per that
+issue the note is the server's summary of the prose the model wrote between the calls, not the
+prose itself (a code block in it is dropped), so the card shows what the pane shows, and the
+word `narration` appears in no official doc — the platform docs call it a progress update. Over the
+762 local transcripts written in the last ten days: 741 narration blocks in 119 files, Claude
+Code 2.1.259–2.1.288, Opus 5.5 and Fable 5.1, never in a sidechain, never beside a `text` block
+in one message, always before the tool call; 10,586 signed blocks carry the header. Opus 4.7's
+signatures (no field 1, no kind — and an empty `thinking`), Fable 5's earlier format (a 64-byte
+field 5 in the header, no kind) and the five empty signatures of interrupted blocks carry no
+kind. The 2026-09-02 block above ("3 of 6 visible text blocks … were never written", 2.1.257)
+was measured before a narration block exists in the local corpus (first seen on 2.1.259);
+whether that session's missing prose was this shape under an earlier spelling cannot be
+re-measured, and that finding stands as written.
+
+**Shipped.** `adopt::assistant_text` returns the newest of a `text` block or a narration block,
+and `adopt::narration` reads the block kind off a signature's first 48 bytes through two small
+readers (`base64_prefix`, `proto_field`; no new dependency in core). Anything without a
+`narration` kind stays private, so a change to the signature's shape degrades to the old
+behaviour — a reply behind — and never to a thought on a card. The peek, the census drawer, the
+recovery hints and Remote Control's card all read `assistant_text`, so the four move together.
+`classify_tail_record` is untouched: a note is words, not state, its record stays `Other`, and
+the tool call behind it is the state. `reply_key` now moves on a note as on a reply: the spoke
+mark and a banner's quoted words treat a note as something the agent said, which it is, on
+screen.
+
+**Tests.** `a_progress_update_is_the_agents_words_and_private_thinking_is_not` and
+`the_signature_readers_take_a_prefix_and_refuse_the_rest` (core `adopt`: T-601's signature
+prefixes, a 2.1.283 pair, the three kindless shapes, a blank note, a note beside a text block
+in either order); `a_progress_update_before_a_tool_call_is_the_newest_words` (daemon
+`history`: T-601's records between the two replies, scrubbed, then the closing reply).

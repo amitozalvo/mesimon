@@ -155,6 +155,11 @@ in the Esc menu under `Release notes` and on GitHub.
   through a small Mesimon applet mesimon builds once under its state
   directory. A Mac that later gains terminal-notifier lists a second
   "Mesimon" under Notifications settings.
+- **The transcript preview on a card and on the ticket page shows the
+  agent's newest words, including the progress notes a Claude 5 model
+  writes between tool calls.** Those notes are stored as thinking blocks and
+  were skipped, so while a turn ran the preview was one reply behind the
+  pane. Private thinking is still never shown.
 
 ## v0.1.0-alpha.36 — 2026-10-01
 

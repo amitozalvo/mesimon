@@ -142,17 +142,126 @@ pub enum TailTool {
 
 /// Display text is independent of lifecycle: final replies and tool calls can
 /// both carry text. Callers must not use preview selection as a state detector.
+///
+/// The words are a `text` block's, or a progress update's (a `thinking` block
+/// the server wrote for a person, [`narration`]): the pane prints both as
+/// prose, so both are what the agent last said. The newest block wins.
 pub fn assistant_text(v: &Value) -> Option<&str> {
     if v.get("type").and_then(Value::as_str) != Some("assistant") {
         return None;
     }
-    v.get("message")?
-        .get("content")?
-        .as_array()?
-        .iter()
-        .rev()
-        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-        .find_map(|b| b.get("text").and_then(Value::as_str))
+    v.get("message")?.get("content")?.as_array()?.iter().rev().find_map(|b| {
+        match b.get("type").and_then(Value::as_str) {
+            Some("text") => b.get("text").and_then(Value::as_str),
+            Some("thinking") => narration(b),
+            _ => None,
+        }
+    })
+}
+
+/// The words of a `thinking` block written for a person to read, or `None`
+/// for the model's private reasoning. A Claude 5 model under
+/// `thinking.display: "updates"` — what Claude Code 2.1.28x asks for — puts
+/// its progress notes between tool calls ("the suite is green; now the
+/// clippy pass") in `thinking` blocks of their own, one at most before each
+/// tool call, and the pane prints them as ordinary prose where it folds
+/// private thinking away (T-604: the card showed the reply before the one
+/// on screen). The record carries nothing else that tells the two apart: the
+/// block kind is in the signature, base64 of a protobuf whose header (field
+/// 2 → field 1 → field 8) spells `thinking` or `narration`, which is also
+/// how Claude Code's own stream-json schema says a renderer should tell
+/// them apart (`narration_block_indexes`). Measured 2026-10-03 over 10,586
+/// signed blocks in 762 local transcripts: every Claude 5 block carries the
+/// header; Claude 4 blocks, Fable 5's older format and an interrupted block's
+/// empty signature carry no kind and read as private, which is what they
+/// were before — the walk never shows a thought by accident.
+pub fn narration(block: &Value) -> Option<&str> {
+    if block.get("type").and_then(Value::as_str) != Some("thinking") {
+        return None;
+    }
+    let signature = block.get("signature").and_then(Value::as_str)?;
+    if signature_block_kind(signature)? != b"narration" {
+        return None;
+    }
+    // The server's notes end in two blanks; a card has no room for them.
+    Some(block.get("thinking").and_then(Value::as_str)?.trim()).filter(|t| !t.is_empty())
+}
+
+/// The block kind a thinking block's signature carries (see [`narration`]),
+/// read from its first 48 bytes: the header ends inside 32 on every measured
+/// signature, and the rest is the ciphertext. `None` for any other shape.
+fn signature_block_kind(signature: &str) -> Option<Vec<u8>> {
+    let bytes = base64_prefix(signature, 64);
+    let outer = proto_field(&bytes, 2)?;
+    let header = proto_field(outer, 1)?;
+    proto_field(header, 8).map(<[u8]>::to_vec)
+}
+
+/// Decode up to `chars` of standard (or URL-safe) base64, stopping at the
+/// first character outside the alphabet. A short last group yields its whole
+/// bytes; nothing here needs padding.
+fn base64_prefix(text: &str, chars: usize) -> Vec<u8> {
+    let sextet = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' | b'-' => Some(62),
+        b'/' | b'_' => Some(63),
+        _ => None,
+    };
+    let digits: Vec<u8> = text.bytes().take(chars).map_while(sextet).collect();
+    let mut out = Vec::with_capacity(digits.len() * 3 / 4);
+    for group in digits.chunks(4) {
+        let mut acc: u32 = 0;
+        for (i, d) in group.iter().enumerate() {
+            acc |= u32::from(*d) << (18 - 6 * i);
+        }
+        let whole = [(acc >> 16) as u8, (acc >> 8) as u8, acc as u8];
+        out.extend_from_slice(&whole[..group.len().saturating_sub(1)]);
+    }
+    out
+}
+
+/// The bytes of length-delimited protobuf field `want` at the top level of
+/// `buf`, walking the fields before it; a wanted field cut off by the end of
+/// the buffer is returned as far as it goes (the caller reads a prefix). Any
+/// other field cut off, a wire type past the four, or a malformed varint is
+/// `None`.
+fn proto_field(buf: &[u8], want: u64) -> Option<&[u8]> {
+    let varint = |i: &mut usize| -> Option<u64> {
+        let mut value = 0u64;
+        for shift in (0..64).step_by(7) {
+            let byte = *buf.get(*i)?;
+            *i += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Some(value);
+            }
+        }
+        None
+    };
+    let mut i = 0;
+    while i < buf.len() {
+        let tag = varint(&mut i)?;
+        let (field, wire) = (tag >> 3, tag & 7);
+        match wire {
+            0 => {
+                varint(&mut i)?;
+            }
+            1 => i += 8,
+            5 => i += 4,
+            2 => {
+                let len = usize::try_from(varint(&mut i)?).ok()?;
+                let end = i.checked_add(len)?;
+                if field == want {
+                    return Some(&buf[i..end.min(buf.len())]);
+                }
+                i = end;
+            }
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Outstanding tool identity survives quiet polls, including parallel calls.
@@ -800,5 +909,94 @@ mod tests {
             turn_edge(&j(r#"{"uuid":"u","type":"system","subtype":"compact_boundary"}"#)),
             TurnEdge::Unsaid
         );
+    }
+
+    /// T-604: a Claude 5 model's progress notes between tool calls are
+    /// `thinking` blocks the server tagged `narration` in the signature, and
+    /// the pane prints them as prose. Shapes from T-601's transcript (Claude
+    /// Code 2.1.288, Opus 5.5): the words scrubbed, the signature prefixes
+    /// real — the header is the first 32 bytes, the rest is ciphertext.
+    #[test]
+    fn a_progress_update_is_the_agents_words_and_private_thinking_is_not() {
+        const NARRATION: &str = "CAQSqAYKEQgSGAI4AUIJbmFycmF0aW9uEgz6RfzbZ3WGlSWDhZgaDMPYsCHMosTFaCYSbyIw5iwbGg2IIGHyFn57q3rfGqRCddO0A0KzShOu2yD3Wgv4piiOp8iViofNNe3nQo3IKsQFZ5FDP5BFYQVq";
+        const THINKING: &str = "CAQS3wcKEAgSGAI4AUIIdGhpbmtpbmcSDB8YT6rdRh3KJTjRCBoM8rfhnSQrS4xo2VnjIjBsRWkpUTlTCt34Y5LTY3S6oISt0dQYaNqT0JhKtJG1HNG+jGilr6Y19GRv6PC8VN4q/AZSXXadvsdJSprS54NXkquSYR2XI52WtTvAlJ1zRdHRspR2B4";
+        let record = |sig: &str| {
+            val(&format!(
+                r#"{{"uuid":"u1","type":"assistant","message":{{"stop_reason":"tool_use","content":[
+                {{"type":"thinking","thinking":"The suite is green; now the clippy pass.  ","signature":"{sig}"}}]}}}}"#
+            ))
+        };
+        let v = record(NARRATION);
+        assert_eq!(assistant_text(&v), Some("The suite is green; now the clippy pass."));
+        // Words, not state: the note introduces the tool call that follows
+        // it, so the observe tier still reads nothing from the record.
+        assert_eq!(classify_tail_record(&v), TailEvent::Other);
+        assert_eq!(assistant_text(&record(THINKING)), None, "private reasoning");
+        // The shapes that carry no kind are all private: an interrupted
+        // block's empty signature, Fable 5's and Opus 4.7's formats, and a
+        // signature that is not base64.
+        for sig in [
+            "",
+            "CAIS8xkKiAIIEhgCKkDvRYCjgsWA+Dm/TW5bKVqDsnRU10oXIvPpCBIUIDsvdBqR",
+            "EukHCqgBCBIYAipA1D3r1rObW4SSPU+vNFd1/zldtT3WS/nuZ27bKEEgqQeuxLw6",
+            "not a signature",
+        ] {
+            assert_eq!(assistant_text(&record(sig)), None, "{sig:?}");
+        }
+        let v = val(
+            r#"{"uuid":"u2","type":"assistant","message":{"content":[{"type":"thinking","thinking":"hm"}]}}"#,
+        );
+        assert_eq!(assistant_text(&v), None, "no signature at all");
+        // A 2.1.283 pair, its header one byte shorter: the same answer.
+        assert_eq!(
+            signature_block_kind(
+                "CAQS8wYKEQgSGAI4AUIJbmFycmF0aW9uEgxt85/pr/BS8b1X7FcaDMcRkfB/WwnI"
+            )
+            .as_deref(),
+            Some(&b"narration"[..])
+        );
+        assert_eq!(
+            signature_block_kind(
+                "CAQS+wQKEAgSGAI4AUIIdGhpbmtpbmcSDGSAfxQye8rOVXTKSRoMvkpU5WLq/C/Y"
+            )
+            .as_deref(),
+            Some(&b"thinking"[..])
+        );
+        // A blank note is no words; a text block beside a note is the later
+        // of the two, whichever order the blocks come in.
+        let v = val(&format!(
+            r#"{{"uuid":"u3","type":"assistant","message":{{"content":[
+                {{"type":"thinking","thinking":"  ","signature":"{NARRATION}"}}]}}}}"#
+        ));
+        assert_eq!(assistant_text(&v), None);
+        let v = val(&format!(
+            r#"{{"uuid":"u4","type":"assistant","message":{{"content":[
+                {{"type":"thinking","thinking":"first the note","signature":"{NARRATION}"}},
+                {{"type":"text","text":"then the reply"}}]}}}}"#
+        ));
+        assert_eq!(assistant_text(&v), Some("then the reply"));
+        let v = val(&format!(
+            r#"{{"uuid":"u5","type":"assistant","message":{{"content":[
+                {{"type":"text","text":"first the reply"}},
+                {{"type":"thinking","thinking":"then the note","signature":"{NARRATION}"}}]}}}}"#
+        ));
+        assert_eq!(assistant_text(&v), Some("then the note"));
+    }
+
+    #[test]
+    fn the_signature_readers_take_a_prefix_and_refuse_the_rest() {
+        assert_eq!(base64_prefix("QUJDRA==", 64), b"ABCD");
+        assert_eq!(base64_prefix("QUI", 64), b"AB", "a short last group yields its whole bytes");
+        assert_eq!(base64_prefix("QUJD", 2), b"A", "the cap is in characters");
+        assert_eq!(base64_prefix("QU/D-_", 64).len(), 4, "both alphabets");
+        assert!(base64_prefix("", 64).is_empty());
+        // Field 2 after a varint field; a wanted field cut off by the buffer
+        // is a prefix, any other cut-off field ends the walk.
+        assert_eq!(proto_field(&[0x08, 0x04, 0x12, 0x03, b'a', b'b', b'c'], 2), Some(&b"abc"[..]));
+        assert_eq!(proto_field(&[0x12, 0x09, b'a', b'b'], 2), Some(&b"ab"[..]));
+        assert_eq!(proto_field(&[0x0a, 0x09, b'a', b'b'], 2), None);
+        assert_eq!(proto_field(&[0x3f, 0x01], 2), None, "wire type 7");
+        assert_eq!(proto_field(&[0x08, 0x80], 2), None, "a varint cut off");
+        assert_eq!(proto_field(&[], 2), None);
     }
 }
