@@ -1,4 +1,5 @@
 // Receives only authenticated, decrypted daemon projections.
+import { swipeAway } from "./swipe.js";
 export function shouldAlert(reply, visibleTicket) {
   return reply.result === "awareness" && reply.alert === true &&
     reply.ticket !== visibleTicket &&
@@ -9,6 +10,7 @@ export function alertTitle(phase) {
     completed: "Turn completed", failed: "Agent failed" }[phase] || "Agent update";
 }
 let nativeNotice;
+let swipeArmed;
 export function clearAlerts() {
   nativeNotice?.close();
   nativeNotice = undefined;
@@ -20,6 +22,10 @@ export function showAlert(reply, visibleTicket, navigate) {
   if (!shouldAlert(reply, visibleTicket)) return;
   clearAlerts();
   const banner = document.getElementById("awareness");
+  // Swiped away, it is dismissed; the last swipe's flight is undone here.
+  if (!swipeArmed) swipeArmed = swipeAway(banner, clearAlerts, { up: true });
+  banner.style.translate = "";
+  banner.style.opacity = "";
   const open = document.createElement("button");
   open.type = "button";
   open.textContent = `${alertTitle(reply.awareness.phase)} · ${reply.awareness.headline}`;

@@ -508,6 +508,18 @@ async function until(page, fn, arg, timeout = 30000) {
   }
 }
 
+// A finger's swipe as the mouse spells it (T-628): press in the middle,
+// slide, let go.
+async function swipe(page, locator, dx, dy = 0) {
+  const box = await locator.boundingBox();
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y + dy, { steps: 8 });
+  await page.mouse.up();
+}
+
 // Tickets from this browser (T-497): the sheet and Sent over a host that
 // keeps mail, live and away; the clock while this browser is offline; a
 // reload with tickets on their way; unsend and edit; a forged receipt; a
@@ -998,6 +1010,11 @@ async function notesFlow(browser, engineName, size, viewport) {
     await page.locator("#delete-note").click();
     await sheet.waitFor({ state: "hidden" });
     await toast("Deleted");
+    // A short drag puts the toast back; a swipe sends it off before its time.
+    await swipe(page, page.locator(".toast-body"), 6);
+    assert.equal(await page.locator(".toast-body").evaluate((el) => el.style.translate), "");
+    await swipe(page, page.locator(".toast-body"), -160);
+    await until(page, () => !document.querySelector(".toast-body"), undefined, 1500);
     await notes.waitFor();
     await fresh.waitFor({ state: "detached" });
     assert.equal(await page.evaluate(() => fixture.notes["ticket-0"].length), 2);
@@ -2709,6 +2726,28 @@ try {
           await page.locator("#awareness button").first().click();
           assert.equal(await page.evaluate(() => fixture.alertTarget), "other");
           assert(await page.locator("#awareness").isHidden());
+          // Swiped away like a phone's own notification (T-628): sideways or
+          // up, and the button pressed under the finger opens nothing.
+          const alertOther = () => page.evaluate(async () => {
+            const { showAlert } = await import("./awareness.js");
+            fixture.alertTarget = undefined;
+            showAlert({ result: "awareness", ticket: "other", alert: true,
+              awareness: { phase: "completed", headline: "T-OTHER · done", deepLink: "#ticket=other" } },
+              "m2", (ticket) => { fixture.alertTarget = ticket; });
+          });
+          const banner = page.locator("#awareness");
+          await alertOther();
+          await swipe(page, banner, 24, 4);
+          assert(await banner.isVisible(), "a short drag snaps back");
+          assert.equal(await banner.evaluate((el) => el.style.translate), "");
+          await swipe(page, banner, 260, 6);
+          await until(page, () => document.querySelector("#awareness").hidden);
+          assert.equal(await page.evaluate(() => fixture.alertTarget), undefined);
+          await alertOther();
+          assert.equal(await banner.evaluate((el) => el.style.translate), "", "the last flight is undone");
+          await swipe(page, banner, 0, -60);
+          await until(page, () => document.querySelector("#awareness").hidden);
+          assert.equal(await page.evaluate(() => fixture.alertTarget), undefined);
           // Zero and one ticket snapshots; selected identity falls back cleanly.
           await page.evaluate(() => {
             fixture.tickets = [];

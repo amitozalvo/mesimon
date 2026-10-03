@@ -2944,6 +2944,20 @@ button.sent-sys:hover {
   font-weight: 500;
   box-shadow: var(--shadow);
   animation: rise 0.25s ease-out;
+  pointer-events: auto;
+}
+
+/* a notice a swipe sends away (swipe.js): it follows the finger, then flies */
+.swipe {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition:
+    translate 0.16s ease-out,
+    opacity 0.16s ease-out;
+}
+.swipe.swiping {
+  transition: none;
 }
 
 /* ---- awareness: an alert from another ticket, above everything ------------------ */

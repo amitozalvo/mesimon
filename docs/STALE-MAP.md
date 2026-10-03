@@ -20557,3 +20557,37 @@ cleared). Screenshots of the touched ticket read by eye at desktop and phone. **
 CHANGELOG line at the next bump — **Added:** Remote Control marks the ticket that wears the
 crown and says what the crown last did to a ticket, and whose agent did it, for an hour — and
 the relay's `ship.sh` after it merges, since the hosted relay serves this page.
+
+## Remote Control's notices go with a swipe (T-628, 2026-10-03, the author: "remote control notifications dismissable with swipe on phone")
+
+**What shipped.** The page's two in-page notices — the awareness banner at the top (another
+ticket needs you, finished or failed) and the toast above the tab bar (what became of a
+ticket) — follow a finger and go when swiped, as a phone's own notifications do. One helper,
+`web/mesophon/swipe.js::swipeAway`, serves both: pointer events, a 10 px slop before a press
+is a drag (so a tap on Open, Dismiss or the toast's button stays a tap), then the notice rides
+the finger on the CSS `translate` property and fades. Released past 35 % of its size, or
+flicked (≥ 0.5 px/ms over 30 px), it flies off and its dismissal runs; short of that it snaps
+back. The banner also goes upward (`up: true`), toward the edge it came from; the toast goes
+sideways only. A swiped banner is `clearAlerts`, the Dismiss button's road, so a system
+notification shown for the same alert closes with it; a swiped toast is
+`Store::dismissToast`, which drops it without running its action.
+
+**Why `translate`, not `transform`.** Both notices are centred with `transform:
+translateX(-50%)`; the independent `translate` property composes with it, so the drag never
+has to know where the notice sits. Setting it through the CSSOM is outside the page's CSP
+(which bars style attributes, not `el.style`), as `--viewport-height` already is.
+
+**Costs taken.** `.swipe` sets `touch-action: none` (otherwise the browser takes the gesture
+for a pan and sends `pointercancel`) and `user-select: none`. The toast's pill now takes
+pointer events where it passed them through before: a tap on the pill's own area no longer
+reaches what is under it, for the few seconds it shows. The click a drag ends in is swallowed
+in the capture phase, so the button the finger first pressed opens nothing. The service worker
+keeps `swipe.js` (its `PAGE` list; `assets.test.js` checks it).
+
+The CHANGELOG line is owed to the next bump (alpha.37 is tagged at this branch's base) —
+**Changed:** on Remote Control, a notice at the top or bottom of the page can be swiped away.
+
+**Tests.** `ux.test.js`, Chromium and WebKit at every viewport: the banner snaps back from a
+24 px drag, goes on a 260 px sideways swipe and on a 60 px upward one, opens nothing either
+time, and comes back unmoved on the next alert; the notes flow's "Deleted" toast snaps back
+from a 6 px drag and goes on a sideways swipe well before its 2.8 s.

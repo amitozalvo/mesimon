@@ -4,6 +4,7 @@
 import { html, useEffect, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
+import { swipeAway } from "./swipe.js";
 import { NowList, BoardList, SentList, ColumnTabs, lastSeen } from "./lists.js";
 import { Detail } from "./detail.js";
 import { NewTicket, QuickNew, StartSheet, CardSheet } from "./compose.js";
@@ -136,10 +137,13 @@ function NewTicketButton({ store, board, id, cls, column }) {
 }
 
 // One line at a time, above the tab bar: what just happened to a ticket.
+// A swipe sends it off sooner (T-628).
 function Toast({ store }) {
   const toast = store.toast;
+  const body = useRef();
+  useLayoutEffect(() => body.current && swipeAway(body.current, () => store.dismissToast()), [toast?.id]);
   return html`<div id="toast" class="toast" role="status" aria-live="polite">${toast &&
-    html`<p class="toast-body" key=${toast.id}>${toast.tick && html`<${Tick} state=${toast.tick} />`}<span>${toast.text}</span>${toast.action &&
+    html`<p class="toast-body swipe" key=${toast.id} ref=${body}>${toast.tick && html`<${Tick} state=${toast.tick} />`}<span>${toast.text}</span>${toast.action &&
       html`<button id="toast-action" type="button" class="btn toast-action" onClick=${() => store.toastAction()}>${toast.action.label}</button>`}</p>`}</div>`;
 }
 

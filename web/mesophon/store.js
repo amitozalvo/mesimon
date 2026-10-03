@@ -973,6 +973,12 @@ export class Store {
       }
     }, action ? 6000 : 2800);
   }
+  // Swiped away (T-628): gone without its button's action.
+  dismissToast() {
+    clearTimeout(this.toastTimer);
+    this.toast = undefined;
+    this.emit();
+  }
   // The toast's button, once.
   toastAction() {
     const action = this.toast?.action;
