@@ -74,6 +74,28 @@ in the Esc menu under `Release notes` and on GitHub.
 - **The crown is woken when a worker finishes a turn with nothing to
   merge**, and, after a merge, only once the worker's merged-notice turn has
   ended.
+- **The crown's words can reach a working agent at once.** `ask_agent`
+  takes `deliver`: `idle` (the default) waits for the agent's turn to end,
+  `now` sends the way your `^y` does, and `immediately` uses Claude Code's
+  own send-now, below. The receipt says which road the words took, and an
+  ask held for you reopens at the level the crown chose. Both are refused
+  while the agent is at a dialog.
+- **A crown wake owed when the daemon restarts is delivered after it.** A
+  worker that delivered, finished or was merged while you pressed `U` (or
+  the daemon was otherwise down) wakes the crown once the new daemon has
+  looked at it, with `after a restart` on the line. The ledger is
+  `crown.json` in the state directory; nothing is said twice.
+- **A worker that sits idle with background tasks is left to its work.**
+  Words you queue, and the crown's asks, reach it while the tasks run; its
+  card reads `idle ∙ 3 tasks ∙ 2h`. After 30 minutes the crown is told once
+  (`has been idle with 3 background tasks`) and `get_ticket` on it carries
+  the count. Nothing merges, parks or ends that worker by time: the merge
+  train still waits for a finished turn. A worker the crown started is told
+  that merging, rebasing and moving the card are the board's, and that a
+  finished turn leaves no background task running.
+- **The ticket page carries the crown's mark before its title**, in the
+  crown's tint, and no longer spells the crown out in its state row or its
+  footer; `^o` still crowns and uncrowns there.
 - **The ticket page shows its cost only while the cards show cost** (`$`),
   as `∙ $4.20`, without "at API prices".
 - **Remote Control's Now page lists a stopped agent for an hour**, under
@@ -90,6 +112,13 @@ in the Esc menu under `Release notes` and on GitHub.
   question, from the ticket's card**: every question is drawn, and one
   Submit sends them all. A question with ticks and typed words together is
   still answered in the pane.
+- **A prompt can be sent `immediately` to a working Claude agent.** The
+  ticket page's composer cycles `now`, `queued` and `immediately` with
+  Shift+Tab; `immediately` puts your words in Claude Code's prompt box and
+  presses its send-now (Ctrl+X Ctrl+S), so the agent reads them before its
+  running command ends. That command is moved to the background and not
+  stopped. Through the plugin a draft you are typing in the agent's own box
+  is never replaced; the words are then sent `now`. Codex has no such key.
 
 ### Fixed
 
@@ -114,6 +143,16 @@ in the Esc menu under `Release notes` and on GitHub.
   state directory.
 - **Settings' "this board" scope (`b`) no longer carries into Terminal and
   Usage**, where every row is machine-only.
+- **A blank Enter on a ticket whose agent never took a prompt sends the
+  brief.** An agent started with `c`, or woken fresh, comes up with its
+  title typed and nothing sent; the ask field there reads `send the brief`
+  and a blank Enter sends the title and description now. A blank Enter
+  anywhere else says `nothing to send` instead of staying silent.
+- **macOS banners wear the mascot on a Mac without terminal-notifier.**
+  Those banners came through Script Editor and wore its icon; they now come
+  through a small Mesimon applet mesimon builds once under its state
+  directory. A Mac that later gains terminal-notifier lists a second
+  "Mesimon" under Notifications settings.
 
 ## v0.1.0-alpha.36 — 2026-10-01
 
