@@ -634,6 +634,12 @@ impl Harness {
     /// a `U` reload or a `pkill` does for a real board. Returns once the new
     /// socket answers.
     pub fn restart(&self) {
+        self.restart_after(|| {});
+    }
+
+    /// `restart`, with `between` run while no daemon is up: what happens in
+    /// a restart's window, a merge made in a terminal among it (T-602).
+    pub fn restart_after(&self, between: impl FnOnce()) {
         if let Some(mut c) =
             TestClient::try_connect(&self.paths.orch_sock(), Duration::from_millis(500))
         {
@@ -642,6 +648,7 @@ impl Harness {
         wait_until(Duration::from_secs(10), "the old daemon to leave", || {
             !self.paths.orch_sock().exists()
         });
+        between();
         let _daemon = self.fixture.daemon(&self.repo);
         wait_until(Duration::from_secs(10), "the replacement daemon socket", || {
             self.paths.orch_sock().exists()

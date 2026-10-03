@@ -19628,3 +19628,63 @@ mid-turn hold, and the paste road's mid-turn display is T-420's. Whether Claude 
 `UserPromptSubmit` when it folds a pasted mid-turn prompt into the running turn was not
 measured. If it does, the mark lands on that turn through `ack_owed`. If it does not, the
 `LateAsk` paste branch covers it.
+
+## A crown wake owed across a daemon restart is not lost: `crown.json` (T-602, 2026-10-03, filed by the crown on T-587; the author: "T-600 finished, but it didn't notify you. maybe because I pressed U after it finished and the TUI restarted.")
+
+**Seen.** T-600 finished and its branch merged while the author pressed `U`. The crown was never
+woken: not `delivered`, not `merged`, not `finished`. T-554's block had said why: the crown's
+ledger was memory. A restart forgot each worker's `Heard` (T-469's `judged` and `told`, T-554's
+hold for the train, T-596's landing held for its step), the wakes owed to a working crown, the
+turns open (T-591) and the turn's ask. T-527's first-reading rule then kept a merge in the
+restart's window silent, as it was built to: with nothing heard, a branch merged before the
+restart must not be re-heard.
+
+**Picked: persist the ledger, then look once.** The ticket offered re-deriving at start or
+persisting the holds. Re-deriving needs the `told` baseline on disk anyway, or every merged
+branch reads as news; once that is on disk, the holds, the wakes owed and the turns open are the
+same few lines beside it, and a hold that survives is simpler than one judged again from git with
+the train's memory gone. So both halves, one file:
+
+- **`crown.json`** (`server/crownledger.rs`): `schema_version` 1, the crown it was kept for, the
+  wakes owed, each worker's `Heard` (now with `unjudged`, below), `turns_open`, `turn_asks` and
+  `lingered`. `#[serde(default)]` throughout, quarantined when unreadable, barred when newer
+  (`crown_barred`). `persist_crown` writes it on the tick's slow bucket when it changed (an
+  unchanged ledger and a board with no crown write nothing), and the writer loop writes it once
+  more on the way out, before the sockets go, so `Shutdown` and SIGTERM both flush it after their
+  settles have run. `Told::merge` is a `&'static str`, so it crosses as `ToldOnDisk` and reads
+  back as one of `merge_word`'s four.
+- **Restored only for the same crown.** Another crown, or none, is owed nothing of it (T-414).
+- **A probe sent on the way down never lands.** The shutdown's own settles end turns, and each
+  sends a look off the writer thread that the exiting daemon never reads. `Heard::unjudged`
+  keeps what a probe was asked for (the crown's ask, a turn having run) until the look lands, so
+  the restart judges that turn.
+- **One look after the restart** (`hear_restored`, `ProbeWhy::Restart`). Every worker the
+  ledger names is in `crown_recheck`. It is looked at once its agent is settled: idle, parked, on
+  a dialog, or gone. A worker that is `Unknown` until a hook or the transcript speaks takes the
+  look at its next turn end, at any confidence, because the transcript's re-derivation is Low and
+  never ran the `EndTurn` probe. Past `RECHECK_MS` (60 s) a still-working worker is let go to its
+  own turn's end. The look is a turn probe that also asks `merge_verdict`, because a merge no
+  daemon was there to read is the look's to say. `hear_merges` waits while that look is pending,
+  so the flags' first reading after it is silent.
+- **`after a restart`.** A wake owed across the restart, or owed about a worker no look has
+  reached since, ends its brackets with `after a restart` (`CrownWake::late`, from
+  `Heard::restored`), so the crown knows the line may be late. When the window closes, nothing
+  says it any more.
+- **Never a duplicate.** The look is judged against the restored baselines. The same tip is no
+  delivery, and a merge the crown was told of is no merge, so a wake the crown already heard is
+  silent after the restart (T-527's rule, now across one).
+
+**Not covered.** A question or a plan that arose in the window wakes the crown only if the
+transcript's re-derivation enters `RequiresAction` (`asks_the_crown` takes any edge into it). A
+`raise_hand` in the window fails at the tool, so the agent knows. The owed pastes (`owed`),
+`late_asks`, the train's own state and the crown's held asks stay memory, as T-413 and T-550 set
+them.
+
+**Tests.** Units in `crownwake`: the baseline round-trips; a merge in the restart window is heard
+once after it; a wake already heard is silent after a restart; a held delivery is heard at its
+merge after a restart. A unit in `crownledger`: the ledger round-trips and a newer one is refused.
+`crown_e2e::a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart`: the crown hears
+a delivery, the daemon shuts down, the branch is merged by `git merge --ff-only` while it is
+down (`Harness::restart_after`), and the next daemon wakes the crown once with `merged
+(merge_state ahead → merged, after a restart)`. A second restart with nothing new is silent. With
+`restore_crown` disabled, the e2e times out waiting for the merge's wake.

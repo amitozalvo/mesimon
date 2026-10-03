@@ -98,6 +98,7 @@ impl Mint {
 
 mod attachments;
 mod bridge;
+mod crownledger;
 mod crownplan;
 mod crownwake;
 mod mesophon;
@@ -640,17 +641,24 @@ pub struct Daemon {
     /// Wakes the crown is owed (T-414, T-469, T-527): one per worker that
     /// delivered, answered the crown's ask, raised its hand or was merged
     /// since the crown's last turn, rendered into ONE sentence when the crown itself
-    /// is idle. In memory on purpose, like a held ask (T-413): a restart
-    /// re-derives every worker's state at Low confidence anyway, and the
-    /// crown can list the board. Uncrowning drops them.
+    /// is idle. Kept in `crown.json` (T-602), so a restart loses none.
+    /// Uncrowning drops them.
     crown_wakes: Vec<CrownWake>,
     /// Each worker's work as its last judged turn left it and as the last
     /// wake about it described it (T-469): what the next turn's end is
     /// compared with — a second idle at the same tip delivers nothing —
-    /// and where a wake's delta runs from. In memory like the wakes; a
-    /// restart forgets it, and the first delivery after one wakes the crown
-    /// again. A new crown starts with it empty.
+    /// and where a wake's delta runs from. Kept in `crown.json` with the
+    /// wakes (T-602). A new crown starts with it empty.
     crown_heard: HashMap<ulid::Ulid, crownwake::Heard>,
+    /// Workers the restored ledger names, owed one look after the restart
+    /// (T-602, `hear_restored`), with the turn the last daemon did not
+    /// judge; let go at `crown_recheck_until`.
+    crown_recheck: HashMap<ulid::Ulid, crownwake::Unjudged>,
+    crown_recheck_until: u64,
+    /// `crown.json` could not be read, or a newer build wrote it.
+    crown_barred: bool,
+    /// The ledger as last written, so an unchanged one is not written again.
+    crown_written: String,
     /// Tickets whose branch the worktree flags just read `merged` after
     /// reading it unmerged, or on a first reading of a branch the crown was
     /// told of (T-527), heard by the crown on the next tick (`hear_merges`).
@@ -674,7 +682,7 @@ pub struct Daemon {
     turns_open: std::collections::HashSet<ulid::Ulid>,
     /// Records whose stretch idle with background tasks the crown has been
     /// told of (T-599, `hear_lingering`), forgotten on the record's next
-    /// foreground turn. In memory: a restart re-derives every state.
+    /// foreground turn. Kept in `crown.json` (T-602).
     lingered: std::collections::HashSet<uuid::Uuid>,
     /// The session whose dialog the `answer_agent` call in hand queued an
     /// answer for (T-569): the writer loop parks that call's reply with the
@@ -929,6 +937,8 @@ pub fn run(paths: Paths) -> Result<()> {
     notices.extend(started_notices);
     let (costs, cost_notices, costs_barred) = crate::cost::load_or_recover(&paths);
     notices.extend(cost_notices);
+    let (crown_ledger, crown_notices, crown_barred) = crownledger::load_or_recover(&paths);
+    notices.extend(crown_notices);
     let queued: Vec<QueuedAsk> = queue_entries
         .into_iter()
         .filter_map(|e| {
@@ -1134,6 +1144,10 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_dropped: HashMap::new(),
         crown_wakes: Vec::new(),
         crown_heard: HashMap::new(),
+        crown_recheck: HashMap::new(),
+        crown_recheck_until: 0,
+        crown_barred,
+        crown_written: String::new(),
         crown_landed: Vec::new(),
         turn_asks: HashMap::new(),
         late_asks: HashMap::new(),
@@ -1166,6 +1180,8 @@ pub fn run(paths: Paths) -> Result<()> {
         git_fetching_repos: std::collections::HashSet::new(),
         git_nested_fetch: HashMap::new(),
     };
+    // The crown's ledger (T-602): what it was told, and what it is owed.
+    d.restore_crown(crown_ledger);
     // The restored entries (T-418), judged once as any entry is (a gone
     // ticket, a seat someone took) and written back so the file is the list
     // again; each survivor is announced, so the feed says where the marks
@@ -1339,6 +1355,9 @@ pub fn run(paths: Paths) -> Result<()> {
         let slowest = d.tick_slowest;
         d.journal.slow_turn(started, &what, Some((slowest.0, slowest.1)));
     }
+    // The crown's ledger on the way down (T-602): whatever the shutdown's
+    // own settles owed or held is there for the next daemon.
+    d.persist_crown();
     let _ = d.feed.flush();
     let _ = std::fs::remove_file(d.paths.orch_sock());
     let _ = std::fs::remove_file(d.paths.hook_sock());
@@ -2630,10 +2649,12 @@ impl Daemon {
             changed |= stage!("drain_tier_switches", self.drain_tier_switches());
             changed |= stage!("drain_queue", self.drain_queue());
             changed |= stage!("hear_lingering", self.hear_lingering());
+            changed |= stage!("hear_restored", self.hear_restored());
             changed |= stage!("hear_merges", self.hear_merges());
             changed |= stage!("hear_deferred", self.hear_deferred());
             changed |= stage!("hear_stepped", self.hear_stepped());
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
+            stage!("persist_crown", self.persist_crown());
             changed |= stage!("drive_usage", self.drive_usage(now));
             if !self.cost_scanning && (self.cost_due || self.ticks.is_multiple_of(COST_TICKS)) {
                 stage!("queue_cost_scan", self.queue_cost_scan());

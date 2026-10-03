@@ -70,12 +70,14 @@
 //! person's `m` whose notice is not sent yet — is heard at once.
 
 use super::*;
+use serde::{Deserialize, Serialize};
 
 /// Why the words a turn ran on were sent. Stamped on the paste's owed entry
 /// (`tag_owed`) and moved to `Daemon::turn_asks` by its ack, so the turn
 /// that TOOK the words knows it at its end — not the one that happened to
 /// be running when they were pasted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) enum TurnAsk {
     /// The crown's `ask_agent` words, sent by a person's `^y`.
     Crown(ulid::Ulid),
@@ -100,15 +102,52 @@ pub(super) struct LateAsk {
 
 /// A worker's work at one turn's end: the baseline the next turn is judged
 /// against and the two sides of a wake's delta.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "ToldOnDisk", into = "ToldOnDisk")]
 pub(super) struct Told {
     /// The branch tip on a worktree (legs joined), HEAD on a checkout.
     pub(super) tip: String,
     /// `merge_state`'s word; `None` on a checkout, which has no branch.
+    /// Skipped only to keep serde's borrow rule off a `'static`: the field
+    /// crosses as `ToldOnDisk`'s.
+    #[serde(skip)]
     pub(super) merge: Option<&'static str>,
     /// Commits ahead of the base; 0 on a checkout.
     pub(super) ahead: u32,
     pub(super) column: String,
+}
+
+/// `Told` in `crown.json` (T-602): the merge word as written, read back as
+/// one of `worktree::merge_word`'s four — a word this build does not know
+/// reads as no branch, which only widens what the next wake says.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct ToldOnDisk {
+    tip: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merge: Option<String>,
+    ahead: u32,
+    column: String,
+}
+
+impl From<ToldOnDisk> for Told {
+    fn from(d: ToldOnDisk) -> Told {
+        let merge = d.merge.and_then(|w| {
+            ["merged", "needs_rebase", "ahead", "clean"].into_iter().find(|k| *k == w)
+        });
+        Told { tip: d.tip, merge, ahead: d.ahead, column: d.column }
+    }
+}
+
+impl From<Told> for ToldOnDisk {
+    fn from(t: Told) -> ToldOnDisk {
+        ToldOnDisk {
+            tip: t.tip,
+            merge: t.merge.map(str::to_string),
+            ahead: t.ahead,
+            column: t.column,
+        }
+    }
 }
 
 impl Told {
@@ -125,7 +164,8 @@ impl Told {
 /// A worktree branch as one look saw it, legs folded: what a wake says of
 /// it, and what the merge train is judged on (T-554). A turn's own look or
 /// the train's last sample, whichever has seen the newer tip.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub(super) struct BranchLook {
     pub(super) tip: String,
     pub(super) base_tip: String,
@@ -155,7 +195,8 @@ impl BranchLook {
 /// turns are one line — and a merge a finished turn (T-591), the weakest
 /// news: every other line about the worker already says its turn ended,
 /// and says what it left.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) enum WakeCause {
     /// Idle with background tasks for `LINGER_MS` (T-599): the weakest.
     Lingering,
@@ -205,23 +246,39 @@ impl WakeCause {
 /// One thing the crown has yet to hear about: keyed by worker, so a second
 /// event before delivery raises the cause (`WakeCause`'s order) and moves
 /// `to` rather than adding a clause. `from` stays what the crown last heard.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct CrownWake {
     pub(super) worker: ulid::Ulid,
     cause: WakeCause,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     from: Option<Told>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     to: Option<Told>,
     /// Held until the merge step's turn was over (T-596): the line says the
     /// worker finished its turn after the merge.
+    #[serde(default)]
     finished: bool,
     /// A lingering wake's numbers (T-599), as the stretch stood when it
     /// was owed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     linger: Option<Linger>,
+    /// Owed across a daemon restart (T-602): the line says `after a
+    /// restart`, so the crown knows it may be late.
+    #[serde(default)]
+    pub(super) late: bool,
+}
+
+/// What rides a wake beside its cause and delta, as `owe_wake` folds it.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Owed {
+    finished: bool,
+    linger: Option<Linger>,
+    late: bool,
 }
 
 /// A worker idle with background tasks (T-599): how many, and for how long
 /// in minutes, when the board noticed. Never the tasks' words.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Linger {
     pub(super) tasks: usize,
     pub(super) minutes: u64,
@@ -280,14 +337,21 @@ impl CrownWake {
     /// What the line says in brackets: what changed from what the crown
     /// last heard to now, and for a finished turn (T-591) first that it
     /// left nothing new to merge — never a checkout's HEAD, which that turn
-    /// did not move. Nothing at all where git could not say.
+    /// did not move. Nothing at all where git could not say. A wake owed
+    /// across a restart says so last (T-602).
     fn changed(&self) -> Vec<String> {
-        let Some(to) = &self.to else { return Vec::new() };
-        if self.cause != WakeCause::Finished {
-            return delta(self.from.as_ref(), to);
+        let mut out = match &self.to {
+            None => Vec::new(),
+            Some(to) if self.cause != WakeCause::Finished => delta(self.from.as_ref(), to),
+            Some(to) => {
+                let mut out = vec!["nothing new to merge".to_string()];
+                out.extend(changes(self.from.as_ref(), to, false));
+                out
+            }
+        };
+        if self.late {
+            out.push("after a restart".to_string());
         }
-        let mut out = vec!["nothing new to merge".to_string()];
-        out.extend(changes(self.from.as_ref(), to, false));
         out
     }
 }
@@ -476,21 +540,61 @@ fn changes(before: Option<&Told>, now: &Told, head: bool) -> Vec<String> {
 /// rebased tip is not news on the next idle. `told` is the work as the last
 /// wake about it described it: a wake's delta runs from there, so a column
 /// a silent turn moved is still said.
-#[derive(Clone, Debug, Default)]
+///
+/// Kept in `crown.json` (T-602) with the wakes owed, so a restart neither
+/// loses a wake nor says one twice.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub(super) struct Heard {
+    #[serde(skip_serializing_if = "Option::is_none")]
     judged: Option<Told>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     told: Option<Told>,
     /// A turn's end held for the merge train (T-554, T-591). `told` does
     /// not move while it is held, so the merge reads as a tip the crown
     /// never heard of.
+    #[serde(skip_serializing_if = "Option::is_none")]
     deferred: Option<Held>,
     /// A landing held until the merge step in flight is over (T-596), the
     /// line as it will be said; `told` already moved to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
     stepped: Option<CrownWake>,
+    /// What the turn probes out for this worker were asked for (T-602):
+    /// a probe sent on the way down never lands, so the restart's look
+    /// judges the turn it was for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) unjudged: Option<Unjudged>,
     /// Turn probes out for this worker. While one is, the train is not
     /// judged on what came before it: the turn that just ended may have
     /// moved the branch.
+    #[serde(skip)]
     looks: u32,
+    /// Read back from `crown.json` and not looked at since (T-602): a wake
+    /// owed now may be late, and says `after a restart`.
+    #[serde(skip)]
+    pub(super) restored: bool,
+}
+
+/// A turn's end the crown's ledger has not judged yet (T-602): what its
+/// probe was for, kept until the look lands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct Unjudged {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) asked: Option<TurnAsk>,
+    pub(super) fresh: bool,
+}
+
+impl Unjudged {
+    /// Two ends owed one look: a turn ran if either says so, and the
+    /// crown's ask is kept over a merge step, as `mark_turn` keeps it.
+    pub(super) fn join(self, other: Unjudged) -> Unjudged {
+        let asked = match (self.asked, other.asked) {
+            (Some(a @ TurnAsk::Crown(_)), _) | (_, Some(a @ TurnAsk::Crown(_))) => Some(a),
+            (a, b) => a.or(b),
+        };
+        Unjudged { asked, fresh: self.fresh || other.fresh }
+    }
 }
 
 impl Heard {
@@ -513,8 +617,15 @@ impl Heard {
             w.fold(cause, from, Some(now));
             return false;
         }
-        self.stepped =
-            Some(CrownWake { worker, cause, from, to: Some(now), finished: true, linger: None });
+        self.stepped = Some(CrownWake {
+            worker,
+            cause,
+            from,
+            to: Some(now),
+            finished: true,
+            linger: None,
+            late: self.restored,
+        });
         true
     }
 
@@ -537,7 +648,7 @@ impl Heard {
 /// A turn's end held for the merge train: what it would have woken the
 /// crown for — a delivery, or a finished turn (T-591) — and the branch as
 /// that turn, or the latest turn since, left it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Held {
     cause: WakeCause,
     look: BranchLook,
@@ -550,6 +661,11 @@ pub(super) enum ProbeWhy {
     /// ran since the last end looked at (`Daemon::turns_open`), so this
     /// end is a finished turn and not an idle re-entered (T-591).
     Turn { asked: Option<TurnAsk>, fresh: bool },
+    /// The first look at a worker after a daemon restart (T-602), for the
+    /// turn the last daemon did not judge, if any: what changed while no
+    /// daemon was looking — a merge among it — is said once, `after a
+    /// restart`.
+    Restart { asked: Option<TurnAsk>, fresh: bool },
     /// The crown just started a checkout worker: its HEAD now is the line
     /// the first turn's commits are judged against.
     Baseline,
@@ -704,10 +820,67 @@ impl Daemon {
         let pasted = self.late_asks.get(&worker).is_some_and(|l| !l.by_mod);
         let late = if pasted { self.late_asks.remove(&worker).map(|l| l.ask) } else { None };
         let asked = self.turn_asks.remove(&worker).or(late);
+        // A worker the restart has yet to look at (T-602): this end, at any
+        // confidence — the transcript's re-derivation is Low — is that look.
+        if let Some(owed) = self.crown_recheck.remove(&worker) {
+            let fresh = self.turns_open.remove(&worker);
+            let u = owed.join(Unjudged { asked, fresh });
+            self.probe_turn(worker, ProbeWhy::Restart { asked: u.asked, fresh: u.fresh });
+            return;
+        }
         if end_turn {
             let fresh = self.turns_open.remove(&worker);
             self.probe_turn(worker, ProbeWhy::Turn { asked, fresh });
         }
+    }
+
+    /// Workers the restored ledger names (T-602), looked at once on the
+    /// tick when their agent is settled — idle, parked, on a dialog, or
+    /// gone — with the turn the last daemon left unjudged, if any. One
+    /// still working, or `Unknown` until a hook or the transcript speaks,
+    /// is left to its turn's end (`turn_ended`); past `RECHECK_MS` it is
+    /// let go, its merge is the flags' to hear, and what is owed from then
+    /// on is current news: no line says `after a restart` any more.
+    pub(super) fn hear_restored(&mut self) -> bool {
+        if self.crown_recheck_until == 0 {
+            return false;
+        }
+        let expired = now_ms() >= self.crown_recheck_until;
+        let settled = |s: &SessionRecord| {
+            !s.pending_submit
+                && !matches!(
+                    s.state,
+                    SessionState::Unknown { .. }
+                        | SessionState::Spawning
+                        | SessionState::Running
+                        | SessionState::Idle { stop_reason: StopReason::Background }
+                )
+        };
+        let due: Vec<ulid::Ulid> = self
+            .crown_recheck
+            .keys()
+            .copied()
+            .filter(|w| self.crown_heard.get(w).is_none_or(|h| h.looks == 0))
+            .filter(|w| expired || self.board.live_agent(*w).is_none_or(settled))
+            .collect();
+        for worker in due {
+            let Some(owed) = self.crown_recheck.remove(&worker) else { continue };
+            if self.board.live_agent(worker).is_some_and(|s| !settled(s)) {
+                // Past the window and still working: its end judges it.
+                continue;
+            }
+            let asked = self.turn_asks.remove(&worker);
+            let fresh = self.turns_open.remove(&worker);
+            let u = owed.join(Unjudged { asked, fresh });
+            self.probe_turn(worker, ProbeWhy::Restart { asked: u.asked, fresh: u.fresh });
+        }
+        if expired && self.crown_recheck.is_empty() {
+            for h in self.crown_heard.values_mut().filter(|h| h.looks == 0) {
+                h.restored = false;
+            }
+            self.crown_recheck_until = 0;
+        }
+        false
     }
 
     /// What is pending on the worker's ticket now (T-596): the module's
@@ -749,8 +922,11 @@ impl Daemon {
         if worker == crown {
             return;
         }
-        let answered =
-            matches!(why, ProbeWhy::Turn { asked: Some(TurnAsk::Crown(c)), .. } if c == crown);
+        let answered = matches!(
+            why,
+            ProbeWhy::Turn { asked: Some(TurnAsk::Crown(c)), .. }
+                | ProbeWhy::Restart { asked: Some(TurnAsk::Crown(c)), .. } if c == crown
+        );
         if !answered && !self.started_by_crown(worker, crown) {
             return;
         }
@@ -772,7 +948,12 @@ impl Daemon {
                 Look::Checkout(std::path::PathBuf::from(cwd))
             }
         };
-        self.crown_heard.entry(worker).or_default().looks += 1;
+        let heard = self.crown_heard.entry(worker).or_default();
+        heard.looks += 1;
+        if let ProbeWhy::Turn { asked, fresh } | ProbeWhy::Restart { asked, fresh } = why {
+            let u = Unjudged { asked, fresh };
+            heard.unjudged = Some(heard.unjudged.map_or(u, |o| o.join(u)));
+        }
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let found = look.run(worker);
@@ -789,18 +970,32 @@ impl Daemon {
     /// comes due here. What is pending is judged as the look lands, after
     /// the queue has had the turn's end.
     pub(super) fn on_turn_probed(&mut self, p: TurnProbe) {
-        if self.board.crown_holder().map(|t| t.id) != Some(p.crown) {
-            return;
+        let worker = p.worker;
+        self.judge_probe(p);
+        // Looked at since the restart (T-602): what is owed from here is
+        // current, and every turn it was asked for is judged.
+        if let Some(h) = self.crown_heard.get_mut(&worker) {
+            h.restored = false;
+            if h.looks == 0 {
+                h.unjudged = None;
+            }
         }
+    }
+
+    fn judge_probe(&mut self, p: TurnProbe) {
         if let Some(h) = self.crown_heard.get_mut(&p.worker) {
             h.looks = h.looks.saturating_sub(1);
+        }
+        if self.board.crown_holder().map(|t| t.id) != Some(p.crown) {
+            return;
         }
         let Some(column) = self.board.ticket(p.worker).map(|t| t.column.clone()) else {
             return;
         };
-        let (asked, fresh) = match p.why {
-            ProbeWhy::Turn { asked, fresh } => (asked, fresh),
-            ProbeWhy::Baseline => (None, false),
+        let (asked, fresh, restart) = match p.why {
+            ProbeWhy::Turn { asked, fresh } => (asked, fresh, false),
+            ProbeWhy::Restart { asked, fresh } => (asked, fresh, true),
+            ProbeWhy::Baseline => (None, false, false),
         };
         let answered = matches!(asked, Some(TurnAsk::Crown(c)) if c == p.crown);
         let merge_step = asked == Some(TurnAsk::Merge);
@@ -818,14 +1013,23 @@ impl Daemon {
                 return;
             }
         };
+        let started = self.started_by_crown(p.worker, p.crown);
         let heard = self.crown_heard.entry(p.worker).or_default();
         if matches!(p.why, ProbeWhy::Baseline) {
             heard.judged.get_or_insert(now);
             return;
         }
+        // A merge no daemon was there to read (T-602) is the restart's to
+        // say, judged as the flags would have (T-527) before the baseline
+        // moves to it.
+        let landed = if restart {
+            merge_verdict(started || heard.deferred.is_some(), heard, &now)
+        } else {
+            None
+        };
         let before = heard.judged.replace(now.clone());
         let held = heard.deferred.as_ref().map(|h| h.cause);
-        let cause = verdict(before.as_ref(), &now, answered, merge_step, fresh);
+        let cause = verdict(before.as_ref(), &now, answered, merge_step, fresh).max(landed);
         // A checkout has no branch for the train: its delivery wakes.
         let cause = match due(cause, held, &self.pending_on(p.worker, branch.as_ref())) {
             Due::Wake(cause) => cause,
@@ -990,7 +1194,8 @@ impl Daemon {
             let column = self.board.ticket(worker).map(|t| t.column.clone());
             let Some(heard) = self.crown_heard.get_mut(&worker) else { continue };
             let Some(wake) = heard.step_over(column) else { continue };
-            self.owe_crown_wake(crown, worker, wake.cause, wake.from, wake.to, true);
+            let held = Owed { finished: true, linger: None, late: wake.late };
+            self.owe_wake(crown, worker, wake.cause, wake.from, wake.to, held);
             woke = true;
         }
         woke
@@ -1014,6 +1219,14 @@ impl Daemon {
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
         let mut woke = false;
         for worker in landed {
+            // The restart's first look at the worker says a merge made while
+            // no daemon was looking (T-602); this reading waits for it.
+            let looking = self.crown_recheck.contains_key(&worker)
+                || self.crown_heard.get(&worker).is_some_and(|h| h.restored && h.looks > 0);
+            if looking {
+                self.crown_landed.push(worker);
+                continue;
+            }
             if self.wt_merged.get(&worker) != Some(&true) {
                 continue;
             }
@@ -1043,6 +1256,9 @@ impl Daemon {
                     woke = true;
                 }
                 Due::Hold(_) | Due::Silent => {}
+            }
+            if let Some(h) = self.crown_heard.get_mut(&worker) {
+                h.restored = false;
             }
         }
         woke
@@ -1083,12 +1299,13 @@ impl Daemon {
         to: Option<Told>,
         finished: bool,
     ) {
-        self.owe_wake(crown, worker, cause, from, to, finished, None);
+        self.owe_wake(crown, worker, cause, from, to, Owed { finished, ..Owed::default() });
     }
 
-    /// `owe_crown_wake`, with a lingering wake's numbers (T-599): they ride
-    /// the wake before it is drained.
-    #[allow(clippy::too_many_arguments)]
+    /// `owe_crown_wake`, with what rides the wake beside its cause: a
+    /// lingering wake's numbers (T-599), and whether it was owed across a
+    /// restart (T-602) — so is any wake about a worker no look has reached
+    /// since one.
     fn owe_wake(
         &mut self,
         crown: ulid::Ulid,
@@ -1096,15 +1313,17 @@ impl Daemon {
         cause: WakeCause,
         from: Option<Told>,
         to: Option<Told>,
-        finished: bool,
-        linger: Option<Linger>,
+        owed: Owed,
     ) {
+        let Owed { finished, linger, late } = owed;
+        let late = late || self.crown_heard.get(&worker).is_some_and(|h| h.restored);
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
             w.fold(cause, from, to);
             w.finished |= finished;
             w.linger = w.linger.or(linger);
+            w.late |= late;
         } else {
-            self.crown_wakes.push(CrownWake { worker, cause, from, to, finished, linger });
+            self.crown_wakes.push(CrownWake { worker, cause, from, to, finished, linger, late });
         }
         self.feed.crown_wake(crown, worker, cause.word());
         self.crown_touched(worker, crown, "woke");
@@ -1147,7 +1366,8 @@ impl Daemon {
             .collect();
         for (id, worker, linger) in &due {
             self.lingered.insert(*id);
-            self.owe_wake(crown, *worker, WakeCause::Lingering, None, None, false, Some(*linger));
+            let owed = Owed { linger: Some(*linger), ..Owed::default() };
+            self.owe_wake(crown, *worker, WakeCause::Lingering, None, None, owed);
         }
         !due.is_empty()
     }
@@ -1158,6 +1378,7 @@ impl Daemon {
     pub(super) fn drop_crown_wakes(&mut self) {
         self.crown_heard.clear();
         self.crown_landed.clear();
+        self.crown_recheck.clear();
         if self.crown_wakes.is_empty() {
             return;
         }
@@ -1266,6 +1487,7 @@ mod tests {
             to: None,
             finished: false,
             linger: Some(l(3, 30)),
+            late: false,
         };
         assert_eq!(w.clause(), "has been idle with 3 background tasks for 30 min");
         assert!(w.changed().is_empty(), "no delta: nothing about the work moved");
@@ -1391,6 +1613,7 @@ mod tests {
             to,
             finished: false,
             linger: None,
+            late: false,
         };
         let head = checkout("1234567890abcdef", "REVIEW");
         assert_eq!(
@@ -1566,6 +1789,7 @@ mod tests {
             to: Some(delivered.clone()),
             finished: false,
             linger: None,
+            late: false,
         };
         let h = heard(Some(delivered.clone()), Some(delivered.clone()));
         let cause = merge_verdict(true, &h, &landed).unwrap();
@@ -1696,6 +1920,7 @@ mod tests {
             to: Some(landed),
             finished: false,
             linger: None,
+            late: false,
         };
         assert_eq!(wake.clause(), "merged");
     }
@@ -1724,5 +1949,123 @@ mod tests {
         assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed));
         assert!(h.step_over(None).is_none(), "the ticket is gone");
         assert!(h.stepped.is_none());
+    }
+
+    /// A worker's ledger as `crown.json` carries it through a restart
+    /// (T-602), read back marked restored.
+    fn restarted(h: &Heard) -> Heard {
+        let mut back: Heard = serde_json::from_str(&serde_json::to_string(h).unwrap()).unwrap();
+        back.restored = true;
+        back
+    }
+
+    /// The baseline round-trips: both sides of it, a hold for the train and
+    /// a landing held for its step, with the merge word read back as the
+    /// same `&'static str` the judging compares. A word this build does not
+    /// know reads as no branch.
+    #[test]
+    fn the_baseline_round_trips() {
+        let delivered = branch("aaa", "ahead", 1, "REVIEW");
+        let mut h = heard(Some(delivered.clone()), Some(delivered.clone()));
+        h.deferred = Some(Held { cause: WakeCause::Finished, look: BranchLook::default() });
+        h.unjudged = Some(Unjudged { asked: Some(TurnAsk::Merge), fresh: true });
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, delivered.clone()));
+        h.looks = 2;
+        let back = restarted(&h);
+        assert_eq!(back.judged, h.judged);
+        assert_eq!(back.told, h.told);
+        assert_eq!(back.unjudged, h.unjudged);
+        assert_eq!(back.looks, 0, "no probe of the last daemon's is out");
+        let stepped = back.stepped.as_ref().expect("the held landing");
+        assert_eq!((stepped.cause, stepped.finished), (WakeCause::Merged, true));
+        let checkout = Heard { told: Some(checkout("1111111aaaa", "REVIEW")), ..Heard::default() };
+        assert_eq!(restarted(&checkout).told.unwrap().merge, None);
+        let odd: Told =
+            serde_json::from_str(r#"{"tip":"a","merge":"rebasing","ahead":1}"#).unwrap();
+        assert_eq!(odd.merge, None);
+        // An answer owed through a turn end and a merge step on the same
+        // look is still an answer.
+        let crown = Unjudged { asked: Some(TurnAsk::Crown(ulid::Ulid::nil())), fresh: false };
+        let step = Unjudged { asked: Some(TurnAsk::Merge), fresh: true };
+        assert_eq!(step.join(crown), Unjudged { asked: crown.asked, fresh: true });
+    }
+
+    /// T-602's own case: the crown heard the delivery, the daemon went
+    /// down, the branch merged in the window. The restart's look says the
+    /// merge — once: the baseline moves to it, and the flags' reading after
+    /// is silent.
+    #[test]
+    fn a_merge_in_the_restart_window_is_heard_once_after_it() {
+        let delivered = branch("aaa", "ahead", 1, "REVIEW");
+        let mut h = restarted(&heard(Some(delivered.clone()), Some(delivered.clone())));
+        assert!(h.awaits_merge(), "the flags' first reading is owed it");
+        let landed = branch("aaa", "merged", 0, "REVIEW");
+        let cause = verdict(h.judged.as_ref(), &landed, false, false, false)
+            .max(merge_verdict(true, &h, &landed));
+        assert_eq!(due(cause, None, &IDLE), Due::Wake(WakeCause::Merged));
+        let wake = CrownWake {
+            worker: ulid::Ulid::nil(),
+            cause: WakeCause::Merged,
+            from: h.told.replace(landed.clone()),
+            to: Some(landed.clone()),
+            finished: false,
+            linger: None,
+            late: h.restored,
+        };
+        h.judged = Some(landed.clone());
+        assert_eq!(wake.changed(), ["merge_state ahead → merged", "after a restart"]);
+        assert_eq!(merge_verdict(true, &h, &landed), None, "the flags after it");
+        // Through a second restart, still heard.
+        assert_eq!(merge_verdict(true, &restarted(&h), &landed), None);
+    }
+
+    /// What the crown heard before the restart is silent after it: the
+    /// same tip is no delivery, and a merge it was told of is no merge.
+    #[test]
+    fn a_wake_already_heard_is_silent_after_a_restart() {
+        let delivered = branch("aaa", "ahead", 1, "REVIEW");
+        let h = restarted(&heard(Some(delivered.clone()), Some(delivered.clone())));
+        let cause = verdict(h.judged.as_ref(), &delivered, false, false, false)
+            .max(merge_verdict(true, &h, &delivered));
+        assert_eq!(due(cause, None, &IDLE), Due::Silent);
+        let landed = branch("aaa", "merged", 0, "DONE");
+        let h = restarted(&heard(Some(landed.clone()), Some(landed.clone())));
+        let cause = verdict(h.judged.as_ref(), &landed, false, false, false)
+            .max(merge_verdict(true, &h, &landed));
+        assert_eq!(due(cause, None, &IDLE), Due::Silent);
+        // A turn that ran across the restart and left the same tip did
+        // finish (T-591), and says so once.
+        assert_eq!(verdict(h.judged.as_ref(), &landed, false, false, true), FINISHED);
+    }
+
+    /// A delivery held for the train (T-554) survives the restart as the
+    /// hold it was, not re-judged: the merge after it is the delivery, with
+    /// `merged` in its delta, heard once.
+    #[test]
+    fn a_held_delivery_is_heard_at_its_merge_after_a_restart() {
+        let behind = branch("aaa", "needs_rebase", 1, "REVIEW");
+        let held = Held { cause: WakeCause::Delivered, look: BranchLook::default() };
+        let h = restarted(&Heard { deferred: Some(held), ..heard(Some(behind), None) });
+        assert!(h.awaits_merge());
+        let landed = branch("bbb", "merged", 0, "DONE");
+        let cause = merge_verdict(true, &h, &landed);
+        assert_eq!(cause, DELIVERED);
+        assert_eq!(due(cause, None, &IDLE), Due::Wake(WakeCause::Delivered));
+        let mut wake = CrownWake {
+            worker: ulid::Ulid::nil(),
+            cause: WakeCause::Delivered,
+            from: h.told.clone(),
+            to: Some(landed),
+            finished: false,
+            linger: None,
+            late: false,
+        };
+        assert_eq!(wake.changed(), ["merge_state merged", "column DONE"]);
+        // Owed across the restart, it says so; a fold keeps saying it.
+        wake.late = true;
+        wake.fold(WakeCause::Raised, None, None);
+        assert_eq!(wake.changed(), ["merge_state merged", "column DONE", "after a restart"]);
+        let back: CrownWake = serde_json::from_str(&serde_json::to_string(&wake).unwrap()).unwrap();
+        assert_eq!((back.cause, back.late), (WakeCause::Raised, true));
     }
 }

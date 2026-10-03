@@ -1874,6 +1874,132 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     assert!(lines[3].starts_with(&format!("{worker} delivered (merge_state merged")), "{lines:?}");
 }
 
+/// A wake owed across a daemon restart is not lost (T-602): the crown
+/// heard a worker's delivery, the daemon went down (`Shutdown`, as a `U`
+/// handover sends it), the branch was merged in a terminal while no daemon
+/// was looking, and the next daemon wakes the crown once, saying the merge
+/// `after a restart`. A restart with nothing new to say is silent.
+#[test]
+fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_restart",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_restart");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-92 merged while down");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = format!("{kw} \"mesimon-probe-92 merged while down\"");
+
+    // ---- 1. the delivery, heard -------------------------------------------
+    commit(&path, "work.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the flags to read the branch ahead", || {
+        read(&mut c, sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
+    });
+    drop(c);
+
+    // ---- 2. merged while no daemon is up: one line, after the restart ----
+    h.restart_after(|| {
+        git(&h.repo, &["merge", "--ff-only", "-q", &branch]);
+    });
+    assert!(h.paths.state_dir.join("crown.json").is_file(), "the ledger was kept");
+    let mut c = h.client("crown_restart_2");
+    wait_until(std::time::Duration::from_secs(15), "the merge's wake", || {
+        lines_with(&worker).len() == 2
+    });
+    assert_eq!(
+        lines_with(&worker)[1],
+        format!(
+            "{worker} merged (merge_state ahead → merged, after a restart) ∙ get_ticket key={kw} \
+             for state and notes"
+        )
+    );
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    // More refreshes at `merged`, the flags' first reading among them:
+    // silent.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(lines_with(&worker).len(), 2, "{}", std::fs::read_to_string(&got).unwrap());
+    drop(c);
+
+    // ---- 3. a restart with nothing new: silent ----------------------------
+    h.restart();
+    let mut c = h.client("crown_restart_3");
+    std::thread::sleep(std::time::Duration::from_millis(4000));
+    assert_eq!(
+        lines_with(&worker).len(),
+        2,
+        "a wake already heard is silent after a restart:\n{}",
+        std::fs::read_to_string(&got).unwrap()
+    );
+    // The worker is still on the board the crown can read.
+    assert!(c.board().ticket(w).is_some());
+}
+
 /// The crown sends its own asks (T-550), where the person lets it: off by
 /// default, so the words wait for `^y` as T-413 built them; on, an ask to an
 /// agent the crown STARTED goes by the queue once that agent is idle — the

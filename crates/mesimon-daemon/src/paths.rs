@@ -83,6 +83,11 @@ impl Paths {
     pub fn started_file(&self) -> PathBuf {
         self.state_dir.join("started.json")
     }
+    /// What the crown has been told of the workers it started, and the
+    /// wakes it is owed (T-602): kept through a restart so none is lost.
+    pub fn crown_file(&self) -> PathBuf {
+        self.state_dir.join("crown.json")
+    }
     /// What each ticket's agents have spent, in tokens by hour and model, and
     /// how far each transcript has been read (T-327).
     pub fn costs_file(&self) -> PathBuf {
