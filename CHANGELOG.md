@@ -8,200 +8,129 @@ in the Esc menu under `Release notes` and on GitHub.
 
 ## v0.1.0-alpha.37 — 2026-10-03
 
+### Added
+
+- **The crown answers a worker's question and accepts its plan.** A question
+  or a plan from an agent the crown started wakes the crown, which answers it,
+  including a dialog of up to four questions and questions with several
+  choices; the card reads `♛ answered` or `♛ accepted plan`. Questions about
+  secrets, permissions, sign-in, anything destructive or beyond the ticket's
+  brief are left to you, and so is every question from an agent you started.
+  `Settings › Agents › Crown mode` set to `supervised` keeps every question
+  and plan for you.
+- **The crown merges a worker's branch where auto merge will not.** When auto
+  merge is off, the ticket was taken off it with `t`, or its column does not
+  merge, the crown merges the branch itself (the same fast-forward `m` makes)
+  and the worker is told; the card reads `♛ merged`. The crown is told who
+  merges each branch: auto merge, itself, or you. Under `supervised` it raises
+  its hand and leaves the merge to you.
+- **The crown's words can reach a working agent at once**, the way your own
+  `now` and `immediately` sends do, instead of waiting for the agent's turn to
+  end. Not while the agent is at a dialog.
+- **Send a prompt `immediately` to a working Claude agent.** Shift+Tab on the
+  ticket page's composer cycles `now`, `queued` and `immediately`.
+  `immediately` uses Claude Code's own send-now: the agent reads your words
+  before its running command ends, and the command keeps running in the
+  background. Codex has no such send.
+- **Remote Control answers a dialog of several questions, or a several-choice
+  question, from the ticket's card.** Every question is drawn, and one Submit
+  sends them all. A question that mixes ticks with typed words is still
+  answered in the pane.
+- **Tiers take a description** (`Settings › Agents › Tiers`, up to 300
+  bytes): when to use the tier, in your words. The crown reads them to pick a
+  tier for each ticket it files or starts and says which it chose in the
+  brief. A ticket you started keeps your tier.
+- **The crown can read a picture on another ticket.**
+
 ### Changed
 
-- **New machine defaults: the terminal tab, notifications and the OS appearance
-  are on.** The tab title reads `mesimon ∙ <project>` without the needs-you
-  count; iTerm2 also takes the theme colour, colours the whole tab while a
-  ticket needs you, and shows the subtitle and the shin icon. OS notifications
-  and Follow the OS appearance are on. The progress ring stays off. A
-  `prefs.json` that already holds a key keeps its value; each row is in
-  Settings › Terminal, Notifications and Appearance.
-- **On Claude Code 2.1.287 or newer, mesimon talks to Claude through a
-  plugin it loads for each session, instead of typing into the pane.**
-  Prompts, briefs, the board's asks, Remote Control prompts and the crown's
-  asks reach Claude whole, as your own words, the moment they are sent; a
-  prompt sent while a turn runs waits and runs as its own turn. A question's
-  answer from the phone or the crown goes straight into Claude's dialog,
-  with no screen read and no keys sent. A brief is no longer wrapped as
-  pasted content. Nothing is installed: mesimon lays the plugin in its state
-  directory and passes it with `--plugin-dir`, after `claude plugin
-  validate` accepts it. There is no setting; `mesimon doctor`'s `claude
-  road` line says which way the last launch went and why.
-- **Claude Code older than 2.1.287, and Codex, work exactly as before.** If
-  the plugin stops validating after a Claude Code update, launches go back
-  to the old way on their own; the feed says `claude_road_fallback` and
-  `mesimon doctor` warns.
-- **A Claude Code that turns mods off keeps working on the hook set.**
-  Before choosing the plugin, mesimon checks that Claude Code will load it;
-  when Claude Code reports mods turned off, sessions start the old way, and a
-  session whose plugin never comes up is restarted the old way once, with its
-  brief. `mesimon doctor`'s `claude road` line
-  says so (`mods are off in this Claude Code … the hook set is used`), and the
-  check is repeated at the next daemon start and every 6 hours.
-- **On that road a session carries no generated `--settings`, MCP server or
-  `--allowedTools`.** The plugin reports the session's events, refuses
-  writes to `.mesimon` and mesimon's state directory in the same words as
-  before (also with the board's daemon stopped), passes permission dialogs
-  to Remote Control, and registers the board's tools itself. Claude Code
-  asks no permission before a board tool runs, in any mode, plan mode
-  included; mesimon's own check of the agent's tier and ticket is the only
-  gate.
-- **Limits of that road.** A slash command (text starting with `/`) is still
-  typed. A plan is still accepted by pressing Enter on its first row, because
-  Claude Code has no call for "Yes, auto-accept edits". A phone's refusal of
-  a question is still Escape. A session whose plugin has not checked in
-  shortly after launch gets its words typed instead (feed `mod_silent`).
-  Sessions started by an earlier build keep the old way until their next
-  sleep and wake.
-- **A ticket's cost on that road comes from Claude Code's own count of each
-  turn**, subagents included; the transcript is still read beside it, and no
-  turn is counted twice. The quota line's 5-hour and weekly windows are also
-  refreshed at the end of every turn; per-model weeks and the plan name still
-  come from the `claude -p` read, on its usual schedule. A new `costs` line in
-  `mesimon doctor` says how many tickets were counted this way and where the
-  two counts disagree.
-- **The crown answers questions and accepts plans by default**, including on
-  existing boards. `accept_plan` is a new crown tool; a worker stopping on a
-  plan wakes the crown, and its card reads `♛ accepted plan`. Turn both off
-  by setting `Settings › Agents › Crown mode` to `supervised`. The crown
-  never answers for an agent a person started, or a secret, permission or
-  sign-in prompt; a person who answers first wins.
+- **On Claude Code 2.1.287 or newer, mesimon talks to Claude through a plugin
+  instead of typing into its pane.** Prompts, briefs and answers from the
+  phone or the crown reach Claude whole, as your own words, the moment they
+  are sent; a prompt sent during a turn waits and runs as its own turn; a
+  question's answer lands straight in the dialog. Nothing is installed in
+  your Claude Code configuration: mesimon keeps the plugin in its own state
+  directory and passes it to each session it starts. Older Claude Code and
+  Codex work as before, and if Claude Code refuses the plugin, sessions start
+  the old way on their own; `mesimon doctor` says which way sessions start.
+  Still typed: slash commands, a plan's accept (Enter on its first row) and a
+  question refused from the phone (Escape). Sessions started by an earlier
+  build switch at their next sleep and wake.
+- **A ticket's cost on the plugin comes from Claude Code's own count of each
+  turn**, subagents included, and the quota line's 5-hour and weekly windows
+  refresh at the end of every turn.
 - **One `Crown mode` row replaces `Crown sends its asks` and `Crown answers
   questions`.** `Settings › Agents › Crown mode` is `autonomous` by default,
   on new and existing boards: the crown's asks reach the agents it started
-  without your `^y`, and it answers their questions and accepts their
-  plans. `supervised` keeps all three for you. `mesimon doctor` prints one
-  `crown mode` line in place of `crown sends` and `crown answers`.
-- **The crown's rows in `Settings › Agents` sit under a `Crown` heading**:
-  `Crown may start`, `Crown mode` and `Crown archives tickets`.
-- **The board-wide `Sleep idle agents` row is removed.** A column's own
-  `Agent behaviour › Sleep idle agents` is now the only idle timer; a board
-  that set the old row no longer sleeps agents by it.
-- **Auto merge is on by default** where `prefs.json` does not set it, as on
-  a new install. `Settings › Behaviour › Auto merge` turns it off; a
-  machine that already saved it off keeps it off.
-- **The crown can no longer archive tickets unless you allow it.** New row
-  `Settings › Agents › Crown archives tickets`, off by default; while off,
-  the crown moves finished tickets to DONE and a merged worktree stays until
-  you archive it. `mesimon doctor` prints a `crown archives` line.
-- **The crown chooses each ticket's workspace and tier on purpose.**
-  `start_agent` and `create_ticket` require `worktree` or
-  `shared_checkout`, and the crown is refused the shared checkout while
-  another ticket's agent holds it. `start_agent` also wakes an agent the
-  crown parked (`♛ woken`). Tiers gain a `Description:` field (`Settings ›
-  Agents › Tiers`, up to 300 bytes) that the crown reads to pick a tier for
-  each ticket it files or starts; a ticket a person started keeps its tier.
-- **The crown is woken when a worker finishes a turn with nothing to
-  merge**, and, after a merge, only once the worker's merged-notice turn has
-  ended.
-- **Pressing `m` on a ticket whose agent the crown started tells that agent
-  in the same step**, where `Settings › Behaviour › Auto merge tells the
-  agent after a merge` is on: the merge dialog closes with `merged ∙ its
-  agent was told` and offers no second press, and the crown is woken once
-  that notice turn ends. A ticket whose agent you started keeps the two
-  presses.
-- **The crown's words can reach a working agent at once.** `ask_agent`
-  takes `deliver`: `idle` (the default) waits for the agent's turn to end,
-  `now` sends the way your `^y` does, and `immediately` uses Claude Code's
-  own send-now, below. The receipt says which road the words took, and an
-  ask held for you reopens at the level the crown chose. Both are refused
-  while the agent is at a dialog.
-- **A crown wake owed when the daemon restarts is delivered after it.** A
-  worker that delivered, finished or was merged while you pressed `U` (or
-  the daemon was otherwise down) wakes the crown once the new daemon has
-  looked at it, with `after a restart` on the line. The ledger is
-  `crown.json` in the state directory; nothing is said twice.
-- **A worker that sits idle with background tasks is left to its work.**
-  Words you queue, and the crown's asks, reach it while the tasks run; its
-  card reads `idle ∙ 3 tasks ∙ 2h`. After 30 minutes the crown is told once
-  (`has been idle with 3 background tasks`) and `get_ticket` on it carries
-  the count. Nothing merges, parks or ends that worker by time: the merge
-  train still waits for a finished turn. A worker the crown started is told
-  that merging, rebasing and moving the card are the board's, and that a
-  finished turn leaves no background task running.
-- **The ticket page carries the crown's mark before its title**, in the
-  crown's tint, and no longer spells the crown out in its state row or its
-  footer; `^o` still crowns and uncrowns there.
-- **The ticket page shows its cost only while the cards show cost** (`$`),
-  as `∙ $4.20`, without "at API prices".
+  without your `^y`, and it answers their questions and accepts their plans.
+  `supervised` keeps all of that for you. The crown's rows now sit under a
+  `Crown` heading.
+- **The crown archives tickets only if you allow it.** `Settings › Agents ›
+  Crown archives tickets` is off by default; while off, the crown moves a
+  finished ticket to DONE and its merged worktree stays until you archive it.
+- **The crown chooses each ticket's workspace on purpose**, a worktree or the
+  shared checkout, and is refused the shared checkout while another ticket's
+  agent holds it. It can also wake an agent it parked (`♛ woken`).
+- **The crown is woken more precisely:** when a worker finishes a turn with
+  nothing to merge; after a merge, only once the worker has read the merged
+  notice; and after a daemon restart, for what happened while the daemon was
+  down (the line says `after a restart`).
+- **A worker idle with background tasks is left to its work.** Your words and
+  the crown's still reach it, the card reads `idle ∙ 3 tasks ∙ 2h`, and after
+  30 minutes the crown is told once. Nothing merges, parks or ends that
+  worker by time.
+- **Pressing `m` on a ticket whose agent the crown started tells the agent in
+  the same step**, where `Auto merge tells the agent after a merge` is on:
+  the dialog closes with `merged ∙ its agent was told` and offers no second
+  press. A ticket whose agent you started keeps the two presses.
+- **New machine defaults: the terminal tab, notifications and following the
+  OS appearance are on.** The tab title reads `mesimon ∙ <project>`; iTerm2
+  also colours the whole tab while a ticket needs you and shows the theme
+  colour, the subtitle and the mascot icon. The progress ring stays off. A
+  machine that already saved its settings keeps them; each row is in
+  `Settings › Terminal`, `Notifications` and `Appearance`.
+- **Auto merge is on by default** on a new install. `Settings › Behaviour ›
+  Auto merge` turns it off; a machine that already saved it off keeps it off.
+- **The board-wide `Sleep idle agents` row is removed.** A column's own `Agent
+  behaviour › Sleep idle agents` is now the only idle timer.
+- **The ticket page carries `♛` before its title** when it wears the crown,
+  and no longer explains the crown in its rows or its footer.
+- **The ticket page shows its cost only while the cards show cost** (`$`).
 - **Remote Control's Now page lists a stopped agent for an hour**, under
-  "Recently idle"; older ones are on Board.
-
-### Added
-
-- **The crown can answer a worker's question** with the new `answer_agent`
-  tool, including a batch of up to four questions and questions with several
-  choices. The card shows `♛ answered`. The crown's `get_ticket` says what a
-  worker stopped on (question, permission, secret, plan) and gives a
-  question's words and options.
-- **Remote Control answers a batch of questions, or a several-choice
-  question, from the ticket's card**: every question is drawn, and one
-  Submit sends them all. A question with ticks and typed words together is
-  still answered in the pane.
-- **A prompt can be sent `immediately` to a working Claude agent.** The
-  ticket page's composer cycles `now`, `queued` and `immediately` with
-  Shift+Tab; `immediately` puts your words in Claude Code's prompt box and
-  presses its send-now (Ctrl+X Ctrl+S), so the agent reads them before its
-  running command ends. That command is moved to the background and not
-  stopped. Through the plugin a draft you are typing in the agent's own box
-  is never replaced; the words are then sent `now`. Codex has no such key.
-- The crown can read a picture on another ticket: `read_attachment` takes
-  `key`.
-- **The crown can merge a worker's branch where the merge train will not**
-  with the new `merge_ticket` tool: the train off, the ticket taken off it
-  with `t`, or a column whose train setting stops short of a merge. The same
-  fast-forward `m` makes; the worker is told where `Auto merge tells the
-  agent after a merge` is on, and the card reads `♛ merged`. Refused under
-  `Crown mode: supervised`, on a branch behind its base (the crown asks the
-  worker to rebase first), and under a working agent. `get_ticket` says who
-  merges each branch (`merge: by train, crown or person`, with the reason),
-  and the sentence that wakes the crown on a delivery carries the word.
+  "Recently idle".
 
 ### Fixed
 
-- **A new agent's brief is pasted only once Claude's input box is on
-  screen.** Several agents started at once could receive a garbled or unsent
-  brief. If the box does not appear within 30 s, the card shows `brief not
-  sent` and needs you; Shift+Enter on the ticket sends it again.
+- **A new agent's brief is sent only once Claude's input box is on screen.**
+  Several agents started at once could get a garbled or unsent brief. If the
+  box does not appear within 30 s, the card reads `brief not sent`;
+  Shift+Enter on the ticket sends it again.
+- **A blank Enter on a ticket whose agent never took a prompt sends the
+  brief.** The ask field reads `send the brief`. A blank Enter anywhere else
+  says `nothing to send` instead of staying silent.
 - **Words queued for an agent stopped on a question are held**, and the card
-  says what holds them (`agent asked ∙ you send`, `queued ∙ after T-3's
-  answer`). `^y` no longer sends them into the question.
+  says what holds them. `^y` no longer sends them into the question.
 - **A phone's question answer reads "Answered." only once Claude confirms
-  it**; otherwise it says the keys were sent but not confirmed, and a failed
-  answer keeps its buttons for a retry. Options whose labels wrap are read
-  correctly.
-- **A queued phone prompt no longer blocks answering that agent's
-  question**, Steer and Send now are refused while the agent waits on a
-  dialog, and the queued row says who queued it and what holds it.
-- **A question asked alongside other tool calls stays answerable** until
-  its own call ends; before, the first sibling tool to finish removed it
-  from Remote Control and the crown.
+  it**; otherwise it says the keys were sent but not confirmed, and keeps its
+  buttons for a retry. Wrapped option labels are read correctly.
+- **A queued phone prompt no longer blocks answering that agent's question.**
+  Steer and Send now are refused while the agent waits on a dialog, and the
+  queued row says who queued it and what holds it.
+- **A question asked alongside other tool calls stays answerable** until its
+  own call ends.
+- **The transcript preview shows the agent's newest words**, including the
+  progress notes a Claude 5 model writes between tool calls; it ran one reply
+  behind the pane. Private thinking is never shown.
+- **A raised hand comes down when the question behind it is answered in the
+  pane.** A hand raised with no dialog behind it still stays until you open
+  the ticket or send the next prompt.
+- **macOS banners wear the mascot on a Mac without terminal-notifier.** A Mac
+  that later installs terminal-notifier lists a second "Mesimon" under
+  Notifications settings.
 - **The write guard also refuses `NotebookEdit`** under `.mesimon` and the
   state directory.
 - **Settings' "this board" scope (`b`) no longer carries into Terminal and
-  Usage**, where every row is machine-only.
-- **A blank Enter on a ticket whose agent never took a prompt sends the
-  brief.** An agent started with `c`, or woken fresh, comes up with its
-  title typed and nothing sent; the ask field there reads `send the brief`
-  and a blank Enter sends the title and description now. A blank Enter
-  anywhere else says `nothing to send` instead of staying silent.
-- **macOS banners wear the mascot on a Mac without terminal-notifier.**
-  Those banners came through Script Editor and wore its icon; they now come
-  through a small Mesimon applet mesimon builds once under its state
-  directory. A Mac that later gains terminal-notifier lists a second
-  "Mesimon" under Notifications settings.
-- **The transcript preview on a card and on the ticket page shows the
-  agent's newest words, including the progress notes a Claude 5 model
-  writes between tool calls.** Those notes are stored as thinking blocks and
-  were skipped, so while a turn ran the preview was one reply behind the
-  pane. Private thinking is still never shown.
-- **A raised hand comes down when the question behind it is answered in
-  the agent's pane.** An agent that raised its hand and then asked a
-  question, a plan or a permission kept the mark after the answer until its
-  next prompt; a refused dialog lowers it too. A hand raised with no dialog
-  behind it still stays until you open the ticket or the next prompt
-  arrives.
+  Usage.**
 
 ## v0.1.0-alpha.36 — 2026-10-01
 
