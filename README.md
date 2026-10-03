@@ -122,8 +122,6 @@ breaking one, [report it](SECURITY.md).
 
 - [Using mesimon](docs/USING.md): the board, settings, keyboard layouts, pictures in notes, what
   your agents can see, updating and stopping everything.
-- [Remote Control](docs/REMOTE-CONTROL.md): a browser preview for reading and answering your
-  agents from a phone or another computer.
 - [What is useful to report](TESTING.md), and how to report a [security issue](SECURITY.md).
 - [All the docs](docs/README.md), including the design record and the architecture.
 
