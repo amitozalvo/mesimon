@@ -414,12 +414,12 @@ cleanup after Mesimon is killed.
 **Settings › Appearance › Notifications** opens the list that chooses which events post a
 banner and whether a sound plays: banner on or off, whether a finished turn counts as well as a
 blocked agent, whether the agent's words are quoted, the two sounds, whether a focused board or
-the agent's own pane still speaks, and iTerm2's dock bounce (T-492).
+the agent's own pane still speaks, and iTerm2's dock bounce.
 
 On macOS the banner wears the mesimon mascot. mesimon never installs anything into your
 Notifications settings by hand. Where `terminal-notifier` is installed it posts through a signed
 private copy under `~/.local/state/mesimon/notifications/`; where it is not, through a small
-"Mesimon" applet it builds there once with the system's `osacompile` (T-605). A Mac that later
+"Mesimon" applet it builds there once with the system's `osacompile`. A Mac that later
 gains terminal-notifier shows a second "Mesimon" under System Settings › Notifications, and the
 first banners from a new identity may not show until macOS has asked you to allow them. On Linux
 the notifier is `notify-send`, where present.
