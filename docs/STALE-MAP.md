@@ -20073,3 +20073,47 @@ description is unchanged (no room under the 820-byte cap worth spending on it).
 `PostToolUse` mid-turn and the question opening leave the hand up; the question's `PostToolUse`
 takes it down with the session `Running`; a second hand comes down on the refusal road. Both
 roads (`MESIMON_TEST_ROAD=mod` twins every frame); it fails with the edge removed.
+
+## Settings › Agents: one Crown mode, a Crown subtitle, no board-wide sleep timer, the train on by default (T-610, 2026-10-03, filed by the crown on T-607 from the author's settings review)
+
+**Crown mode.** `Board::crown_mode: CrownMode` (`autonomous` | `supervised`, serde `snake_case`,
+default `Autonomous`) replaces `crown_sends` (T-550, off by default) and `crown_answers` (T-569,
+on since T-582). `CrownMode::sends()` and `answers()` are what the old readers ask:
+`crown_ask_hold`, `set_crown_mode`'s `hold_crown_sends`, `crownwake::asks_the_crown`, the answer
+and accept-plan gates and their in-flight checks (`crown_answer_allowed`, `crown_plan_allowed`).
+One wire command, `SetCrownMode { mode }`, never an agent's (`agent_allows`); one `Verb::CrownMode`
+row whose Enter toggles; one doctor line, `crown mode`. Refusals name "Settings → Agents → Crown
+mode: supervised" (the ask hold) and "Crown mode is supervised" (an answer, a plan). The two
+were split in T-569 on the argument that letting words through at idle is not consent to
+answers in a dialog; the author folded them back: one decision, how far the crown acts for you.
+The old keys are ignored on read, so every existing board comes up autonomous, the author's
+intent. **No schema bump, and one write-only key.** An older build reads a missing
+`crown_answers` as ON (T-582's serde default), so a supervised board downgraded would hand the
+crown its answers back: the `mcp_tools` doctrine on `COLUMNS_SCHEMA` forbids that. `ColumnsFile`
+therefore writes `crown_answers = false` while supervised (`legacy_crown_answers`,
+`skip_deserializing`) and nothing while autonomous; an older build's missing `crown_sends` is off,
+which narrows. A downgrade-then-upgrade comes back autonomous, as every pre-mode board does.
+
+**The Crown subtitle.** The Settings list had no subtitle kind (the sharing dialog's headings
+are `draw_rows_with`'s, a different surface). `keymap::settings_heading(verb)` names one, `Crown`
+over `CrownBudget`; it is not a row of `settings_items`, so the cursor, `settings_row` and Enter
+never see it. `menu::draw_list` inserts it and shifts the drawn index; `dialog::ListRow` gained
+`heading: bool` (one dim line, one cell in, never selected), and `dialog::list` now windows by
+LINES rather than rows — with every row one height this is exactly the old arithmetic (no other
+golden moved), and the title's `n/m` counts selectable rows. **The 20-row fit.** Agents at 60x20
+already scrolled (`1/10` since T-569's ninth row; `draw_list`'s "does not scroll" comments are
+older than `dialog::list`'s window); it now holds 8 rows and a heading, 17 lines in 16, so it
+scrolls by one (`1/8`, the archive row below the fold). The ticket's fallback was to move the
+`Agent prompts` door last; it was not moved, because its reason was an unreachable row and the
+list scrolls, and last it would have sat under the `Crown` subtitle as if it were a crown row.
+
+**No board-wide sleep timer.** `Board::park_after_minutes`, `Verb::ParkAfterMinutes`,
+`Command::SetParkAfterMinutes`, `SessionRecord::inactivity_park_due` and the `inactivity_park`
+feed rule are gone; `Board::idle_park_due` reads the ticket's column alone (`autosleep`). A
+`columns.toml` that still carries the key loads and drops it on the next write. Its e2e now
+drives every column's `sleep_after_minutes`, and the column rule parks an idle agent with no
+finished turn, which the old test's "unknown" seat asserted it would not; that seat left the
+test. **The train on by default.** `Prefs::default().merge_train` and an absent `merge_train` in
+`prefs.json` are on; `save` writes every key, so a machine that ever saved its prefs carries the
+`false` it was given then and keeps it. Goldens that drew the off train (`t merge by hand` in
+three footers, the Behaviour list) moved with it; three TUI tests about the off state seed it.

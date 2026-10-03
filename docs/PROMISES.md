@@ -50,14 +50,13 @@ workspace of and start an agent on the other tickets, archive them where you tur
 started to sleep, each edit checked against the ticket as the agent last read it and lit on the card
 as it happens. Starts are capped by a per-board budget (Settings → Agents, three by default),
 a ticket the crown started can never itself be crowned, and an agent you started is yours
-alone to sleep. Words the crown leaves for another ticket's agent wait on that card until you
-send them, unless you turn on *Settings › Agents › Crown sends its asks* (off by default): then
-words for an agent the crown started reach it once it is idle, and an agent you started still
-waits for you. The crown also answers by default (*Settings › Agents › Crown answers
-questions*, on; turn it off to keep every question and plan for yourself): it may answer a
-question an agent it started stops on, typed into that agent's dialog, or accept a plan that
+alone to sleep. *Settings › Agents › Crown mode* is autonomous by default: words the crown
+leaves for an agent it started reach that agent once it is idle, and the crown may answer a
+question that agent stops on, typed into that agent's dialog, or accept a plan that
 agent stops on, with one Enter on the plan dialog's first row (`♛ accepted plan`), each shown
-on its card and in the activity feed. A plan it would change, a question about secrets, spend,
+on its card and in the activity feed. Supervised keeps them for you: the crown's words wait on
+the card until you send them, and every question and plan waits for you. Words for an agent
+you started wait for you under either mode. A plan it would change, a question about secrets, spend,
 anything destructive or beyond the brief is raised to you, and every other stop, and every
 question or plan from an agent you started, still waits for you. Only you can
 crown a ticket; an agent that asks for it is told to ask you.

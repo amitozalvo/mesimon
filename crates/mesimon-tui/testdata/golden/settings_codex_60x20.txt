@@ -1,5 +1,5 @@
  BOARD   mesimon › kanban-tui   7 tickets
-  ╭─ AGENTS ∙ 1/10 ──────────────────────────────────────╮
+  ╭─ AGENTS ∙ 1/8 ───────────────────────────────────────╮
   │   Default tier: claude                               │
   │     this board uses codex (b) ∙ Claude Code ∙ its o~ │
   │   Tiers: none yet                                    │
@@ -10,11 +10,11 @@
   │     the seven board tools every spawn carries ∙ ent~ │
   │   Agent prompts: mesimon's words                     │
   │     what mesimon types at an agent about a rebase, ~ │
-  │   Sleep idle agents: off                             │
-  │     this board ∙ after a finished turn ∙ enter cycl~ │
+  │ Crown                                                │
   │   Crown may start 3 agents at once                   │
   │     start_agent on the crowned ticket ∙ a sleeping ~ │
-  │   Crown sends its asks: off                          │
-  │     its asks wait on the card for ^y ∙ enter lets i~ │
+  │   Crown mode: autonomous                             │
+  │     agents it started take its asks without ^y, and~ │
+  │                                                      │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
  SETTINGS                                            ? keys

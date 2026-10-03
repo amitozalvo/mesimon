@@ -21,7 +21,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use mesimon_core::board::{SessionKind, SessionState, WorkspaceStrategy};
+use mesimon_core::board::{CrownMode, SessionKind, SessionState, WorkspaceStrategy};
 use mesimon_core::command::{AgentTicketView, AskRoad, Command, CrownTouch, Deliver, Response};
 use mesimon_core::Principal;
 use serde_json::json;
@@ -681,10 +681,11 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::AgentAsked { key, replaced, seen, held_for_person, held_because, road } => {
             assert_eq!(key, kb);
             assert!(!replaced);
-            // T-550: off by default, so the board holds it and says so.
+            // T-550: a person started B's agent, so the board holds it
+            // for them whatever the crown's mode, and says so.
             assert!(held_for_person);
             assert_eq!(road, Some(mesimon_core::command::AskRoad::HeldForPerson));
-            assert!(held_because.is_some_and(|w| w.contains("Crown sends its asks")));
+            assert!(held_because.is_some_and(|w| w.contains("a person started")));
             seen.expect("a fresh stamp rides back")
         }
         other => panic!("the ask: {other:?}"),
@@ -1487,6 +1488,12 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     ));
     let sa = spawn(&mut c, a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    // A person sends the crown's ask here (step 2): supervised, so the
+    // queue does not send it first (autonomous by default since T-610).
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
+        Response::Ok
+    ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
     stop(&mut c, sa);
@@ -2003,14 +2010,15 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
     assert!(c.board().ticket(w).is_some());
 }
 
-/// The crown sends its own asks (T-550), where the person lets it: off by
-/// default, so the words wait for `^y` as T-413 built them; on, an ask to an
-/// agent the crown STARTED goes by the queue once that agent is idle — the
+/// The crown sends its own asks (T-550), where the person lets it: in
+/// supervised mode the words wait for `^y` as T-413 built them; autonomous
+/// (the default since T-610), an ask to an agent the crown STARTED goes by
+/// the queue once that agent is idle — the
 /// feed's actor is the agent, the card lights `♛ sent`, and the turn that
 /// takes the words wakes the crown as a person's send would. An agent a
-/// person started is held whatever the switch says, words that would wake a
+/// person started is held whatever the mode says, words that would wake a
 /// parked agent need a free budget seat and hold one while they wait, and
-/// switching off or uncrowning holds what had not gone yet.
+/// supervising or uncrowning holds what had not gone yet.
 #[test]
 fn the_crown_sends_its_asks_to_the_agents_it_started() {
     let Some(h) = Harness::boot_with_env(
@@ -2123,10 +2131,14 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         pending_of(c, Some(t)).into_iter().find(|p| p.is_queued_ask() && !p.in_flight)
     };
 
-    // ---- off, the default: held for a person, even on the crown's own worker
-    assert!(!c.board().crown_sends, "off by default");
+    // ---- supervised: held for a person, even on the crown's own worker -----
+    assert!(c.board().crown_mode.sends(), "autonomous by default");
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
+        Response::Ok
+    ));
     let (held, why) = ask(&mut c, &kw, "mesimon-probe-92 held");
-    assert!(held && why.contains("Crown sends its asks"), "{why}");
+    assert!(held && why.contains("Crown mode: supervised"), "{why}");
     let r = row(&mut c, w).expect("held on W's card");
     assert!(!r.sends && r.by.is_some() && r.waits_on.is_empty(), "{r:?}");
     settle();
@@ -2136,18 +2148,24 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         Response::PromptTakenBack { .. }
     ));
 
-    // ---- on: refused to an agent, persisted, printed ------------------------
-    match c.send(Principal::Agent { session: sa }, Command::SetCrownSends { on: true }) {
+    // ---- autonomous: refused to an agent, persisted, printed ----------------
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::SetCrownMode { mode: CrownMode::Autonomous },
+    ) {
         Response::Err { .. } => {}
-        other => panic!("an agent switching it on: {other:?}"),
+        other => panic!("an agent making it autonomous: {other:?}"),
     }
-    assert!(!c.board().crown_sends);
-    assert!(matches!(c.request(Command::SetCrownSends { on: true }), Response::Ok));
-    assert!(c.board().crown_sends);
+    assert!(!c.board().crown_mode.sends());
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    assert!(c.board().crown_mode.sends());
     let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
-    assert!(file.contains("crown_sends = true"), "{file}");
+    assert!(file.contains("crown_mode = \"autonomous\""), "{file}");
 
-    // A person's agent waits for its person whatever the switch says.
+    // A person's agent waits for its person whatever the mode says.
     let (held, why) = ask(&mut c, &kp, "mesimon-probe-93 for the person's");
     assert!(held && why.contains("a person started"), "{why}");
     settle();
@@ -2327,18 +2345,24 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     start(&mut c, ws);
     stop(&mut c, ws);
 
-    // ---- off again, or the crown leaving, holds what had not gone -----------
+    // ---- supervised again, or the crown leaving, holds what had not gone ----
     start(&mut c, ws);
     let (held, _) = ask(&mut c, &kw, "mesimon-probe-98 not now");
     assert!(!held);
-    assert!(matches!(c.request(Command::SetCrownSends { on: false }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
+        Response::Ok
+    ));
     let r = row(&mut c, w).expect("still on the card");
     assert!(!r.sends && r.waits_on.is_empty(), "held for the person now: {r:?}");
     stop(&mut c, ws);
     settle();
-    assert!(!landed("mesimon-probe-98"), "switched off, nothing more goes");
+    assert!(!landed("mesimon-probe-98"), "supervised, nothing more goes");
     assert!(matches!(c.request(Command::DropQueuedAsk { ticket: w }), Response::Ok));
-    assert!(matches!(c.request(Command::SetCrownSends { on: true }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
     start(&mut c, ws);
     let (held, _) = ask(&mut c, &kw, "mesimon-probe-99 not now either");
     assert!(!held);
@@ -2406,7 +2430,10 @@ fn the_crown_sends_now_into_a_working_turn() {
     let kw = key_of(&mut c, w);
     let sa = spawn(&mut c, a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    assert!(matches!(c.request(Command::SetCrownSends { on: true }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
     stop(&mut c, sa);
@@ -2549,8 +2576,11 @@ fn the_crown_sends_now_into_a_working_turn() {
     }
     answer_heard(&mut c, before);
 
-    // ---- sends off: held for a person, the send preset to now ---------------
-    assert!(matches!(c.request(Command::SetCrownSends { on: false }), Response::Ok));
+    // ---- supervised: held for a person, the send preset to now --------------
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
+        Response::Ok
+    ));
     start(&mut c, ws);
     let (held, road) = road_of(ask(&mut c, "mesimon-probe-86 held now", Deliver::Now));
     assert!(held && road == AskRoad::HeldForPerson);
@@ -2630,7 +2660,10 @@ fn the_crown_sends_immediately_into_a_working_turn() {
     let kw = key_of(&mut c, w);
     let sa = spawn(&mut c, a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    assert!(matches!(c.request(Command::SetCrownSends { on: true }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
     stop(&mut c, sa);
@@ -3379,28 +3412,37 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
         }
     };
 
-    // ---- off (on by default since T-582): no wake, the refusal names the row -
-    assert!(c.board().crown_answers, "on by default");
-    assert!(matches!(c.request(Command::SetCrownAnswers { on: false }), Response::Ok));
+    // ---- supervised (autonomous by default): no wake, the refusal names the row
+    assert!(c.board().crown_mode.answers(), "autonomous by default");
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
+        Response::Ok
+    ));
     hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &question("toolu_a1"));
     c.await_state(ws, "asking", asking);
     settle();
-    assert!(!landed("asks a question"), "off, the person is the one to wake");
+    assert!(!landed("asks a question"), "supervised, the person is the one to wake");
     let why = refused(&mut c, &kw, "toolu_a1", Some(0), None);
-    assert!(why.contains("Settings → Agents → Crown answers questions"), "{why}");
+    assert!(why.contains("Settings → Agents → Crown mode"), "{why}");
     hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &question("toolu_a1"));
     c.await_state(ws, "running", |s| *s == SessionState::Running);
 
-    // ---- on: an agent may not switch it, a person does, and it is kept -----
-    match c.send(Principal::Agent { session: sa }, Command::SetCrownAnswers { on: true }) {
+    // ---- autonomous: an agent may not switch it, a person does, and it is kept
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::SetCrownMode { mode: CrownMode::Autonomous },
+    ) {
         Response::Err { .. } => {}
-        other => panic!("an agent switching it on: {other:?}"),
+        other => panic!("an agent making it autonomous: {other:?}"),
     }
-    assert!(!c.board().crown_answers);
-    assert!(matches!(c.request(Command::SetCrownAnswers { on: true }), Response::Ok));
+    assert!(!c.board().crown_mode.answers());
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
     let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
-    assert!(file.contains("crown_answers = true"), "{file}");
-    assert!(!file.contains("crown_sends = true"), "a switch of its own: {file}");
+    assert!(file.contains("crown_mode = \"autonomous\""), "{file}");
+    assert!(!file.contains("crown_answers"), "autonomous leaves no legacy key: {file}");
 
     // ---- a person's agent: the one who started it answers it ---------------
     start(&mut c, sp);
@@ -3555,12 +3597,15 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &two);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
 
-    // ---- off again: the crown's answer is refused once more ----------------
-    assert!(matches!(c.request(Command::SetCrownAnswers { on: false }), Response::Ok));
+    // ---- supervised again: the crown's answer is refused once more ---------
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
+        Response::Ok
+    ));
     hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &question("toolu_a3"));
     c.await_state(ws, "asking", asking);
     let why = refused(&mut c, &kw, "toolu_a3", Some(0), None);
-    assert!(why.contains("Crown answers questions is off"), "{why}");
+    assert!(why.contains("Crown mode is supervised"), "{why}");
 }
 
 /// The crown answers a batch (T-571). The worker's pane runs a stand-in for
@@ -3593,7 +3638,10 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
     let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
     let sa = spawn(&mut c, a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    assert!(matches!(c.request(Command::SetCrownAnswers { on: true }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let v = read(&mut c, sa, &kw).unwrap();
     assert!(matches!(
@@ -3830,7 +3878,7 @@ fn the_crown_accepts_a_plan_by_default() {
     }
 
     // ---- on by default: no person switched anything ----------------------
-    assert!(c.board().crown_answers, "a fresh board lets the crown answer and accept");
+    assert!(c.board().crown_mode.answers(), "a fresh board lets the crown answer and accept");
     let v = read(&mut c, sa, &kw).unwrap();
     assert!(matches!(
         c.send(
@@ -3942,10 +3990,16 @@ fn the_crown_accepts_a_plan_by_default() {
         ),
         other => panic!("ask_agent on a plan: {other:?}"),
     }
-    assert!(matches!(c.request(Command::SetCrownAnswers { on: false }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
+        Response::Ok
+    ));
     let why = refused(&mut c, &kw, "toolu_w1");
-    assert!(why.contains("Crown answers questions is off") && why.contains("raise_hand"), "{why}");
-    assert!(matches!(c.request(Command::SetCrownAnswers { on: true }), Response::Ok));
+    assert!(why.contains("Crown mode is supervised") && why.contains("raise_hand"), "{why}");
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
     assert_eq!(pressed(), before, "a refusal types nothing");
     assert!(!feed().contains("\"accept_plan\""), "a refusal writes nothing");
 
@@ -4278,7 +4332,10 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     ));
     let sa = spawn(&mut c, a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    assert!(matches!(c.request(Command::SetCrownSends { on: true }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     send(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);

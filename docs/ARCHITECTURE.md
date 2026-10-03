@@ -570,8 +570,8 @@ and the store's v3→v4 migration of an existing one — `COLUMNS_SCHEMA` 4). `o
 ARE automove (`core/src/automove.rs` reads the ticket's column's settings), `train` is the merge
 train's reach (`Merge` = candidates + rebase asks, `Rebase` = asks only), `requires_merge` is the
 DONE gate, `reclaim` is the sleep/archive offer and `X`/`Z`, `sleep_after_minutes` is the
-column's own idle park (T-543; `Board::idle_park_due` judges it, any idle at the prompt, beside
-the board's `park_after_minutes`, a finished turn only, in `park_inactive`), `workspace` defaults a ticket CREATED
+column's own idle park (T-543; `Board::idle_park_due` judges it, any idle at the prompt, in
+`park_inactive`; the board's `park_after_minutes` beside it was removed in T-610), `workspace` defaults a ticket CREATED
 there by stamping the ticket field at mint (never retroactive), `collapsed` pins a spine, `claude_mode`
 rides `--permission-mode` (`inherit` = the user's own `defaultMode`, else `auto`/`plan`/`manual`;
 the enum cannot spell `bypassPermissions`; `--permission-mode` is in `resume_argv`'s `owned` list so
@@ -1870,8 +1870,8 @@ complete); `docs/spikes/T-225-multirepo-workspace.md` is the design. E2e:
 `crates/mesimon/tests/workspace_e2e.rs`. (STALE-MAP "A board on a workspace of repositories"
 and "A worktree ticket on a workspace cuts one leg per repo".)
 
-**The merge train (opt-in, 2026-09-04).** Settings rows `Merge train` (`prefs.json::merge_train`,
-off) and `Train tells the agent after a merge` (`merge_train_notice`, on). The daemon reads no
+**The merge train (opt-in 2026-09-04, on by default since T-610).** Settings rows `Merge train`
+(`prefs.json::merge_train`, on) and `Train tells the agent after a merge` (`merge_train_notice`, on). The daemon reads no
 preference: the TUI pushes `Command::SetAutomation` on every toggle and from
 `App::reconcile_train` whenever a snapshot reads it unarmed while the pref is on (30 s back-off;
 a pref that is off pushes nothing), and the daemon holds it in memory tied to the CONNECTION

@@ -1330,10 +1330,10 @@ impl Daemon {
         request: &str,
         answer: CrownAnswer,
     ) -> std::result::Result<uuid::Uuid, String> {
-        if !self.board.crown_answers {
+        if !self.board.crown_mode.answers() {
             return Err(format!(
-                "this board leaves {key}'s question to a person (Settings → Agents → Crown answers \
-                 questions is off); raise_hand on the crown's own ticket names the worker and the \
+                "this board leaves {key}'s question to a person (Settings → Agents → Crown mode is \
+                 supervised); raise_hand on the crown's own ticket names the worker and the \
                  question for them"
             ));
         }
@@ -1444,7 +1444,7 @@ impl Daemon {
     ) -> bool {
         let by = Principal::Agent { session };
         self.board.is_crowned(crown)
-            && self.board.crown_answers
+            && self.board.crown_mode.answers()
             && self.board.live_agent(ticket).is_some_and(|rec| {
                 rec.id == id
                     && rec.started_by.is_some()

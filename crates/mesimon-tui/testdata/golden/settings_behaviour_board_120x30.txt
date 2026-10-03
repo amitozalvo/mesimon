@@ -7,7 +7,7 @@
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
                            ╭─ BEHAVIOUR ∙ THIS BOARD ───────────────────────────────────────╮
                            │   Auto merge: on                                               │
-                           │     set here ∙ machine: off ∙ merges quiet REVIEW branches, a~ │
+                           │     set here ∙ machine: on ∙ merges quiet REVIEW branches, as~ │
                            │   Auto merge tells the agent after a merge                     │
                            │     inherited ∙ pastes the merged notice into the agent ∙ sta~ │
                            │   Keep this machine awake: off                                 │

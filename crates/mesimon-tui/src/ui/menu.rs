@@ -427,9 +427,24 @@ fn draw_list(
 ) {
     let ctx = app.frame_ctx();
     let mark = crate::glyphs::suggest_mark(app.theme.glyph_tier());
-    let rows: Vec<ListRow> = items
-        .iter()
-        .map(|item| ListRow {
+    // A subtitle (T-610) is a row of the drawing and not of the list: the
+    // cursor's `idx` moves past every one drawn above it.
+    let mut rows: Vec<ListRow> = Vec::new();
+    let mut at = idx;
+    for (i, item) in items.iter().enumerate() {
+        if let Some(heading) = keymap::settings_heading(item.verb) {
+            if i <= idx {
+                at += 1;
+            }
+            rows.push(ListRow {
+                lead: String::new(),
+                head: heading.to_string(),
+                right: String::new(),
+                detail: None,
+                heading: true,
+            });
+        }
+        rows.push(ListRow {
             lead: if keymap::is_suggested(item.verb, &ctx) {
                 format!(" {mark} ")
             } else {
@@ -438,7 +453,8 @@ fn draw_list(
             head: (item.label)(&ctx),
             right: item.key.to_string(),
             detail: Some(keymap::item_detail(item, &ctx)),
-        })
-        .collect();
-    dialog::list(f, app, name, false, scope, idx, &rows);
+            heading: false,
+        });
+    }
+    dialog::list(f, app, name, false, scope, at, &rows);
 }

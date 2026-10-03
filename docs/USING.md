@@ -236,32 +236,30 @@ it archived burns away before its column closes up. When an agent it started rep
 bolt runs the other way, from that card to the crown. **Settings › Appearance › Crown's
 actions** turns the lightning off for this machine; the card still says what was done.
 
-**Settings › Agents › Crown sends its asks** (off by default) lets the crown's words go without
-your `^y` to an agent the crown started: the queue delivers them once that agent is idle, the card
-lights `♛ sent`, and the activity feed records the send as the agent's. Words for an agent you
-started still wait for you, whatever the setting says. Words that would wake a sleeping agent need
-a free seat in the crown's budget and hold it while they wait. Turning the setting off, or taking
-the crown back, holds whatever had not gone yet on its card. The crown can also send its words
-`now` or `immediately`, as your Shift+Enter does with the send set to either: they reach a
-working agent at once instead of waiting for it to go idle. It cannot send them that way while
-the agent is at a dialog. Where its words are held for you, the ask opens at the level the crown
-chose when you edit it, and `^y` sends it at that level.
-
-**Settings › Agents › Crown answers questions** (on by default, and separate from sending; turn it
-off there to keep every question and plan for yourself) lets the crown answer a question, and
-accept a plan, that an agent it started stops on. That question wakes the crown, which
-reads it on the agent's ticket and may pick one of its options, tick several where the question
-takes several, or type a one-line answer in their place, through the same screen-checked road as
-Remote Control's question card. A dialog that asks several questions at once is answered whole,
-one answer per question, because Claude Code submits them together. The card lights
-`♛ answered` and reads `answered by T-411: Okta` while the agent works on the answer (several
-answers are joined by `;`), and the activity feed records the answer as the agent's. A
-permission, a secret or a form waits for you, and so does every question or plan from an agent
-you started. mesimon does not read the question to decide. The crown is told that a question
-about secrets or credentials, spend or quota, something destructive or irreversible (deleting,
+**Settings › Agents › Crown mode** is autonomous by default; supervised keeps the crown's words,
+and every question and plan, for you. Autonomous lets the crown's words go without your `^y` to an
+agent the crown started, and lets the crown answer a question, and accept a plan, that such an
+agent stops on. Its words reach that agent by the queue once the agent is idle, the card lights
+`♛ sent`, and the activity feed records the send as the agent's. Words that would wake a sleeping
+agent need a free seat in the crown's budget and hold it while they wait. The crown can also send
+its words `now` or `immediately`, as your Shift+Enter does with the send set to either: they reach
+a working agent at once instead of waiting for it to go idle. It cannot send them that way while
+the agent is at a dialog. A question from such an agent wakes the crown, which reads it on the
+agent's ticket and may pick one of its options, tick several where the question takes several, or
+type a one-line answer in their place, through the same screen-checked road as Remote Control's
+question card. A dialog that asks several questions at once is answered whole, one answer per
+question, because Claude Code submits them together. The card lights `♛ answered` and reads
+`answered by T-411: Okta` while the agent works on the answer (several answers are joined by `;`),
+and the activity feed records the answer as the agent's. Words for an agent you started, and every
+question or plan from one, wait for you under either mode, and so does a permission, a secret or a
+form. mesimon does not read the question to decide. The crown is told that a question about
+secrets or credentials, spend or quota, something destructive or irreversible (deleting,
 force-pushing, publishing, sending to people), a preference its brief leaves open, or anything
 beyond the brief is yours, and that one such question in a batch makes the whole batch yours, and
 to raise its hand on its own card for it. If you answer first, the crown's answer is refused.
+Switching to supervised, or taking the crown back, holds whatever words had not gone yet on their
+card. Where its words are held for you, the ask opens at the level the crown chose when you edit
+it, and `^y` sends it at that level.
 
 A plan an agent the crown started stops on wakes the crown too. The crown reads the plan on that
 agent's ticket and may accept it the way the board's own accept does: one Enter on the plan
@@ -318,20 +316,13 @@ suite) and the board cannot tell.
 
 ## Sleeping idle agents
 
-**Settings › Agents › Sleep idle agents** optionally sleeps finished agent sessions after
-15, 30, 60 or 120 idle minutes. It is off by default and applies to this board, even with the
-TUI closed. The daemon checks every ten seconds, measuring from when the turn finishes.
-Running turns, background work and sessions needing attention stay awake. Wake resumes the
-same conversation. The board's `park_after_minutes` setting accepts any whole number of
-minutes; `0` disables it.
-
 A column can opt its own tickets in: **Agent behaviour › Sleep idle agents** in the column's
 settings sleeps a Claude agent on a ticket in that column after 1, 5, 15 or 60 minutes idle.
-It is off by default. Any agent idle at its prompt counts, including one you woke or
-interrupted that has not finished a turn since; anything running, waiting on you or with
-background work stays awake. A ticket you move into the column whose agent went idle long ago
-sleeps within seconds. When both timers are on, each acts by its own rule, and the board's
-timer counts only a finished turn.
+It is off by default and works even with the TUI closed; the daemon checks every ten seconds.
+Any agent idle at its prompt counts, including one you woke or interrupted that has not
+finished a turn since; anything running, waiting on you or with background work stays awake.
+A ticket you move into the column whose agent went idle long ago sleeps within seconds. Wake
+resumes the same conversation.
 If you are attached to the agent's pane and have typed in it within the timer, it stays
 awake until you leave or go quiet for that long. On disk this is the column's
 `sleep_after_minutes`, any whole number; `0` disables it.

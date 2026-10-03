@@ -4580,10 +4580,8 @@ impl App {
         let mut ctx = Ctx {
             settings_section: self.settings_section,
             agent_provider: self.board.agent_provider,
-            park_after_minutes: self.board.park_after_minutes,
             crown_budget: self.board.crown_budget,
-            crown_sends: self.board.crown_sends,
-            crown_answers: self.board.crown_answers,
+            crown_mode: self.board.crown_mode,
             crown_archives: self.board.crown_archives,
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
@@ -5766,19 +5764,6 @@ impl App {
             // `^n` on the board or the ticket page; the fields take theirs
             // in `key_input` and `key_editor`.
             Verb::TierNext => self.cycle_tier()?,
-            Verb::ParkAfterMinutes => {
-                let minutes = match self.board.park_after_minutes {
-                    0 => 15,
-                    1..=15 => 30,
-                    16..=30 => 60,
-                    31..=60 => 120,
-                    _ => 0,
-                };
-                match self.client.request(Command::SetParkAfterMinutes { minutes })? {
-                    Response::Err { message } => self.status = message,
-                    _ => self.refresh()?,
-                }
-            }
             Verb::CrownBudget => {
                 let budget = match self.board.crown_budget {
                     0 => 1,
@@ -5793,35 +5778,21 @@ impl App {
                     _ => self.refresh()?,
                 }
             }
-            Verb::CrownSends => {
-                let on = !self.board.crown_sends;
-                match self.client.request(Command::SetCrownSends { on })? {
+            Verb::CrownMode => {
+                let mode = self.board.crown_mode.toggled();
+                match self.client.request(Command::SetCrownMode { mode })? {
                     Response::Err { message } => self.status = message,
                     _ => {
                         self.refresh()?;
-                        // The reach, as the agent-tools row says it: which
-                        // agents take the words, and that a person's never do.
-                        self.status = if on {
-                            "crown sends on ∙ agents it started take its asks once idle".into()
+                        // The reach (T-550, T-569, T-582, T-610): which
+                        // agents take its words and its answers, and that
+                        // a person's agent never does.
+                        self.status = if mode.sends() {
+                            "crown autonomous ∙ agents it started take its asks and its answers"
+                                .into()
                         } else {
-                            "crown sends off ∙ its asks wait on the card for ^y".into()
-                        };
-                    }
-                }
-            }
-            Verb::CrownAnswers => {
-                let on = !self.board.crown_answers;
-                match self.client.request(Command::SetCrownAnswers { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh()?;
-                        // The reach (T-569, T-582): whose questions and
-                        // plans, and that a person's agent still asks the
-                        // person.
-                        self.status = if on {
-                            "crown answers on ∙ agents it started may be answered by it".into()
-                        } else {
-                            "crown answers off ∙ every question and plan waits for you".into()
+                            "crown supervised ∙ its asks wait for ^y, every question and plan for you"
+                                .into()
                         };
                     }
                 }
@@ -12309,20 +12280,12 @@ pub(crate) mod test_support {
                 // The daemon's two answers to the agent-brief offer, in the
                 // one respect the client can see: both are board state, so
                 // the very next snapshot carries them.
-                Command::SetParkAfterMinutes { minutes } => {
-                    self.board.park_after_minutes = minutes;
-                    Ok(Response::Ok)
-                }
                 Command::SetCrownBudget { budget } => {
                     self.board.crown_budget = budget;
                     Ok(Response::Ok)
                 }
-                Command::SetCrownSends { on } => {
-                    self.board.crown_sends = on;
-                    Ok(Response::Ok)
-                }
-                Command::SetCrownAnswers { on } => {
-                    self.board.crown_answers = on;
+                Command::SetCrownMode { mode } => {
+                    self.board.crown_mode = mode;
                     Ok(Response::Ok)
                 }
                 Command::SetCrownArchives { on } => {
@@ -15199,23 +15162,8 @@ mod tests {
         assert_eq!(app.mode, Mode::Sharing { idx: 1, editing: None, armed: false });
     }
 
-    #[test]
-    fn inactivity_setting_cycles_through_board_command() {
-        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
-        app.settings_section = keymap::SettingsSection::Agents;
-        let idx = app.settings_row(Verb::ParkAfterMinutes);
-        app.mode = Mode::Settings { idx };
-        for minutes in [15, 30, 60, 120, 0] {
-            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-            assert_eq!(app.board.park_after_minutes, minutes);
-            assert_eq!(app.ctx().park_after_minutes, minutes);
-            assert_eq!(app.mode, Mode::Settings { idx });
-        }
-        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetParkAfterMinutes")).count(), 5);
-    }
-
     /// The crown's spawn budget (T-412) cycles through the board command
-    /// like the inactivity row, from the default of three.
+    /// from the default of three.
     #[test]
     fn crown_budget_setting_cycles_through_board_command() {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
@@ -15232,45 +15180,27 @@ mod tests {
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownBudget")).count(), 6);
     }
 
-    /// The crown's send switch (T-550) is off on a fresh board and toggles
-    /// through its board command, saying who takes the words.
+    /// The crown's mode (T-610) is autonomous on a fresh board, sits under
+    /// the budget row, and toggles through its board command, saying who
+    /// takes the crown's words and answers.
     #[test]
-    fn crown_sends_setting_toggles_through_board_command() {
+    fn crown_mode_setting_toggles_through_board_command() {
+        use mesimon_core::board::CrownMode;
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
         app.settings_section = keymap::SettingsSection::Agents;
-        let idx = app.settings_row(Verb::CrownSends);
+        let idx = app.settings_row(Verb::CrownMode);
+        assert_eq!(idx, app.settings_row(Verb::CrownBudget) + 1, "under the budget row");
         app.mode = Mode::Settings { idx };
-        assert!(!app.board.crown_sends, "off by default");
+        assert_eq!(app.ctx().crown_mode, CrownMode::Autonomous, "autonomous by default");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(app.board.crown_sends && app.ctx().crown_sends);
-        assert!(app.status.contains("agents it started"), "{}", app.status);
+        assert_eq!(app.board.crown_mode, CrownMode::Supervised);
+        assert_eq!(app.ctx().crown_mode, CrownMode::Supervised);
+        assert!(app.status.contains("question and plan for you"), "{}", app.status);
         assert_eq!(app.mode, Mode::Settings { idx });
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(!app.board.crown_sends && !app.ctx().crown_sends);
-        assert!(app.status.contains("^y"), "{}", app.status);
-        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownSends")).count(), 2);
-    }
-
-    /// The crown's answers switch (T-569) is ON on a fresh board since
-    /// T-582, sits under the sends row, and toggles through its own board
-    /// command: the row is the opt-out.
-    #[test]
-    fn crown_answers_setting_toggles_through_board_command() {
-        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
-        app.settings_section = keymap::SettingsSection::Agents;
-        let idx = app.settings_row(Verb::CrownAnswers);
-        assert_eq!(idx, app.settings_row(Verb::CrownSends) + 1, "under the sends row");
-        app.mode = Mode::Settings { idx };
-        assert!(app.board.crown_answers && app.ctx().crown_answers, "on by default");
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(!app.board.crown_answers && !app.ctx().crown_answers);
-        assert!(app.status.contains("question and plan waits for you"), "{}", app.status);
-        assert_eq!(app.mode, Mode::Settings { idx });
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(app.board.crown_answers && app.ctx().crown_answers);
-        assert!(!app.board.crown_sends, "the sends switch is its own");
+        assert_eq!(app.ctx().crown_mode, CrownMode::Autonomous);
         assert!(app.status.contains("agents it started"), "{}", app.status);
-        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownAnswers")).count(), 2);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownMode")).count(), 2);
     }
 
     /// The crown's archive switch (T-590) is OFF on a fresh board, sits
@@ -15281,7 +15211,7 @@ mod tests {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
         app.settings_section = keymap::SettingsSection::Agents;
         let idx = app.settings_row(Verb::CrownArchives);
-        assert_eq!(idx, app.settings_row(Verb::CrownAnswers) + 1, "under the answers row");
+        assert_eq!(idx, app.settings_row(Verb::CrownMode) + 1, "under the mode row");
         app.mode = Mode::Settings { idx };
         assert!(!app.board.crown_archives && !app.ctx().crown_archives, "off by default");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -15290,7 +15220,11 @@ mod tests {
         assert_eq!(app.mode, Mode::Settings { idx });
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!app.board.crown_archives && !app.ctx().crown_archives);
-        assert!(app.board.crown_answers, "the answers switch is its own");
+        assert_eq!(
+            app.board.crown_mode,
+            mesimon_core::board::CrownMode::Autonomous,
+            "the mode is its own"
+        );
         assert!(app.status.contains("may not archive"), "{}", app.status);
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownArchives")).count(), 2);
     }
@@ -15693,10 +15627,10 @@ mod tests {
     }
 
     /// T-543: the column's idle park is a row in Agent behaviour that
-    /// cycles its minutes on the wire, names the board's timer while it is
-    /// off, and is not offered on a board where no Claude would hear it.
+    /// cycles its minutes on the wire and is not offered on a board where
+    /// no Claude would hear it.
     #[test]
-    fn column_sleep_cycles_on_the_wire_and_names_the_boards_timer() {
+    fn column_sleep_cycles_on_the_wire() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -15705,8 +15639,6 @@ mod tests {
             keymap::column_items(&app.ctx()).into_iter().find(|m| m.verb == Verb::ColumnSleepAfter)
         };
         assert_eq!((row(&app).unwrap().label)(&app.ctx()), "Sleep idle agents: off");
-        app.board.park_after_minutes = 30;
-        assert_eq!((row(&app).unwrap().label)(&app.ctx()), "Sleep idle agents: board (30 min)");
         let idx = keymap::column_items(&app.ctx())
             .iter()
             .position(|m| m.verb == Verb::ColumnSleepAfter)
@@ -16100,7 +16032,9 @@ mod tests {
         let pushes = |sent: &std::cell::RefCell<Vec<String>>| {
             sent.borrow().iter().filter(|c| c.contains("SetAutomation")).count()
         };
-        // Off: a refresh pushes nothing.
+        // Off (the person turned it off; on by default since T-610): a
+        // refresh pushes nothing.
+        app.seed_pref(|p| p.merge_train = false);
         app.refresh().unwrap();
         assert_eq!(pushes(&sent), 0);
         let ctx = app.ctx();
@@ -20992,6 +20926,8 @@ mod tests {
     fn b_flips_scope_and_enter_cycles_inherit_on_off_inherit() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         let (machine, board) = pref_scratch("cycle");
+        // The machine's train off, so this board's cycle starts at on.
+        app.seed_pref(|p| p.merge_train = false);
         app.prefs_path = Some(machine.clone());
         app.board_prefs_path = Some(board.clone());
         app.settings_section = keymap::SettingsSection::Behaviour;

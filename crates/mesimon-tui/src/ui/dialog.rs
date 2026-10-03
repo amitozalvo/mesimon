@@ -173,6 +173,10 @@ pub(super) struct ListRow {
     /// carries one, and the selected row's detail marquee-reveals when it
     /// overflows.
     pub detail: Option<String>,
+    /// A subtitle over the rows under it (T-610): one dim line, never the
+    /// cursor's — a caller keeps its cursor over its own rows and passes
+    /// `idx` already past every heading above it.
+    pub heading: bool,
 }
 
 /// A centred framed list: `name` in the top edge, `scope`'s keys in the
@@ -199,15 +203,33 @@ pub(super) fn list(
     let idx = idx.min(rows.len() - 1);
     let tall = rows.iter().any(|r| r.detail.is_some());
     let per = if tall { 2 } else { 1 };
-    let wanted = u16::try_from(rows.len() * per).unwrap_or(u16::MAX);
+    let height = |r: &ListRow| if r.heading { 1 } else { per };
+    let wanted = u16::try_from(rows.iter().map(height).sum::<usize>()).unwrap_or(u16::MAX);
     let area = centred(f.area(), wanted, MAX_W);
-    let visible = (usize::from(area.height.saturating_sub(2)) / per).max(1);
-    let first = idx.saturating_sub(visible / 2).min(rows.len().saturating_sub(visible));
-    let last = (first + visible).min(rows.len());
-    let name = if rows.len() > visible {
-        format!("{name} ∙ {}/{}", idx + 1, rows.len())
+    // The window, in lines: the cursor's row, about half the room above it,
+    // the rest below, and above again where the list ends first. With every
+    // row one height this is the row arithmetic it replaced; a heading
+    // (T-610) is one line in a list of two.
+    let room = usize::from(area.height.saturating_sub(2));
+    let (mut first, mut last, mut used) = (idx, idx + 1, height(&rows[idx]));
+    while first > 0 && used + height(&rows[first - 1]) <= room / 2 + height(&rows[idx]) {
+        first -= 1;
+        used += height(&rows[first]);
+    }
+    while last < rows.len() && used + height(&rows[last]) <= room {
+        used += height(&rows[last]);
+        last += 1;
+    }
+    while first > 0 && used + height(&rows[first - 1]) <= room {
+        first -= 1;
+        used += height(&rows[first]);
+    }
+    // The count is of the rows a cursor can stand on: a heading is a label.
+    let selectable = rows.iter().filter(|r| !r.heading).count();
+    let name = if last - first < rows.len() {
+        format!("{name} ∙ {}/{selectable}", rows[..=idx].iter().filter(|r| !r.heading).count())
     } else if count {
-        format!("{name} ∙ {}", rows.len())
+        format!("{name} ∙ {selectable}")
     } else {
         name.to_string()
     };
@@ -225,6 +247,18 @@ pub(super) fn list(
     );
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, row) in rows.iter().enumerate().take(last).skip(first) {
+        if row.heading {
+            // One cell in, its rows three: the indent is the group, the
+            // way the sharing dialog's headings read.
+            let head = truncate(&row.head, inner_w.saturating_sub(2));
+            let pad = inner_w.saturating_sub(1 + head.width());
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(head, theme.dim3()),
+                Span::raw(" ".repeat(pad)),
+            ]));
+            continue;
+        }
         let selected = i == idx;
         let style = if selected {
             theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
@@ -320,6 +354,7 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
                 ),
                 right: String::new(),
                 detail: None,
+                heading: false,
             }
         })
         .collect();
@@ -370,6 +405,7 @@ pub(super) fn draw_links(
                 head: format!("{:<6} {}", l.kind(), crate::text::one_line(&body)),
                 right: String::new(),
                 detail: None,
+                heading: false,
             }
         })
         .collect();
@@ -474,6 +510,7 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
                 ),
                 right: String::new(),
                 detail: Some(item.preview.clone().unwrap_or_default()),
+                heading: false,
             }
         })
         .collect();

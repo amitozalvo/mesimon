@@ -33,6 +33,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize, slot: Slot) {
             head: "inherit".into(),
             right: String::new(),
             detail: Some(format!("the machine's pick: {machine}")),
+            heading: false,
         });
     }
     // The flavor's own ground sits where the menu puts a key: it is the one
@@ -42,6 +43,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize, slot: Slot) {
         head: flavor.name().into(),
         right: flavor.ground().word().into(),
         detail: Some(flavor.blurb().into()),
+        heading: false,
     }));
     let name = match slot {
         Slot::One(g) => format!("THEME ∙ for a {} terminal", g.word()),

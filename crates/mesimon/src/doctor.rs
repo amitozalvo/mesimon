@@ -597,26 +597,17 @@ fn agents(repo: &Path, verbose: bool) -> Section {
                 .advice("Counted over the awake agents the crown started; a sleeping one frees its seat until it is woken. A crown-started ticket cannot itself be crowned. Settings > Agents > Crown may start ... sets it."),
         });
 
-        // Whether the crown's words reach another agent with no person
-        // between them (T-550): printed either way, beside the budget that
-        // bounds what those words can wake.
-        records.push(if cols.crown_sends {
-            rec(Level::Note, "crown sends", "on - the crown's asks go to agents it started once they are idle")
-                .advice("An ask_agent to an agent the crown started is delivered by the queue without your ^y; one to an agent you started still waits for you. Words that would wake a sleeping agent need a free seat in the crown budget. Settings > Agents > Crown sends its asks turns it off.")
+        // The crown's mode (T-610, over T-550's and T-569's switches):
+        // whether its words reach another agent with no person between
+        // them, and whether it answers a question in another agent's dialog
+        // and accepts its plan, a decision made for the person. Printed
+        // either way, beside the budget that bounds what its words can wake.
+        records.push(if cols.crown_mode.sends() {
+            rec(Level::Note, "crown mode", "autonomous - the crown's asks go to agents it started once they are idle, and it may answer their questions and accept their plans")
+                .advice("An ask_agent to an agent the crown started is delivered by the queue without your ^y; words that would wake a sleeping agent need a free seat in the crown budget. A question or plan from such an agent wakes the crown; answer_agent types the answer into the dialog and accept_plan presses the plan dialog's default row, and the feed and the card say what it did. It raises its hand for a question or a plan that is yours to decide. An agent you started, and every permission, secret or form, still waits for you. Settings > Agents > Crown mode makes it supervised.")
         } else {
-            rec(Level::Ok, "crown sends", "off - every ask_agent waits on its card for your ^y")
-                .advice("Settings > Agents > Crown sends its asks lets the crown deliver to the agents it started; an agent you started always waits for you.")
-        });
-
-        // Whether the crown answers a question in another agent's dialog
-        // (T-569) and accepts its plan (T-582): a decision made for the
-        // person, on by default, printed either way.
-        records.push(if cols.crown_answers {
-            rec(Level::Note, "crown answers", "on - the crown may answer the questions and accept the plans of agents it started")
-                .advice("Such a question or plan wakes the crown; answer_agent types the answer into the dialog and accept_plan presses the plan dialog's default row, and the feed and the card say what it did. It raises its hand for a question or a plan that is yours to decide. A question or plan from an agent you started, and every permission, secret or form, still waits for you. Settings > Agents > Crown answers questions turns it off.")
-        } else {
-            rec(Level::Ok, "crown answers", "off - every question and plan an agent stops on waits for you")
-                .advice("Settings > Agents > Crown answers questions lets the crown answer the questions and accept the plans of the agents it started.")
+            rec(Level::Ok, "crown mode", "supervised - every ask_agent waits on its card for your ^y, and every question and plan an agent stops on waits for you")
+                .advice("Settings > Agents > Crown mode makes it autonomous: the crown delivers to the agents it started, answers their questions and accepts their plans; an agent you started always waits for you.")
         });
 
         records.push(crown_archives(cols.crown_archives));

@@ -2,9 +2,10 @@
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
-    Decay treatments      >╭─ AGENTS ───────────────────────────────────────────────────────╮
-                           │   Default tier: claude                                         │
-    Keymap validator      >│     Claude Code ∙ its own model ∙ what a ticket starts on unl~ │
+    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
+                           ╭─ AGENTS ───────────────────────────────────────────────────────╮
+    Keymap validator      >│   Default tier: claude                                         │
+                           │     Claude Code ∙ its own model ∙ what a ticket starts on unl~ │
                            │   Tiers: none yet                                              │
                            │     a name for a launch: provider, model, effort ∙ ^n cycles ~ │
                            │   Agent brief: off                                             │
@@ -13,17 +14,16 @@
                            │     the seven board tools every spawn carries ∙ enter takes t~ │
                            │   Agent prompts: mesimon's words                               │
                            │     what mesimon types at an agent about a rebase, a merge, a~ │
-                           │   Sleep idle agents: off                                       │
-                           │     this board ∙ after a finished turn ∙ enter cycles off / 1~ │
+                           │ Crown                                                          │
                            │   Crown may start 3 agents at once                             │
                            │     start_agent on the crowned ticket ∙ a sleeping agent free~ │
-                           │   Crown sends its asks: off                                    │
-                           │     its asks wait on the card for ^y ∙ enter lets it send to ~ │
-                           │   Crown answers questions: on                                  │
-                           │     a question or plan from an agent it started wakes it, and~ │
+                           │   Crown mode: autonomous                                       │
+                           │     agents it started take its asks without ^y, and it answer~ │
                            │   Crown archives tickets: off                                  │
                            │     it may not archive or restore tickets ∙ enter lets it      │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
+
+
 
 
 

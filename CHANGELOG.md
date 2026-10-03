@@ -64,9 +64,23 @@ in the Esc menu under `Release notes` and on GitHub.
 - **The crown answers questions and accepts plans by default**, including on
   existing boards. `accept_plan` is a new crown tool; a worker stopping on a
   plan wakes the crown, and its card reads `♛ accepted plan`. Turn both off
-  in `Settings › Agents › Crown answers questions`. The crown never answers
-  for an agent a person started, or a secret, permission or sign-in prompt;
-  a person who answers first wins.
+  by setting `Settings › Agents › Crown mode` to `supervised`. The crown
+  never answers for an agent a person started, or a secret, permission or
+  sign-in prompt; a person who answers first wins.
+- **One `Crown mode` row replaces `Crown sends its asks` and `Crown answers
+  questions`.** `Settings › Agents › Crown mode` is `autonomous` by default,
+  on new and existing boards: the crown's asks reach the agents it started
+  without your `^y`, and it answers their questions and accepts their
+  plans. `supervised` keeps all three for you. `mesimon doctor` prints one
+  `crown mode` line in place of `crown sends` and `crown answers`.
+- **The crown's rows in `Settings › Agents` sit under a `Crown` heading**:
+  `Crown may start`, `Crown mode` and `Crown archives tickets`.
+- **The board-wide `Sleep idle agents` row is removed.** A column's own
+  `Agent behaviour › Sleep idle agents` is now the only idle timer; a board
+  that set the old row no longer sleeps agents by it.
+- **Auto merge is on by default** where `prefs.json` does not set it, as on
+  a new install. `Settings › Behaviour › Auto merge` turns it off; a
+  machine that already saved it off keeps it off.
 - **The crown can no longer archive tickets unless you allow it.** New row
   `Settings › Agents › Crown archives tickets`, off by default; while off,
   the crown moves finished tickets to DONE and a merged worktree stays until

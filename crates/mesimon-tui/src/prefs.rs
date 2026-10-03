@@ -316,9 +316,11 @@ pub(crate) struct Prefs {
     pub week_start: Weekday,
     /// The merge train (2026-09-04): while every claude on the board is idle,
     /// mesimon fast-forwards finished REVIEW branches and asks idle agents
-    /// whose branch fell behind to rebase + test. OFF by default — it prompts
-    /// an agent with no per-press gesture, and this row is the consent. The
-    /// TUI pushes it to the daemon; the daemon never reads this file.
+    /// whose branch fell behind to rebase + test. ON by default since T-610
+    /// (the author's settings review): it prompts an agent with no per-press
+    /// gesture, and this row is where the consent is taken back. A file that
+    /// says `false` keeps it off. The TUI pushes it to the daemon; the
+    /// daemon never reads this file.
     pub merge_train: bool,
     /// After a train merge, paste the merged notice into that agent (starts
     /// a turn). On by default; only meaningful while the train is on.
@@ -441,7 +443,7 @@ impl Default for Prefs {
             follow_os: true,
             snooze_needs_you: true,
             week_start: Weekday::Monday,
-            merge_train: false,
+            merge_train: true,
             merge_train_notice: true,
             status_top: false,
             tab_title: TabTitle::Mesimon,
@@ -981,7 +983,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     };
     let follow_os = doc.get(FOLLOW_OS_KEY).and_then(Value::as_bool).unwrap_or(true);
     let snooze_needs_you = doc.get(SNOOZE_KEY).and_then(Value::as_bool).unwrap_or(true);
-    let merge_train = doc.get(MERGE_TRAIN_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let merge_train = doc.get(MERGE_TRAIN_KEY).and_then(Value::as_bool).unwrap_or(true);
     let merge_train_notice =
         doc.get(MERGE_TRAIN_NOTICE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let status_top = doc.get(STATUS_TOP_KEY).and_then(Value::as_bool).unwrap_or(false);
@@ -1427,26 +1429,27 @@ mod tests {
         assert_eq!(v["dark"], "amber");
     }
 
-    /// The merge train: absent is OFF (it prompts agents with no gesture)
-    /// and the notice absent is ON; both round-trip and survive a theme pick.
+    /// The merge train: absent is ON since T-610, and so is the notice; an
+    /// off of either round-trips and survives a theme pick.
     #[test]
-    fn the_merge_train_defaults_off_and_round_trips() {
+    fn the_merge_train_defaults_on_and_round_trips() {
         let p = scratch("train");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
         let mut l = load(&p);
-        assert!(!l.prefs.merge_train, "absent is the default: off");
+        assert!(l.prefs.merge_train, "absent is the default: on");
         assert!(l.prefs.merge_train_notice, "absent is the default: on");
-        l.prefs.merge_train = true;
+        assert!(Prefs::default().merge_train);
+        l.prefs.merge_train = false;
         l.prefs.merge_train_notice = false;
         save(&p, &l.prefs).unwrap();
         let mut l = load(&p);
-        assert!(l.prefs.merge_train);
+        assert!(!l.prefs.merge_train, "an off is kept");
         assert!(!l.prefs.merge_train_notice);
         l.prefs.set(Ground::Dark, Flavor::Amber);
         save(&p, &l.prefs).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-        assert_eq!(v["merge_train"], true);
+        assert_eq!(v["merge_train"], false);
         assert_eq!(v["merge_train_notice"], false);
         assert_eq!(v["dark"], "amber");
     }

@@ -557,10 +557,6 @@ pub enum Command {
     SetMcpTools {
         on: bool,
     },
-    /// Board inactivity timeout for Claude sessions, in minutes. Zero disables it.
-    SetParkAfterMinutes {
-        minutes: u32,
-    },
     /// The crown's spawn budget (`Board::crown_budget`, T-412): how many
     /// awake agents the crown's agent may have started at once. Zero means
     /// none. Local only — a tier that could raise its own budget is D10's
@@ -568,19 +564,15 @@ pub enum Command {
     SetCrownBudget {
         budget: u8,
     },
-    /// Whether the crown delivers its own asks to the agents it started
-    /// (`Board::crown_sends`, T-550). Local only for the budget's reason:
-    /// an agent that could switch this on would be lifting the person out
-    /// from between its words and another agent's turn.
-    SetCrownSends {
-        on: bool,
-    },
-    /// Whether the crown may answer a question an agent it started stopped
-    /// on (`Board::crown_answers`, T-569). Local only, and apart from
-    /// `SetCrownSends`: an answer in a dialog is a decision made for the
-    /// person, and only the person may hand that over.
-    SetCrownAnswers {
-        on: bool,
+    /// The crown's mode (`Board::crown_mode`, T-610): whether it delivers
+    /// its own asks to the agents it started, answers their questions and
+    /// accepts their plans. Local only for the budget's reason: an agent
+    /// that could make itself autonomous would be lifting the person out
+    /// from between its words and another agent's turn, and an answer in a
+    /// dialog is a decision made for the person, which only the person may
+    /// hand over.
+    SetCrownMode {
+        mode: crate::board::CrownMode,
     },
     /// Whether the crown may archive and restore tickets with
     /// `archive_ticket` (`Board::crown_archives`, T-590). Local only: taking
@@ -1039,7 +1031,7 @@ pub enum Command {
     },
     /// Answer the question another ticket's agent stopped on, by key
     /// (T-569): Remote Control's screen-verified dialog road, driven for the
-    /// crown. Crown only, behind `Board::crown_answers`, only for an agent
+    /// crown. Crown only, behind `Board::crown_mode`, only for an agent
     /// the crown started, only at `RequiresAction{Question}` on the dialog
     /// `request` names (get_ticket's `needs_you.request`), and only in a
     /// shape the phone answers. `index` picks an option of the one
@@ -1062,7 +1054,7 @@ pub enum Command {
     /// Accept the plan another ticket's agent stopped on, by key (T-582):
     /// the board's own accept (T-420), Enter on the plan dialog's default
     /// row once the screen shows it there, pressed for the crown. Crown
-    /// only, behind `Board::crown_answers`, only for a claude the crown
+    /// only, behind `Board::crown_mode`, only for a claude the crown
     /// started, only at `RequiresAction{Plan}` on the dialog `request`
     /// names (get_ticket's `needs_you.request`). The receipt waits for the
     /// hook edge (`Response::AgentPlanAccepted`).
@@ -1376,10 +1368,8 @@ impl Command {
             | DeleteTier { .. }
             | MoveTier { .. }
             | SetDefaultTier { .. }
-            | SetParkAfterMinutes { .. }
             | SetCrownBudget { .. }
-            | SetCrownSends { .. }
-            | SetCrownAnswers { .. }
+            | SetCrownMode { .. }
             | SetCrownArchives { .. }
             | SetSystemPrompt { .. }
             | SetFollowUpMode { .. }

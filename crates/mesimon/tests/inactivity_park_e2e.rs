@@ -58,8 +58,21 @@ fn finish(h: &Harness, c: &mut TestClient, id: uuid::Uuid) {
     });
 }
 
+/// Every column's minutes (T-543), the board's only idle timer since
+/// T-610: the automoves carry these tickets between columns.
+fn sleep_every_column(c: &mut TestClient, minutes: u32) {
+    for column in c.board().columns {
+        let mut settings = column.settings.clone();
+        settings.sleep_after_minutes = minutes;
+        assert!(matches!(
+            c.request(Command::SetColumnSettings { name: column.name, settings }),
+            Response::Ok
+        ));
+    }
+}
+
 #[test]
-fn inactivity_parks_only_finished_resumable_turns_and_wakes_the_same_conversation() {
+fn inactivity_parks_only_idle_resumable_agents_and_wakes_the_same_conversation() {
     let Some(h) = Harness::boot_with_env(
         "inactivity",
         Some(STUB),
@@ -75,7 +88,6 @@ fn inactivity_parks_only_finished_resumable_turns_and_wakes_the_same_conversatio
     let (idle, conversation) = start(&h, &mut c, "finished");
     finish(&h, &mut c, idle);
     std::thread::sleep(Duration::from_secs(4));
-    assert_eq!(c.board().park_after_minutes, 0);
     assert!(matches!(
         c.board().sessions.iter().find(|s| s.id == idle).unwrap().state,
         SessionState::Idle { stop_reason: StopReason::EndTurn }
@@ -110,13 +122,12 @@ fn inactivity_parks_only_finished_resumable_turns_and_wakes_the_same_conversatio
     let (missing, missing_conversation) = start(&h, &mut c, "missing history");
     finish(&h, &mut c, missing);
     std::fs::remove_file(h.dir.join(format!("{missing_conversation}.jsonl"))).unwrap();
-    let (unknown, _) = start(&h, &mut c, "no finished turn");
 
     // Time spent running never consumes the idle timeout, including a new turn
     // on a record whose previous completion is already older than the timeout.
     hook(&h, idle, "UserPromptSubmit", "{}");
     c.await_state(idle, "running again", |s| *s == SessionState::Running);
-    assert!(matches!(c.request(Command::SetParkAfterMinutes { minutes: 1 }), Response::Ok));
+    sleep_every_column(&mut c, 1);
     std::thread::sleep(Duration::from_secs(4));
     assert_eq!(
         c.board().sessions.iter().find(|s| s.id == idle).unwrap().state,
@@ -133,7 +144,7 @@ fn inactivity_parks_only_finished_resumable_turns_and_wakes_the_same_conversatio
     ));
     c.await_state(idle, "automatically sleeping", |s| *s == SessionState::Sleeping);
     let board = c.board();
-    for id in background_sessions.into_iter().chain([attention, missing, unknown]) {
+    for id in background_sessions.into_iter().chain([attention, missing]) {
         assert!(
             board.sessions.iter().find(|s| s.id == id).unwrap().state.has_pane(),
             "unsafe park: {id}"
@@ -150,8 +161,7 @@ fn inactivity_parks_only_finished_resumable_turns_and_wakes_the_same_conversatio
     let rec = board.sessions.iter().find(|s| s.id == idle).unwrap();
     assert_eq!(rec.claude_session_id, Some(conversation));
     assert!(rec.argv.windows(2).any(|a| a == ["--resume", &conversation.to_string()]));
-    assert!(matches!(c.request(Command::SetParkAfterMinutes { minutes: 0 }), Response::Ok));
-    assert_eq!(c.board().park_after_minutes, 0);
+    sleep_every_column(&mut c, 0);
 }
 
 /// T-543: a column opts its tickets into the idle park. Nothing sleeps
@@ -184,7 +194,6 @@ fn a_column_parks_its_idle_agents_and_spares_the_rest() {
 
     // Older than a column minute, and no column has asked: both awake.
     std::thread::sleep(Duration::from_millis(10_500));
-    assert_eq!(c.board().park_after_minutes, 0);
     for id in [kept, parked] {
         assert!(state(&mut c, id).has_pane(), "slept with nothing on: {id}");
     }
@@ -241,7 +250,7 @@ fn a_column_parks_its_idle_agents_and_spares_the_rest() {
 
     // The author's T-534: woken in DONE, it sits at its prompt with no
     // finished turn (`Idle{Unknown}` off the resume's SessionStart). The
-    // board's timer would wait for a turn; the column's sleeps it anyway.
+    // column's timer sleeps it anyway.
     assert!(matches!(
         c.request(Command::WakeSession { id: parked }),
         Response::Spawned { fresh: false, .. }

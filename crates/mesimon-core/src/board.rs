@@ -567,20 +567,14 @@ impl SessionRecord {
         }
     }
 
-    /// A confirmed finished Claude turn has exceeded an enabled inactivity timeout.
-    /// The daemon additionally checks pending work, ownership and resume history.
-    pub fn inactivity_park_due(&self, now: u64, timeout_ms: u64) -> bool {
-        self.state == (SessionState::Idle { stop_reason: StopReason::EndTurn })
-            && self.park_clock_due(now, timeout_ms)
-    }
-
-    /// A column's opt-in (T-543) is wider than the board's timer: a Claude
-    /// idle at its prompt counts whether or not a turn finished there — just
-    /// woken, interrupted, or done waiting on background work — because a
-    /// column that asked for its agents to sleep meant every idle one (the
-    /// author's T-534 was woken in DONE and never slept). Background and
-    /// monitoring are still work. A conversation with no history yet is
-    /// the daemon's to refuse, as for the board's timer.
+    /// A column's opt-in (T-543): a confirmed Claude idle at its prompt past
+    /// the timeout, whether or not a turn finished there — just woken,
+    /// interrupted, or done waiting on background work — because a column
+    /// that asked for its agents to sleep meant every idle one (the author's
+    /// T-534 was woken in DONE and never slept). Background and monitoring
+    /// are still work. The daemon additionally checks pending work,
+    /// ownership and resume history; a conversation with no history yet is
+    /// its to refuse.
     pub fn autosleep_due(&self, now: u64, timeout_ms: u64) -> bool {
         matches!(
             self.state,
@@ -1020,9 +1014,9 @@ pub struct ColumnSettings {
     pub train: TrainReach,
     /// Park a Claude agent here once it has been idle at its prompt this
     /// many minutes (T-543, `SessionRecord::autosleep_due`); zero is off.
-    /// The board's `park_after_minutes` still applies everywhere under its
-    /// own rule (`Board::idle_park_due`). No schema bump: a build that drops
-    /// it only stops sleeping agents, which narrows nothing.
+    /// The board's only idle timer since T-610 (`Board::idle_park_due`). No
+    /// schema bump: a build that drops it only stops sleeping agents, which
+    /// narrows nothing.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub sleep_after_minutes: u32,
 }
@@ -1695,6 +1689,48 @@ impl Ticket {
     }
 }
 
+/// How far the crown acts for the person on the agents it started (T-610):
+/// one setting over what were two switches, `crown_sends` (T-550) and
+/// `crown_answers` (T-569, T-582). `Autonomous` delivers its `ask_agent`
+/// words by the queue without a person's `^y`, answers their questions and
+/// accepts their plans; `Supervised` holds every ask for `^y` and leaves
+/// every question and plan to the person. An agent a person started is the
+/// person's under either mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CrownMode {
+    #[default]
+    Autonomous,
+    Supervised,
+}
+
+impl CrownMode {
+    /// The crown's `ask_agent` words go by the queue (was `crown_sends`).
+    pub fn sends(self) -> bool {
+        self == Self::Autonomous
+    }
+
+    /// The crown answers questions and accepts plans (was `crown_answers`).
+    pub fn answers(self) -> bool {
+        self == Self::Autonomous
+    }
+
+    /// The setting's value in the words the row and `doctor` show.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Autonomous => "autonomous",
+            Self::Supervised => "supervised",
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Autonomous => Self::Supervised,
+            Self::Supervised => Self::Autonomous,
+        }
+    }
+}
+
 /// Default timing for a person's follow-up composer, stored per board.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1713,9 +1749,6 @@ pub struct Board {
     /// sessions, including sleeping ones, retain their persisted kind.
     #[serde(default)]
     pub agent_provider: AgentProvider,
-    /// Automatically sleep quiet Claude sessions after this many minutes; zero disables it.
-    #[serde(default)]
-    pub park_after_minutes: u32,
     /// The spawn budget (T-412): how many agent seats the crown's agent may
     /// have started at once, counted over `SessionRecord::started_by` while
     /// each seat is held awake (a sleeping record frees it, T-541) on a
@@ -1724,27 +1757,19 @@ pub struct Board {
     /// by the one-level rule on `started_by`, never by trust.
     #[serde(default = "default_crown_budget")]
     pub crown_budget: u8,
-    /// The crown delivers its own asks (T-550): `ask_agent` words for an
-    /// agent the crown STARTED (`started_by`, any crown's) go by the queue
-    /// when that agent is idle, instead of waiting on a person's `^y`
-    /// (T-413). An agent a person started is held for them whatever this
-    /// says, and a wake on the crown's words is a seat in `crown_budget`.
-    /// Off by default; a build that drops it only takes authority away.
+    /// The crown's mode (T-610): under `Autonomous`, the default, its
+    /// `ask_agent` words for an agent it STARTED (`started_by`, any
+    /// crown's) go by the queue when that agent is idle instead of waiting
+    /// on a person's `^y` (T-550), `answer_agent` may answer the
+    /// `AskUserQuestion` such an agent stopped on (T-569) and `accept_plan`
+    /// its plan (T-582), and either stop wakes the crown. `Supervised`
+    /// keeps all three for the person. An agent a person started is held
+    /// for them whatever this says, and a wake on the crown's words is a
+    /// seat in `crown_budget`. The two switches it replaced
+    /// (`crown_sends`, `crown_answers`) are ignored on read: a board that
+    /// had them comes up autonomous, the author's call for every board.
     #[serde(default)]
-    pub crown_sends: bool,
-    /// The crown answers questions (T-569) and accepts plans (T-582):
-    /// `answer_agent` may answer the `AskUserQuestion` an agent the crown
-    /// STARTED stopped on and `accept_plan` the plan one stopped on, and
-    /// either stop wakes the crown. Separate from `crown_sends`: a person
-    /// who let the crown's words through at idle has not consented to
-    /// answers in a dialog. A person's agent, and every other stop, stays
-    /// the person's whatever this says. ON by default since T-582 (the
-    /// author: "as the crown you should be able to answer without user
-    /// unless you choose to delegate to the user"); the crown's delegation
-    /// is its own `raise_hand`. A build that drops it leaves every question
-    /// to a person again, which only takes authority away.
-    #[serde(default = "yes")]
-    pub crown_answers: bool,
+    pub crown_mode: CrownMode,
     /// The crown archives (T-590): `archive_ticket`, archive and restore
     /// alike, is refused while this is off; nothing else of the crown's
     /// changes. Taking a card off the board is
@@ -1864,7 +1889,7 @@ fn default_crown_budget() -> u8 {
     DEFAULT_CROWN_BUDGET
 }
 
-/// `Board::mcp_tools` and `Board::crown_answers` default ON: a serde default
+/// `Board::mcp_tools` defaults ON: a serde default
 /// has to be a function, and this is the whole of it.
 fn yes() -> bool {
     true
@@ -1923,10 +1948,8 @@ impl Default for Board {
             tickets: Vec::new(),
             sessions: Vec::new(),
             agent_provider: AgentProvider::default(),
-            park_after_minutes: 0,
             crown_budget: DEFAULT_CROWN_BUDGET,
-            crown_sends: false,
-            crown_answers: true,
+            crown_mode: CrownMode::default(),
             crown_archives: false,
             next_key: 0,
             tags: Vec::new(),
@@ -2042,10 +2065,8 @@ impl Board {
 
     /// The idle park that is due for `rec` now (T-543), as the automation
     /// rule that names it in the feed and its timeout: the ticket's column's
-    /// `sleep_after_minutes` under `autosleep_due`, else the board's
-    /// `park_after_minutes` under `inactivity_park_due`. Each timer is judged
-    /// by its own rule, never the shorter one by the other's: a 15-minute
-    /// board does not narrow a column that sleeps every idle agent after 60.
+    /// `sleep_after_minutes` under `autosleep_due`. The column is the only
+    /// timer since T-610 removed the board's `park_after_minutes`.
     pub fn idle_park_due(
         &self,
         rec: &SessionRecord,
@@ -2057,14 +2078,7 @@ impl Board {
             .ticket(rec.ticket)
             .and_then(|t| self.column(&t.column))
             .map_or(0, |c| timeout(c.settings.sleep_after_minutes));
-        let board = timeout(self.park_after_minutes);
-        if rec.autosleep_due(now, column) {
-            Some(("autosleep", column))
-        } else if rec.inactivity_park_due(now, board) {
-            Some(("inactivity_park", board))
-        } else {
-            None
-        }
+        rec.autosleep_due(now, column).then_some(("autosleep", column))
     }
 
     /// The column a ticket lands in when nothing named one (T-279): the
@@ -2690,7 +2704,7 @@ impl Board {
     /// either way. A parked agent is out of the count (T-541): it runs no
     /// process and spends nothing, so `sleep_agent` (or a person's `x`, or
     /// the inactivity park) frees its seat, and its wake — a person's `c`,
-    /// their send of the crown's held ask, or with `crown_sends` the
+    /// their send of the crown's held ask, or in autonomous mode the
     /// crown's own ask, which the daemon counts as a seat while it waits
     /// (T-550) — takes it back. An archived ticket's (a snooze's too) is out of the count
     /// as well (T-518), a belt now that an archive needs everything asleep.
@@ -2817,16 +2831,27 @@ mod tests {
         );
     }
 
-    /// T-582: a board from before the field lets the crown answer and
-    /// accept, and one that turned it off keeps it off.
+    /// T-610: a board from before the mode, whatever its two old switches
+    /// said, lets the crown act; a supervised board stays supervised.
     #[test]
-    fn crown_answers_defaults_on_and_an_off_is_kept() {
-        assert!(Board::default().crown_answers);
+    fn crown_mode_defaults_autonomous_and_a_supervised_is_kept() {
+        assert_eq!(Board::default().crown_mode, CrownMode::Autonomous);
         let mut wire = serde_json::to_value(Board::default()).unwrap();
-        wire.as_object_mut().unwrap().remove("crown_answers");
-        assert!(serde_json::from_value::<Board>(wire.clone()).unwrap().crown_answers);
+        assert_eq!(wire["crown_mode"], "autonomous");
+        wire.as_object_mut().unwrap().remove("crown_mode");
+        wire["crown_sends"] = serde_json::json!(false);
         wire["crown_answers"] = serde_json::json!(false);
-        assert!(!serde_json::from_value::<Board>(wire).unwrap().crown_answers);
+        assert_eq!(
+            serde_json::from_value::<Board>(wire.clone()).unwrap().crown_mode,
+            CrownMode::Autonomous,
+            "the old switches are ignored"
+        );
+        wire["crown_mode"] = serde_json::json!("supervised");
+        let back = serde_json::from_value::<Board>(wire).unwrap().crown_mode;
+        assert_eq!(back, CrownMode::Supervised);
+        assert!(!back.sends() && !back.answers());
+        assert!(CrownMode::Autonomous.sends() && CrownMode::Autonomous.answers());
+        assert_eq!(back.toggled(), CrownMode::Autonomous);
     }
 
     /// T-590: a board from before the field leaves archiving to a person,
@@ -2841,13 +2866,12 @@ mod tests {
         assert!(serde_json::from_value::<Board>(wire).unwrap().crown_archives);
     }
 
-    /// T-543: a column opts its tickets into the idle park, and each timer
-    /// is judged by its own rule. The column takes an agent idle at its
-    /// prompt with no finished turn (woken, interrupted); the board's timer
-    /// waits for a finished one; a ticket in a column that did not opt in
-    /// keeps only the board's.
+    /// T-543: a column opts its tickets into the idle park, taking an agent
+    /// idle at its prompt with no finished turn (woken, interrupted) too; a
+    /// ticket in a column that did not opt in never sleeps by time (T-610
+    /// removed the board's timer).
     #[test]
-    fn a_columns_sleep_timer_and_the_boards_each_judge_by_their_own_rule() {
+    fn a_columns_sleep_timer_is_the_only_one() {
         let mut board = Board::default();
         let mut done = Column::new("DONE", "b");
         done.settings.sleep_after_minutes = 5;
@@ -2878,26 +2902,6 @@ mod tests {
         }
         let elsewhere = rec(1, StopReason::EndTurn);
         assert_eq!(board.idle_park_due(&elsewhere, 99_000, minute), None, "nothing on there");
-        board.park_after_minutes = 1;
-        assert_eq!(
-            board.idle_park_due(&elsewhere, 1_000, minute),
-            Some(("inactivity_park", 1_000))
-        );
-        assert_eq!(
-            board.idle_park_due(&rec(1, StopReason::Unknown), 99_000, minute),
-            None,
-            "the board's timer waits for a finished turn"
-        );
-        assert_eq!(
-            board.idle_park_due(&finished, 1_000, minute),
-            Some(("inactivity_park", 1_000)),
-            "the board's sooner timer still parks a finished turn in the column"
-        );
-        assert_eq!(
-            board.idle_park_due(&woken, 1_000, minute),
-            None,
-            "and does not lend its minute to the column's wider rule"
-        );
         let mut low = rec(2, StopReason::Unknown);
         low.confidence = Confidence::Low;
         assert_eq!(board.idle_park_due(&low, 99_000, minute), None, "a guess is not idle");
@@ -2927,7 +2931,7 @@ mod tests {
     }
 
     #[test]
-    fn inactivity_requires_a_confirmed_finished_turn_and_ages_from_settlement() {
+    fn autosleep_requires_a_confirmed_idle_and_ages_from_settlement() {
         let mut rec = SessionRecord::new(
             uuid::Uuid::new_v4(),
             SessionKind::Claude,
@@ -2937,12 +2941,12 @@ mod tests {
             SessionState::Idle { stop_reason: StopReason::EndTurn },
         );
         rec.confidence = Confidence::High;
-        assert!(!rec.inactivity_park_due(99_000, 60_000), "unknown idle age");
+        assert!(!rec.autosleep_due(99_000, 60_000), "unknown idle age");
         rec.state_changed_at = Some(30_000);
-        assert!(!rec.inactivity_park_due(89_999, 60_000));
-        assert!(rec.inactivity_park_due(90_000, 60_000));
-        assert!(!rec.inactivity_park_due(90_000, 0), "off");
-        assert!(!rec.inactivity_park_due(29_999, 60_000), "clock moved backwards");
+        assert!(!rec.autosleep_due(89_999, 60_000));
+        assert!(rec.autosleep_due(90_000, 60_000));
+        assert!(!rec.autosleep_due(90_000, 0), "off");
+        assert!(!rec.autosleep_due(29_999, 60_000), "clock moved backwards");
         for state in [
             SessionState::Running,
             SessionState::Spawning,
@@ -2953,31 +2957,29 @@ mod tests {
             SessionState::unknown(),
             SessionState::Idle { stop_reason: StopReason::Background },
             SessionState::Idle { stop_reason: StopReason::Monitoring },
-            SessionState::Idle { stop_reason: StopReason::Interrupted },
-            SessionState::Idle { stop_reason: StopReason::Unknown },
         ] {
             let mut held = rec.clone();
             held.state = state;
-            assert!(!held.inactivity_park_due(90_000, 60_000), "{:?}", held.state);
+            assert!(!held.autosleep_due(90_000, 60_000), "{:?}", held.state);
         }
         for kind in [SessionKind::Codex, SessionKind::Bash] {
             let mut held = rec.clone();
             held.kind = kind;
-            assert!(!held.inactivity_park_due(90_000, 60_000));
+            assert!(!held.autosleep_due(90_000, 60_000));
         }
         for confidence in [Confidence::Medium, Confidence::Low, Confidence::Stale] {
             let mut held = rec.clone();
             held.confidence = confidence;
-            assert!(!held.inactivity_park_due(90_000, 60_000));
+            assert!(!held.autosleep_due(90_000, 60_000));
         }
         let mut held = rec.clone();
         held.pending_submit = true;
-        assert!(!held.inactivity_park_due(90_000, 60_000));
+        assert!(!held.autosleep_due(90_000, 60_000));
         held = rec.clone();
         held.pending_prefill = true;
-        assert!(!held.inactivity_park_due(90_000, 60_000));
+        assert!(!held.autosleep_due(90_000, 60_000));
         rec.argv.clear();
-        assert!(!rec.inactivity_park_due(90_000, 60_000), "observe-only adoption");
+        assert!(!rec.autosleep_due(90_000, 60_000), "observe-only adoption");
     }
 
     #[test]

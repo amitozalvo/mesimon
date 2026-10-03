@@ -632,14 +632,13 @@ class Rig:
             settings["claude_mode"] = "manual"
             self.wire.request({"cmd": "set_column_settings", "name": MANUAL_COLUMN,
                                "settings": settings})
-        if not board.get("crown_answers", True):
-            self.wire.set_crown_answers(True)
-        # The crown's asks go straight to the workers it started (T-550);
-        # otherwise each waits on its card for a person's ^y.
-        if not board.get("crown_sends"):
-            self.wire.set_crown_sends(True)
+        # The crown's asks go straight to the workers it started and it
+        # answers their questions (T-610's autonomous mode, the default);
+        # supervised, each waits on its card for a person's ^y.
+        if board.get("crown_mode", "autonomous") != "autonomous":
+            self.wire.set_crown_mode("autonomous")
         say(f"  tier {TIER_NAME} ({spec['model']}, effort {TIER_EFFORT}) is the board's default; "
-            f"the crown answers and sends")
+            f"the crown is autonomous")
 
     def clear_previous(self):
         """A run is repeatable. An earlier run's tickets stay where they are

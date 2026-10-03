@@ -181,11 +181,8 @@ class Wire:
     def set_default_tier(self, scope, tier_id):
         return self.request({"cmd": "set_default_tier", "scope": scope, "id": tier_id})
 
-    def set_crown_sends(self, on):
-        return self.request({"cmd": "set_crown_sends", "on": on})
-
-    def set_crown_answers(self, on):
-        return self.request({"cmd": "set_crown_answers", "on": on})
+    def set_crown_mode(self, mode):
+        return self.request({"cmd": "set_crown_mode", "mode": mode})
 
     def set_crown_budget(self, budget):
         return self.request({"cmd": "set_crown_budget", "budget": budget})

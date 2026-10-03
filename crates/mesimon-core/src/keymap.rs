@@ -673,22 +673,19 @@ pub enum Verb {
     /// ticket page at once, in the composer and the ask field as a pick
     /// that rides the draft or the words, like `^p`.
     TierNext,
-    ParkAfterMinutes,
     /// The Settings row for the crown's spawn budget (T-412): how many agent
     /// seats the crowned agent may have started at once. Board state like
     /// `McpTools`, in `columns.toml`; Enter cycles it.
     CrownBudget,
-    /// The Settings row under it (T-550): whether the crown's `ask_agent`
-    /// words for an agent it started go by the queue without a person's
-    /// `^y`. Board state like `CrownBudget`; Enter toggles it.
-    CrownSends,
-    /// The Settings row under it (T-569): whether the crown may answer a
-    /// question an agent it started stopped on (`answer_agent`) and accept
-    /// its plan (`accept_plan`, T-582), and is woken by either. Board state
-    /// like `CrownSends`, on by default; Enter toggles it.
-    CrownAnswers,
+    /// The Settings row under it (T-610, over T-550's and T-569's two
+    /// switches): the crown's mode. Autonomous, the default, sends its
+    /// `ask_agent` words to an agent it started without a person's `^y`,
+    /// answers that agent's questions (`answer_agent`) and accepts its plans
+    /// (`accept_plan`); supervised leaves all three to the person. Board
+    /// state like `CrownBudget`; Enter toggles it.
+    CrownMode,
     /// The Settings row under it (T-590): whether the crown may archive and
-    /// restore tickets (`archive_ticket`). Board state like `CrownAnswers`,
+    /// restore tickets (`archive_ticket`). Board state like `CrownMode`,
     /// off by default; Enter toggles it.
     CrownArchives,
     /// The Settings row under it (T-224): whether every claude mesimon
@@ -969,10 +966,8 @@ impl SettingsSection {
             | Verb::McpTools
             | Verb::DefaultTier
             | Verb::Tiers
-            | Verb::ParkAfterMinutes
             | Verb::CrownBudget
-            | Verb::CrownSends
-            | Verb::CrownAnswers
+            | Verb::CrownMode
             | Verb::CrownArchives
             | Verb::AgentPrompts => Self::Agents,
             _ => Self::Root,
@@ -995,13 +990,10 @@ pub struct Ctx {
     /// detail teaches the placeholders instead of showing the sentence.
     pub prompt_editing: bool,
     pub agent_provider: AgentProvider,
-    pub park_after_minutes: u32,
     /// `Board::crown_budget` (T-412), for the Settings row's words.
     pub crown_budget: u8,
-    /// `Board::crown_sends` (T-550), for the row under it.
-    pub crown_sends: bool,
-    /// `Board::crown_answers` (T-569), for the row under that.
-    pub crown_answers: bool,
+    /// `Board::crown_mode` (T-610), for the row under it.
+    pub crown_mode: crate::board::CrownMode,
     /// `Board::crown_archives` (T-590), for the row under that.
     pub crown_archives: bool,
     pub column_agents: bool,
@@ -4627,7 +4619,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     // The merge train (2026-09-04): the one standing consent for mesimon to
     // prompt an agent with no per-press gesture, which is why it is a
-    // preference and off by default.
+    // preference; on by default since T-610, and this row takes it back.
     MenuItem {
         verb: Verb::MergeTrain,
         label: |c| if c.merge_train { "Auto merge: on".into() } else { "Auto merge: off".into() },
@@ -4719,21 +4711,6 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
-    MenuItem {
-        verb: Verb::ParkAfterMinutes,
-        label: |c| {
-            if c.park_after_minutes == 0 {
-                "Sleep idle agents: off".into()
-            } else {
-                format!("Sleep idle agents after {} min", c.park_after_minutes)
-            }
-        },
-        detail: |_| {
-            "this board ∙ after a finished turn ∙ enter cycles off / 15 / 30 / 60 / 120 min".into()
-        },
-        avail: always,
-        key: "",
-    },
     // The crown's spawn budget (T-412). Board state in `columns.toml` like
     // the provider row: the cap on agents an agent may have running at once
     // is a property of the board, not of the person's terminal.
@@ -4753,50 +4730,23 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
-    // Whether the crown's asks wait for a person's ^y (T-550). Off, every
-    // ask_agent is held; on, an agent the crown started takes the words
-    // when it is idle, and a person's agent still waits for its person.
+    // The crown's mode (T-610), one row over what were two switches:
+    // whether its asks wait for a person's ^y (T-550) and whether it may
+    // answer a question an agent it started asks (T-569) and accept the plan
+    // one stops on (T-582). Autonomous by default: an agent the crown
+    // started takes its words once idle, and a question or a plan from one
+    // wakes the crown, which answers or accepts, announced on the card and
+    // in the feed, raising its hand for what is a person's. Supervised, every
+    // ask waits for ^y and every question and plan is the person's. A
+    // person's agent stays the person's under either.
     MenuItem {
-        verb: Verb::CrownSends,
-        label: |c| {
-            if c.crown_sends {
-                "Crown sends its asks: on".into()
-            } else {
-                "Crown sends its asks: off".into()
-            }
-        },
+        verb: Verb::CrownMode,
+        label: |c| format!("Crown mode: {}", c.crown_mode.word()),
         detail: |c| {
-            if c.crown_sends {
-                "agents it started take its words once idle ∙ yours still wait for ^y ∙ enter turns off".into()
+            if c.crown_mode.sends() {
+                "agents it started take its asks without ^y, and it answers their questions and plans ∙ yours wait for you ∙ enter supervises".into()
             } else {
-                "its asks wait on the card for ^y ∙ enter lets it send to agents it started".into()
-            }
-        },
-        avail: always,
-        key: "",
-    },
-    // Whether the crown may answer a question an agent it started asks
-    // (T-569) and accept the plan one stops on (T-582). On by default: a
-    // question or a plan from an agent the crown started wakes the crown
-    // and it may answer or accept, announced on the card and in the feed,
-    // raising its hand for what is a person's. Off, every question and plan
-    // is the person's. Every other stop, and a person's agent, stays the
-    // person's.
-    MenuItem {
-        verb: Verb::CrownAnswers,
-        label: |c| {
-            if c.crown_answers {
-                "Crown answers questions: on".into()
-            } else {
-                "Crown answers questions: off".into()
-            }
-        },
-        detail: |c| {
-            if c.crown_answers {
-                "a question or plan from an agent it started wakes it, and it may answer or accept ∙ yours still ask you ∙ enter turns off".into()
-            } else {
-                "every question and plan waits for you ∙ enter lets it answer agents it started"
-                    .into()
+                "its asks wait on the card for ^y ∙ every question and plan waits for you ∙ enter makes it autonomous".into()
             }
         },
         avail: always,
@@ -4898,9 +4848,10 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     // The four sentences mesimon itself types into an agent's box (T-353,
     // T-414). A door, like Notifications: rows that are each a text field do
-    // not fit a list `draw_list` sizes at two lines a row. Last in Agents,
-    // because the rows above decide whether mesimon says anything to an
-    // agent at all and this decides what it says once it does.
+    // not fit a list `draw_list` sizes at two lines a row. Last of the
+    // agent rows, above the crown's group (T-610), because the rows above
+    // decide whether mesimon says anything to an agent at all and this
+    // decides what it says once it does.
     MenuItem {
         verb: Verb::AgentPrompts,
         label: |c| match c.prompts.custom_count() {
@@ -5283,10 +5234,8 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::SystemPrompt,
             Verb::McpTools,
             Verb::AgentPrompts,
-            Verb::ParkAfterMinutes,
             Verb::CrownBudget,
-            Verb::CrownSends,
-            Verb::CrownAnswers,
+            Verb::CrownMode,
             Verb::CrownArchives,
         ],
     };
@@ -5294,6 +5243,17 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
         .iter()
         .filter_map(|v| SETTINGS_ITEMS.iter().find(|m| m.verb == *v && m.live(ctx)))
         .collect()
+}
+
+/// The subtitle drawn over a Settings row (T-610): a dim line the list
+/// shows above `verb` and the cursor never lands on, because it is not a
+/// row of `settings_items` — the cursor, `settings_row` and Enter count
+/// rows only. The crown's rows sit under one, as a group of their own.
+pub fn settings_heading(verb: Verb) -> Option<&'static str> {
+    match verb {
+        Verb::CrownBudget => Some("Crown"),
+        _ => None,
+    }
 }
 
 /// The notifications list's rows that apply right now (T-282).
@@ -5549,14 +5509,13 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         avail: |c| !c.col_new,
         key: "",
     },
-    // T-543. Claude only, as the board's own row is: a Codex board hides it,
-    // because nothing would act on a Codex agent here.
+    // T-543, the board's only idle timer since T-610. Claude only: a Codex
+    // board hides it, because nothing would act on a Codex agent here.
     MenuItem {
         verb: Verb::ColumnSleepAfter,
-        label: |c| match (c.col_sleep_after, c.park_after_minutes) {
-            (0, 0) => "Sleep idle agents: off".into(),
-            (0, board) => format!("Sleep idle agents: board ({board} min)"),
-            (minutes, _) => format!("Sleep idle agents after {minutes} min"),
+        label: |c| match c.col_sleep_after {
+            0 => "Sleep idle agents: off".into(),
+            minutes => format!("Sleep idle agents after {minutes} min"),
         },
         detail: |_| "any agent idle at its prompt ∙ enter cycles off / 1 / 5 / 15 / 60 min".into(),
         avail: |c| !c.col_new && !c.claude_unused,
@@ -9099,10 +9058,8 @@ mod tests {
                     Verb::SystemPrompt,
                     Verb::McpTools,
                     Verb::AgentPrompts,
-                    Verb::ParkAfterMinutes,
                     Verb::CrownBudget,
-                    Verb::CrownSends,
-                    Verb::CrownAnswers,
+                    Verb::CrownMode,
                     Verb::CrownArchives,
                 ],
             ),

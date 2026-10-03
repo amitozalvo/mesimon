@@ -167,8 +167,8 @@ pub const CROWN_WAKES: &str = concat!(
      plan reads needs-you, and \
      get_ticket on its ticket carries it (needs_you: the reason, the request, and the \
      question's words and options or the plan's markdown); ask_agent is refused while it \
-     stands. Where the board lets the crown answer (Settings → Agents → Crown answers \
-     questions, on unless a person turned it off), the crown answers by default: a question \
+     stands. Where the board lets the crown answer (Settings → Agents → Crown mode, \
+     autonomous unless a person chose supervised), the crown answers by default: a question \
      an agent the crown started asks wakes this session and answer_agent answers it, and a \
      plan one stops on wakes it and accept_plan accepts it, after get_ticket shows the plan. \
      Every other stop, an agent a person started, and a board that does not let the crown \
@@ -638,13 +638,13 @@ pub fn tools() -> Vec<Value> {
         // The crown's ask (T-413): words for another ticket's agent, held on
         // its card until a person sends them. The direct prompt stays in the
         // never-tier; this is its road through a person — or, on a board
-        // whose person switched `crown_sends` on, through the queue to an
+        // whose crown mode is autonomous (T-610), through the queue to an
         // agent the crown started (T-550).
         json!({
             "name": "ask_agent",
             "description": "Queues words on another ticket's card for its agent (crown \
-                            only). A person sends (^y) or takes back (^u); with crown sends \
-                            on, an agent the crown started gets them as deliver says (road says \
+                            only). A person sends (^y) or takes back (^u); if the crown is \
+                            autonomous, an agent it started gets them as deliver says (road says \
                             which). Refused with no agent, on this session's ticket, or \
                             at once at a dialog. The turn taking them wakes this session at \
                             its end.",
@@ -663,7 +663,7 @@ pub fn tools() -> Vec<Value> {
         }),
         // The crown's answer (T-569): Remote Control's screen-verified
         // dialog road, for a question an agent the crown started asks, on
-        // a board whose person switched `crown_answers` on. The daemon
+        // a board whose crown mode is autonomous. The daemon
         // enforces the structure; which questions stay a person's is the
         // crown's judgement, described here and in the receipt.
         json!({
@@ -1212,7 +1212,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::AgentAskTicket { .. }
         // The crown's answer (T-569): one key walk into a dialog an agent
         // the crown started stopped on, judged by the daemon against the
-        // board's `crown_answers` switch, the agent's provenance and the
+        // board's `crown_mode`, the agent's provenance and the
         // dialog's shape. `PromptSession` stays below.
         | Command::AgentAnswerTicket { .. }
         // The crown's plan accept (T-582): the board's own Enter on a plan
@@ -1372,15 +1372,12 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::DeleteTier { .. }
         | Command::MoveTier { .. }
         | Command::SetDefaultTier { .. }
-        | Command::SetParkAfterMinutes { .. }
         | Command::SetCrownBudget { .. }
-        // T-550: the crown sending its own asks is the person stepping out
-        // from between one agent's words and another's turn. Only the
-        // person may step out.
-        | Command::SetCrownSends { .. }
-        // T-569: the crown answering a worker's question is a decision made
-        // for the person. Only the person may hand that over.
-        | Command::SetCrownAnswers { .. }
+        // T-550, T-569, T-610: the crown sending its own asks is the person
+        // stepping out from between one agent's words and another's turn,
+        // and the crown answering a worker's question is a decision made
+        // for the person. Only the person may hand either over.
+        | Command::SetCrownMode { .. }
         // T-590: the crown taking a card off the board is the person's
         // gesture handed over. Only the person may hand it over.
         | Command::SetCrownArchives { .. }
@@ -2318,12 +2315,12 @@ mod tests {
             "a person's to answer",
             "ask_agent is refused",
             // T-569: where the crown may answer, and what stays a person's.
-            "Crown answers questions",
+            "Crown mode",
             "answer_agent answers it",
             "an agent a person started",
             // T-582: on by default, the plan read and accepted.
             "the crown answers by default",
-            "on unless a person turned it off",
+            "autonomous unless a person chose supervised",
             "stops on a plan",
             "accept_plan accepts it",
             "the plan's markdown",
@@ -2798,10 +2795,8 @@ mod tests {
                 tier: None,
             },
             Command::SetAgentProvider { provider: crate::board::AgentProvider::Codex },
-            Command::SetParkAfterMinutes { minutes: 30 },
             Command::SetCrownBudget { budget: 3 },
-            Command::SetCrownSends { on: true },
-            Command::SetCrownAnswers { on: true },
+            Command::SetCrownMode { mode: crate::board::CrownMode::Autonomous },
             Command::SetCrownArchives { on: true },
             Command::SetTicketTier { id: t, tier: Some("claude".into()) },
             Command::SaveTier {

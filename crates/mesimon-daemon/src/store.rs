@@ -9,7 +9,9 @@
 use std::path::Path;
 
 use anyhow::Result;
-use mesimon_core::board::{AgentProvider, Board, Column, SessionRecord, Ticket, KEY_PREFIX};
+use mesimon_core::board::{
+    AgentProvider, Board, Column, CrownMode, SessionRecord, Ticket, KEY_PREFIX,
+};
 use mesimon_core::command::Notice;
 use mesimon_core::prompts::PromptSet;
 use mesimon_core::tier::MachineTiers;
@@ -110,28 +112,32 @@ struct ColumnsFile {
     next_key: u64,
     #[serde(default)]
     agent_provider: AgentProvider,
-    #[serde(default)]
-    park_after_minutes: u32,
     /// The crown's spawn budget (`Board::crown_budget`, T-412). A scalar,
     /// so it sits here; absent — every file before the field — means the
     /// default of three, and no bump: a build that drops it falls back to
     /// that same number, and the count it caps is in `sessions.json`.
     #[serde(default = "default_crown_budget")]
     crown_budget: u8,
-    /// The crown delivers its own asks to the agents it started
-    /// (`Board::crown_sends`, T-550). Absent means off, and no bump: a
-    /// build that drops it holds every ask for a person again, which only
-    /// takes authority away.
+    /// The crown's mode (`Board::crown_mode`, T-610). Absent means
+    /// autonomous — every file before the field, whatever its old
+    /// `crown_sends` and `crown_answers` said, which are ignored on read and
+    /// gone on the next write: the author's call for every board. Written
+    /// either way. No bump: an older build that drops it reads no
+    /// `crown_sends`, which is off, and the `crown_answers` below.
     #[serde(default)]
-    crown_sends: bool,
-    /// The crown answers questions from the agents it started and accepts
-    /// their plans (`Board::crown_answers`, T-569, T-582). Absent means ON
-    /// since T-582 — every file before the field, and every board that never
-    /// turned it — and no bump: a build that drops it leaves every question
-    /// to a person again, which only takes authority away. Written either
-    /// way, so an off survives the default.
-    #[serde(default = "yes")]
-    crown_answers: bool,
+    crown_mode: CrownMode,
+    /// Written for an older build alone, never read: `crown_answers =
+    /// false` while the mode is supervised. An older build reads an absent
+    /// `crown_answers` as ON (T-582), so without it a downgrade would hand
+    /// the crown the answers a person took away — the `mcp_tools` doctrine
+    /// on `COLUMNS_SCHEMA`: a consent flag may not be lost by a downgrade.
+    #[serde(
+        rename = "crown_answers",
+        default,
+        skip_deserializing,
+        skip_serializing_if = "Option::is_none"
+    )]
+    legacy_crown_answers: Option<bool>,
     /// The crown archives and restores tickets (`Board::crown_archives`,
     /// T-590). Absent means OFF — every file before the field, and every
     /// board whose person never turned it on. Written either way, so an on
@@ -490,10 +496,8 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 columns: cf.columns,
                                 next_key: cf.next_key,
                                 agent_provider: cf.agent_provider,
-                                park_after_minutes: cf.park_after_minutes,
                                 crown_budget: cf.crown_budget,
-                                crown_sends: cf.crown_sends,
-                                crown_answers: cf.crown_answers,
+                                crown_mode: cf.crown_mode,
                                 crown_archives: cf.crown_archives,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
@@ -695,10 +699,8 @@ pub struct ColumnsScalars {
     pub tiers: Vec<mesimon_core::tier::Tier>,
     /// `Board::crown_budget` (T-412).
     pub crown_budget: u8,
-    /// `Board::crown_sends` (T-550).
-    pub crown_sends: bool,
-    /// `Board::crown_answers` (T-569).
-    pub crown_answers: bool,
+    /// `Board::crown_mode` (T-610).
+    pub crown_mode: CrownMode,
     /// `Board::crown_archives` (T-590).
     pub crown_archives: bool,
     /// `Board::mcp_tools` (T-217).
@@ -724,8 +726,7 @@ impl Default for ColumnsScalars {
             default_tier: None,
             tiers: Vec::new(),
             crown_budget: mesimon_core::board::DEFAULT_CROWN_BUDGET,
-            crown_sends: false,
-            crown_answers: true,
+            crown_mode: CrownMode::default(),
             crown_archives: false,
             mcp_tools: true,
 
@@ -758,8 +759,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         default_tier: cf.default_tier,
         tiers: cf.tiers,
         crown_budget: cf.crown_budget,
-        crown_sends: cf.crown_sends,
-        crown_answers: cf.crown_answers,
+        crown_mode: cf.crown_mode,
         crown_archives: cf.crown_archives,
         mcp_tools: cf.mcp_tools,
         system_prompt: cf.system_prompt,
@@ -781,10 +781,9 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         schema_version: COLUMNS_SCHEMA,
         next_key: board.next_key,
         agent_provider: board.agent_provider,
-        park_after_minutes: board.park_after_minutes,
         crown_budget: board.crown_budget,
-        crown_sends: board.crown_sends,
-        crown_answers: board.crown_answers,
+        crown_mode: board.crown_mode,
+        legacy_crown_answers: (!board.crown_mode.answers()).then_some(false),
         crown_archives: board.crown_archives,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
@@ -1089,33 +1088,38 @@ mod tests {
         cleanup(&dir, &paths);
     }
 
-    /// T-582: a `columns.toml` that never carried `crown_answers` — every
-    /// file before T-569, and every board whose person never turned it —
-    /// lets the crown answer and accept, in the daemon and in doctor alike;
-    /// one that says `false` keeps it off through a save, because the
-    /// scalar is written either way.
+    /// T-610: a `columns.toml` from before the mode comes up autonomous in
+    /// the daemon and in doctor alike, whatever its two old switches said;
+    /// a supervised mode survives a save, and leaves `crown_answers = false`
+    /// behind for an older build, which would read the key's absence as on.
     #[test]
-    fn crown_answers_is_on_unless_the_file_says_off() {
-        let (dir, paths) = scratch("crownanswers");
+    fn crown_mode_is_autonomous_unless_the_file_says_supervised() {
+        let (dir, paths) = scratch("crownmode");
         let cols = dir.join(".mesimon/board/columns.toml");
         write(
             &cols,
             &format!(
-                "schema_version = {COLUMNS_SCHEMA}\nnext_key = 2\ncrown_sends = true\n\n\
+                "schema_version = {COLUMNS_SCHEMA}\nnext_key = 2\ncrown_sends = false\n\
+                 crown_answers = false\ncrown_budget = 5\n\n\
                  [[columns]]\nname = \"TODO\"\norder = \"a0\"\n"
             ),
         );
-        assert!(read_columns_scalars(&paths).crown_answers, "doctor reads it on");
+        assert_eq!(read_columns_scalars(&paths).crown_mode, CrownMode::Autonomous, "doctor");
         let l = load(&paths).unwrap();
-        assert!(l.board.crown_answers, "an older file turns the crown's answers on");
-        assert!(l.board.crown_sends, "the scalar beside it survives");
-        let mut off = l.board;
-        off.crown_answers = false;
-        save_columns(&paths, &off).unwrap();
+        assert_eq!(l.board.crown_mode, CrownMode::Autonomous, "the old switches are ignored");
+        assert_eq!(l.board.crown_budget, 5, "the scalar beside them survives");
+        save_columns(&paths, &l.board).unwrap();
         let text = std::fs::read_to_string(&cols).unwrap();
-        assert!(text.contains("crown_answers = false"), "{text}");
-        assert!(!load(&paths).unwrap().board.crown_answers, "an off is kept");
-        assert!(!read_columns_scalars(&paths).crown_answers);
+        assert!(text.contains("crown_mode = \"autonomous\""), "{text}");
+        assert!(!text.contains("crown_sends") && !text.contains("crown_answers"), "{text}");
+        let mut supervised = l.board;
+        supervised.crown_mode = CrownMode::Supervised;
+        save_columns(&paths, &supervised).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("crown_mode = \"supervised\""), "{text}");
+        assert!(text.contains("crown_answers = false"), "for an older build: {text}");
+        assert_eq!(load(&paths).unwrap().board.crown_mode, CrownMode::Supervised, "kept");
+        assert_eq!(read_columns_scalars(&paths).crown_mode, CrownMode::Supervised);
         cleanup(&dir, &paths);
     }
 
@@ -1130,14 +1134,14 @@ mod tests {
         write(
             &cols,
             &format!(
-                "schema_version = {COLUMNS_SCHEMA}\nnext_key = 2\ncrown_answers = false\n\n\
+                "schema_version = {COLUMNS_SCHEMA}\nnext_key = 2\ncrown_mode = \"supervised\"\n\n\
                  [[columns]]\nname = \"TODO\"\norder = \"a0\"\n"
             ),
         );
         assert!(!read_columns_scalars(&paths).crown_archives, "doctor reads it off");
         let l = load(&paths).unwrap();
         assert!(!l.board.crown_archives, "an older file leaves archiving to a person");
-        assert!(!l.board.crown_answers, "the scalar beside it survives");
+        assert_eq!(l.board.crown_mode, CrownMode::Supervised, "the scalar beside it survives");
         let mut on = l.board;
         on.crown_archives = true;
         save_columns(&paths, &on).unwrap();
@@ -2144,25 +2148,22 @@ order = "a0"
         cleanup(&dir, &paths);
     }
 
+    /// T-610: the board's `park_after_minutes` is gone; a file that still
+    /// carries it loads, and the key is dropped on the next write.
     #[test]
-    fn inactivity_timeout_defaults_off_and_survives_reload() {
+    fn a_boards_old_idle_timer_loads_and_is_dropped() {
         let (dir, paths) = scratch("inactivity");
-        let mut board = load_with(&paths, false).unwrap().board;
-        assert_eq!(board.park_after_minutes, 0);
-        for minutes in [17, u32::MAX, 0] {
-            board.park_after_minutes = minutes;
-            save_columns(&paths, &board).unwrap();
-            assert_eq!(load_with(&paths, false).unwrap().board.park_after_minutes, minutes);
-        }
+        let board = load_with(&paths, false).unwrap().board;
+        save_columns(&paths, &board).unwrap();
         let path = paths.board_dir.join("board/columns.toml");
         let text = std::fs::read_to_string(&path).unwrap();
-        let legacy = text
-            .lines()
-            .filter(|l| !l.starts_with("park_after_minutes"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        std::fs::write(path, legacy).unwrap();
-        assert_eq!(load_with(&paths, false).unwrap().board.park_after_minutes, 0);
+        std::fs::write(&path, text.replacen("next_key", "park_after_minutes = 30\nnext_key", 1))
+            .unwrap();
+        let back = load_with(&paths, false).unwrap().board;
+        assert_eq!(back.columns, board.columns);
+        save_columns(&paths, &back).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("park_after_minutes"), "{text}");
         cleanup(&dir, &paths);
     }
 
@@ -2176,10 +2177,9 @@ order = "a0"
             schema_version: COLUMNS_SCHEMA,
             next_key: 3,
             agent_provider: AgentProvider::Codex,
-            park_after_minutes: 30,
             crown_budget: 5,
-            crown_sends: true,
-            crown_answers: true,
+            crown_mode: CrownMode::Supervised,
+            legacy_crown_answers: Some(false),
             crown_archives: true,
             tags_seeded: true,
             mcp_tools: false,
@@ -2252,7 +2252,6 @@ order = "a0"
         assert_eq!(back.default_column.as_deref(), Some("TODO"));
         assert_eq!(back.follow_up_mode, mesimon_core::board::FollowUpMode::Steer);
         assert_eq!(back.agent_provider, AgentProvider::Codex);
-        assert_eq!(back.park_after_minutes, 30);
         // T-443: the default tier is a scalar before the tables, and the
         // tiers an array of tables after them — a scalar after `[[tiers]]`
         // would be a serialize error.
@@ -2261,10 +2260,10 @@ order = "a0"
         assert!(text.find("default_tier").unwrap() < text.find("[[columns]]").unwrap());
         assert!(text.contains("[[tiers]]") && text.contains("effort = \"xhigh\""), "{text}");
         assert_eq!(back.crown_budget, 5);
-        assert!(back.crown_sends, "{text}");
-        assert!(text.find("crown_sends").unwrap() < text.find("[[columns]]").unwrap());
-        // T-569: the crown's answers switch is a scalar before the tables too.
-        assert!(back.crown_answers, "{text}");
+        // T-610: the crown's mode is a scalar before the tables, and so is
+        // the `crown_answers` an older build reads beside it.
+        assert_eq!(back.crown_mode, CrownMode::Supervised, "{text}");
+        assert!(text.find("crown_mode").unwrap() < text.find("[[columns]]").unwrap());
         assert!(text.find("crown_answers").unwrap() < text.find("[[columns]]").unwrap());
         // T-590: and so is the crown's archive switch.
         assert!(back.crown_archives, "{text}");

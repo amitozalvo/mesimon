@@ -1,9 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TODO                               2   2   2   0
   ╭─ BEHAVIOUR ──────────────────────────────────────────╮
-  │   Auto merge: off                                    │
-  │     mesimon merges and asks to rebase for you while~ │
+  │   Auto merge: on                                     │
+  │     merges quiet REVIEW branches, asks idle agents ~ │
+  │   Auto merge tells the agent after a merge           │
+  │     pastes the merged notice into the agent ∙ start~ │
   │   Keep this machine awake: off                       │
   │     the machine sleeps on its own clock while an ag~ │
   │   Snooze returns with needs-you                      │
@@ -15,6 +16,5 @@
   │   Follow-ups: Queue                                  │
   │     default for this board ∙ Queue waits for idle; ~ │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
 
  SETTINGS                                            ? keys

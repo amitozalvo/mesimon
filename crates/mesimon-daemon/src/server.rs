@@ -15,7 +15,7 @@ use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::attention::{self, Change, EndKind, Machine, Signal, StartSource};
 use mesimon_core::board::{
     agent_reason_word, agent_state_word, foreground_of, sanitize_tag, AgentProvider, AgentTools,
-    Archived, Board, Confidence, ExitReason, PickedUp, Provenance, Reason, SessionKind,
+    Archived, Board, Confidence, CrownMode, ExitReason, PickedUp, Provenance, Reason, SessionKind,
     SessionRecord, SessionState, StopReason, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
     PICKED_AT_DESK, PICKED_BY_AGENT,
 };
@@ -1748,7 +1748,7 @@ struct QueuedAsk {
     /// the crown may ask again.
     by: Option<ulid::Ulid>,
     /// The crown's ask goes by the queue like a person's (T-550): the
-    /// board's `crown_sends` is on and the crown started this agent, so
+    /// board's crown mode is autonomous and the crown started this agent, so
     /// `drain_queue` delivers it once the agent is idle. False on every
     /// person's ask; set by the crown's handler after `park_ask`.
     sends: bool,
@@ -2354,10 +2354,8 @@ impl Daemon {
             Command::DeleteTier { scope, id } => self.delete_tier(scope, id),
             Command::MoveTier { scope, id, to_index } => self.move_tier(scope, id, to_index),
             Command::SetDefaultTier { scope, id } => self.set_default_tier(scope, id),
-            Command::SetParkAfterMinutes { minutes } => self.set_park_after_minutes(minutes),
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
-            Command::SetCrownSends { on } => self.set_crown_sends(on),
-            Command::SetCrownAnswers { on } => self.set_crown_answers(on),
+            Command::SetCrownMode { mode } => self.set_crown_mode(mode),
             Command::SetCrownArchives { on } => self.set_crown_archives(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetUsageWants { claude, codex } => {
@@ -4656,7 +4654,7 @@ impl Daemon {
         // person is the one to wake, and the card's needs-you already does.
         // A secret, a form or a permission is never the crown's.
         if let Some(cause) =
-            crownwake::asks_the_crown(self.board.crown_answers, snapshot.kind, change)
+            crownwake::asks_the_crown(self.board.crown_mode.answers(), snapshot.kind, change)
         {
             self.note_crown_wake(snapshot.ticket, cause, None, None);
         }
@@ -5673,10 +5671,10 @@ impl Daemon {
         target: ulid::Ulid,
         seat: &QueuedSeat,
     ) -> Option<String> {
-        if !self.board.crown_sends {
+        if !self.board.crown_mode.sends() {
             return Some(
                 "this board holds the crown's asks for a person to send (Settings → Agents → \
-                 Crown sends its asks)"
+                 Crown mode: supervised)"
                     .into(),
             );
         }
@@ -6018,8 +6016,8 @@ impl Daemon {
     }
 
     /// The crown's asks still waiting to send are held for the person from
-    /// here (T-550): the switch went off, or the crown left the ticket that
-    /// asked. Its authority to send was the switch AND the crown, so either
+    /// here (T-550): the mode went supervised, or the crown left the ticket
+    /// that asked. Its authority to send was the mode AND the crown, so either
     /// ending ends the road; the words stay on the card for `^y` or `^u`.
     fn hold_crown_sends(&mut self) {
         for q in self.queued.iter_mut().filter(|q| q.sends) {
@@ -10837,24 +10835,6 @@ impl Daemon {
         self.with_ticket(id, |t| t.manual_merge = on)
     }
 
-    /// Turn the agent tool surface on or off for this board (T-217).
-    ///
-    /// Only ever the whole board, only ever a person: `mcp::agent_allows`
-    /// denies the command, so nothing an agent says can reach here. What
-    /// changes is what the NEXT spawn or wake is built with — a running pane's
-    /// argv was fixed at exec and nothing can revise it, which is the sentence
-    /// the Settings row spends its detail on.
-    fn set_park_after_minutes(&mut self, minutes: u32) -> Response {
-        if self.columns_barred {
-            return Response::Err { message: self.barred_message("columns") };
-        }
-        if self.board.park_after_minutes != minutes {
-            self.board.park_after_minutes = minutes;
-            self.persist_and_notify();
-        }
-        Response::Ok
-    }
-
     /// `Command::SetCrownBudget` (T-412): the cap on crown-started seats.
     /// Lowering it below what is held stops the next start and kills
     /// nothing — the seats already paid for run out on their own.
@@ -10869,36 +10849,26 @@ impl Daemon {
         Response::Ok
     }
 
-    /// `Command::SetCrownSends` (T-550): whether the crown's asks to the
-    /// agents it started go by the queue. Off means nothing more goes out
-    /// on the crown's word: an ask still waiting to send is held for the
-    /// person from here. On releases nothing already held — those words
-    /// were left for the person to read, and the crown may ask again.
-    fn set_crown_sends(&mut self, on: bool) -> Response {
+    /// `Command::SetCrownMode` (T-610, over T-550's and T-569's switches):
+    /// whether the crown's asks to the agents it started go by the queue,
+    /// and whether it may answer a question or accept a plan one of them
+    /// stopped on, and is woken by either. Supervised means nothing more
+    /// goes out on the crown's word: an ask still waiting to send is held
+    /// for the person from here, and an answer still walking its keys stops
+    /// at its next step (`state_changed`, `crown_answer_allowed`); a wake
+    /// already owed is still said, and the crown's answer is then refused in
+    /// words naming this row. Autonomous releases nothing already held —
+    /// those words were left for the person to read, and the crown may ask
+    /// again.
+    fn set_crown_mode(&mut self, mode: CrownMode) -> Response {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
         }
-        if self.board.crown_sends != on {
-            self.board.crown_sends = on;
-            if !on {
+        if self.board.crown_mode != mode {
+            self.board.crown_mode = mode;
+            if !mode.sends() {
                 self.hold_crown_sends();
             }
-            self.persist_and_notify();
-        }
-        Response::Ok
-    }
-
-    /// `Command::SetCrownAnswers` (T-569): whether the crown may answer a
-    /// question an agent it started stopped on, and is woken by one. Off
-    /// stops an answer still walking its keys at its next step (`state_changed`,
-    /// `crown_answer_allowed`); a wake already owed is still said, and the
-    /// crown's answer is then refused in words naming this row.
-    fn set_crown_answers(&mut self, on: bool) -> Response {
-        if self.columns_barred {
-            return Response::Err { message: self.barred_message("columns") };
-        }
-        if self.board.crown_answers != on {
-            self.board.crown_answers = on;
             self.persist_and_notify();
         }
         Response::Ok
@@ -10918,6 +10888,13 @@ impl Daemon {
         Response::Ok
     }
 
+    /// Turn the agent tool surface on or off for this board (T-217).
+    ///
+    /// Only ever the whole board, only ever a person: `mcp::agent_allows`
+    /// denies the command, so nothing an agent says can reach here. What
+    /// changes is what the NEXT spawn or wake is built with — a running pane's
+    /// argv was fixed at exec and nothing can revise it, which is the sentence
+    /// the Settings row spends its detail on.
     fn set_mcp_tools(&mut self, on: bool) -> Response {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
@@ -12816,9 +12793,8 @@ impl Daemon {
     /// Automatic sleep is deliberately narrower than a user's sleep gesture:
     /// a High-confidence idle Claude, timed from its settled state
     /// transition, by the rule that is due (`Board::idle_park_due`): the
-    /// board's `park_after_minutes` over a finished turn, or the ticket's
-    /// column's own `sleep_after_minutes` over any idle at its prompt
-    /// (T-543).
+    /// ticket's column's own `sleep_after_minutes` over any idle at its
+    /// prompt (T-543), the only timer since T-610.
     fn park_inactive(&mut self, now: u64) -> bool {
         let minute = inactivity_minute_ms();
         let candidates: Vec<_> = self

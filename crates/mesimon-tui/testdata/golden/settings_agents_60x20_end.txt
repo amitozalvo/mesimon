@@ -1,20 +1,20 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ AGENTS ∙ 10/10 ─────────────────────────────────────╮
+  ╭─ AGENTS ∙ 8/8 ───────────────────────────────────────╮
+  │   Tiers: none yet                                    │
+  │     a name for a launch: provider, model, effort ∙ ~ │
   │   Agent brief: off                                   │
   │     one line: read the ticket first ∙ enter shows i~ │
   │   Agent tools: on                                    │
   │     the seven board tools every spawn carries ∙ ent~ │
   │   Agent prompts: mesimon's words                     │
   │     what mesimon types at an agent about a rebase, ~ │
-  │   Sleep idle agents: off                             │
-  │     this board ∙ after a finished turn ∙ enter cycl~ │
+  │ Crown                                                │
   │   Crown may start 3 agents at once                   │
   │     start_agent on the crowned ticket ∙ a sleeping ~ │
-  │   Crown sends its asks: off                          │
-  │     its asks wait on the card for ^y ∙ enter lets i~ │
-  │   Crown answers questions: on                        │
-  │     a question or plan from an agent it started wak~ │
+  │   Crown mode: autonomous                             │
+  │     agents it started take its asks without ^y, and~ │
   │   Crown archives tickets: off                        │
   │     it may not archive or restore tickets ∙ enter l~ │
+  │                                                      │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
  SETTINGS                                            ? keys

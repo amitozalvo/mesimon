@@ -1,5 +1,5 @@
 //! The crown accepts a plan (T-582): `accept_plan` on a plan dialog a claude
-//! the crown started stopped on, under the board's `crown_answers` switch.
+//! the crown started stopped on, under the board's `crown_mode` (T-610).
 //!
 //! The press is the board's own accept (T-420, `press_plan`): Enter on the
 //! dialog's default row, only once the screen shows the dialog with the
@@ -60,10 +60,10 @@ impl Daemon {
         key: &str,
         request: &str,
     ) -> std::result::Result<uuid::Uuid, String> {
-        if !self.board.crown_answers {
+        if !self.board.crown_mode.answers() {
             return Err(format!(
-                "this board leaves {key}'s plan to a person (Settings → Agents → Crown answers \
-                 questions is off); raise_hand on the crown's own ticket names the worker and the \
+                "this board leaves {key}'s plan to a person (Settings → Agents → Crown mode is \
+                 supervised); raise_hand on the crown's own ticket names the worker and the \
                  plan for them"
             ));
         }
@@ -158,13 +158,13 @@ impl Daemon {
     }
 
     /// Whether the crown's press may still go (T-582): what allowed it at
-    /// the call holds — the crown on its ticket, the board's switch, a
+    /// the call holds — the crown on its ticket, the board's mode, a
     /// claude the crown started on that ticket at its plan, and the crown's
     /// `Mutate` on it.
     fn crown_plan_allowed(&self, plan: &CrownPlan, id: uuid::Uuid) -> bool {
         let by = Principal::Agent { session: plan.session };
         self.board.is_crowned(plan.crown)
-            && self.board.crown_answers
+            && self.board.crown_mode.answers()
             && self.board.live_agent(plan.ticket).is_some_and(|rec| {
                 rec.id == id
                     && rec.started_by.is_some()

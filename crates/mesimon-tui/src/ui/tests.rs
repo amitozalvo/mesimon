@@ -1068,8 +1068,10 @@ fn the_notifications_list_is_one_row_while_it_is_off() {
 #[test]
 fn the_settings_subtitle_marquees() {
     let mut app = app_graphite(fixture_archived());
-    // The merge train's row: the longest detail in the list, and off by
-    // default, which is the sentence that explains the standing consent.
+    // The merge train's row: the longest detail in the list while the train
+    // is off (on by default since T-610), the sentence that explains the
+    // standing consent.
+    app.seed_pref(|p| p.merge_train = false);
     // The first row of BEHAVIOUR, which is where the train sits now; keep
     // awake is under it, and neither index moves the other.
     app.settings_section = mesimon_core::keymap::SettingsSection::Behaviour;
