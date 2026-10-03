@@ -19992,3 +19992,50 @@ screen.
 prefixes, a 2.1.283 pair, the three kindless shapes, a blank note, a note beside a text block
 in either order); `a_progress_update_before_a_tool_call_is_the_newest_words` (daemon
 `history`: T-601's records between the two replies, scrubbed, then the closing reply).
+
+## Planning v0.1.0-alpha.37: the notes, the sandbox and three fixes (T-607, 2026-10-03, the author: "plan next release … test manually on a test board + remote control locally … find bugs or gaps in documentation")
+
+**Seen.** 72 commits since alpha.36; the bump and the dated heading were on main (`d216217c`),
+with eight tickets landed after it and no line in the notes. The crown on this ticket planned
+the release, filed and started the fixes, and drove the rest.
+
+**Found, and what became of it.**
+- *The notes.* T-599, T-600/T-601 (`deliver`, the `immediately` send), T-602, T-603, T-597 and
+  T-605 had no line under alpha.37. Written here (`86476bbc`).
+- *The sandbox's Claude Code was pinned at image build.* `ci/sandbox/host.Dockerfile` installs
+  Claude Code when the image is built, and the image from T-542 (2026-10-01) carried 2.1.286:
+  below the plugin road's floor, so every sandbox session would have run on the hook set and the
+  manual test of the release's headline would have tested the old road without saying so.
+  Rebuilt with `ci/sandbox.sh compose build --no-cache host` (2.1.288); inside the host `doctor`
+  reads `claude road: mod`. The rule: before a release's manual test, rebuild the host image.
+  `up` on a warm target is under a minute. The relay image needs no rebuild while
+  `crates/mesimon-team` and `crates/mesimon-web` have not changed since it was built, and
+  `web/mesophon` is served from the checkout.
+- *T-604*, the transcript preview one reply behind (a release blocker): a Claude 5 progress note
+  stored as a narration-tagged `thinking` block; its own block above.
+- *Docs* (T-608): `docs/PROMISES.md` said *Crown answers questions* is off by default (on since
+  T-582, and the crown accepts plans); `docs/REMOTE-CONTROL.md` described questions and
+  permissions on the keyed road only and lacked Now's *Recently idle*; `docs/USING.md` had no
+  Notifications section and nothing on the idle-with-tasks wake.
+- *`read_attachment`* (T-609) had no `key` for the crown, and a miss read "image unavailable on
+  this machine"; found when the crown tried to read T-604's screenshot. Its own block above.
+- *T-606* (a worker merged main itself) stays in BACKLOG: T-599's `under_crown` now tells a
+  crown-started worker that the merge is the board's; a person-started worker hears only the
+  rebase ask, and one line on it is the fix if it recurs.
+- *`docs/claude-compatibility.json`* stops at 2.1.267 while the plugin road was measured on
+  2.1.288. A manifest gap, not a release one.
+
+**Seen on the way, not changed.** The train's rebase ask to T-604 went down by the mod while
+the worker was still inside a turn, so its `UserPromptSubmit` came 55 s later, past the 10 s
+ack window: `submit_unacked`, and `merge_train_rebase_landed` never fired, so the train kept no
+`AskRecord` for it (the fuse did not count the ask). The worker rebased on the words anyway,
+and the crown's own ask on the same turn was carried by T-600's `LateAsk`. T-600's block
+already says a merge step's mark ends with its window; this is that case, observed. Also: the
+train's pass holds while any worker on the shared checkout is busy (`train_busy`), the crown
+included, so a crown that investigates a stalled merge is what stalls it. Going idle is the fix.
+
+**The release, in order.** Notes complete → the three fixes merged by the train → `cargo
+build` and the `U` chip → `MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3 -B ci/test-run.py`
+(stamps HEAD, both roads) → the relay's lock commit (`85d2492`, `cargo update --workspace
+--offline`) and `deploy/ship.sh all --dry-run` → the author's `deploy/ship.sh all`. The manual
+test script (ten steps on the sandbox, Remote Control included) is the note on T-607.
