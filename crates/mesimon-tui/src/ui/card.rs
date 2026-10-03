@@ -129,8 +129,9 @@ pub(super) fn render_prompt(
 /// The placeholder is what a blank Enter would do, in the seat's own words,
 /// and by the same rule `commit_input` judges it: drop the entry that is
 /// waiting, start the agent on the title where the seat is empty and the
-/// toggle says now (T-294), accept the plan at `accept plan` (T-420), or
-/// nothing at all.
+/// toggle says now (T-294), send the brief where the seat never took a
+/// prompt (T-603), accept the plan at `accept plan` (T-420), or nothing at
+/// all.
 #[allow(clippy::too_many_arguments)] // the field's state, spelled out; two call sites
 pub(super) fn render_ask_field(
     ctx: &CardCtx,
@@ -149,6 +150,8 @@ pub(super) fn render_ask_field(
         "enter drops"
     } else if starts {
         "start on the title"
+    } else if app.ticket_unprompted(ticket) {
+        "send the brief"
     } else {
         "ask agent"
     };

@@ -19688,3 +19688,84 @@ a delivery, the daemon shuts down, the branch is merged by `git merge --ff-only`
 down (`Harness::restart_after`), and the next daemon wakes the crown once with `merged
 (merge_state ahead → merged, after a restart)`. A second restart with nothing new is silent. With
 `restore_crown` disabled, the e2e times out waiting for the merge's wake.
+
+## A blank ask sends the brief to a seat that never took a prompt (T-603, 2026-10-03, filed by the crown on T-587: "A person's start comes up promptless on the mod road and the ticket page's send does nothing: the owed brief is lost")
+
+**What happened, from the feed and the journal.** The crown's timeline was about 6 min 40 s
+off; these are the feed's own stamps, local time:
+
+- **13:26:45** `U` restarts the daemon on T-599's build. 13:26:47 the probe says the mod road.
+- **13:26:54.572** `spawn_session` by `local` on T-601. Its worktree was cut at .804, so the
+  spawn was parked behind provisioning and replayed.
+- **13:26:55** the mod's `SessionStart (startup)`, `idle` with no stop reason. After that, no
+  `prompt_by_mod`, `prompt_by_paste`, `mod_silent` or `unsent`.
+- **13:29:46** `sleep_session` by `local`. 13:31:55 `U` again, onto T-600's build.
+- **13:33:49** the crown's `start_agent` on T-602. It was also parked behind provisioning, and
+  `prompt_by_mod` came 3.6 s later.
+- **13:35:49** `resume_session` by `local` on T-601. The wake was fresh (no conversation to
+  resume, `claude_session_id` re-minted) and came up on an empty composer.
+- No person command between 13:35:49 and **13:39:40**, the crown's `prompt_session`, which went
+  by `prompt_by_mod` at once.
+
+**Nothing was lost, because nothing was owed.** Every owed entry ends in a feed line: by the mod,
+by paste after the 10 s bridge wait, `mod_silent`, `not_ready` or `unsent`. T-601 has none. The
+spawn was `submit_prompt: false`: `c` on the ticket page or `enter` on its `+ agent session`
+row. The design for that start since T-224: the title is typed into the composer, never
+submitted, and the person sends it. T-602 differs from T-601 in the command (`start_agent` is a
+composed start), not in the road, the pane key or the provisioning. T-599 and T-600 changed none
+of it, so there was nothing to bisect.
+
+**The send that did nothing was the ticket page's blank Enter.** `commit_input` committed a blank
+ask field only on an empty seat (T-294) or at `accept plan`. On a seat that had an agent it
+returned without a request and without a word. That is why there is no `prompt_session` line and
+no refusal. Typed words would have gone, as the crown's did. The person wanted the brief and had
+no way to ask for it: the wake had emptied the composer, and the only key that sends the brief
+(Shift+Enter on an empty seat) was not offered because the seat was taken.
+
+**The fix: a seat that never took a prompt takes its brief on a blank ask.**
+
+- **The fact.** `SessionRecord.unprompted`, filled into the snapshot only, as `tasks_running`
+  is. It is true for a Claude seat that is `idle` with no stop reason (or parked), with nothing
+  owed or unsent, and no file at the transcript path its `SessionStart` named. Measured on
+  Claude Code 2.1.288: no transcript exists before the first prompt. That costs one `stat` per
+  such seat per snapshot.
+- **The decision.** `prompt_session` checks the fact again with `history_missing`, which also
+  looks where a conversation that moved with its cwd went. A blank ask there sends the title and
+  the description (`send_brief`):
+  - on a pane, by `send_launch_words`, the resend's road (T-570), now shared, with the feed word
+    `prompt_brief`. On the paste road the one Ctrl+C clears the typed title from the box. On the
+    mod road the brief is its own turn, and a box seen holding the title gets the same single
+    Ctrl+C first.
+  - on a parked seat, by `wake_with`, which now parks any `Parked` (and `PendingResume.brief`
+    carries it across a worktree rebuild).
+  - on a pane in plan mode or owing a tier switch, by `relaunch_with`.
+- **No queueing.** The brief goes now whatever the toggle says, because the seat has no turn of
+  its own to wait for. The TUI sends it with `queued: false`.
+- **Refusals.** Every other blank ask still answers `nothing to send`. The TUI now sends nothing
+  and says that on its status line, with the card's shake, where it used to stay silent.
+- **The field.** It says `send the brief` where it said `ask agent`, and the receipt says
+  `brief sent`.
+- **The wake retypes the title.** A person's wake that comes up fresh (`ResumeSession`,
+  `WakeSession`) types the title again, never submitted, as the start did and as the hook-set
+  relaunch already does (`retype_title`). A wake that carries words types nothing.
+
+**Kept.** `c` still owes nothing: it is the plain start, and the person edits and sends the
+title. A `UserPromptSubmit` is not needed to clear `unprompted`. The transcript appearing clears
+it.
+
+**Tests.**
+- `prompt_e2e::a_blank_ask_at_a_seat_that_never_took_a_prompt_sends_the_brief`, on both roads:
+  - the plain start types the title;
+  - after `SessionStart` with no transcript, the snapshot says `unprompted`;
+  - a blank ask at `queued` delivers the title and the description;
+  - once the transcript exists, a blank ask is `nothing to send`;
+  - a person's fresh wake types the title again;
+  - parked again, a blank ask wakes it on the brief.
+- TUI: `a_blank_ask_at_a_seat_that_never_took_a_prompt_sends_the_brief` (refused out loud on a
+  conversed seat, sent as `brief sent` on a fresh one) and
+  `the_prompt_field_offers_the_brief_to_a_seat_that_never_took_a_prompt`.
+- Full nextest: 2,095 passed.
+
+**Not done.** The real engine was not driven through the rig. The mod road's single Ctrl+C before
+the brief's `submit` was not measured on a live pane: it follows the paste road's rule (one press,
+only into a box read as holding text).

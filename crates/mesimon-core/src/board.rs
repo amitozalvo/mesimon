@@ -433,6 +433,15 @@ pub struct SessionRecord {
     /// the task registry is never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tasks_running: Option<u32>,
+    /// A Claude seat whose conversation has never taken a prompt (T-603):
+    /// a plain start (`c`, whose title is typed and never submitted), or a
+    /// wake of one, which comes up on an empty composer. Claude Code writes
+    /// no transcript before the first prompt, so it is the transcript's
+    /// absence, read when the snapshot is built. There a blank ask sends
+    /// the ticket's brief, as on an empty seat. SNAPSHOT only, as
+    /// `tasks_running` is.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unprompted: bool,
 }
 
 /// What a launch road meant to submit and did not (T-570). The ticket's
@@ -554,6 +563,7 @@ impl SessionRecord {
             tier_wake: false,
             unsent: None,
             tasks_running: None,
+            unprompted: false,
         }
     }
 

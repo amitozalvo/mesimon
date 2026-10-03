@@ -4000,6 +4000,48 @@ fn golden_prompt_field_start_120() {
     golden("board_prompt_start_120x30", &render(&app, 120, 30));
 }
 
+/// T-603: a claude that never took a prompt — a plain start at its composer,
+/// or the wake of one — takes the ticket's brief on a blank Enter, and the
+/// empty field says so where it said `ask agent`.
+#[test]
+fn the_prompt_field_offers_the_brief_to_a_seat_that_never_took_a_prompt() {
+    let mut board = fixture(false);
+    let mut fresh = session(
+        91,
+        ulid_n(1),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: StopReason::Unknown },
+    );
+    fresh.unprompted = true;
+    board.sessions.push(fresh);
+    let mut app = app_graphite(board);
+    app.rich_keys = true;
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(1)),
+            walk: None,
+            queued: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
+    };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("send the brief")),
+        "the blank Enter names itself:\n{}",
+        lines.join("\n")
+    );
+    // Once it has conversed, a blank Enter has nothing to send.
+    app.board.sessions.last_mut().expect("pushed").unprompted = false;
+    let lines = render(&app, 120, 30);
+    assert!(!lines.iter().any(|l| l.contains("send the brief")), "{}", lines.join("\n"));
+    assert!(lines.iter().any(|l| l.contains("ask agent")), "{}", lines.join("\n"));
+}
+
 /// And the card says a SESSION is coming, not that words are waiting: a start
 /// is louder than a paste, and it is what the queue is holding back.
 #[test]

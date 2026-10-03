@@ -266,3 +266,148 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
 
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
 }
+
+/// T-603. A plain start (`c`, `+ agent session`) types the title and owes
+/// nothing: the person submits it. One that comes up and is never asked sits
+/// awake at its composer, `idle` with no stop reason, and Claude Code has
+/// written no transcript. A blank ask there is the ticket's brief — title and
+/// description — where it was refused as `nothing to send` (the TUI did not
+/// even send it). A seat that has conversed still refuses; a person's wake of
+/// one that never did comes up fresh and gets the title typed again, as the
+/// start typed it; and a blank ask at it while parked wakes it on the brief.
+#[test]
+fn a_blank_ask_at_a_seat_that_never_took_a_prompt_sends_the_brief() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) = Harness::boot("prompt-brief", Some(STUB)) else { return };
+    let got = h.dir.join("got.txt");
+    let tmux_sock = h.paths.tmux_sock();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("prompt-brief");
+    let _ = c.request(Command::CreateTicketWithNote {
+        column: "TODO".into(),
+        title: "fresh seat".into(),
+        workspace: None,
+        text: "mesimon-probe-603 the brief's own words".into(),
+        uploads: Vec::new(),
+        tags: Vec::new(),
+        tier: None,
+    });
+    let ticket = c.board().tickets.first().expect("ticket").id;
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let sid16: String = sid.simple().to_string().chars().take(16).collect();
+    let pane_text = || -> String {
+        tmux(&tmux_sock)
+            .args(["capture-pane", "-p", "-t", &sid16])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    wait_until(Duration::from_secs(15), "the plain start to type the title", || {
+        pane_text().contains("fresh seat")
+    });
+
+    // Claude names the transcript it will write; there is no file yet.
+    let transcript = h.dir.join(format!("{sid}.jsonl"));
+    let start = format!(r#"{{"transcript_path":"{}"}}"#, transcript.display());
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), &start);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(5), "the snapshot to read the seat unprompted", || {
+        c.board().sessions.iter().any(|s| s.id == sid && s.unprompted)
+    });
+    let blank = || Command::PromptSession {
+        ticket,
+        text: "   ".into(),
+        queued: true,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+    };
+    // At `queued` too: the brief has no turn of this seat's to wait for.
+    match c.request(blank()) {
+        Response::Ok => {}
+        other => panic!("a blank ask at a fresh seat sends its brief: {other:?}"),
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let received = loop {
+        let text = std::fs::read_to_string(&got).unwrap_or_default();
+        if text.contains("mesimon-probe-603") {
+            break text;
+        }
+        assert!(Instant::now() < deadline, "the brief never reached the agent: {text:?}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(received.contains("fresh seat"), "the title leads the brief: {received:?}");
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    wait_until(Duration::from_secs(5), "the ack to clear the owed brief", || {
+        c.board().sessions.iter().any(|s| s.id == sid && !s.pending_submit)
+    });
+    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+
+    // Conversed: Claude wrote the transcript, and a blank ask is nothing.
+    std::fs::write(&transcript, "{}\n").unwrap();
+    match c.request(blank()) {
+        Response::Err { message } => assert!(message.contains("nothing to send"), "{message}"),
+        other => panic!("a conversed seat refuses a blank ask: {other:?}"),
+    }
+
+    // A seat that never conversed (the file gone again stands in for one),
+    // parked and woken by a person: no conversation to resume, so the wake
+    // is fresh and its empty composer gets the title again.
+    std::fs::remove_file(&transcript).unwrap();
+    let _ = std::fs::remove_file(&got);
+    assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+    c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);
+    match c.request(Command::ResumeSession { id: sid, confirm: false }) {
+        Response::Spawned { fresh, .. } => assert!(fresh, "nothing to resume"),
+        other => panic!("the wake: {other:?}"),
+    }
+    wait_until(Duration::from_secs(15), "the wake to type the title again", || {
+        pane_text().contains("fresh seat")
+    });
+    let fresh_id = c
+        .board()
+        .sessions
+        .into_iter()
+        .find(|s| s.id == sid)
+        .and_then(|s| s.claude_session_id)
+        .expect("a fresh wake mints the conversation's id");
+    let transcript = h.dir.join(format!("{fresh_id}.jsonl"));
+    let start = format!(r#"{{"transcript_path":"{}"}}"#, transcript.display());
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), &start);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+
+    // And parked again, a blank ask wakes it on the brief.
+    assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+    c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);
+    wait_until(Duration::from_secs(5), "a parked fresh seat to read unprompted", || {
+        c.board().sessions.iter().any(|s| s.id == sid && s.unprompted)
+    });
+    match c.request(blank()) {
+        Response::Spawned { id, .. } => assert_eq!(id, sid, "the wake re-enters the record"),
+        other => panic!("a blank ask at a parked fresh seat wakes it: {other:?}"),
+    }
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), "{}");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let received = loop {
+        let text = std::fs::read_to_string(&got).unwrap_or_default();
+        if text.contains("mesimon-probe-603") {
+            break text;
+        }
+        assert!(Instant::now() < deadline, "the woken seat never got its brief: {text:?}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(received.contains("fresh seat"), "the title leads it: {received:?}");
+
+    assert!(matches!(c.request(Command::Shutdown), Response::Ok));
+}

@@ -504,6 +504,20 @@ impl Daemon {
         plan: bool,
         actor: &str,
     ) -> Response {
+        let words = text.map(|text| Parked { text, brief: false, title: false });
+        self.relaunch_with(ticket, id, words, plan, actor)
+    }
+
+    /// `relaunch` with the words as a launch parks them: the brief of a seat
+    /// that never took a prompt (T-603) rides a plan-mode wake as an ask does.
+    pub(super) fn relaunch_with(
+        &mut self,
+        ticket: ulid::Ulid,
+        id: uuid::Uuid,
+        words: Option<Parked>,
+        plan: bool,
+        actor: &str,
+    ) -> Response {
         let why = if plan { "plan mode" } else { "a tier switch" };
         if !self.session_idle(id) {
             return Response::Err {
@@ -522,7 +536,7 @@ impl Daemon {
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.tier_wake = true;
             }
-            if let Some(text) = text.filter(|t| !t.is_empty()) {
+            if let Some(text) = words.map(|w| w.text).filter(|t| !t.is_empty()) {
                 if let Err(message) =
                     self.park_ask(ticket, QueuedSeat::Wake(id), text, None, false, plan)
                 {
@@ -533,8 +547,8 @@ impl Daemon {
             self.persist_and_notify();
             return Response::Ok;
         }
-        match text {
-            Some(text) => self.prompt_sleeping(ticket, text, plan),
+        match words {
+            Some(words) => self.wake_with(ticket, words, plan),
             None => self.resume_session_in(id, false, plan),
         }
     }

@@ -10510,9 +10510,25 @@ impl App {
                     self.refresh()?;
                     return Ok(());
                 }
+                // A seat that never took a prompt (T-603) takes its brief
+                // the same way: a plain start typed the title and left it,
+                // and the field was the one place a person asked for the
+                // rest. Any other seat has nothing to send, and says so —
+                // a blank Enter there was silent, and read as a dead key.
                 if starts {
                     return self.commit_prompt(purpose, title);
                 }
+                // The brief goes now, whatever the toggle: the seat has no
+                // turn to wait for (the daemon's rule, said on the wire).
+                if self.ticket_unprompted(ticket) {
+                    let mut purpose = purpose;
+                    if let InputPurpose::Prompt { queued, .. } = &mut purpose {
+                        *queued = false;
+                    }
+                    return self.commit_prompt(purpose, title);
+                }
+                self.status = "nothing to send".into();
+                self.shake(ticket);
             }
             return Ok(());
         }
@@ -10709,6 +10725,13 @@ impl App {
             _ => ("queued".into(), "queued ∙ sends next".into()),
         };
         let blank = text.is_empty();
+        // A blank field at a seat that never took a prompt (T-603) sends
+        // the ticket's brief, and the receipt names it.
+        let ask = if blank && !starting && self.ticket_unprompted(ticket) {
+            "brief sent"
+        } else {
+            "asked"
+        };
         // The field's `^n` pick (T-443) rides every receipt: the words go
         // to the agent on that tier.
         let on_tier = tier.as_deref().map(|t| format!(" ∙ on {}", self.tier_name(t)));
@@ -10730,8 +10753,8 @@ impl App {
             // ever been trusted for it — the hooks.
             // Sending now over a waiting ask drops the waiting one:
             // the daemon did, and the status says so.
-            Response::Ok if !queued && had => "asked ∙ queued ask dropped".into(),
-            Response::Ok => "asked".into(),
+            Response::Ok if !queued && had => format!("{ask} ∙ queued ask dropped"),
+            Response::Ok => ask.into(),
             // Parked HELD (T-565): its agent is on a question, so the words,
             // and any accept they carry, wait for the answer and a person's
             // send.
@@ -10757,19 +10780,19 @@ impl App {
             // said here for the same reason `c` says it. An empty seat
             // reports the same way and means something else: a session
             // that did not exist a moment ago (T-294).
-            Response::Spawned { .. } if starting => format!("{word} started{mode} ∙ asked"),
+            Response::Spawned { .. } if starting => format!("{word} started{mode} ∙ {ask}"),
             // An idle pane parked and woken into plan mode (T-434).
             Response::Spawned { fresh: false, .. } if plan && !waking => {
-                format!("restarted {word}{mode} ∙ asked")
+                format!("restarted {word}{mode} ∙ {ask}")
             }
-            Response::Spawned { fresh: false, .. } => format!("woke {word}{mode} ∙ asked"),
+            Response::Spawned { fresh: false, .. } => format!("woke {word}{mode} ∙ {ask}"),
             Response::Spawned { fresh: true, .. } => {
-                "nothing to resume ∙ started a fresh conversation ∙ asked".into()
+                format!("nothing to resume ∙ started a fresh conversation ∙ {ask}")
             }
             // Its worktree is being rebuilt under the wake (T-278);
             // the words ride the parked wake.
             Response::Provisioning => {
-                format!("provisioning worktree ∙ {word} wakes when ready ∙ asked")
+                format!("provisioning worktree ∙ {word} wakes when ready ∙ {ask}")
             }
             Response::Err { message } => message,
             _ => String::new(),
@@ -10914,6 +10937,13 @@ impl App {
             rows.extend(t.notes.iter().map(RailRow::Note));
         }
         rows
+    }
+
+    /// Whether the ticket's claude has never taken a prompt (T-603): the
+    /// daemon's `unprompted`, read off the snapshot. A blank ask there sends
+    /// the ticket's brief.
+    pub(crate) fn ticket_unprompted(&self, ticket: ulid::Ulid) -> bool {
+        self.board.live_agent(ticket).is_some_and(|r| r.unprompted)
     }
 
     /// Does the rail carry the `+ agent session` row (T-300)? Exactly when
@@ -17452,6 +17482,46 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "queued: true"), "{:?}", sent.borrow());
         assert_eq!(app.status, "agent wakes ∙ after T-9");
+    }
+
+    /// T-603. A plain start awake at its composer, `idle` with no stop
+    /// reason, never took a prompt: the field says a blank Enter sends the
+    /// brief, and it does, where it used to close without a word. On a seat
+    /// that has conversed a blank Enter still sends nothing, and says so.
+    #[test]
+    fn a_blank_ask_at_a_seat_that_never_took_a_prompt_sends_the_brief() {
+        let idle = SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Unknown };
+        let (mut app, sent, _) = app_with_claude(idle.clone(), false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "nothing to send", "a blank Enter is never silent");
+
+        let mut b = board_three_columns();
+        let mut rec = mesimon_core::board::SessionRecord::new(
+            uuid::Uuid::from_u128(7),
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            vec!["claude".into()],
+            "/repo".into(),
+            idle,
+        );
+        rec.unprompted = true;
+        b.sessions.push(rec);
+        let (mut app, sent) = App::for_test_logged(b, theme(), false);
+        app.rich_keys = true;
+        assert!(app.ticket_unprompted(ulid::Ulid(1)));
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(
+            matches!(app.mode, Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }),
+            "the field opens: {:?}",
+            app.mode
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, r#"text: """#), "blank, for the daemon: {:?}", sent.borrow());
+        assert_eq!(app.status, "brief sent");
     }
 
     /// T-390: live-pane follow-ups use the per-board Queue/Steer default.

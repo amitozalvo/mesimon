@@ -254,6 +254,9 @@ struct PendingResume {
     session: uuid::Uuid,
     confirm: bool,
     prompt: Option<String>,
+    /// The ticket's brief leads `prompt` (T-603): the wake of a seat that
+    /// never took a prompt, asked with a blank field.
+    brief: bool,
     /// Wake in plan mode (T-434), carried across the rebuild.
     plan: bool,
 }
@@ -2510,6 +2513,7 @@ impl Daemon {
                     env.principal.is_human(),
                     false,
                 );
+                self.retype_title(&resp);
                 self.persist_and_notify();
                 resp
             }
@@ -2522,6 +2526,7 @@ impl Daemon {
             },
             Command::WakeSession { id } => {
                 let resp = self.wake_session(id);
+                self.retype_title(&resp);
                 self.persist_and_notify();
                 resp
             }
@@ -3788,12 +3793,28 @@ impl Daemon {
                 message: "a prompt is already waiting for this session".into(),
             };
         }
-        let now = now_ms();
         let parked = Parked { text: unsent.text, brief: unsent.brief, title: unsent.brief };
+        self.send_launch_words(id, ticket, parked, "prompt_resent")
+    }
+
+    /// Launch words for a seat whose pane is long past `SessionStart`: a
+    /// resend (T-570), or the brief of a conversation that never took a
+    /// prompt (T-603). Armed now, with the composer wait and one Ctrl+C owed
+    /// for a box holding text — what a failed start left, or the title a
+    /// plain start typed.
+    fn send_launch_words(
+        &mut self,
+        id: uuid::Uuid,
+        ticket: ulid::Ulid,
+        parked: Parked,
+        word: &'static str,
+    ) -> Response {
+        let now = now_ms();
         // A session whose mod is up takes the words by its `submit` (T-575):
-        // nothing is typed, so there is no stray text to clear first. One
-        // whose mod never came up — the reason its words went unsent, most
-        // likely — takes the paste road below.
+        // nothing is typed, so there is no stray text to clear first, and
+        // whatever the box holds stays the person's. One whose mod never
+        // came up — the reason its words went unsent, most likely — takes
+        // the paste road below.
         if self.mod_speaks(id, "submit") && !road::is_command(&self.launch_words(ticket, &parked)) {
             if !self.mod_submit(id, ticket, parked, Ack::PROMPT) {
                 return Response::Err { message: "nothing to send".into() };
@@ -3802,7 +3823,7 @@ impl Daemon {
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.pending_submit = true;
             }
-            self.feed.board("local", "prompt_resent", Some(ticket));
+            self.feed.board("local", word, Some(ticket));
             self.persist_and_notify();
             return Response::Ok;
         }
@@ -3814,9 +3835,72 @@ impl Daemon {
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pending_submit = true;
         }
-        self.feed.board("local", "prompt_resent", Some(ticket));
+        self.feed.board("local", word, Some(ticket));
         self.persist_and_notify();
         Response::Ok
+    }
+
+    /// A Claude seat whose conversation never took a prompt (T-603), by the
+    /// cheap reading the snapshot can afford on every build: idle at the
+    /// composer `SessionStart` left (or parked), nothing owed or unsent,
+    /// and no file at the transcript path `SessionStart` named — Claude
+    /// Code writes none before the first prompt (measured on 2.1.288).
+    fn unprompted_hint(&self, rec: &mesimon_core::board::SessionRecord) -> bool {
+        rec.kind == SessionKind::Claude
+            && matches!(
+                rec.state,
+                SessionState::Idle { stop_reason: StopReason::Unknown } | SessionState::Sleeping
+            )
+            && rec.unsent.is_none()
+            && !self.owed.contains_key(&rec.id)
+            && rec.transcript_path.as_deref().is_some_and(|p| !std::path::Path::new(p).is_file())
+    }
+
+    /// `unprompted_hint`, confirmed the way a wake judges a conversation
+    /// gone (`history_missing`, which also looks where a conversation that
+    /// moved with its cwd went): the reading a blank ask acts on.
+    fn unprompted(&self, id: uuid::Uuid) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
+        self.unprompted_hint(rec)
+            && crate::agents::adapter(rec.kind).is_some_and(|a| a.history_missing(rec))
+    }
+
+    /// A blank ask at a seat that never took a prompt (T-603): the ticket's
+    /// title and description, as a start sends them. A plain start (`c`)
+    /// typed the title and left it for the person, and its wake came up on
+    /// an empty composer; the field's blank Enter there did nothing at all.
+    /// It goes now whatever the toggle says: there is no turn of this seat's
+    /// to wait for, as a worktree's start never waits.
+    fn send_brief(&mut self, ticket: ulid::Ulid, seat: QueuedSeat, plan: bool) -> Response {
+        let brief = Parked { text: String::new(), brief: true, title: true };
+        match seat {
+            QueuedSeat::Pane(id) if plan || self.tier_owed(id) => {
+                self.relaunch_with(ticket, id, Some(brief), plan, "local")
+            }
+            QueuedSeat::Pane(id) => {
+                // The title a plain start typed would sit in the box under
+                // the brief's own turn on the mod road, where nothing is
+                // pasted over it: the paste road's one Ctrl+C, into a box
+                // seen holding text, clears it there too.
+                if self.mod_speaks(id, "submit") {
+                    use crate::agents::claude::composer::{self, Composer};
+                    if let Some(sid) =
+                        self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16())
+                    {
+                        let holding = self
+                            .backend
+                            .capture_input_screen(&sid)
+                            .is_ok_and(|screen| composer::read(&screen) == Composer::Holding);
+                        if holding {
+                            let _ = self.backend.clear_input(&sid);
+                        }
+                    }
+                }
+                self.send_launch_words(id, ticket, brief, "prompt_brief")
+            }
+            QueuedSeat::Wake(_) => self.wake_with(ticket, brief, plan),
+            QueuedSeat::Start(_) => Response::Err { message: "nothing to send".into() },
+        }
     }
 
     /// The words a launch road delivers, as they stand NOW: a brief is the
@@ -6778,6 +6862,9 @@ impl Daemon {
             rec.tasks_running = (rec.kind.is_agent()
                 && rec.state == (SessionState::Idle { stop_reason: StopReason::Background }))
             .then(|| u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX));
+            // And whether the seat never took a prompt (T-603): one `stat`
+            // per idle or parked claude.
+            rec.unprompted = self.unprompted_hint(rec);
         }
         let terminals = self
             .terminals
@@ -8978,6 +9065,11 @@ impl Daemon {
             // "Accept the plan, ask nothing": the entry carries the flag
             // and no words, and goes the moment the press is in.
             (None, QueuedSeat::Pane(_)) if accept_plan => String::new(),
+            // A seat that never took a prompt (T-603): blank is its brief.
+            (None, QueuedSeat::Pane(id) | QueuedSeat::Wake(id)) if self.unprompted(*id) => {
+                self.forget_queued(ticket, "queued_ask_dropped", "local", "person");
+                return self.send_brief(ticket, seat, plan);
+            }
             (None, _) => return Response::Err { message: "nothing to send".into() },
         };
         if queued || accept_plan {
@@ -10213,6 +10305,37 @@ impl Daemon {
     /// user watches the ask land — and the seat is still ONE claude: a wake
     /// re-enters the record, it never mints a second.
     fn prompt_sleeping(&mut self, ticket: ulid::Ulid, text: String, plan: bool) -> Response {
+        self.wake_with(ticket, Parked { text, brief: false, title: false }, plan)
+    }
+
+    /// A person's plain wake that came up fresh (T-603): the conversation
+    /// never took a prompt, so there was none to resume, and the new pane's
+    /// composer is empty where the plain start's held the title. The title
+    /// is typed again, never submitted, as the start typed it and as the
+    /// hook-set relaunch does (`relaunch_on_hooks`). A wake that carries
+    /// words owes them and types nothing.
+    fn retype_title(&mut self, resp: &Response) {
+        let Response::Spawned { id, fresh: true } = resp else { return };
+        if self.owed.contains_key(id) {
+            return;
+        }
+        let Some(rec) =
+            self.board.sessions.iter().find(|s| s.id == *id && s.kind == SessionKind::Claude)
+        else {
+            return;
+        };
+        let Some(title) =
+            self.board.ticket(rec.ticket).map(|t| t.title.trim()).filter(|t| !t.is_empty())
+        else {
+            return;
+        };
+        let _ = self.backend.send_text(&rec.sid16(), &format!("{title} "));
+    }
+
+    /// Wake the ticket's parked claude and hold `words` for its first tick:
+    /// an ask (`prompt_sleeping`), or the brief of a conversation that never
+    /// took a prompt (T-603).
+    fn wake_with(&mut self, ticket: ulid::Ulid, words: Parked, plan: bool) -> Response {
         let Some(id) = self
             .board
             .live_agent(ticket)
@@ -10225,14 +10348,13 @@ impl Daemon {
         };
         let resp = self.resume_session_in(id, false, plan);
         match &resp {
-            Response::Spawned { .. } => {
-                self.park(id, ticket, Parked { text, brief: false, title: false }, Ack::PROMPT)
-            }
+            Response::Spawned { .. } => self.park(id, ticket, words, Ack::PROMPT),
             // The worktree is being rebuilt under the wake (T-278): the
             // words ride the parked resume and land when it replays.
             Response::Provisioning => {
                 if let Some(r) = self.pending_resumes.iter_mut().find(|r| r.session == id) {
-                    r.prompt = Some(text);
+                    r.prompt = Some(words.text);
+                    r.brief = words.brief;
                     r.plan = plan;
                 }
             }
@@ -11524,12 +11646,8 @@ impl Daemon {
                     match self.resume_session_in(r.session, r.confirm, r.plan) {
                         Response::Spawned { .. } => {
                             if let Some(text) = r.prompt {
-                                self.park(
-                                    r.session,
-                                    r.ticket,
-                                    Parked { text, brief: false, title: false },
-                                    Ack::PROMPT,
-                                );
+                                let words = Parked { text, brief: r.brief, title: r.brief };
+                                self.park(r.session, r.ticket, words, Ack::PROMPT);
                             }
                         }
                         Response::Err { message } => {
@@ -12405,6 +12523,7 @@ impl Daemon {
                             session: id,
                             confirm,
                             prompt: None,
+                            brief: false,
                             plan,
                         });
                     }

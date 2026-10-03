@@ -264,6 +264,7 @@ mod tests {
             tier_wake: false,
             unsent: None,
             tasks_running: None,
+            unprompted: false,
         }
     }
 
