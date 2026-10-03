@@ -51,6 +51,23 @@ pub fn is_working(s: &SessionRecord) -> bool {
             ))
 }
 
+/// A session that holds back WORDS meant for it (T-599): `is_working` minus
+/// a Claude idle at its composer while background tasks run
+/// (`Idle{Background}`). Claude Code takes a prompt there, and the wait may
+/// be the work itself or a loop that never ends — the board cannot tell
+/// which, so it lets the words through (a person's queued prompt, the
+/// crown's ask, the crown's own wake) and the agent decides. Everything
+/// else keeps `is_working`: the merge train's seat, the attention set, the
+/// keep-awake hold, and another ticket's ask in the same checkout. Written
+/// in terms of `is_working`, so the two can only ever disagree about that
+/// one state.
+pub fn holds_against_words(s: &SessionRecord) -> bool {
+    is_working(s)
+        && !(s.kind == SessionKind::Claude
+            && s.state == (SessionState::Idle { stop_reason: StopReason::Background })
+            && !s.pending_submit)
+}
+
 /// A session that holds its checkout AGAINST A PLAN ACCEPT (T-429):
 /// `is_working` minus a session parked on its own plan dialog. A dialog
 /// writes nothing, and three agents each waiting on theirs would otherwise
@@ -125,17 +142,18 @@ pub fn working_tickets(
     owed: &HashSet<ulid::Ulid>,
     cwd: Option<&str>,
 ) -> Vec<ulid::Ulid> {
-    working_tickets_by(board, owed, cwd, is_working)
+    working_tickets_by(board, owed, cwd, &is_working)
 }
 
 /// `working_tickets` under another reading of "working": the plan accept's
-/// (`holds_against_accept`, T-429) is the one other caller. The owed pastes
+/// (`holds_against_accept`, T-429), and a queued ask's, which lets its own
+/// agent's background wait through (`holds_against_words`, T-599). The owed pastes
 /// count whatever the predicate says — an Enter of ours is a writer.
 pub fn working_tickets_by(
     board: &Board,
     owed: &HashSet<ulid::Ulid>,
     cwd: Option<&str>,
-    working: fn(&SessionRecord) -> bool,
+    working: &dyn Fn(&SessionRecord) -> bool,
 ) -> Vec<ulid::Ulid> {
     let mut out: Vec<ulid::Ulid> = Vec::new();
     let mut push = |t: ulid::Ulid| {
@@ -245,6 +263,7 @@ mod tests {
             tier_owed: false,
             tier_wake: false,
             unsent: None,
+            tasks_running: None,
         }
     }
 
@@ -265,6 +284,30 @@ mod tests {
         s.state = SessionState::Idle { stop_reason: StopReason::Background };
         assert!(is_working(&s));
         assert!(is_mid_turn(&s));
+    }
+
+    /// An agent idle at its composer with background tasks takes words
+    /// (T-599) and is still working for everything else; a turn in flight,
+    /// an owed Enter or a Codex holds them.
+    #[test]
+    fn a_background_wait_lets_words_through_and_nothing_else() {
+        let mut s = session(
+            ulid::Ulid::new(),
+            SessionKind::Claude,
+            "/tmp",
+            SessionState::Idle { stop_reason: StopReason::Background },
+        );
+        assert!(is_working(&s), "the working set keeps it");
+        assert!(!holds_against_words(&s));
+        s.pending_submit = true;
+        assert!(holds_against_words(&s), "an owed Enter is ours");
+        s.pending_submit = false;
+        for state in [SessionState::Running, SessionState::Spawning] {
+            s.state = state;
+            assert!(holds_against_words(&s), "{:?}", s.state);
+        }
+        s.state = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        assert!(!holds_against_words(&s));
     }
 
     #[test]
@@ -511,15 +554,18 @@ mod tests {
         let none = HashSet::new();
         assert_eq!(working_tickets(&board, &none, Some("/repo")), vec![a, b, c]);
         assert!(
-            working_tickets_by(&board, &none, Some("/repo"), holds_against_accept).is_empty(),
+            working_tickets_by(&board, &none, Some("/repo"), &holds_against_accept).is_empty(),
             "three dialogs hold nothing against each other"
         );
         let owed: HashSet<ulid::Ulid> = [b].into_iter().collect();
         assert_eq!(
-            working_tickets_by(&board, &owed, Some("/repo"), holds_against_accept),
+            working_tickets_by(&board, &owed, Some("/repo"), &holds_against_accept),
             vec![b],
             "an Enter of ours holds"
         );
-        assert_eq!(working_tickets_by(&board, &none, Some("/wt/d"), holds_against_accept), vec![d]);
+        assert_eq!(
+            working_tickets_by(&board, &none, Some("/wt/d"), &holds_against_accept),
+            vec![d]
+        );
     }
 }

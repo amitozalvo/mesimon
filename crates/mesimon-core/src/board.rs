@@ -427,6 +427,12 @@ pub struct SessionRecord {
     /// saying nothing, which widens nothing, so no schema bump.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsent: Option<Unsent>,
+    /// How many background tasks an agent idle at its composer has running
+    /// (`Idle{Background}`, T-599): the card says `idle ∙ 3 tasks ∙ 2h`.
+    /// The daemon fills it into the SNAPSHOT only, as it does `foreground`:
+    /// the task registry is never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks_running: Option<u32>,
 }
 
 /// What a launch road meant to submit and did not (T-570). The ticket's
@@ -547,6 +553,7 @@ impl SessionRecord {
             tier_owed: false,
             tier_wake: false,
             unsent: None,
+            tasks_running: None,
         }
     }
 

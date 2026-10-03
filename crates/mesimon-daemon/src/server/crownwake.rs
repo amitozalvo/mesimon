@@ -25,6 +25,13 @@
 //!    or a `git merge` in a terminal. A shared-checkout worker has no branch,
 //!    so nothing to read; its commits are on the base the moment they exist.
 //!
+//! And one that is no event at all (T-599): **lingering** — a worker it
+//! started has sat idle at its composer with background tasks running for
+//! `LINGER_MS` (30 min) with no foreground turn. Once per stretch, and the
+//! weakest news: the wait may be the work (a long suite, a rig run) or a
+//! loop that never ends, and time cannot tell which, so the board decides
+//! nothing — it says so, and the crown asks the worker.
+//!
 //! A turn that took mesimon's own merge-flow words (`m`'s or the train's
 //! rebase ask, the merged notice) is a merge step: the person already knows,
 //! and the crown learns on its next `get_ticket` — or from the merge itself,
@@ -136,6 +143,8 @@ impl BranchLook {
 /// and says what it left.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum WakeCause {
+    /// Idle with background tasks for `LINGER_MS` (T-599): the weakest.
+    Lingering,
     Finished,
     Merged,
     Delivered,
@@ -149,6 +158,7 @@ impl WakeCause {
     /// The clause after the ticket in the sentence.
     fn clause(self) -> &'static str {
         match self {
+            WakeCause::Lingering => "has been idle with background tasks",
             WakeCause::Finished => "finished its turn",
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
@@ -166,6 +176,7 @@ impl WakeCause {
     /// The feed's word.
     fn word(self) -> &'static str {
         match self {
+            WakeCause::Lingering => "lingering",
             WakeCause::Finished => "finished",
             WakeCause::Merged => "merged",
             WakeCause::Delivered => "delivered",
@@ -189,6 +200,38 @@ pub(super) struct CrownWake {
     /// Held until the merge step's turn was over (T-596): the line says the
     /// worker finished its turn after the merge.
     finished: bool,
+    /// A lingering wake's numbers (T-599), as the stretch stood when it
+    /// was owed.
+    linger: Option<Linger>,
+}
+
+/// A worker idle with background tasks (T-599): how many, and for how long
+/// in minutes, when the board noticed. Never the tasks' words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Linger {
+    pub(super) tasks: usize,
+    pub(super) minutes: u64,
+}
+
+/// How long a worker sits idle with background tasks before the crown is
+/// told (T-599). Not a verdict: the crown is told, and nothing else moves.
+pub(super) const LINGER_MS: u64 = 30 * 60 * 1000;
+
+/// The lingering clause: `has been idle with 3 background tasks for 30
+/// min`, the count left out where the registry lost it (a restart starts
+/// it empty), the hours said past two of them.
+pub(super) fn lingering_clause(l: Linger) -> String {
+    let tasks = match l.tasks {
+        0 => "background tasks".to_string(),
+        1 => "1 background task".to_string(),
+        n => format!("{n} background tasks"),
+    };
+    let time = if l.minutes >= 120 {
+        format!("{} h", l.minutes / 60)
+    } else {
+        format!("{} min", l.minutes)
+    };
+    format!("has been idle with {tasks} for {time}")
 }
 
 impl CrownWake {
@@ -209,6 +252,9 @@ impl CrownWake {
     /// until its merge step's turn was over (T-596), that the turn ended —
     /// the crown's close-out (`sleep_agent`) goes through from here.
     fn clause(&self) -> String {
+        if let (WakeCause::Lingering, Some(l)) = (self.cause, self.linger) {
+            return lingering_clause(l);
+        }
         let clause = self.cause.clause();
         if self.finished && matches!(self.cause, WakeCause::Merged | WakeCause::Delivered) {
             format!("{clause} and finished its turn")
@@ -453,7 +499,8 @@ impl Heard {
             w.fold(cause, from, Some(now));
             return false;
         }
-        self.stepped = Some(CrownWake { worker, cause, from, to: Some(now), finished: true });
+        self.stepped =
+            Some(CrownWake { worker, cause, from, to: Some(now), finished: true, linger: None });
         true
     }
 
@@ -1006,16 +1053,73 @@ impl Daemon {
         to: Option<Told>,
         finished: bool,
     ) {
+        self.owe_wake(crown, worker, cause, from, to, finished, None);
+    }
+
+    /// `owe_crown_wake`, with a lingering wake's numbers (T-599): they ride
+    /// the wake before it is drained.
+    #[allow(clippy::too_many_arguments)]
+    fn owe_wake(
+        &mut self,
+        crown: ulid::Ulid,
+        worker: ulid::Ulid,
+        cause: WakeCause,
+        from: Option<Told>,
+        to: Option<Told>,
+        finished: bool,
+        linger: Option<Linger>,
+    ) {
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
             w.fold(cause, from, to);
             w.finished |= finished;
+            w.linger = w.linger.or(linger);
         } else {
-            self.crown_wakes.push(CrownWake { worker, cause, from, to, finished });
+            self.crown_wakes.push(CrownWake { worker, cause, from, to, finished, linger });
         }
         self.feed.crown_wake(crown, worker, cause.word());
         self.crown_touched(worker, crown, "woke");
         self.drain_crown_wakes();
         self.broadcast();
+    }
+
+    /// Workers the crown started that have sat idle at their composer with
+    /// background tasks for `LINGER_MS` with no foreground turn (T-599), on
+    /// the tick: the crown is woken once per stretch, `has been idle with 3
+    /// background tasks for 30 min`, and nothing else happens — no merge,
+    /// no park, no kill. A stretch ends only with a foreground turn
+    /// (`apply_change` forgets the record on `Running`), so a task the
+    /// agent arms or ends without a turn does not make a second wake.
+    pub(super) fn hear_lingering(&mut self) -> bool {
+        let sessions = &self.board.sessions;
+        self.lingered.retain(|id| sessions.iter().any(|s| s.id == *id));
+        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
+        let now = now_ms();
+        let after = super::linger_ms();
+        let due: Vec<(uuid::Uuid, ulid::Ulid, Linger)> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.kind == SessionKind::Claude
+                    && s.ticket != crown
+                    && s.started_by == Some(crown)
+                    && s.state == (SessionState::Idle { stop_reason: StopReason::Background })
+                    && !self.lingered.contains(&s.id)
+            })
+            .filter_map(|s| {
+                let age = now.saturating_sub(s.state_changed_at?);
+                (age >= after).then_some((
+                    s.id,
+                    s.ticket,
+                    Linger { tasks: s.background_tasks.count(), minutes: age / 60_000 },
+                ))
+            })
+            .collect();
+        for (id, worker, linger) in &due {
+            self.lingered.insert(*id);
+            self.owe_wake(crown, *worker, WakeCause::Lingering, None, None, false, Some(*linger));
+        }
+        !due.is_empty()
     }
 
     /// The crown left, or another ticket took it: whatever it was owed goes
@@ -1116,6 +1220,37 @@ mod tests {
     /// same idle re-entered with no turn between is not fresh again. A
     /// merge step stays silent however fresh it reads; the crown hears at
     /// the merge. Nothing pending, it wakes.
+    /// A worker idle with background tasks (T-599): the weakest news, said
+    /// in numbers, never the tasks' words.
+    #[test]
+    fn a_lingering_line_says_how_many_and_how_long() {
+        let l = |tasks, minutes| Linger { tasks, minutes };
+        assert_eq!(lingering_clause(l(3, 30)), "has been idle with 3 background tasks for 30 min");
+        assert_eq!(lingering_clause(l(1, 45)), "has been idle with 1 background task for 45 min");
+        assert_eq!(lingering_clause(l(0, 600)), "has been idle with background tasks for 10 h");
+        assert!(WakeCause::Lingering < WakeCause::Finished, "below a finished turn");
+        let mut w = CrownWake {
+            worker: ulid::Ulid::nil(),
+            cause: WakeCause::Lingering,
+            from: None,
+            to: None,
+            finished: false,
+            linger: Some(l(3, 30)),
+        };
+        assert_eq!(w.clause(), "has been idle with 3 background tasks for 30 min");
+        assert!(w.changed().is_empty(), "no delta: nothing about the work moved");
+        // A stronger event on the same worker says itself.
+        w.fold(WakeCause::Raised, None, None);
+        assert_eq!(w.clause(), "raised its hand");
+        // A lingering wake is never held: nothing pending on the ticket
+        // weighs it.
+        let pending = Pending { train: true, words: true, turn: true, ..IDLE };
+        assert_eq!(
+            due(Some(WakeCause::Lingering), None, &pending),
+            Due::Wake(WakeCause::Lingering)
+        );
+    }
+
     #[test]
     fn a_finished_turn_with_nothing_new_wakes_once() {
         let idle = branch("base", "clean", 0, "REVIEW");
@@ -1225,6 +1360,7 @@ mod tests {
             from,
             to,
             finished: false,
+            linger: None,
         };
         let head = checkout("1234567890abcdef", "REVIEW");
         assert_eq!(
@@ -1399,6 +1535,7 @@ mod tests {
             from: None,
             to: Some(delivered.clone()),
             finished: false,
+            linger: None,
         };
         let h = heard(Some(delivered.clone()), Some(delivered.clone()));
         let cause = merge_verdict(true, &h, &landed).unwrap();
@@ -1528,6 +1665,7 @@ mod tests {
             from: Some(delivered),
             to: Some(landed),
             finished: false,
+            linger: None,
         };
         assert_eq!(wake.clause(), "merged");
     }

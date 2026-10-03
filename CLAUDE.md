@@ -420,7 +420,9 @@ drawer after the record is gone; `costs.json` (T-327) keeps every transcript a t
 held, with how far it is read and its tokens by hour. The machine's quota reading is not a state
 file: `~/.local/state/mesimon/usage.json` is a shared cache, merged per provider. `SessionState` is matched
 non-exhaustively in places: use `state.is_live()` for working-set membership and
-`state.has_pane()` for pane existence. `Sleeping` is live-but-parked.
+`state.has_pane()` for pane existence. `Sleeping` is live-but-parked. **`Idle{Background}` is
+working, except to words** (T-599): a queued ask, the crown's ask and the crown's wake land on it
+(`quiet::holds_against_words`); the train, the parks and the working set never decide it by time.
 
 **Worktrees and merge (M4a).** Workspace is a per-ticket field (`Ticket.workspace`); worktrees
 live under the state dir at `worktrees/<KEY>-<slug>/` on branch `msmn/<KEY>-<slug>` (slugger in
@@ -561,6 +563,9 @@ will not show up in our tests until they break something.
   says the dialog is gone, and it is the refusal road (`Signal::ToolStarted`, T-447).
 - **A tool in flight keeps the transcript still for its whole duration**, so an mtime-quiet rule
   reads a 3.5-minute `cargo` call as a dead turn.
+- **`pgrep -f <pattern>` matches the shell that runs it**, whose own argv holds the pattern: a
+  `while pgrep -f …; do sleep 5; done` never ends (T-599's ten hours). Wait on a pid, a pidfile
+  or `pgrep -x`, never on the command's own words.
 - **Claude Code's session file flips `idle` at the end of every turn**, milliseconds before the
   `Stop` hook fires, so a status probe races the hook on every turn.
 - **A teammate is listed `running` in every later `Stop` payload for its whole life**, idle or
@@ -625,6 +630,8 @@ a runner without tmux otherwise reports a green suite that ran almost nothing), 
 respawns; required by `restart_skew_e2e`, the only test driving the real `Client::connect`),
 `MESIMON_CLAUDE_HOME` (census root for fabricated `~/.claude` trees), `MESIMON_COMPOSER_WAIT_MS`
 (how long launch words wait for Claude's composer), `MESIMON_SLEEP_MIN_AGE_MS`,
+`MESIMON_LINGER_MS` (how long a crown-started worker sits idle with background tasks before the
+crown is told, T-599),
 `MESIMON_CODEX_CLEANUP_STALE_MS` (how long an unconfirmed Codex cleanup may own a live ticket's
 checkout before the sweep goes looking for its runtime),
 `MESIMON_PANE_QUIET_MS`, `MESIMON_NO_UPDATE_CHECK`, `MESIMON_UPDATE_CHECK`,

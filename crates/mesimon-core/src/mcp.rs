@@ -142,8 +142,14 @@ pub const CROWN_WAKES: &str = concat!(
      this session's next prompt, once it is idle. A finished turn that left nothing new to \
      merge says so: the agent is done with what it was asked, and what comes next is the \
      crown's to decide. Nothing needs \
-     polling. A background task or monitor left running makes this session read as busy, and \
-     the wake and every queued word wait until it ends. A worker whose branch is merged is \
+     polling. A background task or monitor left running does not hold the wake or a queued \
+     word: they land at this session's composer as at any idle one. A worker the crown started \
+     that sits idle with background tasks for 30 minutes wakes this session once (has been \
+     idle with N background tasks), and get_ticket on it carries background (tasks, \
+     since_secs). The wait may be the work (a long suite, a build) or a loop that will not end, \
+     and the board cannot tell which, so it merges, parks and ends nothing for it: ask_agent \
+     reaches the worker while its tasks run, to ask whether it is done and what they wait on. \
+     A worker whose branch is merged is \
      finished: sleep_agent parks it, which frees its seat in the crown's budget, and \
      move_ticket to the board's done column closes it (its gate admits a merged branch). \
      Where Settings → Agents → Crown archives tickets is on, archive_ticket also takes it off \
@@ -175,6 +181,23 @@ pub const CROWN_WAKES: &str = concat!(
     " ",
     persons_questions!()
 );
+
+/// What a worker the crown started is told about the board it works on
+/// (T-599), on its own `get_ticket` view: `CROWN_WAKES`'s counterpart, and
+/// transient result data like it, never tool text or a system prompt, so it
+/// may instruct. A worker under a crown addressed "the author" with four
+/// commands, two of them (the merge, copying the release stamp) the board's
+/// and the crown's; and it left three loops running past its last turn,
+/// which read as unfinished work for ten hours.
+pub const WORKER_UNDER_CROWN: &str = "The board's crown, the agent coordinating this board \
+     from another ticket, started this session. Under a crown the merge is the board's: the \
+     merge train lands a finished branch, else the crown does, and the board asks for its \
+     rebase and closes the ticket, so a finished turn's report asks no person to merge, \
+     rebase, move the card or copy what the board already records. The commands a report \
+     addresses to a person are only those a person must run, such as a production ship. A \
+     finished turn leaves no background task or monitor running: the board reads a running \
+     task as unfinished work, so the branch is not merged behind it, and the crown asks what \
+     it waits on.";
 
 /// Words that turn a description into an instruction. Tool text is injected
 /// into every request; it may describe, and it may not tell the model what to

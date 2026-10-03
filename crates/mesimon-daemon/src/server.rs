@@ -20,10 +20,11 @@ use mesimon_core::board::{
     PICKED_AT_DESK, PICKED_BY_AGENT,
 };
 use mesimon_core::command::{
-    AgentAutomoveView, AgentBoardView, AgentNeedsYouView, AgentQuestionView, AgentRepoView,
-    AgentStateView, AgentTagView, AgentTicketRow, AgentTicketView, Command, CrownTouch, DiffTarget,
-    Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Notice, Pending, PendingAction,
-    Resources, Response, TerminalItem, WorktreeItem, WorktreeRepoItem, PROTOCOL_VERSION,
+    AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentNeedsYouView, AgentQuestionView,
+    AgentRepoView, AgentStateView, AgentTagView, AgentTicketRow, AgentTicketView, Command,
+    CrownTouch, DiffTarget, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Notice,
+    Pending, PendingAction, Resources, Response, TerminalItem, WorktreeItem, WorktreeRepoItem,
+    PROTOCOL_VERSION,
 };
 use mesimon_core::crown;
 use mesimon_core::mcp;
@@ -667,6 +668,10 @@ pub struct Daemon {
     /// a second one. On the writer, so the probe that runs off it cannot
     /// race the next turn's start.
     turns_open: std::collections::HashSet<ulid::Ulid>,
+    /// Records whose stretch idle with background tasks the crown has been
+    /// told of (T-599, `hear_lingering`), forgotten on the record's next
+    /// foreground turn. In memory: a restart re-derives every state.
+    lingered: std::collections::HashSet<uuid::Uuid>,
     /// The session whose dialog the `answer_agent` call in hand queued an
     /// answer for (T-569): the writer loop parks that call's reply with the
     /// delivery (`control_park_reply`), which answers it when it settles.
@@ -1127,6 +1132,7 @@ pub fn run(paths: Paths) -> Result<()> {
         crown_landed: Vec::new(),
         turn_asks: HashMap::new(),
         turns_open: std::collections::HashSet::new(),
+        lingered: std::collections::HashSet::new(),
         answer_waits: None,
         modroad,
         mod_park: None,
@@ -2612,6 +2618,7 @@ impl Daemon {
             self.refresh_machine_tiers();
             changed |= stage!("drain_tier_switches", self.drain_tier_switches());
             changed |= stage!("drain_queue", self.drain_queue());
+            changed |= stage!("hear_lingering", self.hear_lingering());
             changed |= stage!("hear_merges", self.hear_merges());
             changed |= stage!("hear_deferred", self.hear_deferred());
             changed |= stage!("hear_stepped", self.hear_stepped());
@@ -4394,8 +4401,22 @@ impl Daemon {
         // its claude's mark.
         // An edge into a working state opens a turn (T-591), so the next
         // `EndTurn` is a finished one.
+        // A foreground turn ends a stretch idle with background tasks
+        // (T-599): the next one is new, and may wake the crown again.
+        if change.to == SessionState::Running {
+            self.lingered.remove(&id);
+        }
         if snapshot.kind.is_agent() && change.from != change.to {
-            if mesimon_core::quiet::is_working(&snapshot) {
+            // A turn that took the crown's ask and ended with background
+            // tasks still running answered it (T-599): the crown asked
+            // whether the wait is the work, and the words are the answer.
+            let answered_with_tasks = change.to
+                == (SessionState::Idle { stop_reason: StopReason::Background })
+                && matches!(self.turn_asks.get(&snapshot.ticket), Some(TurnAsk::Crown(_)))
+                && matches!(change.confidence, Confidence::High | Confidence::Medium);
+            if answered_with_tasks {
+                self.turn_ended(snapshot.ticket, true);
+            } else if mesimon_core::quiet::is_working(&snapshot) {
                 self.turns_open.insert(snapshot.ticket);
             } else {
                 let end_turn =
@@ -4551,7 +4572,16 @@ impl Daemon {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
                 match self.agent_ticket_view(ticket) {
-                    Some(view) => {
+                    Some(mut view) => {
+                        // A worker the board's crown started reads who merges
+                        // under it (T-599).
+                        let crown = self.board.crown_holder().map(|t| t.id);
+                        view.under_crown = self
+                            .board
+                            .sessions
+                            .iter()
+                            .any(|s| s.id == session && crown.is_some() && s.started_by == crown)
+                            .then(|| mesimon_core::mcp::WORKER_UNDER_CROWN.to_string());
                         // The agent read its ticket: the page stops saying
                         // it has not (T-224). A persisted fact, and a real
                         // delta for the page to draw, so it is broadcast.
@@ -5712,7 +5742,7 @@ impl Daemon {
             return true;
         }
         match self.seat_of(crown) {
-            QueuedSeat::Pane(id) => !self.session_idle(id),
+            QueuedSeat::Pane(id) => !self.session_takes_words(id),
             QueuedSeat::Wake(_) => false,
             QueuedSeat::Start(_) => true,
         }
@@ -6202,10 +6232,25 @@ impl Daemon {
                 .collect(),
             crowned: self.board.is_crowned(id),
             crown: self.board.is_crowned(id).then(|| mesimon_core::mcp::CROWN_WAKES.to_string()),
+            under_crown: None,
+            background: self.agent_background(id),
             state: self.agent_state_view(id),
             needs_you: self.agent_needs_you(id),
             asked: None,
             seen: Some(self.seen_token(id)),
+        })
+    }
+
+    /// The ticket's agent idle at its composer with background tasks running
+    /// (T-599): how many, and since its turn ended. Said, never judged.
+    fn agent_background(&self, id: ulid::Ulid) -> Option<AgentBackgroundView> {
+        let rec = self.board.live_agent(id)?;
+        if rec.state != (SessionState::Idle { stop_reason: StopReason::Background }) {
+            return None;
+        }
+        Some(AgentBackgroundView {
+            tasks: u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX),
+            since_secs: rec.state_changed_at.map(|at| now_ms().saturating_sub(at) / 1000),
         })
     }
 
@@ -6631,9 +6676,14 @@ impl Daemon {
         notices.extend(self.machine_tiers.notice.clone());
         // The foregrounds ride the snapshot's records and nothing else: the
         // board on disk never carries one (T-366).
+        // So does the count of an idle agent's background tasks (T-599): the
+        // registry is never persisted.
         let mut board = self.board.clone();
         for rec in &mut board.sessions {
             rec.foreground = self.foregrounds.get(&rec.id).cloned();
+            rec.tasks_running = (rec.kind.is_agent()
+                && rec.state == (SessionState::Idle { stop_reason: StopReason::Background }))
+            .then(|| u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX));
         }
         let terminals = self
             .terminals
@@ -9085,6 +9135,23 @@ impl Daemon {
         self.working(Some(cwd))
     }
 
+    /// The tickets holding a queued ask back: `checkout_holders` on its
+    /// checkout, except that its OWN agent idle at its composer with
+    /// background tasks running does not (T-599, `quiet::holds_against_words`):
+    /// Claude Code takes a prompt there, and whether the wait is the work or
+    /// a loop that never ends is the agent's to say. Another ticket's agent
+    /// in the same checkout still holds it, tasks and all.
+    fn ask_holders(&self, q: &QueuedAsk) -> Vec<ulid::Ulid> {
+        let own = q.ticket;
+        self.working_by(Some(&q.cwd), &|s| {
+            if s.ticket == own {
+                mesimon_core::quiet::holds_against_words(s)
+            } else {
+                mesimon_core::quiet::is_working(s)
+            }
+        })
+    }
+
     /// The merge train's gate (T-351). It was `working(None)` — every working
     /// ticket anywhere — until the user asked why three grinding worktrees
     /// should hold up a fourth ticket's merge. They should not.
@@ -9127,7 +9194,7 @@ impl Daemon {
 
     /// The working tickets, on one checkout (`Some(cwd)`) or the whole board.
     fn working(&self, cwd: Option<&str>) -> Vec<ulid::Ulid> {
-        self.working_by(cwd, mesimon_core::quiet::is_working)
+        self.working_by(cwd, &mesimon_core::quiet::is_working)
     }
 
     /// `working` under another reading of the word — the plan accept's
@@ -9136,7 +9203,7 @@ impl Daemon {
     fn working_by(
         &self,
         cwd: Option<&str>,
-        working: fn(&mesimon_core::board::SessionRecord) -> bool,
+        working: &dyn Fn(&mesimon_core::board::SessionRecord) -> bool,
     ) -> Vec<ulid::Ulid> {
         let owed: std::collections::HashSet<ulid::Ulid> =
             self.owed.values().map(|o| o.ticket).collect();
@@ -9160,7 +9227,7 @@ impl Daemon {
     /// Enter, and from the Enter on it is a writer. A worktree ticket's
     /// checkout is its own, so there the list is only ever itself.
     fn accept_holders(&self, cwd: &str) -> Vec<ulid::Ulid> {
-        let mut out = self.working_by(Some(cwd), mesimon_core::quiet::holds_against_accept);
+        let mut out = self.working_by(Some(cwd), &mesimon_core::quiet::holds_against_accept);
         for s in &self.board.sessions {
             if s.cwd == cwd && self.plan_accept.contains_key(&s.id) && !out.contains(&s.ticket) {
                 out.push(s.ticket);
@@ -9431,7 +9498,7 @@ impl Daemon {
             }
             return ids;
         }
-        let mut ids = self.checkout_holders(&q.cwd);
+        let mut ids = self.ask_holders(q);
         if !self.queued_target_ready(q) && !ids.contains(&ticket) {
             ids.push(ticket);
         }
@@ -9508,7 +9575,10 @@ impl Daemon {
     /// the pane it was queued at is dropped, not redirected.
     fn queued_target_ready(&self, q: &QueuedAsk) -> bool {
         match q.seat {
-            QueuedSeat::Pane(id) => self.session_idle(id),
+            // A relaunch (plan mode, a tier switch owed) ends the pane and
+            // its tasks with it, so it waits for a true idle (T-599).
+            QueuedSeat::Pane(id) if q.plan || self.tier_owed(id) => self.session_idle(id),
+            QueuedSeat::Pane(id) => self.session_takes_words(id),
             // A Codex record wakes only once its runtime confirmed the stop
             // (a tier switch parks one and queues its words here, T-443);
             // trying earlier is a refusal, and the words would be lost.
@@ -9520,13 +9590,27 @@ impl Daemon {
     }
 
     /// Is this pane's session between turns — idle, not parked in the
-    /// background, and not working by any of `quiet`'s signs? The one
-    /// predicate a queued ask and the crown's wake (T-414) both take.
+    /// background, and not working by any of `quiet`'s signs? What a
+    /// relaunch waits for (a tier switch, plan mode); a paste of words reads
+    /// the wider `session_takes_words` (T-599).
     fn session_idle(&self, id: uuid::Uuid) -> bool {
         self.board.sessions.iter().any(|s| {
             s.id == id
                 && matches!(s.state, SessionState::Idle { stop_reason } if stop_reason != StopReason::Background)
                 && !mesimon_core::quiet::is_working(s)
+        })
+    }
+
+    /// Will this pane's session take words now — `session_idle`, or idle at
+    /// its composer while background tasks run (T-599,
+    /// `quiet::holds_against_words`)? What a queued ask and the crown's wake
+    /// read. A tier switch or a plan relaunch keeps `session_idle`: those
+    /// end the pane, and the tasks with it.
+    fn session_takes_words(&self, id: uuid::Uuid) -> bool {
+        self.board.sessions.iter().any(|s| {
+            s.id == id
+                && matches!(s.state, SessionState::Idle { .. })
+                && !mesimon_core::quiet::holds_against_words(s)
         })
     }
 
@@ -9550,7 +9634,7 @@ impl Daemon {
             }
             let cwd = self.queued[i].cwd.clone();
             let quiet = !seen.contains(&cwd)
-                && self.checkout_holders(&cwd).is_empty()
+                && self.ask_holders(&self.queued[i]).is_empty()
                 && !self.checkout_unresolved(&cwd)
                 && self.queued_target_ready(&self.queued[i]);
             seen.push(cwd);
@@ -13243,6 +13327,15 @@ fn sleep_min_age_ms() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(SLEEP_MIN_AGE_MS)
+}
+
+/// Test seam only — e2e cannot wait out the real 30 minutes a worker sits
+/// idle with background tasks before the crown is told (T-599).
+fn linger_ms() -> u64 {
+    std::env::var("MESIMON_LINGER_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(crownwake::LINGER_MS)
 }
 
 /// Test seam only — e2e cannot wait out the real 30 s composer wait.

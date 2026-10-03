@@ -4058,6 +4058,9 @@ impl App {
             return Some(row);
         }
         let Some(p) = self.pending_of(ticket) else {
+            if let Some(row) = self.tasks_row(ticket) {
+                return Some(row);
+            }
             let off = self.board.ticket(ticket).is_some_and(|t| t.manual_merge)
                 && self.wt_item(ticket).is_some_and(|w| w.status == "attached");
             return off.then(|| "auto-merge ∙ off".to_string());
@@ -4152,6 +4155,27 @@ impl App {
             // A newer daemon's word: the mark is right, the row is generic.
             (A::Unknown, None) => "owed ∙ next".into(),
             (A::Unknown, Some(a)) => format!("owed ∙ {a}"),
+        })
+    }
+
+    /// The ticket's agent idle at its composer with background tasks running
+    /// (T-599, the snapshot's `tasks_running`): `idle ∙ 3 tasks ∙ 2h`, timed
+    /// from the turn's end in the age slot's words, so a person sees a seat
+    /// that has been waiting a long time without opening its pane. Whether
+    /// the wait is the work is not the board's to say. What mesimon owes the
+    /// card is said first.
+    pub(crate) fn tasks_row(&self, ticket: ulid::Ulid) -> Option<String> {
+        let s = self.board.live_agent(ticket)?;
+        let tasks = match s.tasks_running? {
+            0 => "tasks".to_string(),
+            1 => "1 task".to_string(),
+            n => format!("{n} tasks"),
+        };
+        Some(match s.state_changed_at {
+            Some(at) => {
+                format!("idle ∙ {tasks} ∙ {}", crate::text::age_slot((self.now)(), at, false))
+            }
+            None => format!("idle ∙ {tasks}"),
         })
     }
 

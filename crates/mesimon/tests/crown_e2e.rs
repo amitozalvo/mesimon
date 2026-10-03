@@ -3647,3 +3647,190 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
     landed(&mut c, p);
     assert_eq!(flag(&mut c, p, "--model"), None, "the built-in passes no model");
 }
+
+/// A worker idle at its composer with background tasks still running
+/// (T-599): words reach it, the crown is told once, and nothing is decided
+/// by time. A person's queued prompt and the crown's ask land on it while
+/// its tasks run; its answer, given with the tasks still running, wakes the
+/// crown as any answer does; past the lingering grace the crown is woken
+/// once (`has been idle with 3 background tasks`) and `get_ticket` says
+/// `background`; no second wake without a foreground turn; and the board
+/// never touches the seat — still `Idle{Background}`, still `Busy` to the
+/// train. The worker's own `get_ticket` says who merges under a crown.
+#[test]
+fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
+    use mesimon_core::board::StopReason;
+    let Some(h) = Harness::boot_with_env(
+        "crown_linger",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_LINGER_MS", "6000"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_linger");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let send = |sid: uuid::Uuid, event: &str, body: &str| {
+        hook_send(&hook_sock, &sid.to_string(), event, body);
+    };
+    let backgrounded = SessionState::Idle { stop_reason: StopReason::Background };
+    // A turn that ends with three background commands still running.
+    let leave_tasks = |c: &mut TestClient, sid: uuid::Uuid| {
+        let mut rows = Vec::new();
+        for n in 1..=3 {
+            send(
+                sid,
+                "PostToolUse",
+                &format!(
+                    r#"{{"tool_name":"Bash","tool_response":{{"stdout":"","stderr":"","backgroundTaskId":"loop{n}"}}}}"#
+                ),
+            );
+            rows.push(format!(r#"{{"id":"loop{n}","type":"shell","status":"running"}}"#));
+        }
+        send(
+            sid,
+            "Stop",
+            &format!(r#"{{"stop_hook_active":false,"background_tasks":[{}]}}"#, rows.join(",")),
+        );
+        c.await_state(sid, "idle with its tasks", |s| {
+            *s == SessionState::Idle { stop_reason: StopReason::Background }
+        });
+    };
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-94 waits in the background");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(c.request(Command::SetCrownSends { on: true }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    send(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    wait_attached(&mut c, w);
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // The worker reads who merges under a crown; nobody else reads it.
+    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket } => {
+            assert_eq!(ticket.under_crown.as_deref(), Some(mesimon_core::mcp::WORKER_UNDER_CROWN))
+        }
+        other => panic!("the worker's get_ticket: {other:?}"),
+    }
+    assert!(read(&mut c, sa, &kw).unwrap().under_crown.is_none());
+
+    // ---- 1. a person's queued prompt lands while the tasks run -------------
+    send(ws, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    leave_tasks(&mut c, ws);
+    let view = read(&mut c, sa, &kw).unwrap().background.expect("background on get_ticket");
+    assert_eq!(view.tasks, 3);
+    let rec = c.board().live_agent(w).cloned().unwrap();
+    assert_eq!(rec.tasks_running, Some(3), "the card's count");
+    match c.request(Command::PromptSession {
+        ticket: w,
+        text: "mesimon-probe-94 person".into(),
+        queued: true,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+    }) {
+        Response::Queued { .. } | Response::Ok => {}
+        other => panic!("queue a person's ask: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(10), "the person's words to land", || {
+        !lines_with("mesimon-probe-94 person").is_empty()
+    });
+    send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-94 person"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    leave_tasks(&mut c, ws);
+
+    // ---- 2. the crown's ask lands; its answer, tasks running, wakes it ------
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAskTicket {
+            key: kw.clone(),
+            text: "mesimon-probe-94 crown: are you done".into(),
+            seen: v.seen,
+            plan: false,
+        },
+    ) {
+        Response::AgentAsked { held_for_person: false, .. } => {}
+        other => panic!("ask_agent: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(10), "the crown's words to land", || {
+        !lines_with("mesimon-probe-94 crown").is_empty()
+    });
+    send(ws, "UserPromptSubmit", r#"{"prompt":"are you done"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    leave_tasks(&mut c, ws);
+    let worker = format!("{kw} \"mesimon-probe-94 waits in the background\"");
+    wait_until(std::time::Duration::from_secs(10), "the answer's wake", || {
+        !lines_with(&format!("{worker} answered your ask")).is_empty()
+    });
+    send(sa, "UserPromptSubmit", r#"{"prompt":"wake"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+
+    // ---- 3. lingering: once after the grace, never decided ------------------
+    let lingering = format!("{worker} has been idle with 3 background tasks for ");
+    assert!(lines_with(&lingering).is_empty(), "silent inside the grace");
+    wait_until(std::time::Duration::from_secs(20), "the lingering wake", || {
+        lines_with(&lingering).len() == 1
+    });
+    send(sa, "UserPromptSubmit", r#"{"prompt":"wake"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    send(sa, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    std::thread::sleep(std::time::Duration::from_millis(7000));
+    assert_eq!(lines_with(&lingering).len(), 1, "no second wake without a foreground turn");
+    let rec = c.board().live_agent(w).cloned().unwrap();
+    assert_eq!(rec.state, backgrounded, "nothing parked, killed or moved by time");
+    let board = c.board();
+    assert_eq!(
+        mesimon_core::train::seat(&board, w),
+        mesimon_core::train::Seat::Busy,
+        "never merged under a worker that may be mid-work"
+    );
+    let view = read(&mut c, sa, &kw).unwrap().background.expect("still background");
+    assert!(view.since_secs.is_some_and(|s| s >= 6), "{view:?}");
+}

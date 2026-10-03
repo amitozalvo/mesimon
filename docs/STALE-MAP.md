@@ -19489,3 +19489,71 @@ relay's `deploy/ship.sh all` are the author's). The phone itself on the rig (a r
 run. The disagreement count over the first week is the author's to read off doctor. A
 compaction's summarizer request is reported by `session.compact`, not `turn.complete`; whether
 the mod's count should add it was not measured.
+
+## A worker idle with background tasks: words reach it, the crown is told, nothing is decided by time (T-599, 2026-10-03, filed by the crown on T-587)
+
+**Seen.** C (T-581) finished at about 03:30: branch clean, rebased, the release gate green, its
+last words "Next: merge T-581". It left three background loops, `while pgrep -f "python3 -B
+ci/rig.py"; do sleep 5; done`, whose pattern matched their own shells, so they never ended (10 h
+33 m to 10 h 55 m old when the crown sent them SIGTERM). Claude Code's `Stop` carried them as
+`background_tasks`, and the record read `Idle{Background}` for nine hours. `train::seat` read it
+`Busy`, T-591's finished wake needs `EndTurn`, and the crown's queued words waited for idle.
+Nothing moved until a person noticed. The worker had also addressed "the author" with four
+commands, two of them (the merge, copying the stamp) the board's and the crown's.
+
+**Refuted: a clock that decides.** The first build (unmerged, taken out) put a 10-minute grace on
+`Idle{Background}` and then counted the worker finished: the merge lane opened, the card moved to
+its `on_done`, the crown was woken `finished`, and the idle parks could end the tasks. The author:
+"what if the wait is necessary? this is disruptive." A background wait is often the work itself
+(a 20-minute suite, a 15-minute rig run, a build), and the board cannot tell that from a dead
+loop by time. A guess that merges or parks a worker mid-work is worse than a stall. **No clock
+decides anything. The board makes the stall visible and lets words through; the crown or a
+person decides.**
+
+**Decided.**
+1. *Words reach an idle worker whose tasks still run.* `quiet::holds_against_words` is
+   `is_working` minus a Claude in `Idle{Background}` with no Enter owed: Claude Code takes a
+   prompt at its composer while tasks run. A queued ask's target (`session_takes_words`) and its
+   checkout (`ask_holders`: its own agent's background wait does not hold it, another ticket's
+   agent in the same checkout still does) read it, and so does the crown's own wake
+   (`crown_wake_blocked`), so a crown that armed a watch hears its workers too. A relaunch keeps
+   `session_idle`: a plan-mode ask or an owed tier switch ends the pane and its tasks, so those
+   wait for a true idle. Unchanged: the train's seat (`Idle{Background}` stays `Busy`: never merge
+   under a worker that may be mid-work), the attention set, the working set, the keep-awake hold
+   and both idle parks.
+2. *An answer given with the tasks still running is an answer.* A turn that took the crown's ask
+   and ends in `Idle{Background}` is a turn's end for the crown's look (`turn_ended`), so it wakes
+   `answered your ask` as any answer does. Without it the crown's question "are you done?" could
+   never be heard from a worker whose answer is "no, the suite is still running".
+3. *The crown is told, once.* `WakeCause::Lingering`, ranked below `Finished`: a worker the crown
+   started that sits in `Idle{Background}` for `LINGER_MS` (30 min, seam `MESIMON_LINGER_MS`)
+   wakes the crown with `T-581 "…" has been idle with 3 background tasks for 30 min` (the count
+   and the stretch when noticed; never the tasks' words; hours past two). Once per stretch: the
+   record is remembered (`Daemon::lingered`) until its next `Running`, so a task armed or ended
+   without a foreground turn makes no second wake. Never held by what is pending. `get_ticket`
+   carries `background: { tasks, since_secs }` whenever the agent sits there, and `CROWN_WAKES`
+   now says what the crown does with it: ask the worker, which the road in 1 reaches. No merge, no
+   park, no kill by the board.
+4. *The card says it.* `SessionRecord::tasks_running`, filled into the snapshot only (the task
+   registry is never persisted), and the owed row reads `idle ∙ 3 tasks ∙ 2h` where nothing else is
+   owed, on the card and the ticket page. The time is the age slot's own vocabulary (`2h`, not the
+   brief's `2 h`), the one way a card spells time. The glyph is unchanged: the tasks run.
+5. *The worker is told who merges.* `mcp::WORKER_UNDER_CROWN` rides the worker's own `get_ticket`
+   as `under_crown`, only when the board's crown started that session: under a crown the merge is
+   the board's (the train, else the crown), a report asks no person to merge, rebase, move the card
+   or copy what the board records, a person's commands are only those a person must run (a
+   production ship), and a finished turn leaves no background task running because the board reads
+   one as unfinished work. Promise 3: transient result data on a tool the worker calls, like
+   `CROWN_WAKES`; never a system prompt, never in the first prompt.
+6. CLAUDE.md gains the `pgrep -f` trap.
+
+**Built.** `quiet::holds_against_words` (and `working_tickets_by` takes a closure),
+`background::Registry::count`, `SessionRecord::tasks_running`, `AgentTicketView::{under_crown,
+background}` and `AgentBackgroundView`, `mcp::WORKER_UNDER_CROWN` and `CROWN_WAKES`' new sentence;
+the daemon's `session_takes_words`, `ask_holders`, `agent_background`, `hear_lingering`,
+`Linger`/`lingering_clause`, `owe_wake`; the TUI's `tasks_row` and the golden
+`board_tasks_running_120x30`;
+`crown_e2e::a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told` (a person's
+queued prompt and the crown's ask land while three backgrounded commands run, the answer wakes the
+crown, the lingering wake comes once under a 6 s seam and not again without a turn, the seat stays
+`Idle{Background}` and `Busy` to the train).

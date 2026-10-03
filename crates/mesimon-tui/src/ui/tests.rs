@@ -595,6 +595,29 @@ fn golden_interrupted_board_120() {
     golden("board_interrupted_120x30", &render(&app, 120, 30));
 }
 
+/// An agent idle at its composer with background tasks running (T-599):
+/// the cursor card says how many and since when — `idle ∙ 3 tasks ∙ >1y`
+/// at the fixture's epoch-adjacent stamp. The glyph is unchanged: the
+/// tasks are running, and the board decides nothing about them.
+#[test]
+fn golden_tasks_running_board_120() {
+    let mut b = fixture(false);
+    let mut s = session(
+        21,
+        ulid_n(2),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: StopReason::Background },
+    );
+    s.tasks_running = Some(3);
+    b.sessions.push(s);
+    let mut app = app_graphite(b);
+    app.cursor_col = 0;
+    app.cursor_row = Some(1);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("idle ∙ 3 tasks ∙ >1y")), "{lines:?}");
+    golden("board_tasks_running_120x30", &lines);
+}
+
 #[test]
 fn golden_move_ghost_120() {
     let mut app = app_graphite(fixture(false));

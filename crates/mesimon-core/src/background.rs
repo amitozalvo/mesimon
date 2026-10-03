@@ -94,6 +94,12 @@ impl Registry {
         self.tasks.clear();
     }
 
+    /// How many tasks are in flight: what an idle agent left running, said
+    /// on the card and to the crown (T-599).
+    pub fn count(&self) -> usize {
+        self.tasks.len()
+    }
+
     pub fn liveness(&self) -> Liveness {
         if self.tasks.values().any(|t| t.liveness == Liveness::Working) {
             Liveness::Working

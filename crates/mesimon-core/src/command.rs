@@ -1953,6 +1953,17 @@ pub struct AgentTicketView {
     /// from a monitor of its own. Absent everywhere else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crown: Option<String>,
+    /// On a worker's own read, where the board's crown started it (T-599):
+    /// who merges under a crown, and what a background task left running
+    /// costs (`mcp::WORKER_UNDER_CROWN`). Absent for every other reader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub under_crown: Option<String>,
+    /// The ticket's agent is idle at its composer while background tasks
+    /// run (T-599): how many, and for how long. Whether the wait is the work
+    /// or a stall is the reader's to ask the agent; the board decides
+    /// nothing by time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<AgentBackgroundView>,
     /// The card's words about the ticket's agent (T-411): the state the
     /// board shows, never the pane. Absent when the ticket has no agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2001,6 +2012,15 @@ pub struct AgentStateView {
     /// The agent's `raise_hand` reason, while the hand is up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raised: Option<String>,
+}
+
+/// An agent idle with background tasks still running (T-599): `tasks` the
+/// count Claude Code last listed, `since_secs` since the turn ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentBackgroundView {
+    pub tasks: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_secs: Option<u64>,
 }
 
 /// The stop a `needs-you` agent is at (T-566). `reason` is
@@ -2924,6 +2944,8 @@ mod tests {
             notes: vec![],
             crowned: false,
             crown: None,
+            under_crown: None,
+            background: None,
             state: None,
             needs_you: None,
             asked: None,
