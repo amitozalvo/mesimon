@@ -1983,6 +1983,13 @@ pub struct AgentTicketView {
     /// reads it on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge: Option<AgentMergeView>,
+    /// The repository's worktree init script (T-614): its name, whether
+    /// the repository has one, what it is for, and how its last run for
+    /// this ticket ended. On every read, so an agent asked how to make a
+    /// cold worktree warm finds the road in its own first tool result,
+    /// which is the agent's call and not a token the board adds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_init: Option<AgentWorktreeInitView>,
     /// Where `move_ticket` will accept a move to, right now. This is why
     /// `to_column` needs no schema enum: the valid set travels as transient
     /// result data instead of permanent context.
@@ -2197,6 +2204,19 @@ pub struct AgentRepoView {
 pub struct AgentMergeView {
     pub by: String,
     pub why: String,
+}
+
+/// The worktree init script as an agent reads it (T-614): the file's name
+/// (`workspace::INIT_SCRIPT`), whether this repository has one, what it is
+/// for (`mcp::WORKTREE_INIT_ABOUT`), and the last run's word on this
+/// ticket's worktree (`InitRun::word`), absent while none ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorktreeInitView {
+    pub script: String,
+    pub present: bool,
+    pub about: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<String>,
 }
 
 /// One note as an agent lists it. No body: that is `read_note`'s answer.
@@ -2541,7 +2561,11 @@ pub struct WorktreeItem {
     /// flow's rebase stage comes first.
     #[serde(default)]
     pub needs_rebase: bool,
-    /// Error detail when status == "error" (names the failing stage).
+    /// Error detail when status == "error" (names the failing stage), a
+    /// workspace provision's `7/19` while it runs, or on an attached binding
+    /// how its init script went wrong (T-614, `InitRun::detail`): `init
+    /// failed ∙ exit 2`, `init timed out`. The ticket page draws it beside
+    /// the branch; a run that went well says nothing.
     #[serde(default)]
     pub detail: Option<String>,
     /// Worktree directory — Some only while attached (M4b, `!` handover).
@@ -3103,6 +3127,7 @@ mod tests {
             merge_state: Some("ahead".into()),
             repos: vec![],
             merge: None,
+            worktree_init: None,
             allowed_columns: vec![],
             column_descriptions: Default::default(),
             automove: AgentAutomoveView::default(),

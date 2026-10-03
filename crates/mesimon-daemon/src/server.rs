@@ -342,7 +342,15 @@ enum Msg {
     Tick,
     /// A provisioning thread finished (M4): the binding, or the failing
     /// stage, and how long it took — the number the journal keeps (T-368).
-    Provisioned(ulid::Ulid, std::result::Result<Binding, (String, String)>, Duration),
+    Provisioned(
+        ulid::Ulid,
+        std::result::Result<Binding, (String, String)>,
+        Duration,
+        Vec<worktree::InitReport>,
+    ),
+    /// The init script started in a leg of a provisioning worktree (T-614):
+    /// the ticket page reads `init script running` for as long as it does.
+    ProvisionInit(ulid::Ulid),
     /// A workspace provision landed one more leg (T-368): `(done, total)`,
     /// the snapshot's `7/19` while the binding is `provisioning`.
     ProvisionProgress(ulid::Ulid, u32, u32),
@@ -577,6 +585,8 @@ pub struct Daemon {
     wt_base_tip: HashMap<ulid::Ulid, String>,
     /// A workspace provision's `(done, total)` while it runs (T-368).
     wt_progress: HashMap<ulid::Ulid, (u32, u32)>,
+    /// The tickets whose provisioning is in the init script (T-614).
+    wt_init: std::collections::HashSet<ulid::Ulid>,
     /// Every branch checked out twice, across every repository the legs
     /// live in.
     wt_conflicts: Vec<String>,
@@ -1124,6 +1134,7 @@ pub fn run(paths: Paths) -> Result<()> {
         wt_repos: HashMap::new(),
         wt_base_tip: HashMap::new(),
         wt_progress: HashMap::new(),
+        wt_init: std::collections::HashSet::new(),
         wt_conflicts: Vec::new(),
         wt_gen: 0,
         wt_inflight: false,
@@ -1272,6 +1283,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::RemotePermission(..) => "remote permission".into(),
             Msg::Request(env, ..) => format!("request {}", env.command.wire_name()).into(),
             Msg::Provisioned(..) => "provisioned".into(),
+            Msg::ProvisionInit(..) => "provision init".into(),
             Msg::ProvisionProgress(..) => "provision progress".into(),
             Msg::ShellEnvCaptured(_) => "shell env captured".into(),
             Msg::ExternalScanned(_) => "external scanned".into(),
@@ -1306,7 +1318,10 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::RemotePermission(frame, stream) => d.control_permission_wait(frame, stream),
             Msg::CodexSnapshots(snapshots) => d.on_codex_snapshots(snapshots),
             Msg::CodexOrphansChecked(results) => d.on_codex_orphans_checked(results),
-            Msg::Provisioned(ticket, result, took) => d.on_provisioned(ticket, result, took),
+            Msg::Provisioned(ticket, result, took, inits) => {
+                d.on_provisioned(ticket, result, took, inits)
+            }
+            Msg::ProvisionInit(ticket) => d.on_provision_init(ticket),
             Msg::ProvisionProgress(ticket, done, total) => {
                 d.on_provision_progress(ticket, done, total)
             }
@@ -6721,6 +6736,15 @@ impl Daemon {
             merge_state: self.merge_state_word(id).map(str::to_string),
             repos: self.agent_repo_views(id),
             merge: self.merge_state_word(id).is_some().then(|| self.merge_by(id)),
+            // The init script (T-614), on every read: the file's name,
+            // whether the checkout has one, what it is for, and how its
+            // last run for this ticket went. A stat, nothing more.
+            worktree_init: Some(mesimon_core::command::AgentWorktreeInitView {
+                script: mesimon_core::workspace::INIT_SCRIPT.into(),
+                present: worktree::init_script(&self.paths.repo_root).is_some(),
+                about: mesimon_core::mcp::WORKTREE_INIT_ABOUT.into(),
+                last: self.worktrees.get(&id).and_then(|b| b.init.as_ref()).map(|r| r.word()),
+            }),
             allowed_columns: self.agent_allowed_columns(id),
             column_descriptions: self.agent_column_descriptions(),
             automove: self
@@ -7105,9 +7129,14 @@ impl Daemon {
                 needs_rebase: self.wt_needs_rebase.get(tid).copied().unwrap_or(false),
                 detail: match &b.status {
                     BindingStatus::Error { stage, message } => Some(format!("{stage}: {message}")),
+                    BindingStatus::Provisioning if self.wt_init.contains(tid) => {
+                        Some("init script running".into())
+                    }
                     BindingStatus::Provisioning => {
                         self.wt_progress.get(tid).map(|(d, t)| format!("{d}/{t}"))
                     }
+                    // How the init script went, while it went wrong (T-614).
+                    BindingStatus::Attached => b.init.as_ref().and_then(|r| r.detail()),
                     _ => None,
                 },
                 path: (b.status == BindingStatus::Attached).then(|| b.path.display().to_string()),
@@ -11946,6 +11975,7 @@ impl Daemon {
             status: BindingStatus::Queued,
             locked: false,
             repos: Vec::new(),
+            init: None,
         });
         entry.status = BindingStatus::Queued;
         let in_flight =
@@ -11978,6 +12008,10 @@ impl Daemon {
         // spawn before the boot sample lands is judged the same way.
         let census = crate::gitstatus::census(&repo);
         let is_meta = repo.join(".git").exists();
+        // The init script's road (T-614): the pane's own launcher, so the
+        // script sees the environment the agent will, and the seam.
+        let launcher = self.init_launcher();
+        let init_timeout = worktree::init_timeout();
         std::thread::spawn(move || {
             let started = Instant::now();
             let ptx = tx.clone();
@@ -11999,7 +12033,27 @@ impl Daemon {
                     },
                 ),
             };
-            let _ = tx.send(Msg::Provisioned(ticket, result, started.elapsed()));
+            let took = started.elapsed();
+            // The init script, once per leg that has one, after the tree is
+            // cut and before the parked spawn replays (T-614). Its time is
+            // not the provision's: the journal keeps the two apart.
+            let mut inits = Vec::new();
+            if let Ok(b) = &result {
+                let vars = vec![
+                    ("MESIMON_TICKET".to_string(), key.clone()),
+                    ("MESIMON_WORKTREE_BRANCH".to_string(), b.branch.clone()),
+                ];
+                for leg in b.legs(&repo, "") {
+                    if worktree::init_script(&leg.repo).is_none() {
+                        continue;
+                    }
+                    let _ = ptx.send(Msg::ProvisionInit(ticket));
+                    if let Some(r) = worktree::run_init(&launcher, &leg, &vars, init_timeout) {
+                        inits.push(r);
+                    }
+                }
+            }
+            let _ = tx.send(Msg::Provisioned(ticket, result, took, inits));
         });
     }
 
@@ -12010,15 +12064,39 @@ impl Daemon {
         }
     }
 
+    /// The init script started in a provisioning tree (T-614): the page
+    /// says so while it runs, so a long seed reads as what it is.
+    fn on_provision_init(&mut self, ticket: ulid::Ulid) {
+        if self.worktrees.get(&ticket).is_some_and(|b| b.status == BindingStatus::Provisioning)
+            && self.wt_init.insert(ticket)
+        {
+            self.broadcast();
+        }
+    }
+
+    /// The init script's launcher (T-614): `mesimon exec --env <file>`,
+    /// the pane's own prefix, so the script runs in the environment the
+    /// agent will and the captured secrets never ride a command line.
+    fn init_launcher(&self) -> Vec<String> {
+        vec![
+            self.self_exe.display().to_string(),
+            "exec".into(),
+            "--env".into(),
+            self.paths.shell_env_file().display().to_string(),
+        ]
+    }
+
     fn on_provisioned(
         &mut self,
         ticket: ulid::Ulid,
         result: std::result::Result<Binding, (String, String)>,
         took: Duration,
+        inits: Vec<worktree::InitReport>,
     ) {
         self.wt_progress.remove(&ticket);
+        self.wt_init.remove(&ticket);
         match result {
-            Ok(b) => {
+            Ok(mut b) => {
                 // The journal keeps the cost (T-368): a workspace's legs are
                 // cut one after another, and this line is how the number on
                 // a real workspace is read — the single-repo line beside it
@@ -12030,6 +12108,33 @@ impl Daemon {
                     mesimon_core::workspace::repos_word(b.repos.len().max(1)),
                     took.as_millis()
                 ));
+                // The init script's runs (T-614): the journal keeps each
+                // leg's word and its output under the ticket's key, the
+                // feed one `worktree_init` line per leg with the exit code
+                // and the seconds, and the binding the worst run — a
+                // failure outranks the legs that went well — until the
+                // next provisioning. Nothing here holds the spawn below.
+                for r in &inits {
+                    let leg = if r.leg.is_empty() { String::new() } else { format!(" {}", r.leg) };
+                    self.journal.line(&format!(
+                        "init {key}{leg}: {} ({})",
+                        r.run.word(),
+                        mesimon_core::workspace::INIT_SCRIPT
+                    ));
+                    for line in r.output.lines() {
+                        self.journal.line(&format!("  {key}{leg} | {line}"));
+                    }
+                    let outcome = if r.leg.is_empty() {
+                        r.run.word()
+                    } else {
+                        format!("{}: {}", r.leg, r.run.word())
+                    };
+                    self.feed.board_outcome("daemon", "worktree_init", Some(ticket), &outcome);
+                }
+                b.init = inits.iter().fold(None, |worst, r| match worst {
+                    Some(w) if !mesimon_core::workspace::InitRun::ok(&w) => Some(w),
+                    _ => Some(r.run.clone()),
+                });
                 self.worktrees.insert(ticket, b);
                 // The replay is timed as a stage (T-430): what is left on
                 // this turn is `spawn_session`'s tmux work, and the

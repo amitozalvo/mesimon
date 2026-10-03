@@ -643,6 +643,20 @@ fn agents(repo: &Path, verbose: bool) -> Section {
             });
         }
 
+        // The worktree init script (T-614): the one file in the repository
+        // mesimon reads before an agent starts in a fresh worktree, and never
+        // writes. Printed either way, because "why does every worktree build
+        // from nothing" is answered here, and so is "what runs before my
+        // agent starts".
+        let init_script = mesimon_core::workspace::INIT_SCRIPT;
+        records.push(if mesimon_daemon::worktree::init_script(&paths.repo_root).is_some() {
+            rec(Level::Ok, "worktree init", format!("{init_script} runs in each new worktree before its agent starts"))
+                .advice("Read from this checkout, run in the new worktree through your login shell's environment, with MESIMON_CHECKOUT (this checkout), MESIMON_WORKTREE (the worktree) and MESIMON_TICKET set. Executable, it runs as itself; otherwise under sh. Its output goes to the daemon journal, the activity feed keeps its exit code and time, and a failure marks the ticket page and never holds the agent back. Ten minutes is the limit (MESIMON_WORKTREE_INIT_MS).")
+        } else {
+            rec(Level::Ok, "worktree init", "none - every worktree starts cold")
+                .advice(format!("A {init_script} at the repository root runs once in each new worktree before its agent starts: seed a build cache (cp -c -R \"$MESIMON_CHECKOUT/target\" target on macOS), install dependencies (npm ci, uv sync), anything. Mesimon never creates it; docs/USING.md has the examples."))
+        });
+
         // And the CLAUDE.md road, for a user who would rather keep the words
         // in their own file. Always printed with the snippet when it is
         // missing — including on a board that answered the offer with "never

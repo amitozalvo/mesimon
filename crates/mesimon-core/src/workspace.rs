@@ -167,9 +167,100 @@ pub fn submodule_paths(gitmodules: &str) -> Vec<String> {
         .collect()
 }
 
+/// The worktree init script (T-614): a file at a repository's root, the
+/// user's own, run once in each new worktree before the ticket's agent
+/// starts. Present, it runs; absent, nothing does — there is no setting.
+/// The file lives with the code (committed, reviewed, in every clone)
+/// rather than on the board, which is per clone and git-excluded. mesimon
+/// reads it from the checkout and never writes it (README promise 1), and
+/// nothing of it reaches the agent's prompt (promise 3): the agent learns
+/// of it through `get_ticket`.
+pub const INIT_SCRIPT: &str = ".mesimon-worktree-init.sh";
+
+/// How one run of the init script ended (T-614). Kept on the binding
+/// until the next provisioning, said on the ticket page while it failed,
+/// and read back to the agent in `get_ticket`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InitRun {
+    /// The exit code; `None` when a signal ended the script, the timeout
+    /// did, or it could not be started at all.
+    #[serde(default)]
+    pub exit: Option<i32>,
+    #[serde(default)]
+    pub timed_out: bool,
+    /// Wall time, in ms.
+    #[serde(default)]
+    pub ms: u64,
+}
+
+impl InitRun {
+    pub fn ok(&self) -> bool {
+        !self.timed_out && self.exit == Some(0)
+    }
+
+    /// Whole seconds, the nearest.
+    fn secs(&self) -> u64 {
+        (self.ms + 500) / 1000
+    }
+
+    /// The feed's and the journal's word: `ok ∙ 12 s`, `failed ∙ exit 2 ∙
+    /// 3 s`, `failed ∙ signal ∙ 3 s`, `timed out ∙ 600 s`.
+    pub fn word(&self) -> String {
+        let s = self.secs();
+        if self.timed_out {
+            format!("timed out ∙ {s} s")
+        } else {
+            match self.exit {
+                Some(0) => format!("ok ∙ {s} s"),
+                Some(code) => format!("failed ∙ exit {code} ∙ {s} s"),
+                None => format!("failed ∙ signal ∙ {s} s"),
+            }
+        }
+    }
+
+    /// What the ticket page says beside the branch — failures only, in
+    /// the quiet-tickets rule: `init failed ∙ exit 2`, `init timed out`.
+    pub fn detail(&self) -> Option<String> {
+        if self.timed_out {
+            Some("init timed out".into())
+        } else {
+            match self.exit {
+                Some(0) => None,
+                Some(code) => Some(format!("init failed ∙ exit {code}")),
+                None => Some("init failed ∙ signal".into()),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_init_run_has_one_word_and_a_detail_only_when_it_failed() {
+        let ok = InitRun { exit: Some(0), timed_out: false, ms: 11_600 };
+        assert_eq!(ok.word(), "ok ∙ 12 s");
+        assert_eq!(ok.detail(), None);
+        assert!(ok.ok());
+        let failed = InitRun { exit: Some(2), timed_out: false, ms: 2_900 };
+        assert_eq!(failed.word(), "failed ∙ exit 2 ∙ 3 s");
+        assert_eq!(failed.detail().as_deref(), Some("init failed ∙ exit 2"));
+        assert!(!failed.ok());
+        let killed = InitRun { exit: None, timed_out: false, ms: 10 };
+        assert_eq!(killed.word(), "failed ∙ signal ∙ 0 s");
+        assert_eq!(killed.detail().as_deref(), Some("init failed ∙ signal"));
+        let late = InitRun { exit: None, timed_out: true, ms: 600_000 };
+        assert_eq!(late.word(), "timed out ∙ 600 s");
+        assert_eq!(late.detail().as_deref(), Some("init timed out"));
+        assert!(!late.ok());
+        // The wire shape, and an older daemon's record with no field at
+        // all parses as a run that said nothing.
+        let json = serde_json::to_string(&failed).unwrap();
+        assert_eq!(json, r#"{"exit":2,"timed_out":false,"ms":2900}"#);
+        let bare: InitRun = serde_json::from_str("{}").unwrap();
+        assert_eq!(bare, InitRun { exit: None, timed_out: false, ms: 0 });
+    }
 
     #[test]
     fn slug_basics() {

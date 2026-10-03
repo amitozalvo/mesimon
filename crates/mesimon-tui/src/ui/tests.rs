@@ -4805,6 +4805,32 @@ fn the_state_row_never_shows_an_empty_tag_bullet() {
     assert!(row.starts_with("  BUG   STAGING  ∙ IN PROGRESS"), "{row:?}");
 }
 
+/// A worktree whose init script failed says so on the page's branch row
+/// (T-614): the daemon's detail word beside the branch, in the detail's
+/// register, and a run that went well leaves the row as it was.
+#[test]
+fn the_workspace_row_says_when_the_init_script_failed() {
+    let mut app = app_graphite(fixture_tagged());
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let row_of = |app: &App| {
+        let lines = render(app, 120, 30);
+        let state = lines.iter().position(|l| l.contains("IN PROGRESS")).expect("state row");
+        lines[state + 1].clone()
+    };
+    app.worktrees = vec![tagged_worktree()];
+    let quiet = row_of(&app);
+    assert!(!quiet.contains("init"), "{quiet:?}");
+    let mut failed = tagged_worktree();
+    failed.detail = Some("init failed ∙ exit 2".into());
+    app.worktrees = vec![failed];
+    let row = row_of(&app);
+    assert!(row.contains("∙ 2 to merge ∙ init failed ∙ exit 2"), "{row:?}");
+    let mut late = tagged_worktree();
+    late.detail = Some("init timed out".into());
+    app.worktrees = vec![late];
+    assert!(row_of(&app).contains("∙ init timed out"), "{:?}", row_of(&app));
+}
+
 /// The workspace row is the branch's own (T-346), so the name gives way to
 /// nothing but the merge state beside it — cut with the `~` marker, never
 /// below its floor and never off the right edge.

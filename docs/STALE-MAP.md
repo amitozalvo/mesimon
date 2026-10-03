@@ -20198,3 +20198,86 @@ road (the person's `m` tells the worker; the wake says `merged and finished its 
 `a_merge_that_told_the_agent_offers_no_second_press`. Core
 `mcp::the_crown_merges_where_the_train_will_not` (parse, rung, the tool's and `CROWN_WAKES`'s
 words, the lint) and the `authorize_execution` floor test flipped for `Agent`.
+
+## A worktree init script, the user's own: `.mesimon-worktree-init.sh` runs in each new worktree before its agent starts (T-614, 2026-10-03, filed by the crown on T-607 from the author's "is there a way to speed up the tests? tickets take ages now")
+
+**Seen.** Every ticket worktree built the workspace from nothing: six worktrees under the state
+dir held 3.2 to 4.8 GB of `target/` each, their first-to-last artifact times spanned 10 to 27
+minutes per worker (T-613: 18:04 to 18:31 of a 50-minute ticket), while the checkout's own
+`target/` was 24 GB and warm. The same shape exists for any stack (`node_modules`, a venv, a
+Gradle cache, generated code), and mesimon knows nothing of any of them and must not.
+
+**Refuted before any code: the board setting the crown drew.** The ticket as filed was a
+Settings › Behaviour text field holding one command line, a board pref. The author, before
+work started: "user create .mesimon-worktree-init.sh file and mesimon calls it with env
+variables … focus on UX … this feature was created based on mesimon's own repo needs, probably
+not a need every repo would have." The reasons the file wins, recorded so the setting is not
+drawn again: the setup belongs to the repo, not the board — `.mesimon/` is git-excluded, so a
+setting is per clone and per teammate and rots silently when the build layout moves, while a
+committed script is reviewed in PRs, travels with every clone and the agent in the worktree can
+read and fix it; zero UI for a feature most repos never use — the file's presence is the switch,
+as `.envrc`, `.pre-commit-config.yaml` and a `Makefile` work; multi-line, comments and any
+language by shebang, where a one-line field forces `a && b && c`; testable by hand from a shell
+with the two variables set, which a setting can never be. One road: no setting fallback, since
+two ways to say one thing is worse UX than either.
+
+**Decided.** `mesimon_core::workspace::INIT_SCRIPT` names the file. `worktree::init_script(repo)`
+reads it **from the checkout**, not the worktree: a script a person is still trying out runs
+before it is committed, and `doctor`'s "present" and the run agree (a worktree cut from the
+default branch would hold the committed copy only). `worktree::run_init` runs it once per leg
+that has one, in the provisioning thread after the tree is cut and before `Msg::Provisioned`
+sends, so the parked spawn replays after it: through the pane's own launcher (`mesimon exec
+--env <shellenv>`, `Daemon::init_launcher`) with `MESIMON_TICKET`, `MESIMON_WORKTREE_BRANCH`,
+`MESIMON_CHECKOUT` (the leg's repo) and `MESIMON_WORKTREE` (the leg's tree) as `--set`s; cwd the
+leg's tree; stdin closed; executable runs as itself, otherwise under `sh` (no `chmod` trap on a
+first try); its own process group, killed whole at `init_timeout()` (10 min,
+`MESIMON_WORKTREE_INIT_MS`). The report (`InitReport { leg, run: InitRun, output }`) rides the
+`Provisioned` message; `on_provisioned` writes the journal (`init T-1: ok ∙ 12 s
+(.mesimon-worktree-init.sh)` then each output line as `  T-1 | …`, the last 32 KiB of each
+stream), one feed `worktree_init` per leg with `InitRun::word` as the outcome (`ok ∙ 12 s`,
+`failed ∙ exit 2 ∙ 3 s`, `timed out ∙ 600 s`), and the binding's `init` (schema-free,
+`#[serde(default)]`, the worst leg's) until the next provisioning makes a new binding. The wire
+reuses `WorktreeItem.detail` rather than a new field: attached, it carries `InitRun::detail`
+(`init failed ∙ exit 2`, `init timed out`, nothing on success); provisioning, `init script
+running` (`Msg::ProvisionInit`, `wt_init`) over the leg count, so a long seed reads as what it
+is. The ticket page draws `detail` beside the branch already, so the TUI changed by one test.
+Nothing blocks: a failed or timed-out run still spawns the agent.
+
+**Told to the agent, through the tool it already calls first (the author: "add a way to reveal
+this for the agents mesimon spawns so that they would know this behaviour").** `get_ticket`
+carries `worktree_init: { script, present, about, last }` on every read: `present` is a stat of
+the checkout, `about` is `mcp::WORKTREE_INIT_ABOUT` (linted), `last` the binding's
+`InitRun::word`. A tool result is the agent's own call and not a token the board adds, so
+promise 3 holds; the description names the field ("the init script (worktree_init)") and lost
+a few words elsewhere to stay under the 820-byte cap. `doctor` prints a `worktree init` line
+either way, with the examples when none is there. Promise 1: mesimon never creates or changes
+the file; the script is the user's, run as the user, inside a worktree mesimon cut. No "allow"
+dialog on first run: it runs only when a person starts an agent on a worktree ticket in that
+repo, and that agent runs arbitrary commands anyway — the same trust as `build.rs` or an npm
+postinstall, said in USING.
+
+**Not built.** The wider surface the author raised — every mesimon behaviour an agent should
+know, so "how can we speed up…" finds its answer in mesimon rather than guessing — is a ticket
+of its own: the candidates are the init script (now in `get_ticket`), who merges and how
+(there, since T-613), what the gate refuses, how a raised hand reaches the person, and what an
+exit does (a park). A `.mesimon-worktree-init.sh` for mesimon's own repository is not in this
+ticket: the content is the author's call (a whole `cp -c -R target` of 24 GB and ~880k files
+is minutes of clone syscalls, not seconds, and a half-written artifact under another agent's
+build is a torn `.rlib`), and the ticket's "also, not code" line about the crown's briefs
+stands as it was. The CHANGELOG line is owed to the next bump: alpha.37 is tagged at this
+branch's base, and `relnotes` requires the top entry to be the build's version, so it is here
+instead — **Added:** `.mesimon-worktree-init.sh` at the repository root runs once in each new
+worktree before its agent starts, with `MESIMON_CHECKOUT` and `MESIMON_WORKTREE` set; a failure
+reads `init failed ∙ exit 2` on the ticket page and never holds the agent back; `doctor` and
+an agent's own ticket say whether the repository has one.
+
+**Tests.** `worktree_init_e2e::the_init_script_runs_before_the_agent_and_never_holds_it_back`: a
+non-executable script under `sh` writing both paths and the ticket into the worktree, the stub
+starting after it (the marker there when it started), the feed line and the journal's output,
+`get_ticket`'s `present` and `last`; an executable failing script (`detail`, the agent still
+spawned, stderr in the journal, `last`); a script past the 1.5 s seam (`init script running`
+seen while it ran, `init timed out`, the agent spawned); and no script (nothing runs, `present:
+false`). Daemon `worktree::tests::the_init_script_runs_in_the_worktree_and_reports_how_it_went`
+(absent, `sh`, the shebang, exit 2, the timeout's kill, the seam's default). Core
+`workspace::an_init_run_has_one_word_and_a_detail_only_when_it_failed`; the lint over
+`WORKTREE_INIT_ABOUT`; TUI `the_workspace_row_says_when_the_init_script_failed`.

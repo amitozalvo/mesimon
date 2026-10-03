@@ -8,11 +8,14 @@
 //! (12 §12.2.3) and never registers Claude Code's WorktreeCreate hook.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use mesimon_core::command::Notice;
+use mesimon_core::workspace::{InitRun, INIT_SCRIPT};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
@@ -36,6 +39,12 @@ pub struct Binding {
     /// wire, so a single-repo `worktrees.json` reads as it always did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<RepoBinding>,
+    /// How the init script's last run ended (T-614), when this provisioning
+    /// ran one: the worst leg's on a workspace. Cleared by the next
+    /// provisioning, which makes a new binding; an older build's file has
+    /// none and reads as no run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub init: Option<InitRun>,
 }
 
 /// One leg of a workspace binding as persisted: which nested repo, and the
@@ -247,6 +256,7 @@ pub fn rebuild_from_disk(repo: &Path, worktrees_root: &Path) -> Bindings {
                 status,
                 locked: row.locked_reason.is_some(),
                 repos: Vec::new(),
+                init: None,
             },
         );
     }
@@ -284,6 +294,7 @@ pub fn rebuild_from_disk(repo: &Path, worktrees_root: &Path) -> Bindings {
                 status: BindingStatus::Attached,
                 locked: row.locked_reason.is_some(),
                 repos: Vec::new(),
+                init: None,
             });
             if b.repos.is_empty() && root_found.contains(&ticket) {
                 // The meta's own row: the root leg, from what the scan above
@@ -556,6 +567,7 @@ pub fn provision(
         status: BindingStatus::Attached,
         locked: false,
         repos: Vec::new(),
+        init: None,
     })
 }
 
@@ -717,6 +729,7 @@ pub fn provision_workspace(
         status: BindingStatus::Attached,
         locked: false,
         repos,
+        init: None,
     })
 }
 
@@ -1968,6 +1981,164 @@ pub fn landed_words(pairs: &[(String, String)]) -> String {
         .join(", ")
 }
 
+// ------------------------------------------------------------ init script
+
+/// The checkout's init script (T-614), when the repository has one: a
+/// regular file named `INIT_SCRIPT` at its root. Read from the CHECKOUT,
+/// not the worktree, so a script a person is still trying out runs before
+/// it is committed, and `doctor`'s "present" and the run agree; a worktree
+/// cut from the default branch would hold the committed copy only.
+pub fn init_script(repo: &Path) -> Option<PathBuf> {
+    let p = repo.join(INIT_SCRIPT);
+    p.is_file().then_some(p)
+}
+
+/// How long the init script may run before it is killed: ten minutes, a
+/// cold `cargo build`'s worth, or the `MESIMON_WORKTREE_INIT_MS` seam.
+pub fn init_timeout() -> Duration {
+    std::env::var("MESIMON_WORKTREE_INIT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(600))
+}
+
+/// What the journal keeps of a script's output: the LAST bytes of each
+/// stream, where a failure says why.
+const INIT_OUTPUT_CAP: usize = 32 * 1024;
+
+/// One leg's run of the init script (T-614): which leg (`""` the root),
+/// how it ended, and what it printed on both streams, for the journal.
+#[derive(Debug, Clone)]
+pub struct InitReport {
+    pub leg: String,
+    pub run: InitRun,
+    pub output: String,
+}
+
+/// Drain one stream to its end off the polling loop, keeping the tail.
+fn drain<R: Read + Send + 'static>(stream: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let Some(mut r) = stream else { return buf };
+        let mut chunk = [0u8; 8192];
+        loop {
+            match r.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() > INIT_OUTPUT_CAP {
+                        let cut = buf.len() - INIT_OUTPUT_CAP;
+                        buf.drain(..cut);
+                    }
+                }
+            }
+        }
+        buf
+    })
+}
+
+/// Run the checkout's init script in one leg of a fresh worktree (T-614),
+/// or nothing when the checkout has none.
+///
+/// `launcher` is the pane's own prefix (`mesimon exec --env <file>`), so
+/// the script gets the person's shell environment exactly as the agent
+/// will, with `vars` — mesimon's own — applied last through `--set`;
+/// empty, the script runs bare with `vars` in its environment (the unit
+/// tests). `MESIMON_CHECKOUT` and `MESIMON_WORKTREE` are set here, per leg.
+/// An executable file runs as it is, its shebang deciding; one without
+/// the bit runs under `sh`, so a first try needs no `chmod`. The cwd is the
+/// leg's worktree and stdin is closed. The script runs in a process group
+/// of its own, and past `timeout` the whole group is killed — a `cargo
+/// build` it started goes with it — and the run reads timed out. Nothing
+/// here blocks the agent: the caller stores the report and spawns anyway.
+pub fn run_init(
+    launcher: &[String],
+    leg: &Leg,
+    vars: &[(String, String)],
+    timeout: Duration,
+) -> Option<InitReport> {
+    let script = init_script(&leg.repo)?;
+    let executable = std::fs::metadata(&script)
+        .map(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0)
+        .unwrap_or(false);
+    let mut env: Vec<(String, String)> = vars.to_vec();
+    env.push(("MESIMON_CHECKOUT".into(), leg.repo.display().to_string()));
+    env.push(("MESIMON_WORKTREE".into(), leg.path.display().to_string()));
+    let script_s = script.display().to_string();
+    let mut argv: Vec<String> = Vec::new();
+    if !executable {
+        argv.push("sh".into());
+    }
+    argv.push(script_s);
+    let mut cmd = match launcher.split_first() {
+        Some((exe, rest)) => {
+            let mut c = Command::new(exe);
+            c.args(rest);
+            for (k, v) in &env {
+                c.arg("--set").arg(format!("{k}={v}"));
+            }
+            c.arg("--");
+            c.args(&argv);
+            c
+        }
+        None => {
+            let mut c = Command::new(&argv[0]);
+            c.args(&argv[1..]);
+            c.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            c
+        }
+    };
+    cmd.current_dir(&leg.path).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let started = Instant::now();
+    let report =
+        |run: InitRun, output: String| Some(InitReport { leg: leg.name.clone(), run, output });
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let ms = started.elapsed().as_millis() as u64;
+            return report(
+                InitRun { exit: None, timed_out: false, ms },
+                format!("could not start {}: {e}", script.display()),
+            );
+        }
+    };
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
+    let (status, timed_out) = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break (Some(st), false),
+            Ok(None) => {}
+            Err(_) => break (None, false),
+        }
+        if started.elapsed() >= timeout {
+            // The group, not the pid: `mesimon exec` execs the script, so
+            // the pid is the script's, but what it spawned is its own.
+            // SAFETY: a plain signal to a process group this process
+            // created; no memory is touched.
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            break (None, true);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let ms = started.elapsed().as_millis() as u64;
+    let mut output = String::from_utf8_lossy(&out.join().unwrap_or_default()).into_owned();
+    let errs = String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned();
+    if !errs.is_empty() {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&errs);
+    }
+    let exit = status.and_then(|st| st.code());
+    report(InitRun { exit, timed_out, ms }, output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1981,6 +2152,7 @@ mod tests {
             status,
             locked: false,
             repos: Vec::new(),
+            init: None,
         }
     }
 
@@ -2109,6 +2281,7 @@ mod tests {
                 status: BindingStatus::Queued,
                 locked: false,
                 repos: Vec::new(),
+                init: None,
             },
         );
         // Dir exists but is not ours (no marker) → fail closed.
@@ -2124,6 +2297,7 @@ mod tests {
                 status: BindingStatus::Provisioning,
                 locked: false,
                 repos: Vec::new(),
+                init: None,
             },
         );
         // Attached stays untouched.
@@ -2763,6 +2937,7 @@ mod tests {
                     branch_oid: "a1".into(),
                 },
             ],
+            init: None,
         }
     }
 
@@ -3229,5 +3404,74 @@ mod tests {
             "nothing moved on a rebase answer"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ------------------------------------------------------- init script
+
+    /// The init script runs in the worktree with both paths named, under
+    /// `sh` when it is not executable and as itself when it is; a failure
+    /// and a timeout are reported as what they are, and an absent file
+    /// runs nothing (T-614).
+    #[test]
+    fn the_init_script_runs_in_the_worktree_and_reports_how_it_went() {
+        let dir = std::env::temp_dir().join(format!("msmn-init-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        // Canonical, as a provisioned worktree's path is: `sh` reports the
+        // real `$PWD`, and macOS keeps its temp dir behind a symlink.
+        let dir = dir.canonicalize().unwrap();
+        let (repo, wt) = (dir.join("repo"), dir.join("wt"));
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+        let leg = Leg {
+            name: String::new(),
+            repo: repo.clone(),
+            path: wt.clone(),
+            base: "main".into(),
+            base_oid: String::new(),
+            branch_oid: String::new(),
+        };
+        let vars = vec![("MESIMON_TICKET".to_string(), "T-1".to_string())];
+        let long = Duration::from_secs(20);
+        assert!(run_init(&[], &leg, &vars, long).is_none(), "no file, no run");
+
+        // Not executable: runs under sh, in the worktree, with the paths.
+        let script = repo.join(INIT_SCRIPT);
+        std::fs::write(
+            &script,
+            "echo \"$MESIMON_CHECKOUT|$MESIMON_WORKTREE|$PWD|$MESIMON_TICKET\" > marker\n\
+             echo hello\necho oops >&2\n",
+        )
+        .unwrap();
+        let r = run_init(&[], &leg, &vars, long).expect("a run");
+        assert!(r.run.ok(), "{:?}", r.run);
+        assert_eq!(r.leg, "");
+        let marker = std::fs::read_to_string(wt.join("marker")).unwrap();
+        assert_eq!(
+            marker.trim(),
+            format!("{}|{}|{}|T-1", repo.display(), wt.display(), wt.display())
+        );
+        assert!(r.output.contains("hello") && r.output.contains("oops"), "{:?}", r.output);
+        assert!(r.run.detail().is_none(), "a run that went well says nothing on the page");
+
+        // Executable with a shebang: runs as itself; its exit code is kept.
+        std::fs::write(&script, "#!/bin/sh\nexit 2\n").unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let r = run_init(&[], &leg, &vars, long).expect("a run");
+        assert_eq!(r.run.exit, Some(2));
+        assert!(!r.run.timed_out && !r.run.ok());
+        assert_eq!(r.run.detail().as_deref(), Some("init failed ∙ exit 2"));
+
+        // Past the timeout the script is killed and the run says so.
+        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        let r = run_init(&[], &leg, &vars, Duration::from_millis(300)).expect("a run");
+        assert!(r.run.timed_out, "{:?}", r.run);
+        assert!(r.run.ms < 10_000, "the kill did not wait for the sleep: {} ms", r.run.ms);
+        assert_eq!(r.run.detail().as_deref(), Some("init timed out"));
+
+        // The seam, and its default.
+        assert_eq!(init_timeout(), Duration::from_secs(600));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -206,6 +206,19 @@ pub const CROWN_WAKES: &str = concat!(
 /// commands, two of them (the merge, copying the release stamp) the board's
 /// and the crown's; and it left three loops running past its last turn,
 /// which read as unfinished work for ten hours.
+/// What the worktree init script is (T-614), on every `get_ticket`
+/// (`worktree_init.about`): the one place an agent learns that a cold
+/// worktree is made warm by a file in the repository, so a person's "how do
+/// we speed this up" has an answer the agent can find in its own first tool
+/// result. The variables are named in lowercase prose so the text passes
+/// the lint; the file's own name says the rest.
+pub const WORKTREE_INIT_ABOUT: &str = "A script at the repository's root, run once in each new \
+     worktree before its agent starts: read from the checkout, run in the worktree through the \
+     person's login-shell environment, with the checkout's path in mesimon_checkout and the \
+     worktree's in mesimon_worktree (uppercase, as every mesimon variable). Where a build cache \
+     is seeded or dependencies installed so the worktree starts warm; absent, nothing runs, and \
+     a failure is reported while the agent starts anyway.";
+
 pub const WORKER_UNDER_CROWN: &str = "The board's crown, the agent coordinating this board \
      from another ticket, started this session. Under a crown the merge is the board's: the \
      merge train lands a finished branch, else the crown does, and the board asks for its \
@@ -310,13 +323,13 @@ pub fn tools() -> Vec<Value> {
             "description": "Returns the mesimon ticket this session is attached to, or with \
                             key another ticket (crown only): key, title, column, workspace, \
                             branch, merge state (per repo on a workspace), who merges \
-                            (merge), the column names \
-                            move_ticket accepts and what each column is for, tags, \
-                            all tags the board knows (allowed_tags), the description (first \
-                            note), each note's id, name and author, the agent's state \
-                            and a seen stamp keyed edits require. The prompt that starts a \
-                            session is often the ticket's title alone; the description and \
-                            notes are the rest of the brief, so this is a session's first call.",
+                            (merge), the init script (worktree_init), the columns \
+                            move_ticket accepts and what each is for, tags, the board's \
+                            tags (allowed_tags), the description (first note), each note's \
+                            id, name and author, the agent's state and a seen stamp keyed \
+                            edits require. A session's prompt is often the ticket's title \
+                            alone; the description and notes are the rest of the brief, so \
+                            this is a session's first call.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2389,6 +2402,7 @@ mod tests {
         assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
         assert_eq!(lint_tool_text(PERSONS_QUESTIONS), Ok(()));
         assert_eq!(lint_tool_text(PERSONS_PLANS), Ok(()));
+        assert_eq!(lint_tool_text(WORKTREE_INIT_ABOUT), Ok(()));
     }
 
     /// T-582: a plan the crown would change stays a person's, said in the
@@ -2595,10 +2609,7 @@ mod tests {
                     "A near-duplicate title means the older ticket wins",
                 ],
             ),
-            (
-                "get_ticket",
-                vec!["the column names move_ticket accepts and what each column is for"],
-            ),
+            ("get_ticket", vec!["the columns move_ticket accepts and what each is for"]),
             // T-537: a crown that is not told the board wakes it goes
             // looking on its own, with a monitor that holds the wake.
             ("start_agent", vec!["The board then wakes this session", "so nothing is polled"]),

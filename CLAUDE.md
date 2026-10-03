@@ -634,7 +634,8 @@ respawns; required by `restart_skew_e2e`, the only test driving the real `Client
 `MESIMON_LINGER_MS` (how long a crown-started worker sits idle with background tasks before the
 crown is told, T-599),
 `MESIMON_CODEX_CLEANUP_STALE_MS` (how long an unconfirmed Codex cleanup may own a live ticket's
-checkout before the sweep goes looking for its runtime),
+checkout before the sweep goes looking for its runtime), `MESIMON_WORKTREE_INIT_MS` (how long
+the repo's `.mesimon-worktree-init.sh` may run in a fresh worktree before it is killed, T-614),
 `MESIMON_PANE_QUIET_MS`, `MESIMON_NO_UPDATE_CHECK`, `MESIMON_UPDATE_CHECK`,
 `MESIMON_SERVER_GUARD_TICKS`, `MESIMON_WT_REFRESH_TICKS` (the slow bucket: worktree flags, merge
 train, CLAUDE.md sample, checkout git sample), `MESIMON_NO_TAG_SEED`,

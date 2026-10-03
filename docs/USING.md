@@ -124,6 +124,38 @@ was merged; for an agent the crown started, the board tells it in the same step 
 merge tells the agent after a merge** is on), the line reads `merged ∙ its agent was told`, and
 there is no second press.
 
+A worktree starts cold: a fresh checkout with no build cache and no installed dependencies, so
+the first thing its agent does is wait for a build. To start it warm, put a script named
+`.mesimon-worktree-init.sh` at the repository root. mesimon runs it once in each new worktree,
+before the ticket's agent starts, in your login shell's environment, with `MESIMON_CHECKOUT`
+naming your checkout and `MESIMON_WORKTREE` the new worktree, which is also its working
+directory. Executable, it runs as it is, so any language with a shebang works; otherwise it runs
+under `sh`. It is read from your checkout, so you can try it before you commit it; committed, it
+reaches every clone. mesimon never creates it and never changes it. A failure never holds the
+agent back: the ticket page reads `init failed ∙ exit 2` beside the branch, the activity feed
+keeps the exit code and the time it took, and the daemon journal keeps what it printed. Ten
+minutes is the limit. The script is yours and runs as you, the same trust as a build script or a
+package's install hook; on a workspace of several repositories it runs in each one that has a
+script. An agent reads whether the repository has one and how the last run went on its own
+ticket, so an agent asked to make tickets start faster knows where to look. The script is
+whatever your stack needs:
+
+```sh
+# Rust on macOS: clone the warm build directory. APFS copies on write, so
+# this takes seconds and no space until a file changes.
+cp -c -R "$MESIMON_CHECKOUT/target" target
+
+# Node: install, or share the checkout's modules.
+npm ci
+ln -s "$MESIMON_CHECKOUT/node_modules" node_modules
+
+# Python
+uv sync
+
+# Anything
+make dev
+```
+
 What you step into is the agent itself: Claude Code or Codex exactly as you run it without
 mesimon, with the same prompt, the same slash commands and the same permission dialogs. Type to
 it, answer its questions, interrupt it: mesimon never sits between you and it.
