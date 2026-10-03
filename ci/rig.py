@@ -522,7 +522,7 @@ class Rig:
         path = os.path.join(dst, "hooks", "register.ts")
         with open(path) as f:
             text = f.read()
-        line = "const argv = [c.bin, 'approve', '--sock', c.hookSock, '--session', c.session]"
+        line = "const argv = [c.bin, 'approve', '--sock', c.hookSock, '--session', c.session,"
         if line not in text:
             die("the mod's approve moved: the phone cannot be patched in")
         text = text.replace(line, line.replace("c.hookSock", repr(PHONE_SOCK)), 1)

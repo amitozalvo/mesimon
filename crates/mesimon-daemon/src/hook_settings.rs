@@ -8,7 +8,8 @@
 //! encodes 11 §11.2.3's silent-failure traps as hard rules, each unit-tested:
 //! `if` is never emitted (silently disables non-tool events), matchers only on
 //! events that support them, `async: true` only where it cannot block, and
-//! `timeout: 2` for observers and the gate; a bounded remote decision gets 50s.
+//! `timeout: 2` for observers and the gate; a remote decision holds as long as
+//! the dialog stands, within `PERMISSION_HOLD_SECS` (T-632).
 //!
 //! D15's attention hooks
 //! are pure observers: they exec `mesimon hook`, which never writes stdout and
@@ -25,6 +26,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::paths::Paths;
+use mesimon_core::mesophon::PERMISSION_HOLD_SECS;
 
 const SESSION_START_SOURCES: [&str; 5] = ["startup", "resume", "clear", "compact", "fork"];
 const SESSION_END_REASONS: [&str; 5] = ["clear", "resume", "logout", "prompt_input_exit", "other"];
@@ -207,7 +209,9 @@ pub fn render_settings(
             json!({
                 "hooks": [{"type": "command", "command": hook_bin.display().to_string(),
                     "args": ["approve", "--sock", hook_sock.display().to_string(),
-                        "--session", session.to_string()], "timeout": 50}]
+                        "--session", session.to_string(),
+                        "--hold", PERMISSION_HOLD_SECS.to_string()],
+                    "timeout": PERMISSION_HOLD_SECS + 10}]
             }),
         ]),
     );
@@ -449,6 +453,19 @@ mod tests {
         assert!(code
             .contains("JSON.parse(String(out?.stdout || 'null'))?.hookSpecificOutput?.decision"));
         assert!(!code.contains("behavior"), "the mod spells no behavior");
+        // The mod's rounds are the core's numbers (T-632), each inside the
+        // ten minutes a mod's process may live, together the whole hold.
+        use mesimon_core::mesophon::{PERMISSION_RENEW_EXIT, PERMISSION_ROUND_SECS};
+        let timeout_ms = (PERMISSION_ROUND_SECS + 30) * 1000;
+        assert!(timeout_ms <= 600_000);
+        for line in [
+            format!("const APPROVE_ROUND_SECS = {PERMISSION_ROUND_SECS}"),
+            format!("const APPROVE_TIMEOUT_MS = {timeout_ms}"),
+            format!("const APPROVE_RENEW_EXIT = {PERMISSION_RENEW_EXIT}"),
+            format!("const APPROVE_ROUNDS = {}", PERMISSION_HOLD_SECS / PERMISSION_ROUND_SECS),
+        ] {
+            assert!(code.contains(&line), "{line}");
+        }
     }
 
     fn rendered() -> Value {
@@ -576,7 +593,11 @@ mod tests {
             for h in e["hooks"].as_array().unwrap() {
                 assert_eq!(
                     h["timeout"],
-                    if h["args"][0] == "approve" { json!(50) } else { json!(2) },
+                    if h["args"][0] == "approve" {
+                        json!(PERMISSION_HOLD_SECS + 10)
+                    } else {
+                        json!(2)
+                    },
                     "timeout on {ev}"
                 );
                 assert_eq!(h["type"], json!("command"));

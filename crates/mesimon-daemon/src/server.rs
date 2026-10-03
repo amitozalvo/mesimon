@@ -3566,9 +3566,7 @@ impl Daemon {
         {
             return;
         }
-        if releases_permission(&frame) {
-            self.control_cancel_permission(id);
-        }
+        self.control_release_permission(id, &frame);
         self.control_observe_dialog(id, &frame);
         let now = now_ms();
         let mut observation = self

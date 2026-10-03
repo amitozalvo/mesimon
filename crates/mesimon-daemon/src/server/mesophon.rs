@@ -141,10 +141,27 @@ pub(super) enum DialogEdge {
 struct PermissionWait {
     projection: api::Permission,
     stream: UnixStream,
+    /// When it was offered; a renewal keeps it.
+    offered: Instant,
     deadline: Instant,
-    /// Only connections present when the prompt was offered may answer it.
-    peers: Vec<String>,
+    /// Only devices paired when the prompt was offered may answer it, from
+    /// any connection: a phone that slept and came back is the same phone
+    /// (T-632).
+    grants: Vec<BoardId>,
+    /// The mod's `mesimon approve --renew`: its run ends every round, and
+    /// the next run takes the wait over (`PERMISSION_RENEW_GRACE`).
+    renews: bool,
+    /// When a renewing run's stream closed.
+    closed: Option<Instant>,
 }
+/// How long a renewing wait outlives its run for the next one to take it
+/// over (T-632): the mod starts it at once, so this is slack for a loaded
+/// machine.
+const PERMISSION_RENEW_GRACE: Duration = Duration::from_secs(5);
+/// How old a wait must be before the session's own next tool call says its
+/// dialog is gone (T-632). The mod relays the dialog's own `PreToolUse` in
+/// order behind earlier frames, so it may land after the wait began.
+const PERMISSION_PASSED_AFTER: Duration = Duration::from_secs(5);
 struct Invite {
     code: InviteCode,
     expires: Instant,
@@ -1619,7 +1636,6 @@ impl Daemon {
         if authorize(&by, &Action::Mutate, &Resource::Session { id }).denied()
             || self.control.stored.is_none()
             || !self.control.online
-            || self.control.permissions.contains_key(&id)
         {
             return;
         }
@@ -1647,19 +1663,33 @@ impl Daemon {
         {
             return;
         }
-        let peers: Vec<_> = self
+        let grants: Vec<_> = self
             .control
-            .peers
+            .stored
             .iter()
-            .filter(|(_, p)| p.subscribed && self.control_granted(p.grant, p.device))
-            .map(|(id, _)| id.clone())
+            .flat_map(|s| &s.grants)
+            .filter(|g| self.control_granted(g.id, g.device))
+            .map(|g| g.id)
             .collect();
-        if peers.is_empty() {
+        if grants.is_empty() {
             return;
         }
         // Closing this stream gives the deciding process empty stdout. Never
         // hold the writer for a phone: all waiting is state plus a deadline.
         let _ = stream.set_nonblocking(true);
+        let renews = frame.reason.as_deref() == Some("renew");
+        // The mod's next round of the same dialog takes the wait over, its
+        // request and deadline unchanged, so a phone mid-tap still lands.
+        // Any other request is a newer dialog and replaces the old wait,
+        // whose run then prints nothing.
+        if let Some(old) = self.control.permissions.remove(&id) {
+            if renews && takes_over(&old, tool, input) {
+                let wait = PermissionWait { stream, grants, closed: None, ..old };
+                self.control.permissions.insert(id, wait);
+                return;
+            }
+        }
+        let hold = Duration::from_secs(mesimon_core::mesophon::PERMISSION_HOLD_SECS);
         self.control.permissions.insert(
             id,
             PermissionWait {
@@ -1667,14 +1697,33 @@ impl Daemon {
                     request: uuid::Uuid::new_v4().to_string(),
                     tool: tool.into(),
                     input: input.clone(),
-                    expires_at: now_ms() + 40_000,
+                    expires_at: now_ms() + hold.as_millis() as u64,
                 },
                 stream,
-                deadline: Instant::now() + Duration::from_secs(40),
-                peers,
+                offered: Instant::now(),
+                deadline: Instant::now() + hold,
+                grants,
+                renews,
+                closed: None,
             },
         );
         self.control_changed();
+    }
+
+    /// The hook edge that ends a session's permission wait, if `frame` is
+    /// one: `releases_permission`'s, or the session's own next tool call
+    /// once the wait is old enough that it cannot be the dialog's own
+    /// (T-632): the person refused the dialog in the pane, which fires no
+    /// hook.
+    pub(super) fn control_release_permission(&mut self, id: uuid::Uuid, frame: &HookFrame) {
+        let passed = self.control.permissions.get(&id).is_some_and(|p| {
+            frame.event == "PreToolUse"
+                && frame.payload.get("agent_id").is_none()
+                && p.offered.elapsed() >= PERMISSION_PASSED_AFTER
+        });
+        if passed || super::releases_permission(frame) {
+            self.control_cancel_permission(id);
+        }
     }
 
     pub(super) fn control_cancel_permission(&mut self, id: uuid::Uuid) {
@@ -1684,19 +1733,23 @@ impl Daemon {
     }
 
     fn control_expire_permissions(&mut self) {
+        let now = Instant::now();
+        for p in self.control.permissions.values_mut() {
+            p.note_closed(now);
+        }
+        let stored = self.control.stored.as_ref();
+        let granted = |grant: BoardId| {
+            stored
+                .into_iter()
+                .flat_map(|s| &s.grants)
+                .any(|g| g.id == grant && self.control_granted(g.id, g.device))
+        };
         let expired: Vec<_> = self
             .control
             .permissions
             .iter()
             .filter(|(id, p)| {
-                Instant::now() >= p.deadline
-                    || permission_peer_closed(&p.stream)
-                    || !p.peers.iter().any(|peer| {
-                        self.control
-                            .peers
-                            .get(peer)
-                            .is_some_and(|peer| self.control_granted(peer.grant, peer.device))
-                    })
+                p.lapsed(now, granted)
                     || !self.board.sessions.iter().any(|s| {
                         s.id == **id
                             && self.control_target(&s.ticket.to_string(), &s.id.to_string())
@@ -1726,12 +1779,12 @@ impl Daemon {
             return Reply::Revoked;
         }
         self.control_expire_permissions();
-        if !self
-            .control
-            .permissions
-            .get(&id)
-            .is_some_and(|p| p.projection.request == request && p.peers.iter().any(|p| p == peer))
-        {
+        let grant = self.control.peers.get(peer).map(|p| p.grant);
+        if !self.control.permissions.get(&id).is_some_and(|p| {
+            p.projection.request == request
+                && p.closed.is_none()
+                && grant.is_some_and(|g| p.grants.contains(&g))
+        }) {
             return Reply::Rejected {
                 message: "permission expired or was already answered; check the pane".into(),
             };
@@ -3054,6 +3107,32 @@ impl Daemon {
         for grant in grants {
             self.control_revoke(grant);
         }
+    }
+}
+
+/// Whether a renewing run's request is the same dialog as the wait it
+/// finds: its tool and its input, as the phone was shown them.
+fn takes_over(wait: &PermissionWait, tool: &str, input: &serde_json::Value) -> bool {
+    wait.projection.tool == tool && wait.projection.input == *input
+}
+
+impl PermissionWait {
+    /// A renewing run's stream closing starts its grace (T-632).
+    fn note_closed(&mut self, now: Instant) {
+        if self.renews && self.closed.is_none() && permission_peer_closed(&self.stream) {
+            self.closed = Some(now);
+        }
+    }
+
+    /// Past its day, its run gone (a renewing one's past the grace), or no
+    /// device it was offered to still paired.
+    fn lapsed(&self, now: Instant, granted: impl Fn(BoardId) -> bool) -> bool {
+        now >= self.deadline
+            || self.closed.map_or_else(
+                || permission_peer_closed(&self.stream),
+                |at| now >= at + PERMISSION_RENEW_GRACE,
+            )
+            || !self.grants.iter().any(|g| granted(*g))
     }
 }
 
@@ -5440,6 +5519,59 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert!(!permission_peer_closed(&host));
         drop(hook);
         assert!(permission_peer_closed(&host));
+    }
+
+    fn wait(stream: UnixStream, grants: Vec<BoardId>, renews: bool) -> PermissionWait {
+        let now = Instant::now();
+        PermissionWait {
+            projection: api::Permission {
+                request: "r1".into(),
+                tool: "Bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+                expires_at: 0,
+            },
+            stream,
+            offered: now,
+            deadline: now + Duration::from_secs(mesimon_core::mesophon::PERMISSION_HOLD_SECS),
+            grants,
+            renews,
+            closed: None,
+        }
+    }
+
+    /// T-632: a phone's answer is held past a minute, for whichever paired
+    /// device comes back to it, until its run goes or its device is revoked.
+    #[test]
+    fn a_permission_wait_outlives_a_minute_and_a_phone_s_reconnect() {
+        let phone = BoardId::random();
+        let (host, hook) = UnixStream::pair().unwrap();
+        let p = wait(host, vec![phone], false);
+        let later = Instant::now() + Duration::from_secs(3600);
+        assert!(!p.lapsed(later, |g| g == phone), "an hour on, the phone still answers");
+        assert!(p.lapsed(later, |_| false), "a revoked phone ends it");
+        assert!(p.lapsed(p.deadline, |g| g == phone), "a day ends it");
+        drop(hook);
+        assert!(p.lapsed(Instant::now(), |g| g == phone), "a hook set's run gone ends it");
+    }
+
+    /// The mod's rounds: a renewing run that closed keeps its wait for the
+    /// grace, and the next run of the same dialog takes it over.
+    #[test]
+    fn a_renewing_run_s_wait_waits_for_the_next_round() {
+        let phone = BoardId::random();
+        let (host, hook) = UnixStream::pair().unwrap();
+        let mut p = wait(host, vec![phone], true);
+        let now = Instant::now();
+        p.note_closed(now);
+        assert_eq!(p.closed, None, "open while its run lives");
+        drop(hook);
+        p.note_closed(now);
+        assert_eq!(p.closed, Some(now));
+        assert!(!p.lapsed(now, |g| g == phone), "within the grace");
+        assert!(p.lapsed(now + PERMISSION_RENEW_GRACE, |g| g == phone), "past it");
+        assert!(takes_over(&p, "Bash", &serde_json::json!({"command": "ls"})));
+        assert!(!takes_over(&p, "Bash", &serde_json::json!({"command": "rm x"})));
+        assert!(!takes_over(&p, "Write", &serde_json::json!({"command": "ls"})));
     }
 
     #[test]

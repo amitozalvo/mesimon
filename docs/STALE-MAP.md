@@ -20591,3 +20591,44 @@ The CHANGELOG line is owed to the next bump (alpha.37 is tagged at this branch's
 24 px drag, goes on a 260 px sideways swipe and on a 60 px upward one, opens nothing either
 time, and comes back unmoved on the next alert; the notes flow's "Deleted" toast snaps back
 from a 6 px drag and goes on a sideways swipe well before its 2.8 s.
+
+## Remote Control holds a permission dialog for as long as it stands (T-632, 2026-10-03, "remote control lost option to accept a permission request after 1 minute ∙ Afterwards stay needs you but user can't do anything")
+
+**Two causes.** T-395 held the phone's one-shot answer for 40 s (daemon), 45 s (`mesimon
+approve`'s read), 50 s (the hook's timeout and the mod's run): a dialog seen a minute later had
+no buttons, while the session stayed needs-you. And the wait was bound to the relay
+*connections* subscribed when it was offered, so a phone whose page slept and reconnected (a
+new peer id) took the wait down with it at once — the usual case on a phone.
+
+**What shipped.** The hold is `mesophon::PERMISSION_HOLD_SECS`, a day, ended sooner by every
+edge that ended it before (the tool ran or failed, the turn or the pane moved on, the run went,
+a revoke). The wait is bound to the **devices** paired when it was offered (`grants`), answered
+from any of their connections. A newer request from the same session replaces the old wait
+(its run prints nothing) instead of being refused. The session's own `PreToolUse` at least 5 s
+into a wait (`PERMISSION_PASSED_AFTER`) ends it: a person refusing the dialog in the pane fires
+no hook (the T-447 trap), and a held day made that stale card worth clearing; the 5 s is the
+mod's relay of the dialog's own `PreToolUse`, which may land after the wait began.
+
+**The two roads.** The hook set runs `mesimon approve --hold 86400`, entry timeout 86410
+(Claude Code documents no cap; the native dialog stays answerable throughout, as T-395
+measured). A mod's `$.process.run` lives ten minutes at most, so the mod runs `approve --hold
+540 --renew` in up to 160 rounds: a round that ran out with the daemon still holding exits
+`PERMISSION_RENEW_EXIT` (75) and the mod runs the next; EOF from the daemon (released,
+replaced) exits 0 and ends the hold. The daemon passes the wait to the next round when its
+tool and input match (`takes_over`), request id and deadline unchanged, so a phone mid-tap
+still lands; a renewing wait whose run closed waits 5 s for it (`PERMISSION_RENEW_GRACE`) and
+refuses an answer meanwhile. A hook file or mod laid before this passes no `--hold` and keeps
+45 s. The rig's phone mod matches the approve line's new first line.
+
+**Not changed.** No paired device at the moment of the request still means no wait, and the
+relay being down then still means none. Several dialogs queued at once on one session keep one
+wait, now the newest.
+
+**Tests.** `approve_bridge` (the binary against a stand-in socket: a renewing round's exit 75,
+the hook set's silent end, a closed wait, a printed decision); daemon
+`a_permission_wait_outlives_a_minute_and_a_phone_s_reconnect`,
+`a_renewing_run_s_wait_waits_for_the_next_round`; the mod's `register.test.ts` round test
+through `claude plugin test` (`mod_plugin`); `hook_settings` pins the mod's round numbers to
+the core's. **Owed:** a CHANGELOG line at the next bump — **Fixed:** a permission request on
+Remote Control stays answerable until it is answered, instead of for 40 seconds, including
+after the phone's page reconnects.

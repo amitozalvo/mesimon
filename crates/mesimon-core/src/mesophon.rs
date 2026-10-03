@@ -17,6 +17,19 @@ impl PermissionDecision {
     }
 }
 
+/// How long a paired phone may answer a permission dialog (T-632): as long
+/// as the dialog stands, within a day. The hook set's `mesimon approve`
+/// holds this long in one run; the daemon's wait ends here at the latest.
+pub const PERMISSION_HOLD_SECS: u64 = 24 * 60 * 60;
+/// One run of the mod's `mesimon approve`: a mod's process may live ten
+/// minutes at most, so the mod runs it again and the daemon's wait passes
+/// from one run to the next (`--renew`), the phone's card unchanged.
+pub const PERMISSION_ROUND_SECS: u64 = 540;
+/// `mesimon approve --renew` exits so when its round ran out with the
+/// daemon still holding the dialog: the mod runs the next round. Any other
+/// exit with no decision is the end of the hold.
+pub const PERMISSION_RENEW_EXIT: i32 = 75;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Permission {
     pub request: String,

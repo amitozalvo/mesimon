@@ -20,8 +20,9 @@
 //    T-577 a mod launch carries no hook set, so these are the frames the
 //    daemon ingests.
 //  - APPROVE: a permission dialog is put to `mesimon approve` as the hook
-//    set's entry did, and a person's one-shot answer from Remote Control is
-//    returned as the dialog's decision; no answer leaves the dialog alone.
+//    set's entry did, in rounds for as long as the daemon holds it (T-632),
+//    and a person's one-shot answer from Remote Control is returned as the
+//    dialog's decision; no answer leaves the dialog alone.
 //  - BRIDGE: one `mesimon mod-bridge` per session, spawned at session.start
 //    (or by the first event after it, when its read of the variables failed),
 //    whose stdout is the daemon's commands to this session, one JSON line
@@ -116,11 +117,17 @@ const TOOL_PREFIX = 'mcp__mesimon__'
 // ANSWER_WAIT_SECS, 75 s); every other call answers in seconds.
 const TOOL_CALL_TIMEOUT_MS = 90000
 
-// A relay's own bound (`mesimon hook --road mod` has no other), and the
-// permission bridge's: `mesimon approve` gives up at 47 s, the hook set gave
-// it 50.
+// A relay's own bound (`mesimon hook --road mod` has no other).
 const RELAY_TIMEOUT_MS = 5000
-const APPROVE_TIMEOUT_MS = 50000
+// The permission bridge (T-632): a mod's process lives ten minutes at most,
+// so `mesimon approve` runs in rounds of `PERMISSION_ROUND_SECS` (540 s) and
+// the daemon passes its wait from one round to the next. A round that ran
+// out with the dialog still held exits `PERMISSION_RENEW_EXIT` (75); the
+// rounds together reach `PERMISSION_HOLD_SECS`, a day.
+const APPROVE_ROUND_SECS = 540
+const APPROVE_TIMEOUT_MS = 570000
+const APPROVE_RENEW_EXIT = 75
+const APPROVE_ROUNDS = 160
 
 // The kinds of command this mod reads, said to the daemon by the bridge
 // (`mesimon_core::road::SPEAKS`): a session keeps the mod it was launched
@@ -417,10 +424,15 @@ async function approve($: any, e: unknown): Promise<unknown> {
   try {
     const c = await settings($, 'PermissionRequest')
     if (!c) return undefined
-    const argv = [c.bin, 'approve', '--sock', c.hookSock, '--session', c.session]
-    const out = await $.process.run(argv, { stdin: JSON.stringify(e ?? {}), timeoutMs: APPROVE_TIMEOUT_MS })
-    const decision = JSON.parse(String(out?.stdout || 'null'))?.hookSpecificOutput?.decision
-    return decision && typeof decision === 'object' ? decision : undefined
+    const argv = [c.bin, 'approve', '--sock', c.hookSock, '--session', c.session,
+      '--hold', String(APPROVE_ROUND_SECS), '--renew']
+    for (let round = 0; round < APPROVE_ROUNDS; round++) {
+      const out = await $.process.run(argv, { stdin: JSON.stringify(e ?? {}), timeoutMs: APPROVE_TIMEOUT_MS })
+      const decision = JSON.parse(String(out?.stdout || 'null'))?.hookSpecificOutput?.decision
+      if (decision && typeof decision === 'object') return decision
+      if (out?.exitCode !== APPROVE_RENEW_EXIT) return undefined
+    }
+    return undefined
   } catch {
     return undefined
   }

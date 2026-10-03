@@ -688,7 +688,8 @@ test('a permission dialog is put to mesimon approve, and a person\'s answer from
   const r: any = await $.classic.PermissionRequest(body as any)
   expect(r.decision).toEqual({ behavior: 'deny', message: 'the phone said no' })
   const approve = runs.find(r => r.argv[1] === 'approve')!
-  expect(approve.argv).toEqual(['/bin/mesimon', 'approve', '--sock', '/rt/hook.sock', '--session', ENV.MESIMON_MOD_SESSION])
+  expect(approve.argv).toEqual(['/bin/mesimon', 'approve', '--sock', '/rt/hook.sock', '--session', ENV.MESIMON_MOD_SESSION,
+    '--hold', '540', '--renew'])
   expect(JSON.parse(approve.stdin)).toMatchObject(body)
   // No answer leaves the dialog to whatever else answers it.
   answer = ''
@@ -696,6 +697,35 @@ test('a permission dialog is put to mesimon approve, and a person\'s answer from
   expect(none.decision).toBe(undefined)
   await settle()
   expect(runs.filter(r => r.argv.includes('PermissionRequest')).length).toBe(2)
+})
+
+test('a round that ran out with the dialog still held runs the next, and the phone\'s answer in it is taken', async ($, on) => {
+  mock.env(on, ENV)
+  // T-632: a mod's process lives ten minutes at most, so `mesimon approve`
+  // holds in rounds; exit 75 is "the daemon still holds it", exit 0 with
+  // nothing the end of the hold.
+  const exits = [75, 75, 0]
+  let rounds = 0
+  let answer = '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
+  on('process.run', ($: any, e: any) => {
+    if (e.argv[1] !== 'approve') return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    rounds += 1
+    const exitCode = exits.shift() ?? 0
+    const stdout = exitCode === 0 && answer ? answer : ''
+    return { value: { exitCode, stdout, stderr: '' } }
+  })
+  on('classic.PermissionRequest', () => ({}) as any)
+  const body = { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'touch x' } }
+  const r: any = await $.classic.PermissionRequest(body as any)
+  expect(rounds).toBe(3)
+  expect(r.decision).toEqual({ behavior: 'allow' })
+  // Released with no answer: the hold ends, and no further round runs.
+  exits.push(75, 0, 75)
+  answer = ''
+  rounds = 0
+  const none: any = await $.classic.PermissionRequest(body as any)
+  expect(rounds).toBe(2)
+  expect(none.decision).toBe(undefined)
 })
 
 test('a session.start whose read failed leaves the tools to the next event that reads', async ($, on) => {
