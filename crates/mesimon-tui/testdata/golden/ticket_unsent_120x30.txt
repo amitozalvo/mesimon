@@ -27,4 +27,4 @@
 
 
 
- enter focus ∙ shift+enter resend ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown                                  ? keys
+ enter focus ∙ shift+enter resend ∙ r rename ∙ d delete ∙ n describe                                             ? keys

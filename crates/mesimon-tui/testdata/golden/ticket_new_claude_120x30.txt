@@ -27,4 +27,4 @@
     starts in the checkout
     types the ticket title into its box, and sends nothing
     another agent is already writing in this checkout
- jk select row ∙ enter start agent ∙ shift+tab own worktree ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown        ? keys
+ jk select row ∙ enter start agent ∙ shift+tab own worktree ∙ r rename ∙ d delete ∙ n describe                   ? keys

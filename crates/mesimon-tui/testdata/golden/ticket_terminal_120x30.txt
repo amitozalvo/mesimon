@@ -27,4 +27,4 @@
 
 
 
- jk select session ∙ enter adopt shell ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown                             ? keys
+ jk select session ∙ enter adopt shell ∙ r rename ∙ d delete ∙ n describe                                        ? keys

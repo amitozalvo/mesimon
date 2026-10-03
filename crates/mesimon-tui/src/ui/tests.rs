@@ -4759,6 +4759,21 @@ fn golden_ticket_tags_120() {
     golden("ticket_tags_120x30", &render(&app, 120, 30));
 }
 
+/// The holder's page wears the crown's mark before its title (T-597), and
+/// says nothing else about the crown: no state-row clause, no footer hint.
+#[test]
+fn golden_ticket_crowned_120() {
+    let mut b = fixture(false);
+    b.crown = Some(ulid_n(1));
+    let mut app = app_graphite(b);
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    let mark = crate::glyphs::crown(app.theme.glyph_tier());
+    assert!(lines[2].starts_with(&format!(" {mark} Decay treatments")), "{:?}", lines[2]);
+    assert!(lines.iter().all(|l| !l.contains("crown")), "a crown word on the page");
+    golden("ticket_crowned_120x30", &lines);
+}
+
 /// The chips LEAD the state row (T-346) and the ` ∙` separator belongs to
 /// them: it went in before any chip was tried, so T-163's page read
 /// `created 19m ago ∙ ∙ ⎇ msmn/…` (dogfood 2026-09-03). A bullet appears

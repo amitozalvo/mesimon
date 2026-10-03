@@ -207,33 +207,48 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             Line::from(vec![Span::raw(" "), Span::styled(shown, title_style)])
         }
         None => {
-            let title = truncate(&ticket.title, title_budget);
+            // The holder wears the crown's mark before its title, as its card
+            // does (T-597) — the page's only word on the crown.
+            let crowned = app.board.is_crowned(ticket_id);
+            let mark = if crowned {
+                format!("{} ", crate::glyphs::crown(theme.glyph_tier()))
+            } else {
+                String::new()
+            };
+            let title = truncate(&ticket.title, title_budget.saturating_sub(mark.width()));
             let mut spans = vec![Span::raw(" ".repeat(pad))];
             // The holder's title rests in the crown's tint, as its card's does
             // (T-442), and `^o` here sweeps it there from the plain ink on the
             // band's ground. Below TrueColor the tint is the quiet grey, so
             // the title keeps its ink and only the head walks it.
-            let holder = app.board.is_crowned(ticket_id)
-                && !app.doomed(ticket_id)
-                && !app.archiving(ticket_id)
-                && !snoozing;
+            let holder =
+                crowned && !app.doomed(ticket_id) && !app.archiving(ticket_id) && !snoozing;
             let rest = if holder && theme.paints_tags() {
                 theme.crown_text().add_modifier(Modifier::BOLD)
             } else {
                 title_style
             };
+            let cs = theme.crown_text();
             match app.crowning_ms(ticket_id) {
+                // One run, mark and title, so the glow crosses the gap.
                 Some(elapsed) if holder => {
                     let run = CrownSweep {
                         elapsed,
-                        cells: title.width(),
+                        cells: mark.width() + title.width(),
                         before: title_style,
                         after: rest,
                         surface: band.bg.or(theme.bg),
                     };
-                    spans.extend(super::card::swept_spans(theme, &run, &title, 0));
+                    let mark_run = CrownSweep { before: cs, after: cs, ..run };
+                    spans.extend(super::card::swept_spans(theme, &mark_run, &mark, 0));
+                    spans.extend(super::card::swept_spans(theme, &run, &title, mark.width()));
                 }
-                _ => spans.push(Span::styled(title, rest)),
+                _ => {
+                    if crowned {
+                        spans.push(Span::styled(mark, cs));
+                    }
+                    spans.push(Span::styled(title, rest));
+                }
             }
             Line::from(spans)
         }
@@ -296,17 +311,6 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         };
         ident_spans.push(Span::styled(" ∙ ".to_string(), app.theme.dim3()));
         ident_spans.extend(words.into_iter().map(|(t, st)| Span::styled(t, st)));
-    }
-    // The crown (T-411): the page says so in the crown's own tint, and
-    // names the key that takes it back.
-    if app.board.is_crowned(ticket.id) {
-        ident_spans.push(Span::styled(
-            format!(
-                " ∙ {} wears the crown ∙ its agent edits every ticket ∙ ^o uncrowns",
-                crate::glyphs::crown(app.theme.glyph_tier())
-            ),
-            app.theme.crown_text(),
-        ));
     }
     // The agent tier (T-443): what the ticket runs on, and while a switch is
     // owed, from what to what — with the key that picks the next one beside

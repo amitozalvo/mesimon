@@ -27,4 +27,4 @@
 
 
 
- jk select session ∙ enter edit note ∙ r rename ∙ d delete ∙ n edit note ∙ ^o crown                              ? keys
+ jk select session ∙ enter edit note ∙ r rename ∙ d delete ∙ n edit note                                         ? keys

@@ -2889,9 +2889,8 @@ static TICKET: &[Binding] = &[
     },
     Binding {
         // The board's `^o`, on the ticket page (T-411): same verb, same
-        // words. HINTED here where it is overlay-only on the board — the
-        // page's state row is where the crown is read. Late in the footer
-        // (after `n`, before `q`): a rare gesture yields to the daily ones.
+        // words, overlay-only as on the board (T-597): the mark before the
+        // title is the page's only word on the crown.
         keys: &[Key::Ctrl('o')],
         verb: Verb::Crown,
         show: "^o",
@@ -2900,7 +2899,7 @@ static TICKET: &[Binding] = &[
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
-        prio: 96,
+        prio: 0,
     },
     Binding {
         // The board's `^n` on the ticket page (T-443): same verb, same

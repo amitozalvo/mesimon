@@ -19876,3 +19876,15 @@ instruction, and it names a column the board may not have.
 
 **Tests.** `crown_archives_setting_toggles_through_board_command` checks the new status, and two
 reminted goldens (`settings_agents_120x30`, `settings_agents_60x20_end`) show the new detail.
+
+## The ticket page wears the crown's mark, and says nothing else about it (T-597, 2026-10-03, the author: "remove the crown hints on the ticket page, put a crown glyph before title")
+
+The holder's ticket page drew the crown twice in words: a state-row clause ("♛ wears the crown ∙
+its agent edits every ticket ∙ ^o uncrowns", T-411) and a `^o crown`/`uncrown` footer hint on
+every page whose board hands agents tools. Both are gone. The page's title row now carries the
+mark before the title, in the crown's tint, as the holder's card does; the crowning's sweep
+(T-442) runs over mark and title as one run, so the glow crosses the gap. `^o` still works on
+the page and is overlay-only (`prio: 0`), as on the board.
+
+**Tests.** `golden_ticket_crowned_120` (mark before the title, no "crown" word anywhere on the
+page) and 30 reminted ticket goldens whose footer lost `∙ ^o crown`.

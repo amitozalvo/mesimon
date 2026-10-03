@@ -1,7 +1,7 @@
  TICKET (T-1)   mesimon › kanban-tui
 
- Decay treatments
- TODO for >1y ∙ created >1y ago ∙ on coder ∙ ^n next
+ ♛ Decay treatments
+ TODO for >1y ∙ created >1y ago
 
 
   PREVIEW                                                                                  SESSIONS                  0
@@ -17,7 +17,7 @@
 
     enter start agent
 
-    starts on coder ∙ in the checkout
+    starts in the checkout
     types the ticket title into its box, and sends nothing
     another agent is already writing in this checkout
 

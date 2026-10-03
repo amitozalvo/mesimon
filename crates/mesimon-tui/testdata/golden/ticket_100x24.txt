@@ -21,4 +21,4 @@
 
 
 
- enter focus ∙ r rename ∙ d delete ∙ n describe ∙ ^o crown                                   ? keys
+ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys
