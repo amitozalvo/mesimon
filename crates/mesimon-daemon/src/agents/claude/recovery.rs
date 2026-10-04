@@ -23,6 +23,8 @@ pub(super) struct ClaudeRecovery {
     /// Last time a held plan/question was looked for on the tail; `None`
     /// since the cursor was minted, so the first poll looks at once.
     affirmed_at: Option<u64>,
+    /// Whether this `Unknown` spell has been seeded from the resting tail.
+    rested: bool,
 }
 
 /// The transcript's word for a held dialog: the tail event that says THIS
@@ -89,6 +91,7 @@ impl AgentRecovery for ClaudeRecovery {
                         || abort_only(record));
                 if !eligible {
                     self.cursor = None;
+                    self.rested = false;
                 }
                 eligible
             }
@@ -195,9 +198,18 @@ impl ClaudeRecovery {
         };
         let abort_only = abort_only(record);
         let fresh = self.cursor.as_ref().is_none_or(|cursor| cursor.path != path);
+        let unknown = matches!(record.state, SessionState::Unknown { .. });
+        if fresh || !unknown {
+            self.rested = false;
+        }
         // Only an Unknown record may seed low-confidence state from resting
-        // history. Owned live sessions recover explicit current-spell aborts.
-        let backfill = if fresh && matches!(record.state, SessionState::Unknown { .. }) {
+        // history, once per spell. Owned live sessions recover explicit
+        // current-spell aborts. A spell begun on a living cursor is seeded
+        // too: the stale clock demotes a held dialog the tail stopped
+        // showing, and that cursor saw no new line to read (T-649: a card
+        // wore `Unknown`'s turning glyph for good over a finished turn).
+        let backfill = if unknown && !self.rested {
+            self.rested = true;
             resting_hint(&path, now)
         } else if fresh && abort_only {
             record
@@ -230,8 +242,23 @@ impl ClaudeRecovery {
                     && self.affirmed_at.is_none_or(|at| now.saturating_sub(at) >= WAIT_AFFIRM_MS)
                 {
                     self.affirmed_at = Some(now);
-                    if tail::last_event(&path) == Some(TailEvent::NeedsHuman { tool }) {
-                        hints.push((hint, None));
+                    let held = record
+                        .state_changed_at
+                        .is_some_and(|at| now.saturating_sub(at) >= WAIT_AFFIRM_MS);
+                    match tail::last_event(&path) {
+                        Some(TailEvent::NeedsHuman { tool: pending }) if pending == tool => {
+                            hints.push((hint, None));
+                        }
+                        // A minute on, the turn's close is still the last
+                        // word: the lead never called the dialog, whose call
+                        // would be on the tail by now. A frame with no
+                        // `agent_id` from a fork after the turn's `Stop`
+                        // (T-649, mod road) held a finished ticket at
+                        // QUESTION for fifteen minutes.
+                        Some(TailEvent::TurnComplete) if held => {
+                            hints.push((TailHint::TurnComplete, None));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -623,6 +650,67 @@ mod recovery_tests {
         // from a running tool.
         record.state = SessionState::RequiresAction { reason: Reason::Permission };
         assert!(recovery.poll(&record, RecoverySample::Transcript, 300_000).is_empty());
+    }
+
+    /// T-649: a question frame came 2 s after the turn's `Stop`, from no
+    /// call the lead's transcript holds, and the card held QUESTION for
+    /// fifteen minutes and then `Unknown`'s turning glyph for good. A held
+    /// dialog whose tail still ends on the turn's close a minute in reads
+    /// as that close; an `Unknown` the stale clock reached on a living
+    /// cursor is seeded from the resting tail, once.
+    #[test]
+    fn a_dialog_the_tail_never_shows_falls_back_to_the_turns_close() {
+        let history = History::new();
+        history.append(serde_json::json!({"uuid":"reply", "type":"assistant", "message":{
+            "stop_reason":"end_turn", "content":[{"type":"text","text":"Committed."}]}}));
+        history.append(serde_json::json!({"uuid":"hooks", "type":"system", "subtype":"stop_hook_summary"}));
+        history.append(serde_json::json!({"uuid":"end", "type":"system", "subtype":"turn_duration"}));
+        let mut record = record(SessionState::RequiresAction { reason: Reason::Question });
+        record.transcript_path = Some(history.0.display().to_string());
+        let mut recovery = ClaudeRecovery::default();
+        assert!(recovery.needs_poll(&record, RecoveryChannel::Transcript, 1000));
+        assert!(
+            recovery.poll(&record, RecoverySample::Transcript, 1000).is_empty(),
+            "the call may not be written yet"
+        );
+        let closed = recovery.poll(&record, RecoverySample::Transcript, 61_000);
+        assert!(matches!(
+            closed[..],
+            [RecoveryObservation {
+                signal: Signal::TranscriptHint { kind: TailHint::TurnComplete },
+                ..
+            }]
+        ));
+        // The stale clock's demotion, on the cursor already minted.
+        record.state = SessionState::Unknown { reason: UnknownReason::NoSignal };
+        record.state_changed_at = Some(900_000);
+        assert!(recovery.needs_poll(&record, RecoveryChannel::Transcript, 900_000));
+        let seeded = recovery.poll(&record, RecoverySample::Transcript, 900_000);
+        assert!(matches!(
+            seeded[..],
+            [RecoveryObservation {
+                signal: Signal::TranscriptHint { kind: TailHint::TurnComplete },
+                ..
+            }]
+        ));
+        assert!(
+            recovery.poll(&record, RecoverySample::Transcript, 901_000).is_empty(),
+            "once per spell"
+        );
+        // A real question's call is on the tail and is restated, not closed.
+        history.append(serde_json::json!({"uuid":"ask", "type":"assistant", "message":{
+            "stop_reason":"tool_use", "content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{}}]}}));
+        record.state = SessionState::RequiresAction { reason: Reason::Question };
+        record.state_changed_at = Some(1000);
+        let held = recovery.poll(&record, RecoverySample::Transcript, 990_000);
+        assert!(held.iter().all(|o| !matches!(
+            o.signal,
+            Signal::TranscriptHint { kind: TailHint::TurnComplete }
+        )));
+        assert!(held.iter().any(|o| matches!(
+            o.signal,
+            Signal::TranscriptHint { kind: TailHint::AskUserQuestion }
+        )));
     }
 
     #[test]

@@ -20900,3 +20900,21 @@ The Sent list's `Tickets from this browser to your board.` line under the headin
 with its `.list-sub` rule: the heading and its `N sent` count say what the list is. Sent shows no
 search field, as before, so its tools row is the heading alone. Verified with `npm test` in
 `web/mesophon`.
+
+
+## A held dialog the transcript never shows falls back to the turn's close (T-649, 2026-10-05, "T-645 finished but still marked as running")
+
+T-645's turn ended (`Stop`, idle, automove to REVIEW); 2 s later a `PreToolUse` for
+`AskUserQuestion` ("What next for T-645?") arrived on the mod road with no `agent_id`, and a
+`SubagentStop` 4 s after it. No transcript on disk holds that question: it came from a fork
+after the turn, not the lead. The card held QUESTION for fifteen minutes; the stale clock then
+demoted it to `Unknown{NoSignal}`, which wears the turning wait glyph, and it stayed there:
+the transcript cursor was minted while the record held the question, so the `Unknown` seed
+(`resting_hint`, fresh cursors only) never ran. **Two fixes in `agents/claude/recovery.rs`:**
+an `Unknown` spell is seeded from the resting tail once whether or not its cursor is new
+(`ClaudeRecovery::rested`), and the once-a-minute affirm of a held plan or question (T-363) now
+also refutes: past `WAIT_AFFIRM_MS` since the state was entered, a tail whose last event is
+still the turn's close reads as `TailHint::TurnComplete`, since the lead's own dialog call is
+on its tail by then. The grace covers a turn begun by an attachment record, which `last_event`
+skips. Not fixed: which fork sent the frame and why the mod's `tool.call` map gave it no
+`agent_id`; the feed keeps no payload, so the next one is the evidence.
