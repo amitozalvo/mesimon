@@ -383,7 +383,7 @@ function Shell({ store, bp, hidden }) {
       <${Pill} store=${store} />
     </header>
     ${!hidden && html`<p id="connection" role="status" class=${store.status === "Connected" ? "sr-only" : "strip"}>
-      ${store.status !== "Connected" && html`<${LinkIcon} link=${store.link} />`}<span>${store.status}</span></p>`}
+      ${store.status !== "Connected" && html`<${LinkIcon} link=${store.phase === "reconnecting" ? "connecting" : store.link} />`}<span>${store.status}</span></p>`}
     <div class="workspace">
       <${WorkList} store=${store} bp=${bp} />
       ${bp === "desktop" && mode === "board" && store.detailOpen && html`<button type="button" class="detail-scrim" aria-label="Close the ticket" onClick=${() => store.back()}></button>`}

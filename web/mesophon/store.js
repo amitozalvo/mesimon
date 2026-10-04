@@ -1554,7 +1554,7 @@ export class Store {
   // ---- connection callbacks ---------------------------------------------
   async onState(state, message) {
     this.phase = state;
-    if (state === "offline") this.down = true;
+    if (state === "reconnecting") this.down = true;
     this.status = state === "revoked" ? "Removing access…" : message;
     let revocationSaved;
     if (state === "revoked" || state === "unverified") {
@@ -1876,8 +1876,11 @@ export class Store {
     this.foreground();
     if (!document.hidden && this.connection) {
       this.live = false;
-      this.phase = "checking";
-      this.status = "Checking connection… Last received view is stale.";
+      // A retry loop already says what it is doing (T-639).
+      if (this.phase !== "reconnecting") {
+        this.phase = "checking";
+        this.status = "Checking connection… Last received view is stale.";
+      }
       this.sync();
       this.connection.tick();
       this.refresh();

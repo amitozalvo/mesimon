@@ -20708,3 +20708,14 @@ keeps the relay's own clock (`beat`): a ping after 15 s without one sent, and th
 after 45 s without a frame read, which is the writer's `Offline` and a reconnect 5 s later.
 Rust's `Instant` on macOS does not run while the Mac sleeps, so a wake is noticed within 45 s
 of waking, not at once; the relay half needed nothing.
+
+## Remote Control holds one line while it reconnects (T-639, 2026-10-04)
+
+"Show constant reconnecting loading indication. instead of the alternating messages": a
+browser whose terminal was out of reach flipped its connection strip every 3 s between
+"Connecting…" (each attempt) and "Disconnected … Waiting for the host…" (each close). The
+retry loop is now one phase, `reconnecting`, from the first loss (a close or the 10 s silent
+host) to the next welcome: every retry says "Reconnecting… Last received view is stale." with
+the spinner, and a page coming back to the foreground does not overwrite it with "Checking
+connection…". A first connect still says "Connecting…" and pairing "Pairing…". The pill and
+the hero card keep their diagnosis (Offline, Relay unreachable), which never alternated.

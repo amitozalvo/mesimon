@@ -1,5 +1,10 @@
 // Owns only transport, authentication, request correlation and reconnect.
 // A reconnect may query receipts; it never retains or replays request bodies.
+
+// The one line a retry loop shows, from the first loss to the next welcome:
+// a closed socket and the next attempt say the same thing (T-639).
+const RECONNECTING = "Reconnecting… Last received view is stale.";
+
 export class Connection {
   constructor({ Browser, identity, save, onState, onReady, onReply, onLost }) {
     Object.assign(this, {
@@ -52,10 +57,7 @@ export class Connection {
       this.online = false;
       this.relayReached = true;
       this.onLost();
-      this.onState(
-        "offline",
-        "Host not responding. Last received view is stale. Reconnecting…",
-      );
+      this.onState("reconnecting", RECONNECTING);
       this.socket?.close();
     }
   }
@@ -66,10 +68,11 @@ export class Connection {
     this.reached = false;
     const gen = this.generation;
     this.entry = entry;
-    this.onState(
-      "connecting",
-      code ? "Pairing…" : "Connecting… Last received view is stale.",
-    );
+    // A retry (attempt past 0) keeps the loss's word rather than flipping
+    // back to a first connect's.
+    if (code) this.onState("connecting", "Pairing…");
+    else if (attempt) this.onState("reconnecting", RECONNECTING);
+    else this.onState("connecting", "Connecting… Last received view is stale.");
     this.crypto = new this.Browser(this.identity.seed);
     const ws = (this.socket = new WebSocket(
       `${location.origin.replace(/^http/, "ws")}/control`,
@@ -167,12 +170,13 @@ export class Connection {
       this.relayReached = this.reached;
       this.pending.clear();
       this.onLost();
-      this.onState(
-        "offline",
-        "Disconnected. Last received view is stale. Waiting for the host…",
-      );
-      if (entry) this.retry = setTimeout(() => this.connect(entry), 3000);
-      else if (code && attempt < 3)
+      if (entry) {
+        this.onState("reconnecting", RECONNECTING);
+        this.retry = setTimeout(
+          () => this.connect(entry, undefined, attempt + 1),
+          3000,
+        );
+      } else if (code && attempt < 3)
         this.retry = setTimeout(
           () => this.connect(undefined, code, attempt + 1),
           1000,

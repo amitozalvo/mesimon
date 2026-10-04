@@ -651,6 +651,20 @@ async function ticketFlow(browser, engineName, size, viewport) {
       fixture.channel().close();
     });
     await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
+    // The retry loop holds one line and a spinner through a refused retry,
+    // never a "Disconnected" between attempts (T-639).
+    const strip = await page.evaluate(
+      () =>
+        new Promise((done) => {
+          const seen = new Set();
+          const sample = setInterval(() => {
+            const line = document.querySelector("#connection");
+            seen.add(`${line.textContent}|${!!line.querySelector(".spin")}`);
+          }, 50);
+          setTimeout(() => (clearInterval(sample), done([...seen])), 3600);
+        }),
+    );
+    assert.deepEqual(strip, ["Reconnecting… Last received view is stale.|true"]);
     await page.locator("#quick-more").click();
     await sheet.waitFor({ state: "visible" });
     assert.match(await sheet.locator(".compose-dest").textContent(), /waits at the relay/);
@@ -2296,7 +2310,7 @@ try {
             await until(page, () =>
               document
                 .querySelector("#connection")
-                .textContent.includes("Disconnected"),
+                .textContent.includes("Reconnecting"),
             );
             assert(await page.locator("#send").isDisabled());
             await page.evaluate(() => {
