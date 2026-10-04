@@ -1,4 +1,4 @@
- BOARD   mesimon › kanban-tui   6 tickets
+ BOARD   mesimon › kanban-tui   6 tickets ∙ remote
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 

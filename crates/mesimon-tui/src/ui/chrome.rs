@@ -108,6 +108,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         awake.push(Span::raw(" "));
         awake.push(Span::styled(label, style));
     }
+    awake.extend(remote_mark(app));
     // Other screens have no ticket counter; retain their breadcrumb marker.
     if word != "BOARD" {
         spans.append(&mut awake);
@@ -188,6 +189,26 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     // Needs-you lives in the breadcrumb's `!N` (07 §2.2's separate
     // `needs you N` word form superseded by the shared component).
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Remote Control's mark (T-641): ` ∙ remote` while this board is open to
+/// paired browsers, and ` ∙ remote offline` while it is on but the relay is
+/// not reached — a phone cannot see the board then. Off, nothing: the quiet
+/// condition says nothing. It rides beside the awake mark on every screen,
+/// because a board open to a phone is a fact about the board, not about the
+/// page somebody sits on. Grey ramp only: reachable is `base`, unreachable
+/// `dim3`, and `attn` stays needs-you's.
+fn remote_mark(app: &App) -> Vec<Span<'static>> {
+    if !app.control.enabled {
+        return Vec::new();
+    }
+    let theme = &app.theme;
+    let (word, style) = if app.control.connected {
+        ("remote", theme.base())
+    } else {
+        ("remote offline", theme.dim3())
+    };
+    vec![Span::styled(" ∙ ".to_string(), theme.dim3()), Span::styled(word.to_string(), style)]
 }
 
 /// What the branch name keeps of itself while the row is tight: `main` whole,

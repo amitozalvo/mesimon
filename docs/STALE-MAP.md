@@ -20741,3 +20741,21 @@ E2e `merge_train_e2e::a_rebase_turn_open_across_a_restart_still_holds_the_next_a
 lands its git step and keeps its turn; the daemon restarts; B's next hook frame makes it
 running and the train is re-armed; C is not asked across the passes, and is asked once after B
 merges. With the restore disabled, the test fails at the C assertion.
+
+## Remote Control has a mark in the header (T-641, 2026-10-04)
+
+"show remote control indication on terminal ∙ on the board title line": while this board is
+open to paired browsers the header says ` ∙ remote`, and while Remote Control is on but the relay
+is not reached, ` ∙ remote offline` (`chrome::remote_mark`, from `Info.enabled`/`connected`,
+the same two facts the dialog's title spells `CONNECTED`/`DISCONNECTED`). Off, nothing: the quiet
+condition says nothing, as the awake mark's preference does. It sits after the awake mark, so on
+the board it follows the ticket count and on every other screen the breadcrumb — a board a phone
+can prompt is a fact about the board, and a ticket page is a screen somebody sits on (the awake
+mark's own argument). A word, not a glyph: `☕` is the product's only emoji and no one-cell glyph
+says "a phone can reach this" without a legend. Grey ramp only, `base` reachable and `dim3`
+unreachable, never `attn` (`remote_control_mark_is_never_attn` over `Flavor::ALL`). The mark is
+gated on `enabled` alone, not on `mesophon_available`, so a board left open by an earlier build
+still says so. Not focusable, and no key: the Sharing dialog's Remote Control row is where it is changed. TUI only;
+no wire or daemon change. Goldens `board_remote_control_120x30`,
+`board_remote_control_offline_120x30`, and the three `mesophon_*` headers. The older
+`board_remote_120x30` golden (T-335's team screen) is referenced by no test and was left alone.

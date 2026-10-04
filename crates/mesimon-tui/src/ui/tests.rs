@@ -7836,6 +7836,73 @@ fn wake_indicator_is_quiet_and_focus_is_visible() {
     }
 }
 
+/// Remote Control's mark (T-641): nothing while off, `remote` while the
+/// relay carries the board to paired browsers, `remote offline` while it is
+/// on and unreachable — on the board after the ticket count and the awake
+/// mark, and beside the breadcrumb on every other screen.
+#[test]
+fn remote_control_mark_follows_its_state_on_every_screen() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    for screen in [Screen::Board, Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 }] {
+        app.screen = screen;
+        let label = if matches!(app.screen, Screen::Board) { "7 tickets" } else { "kanban-tui" };
+        app.control.enabled = false;
+        app.control.connected = true;
+        let off = render(&app, 120, 30)[0].clone();
+        assert!(!off.contains("remote"), "off: {off}");
+        app.control.enabled = true;
+        let on = render(&app, 120, 30)[0].clone();
+        assert!(on.contains(&format!("{label} ∙ remote")), "on: {on}");
+        assert!(!on.contains("offline"), "on: {on}");
+        app.control.connected = false;
+        let away = render(&app, 120, 30)[0].clone();
+        assert!(away.contains(&format!("{label} ∙ remote offline")), "offline: {away}");
+        app.seed_pref(|p| p.keep_awake = true);
+        app.caffeinated = false;
+        let both = render(&app, 120, 30)[0].clone();
+        assert!(both.contains(&format!("{label} ☾  ∙ remote offline")), "after awake: {both}");
+        app.seed_pref(|p| p.keep_awake = false);
+    }
+}
+
+/// Grey ramp only: reachable reads `base`, unreachable `dim3`, and neither
+/// is ever the attention hue, in any flavor.
+#[test]
+fn remote_control_mark_is_never_attn() {
+    for flavor in Flavor::ALL {
+        let mut app = App::for_test(fixture(false), Theme::new(flavor, Profile::TrueColor));
+        app.control.enabled = true;
+        for connected in [true, false] {
+            app.control.connected = connected;
+            let buf = cells(&app, 120, 30);
+            let x = (0..120u16)
+                .find(|x| {
+                    buf[(*x, 0)].symbol() == "r"
+                        && (1..6).all(|i| {
+                            buf[(*x + i, 0)].symbol() == &"remote"[i as usize..=i as usize]
+                        })
+                })
+                .unwrap();
+            let want = if connected { app.theme.rest.base } else { app.theme.rest.dim3 };
+            assert_eq!(buf[(x, 0)].fg, want, "{flavor:?}, connected={connected}");
+            assert_ne!(buf[(x, 0)].fg, app.theme.attn);
+            assert_ne!(buf[(x, 0)].bg, app.theme.attn);
+        }
+    }
+}
+
+#[test]
+fn golden_remote_control_120() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    app.control.enabled = true;
+    app.control.connected = true;
+    golden("board_remote_control_120x30", &render(&app, 120, 30));
+    app.control.connected = false;
+    golden("board_remote_control_offline_120x30", &render(&app, 120, 30));
+}
+
 /// PTY headroom stays hidden until 80% of the OS cap, then warns.
 #[test]
 fn test_pty_warning_threshold() {
