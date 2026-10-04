@@ -199,7 +199,7 @@ function Title({ store, ticket }) {
     ? "Select a ticket"
     : renames
       ? html`<button id="rename" type="button" class="title-button" aria-describedby="rename-hint"
-          onClick=${() => store.startRename()}><${CrownMark} ticket=${ticket} size=${20} />${ticket.title}<${Icon} name="pencil" size=${16} cls="title-pencil" /></button>`
+          onClick=${() => store.startRename()}><${CrownMark} ticket=${ticket} size=${20} />${ticket.title}</button>`
       : html`<${CrownMark} ticket=${ticket} size=${20} />${ticket.title}`}</h2>
     ${renames && html`<span id="rename-hint" class="sr-only">Rename</span>`}`;
 }

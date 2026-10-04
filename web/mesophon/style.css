@@ -1565,8 +1565,8 @@ select {
   flex-shrink: 0;
   margin-top: 2px;
 }
-/* The title takes a press (T-530): it writes over itself. The pencil shows
-   on hover and focus where there is a pointer, and always on a touch screen. */
+/* The title takes a press (T-530): it writes over itself. No pencil marks it
+   (T-644): a person who wants to rename presses the title. */
 .title-button {
   padding: 0;
   border: 0;
@@ -1581,22 +1581,9 @@ select {
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
 }
-.title-pencil {
-  display: inline-block;
-  margin-left: 8px;
-  vertical-align: -0.05em;
-  color: var(--ink4);
-}
 @media (hover: hover) {
-  .title-pencil {
-    opacity: 0;
-  }
   .title-button:hover {
     background: var(--s1);
-  }
-  .title-button:hover .title-pencil,
-  .title-button:focus-visible .title-pencil {
-    opacity: 1;
   }
 }
 .rename {

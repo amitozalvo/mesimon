@@ -20843,3 +20843,11 @@ than cancelling it as a lost target. Not verified end to end: no e2e drives a pa
 through the daemon (that needs the relay); the wire, the projection and the page are tested
 (`a_phone_is_offered_the_desk_s_tier_ring`, the core wire tests, `ux.test.js`'s `tierFlow`).
 
+
+## Remote Control's ticket title carries no pencil (T-644, 2026-10-04, "Remote control remove pencil icon after title on ticket overlay")
+
+T-530 made the overlay's title the rename button and drew a pencil after it: on hover and focus
+where there is a pointer, always on a touch screen. **Removed**: a person who wants a new title
+presses the title, which is enough to start the edit. The button keeps its hover ground and its screen-reader `Rename` description; the
+`pencil` icon stays for the notepad's Edit. Verified with `npm test` in `web/mesophon` (the unit
+tests and `ux.test.js`'s rename flow on every engine and size).
