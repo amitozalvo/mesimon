@@ -20881,3 +20881,14 @@ marks a recognised shape (`team::looks_like_license_key`) as `✓ a license key`
 reassures, an unrecognised key is still sent, and the relay judges.
 
 **Owed:** a CHANGELOG line at the next release.
+
+
+## Remote Control's Sent feed opens a landed ticket from its bubble (T-645, 2026-10-04, "Remote control sent section remove \"open\"": "Allow to open by clicking on the ticket itself")
+
+A landed ticket's `Landed as T-… in COLUMN` line was a button ending in an underlined `Open`.
+**Removed**: while the ticket is still on the board, the bubble itself (title, description,
+column, tags, time, ticks) is the button and opens the ticket's detail (`store.openSent`); the
+landed line is plain text in every case. A ticket no longer on the board keeps a plain bubble.
+The bubble's lines are spans, since a button holds phrasing content only; its grid lays them out
+as before. Verified with `npm test` in `web/mesophon` (the mailbox flow taps the bubble on every
+engine and size, and asserts no `Open` word is left).

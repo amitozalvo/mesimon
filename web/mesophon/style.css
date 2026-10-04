@@ -2912,6 +2912,14 @@ dialog.compose::backdrop {
   background: var(--s2);
   overflow-wrap: anywhere;
 }
+/* A landed ticket on the board opens from its bubble (T-645). */
+button.sent-bubble {
+  border: 0;
+  text-align: start;
+}
+button.sent-bubble:hover {
+  background: var(--s3);
+}
 .sent-item[data-status="sending"] .sent-bubble {
   opacity: 0.82;
 }
@@ -2964,16 +2972,6 @@ dialog.compose::backdrop {
   color: var(--ink3);
   font-size: 0.8125rem;
   text-align: end;
-}
-button.sent-sys:hover {
-  background: var(--s1);
-  color: var(--ink2);
-}
-.sent-open {
-  color: var(--ink);
-  font-weight: 500;
-  text-decoration: underline;
-  text-underline-offset: 3px;
 }
 .sent-problem {
   max-width: min(88%, 460px);

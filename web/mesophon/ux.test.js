@@ -627,7 +627,9 @@ async function ticketFlow(browser, engineName, size, viewport) {
     assert.match(await page.locator('.sent-item[data-picked="desk"]').textContent(), /Opened at your desk · \d/);
     assert.equal(await page.locator('.sent-item[data-picked="desk"] .sent-tick .tick-picked').count(), 1);
     await shot("sent-picked");
-    await status("landed").first().getByRole("button", { name: /Open/ }).click();
+    // The bubble itself opens the ticket (T-645): no separate Open.
+    assert.doesNotMatch(await status("landed").first().textContent(), /\bOpen\b/);
+    await status("landed").first().locator("button.sent-bubble").click();
     await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-200");
     await overview();
     await mode("board");

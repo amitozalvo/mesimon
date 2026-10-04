@@ -410,22 +410,25 @@ function SentItem({ store, board, item }) {
   const said = saidOf[item.status];
   if (item.status === "withdrawn")
     return html`<p class="sent-gone" data-id=${item.id}>You unsent “<span dir="auto">${item.title}</span>”</p>`;
-  const onBoard = !!item.ticket && board.tickets.some((t) => t.id === item.ticket);
+  // A landed ticket still on the board opens from the bubble itself (T-645).
+  const opens = item.status === "landed" && !!item.ticket && board.tickets.some((t) => t.id === item.ticket);
   const tick = tickFor(item);
   // Still on its way: it can be edited or taken back until the host has it.
   const waiting = item.status === "local" || item.status === "relay";
+  const bubble = html`
+    <span class="sent-title" dir="auto">${item.title}</span>
+    ${item.description && html`<span class="sent-desc" dir="auto">${item.description}</span>`}
+    <span class="sent-meta">
+      <span>→ ${item.column}</span>
+      ${item.tags.map((t) => html`<span class=${`tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}>${t.name}</span>`)}
+      <span>${clock(item.at)}</span>
+      ${tick && html`<span class="sent-tick" title=${item.picked ? "Picked up" : said}><${Tick} state=${tick} /><span class="sr-only">${item.picked ? "Picked up" : said}</span></span>`}
+    </span>`;
   return html`<article class="sent-item" data-status=${item.status} data-picked=${item.picked?.by} data-id=${item.id}
     aria-label=${`${item.title}, ${item.picked ? "picked up" : said}`}>
-    <div class="sent-bubble">
-      <p class="sent-title" dir="auto">${item.title}</p>
-      ${item.description && html`<p class="sent-desc" dir="auto">${item.description}</p>`}
-      <p class="sent-meta">
-        <span>→ ${item.column}</span>
-        ${item.tags.map((t) => html`<span class=${`tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}>${t.name}</span>`)}
-        <span>${clock(item.at)}</span>
-        ${tick && html`<span class="sent-tick" title=${item.picked ? "Picked up" : said}><${Tick} state=${tick} /><span class="sr-only">${item.picked ? "Picked up" : said}</span></span>`}
-      </p>
-    </div>
+    ${opens
+      ? html`<button type="button" class="sent-bubble" onClick=${() => store.openSent(item.id)}>${bubble}</button>`
+      : html`<div class="sent-bubble">${bubble}</div>`}
     ${waiting && html`<div class="sent-waiting" role="group" aria-label=${said}>
       <p>${item.status === "local"
         ? store.link === "nonet"
@@ -437,11 +440,7 @@ function SentItem({ store, board, item }) {
         <button type="button" class="btn btn-quiet" onClick=${() => store.editSent(item.id)}>Edit</button>
       </div>
     </div>`}
-    ${item.status === "landed" &&
-    (onBoard
-      ? html`<button type="button" class="sent-sys" onClick=${() => store.openSent(item.id)}>
-          <${Tick} state="two" /><span>Landed as ${item.key} in ${item.column}</span><span class="sent-open">Open</span></button>`
-      : html`<p class="sent-sys"><${Tick} state="two" /><span>Landed as ${item.key} in ${item.column}</span></p>`)}
+    ${item.status === "landed" && html`<p class="sent-sys"><${Tick} state="two" /><span>Landed as ${item.key} in ${item.column}</span></p>`}
     ${item.picked && html`<p class="sent-sys sent-picked"><${Tick} state="picked" /><span>${pickedLine(item)}</span></p>`}
     ${(item.status === "unknown" || item.status === "rejected") && html`<div class="sent-problem" role="group" aria-label=${said}>
       <p>${item.status === "unknown"
