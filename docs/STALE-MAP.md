@@ -20807,3 +20807,39 @@ which live in `mesimon-relay`; no daemon unit drives `control_workspace` (there 
 fixture for control ops; T-530's were tested the same way).
 
 **Owed:** a CHANGELOG line at the next release, and the relay's `ship.sh` after it merges.
+
+## Remote Control picks the agent tier for a start and a prompt (T-643, 2026-10-04, "remote control add ability to set agenttier ∙ when running ticket / queueing a message like in TUI")
+
+**The wire.** `Request::Start` and `Request::Prompt` gained `tier: Option<String>` (a tier
+id), and `Reply::Board` gained `tiers: Vec<TierOption { id, name, provider, summary }>`,
+`Book::cycle(None)` (`projected_tiers`): the desk's `^n` ring for an empty seat, in its
+order. Each ticket carries `tier` (`Book::of_ticket`, what its next launch runs) and each
+agent `tier` (`launched_tier`, what it runs now). The host says `tiers`, and the page sends a
+pick only to such a host: every side drops a peer on a field it cannot parse
+(`deny_unknown_fields`). The page offers the picker only with two or more choices, and a
+seat holding an agent (awake or parked) only its provider's tiers, the word `provider`
+spells as `Agent::provider` does. A tier never rides Teams; this is the owner's own browser.
+
+**No new power, so no new action.** A pick rides the request it came with, as the desk's
+`PromptSession.tier` rides its ask: it is applied by `apply_ticket_tier` under the start's
+`Action::StartAgent` or the prompt's `PromptExisting`, never as `SetTicketTier`, which stays
+`Mutate` and local. There is no standalone "set tier" from a phone; the ticket asked for the
+two roads the desk's `^n` reaches from a composed ask.
+
+**Start** applies the pick after every refusal and before the seat is read, so an empty seat
+starts on it and a parked one wakes on it; a parked Codex seat refuses a Claude tier in
+`apply_ticket_tier`'s words. **Prompt** applies it after its own refusals, then queues the
+words whenever the pane owes the switch (`tier_owed`), whatever `queued` said: the drain
+delivers through `deliver`, which relaunches an owed idle pane with the words held, the road
+`tier_e2e` covers for the desk. The page forces Queue too, and says `Restarts on <tier> when
+the turn ends, then sends.` A pick equal to the ticket's own is not sent.
+
+**Found on the way: a phone's words that waited for a pane never read `submitted`.**
+`ack_owed`, the one settling site for every owed delivery, now calls `control_submitted`, so
+a relaunch's held words (and a steer parked behind a coming-up composer) settle when the
+agent takes them. A Codex seat parked for its switch has no pane until its runtime stops, so
+`control_delivery_allowed` keeps the phone's receipt while the record is `tier_wake` rather
+than cancelling it as a lost target. Not verified end to end: no e2e drives a paired phone
+through the daemon (that needs the relay); the wire, the projection and the page are tested
+(`a_phone_is_offered_the_desk_s_tier_ring`, the core wire tests, `ux.test.js`'s `tierFlow`).
+

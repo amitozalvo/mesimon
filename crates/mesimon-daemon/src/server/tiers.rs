@@ -97,7 +97,7 @@ impl Daemon {
 
     /// The tier id a record launched on; a record from before tiers ran its
     /// provider's built-in.
-    fn launched_tier(rec: &SessionRecord) -> String {
+    pub(super) fn launched_tier(rec: &SessionRecord) -> String {
         match (rec.tier.is_empty(), rec.kind.provider()) {
             (true, Some(p)) => tier::builtin_id(p).to_string(),
             _ => rec.tier.clone(),

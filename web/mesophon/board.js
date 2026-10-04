@@ -32,6 +32,9 @@ export class BoardState {
     this.defaultColumn = "";
     this.columnDescriptions = {};
     this.allowedTags = [];
+    // The agent tiers a start or a prompt may pick (T-643): live only, as
+    // the pick is, so a remembered board has none.
+    this.tiers = [];
   }
   update(reply, { cached = false, at = Date.now() } = {}) {
     Object.assign(this, {
@@ -41,6 +44,7 @@ export class BoardState {
       defaultColumn: reply.default_column || "",
       columnDescriptions: reply.column_descriptions || {},
       allowedTags: Array.isArray(reply.allowed_tags) ? reply.allowed_tags : [],
+      tiers: Array.isArray(reply.tiers) ? reply.tiers : [],
       cached,
       receivedAt: at,
     });
@@ -87,6 +91,16 @@ export class BoardState {
     const groups = { needs: [], working: [], idle: [] };
     for (const ticket of this.visible()) groups[phase(ticket)].push(ticket);
     return groups;
+  }
+  // The tiers a ticket may pick (T-643), the desk's `^n` ring: a seat that
+  // holds an agent, awake or parked, keeps its provider, so it is offered
+  // that provider's tiers alone.
+  tierRing(ticket) {
+    const provider = ticket?.agent?.provider;
+    return this.tiers.filter((t) => !provider || t.provider === provider);
+  }
+  tierNamed(id) {
+    return this.tiers.find((t) => t.id === id);
   }
   // The column a new ticket starts in: the host's default, else the first.
   landing() {

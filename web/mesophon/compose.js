@@ -152,6 +152,20 @@ export function QuickNew({ store }) {
   </form>`;
 }
 
+// The agent tiers a start may pick (T-643), as the desk's `^n` cycles them:
+// a row of choices like the column's, and the picked one's launch in words.
+function TierChoices({ tiers, picked, onPick }) {
+  if (!tiers.length) return null;
+  const about = tiers.find((t) => t.id === picked)?.summary;
+  return html`<fieldset class="choices">
+    <legend>Agent tier</legend>
+    <div class="choice-row">${tiers.map((tier) => html`<label class="choice" key=${tier.id}>
+      <input type="radio" name="start-tier" value=${tier.id} checked=${tier.id === picked}
+        onChange=${() => onPick(tier.id)} /><span>${tier.name}</span></label>`)}</div>
+    ${about && html`<p class="field-note">${about}</p>`}
+  </fieldset>`;
+}
+
 // The first turn's words (T-510): the desk's Shift+Enter field as a sheet.
 // Blank, an empty seat starts on the ticket's title and description and a
 // parked agent wakes with nothing to say; the host picks the provider.
@@ -168,6 +182,7 @@ export function StartSheet({ store }) {
   if (!ask || !ticket) return html`<dialog id="start-sheet" class="compose" ref=${ref}></dialog>`;
   const asleep = ticket.agent?.state === "sleeping";
   const words = !!ask.text.trim();
+  const tiers = store.tierChoices(ticket);
   return html`<dialog id="start-sheet" class="compose" ref=${ref} aria-labelledby="start-heading"
       onCancel=${(e) => {
         e.preventDefault();
@@ -200,7 +215,8 @@ export function StartSheet({ store }) {
           }}></textarea></label>
         <p class="field-note">${asleep
           ? "Empty wakes it and says nothing, as the board’s wake does."
-          : "Empty starts it on the ticket’s title and details, as the board’s Shift+Enter does. Your terminal picks the provider."}</p>
+          : `Empty starts it on the ticket’s title and details, as the board’s Shift+Enter does.${tiers.length ? "" : " Your terminal picks the provider."}`}</p>
+        <${TierChoices} tiers=${tiers} picked=${ask.tier} onPick=${(tier) => store.setStartTier(tier)} />
       </div>
       <footer class="compose-foot">
         <button id="start-send" type="submit" class="btn btn-pri compose-send">

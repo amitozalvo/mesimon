@@ -2577,6 +2577,21 @@ button.note-row:hover {
   color: var(--ink3);
   font-size: 0.75rem;
 }
+.tier-pick {
+  min-width: 0;
+  display: flex;
+}
+.tier-pick select {
+  max-width: 124px;
+  padding-left: 12px;
+  border: 0;
+  border-radius: 12px;
+  background-color: var(--s2);
+  color: var(--ink2);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
 .mode-help {
   flex: 1;
   min-width: 0;

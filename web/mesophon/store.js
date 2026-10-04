@@ -24,6 +24,10 @@ export const PROMPT_MAX_BYTES = 4096;
 const MAIL_BYTES = 128 * 1024;
 const sentContext = (item) => `sent:${item.id}`;
 const startContext = (ticket) => `start:${ticket}`;
+// The tier a start or a prompt carries (T-643): a pick this ticket may make
+// that is not already its own, and only to a host that takes one.
+const tierPick = (store, ticket, tier) =>
+  tier && tier !== ticket?.tier && store.tierChoices(ticket).some((t) => t.id === tier) ? tier : undefined;
 const noteContext = (item) => `notew:${item.id}`;
 // How often a page opened from the kept copy asks whether the relay is back.
 const PROBE_MS = 5000;
@@ -473,6 +477,16 @@ export class Store {
   get canStart() {
     return this.live && !!this.connection?.features?.includes("start");
   }
+  // Whether the live host takes a tier with a start or a prompt (T-643):
+  // an older one would drop the peer on the field.
+  get picksTiers() {
+    return this.live && !!this.connection?.features?.includes("tiers");
+  }
+  // The tiers this ticket may pick here, or none when there is no choice.
+  tierChoices(ticket) {
+    const ring = this.picksTiers && ticket ? this.board?.tierRing(ticket) || [] : [];
+    return ring.length > 1 ? ring : [];
+  }
   startOf(ticket) {
     return ticket && this.active ? this.starts.get(this.active.pin.board, ticket.id) : undefined;
   }
@@ -486,7 +500,7 @@ export class Store {
   openStart(id) {
     const ticket = this.board?.tickets.find((t) => t.id === id);
     if (!this.startable(ticket) || !this.canStart || startWaiting(this.startOf(ticket))) return;
-    this.startAsk = { ticket: id, text: "" };
+    this.startAsk = { ticket: id, text: "", tier: ticket.tier || "" };
     this.emit();
   }
   closeStart() {
@@ -499,21 +513,31 @@ export class Store {
     this.startAsk.text = text;
     this.emit();
   }
+  setStartTier(tier) {
+    if (!this.startAsk) return;
+    this.startAsk.tier = tier;
+    this.emit();
+  }
   confirmStart() {
     const ask = this.startAsk;
     if (!ask) return;
     this.startAsk = undefined;
-    this.startAgent(ask.ticket, ask.text);
+    this.startAgent(ask.ticket, ask.text, ask.tier);
   }
-  // The host picks the provider; the words ride only when there are any,
-  // so an older host, which knows no `prompt`, still takes a blank start.
-  startAgent(id, text = "") {
+  // The host picks the provider from the ticket's tier; the words ride only
+  // when there are any, so an older host, which knows no `prompt`, still
+  // takes a blank start, and a tier only when it changes the ticket's.
+  startAgent(id, text = "", tier = "") {
     const board = this.active?.pin.board;
     const ticket = this.board?.tickets.find((t) => t.id === id);
     if (!board || !this.startable(ticket) || !this.canStart || startWaiting(this.startOf(ticket))) return;
     const c = this.connection;
     const prompt = text.trim();
-    const command = c.request({ op: "start", ticket: id, ...(prompt ? { prompt } : {}) }, startContext(id));
+    const pick = tierPick(this, ticket, tier);
+    const command = c.request(
+      { op: "start", ticket: id, ...(prompt ? { prompt } : {}), ...(pick ? { tier: pick } : {}) },
+      startContext(id),
+    );
     if (command === undefined) {
       this.say("Not started: the connection dropped. Try again when your terminal is back.");
       this.emit();
@@ -1799,6 +1823,24 @@ export class Store {
     this.entry.mode = mode;
     this.sync();
   }
+  // The composer's tier pick (T-643), the desk ask field's `^n`: it rides
+  // the next prompt, and a pick the agent did not launch on restarts it on
+  // that tier when its turn ends, with the words.
+  setPromptTier(tier) {
+    if (!this.entry) return;
+    this.entry.tier = tier;
+    this.sync();
+  }
+  // The tier the composer shows: its pick, else the ticket's own.
+  promptTier(ticket) {
+    return this.entry?.tier || ticket?.tier || "";
+  }
+  // Whether the next prompt restarts the agent on another tier.
+  switchesTier(ticket) {
+    const pick = this.promptTier(ticket);
+    const agent = ticket?.agent;
+    return !!pick && !!agent?.tier && this.tierChoices(ticket).length > 0 && pick !== agent.tier;
+  }
   queueAction(op) {
     const entry = this.entry;
     const current = this.board?.current;
@@ -1832,14 +1874,21 @@ export class Store {
       this.sync();
       return;
     }
+    const ticket = this.board.current;
+    const pick = tierPick(this, ticket, entry.tier);
     const id = this.connection.request(
-      // Steer is off while the agent waits on you (T-568): the words queue.
+      // Steer is off while the agent waits on you (T-568), and while a tier
+      // switch waits for the turn's end (T-643): the words queue.
       { op: "prompt", ticket: entry.ticket, session: entry.session, text: entry.draft,
-        queued: entry.mode === "queue" || waitsOnYou(agent) },
+        queued: entry.mode === "queue" || waitsOnYou(agent) || this.switchesTier(ticket),
+        ...(pick ? { tier: pick } : {}) },
       entry.key,
     );
-    if (id !== undefined) this.sessions.sent(entry, id, this.connection.incarnation);
-    else entry.delivery = "Delivery unknown. Check the agent before sending again.";
+    if (id !== undefined) {
+      this.sessions.sent(entry, id, this.connection.incarnation);
+      // The pick is the ticket's now; the next board says so.
+      entry.tier = undefined;
+    } else entry.delivery = "Delivery unknown. Check the agent before sending again.";
     this.sync();
   }
 

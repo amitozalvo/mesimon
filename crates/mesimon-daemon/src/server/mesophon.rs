@@ -657,6 +657,8 @@ impl Daemon {
                     "pictures",
                     // The conversation read from its transcript (T-626).
                     "transcript",
+                    // A tier picked for a start or a prompt (T-643).
+                    "tiers",
                     // Tickets for an away host wait at the relay (T-497).
                     if self.control.mail { "mailbox" } else { "" },
                 ]
@@ -821,14 +823,13 @@ impl Daemon {
                     None => return,
                 }
             }
-            api::Request::Prompt { ticket, session, text, queued } => self.control_prompt(
+            api::Request::Prompt { ticket, session, text, queued, tier } => self.control_prompt(
                 &by,
-                grant,
-                device,
-                command.id,
+                (grant, device, command.id),
                 (&ticket, &session),
                 text,
                 queued,
+                tier,
             ),
             api::Request::SendNow { ticket, session } => {
                 self.control_queue_action(&by, &ticket, &session, Some((grant, device, command.id)))
@@ -846,8 +847,8 @@ impl Daemon {
             api::Request::Create { title, description, column, tags } => {
                 self.control_create(&by, title, description, column, &tags, None)
             }
-            api::Request::Start { ticket, prompt } => {
-                self.control_start_agent(&by, (grant, device, command.id), &ticket, prompt)
+            api::Request::Start { ticket, prompt, tier } => {
+                self.control_start_agent(&by, (grant, device, command.id), &ticket, prompt, tier)
             }
             api::Request::Rename { ticket, title } => self.control_rename(&by, &ticket, &title),
             api::Request::Move { ticket, column, before } => {
@@ -1888,6 +1889,7 @@ impl Daemon {
         (grant, device, command): (BoardId, DeviceId, u64),
         ticket: &str,
         prompt: Option<String>,
+        tier: Option<String>,
     ) -> Reply {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
         let Some(id) = ulid::Ulid::from_string(ticket)
@@ -1926,6 +1928,16 @@ impl Daemon {
         }
         if self.worktrees_barred && self.ticket_wants_worktree(id) {
             return reject(&self.barred_message("worktrees"));
+        }
+        // The pick lands on the ticket before the seat is read, as the desk's
+        // `^n` before its Shift+Enter (T-643): an empty seat starts on it and
+        // a parked one wakes on it. A sleeping Codex seat refuses a Claude
+        // tier in `apply_ticket_tier`'s words.
+        if let Some(pick) = tier {
+            if let Err(message) = self.apply_ticket_tier(id, Some(pick)) {
+                return reject(&message);
+            }
+            self.persist_sessions();
         }
         // The words cross the same boundary a desk prompt does: scrubbed,
         // capped and blank-is-none (`sanitize_prompt`).
@@ -2578,7 +2590,10 @@ impl Daemon {
             .map(|t| api::TagOption { group: t.group, name: t.name.clone(), tint: t.tint() })
             .collect();
         allowed_tags.sort_by_key(|t| t.group);
+        let book = self.tier_book();
+        let tiers = projected_tiers(&book);
         let mut reply = Reply::Board {
+            tiers,
             title: self
                 .paths
                 .repo_root
@@ -2610,6 +2625,7 @@ impl Daemon {
                     notes: u32::try_from(t.notes.len()).unwrap_or(u32::MAX),
                     noted: api::notes_stamp(&t.notes),
                     crown: self.board.is_crowned(t.id),
+                    tier: Some(book.of_ticket(t.id).id),
                     crowned: projected_crown_touch(
                         &self.board,
                         self.crown_touches.get(&t.id),
@@ -2648,6 +2664,7 @@ impl Daemon {
         said: Option<String>,
     ) -> api::Agent {
         api::Agent {
+            tier: Some(Self::launched_tier(s)),
             since: s.state_changed_at,
             doing,
             said,
@@ -2856,12 +2873,11 @@ impl Daemon {
     fn control_prompt(
         &mut self,
         by: &Principal,
-        grant: BoardId,
-        device: DeviceId,
-        command: u64,
+        (grant, device, command): (BoardId, DeviceId, u64),
         target: (&str, &str),
         text: String,
         queued: bool,
+        tier: Option<String>,
     ) -> Reply {
         let (ticket, session) = target;
         let Some(id) = self.control_target(ticket, session) else {
@@ -2886,6 +2902,18 @@ impl Daemon {
                 message: "a prompt is already waiting for this session".into(),
             };
         }
+        // The composer's tier pick (T-643) lands first, as the desk ask
+        // field's `^n` does: a pick the pane did not launch on is owed as a
+        // switch, which is a relaunch at idle, so the words queue and ride
+        // it (`deliver` relaunches an owed idle pane instead of pasting).
+        if let Some(pick) = tier {
+            if let Err(message) = self.apply_ticket_tier(ticket, Some(pick)) {
+                return Reply::Rejected { message };
+            }
+            self.persist_sessions();
+            self.broadcast();
+        }
+        let queued = queued || self.tier_owed(id);
         // A steer goes in now, and at a dialog a paste is the dialog's
         // answer (T-568): refused in the board's words, before anything
         // queued is touched. A queued prompt waits for the turn, as the
@@ -3077,10 +3105,15 @@ impl Daemon {
     }
     pub(super) fn control_delivery_allowed(&mut self, id: uuid::Uuid) -> bool {
         if let Some(p) = self.control.pending.get(&id).cloned() {
+            // A Codex seat parked for its tier switch (T-643) has no pane
+            // until its runtime stops and the wake follows: the words wait
+            // as its `Wake` entry, and so does the phone's receipt.
+            let switching = self.board.sessions.iter().any(|s| s.id == id && s.tier_wake);
             if !self.control_granted(p.grant, p.device)
                 || p.send_now_receipt
                     .is_some_and(|(grant, device, _)| !self.control_granted(grant, device))
-                || self.control_target(&p.ticket.to_string(), &id.to_string()) != Some(id)
+                || (!switching
+                    && self.control_target(&p.ticket.to_string(), &id.to_string()) != Some(id))
             {
                 self.control_cancel(id);
                 return false;
@@ -3325,6 +3358,21 @@ fn note_gate<'a>(
         return Err(NoteGate::Description);
     }
     Ok(Some(meta.id))
+}
+
+/// The tiers a phone may pick (T-643): the desk's `^n` ring for an empty
+/// seat, in its order. A seat that holds an agent keeps its provider, so the
+/// page offers it the tiers whose `provider` is the agent's.
+fn projected_tiers(book: &mesimon_core::tier::Book) -> Vec<api::TierOption> {
+    book.cycle(None)
+        .into_iter()
+        .map(|t| api::TierOption {
+            provider: mesimon_core::tier::builtin_id(t.provider).into(),
+            summary: t.summary(),
+            id: t.id,
+            name: t.name,
+        })
+        .collect()
 }
 
 fn projected_tags(board: &Board, t: &Ticket) -> Vec<api::TagOption> {
@@ -5344,6 +5392,41 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
 
     fn agent(ticket: ulid::Ulid, kind: SessionKind, state: SessionState) -> SessionRecord {
         SessionRecord::new(uuid::Uuid::new_v4(), kind, ticket, Vec::new(), "/".into(), state)
+    }
+
+    /// A phone is offered the desk's `^n` ring (T-643): both built-ins while
+    /// nobody made a tier, then the tiers a person made with the default in
+    /// front when it is a built-in, each with its provider's word.
+    #[test]
+    fn a_phone_is_offered_the_desk_s_tier_ring() {
+        use mesimon_core::board::AgentProvider;
+        use mesimon_core::tier::{Book, Effort, MachineTiers, Tier};
+        let mut board = Board::with_default_columns();
+        let machine = MachineTiers::default();
+        let words = |board: &Board| -> Vec<(String, String)> {
+            projected_tiers(&Book::new(&machine, board))
+                .into_iter()
+                .map(|t| (t.name, t.provider))
+                .collect()
+        };
+        assert_eq!(
+            words(&board),
+            [("claude".into(), "claude".into()), ("codex".into(), "codex".into())]
+        );
+        board.tiers.push(Tier {
+            id: "01K".into(),
+            name: "coder".into(),
+            provider: AgentProvider::Codex,
+            model: "gpt-5".into(),
+            effort: Effort::High,
+            description: String::new(),
+        });
+        let tiers = projected_tiers(&Book::new(&machine, &board));
+        assert_eq!(
+            tiers.iter().map(|t| (t.id.as_str(), t.provider.as_str())).collect::<Vec<_>>(),
+            [("claude", "claude"), ("01K", "codex")]
+        );
+        assert_eq!(tiers[1].summary, "Codex ∙ gpt-5 ∙ high");
     }
 
     /// One agent per ticket (T-498): a phone's start finds the seat taken

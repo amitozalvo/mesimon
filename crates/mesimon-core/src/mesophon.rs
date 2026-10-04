@@ -110,6 +110,13 @@ pub enum Request {
         text: String,
         #[serde(default = "queue_by_default")]
         queued: bool,
+        /// The composer's tier pick (T-643), the desk ask field's `^n`: a
+        /// tier id from the board reply's `tiers`, applied to the ticket
+        /// first. A pick the agent did not launch on relaunches it at its
+        /// next idle with the words held, so the words queue whatever
+        /// `queued` said. Sent only to a host that says `tiers`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<String>,
     },
     SendNow {
         ticket: String,
@@ -146,6 +153,12 @@ pub enum Request {
         ticket: String,
         #[serde(default)]
         prompt: Option<String>,
+        /// The tier to start or wake it on (T-643), a tier id from the board
+        /// reply's `tiers`: applied to the ticket first, as the desk's `^n`
+        /// is before its Shift+Enter. Absent, the ticket's own. Sent only to
+        /// a host that says `tiers`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<String>,
     },
     /// Retitle a ticket (T-530): the board's rename from a phone. A blank
     /// title is refused; the host scrubs and caps it as it does the desk's.
@@ -330,6 +343,19 @@ pub struct TagPick {
     pub name: String,
 }
 
+/// One agent tier a phone may pick (T-643), as the desk's `^n` offers it:
+/// `provider` is `claude` or `codex`, the word `Agent::provider` spells, so
+/// a seat that holds an agent is offered its own provider's tiers alone.
+/// `summary` is the launch in words (`Claude Code ∙ opus ∙ high`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TierOption {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+}
+
 /// One tag of the board's vocabulary, as the New ticket sheet offers it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TagOption {
@@ -386,6 +412,10 @@ pub struct Ticket {
     /// settled, and on a board with no repository on the host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<Workspace>,
+    /// The tier id the ticket's next launch runs on (T-643): its pick, or
+    /// the board's default. Absent from an older host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
 }
 
 /// A ticket's workspace as a phone reads it (T-642): the TUI card's
@@ -554,6 +584,10 @@ pub struct Agent {
     /// The first line of the agent's latest reply. Live only, like `doing`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub said: Option<String>,
+    /// The tier id this agent launched on (T-643). Beside a ticket `tier`
+    /// that differs, the agent switches at its next idle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
 }
 
 /// The page a pairing QR opens (T-497): the relay's browser origin with the
@@ -662,6 +696,10 @@ pub enum Reply {
         /// The board's tag vocabulary: every tag a new ticket may wear.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         allowed_tags: Vec<TagOption>,
+        /// The tiers a start or a prompt may pick (T-643), the desk's `^n`
+        /// ring for an empty seat, in its order.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tiers: Vec<TierOption>,
     },
     Preview {
         lines: Vec<String>,
@@ -984,18 +1022,19 @@ mod tests {
             default_column: None,
             column_descriptions: BTreeMap::new(),
             allowed_tags: vec![],
+            tiers: vec![],
         };
         let json = serde_json::to_value(&bare).unwrap();
         assert_eq!(
             json,
             serde_json::json!({"result":"board","title":"b","columns":["TODO"],"tickets":[]})
         );
-        let Reply::Board { default_column, allowed_tags, .. } =
+        let Reply::Board { default_column, allowed_tags, tiers, .. } =
             serde_json::from_value(json).unwrap()
         else {
             panic!("board")
         };
-        assert!(default_column.is_none() && allowed_tags.is_empty());
+        assert!(default_column.is_none() && allowed_tags.is_empty() && tiers.is_empty());
         let created = serde_json::to_value(Reply::Created {
             ticket: "01J".into(),
             key: "T-7".into(),
@@ -1030,6 +1069,7 @@ mod tests {
                 since: None,
                 doing: None,
                 said: None,
+                tier: None,
             }),
             tags: vec![],
             picked: None,
@@ -1038,6 +1078,7 @@ mod tests {
             crown: false,
             crowned: None,
             workspace: None,
+            tier: None,
         };
         let json = serde_json::to_value(&bare).unwrap();
         assert_eq!(
@@ -1059,10 +1100,12 @@ mod tests {
                 ahead: 3,
                 ..Workspace::default()
             }),
+            tier: Some("01K".into()),
             agent: bare.agent.clone().map(|a| Agent {
                 since: Some(1_790_000_000_000),
                 doing: Some("Bash(cargo test)".into()),
                 said: Some("Fixed.".into()),
+                tier: Some("claude".into()),
                 ..a
             }),
             ..bare
@@ -1074,7 +1117,9 @@ mod tests {
         assert!(back.crown);
         assert_eq!(back.crowned, full.crowned);
         assert_eq!(back.workspace, full.workspace);
+        assert_eq!(back.tier.as_deref(), Some("01K"));
         let agent = back.agent.unwrap();
+        assert_eq!(agent.tier.as_deref(), Some("claude"));
         assert_eq!(
             (agent.since, agent.doing.as_deref(), agent.said.as_deref()),
             (Some(1_790_000_000_000), Some("Bash(cargo test)"), Some("Fixed."))
@@ -1120,13 +1165,20 @@ mod tests {
     /// parses: the words are then the ticket's own.
     #[test]
     fn a_start_names_its_ticket_and_at_most_a_prompt() {
-        let Request::Start { ticket, prompt } =
+        let Request::Start { ticket, prompt, tier } =
             serde_json::from_str(r#"{"op":"start","ticket":"01J"}"#).unwrap()
         else {
             panic!("start")
         };
         assert_eq!(ticket, "01J");
-        assert_eq!(prompt, None);
+        assert_eq!((prompt, tier), (None, None));
+        // T-643: a tier the board offers may ride it.
+        let Request::Start { tier, .. } =
+            serde_json::from_str(r#"{"op":"start","ticket":"01J","tier":"coder"}"#).unwrap()
+        else {
+            panic!("start")
+        };
+        assert_eq!(tier.as_deref(), Some("coder"));
         let Request::Start { prompt, .. } =
             serde_json::from_str(r#"{"op":"start","ticket":"01J","prompt":"fix the test"}"#)
                 .unwrap()
@@ -1280,6 +1332,7 @@ mod tests {
             crown: false,
             crowned: None,
             workspace: None,
+            tier: None,
         };
         let json = serde_json::to_value(ticket(Some(Queue::default()))).unwrap();
         assert_eq!((&json["queued"], &json["queue"]), (&"next".into(), &serde_json::json!({})));
@@ -1352,6 +1405,21 @@ mod tests {
             serde_json::from_str::<Request>(request).unwrap(),
             Request::Prompt { queued: false, .. }
         ));
+        // T-643: a tier pick rides the words, and a prompt without one
+        // serializes as an older host reads it.
+        let request = r#"{"op":"prompt","ticket":"t","session":"s","text":"next","tier":"coder"}"#;
+        assert!(matches!(
+            serde_json::from_str::<Request>(request).unwrap(),
+            Request::Prompt { tier: Some(t), .. } if t == "coder"
+        ));
+        let plain = Request::Prompt {
+            ticket: "t".into(),
+            session: "s".into(),
+            text: "next".into(),
+            queued: true,
+            tier: None,
+        };
+        assert!(serde_json::to_value(plain).unwrap().get("tier").is_none());
     }
 }
 

@@ -4206,6 +4206,9 @@ impl Daemon {
         let mut changed = rec.unsent.take().is_some();
         if let Some(owed) = self.drop_owed(id) {
             self.feed.board(owed.ack.by, owed.ack.word, Some(ticket));
+            // A phone's words that waited for this pane (a relaunch onto
+            // its tier pick, T-643, or a composer still coming up) went in.
+            self.control_submitted(id);
             self.late_asks.remove(&ticket);
             if let Some(ask) = owed.asked {
                 self.mark_turn(ticket, ask);

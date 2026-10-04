@@ -1443,6 +1443,119 @@ async function startFlow(browser, engineName, size, viewport) {
   }
 }
 
+// Agent tiers from here (T-643): the start sheet offers every tier for an
+// empty seat and the composer its agent's provider's alone; a pick rides
+// the start or the prompt only when it changes the ticket's, a switch queues
+// the words, and an older host is sent no tier and offered none.
+async function tierFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => {
+    const f = window.fixture;
+    f.features.push("start", "tiers");
+    f.tiers = [
+      { id: "claude", name: "claude", provider: "claude", summary: "Claude Code ∙ its own model" },
+      { id: "01K", name: "coder", provider: "claude", summary: "Claude Code ∙ opus ∙ high" },
+      { id: "01M", name: "quick", provider: "codex", summary: "Codex ∙ gpt-5 ∙ low" },
+    ];
+    for (const t of f.tickets) {
+      t.tier = "claude";
+      if (t.agent) t.agent.tier = t.agent.provider === "codex" ? "codex" : "claude";
+    }
+    const snapshot = f.snapshot.bind(f);
+    f.snapshot = () => ({ ...snapshot(), ...(f.features.includes("tiers") ? { tiers: f.tiers } : {}) });
+  });
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const mode = (name) => page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+  const overview = async () => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+  };
+  const closeOverlay = async () => {
+    if (size === "desktop" && (await page.locator(".detail-scrim").count()))
+      await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
+  };
+  const shot = (name) =>
+    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+  const sheet = page.locator("#start-sheet");
+  const tierInputs = page.locator('#start-sheet input[name="start-tier"]');
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+
+    // An empty seat is offered every tier, its own picked; a pick rides.
+    await mode("board");
+    if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
+    await page.locator('.ticket[data-id="ticket-3"]').click();
+    await page.locator("#detail .start-agent").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.equal(await tierInputs.count(), 3);
+    assert(await tierInputs.nth(0).isChecked(), "the ticket's own tier is picked");
+    assert.match(await sheet.textContent(), /Claude Code ∙ its own model/);
+    await sheet.locator("label.choice", { hasText: "coder" }).click();
+    assert.match(await sheet.textContent(), /Claude Code ∙ opus ∙ high/);
+    assert.doesNotMatch(await sheet.textContent(), /Your terminal picks the provider/);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await shot("tier-start-sheet");
+    await page.locator("#start-send").click();
+    await sheet.waitFor({ state: "hidden" });
+    assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)),
+      { op: "start", ticket: "ticket-3", tier: "01K" });
+
+    // The composer offers the agent's provider's tiers; its own tier rides
+    // nothing, and another one queues the words with the pick.
+    await overview();
+    await closeOverlay();
+    await mode("agents");
+    await page.locator('.ticket[data-id="ticket-0"]').click();
+    const pick = page.locator("#prompt-tier");
+    await pick.waitFor();
+    assert.deepEqual(await pick.locator("option").allTextContents(), ["claude", "coder"]);
+    assert.equal(await pick.inputValue(), "claude");
+    assert(await page.locator("#steer-why").isHidden());
+    await page.locator("#prompt").fill("same tier");
+    await page.locator("#send").click();
+    await until(page, () => fixture.prompts.length === 1);
+    assert.equal(await page.evaluate(() => fixture.prompts[0].tier), undefined);
+    await until(page, () => !document.querySelector("#send").disabled || !document.querySelector("#prompt").value);
+    await pick.selectOption("01K");
+    await until(page, () => !document.querySelector("#steer-why").hidden);
+    assert.match(await page.locator("#steer-why").textContent(), /Restarts on coder when the turn ends/);
+    assert(await page.locator('#prompt-mode input[value="steer"]').isDisabled());
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await shot("tier-composer");
+    await page.locator("#prompt").fill("now on coder");
+    await until(page, () => !document.querySelector("#send").disabled);
+    await page.locator("#send").click();
+    await until(page, () => fixture.prompts.length === 2);
+    const sent = await page.evaluate(() => fixture.prompts[1]);
+    assert.equal(sent.tier, "01K");
+    assert.equal(sent.queued, true);
+
+    // An older host is offered no tier and sent none.
+    await page.evaluate(() => {
+      fixture.features = fixture.features.filter((f) => f !== "tiers");
+      fixture.channel().close();
+    });
+    await until(page, () => document.querySelector("#connection").textContent === "Connected");
+    await until(page, () => !document.querySelector("#prompt-tier"));
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: tiers picked for a start and a prompt, a switch queued, an older host passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-tier-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 // Editing a card from here (T-530): the title written over itself, the
 // line's sheet moving and tagging the ticket a press at a time, a refusal
 // in the sheet's own words, drag and drop where the columns sit side by side,
@@ -3010,6 +3123,7 @@ try {
         }
         await ticketFlow(browser, engineName, size, viewport);
         await startFlow(browser, engineName, size, viewport);
+        await tierFlow(browser, engineName, size, viewport);
         await editFlow(browser, engineName, size, viewport);
         await workspaceFlow(browser, engineName, size, viewport);
         await batchFlow(browser, engineName, size, viewport);

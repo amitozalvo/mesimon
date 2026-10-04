@@ -90,8 +90,12 @@ function Composer({ store, ticket, entry, live }) {
   const acting = entry?.receipt?.waiting && entry.receipt.status !== "queued";
   const queueOff = !live || !agent?.promptable || ticket?.queued == null || !!acting;
   // At a dialog a steer would be its answer (T-568): Steer is off, and the
-  // words queue, until the agent no longer waits on you.
-  const steerOff = waitsOnYou(agent);
+  // words queue, until the agent no longer waits on you. A tier switch
+  // (T-643) restarts the agent at its turn's end, so its words queue too.
+  const tiers = agent ? store.tierChoices(ticket) : [];
+  const pick = store.promptTier(ticket);
+  const switching = !!agent && store.switchesTier(ticket);
+  const steerOff = waitsOnYou(agent) || switching;
   const mode = steerOff ? "queue" : entry?.mode || "queue";
   const sendOff = !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting ||
     !!entry?.answer?.waiting || !entry?.draft.trim();
@@ -142,11 +146,17 @@ function Composer({ store, ticket, entry, live }) {
             <label class=${`${mode === "steer" ? "on" : ""}${steerOff ? " off" : ""}`}><input type="radio" name="prompt-mode" value="steer"
               checked=${mode === "steer"} disabled=${steerOff} onChange=${() => store.setDelivery("steer")} /><${Icon} name="zap" size=${14} /><span>Steer</span></label>
           </fieldset>
+          ${tiers.length > 0 && html`<label class="tier-pick"><span class="sr-only">Agent tier</span>
+            <select id="prompt-tier" value=${pick} onChange=${(e) => store.setPromptTier(e.currentTarget.value)}>
+              ${tiers.map((t) => html`<option key=${t.id} value=${t.id}>${t.name}</option>`)}
+            </select></label>`}
           <p class="mode-help">${mode === "steer" ? "Goes in now, mid-turn." : "Waits for the turn to end."}</p>
           <button id="send" type="submit" class="send" disabled=${sendOff}
             aria-label=${mode === "steer" ? "Send prompt" : "Queue prompt"}><${Icon} name="up" size=${20} width=${2.2} /></button>
         </div>
-        <p id="steer-why" class="steer-why" hidden=${!steerOff}>Steer is off while the agent waits on you · answer it first. Queue still works.</p>
+        <p id="steer-why" class="steer-why" hidden=${!steerOff}>${switching
+          ? `Restarts on ${store.board?.tierNamed(pick)?.name || pick} when the turn ends, then sends.`
+          : "Steer is off while the agent waits on you · answer it first. Queue still works."}</p>
       </div>
       <p id="delivery" role="status" hidden=${ghost || (!tick && !entry?.delivery)}>${tick && html`<${Tick} state=${tick} />`}<span>${entry?.delivery || ""}</span></p>
     </form>

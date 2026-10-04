@@ -123,6 +123,11 @@ out of reach. Its receipt uses the same ticks: a clock while your terminal start
 taken its first prompt. If the answer is lost, the browser asks what became of it and
 never starts it again.
 
+The start sheet lists the board's **agent tiers**, the ones **^n** cycles at your
+terminal, with the ticket's own picked and the picked one's model and effort under them.
+Pick another and the ticket keeps it, as **^n** does, and the agent starts on it. A
+sleeping agent is offered its own provider's tiers only.
+
 Your terminal refuses a start, and the page says why, when the ticket already has an
 agent (a sleeping one included, which you wake at your terminal), when one is already
 starting or a prompt for it is queued at your terminal, and when the ticket came from
@@ -157,6 +162,12 @@ changes. Reconnects never resubmit prompts automatically. If a delivery result
 cannot be recovered, the browser shows **outcome unknown**; check the agent before
 sending again. Prompt text is limited to 4096 UTF-8 bytes, and oversized responses are
 rejected.
+
+Beside **Queue** and **Steer**, a menu picks the agent's **tier**, as **^n** in your
+terminal's ask field does: the agent's own provider's tiers, the ticket's picked. A prompt
+sent on another tier changes the ticket's tier, and your terminal restarts the agent on it
+when its turn ends, the same conversation resumed, with your words as the first thing it
+reads. Steer is off while a switch waits, and the line under the composer says so.
 
 **Queue** waits for the agent's turn to end; **Steer** goes in now. A ticket holds
 one set of queued words, from the browser, your terminal or the crowned agent. The
