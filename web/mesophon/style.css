@@ -2690,10 +2690,6 @@ button.note-row:hover {
   background: var(--s3);
   color: var(--ink);
 }
-.list-sub {
-  color: var(--ink3);
-  font-size: 0.875rem;
-}
 
 /* the sheet: centred on a wide screen, from the bottom on a phone */
 dialog.compose {

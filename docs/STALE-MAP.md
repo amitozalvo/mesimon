@@ -20892,3 +20892,11 @@ landed line is plain text in every case. A ticket no longer on the board keeps a
 The bubble's lines are spans, since a button holds phrasing content only; its grid lays them out
 as before. Verified with `npm test` in `web/mesophon` (the mailbox flow taps the bubble on every
 engine and size, and asserts no `Open` word is left).
+
+
+## Remote Control's Sent heading carries no subtitle (T-646, 2026-10-04, "Remote control remove \"tickets from this browser to your terminal\"")
+
+The Sent list's `Tickets from this browser to your board.` line under the heading is **removed**,
+with its `.list-sub` rule: the heading and its `N sent` count say what the list is. Sent shows no
+search field, as before, so its tools row is the heading alone. Verified with `npm test` in
+`web/mesophon`.

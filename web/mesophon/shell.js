@@ -341,9 +341,7 @@ function WorkList({ store, bp }) {
         ${board?.cached && html`<span class="chip chip-quiet">As of ${lastSeen(board)}</span>`}
         ${bp !== "phone" && html`<${NewTicketButton} store=${store} board=${board} id="new-ticket" cls="btn btn-pri new-ticket" />`}
       </div>
-      ${mode === "sent"
-        ? html`<p class="list-sub">Tickets from this browser to your board.</p>`
-        : html`<label class="search"><${Icon} name="search" size=${16} /><span class="sr-only">Find a ticket</span>
+      ${mode !== "sent" && html`<label class="search"><${Icon} name="search" size=${16} /><span class="sr-only">Find a ticket</span>
             <input id="search" type="search" placeholder="Find a ticket…" value=${board?.search || ""}
               onInput=${(e) => store.setSearch(e.currentTarget.value)} /></label>`}
       ${mode === "board" && bp === "phone" && board && html`<${ColumnTabs} store=${store} board=${board} />`}
