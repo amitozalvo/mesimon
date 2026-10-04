@@ -20918,3 +20918,9 @@ still the turn's close reads as `TailHint::TurnComplete`, since the lead's own d
 on its tail by then. The grace covers a turn begun by an attachment record, which `last_event`
 skips. Not fixed: which fork sent the frame and why the mod's `tool.call` map gave it no
 `agent_id`; the feed keeps no payload, so the next one is the evidence.
+
+## mesimon.dev is about mesimon, not its author (T-648, 2026-10-05, "remove \"amit ozalvo writes it in israel\"")
+
+The About section no longer says who writes mesimon or where, and neither footer says "Made in
+Israel"; both keep the copyright line. This supersedes that part of T-520: the page is about the
+product, and nothing on it should be there that a reader does not need.
