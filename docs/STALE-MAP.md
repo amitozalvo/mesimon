@@ -20851,3 +20851,33 @@ where there is a pointer, always on a touch screen. **Removed**: a person who wa
 presses the title, which is enough to start the edit. The button keeps its hover ground and its screen-reader `Rename` description; the
 `pencil` icon stays for the notepad's Edit. Verified with `npm test` in `web/mesophon` (the unit
 tests and `ux.test.js`'s rename flow on every engine and size).
+
+
+## The license key dialog: fewer sharing rows, the checkout one key away (T-647, 2026-10-04, "about the sharing setting")
+
+**Shipped.** The sharing dialog lost a row on each side. Signed out, the YOU section is `Relay`,
+`Display name` and `Sign in`; the `Access code` row is gone. `Sign in` on the hosted relay
+(`team::is_hosted`), or on any relay that answered `CodeRequired`, opens a small `LICENSE KEY`
+dialog with the cursor already in its field, the draft key in it; Enter there signs in with the
+key and gives way to the `Signing in…` row. A self-hosted relay that never asked signs in at
+once. Signed in, `Enter a code` is gone: `Signed in as …` opens the same dialog, now holding
+`New license key` (sent as `RedeemCode`, its answer read on the row), and `Sign out`, which
+moved there and still asks once ("shared boards stop syncing on this machine"). A lapse reads
+on `Signed in as …` itself ("enter for a new license key"), so no row is needed to find the way.
+`Get a license key` sits under the field when the relay is the hosted one and opens
+`team::CHECKOUT_URL` through the opener (copies it with none). `App::key_dialog` is the
+sub-dialog, `mesophon_dialog`'s pattern: same `Mode::Sharing`, same scope, Esc back to the row
+that opened it.
+
+**Every code a person sees is a license key.** The field, the wire's three error texts
+(`CodeRequired`, `CodeInvalid`, `GrantLapsed`, Display only, no wire change), the daemon's length
+refusal, Remote Control's lapse line and `docs/REMOTE-CONTROL.md` say "license key"; no surface
+says a friend's code. Inside, the field is still `access_code`.
+
+**Refuted: a fixed mask for the field.** A relay-minted key is `MSMN-XXXX-XXXX-XXXX-XXXX` and the
+merchant's is `<PREFIX>-<UUID>`, its prefix set at Polar and written nowhere here, so no one
+template holds both. The empty field shows a dimmed placeholder instead, and the detail line
+marks a recognised shape (`team::looks_like_license_key`) as `✓ a license key`; it only ever
+reassures, an unrecognised key is still sent, and the relay judges.
+
+**Owed:** a CHANGELOG line at the next release.

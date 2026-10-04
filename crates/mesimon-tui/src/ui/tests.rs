@@ -948,8 +948,8 @@ fn golden_agent_prompt_editing_120() {
 
 /// The sharing dialog signed out (T-334, one dialog since T-335): the YOU
 /// section alone — the relay prefilled with the hosted address (T-514), the
-/// name and code unset and `Sign in` saying what it needs — with `SHARING`
-/// in the frame's top edge.
+/// name unset and `Sign in` saying what it needs — with `SHARING` in the
+/// frame's top edge.
 #[test]
 fn golden_sharing_signed_out_120() {
     let mut app = app_graphite(fixture_archived());
@@ -969,6 +969,39 @@ fn golden_sharing_editing_120() {
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
     assert!(matches!(app.mode, Mode::Sharing { editing: Some(_), .. }), "{:?}", app.mode);
     golden("sharing_editing_120x30", &render(&app, 120, 30));
+}
+
+/// `Sign in` on the hosted relay (T-647): the license key dialog, the
+/// cursor already in its empty field, the placeholder dimmed after it,
+/// and the checkout under it.
+#[test]
+fn golden_license_key_signing_in_120() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture_archived());
+    app.team_name_draft = "Dana".into();
+    let sign_in = app.sharing_rows().iter().position(|r| *r == SharingRow::SignIn).expect("row");
+    app.mode = Mode::Sharing { idx: sign_in, editing: None, armed: false };
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
+    assert!(app.key_dialog);
+    golden("license_key_signing_in_120x30", &render(&app, 120, 30));
+}
+
+/// Signed in on the hosted relay, `Signed in as …` opened (T-647): the new
+/// key, the checkout and the sign-out, armed, saying what it costs.
+#[test]
+fn golden_license_key_signed_in_120() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture_archived());
+    let mut device = crate::app::shared_team_fixture().device.expect("device");
+    device.relay = mesimon_core::team::HOSTED_RELAY.into();
+    app.team.device = Some(device);
+    app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("open");
+    assert!(app.key_dialog);
+    app.mode = Mode::Sharing { idx: 2, editing: None, armed: false };
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("arm");
+    assert!(matches!(app.mode, Mode::Sharing { armed: true, .. }), "{:?}", app.mode);
+    golden("license_key_signed_in_120x30", &render(&app, 120, 30));
 }
 
 /// Signed in, the board not yet published: the identity as one row, then

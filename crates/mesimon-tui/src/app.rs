@@ -281,13 +281,19 @@ pub enum SharingRow {
     Relay,
     /// The display name — the same.
     Name,
-    /// An access code for the relay (T-515) — the same; signed out only.
-    AccessCode,
+    /// `Sign in`: on a relay that wants a license key, Enter opens the
+    /// license key dialog first (T-647).
     SignIn,
+    /// `Signed in as …`: Enter opens the license key dialog, where the new
+    /// key and the sign-out are (T-647).
+    Account,
+    /// The license key dialog's field (T-515, T-647): signed out, the key
+    /// the sign-in carries; signed in, a new one, sent as `RedeemCode`.
+    LicenseKey,
+    /// `Get a license key`: the checkout, on the hosted relay only.
+    GetKey,
+    /// The license key dialog's sign-out, two presses.
     SignOut,
-    /// `Enter a code` while signed in (T-515): a renewal, or a friend's
-    /// code on a machine the relay knew before its gate.
-    Redeem,
     RemoteControl,
     ControlEnable,
     ControlDisable,
@@ -1444,6 +1450,9 @@ pub struct App {
     pub team: mesimon_core::team::TeamInfo,
     pub control: mesimon_core::mesophon::Info,
     pub mesophon_dialog: bool,
+    /// The license key dialog (T-647), one level under the sharing dialog's
+    /// `Sign in` or `Signed in as …`: `sharing_rows` is its rows while set.
+    pub key_dialog: bool,
     pub mesophon_available: bool,
     pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
@@ -1857,6 +1866,7 @@ impl App {
             team: snap.team,
             control: snap.mesophon,
             mesophon_dialog: false,
+            key_dialog: false,
             mesophon_available: false,
             theme,
             resume_refused: None,
@@ -5951,6 +5961,7 @@ impl App {
             // while there is no identity, this board's first row otherwise.
             Verb::Sharing | Verb::Mesophon => {
                 self.mesophon_dialog = verb == Verb::Mesophon;
+                self.key_dialog = false;
                 let rows = self.sharing_rows();
                 let signed = self.team.device.as_ref().is_some_and(|d| d.registered);
                 let idx = if signed {
@@ -7130,7 +7141,16 @@ impl App {
             }
             Scope::Sharing => {
                 self.join_watch = None;
-                if self.mesophon_dialog {
+                if self.key_dialog {
+                    // Back onto the row that opened it.
+                    self.key_dialog = false;
+                    let idx = self
+                        .sharing_rows()
+                        .iter()
+                        .position(|row| matches!(row, SharingRow::SignIn | SharingRow::Account))
+                        .unwrap_or(0);
+                    self.mode = Mode::Sharing { idx, editing: None, armed: false };
+                } else if self.mesophon_dialog {
                     self.mesophon_dialog = false;
                     let idx = self
                         .sharing_rows()
@@ -7607,8 +7627,23 @@ impl App {
                 match self.sharing_rows().get(idx) {
                     Some(SharingRow::Relay) => self.team_relay_draft = text,
                     Some(SharingRow::Name) => self.team_name_draft = text,
-                    Some(SharingRow::AccessCode) => self.team_code_draft = text,
-                    Some(SharingRow::Redeem) if !text.is_empty() => {
+                    // Signed out, the key is the sign-in's last word: it
+                    // goes with it, and the dialog gives way to the row that
+                    // reads `Signing in…`.
+                    Some(SharingRow::LicenseKey) if !self.team_signed_in() => {
+                        self.team_code_draft = text;
+                        if !self.team_code_draft.is_empty() {
+                            self.key_dialog = false;
+                            let idx = self
+                                .sharing_rows()
+                                .iter()
+                                .position(|r| *r == SharingRow::SignIn)
+                                .unwrap_or(0);
+                            self.mode = Mode::Sharing { idx, editing: None, armed: false };
+                            self.team_sign_in()?;
+                        }
+                    }
+                    Some(SharingRow::LicenseKey) if !text.is_empty() => {
                         self.send(Command::RedeemCode { code: text })?;
                     }
                     Some(SharingRow::Join) if !text.is_empty() => {
@@ -7637,19 +7672,34 @@ impl App {
     /// belongs to, behind the way onto one more. Remote Control's own
     /// dialog is this board's rows alone: who you are is the parent's.
     pub fn sharing_rows(&self) -> Vec<SharingRow> {
-        let signed = self.team.device.as_ref().is_some_and(|d| d.registered);
+        let signed = self.team_signed_in();
+        if self.key_dialog {
+            // The license key dialog (T-647): the field, the checkout where
+            // the relay is the hosted one, and signed in, the way out.
+            let relay = match self.team.device.as_ref().filter(|_| signed) {
+                Some(d) => d.relay.as_str(),
+                None => self.team_relay_draft.as_str(),
+            };
+            let mut rows = vec![SharingRow::LicenseKey];
+            if mesimon_core::team::is_hosted(relay) {
+                rows.push(SharingRow::GetKey);
+            }
+            if signed {
+                rows.push(SharingRow::SignOut);
+            }
+            return rows;
+        }
         if !signed {
             return vec![
                 SharingRow::Heading("YOU"),
                 SharingRow::Relay,
                 SharingRow::Name,
-                SharingRow::AccessCode,
                 SharingRow::SignIn,
             ];
         }
         let mut rows = Vec::new();
         if !self.mesophon_dialog {
-            rows.extend([SharingRow::Heading("YOU"), SharingRow::SignOut, SharingRow::Redeem]);
+            rows.extend([SharingRow::Heading("YOU"), SharingRow::Account]);
         }
         rows.push(SharingRow::Heading("THIS BOARD"));
         if self.mesophon_dialog {
@@ -7707,6 +7757,27 @@ impl App {
         rows
     }
 
+    /// Whether the relay admitted this device: the sharing dialog's fork
+    /// between signing in and everything else.
+    fn team_signed_in(&self) -> bool {
+        self.team.device.as_ref().is_some_and(|d| d.registered)
+    }
+
+    /// Whether `Sign in` asks for a license key first (T-647): the hosted
+    /// relay always wants one, any other only once it said so.
+    fn sign_in_wants_key(&self) -> bool {
+        self.team.code_required || mesimon_core::team::is_hosted(&self.team_relay_draft)
+    }
+
+    /// `Sign in` with the drafts as they stand; the key goes when one is set.
+    fn team_sign_in(&mut self) -> Result<()> {
+        let (relay, display_name) = (self.team_relay_draft.clone(), self.team_name_draft.clone());
+        let code = (!self.team_code_draft.is_empty()).then(|| self.team_code_draft.clone());
+        // No status line: the row itself reads `Signing in…` and then the
+        // identity, off the snapshot.
+        self.send(Command::TeamSignIn { relay, display_name, code })
+    }
+
     /// A row's label, its detail, and the word Enter's hint wears there —
     /// empty where the row is only read, which is also what makes Enter
     /// inert on it (`Ctx::sharing_enter_word`).
@@ -7723,7 +7794,6 @@ impl App {
             .map(|d| format!("{} on {}", d.display_name, d.relay))
             .unwrap_or_default();
         let drafts_missing = self.team_relay_draft.is_empty() || self.team_name_draft.is_empty();
-        let code_missing = self.team.code_required && self.team_code_draft.is_empty();
         match row {
             SharingRow::RemoteControl => (
                 "Remote Control".into(),
@@ -7801,71 +7871,95 @@ impl App {
                 },
                 "edit",
             ),
-            SharingRow::AccessCode => (
-                if self.team_code_draft.is_empty() {
-                    "Access code: not set".into()
-                } else {
-                    "Access code: set".into()
-                },
-                if editing {
-                    "a friend's code or a license key ∙ paste it whole".into()
-                } else if self.team.code_required {
-                    "this relay signs in with one ∙ enter edits".into()
-                } else {
-                    "needed on the hosted relay, optional elsewhere ∙ enter edits".into()
-                },
-                "edit",
-            ),
             SharingRow::SignIn if busy == "signing in" => {
                 ("Signing in…".into(), "the relay is registering this machine".into(), "")
             }
             SharingRow::SignIn => {
                 // The failure comes first: a row offering a retry has to say
                 // what it is retrying.
-                let detail = if error.starts_with("signing in") && !code_missing {
+                let detail = if error.starts_with("signing in") {
                     format!("{error} ∙ enter tries again")
                 } else if drafts_missing {
                     "needs the relay and a display name above".into()
-                } else if code_missing {
-                    "needs the access code above".into()
+                } else if self.sign_in_wants_key() {
+                    "asks for your license key ∙ the relay learns your name and public key".into()
                 } else {
                     "mints a device key on this machine ∙ the relay learns your name and public key"
                         .into()
                 };
-                let word = if drafts_missing || code_missing { "" } else { "sign in" };
-                ("Sign in".into(), detail, word)
+                ("Sign in".into(), detail, if drafts_missing { "" } else { "sign in" })
             }
-            SharingRow::Redeem if busy == "redeeming" => {
-                ("Redeeming…".into(), "the relay is checking the code".into(), "")
-            }
-            SharingRow::Redeem => (
-                "Enter a code".into(),
-                if editing {
-                    "a friend's code or a license key ∙ paste it whole".into()
-                } else if error.starts_with("redeeming") {
-                    format!("{error} ∙ enter tries again")
-                } else if self.team.granted {
-                    "code accepted ∙ this machine's access is extended".into()
-                } else if self.team.lapsed {
-                    "your access lapsed: shared boards are read-only until a code lands ∙ enter edits"
-                        .into()
-                } else {
-                    "a friend's code or a license key ∙ extends this machine's access".into()
-                },
-                "edit",
-            ),
-            SharingRow::SignOut if armed => (
-                "Sign out?".into(),
-                "this machine forgets its key and shared boards stop syncing ∙ enter again".into(),
-                "sign out",
-            ),
-            SharingRow::SignOut => (
+            SharingRow::Account => (
                 if identity.is_empty() {
                     "Signed in".into()
                 } else {
                     format!("Signed in as {identity}")
                 },
-                "your key stays on this machine ∙ enter asks once more to sign out".into(),
+                if busy == "redeeming" {
+                    "the relay is checking the license key".into()
+                } else if self.team.lapsed {
+                    "access lapsed: shared boards are read-only ∙ enter for a new license key".into()
+                } else {
+                    "license key and sign out ∙ enter opens".into()
+                },
+                "open",
+            ),
+            SharingRow::LicenseKey if busy == "redeeming" => {
+                ("Checking…".into(), "the relay is checking the license key".into(), "")
+            }
+            SharingRow::LicenseKey => {
+                let signed = self.team_signed_in();
+                let label = if signed {
+                    "New license key".into()
+                } else if self.team_code_draft.is_empty() {
+                    "License key: not set".into()
+                } else {
+                    // Never the key itself: a screen may be recorded.
+                    "License key: set".into()
+                };
+                let then = if signed { "enter sends it" } else { "enter signs in" };
+                let detail = match &self.mode {
+                    Mode::Sharing { editing: Some(buf), .. } => {
+                        if mesimon_core::team::looks_like_license_key(buf.as_str()) {
+                            let mark = crate::glyphs::merged_mark(self.theme.glyph_tier());
+                            format!("{mark} a license key ∙ {then}")
+                        } else {
+                            format!("paste it whole ∙ {then}")
+                        }
+                    }
+                    _ if signed && error.starts_with("redeeming") => {
+                        format!("{error} ∙ enter tries again")
+                    }
+                    _ if signed && self.team.granted => {
+                        "license key accepted ∙ this machine's access is extended".into()
+                    }
+                    _ if signed && self.team.lapsed => {
+                        "access lapsed: shared boards are read-only until a key lands ∙ enter edits"
+                            .into()
+                    }
+                    _ if signed => "extends this machine's access ∙ enter edits".into(),
+                    _ => "this relay signs in with one ∙ enter edits".into(),
+                };
+                (label, detail, "edit")
+            }
+            SharingRow::GetKey if self.opener.is_some() => (
+                "Get a license key".into(),
+                "opens mesimon.dev/relay in your browser".into(),
+                "open",
+            ),
+            SharingRow::GetKey => (
+                "Get a license key".into(),
+                "copies mesimon.dev/relay for your browser".into(),
+                "copy",
+            ),
+            SharingRow::SignOut if armed => (
+                "Sign out?".into(),
+                "shared boards stop syncing on this machine ∙ enter again".into(),
+                "sign out",
+            ),
+            SharingRow::SignOut => (
+                "Sign out".into(),
+                "this machine forgets its device key ∙ enter asks once more".into(),
                 "sign out",
             ),
             SharingRow::Publish if busy == "sharing" => {
@@ -8075,31 +8169,45 @@ impl App {
                 );
                 Ok(())
             }
-            SharingRow::AccessCode => {
-                open(
-                    self,
-                    EditBuffer::from_text(self.team_code_draft.clone(), ACCESS_CODE_MAX_BYTES),
-                );
+            SharingRow::LicenseKey => {
+                let text =
+                    if self.team_signed_in() { String::new() } else { self.team_code_draft.clone() };
+                open(self, EditBuffer::from_text(text, ACCESS_CODE_MAX_BYTES));
                 Ok(())
             }
-            SharingRow::Redeem => {
-                open(self, EditBuffer::new(ACCESS_CODE_MAX_BYTES));
+            SharingRow::GetKey => {
+                let url = mesimon_core::team::CHECKOUT_URL;
+                if self.opener.is_some() {
+                    self.open_outside(url.into());
+                } else {
+                    self.status = crate::clipboard::copy_status("license page", url);
+                }
+                Ok(())
+            }
+            // The license key dialog, opened on its field: signed out it is
+            // the sign-in's next step, so the cursor is already in the box;
+            // signed in it may be a visit to sign out, so it is not.
+            SharingRow::Account => {
+                self.key_dialog = true;
+                self.mode = Mode::Sharing { idx: 0, editing: None, armed: false };
+                Ok(())
+            }
+            SharingRow::SignIn if self.sign_in_wants_key() => {
+                self.key_dialog = true;
+                let buf = EditBuffer::from_text(self.team_code_draft.clone(), ACCESS_CODE_MAX_BYTES);
+                self.mode = Mode::Sharing { idx: 0, editing: Some(buf), armed: false };
                 Ok(())
             }
             SharingRow::Join => {
                 open(self, EditBuffer::new(JOIN_CODE_MAX_BYTES));
                 Ok(())
             }
-            SharingRow::SignIn => {
-                let (relay, display_name) =
-                    (self.team_relay_draft.clone(), self.team_name_draft.clone());
-                let code = (!self.team_code_draft.is_empty()).then(|| self.team_code_draft.clone());
-                // No status line: the row itself reads `Signing in…` and
-                // then the identity, off the snapshot.
-                self.send(Command::TeamSignIn { relay, display_name, code })
-            }
+            SharingRow::SignIn => self.team_sign_in(),
+            // Out of the license key dialog with the identity: the sharing
+            // dialog's signed-out rows, on the relay.
             SharingRow::SignOut if armed => {
-                self.mode = Mode::Sharing { idx, editing: None, armed: false };
+                self.key_dialog = false;
+                self.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
                 self.send(Command::TeamSignOut)
             }
             SharingRow::Publish => self.send(Command::ShareBoard { notes: true }),
@@ -14868,7 +14976,6 @@ mod tests {
                 SharingRow::Heading("YOU"),
                 SharingRow::Relay,
                 SharingRow::Name,
-                SharingRow::AccessCode,
                 SharingRow::SignIn
             ]
         );
@@ -14894,11 +15001,9 @@ mod tests {
         // No name yet: the sign-in row has no word, so Enter is inert.
         press(&mut app, 'j');
         press(&mut app, 'j');
-        press(&mut app, 'j');
         assert_eq!(app.ctx().sharing_enter_word, "");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!signed_in(&sent));
-        press(&mut app, 'k');
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "Dana".chars() {
@@ -14906,15 +15011,16 @@ mod tests {
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         press(&mut app, 'j');
-        press(&mut app, 'j');
         assert_eq!(app.ctx().sharing_enter_word, "sign in");
+        // A self-hosted relay that never asked for a key signs in at once.
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.key_dialog);
         assert!(
             sent.borrow().iter().any(|s| s.contains("TeamSignIn")
                 && s.contains("relay.example")
                 && s.contains("Dana")
                 && s.contains("code: None")),
-            "a sign-in with the code field empty carries none: {:?}",
+            "a sign-in with no key carries none: {:?}",
             sent.borrow()
         );
         // `k` off the top row stays on it, never onto the heading above.
@@ -14951,50 +15057,72 @@ mod tests {
         assert!(buf.as_str().starts_with("rebase please"));
     }
 
-    /// The access code (T-515): a field beside the relay and the name while
-    /// signed out, sent with the sign-in when set; the relay's refusal for
-    /// want of one holds `Sign in` until the field is filled; and signed
-    /// in, `Enter a code` is a field whose text goes as `RedeemCode`.
+    /// The license key dialog (T-515, T-647). Signed out on the hosted
+    /// relay, `Sign in` opens it with the cursor in the field, and the key
+    /// goes with the sign-in; the checkout is offered there and nowhere a
+    /// self-hosted relay is. Signed in, `Signed in as …` opens it, and the
+    /// field's text goes as `RedeemCode`. Esc goes back to the row.
     #[test]
-    fn an_access_code_rides_the_sign_in_and_redeems_later() {
+    fn the_license_key_dialog_signs_in_and_redeems() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
-        app.team_relay_draft = "relay.example".into();
         app.team_name_draft = "Dana".into();
-        app.team.code_required = true;
-        app.team.error = Some("signing in: this relay needs an access code".into());
-        let code = app.sharing_rows().iter().position(|r| *r == SharingRow::AccessCode).unwrap();
-        let (label, detail, word) = app.sharing_words(&SharingRow::AccessCode, false);
-        assert_eq!((label.as_str(), word), ("Access code: not set", "edit"));
-        assert!(detail.contains("signs in with one"), "{detail}");
+        let sign_in = app.sharing_rows().iter().position(|r| *r == SharingRow::SignIn).unwrap();
         let (_, detail, word) = app.sharing_words(&SharingRow::SignIn, false);
-        assert_eq!((detail.as_str(), word), ("needs the access code above", ""));
-        app.mode = Mode::Sharing { idx: code, editing: None, armed: false };
+        assert_eq!(word, "sign in");
+        assert!(detail.starts_with("asks for your license key"), "{detail}");
+        app.mode = Mode::Sharing { idx: sign_in, editing: None, armed: false };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.scope(), Scope::Input);
+        assert!(app.key_dialog);
+        assert_eq!(app.sharing_rows(), [SharingRow::LicenseKey, SharingRow::GetKey]);
+        assert_eq!(app.scope(), Scope::Input, "the cursor is already in the field");
+        assert!(!sent.borrow().iter().any(|s| s.contains("TeamSignIn")));
+        let detail = app.sharing_words(&SharingRow::LicenseKey, false).1;
+        assert_eq!(detail, "paste it whole ∙ enter signs in");
         assert!(app.on_paste("MSMN-7A3K-M9Q2-XB4D-H8FN").unwrap());
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.team_code_draft, "MSMN-7A3K-M9Q2-XB4D-H8FN");
-        assert_eq!(app.sharing_words(&SharingRow::AccessCode, false).0, "Access code: set");
-        assert_eq!(app.sharing_words(&SharingRow::SignIn, false).2, "sign in");
-        press(&mut app, 'j');
+        let detail = app.sharing_words(&SharingRow::LicenseKey, false).1;
+        assert!(detail.ends_with("a license key ∙ enter signs in"), "{detail}");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
             sent.borrow().iter().any(|s| s.contains("TeamSignIn") && s.contains("MSMN-7A3K")),
             "{:?}",
             sent.borrow()
         );
-        // Signed in: the code row sits under the identity and sends on Enter.
+        assert!(!app.key_dialog);
+        assert_eq!(app.mode, Mode::Sharing { idx: sign_in, editing: None, armed: false });
+        // A refusal reads under `Sign in`, and Enter opens the dialog again
+        // on the key as typed, never shown on the row.
+        app.team.error = Some("signing in: that license key is unknown, used up or expired".into());
+        assert!(app.sharing_words(&SharingRow::SignIn, false).1.ends_with("enter tries again"));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let Mode::Sharing { editing: Some(buf), .. } = &app.mode else { panic!("{:?}", app.mode) };
+        assert_eq!(buf.as_str(), "MSMN-7A3K-M9Q2-XB4D-H8FN");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.sharing_words(&SharingRow::LicenseKey, false).0, "License key: set");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.key_dialog);
+        assert_eq!(app.mode, Mode::Sharing { idx: sign_in, editing: None, armed: false });
+        // A self-hosted relay that asked for a key: the field, no checkout.
+        app.team_relay_draft = "relay.example".into();
+        app.team.code_required = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.sharing_rows(), [SharingRow::LicenseKey]);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+
+        // Signed in: the YOU section is the one row, and it says a lapse.
         app.team = shared_team_fixture();
         app.team.lapsed = true;
         let rows = app.sharing_rows();
-        assert_eq!(
-            &rows[..3],
-            [SharingRow::Heading("YOU"), SharingRow::SignOut, SharingRow::Redeem]
-        );
-        let (label, detail, _) = app.sharing_words(&SharingRow::Redeem, false);
-        assert_eq!(label, "Enter a code");
-        assert!(detail.starts_with("your access lapsed"), "{detail}");
-        app.mode = Mode::Sharing { idx: 2, editing: None, armed: false };
+        assert_eq!(&rows[..2], [SharingRow::Heading("YOU"), SharingRow::Account]);
+        let (_, detail, word) = app.sharing_words(&SharingRow::Account, false);
+        assert_eq!(word, "open");
+        assert!(detail.starts_with("access lapsed"), "{detail}");
+        app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.key_dialog);
+        assert_eq!(app.sharing_rows(), [SharingRow::LicenseKey, SharingRow::SignOut]);
+        assert_eq!(app.mode, Mode::Sharing { idx: 0, editing: None, armed: false });
+        assert_eq!(app.sharing_words(&SharingRow::LicenseKey, false).0, "New license key");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.text_field());
         for c in "MSMN-1".chars() {
@@ -15006,12 +15134,35 @@ mod tests {
             "{:?}",
             sent.borrow()
         );
+        assert!(app.key_dialog, "the answer reads in the dialog");
+        // The send refreshed the test's empty snapshot over the fixture.
+        app.team = shared_team_fixture();
         app.team.granted = true;
-        app.team.lapsed = false;
-        assert!(app.sharing_words(&SharingRow::Redeem, false).1.starts_with("code accepted"));
+        let detail = app.sharing_words(&SharingRow::LicenseKey, false).1;
+        assert!(detail.starts_with("license key accepted"), "{detail}");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Sharing { idx: 1, editing: None, armed: false });
         // Remote Control's own dialog is this board's rows alone (T-513).
         app.mesophon_dialog = true;
-        assert!(!app.sharing_rows().contains(&SharingRow::Redeem));
+        assert!(!app.sharing_rows().contains(&SharingRow::Account));
+    }
+
+    /// `Get a license key` opens the checkout where an opener was found,
+    /// and copies it where none was.
+    #[test]
+    fn get_a_license_key_opens_the_checkout() {
+        let mut app = app_three_columns();
+        app.key_dialog = true;
+        app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
+        assert_eq!(app.sharing_rows()[1], SharingRow::GetKey);
+        assert_eq!(app.ctx().sharing_enter_word, "copy");
+        app.opener = Some("open".into());
+        assert_eq!(app.ctx().sharing_enter_word, "open");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            app.pending_open,
+            Some(vec!["open".to_string(), mesimon_core::team::CHECKOUT_URL.to_string()])
+        );
     }
 
     /// An identity the relay never admitted reads as signed out: the rows
@@ -15141,9 +15292,9 @@ mod tests {
 
     /// Signed in, the YOU section is the one row that says who (T-513):
     /// the relay and the name are fields for a sign-in, and a new relay is
-    /// a new identity anyway. Enter on it asks before it signs out, and any
-    /// motion takes the question back. Remote Control is this board's
-    /// first row.
+    /// a new identity anyway. Enter on it opens the license key dialog
+    /// (T-647), whose `Sign out` asks before it signs out, and any motion
+    /// takes the question back. Remote Control is this board's first row.
     #[test]
     fn signing_out_asks_first() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
@@ -15152,28 +15303,34 @@ mod tests {
         app.teams = true;
         let rows = app.sharing_rows();
         assert_eq!(
-            rows[..5],
+            rows[..4],
             [
                 SharingRow::Heading("YOU"),
-                SharingRow::SignOut,
-                SharingRow::Redeem,
+                SharingRow::Account,
                 SharingRow::Heading("THIS BOARD"),
                 SharingRow::RemoteControl,
             ]
         );
         app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
+        assert_eq!(app.ctx().sharing_enter_word, "open");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.key_dialog);
+        press(&mut app, 'j');
         assert_eq!(app.ctx().sharing_enter_word, "sign out");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Sharing { idx: 1, editing: None, armed: true });
-        assert_eq!(app.sharing_words(&SharingRow::SignOut, true).0, "Sign out?");
+        let (label, detail, _) = app.sharing_words(&SharingRow::SignOut, true);
+        assert_eq!(label, "Sign out?");
+        assert!(detail.starts_with("shared boards stop syncing"), "{detail}");
         assert!(!sent.borrow().iter().any(|s| s.contains("TeamSignOut")));
-        press(&mut app, 'j');
-        assert_eq!(app.mode, Mode::Sharing { idx: 2, editing: None, armed: false });
         press(&mut app, 'k');
+        assert_eq!(app.mode, Mode::Sharing { idx: 0, editing: None, armed: false });
+        press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!sent.borrow().iter().any(|s| s.contains("TeamSignOut")), "motion disarmed");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent.borrow().iter().any(|s| s.contains("TeamSignOut")));
+        assert!(!app.key_dialog);
         assert_eq!(app.mode, Mode::Sharing { idx: 1, editing: None, armed: false });
     }
 

@@ -390,15 +390,15 @@ pub enum ErrorCode {
     Unavailable,
     /// The relay admits new devices by access code and none was given
     /// (T-515). The sharing dialog opens its code field on it.
-    #[error("this relay needs an access code")]
+    #[error("this relay needs a license key")]
     CodeRequired,
     /// At `register` or `redeem`: the code is not one the relay minted, is
     /// used up, or the license behind it is not active.
-    #[error("that access code is unknown, used up or expired")]
+    #[error("that license key is unknown, used up or expired")]
     CodeInvalid,
     /// A write from a device whose access has run out. Reads still answer,
     /// so the device is read-only, never locked out.
-    #[error("this machine's access has lapsed; enter a code to keep editing")]
+    #[error("this machine's access has lapsed; enter a new license key to keep editing")]
     GrantLapsed,
     /// A code this build does not know: a relay from after it. Serde's
     /// catch-all, so the next variant added here no longer reads as a

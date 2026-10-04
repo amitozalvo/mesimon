@@ -26,6 +26,50 @@ pub const RECORD_SCHEMA: u32 = 1;
 /// answers there for a Mac that signed in before.
 pub const HOSTED_RELAY: &str = "relay.mesimon.dev:443";
 
+/// Where a license key for the hosted relay is bought (T-647): the sharing
+/// dialog's `Get a license key` opens it.
+pub const CHECKOUT_URL: &str = "https://mesimon.dev/relay";
+
+/// Whether `relay` (as typed: `host[:port]`, maybe a space and a pin) is the
+/// hosted relay, on either of its ports. A self-hosted relay mints its own
+/// codes and sells nothing, so the dialog offers the checkout for this one
+/// alone.
+pub fn is_hosted(relay: &str) -> bool {
+    let (host, _) = HOSTED_RELAY.split_once(':').unwrap_or((HOSTED_RELAY, ""));
+    let typed = relay.split_whitespace().next().unwrap_or("");
+    let typed = typed.split_once(':').map_or(typed, |(h, _)| h);
+    typed.eq_ignore_ascii_case(host)
+}
+
+/// Whether `text` has the shape of a license key a relay accepts (T-647):
+/// a relay-minted `MSMN-XXXX-XXXX-XXXX-XXXX`, or the merchant's
+/// `<PREFIX>-<UUID>`. Case, dashes and spaces in a relay-minted one are
+/// the reader's. Only ever a reassurance under the field: the relay is
+/// the judge, so a key this does not recognise is still sent.
+pub fn looks_like_license_key(text: &str) -> bool {
+    let text = text.trim();
+    let minted: String = text
+        .chars()
+        .filter(|c| *c != '-' && !c.is_whitespace())
+        .flat_map(char::to_uppercase)
+        .collect();
+    let crockford = |c: char| c.is_ascii_digit() || (c.is_ascii_uppercase() && !"ILOU".contains(c));
+    if minted.len() == 20 && minted.starts_with("MSMN") && minted[4..].chars().all(crockford) {
+        return true;
+    }
+    let uuid = |s: &str| {
+        s.len() == 36
+            && s.bytes().enumerate().all(|(i, b)| match i {
+                8 | 13 | 18 | 23 => b == b'-',
+                _ => b.is_ascii_hexdigit(),
+            })
+    };
+    text.len() > 37 && text.is_char_boundary(text.len() - 37) && {
+        let (prefix, tail) = text.split_at(text.len() - 37);
+        !prefix.is_empty() && tail.starts_with('-') && uuid(&tail[1..])
+    }
+}
+
 /// What is inside a sealed record. One object per ticket (its scalars), one
 /// per note (its body), one for the column list, one for the board's own
 /// name. The object id of a ticket or a note is its ULID, so nothing maps
@@ -223,6 +267,29 @@ pub struct TeamInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hosted_relay_is_known_by_its_host() {
+        assert!(is_hosted(HOSTED_RELAY));
+        assert!(is_hosted("relay.mesimon.dev"));
+        assert!(is_hosted("Relay.Mesimon.dev:8443"));
+        assert!(!is_hosted("relay.example:8443 abcd"));
+        assert!(!is_hosted("relay.mesimon.dev.example"));
+        assert!(!is_hosted(""));
+    }
+
+    #[test]
+    fn a_license_key_is_known_by_its_shape() {
+        assert!(looks_like_license_key("MSMN-7A3K-M9Q2-XB4D-H8FN"));
+        assert!(looks_like_license_key(" msmn7a3km9q2xb4dh8fn "));
+        assert!(looks_like_license_key("MSMN-POLAR-6F0E0C4A-2B7D-4E3A-9C1F-0A1B2C3D4E5F"));
+        assert!(looks_like_license_key("SHOP-6F0E0C4A-2B7D-4E3A-9C1F-0A1B2C3D4E5F"));
+        assert!(!looks_like_license_key("MSMN-7A3K-M9Q2-XB4D"), "short");
+        assert!(!looks_like_license_key("MSMN-7A3K-M9Q2-XB4D-H8FI"), "I is not Crockford");
+        assert!(!looks_like_license_key("6F0E0C4A-2B7D-4E3A-9C1F-0A1B2C3D4E5F"), "no prefix");
+        assert!(!looks_like_license_key("ééé-6F0E0C4A-2B7D-4E3A-9C1F-0A1B2C3D4E5"));
+        assert!(!looks_like_license_key(""));
+    }
 
     #[test]
     fn an_old_snapshot_without_team_parses_as_signed_out() {

@@ -8,7 +8,6 @@
                            ╭─ SHARING ∙ SYNCED ─────────────────────────────────────────────╮
                            │ YOU                                                            │
                            │   Signed in as Dana on relay.example                           │
-                           │   Enter a code                                                 │
                            │ THIS BOARD                                                     │
                            │   Amit Ozalvo ∙ owner                                          │
                            │   Dana ∙ contributor ∙ you                                     │
@@ -21,6 +20,7 @@
                            │                                                                │
                            │     a one-time code from the board's owner ∙ opens the board   │
                            ╰────────────────────────────────────── enter save ∙ esc cancel ─╯
+
 
 
 

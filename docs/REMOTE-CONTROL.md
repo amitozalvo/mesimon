@@ -8,18 +8,18 @@ Debug builds include Remote Control automatically. In release builds, set
 `MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Sharing → Remote Control**, sign in to
 your relay, and enable this board.
 
-Signing in registers this Mac with the relay once; the sign-in rows are the relay's address,
-your display name and an **access code**. The address is prefilled with the hosted relay,
+Signing in registers this Mac with the relay once; the sign-in rows are the relay's address
+and your display name. The address is prefilled with the hosted relay,
 `relay.mesimon.dev:443`, which needs no pin; a self-hosted relay replaces it with its own
-address, a space and the pin that relay printed when it started. A relay that gates registration (the hosted one does)
-refuses a sign-in without one and says so under `Sign in`; a self-hosted relay ignores an empty
-field. A code is either one a friend minted for you, which never runs out, or a license key
-from a purchase, which lasts as long as the subscription. A code is used at most as many times
-as it was minted for. Once signed in, **Enter a code** under your name takes a later code: a
-renewal, or a friend's code on a Mac that signed in before the relay had a gate. When a Mac's
+address, a space and the pin that relay printed when it started. On the hosted relay, **Sign in**
+asks for a **license key** next; **Get a license key** under the field opens the page that sells
+one. A self-hosted relay signs in without one unless it says it wants one. A key lasts as long
+as the subscription behind it, and is used at most as many times as it was issued for. Once
+signed in, **Signed in as …** opens the same dialog: a **New license key** row takes a later
+key, and **Sign out** is there too. When a Mac's
 access runs out it keeps reading every board it belongs to, and a paired phone keeps its live
 view, but edits stay on the Mac (the sharing dialog reads `LAPSED`) and a ticket filed from a
-phone while the Mac is away is refused, until a code is entered. Choose **Pair a browser** and scan the QR code the
+phone while the Mac is away is refused, until a new key is entered. Choose **Pair a browser** and scan the QR code the
 dialog shows with your phone’s camera: the page opens with the single-use code filled
 in, and **Connect** pairs. Or open the displayed browser address and type the code. The
 code works once, within ten minutes. The QR appears when the terminal has room for it

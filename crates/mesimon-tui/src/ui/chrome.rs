@@ -572,6 +572,7 @@ fn mode_word(app: &App) -> Option<&'static str> {
         // The column dialog's name field (T-117).
         Mode::ColumnSettings { naming: Some(_), .. } => "NAME",
         Mode::ColumnSettings { describing: Some(_), .. } => "DESCRIPTION",
+        Mode::Sharing { .. } if app.key_dialog => "LICENSE KEY",
         Mode::Sharing { .. } if app.mesophon_dialog => "MESOPHON",
         _ => scope.word(),
     };

@@ -7,10 +7,10 @@
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
 
 
+
                            ╭─ SHARING ──────────────────────────────────────────────────────╮
                            │ YOU                                                            │
                            │   Signed in as Amit on relay.example                           │
-                           │   Enter a code                                                 │
                            │ THIS BOARD                                                     │
                            │   Publish this board                                           │
                            │ OTHER BOARDS                                                   │

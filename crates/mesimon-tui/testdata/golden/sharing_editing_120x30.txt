@@ -8,11 +8,11 @@
 
 
 
+
                            ╭─ SHARING ──────────────────────────────────────────────────────╮
                            │ YOU                                                            │
                            │   Relay: relay.mesimon.dev:443                                 │
                            │   Display name: Dana                                           │
-                           │   Access code: not set                                         │
                            │   Sign in                                                      │
                            │                                                                │
                            │     self-hosted: replace with host[:port], a space, its pin    │

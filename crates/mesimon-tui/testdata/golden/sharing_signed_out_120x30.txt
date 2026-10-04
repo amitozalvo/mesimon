@@ -8,11 +8,11 @@
 
 
 
+
                            ╭─ SHARING ──────────────────────────────────────────────────────╮
                            │ YOU                                                            │
                            │   Relay: relay.mesimon.dev:443                                 │
                            │   Display name: not set                                        │
-                           │   Access code: not set                                         │
                            │   Sign in                                                      │
                            │                                                                │
                            │     where shared boards meet ∙ enter edits                     │

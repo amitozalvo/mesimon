@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
+
+    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
+
+    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
+
+
+
+
+                           ╭─ LICENSE KEY ──────────────────────────────────────────────────╮
+                           │   New license key                                              │
+                           │   Get a license key                                            │
+                           │   Sign out?                                                    │
+                           │                                                                │
+                           │     shared boards stop syncing on this machine ∙ enter again   │
+                           ╰─────────────────────── jk select ∙ enter sign out ∙ esc close ─╯
+
+
+
+
+
+
+
+
+
+
+
+ LICENSE KEY  jk select ∙ enter sign out ∙ esc close                                                             ? keys

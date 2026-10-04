@@ -258,7 +258,7 @@ fn err(message: impl Into<String>) -> Response {
 fn clean_code(code: &str) -> Result<String, &'static str> {
     let code = mesimon_core::text::scrub_text(code.trim());
     if code.is_empty() || code.len() > 128 {
-        return Err("an access code is one to 128 characters");
+        return Err("a license key is one to 128 characters");
     }
     Ok(code)
 }

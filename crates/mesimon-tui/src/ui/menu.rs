@@ -115,7 +115,9 @@ pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
         })
         .collect();
     let headings: Vec<bool> = rows.iter().map(|r| matches!(r, SharingRow::Heading(_))).collect();
-    let title = if app.mesophon_dialog {
+    let title = if app.key_dialog {
+        "LICENSE KEY".to_string()
+    } else if app.mesophon_dialog {
         let state = if !app.control.enabled {
             "OFF"
         } else if app.control.connected {
@@ -139,11 +141,14 @@ pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
     let lead = match rows.get(*idx) {
         Some(SharingRow::Relay) => "Relay: ",
         Some(SharingRow::Name) => "Display name: ",
-        Some(SharingRow::AccessCode) => "Access code: ",
-        Some(SharingRow::Join) | Some(SharingRow::Redeem) => "Code: ",
+        Some(SharingRow::LicenseKey) => "License key: ",
+        Some(SharingRow::Join) => "Code: ",
         _ => "",
     };
     let field = editing.as_ref().map(|b| (lead, b));
+    // The empty license key field shows what goes there (T-647).
+    let placeholder =
+        if matches!(rows.get(*idx), Some(SharingRow::LicenseKey)) { KEY_PLACEHOLDER } else { "" };
     // The pairing code as a QR a phone's camera opens (T-497), while a code
     // is live and the theme draws pictures. The code row still says it all.
     let qr = app
@@ -166,11 +171,15 @@ pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
         let (w, h) = qr.cells();
         Picture { w, h: h + 1, paint: &paint }
     });
-    draw_rows_with(f, app, *idx, &title, &words, &headings, field, picture);
+    draw_rows_with(f, app, *idx, &title, &words, &headings, field, placeholder, picture);
 }
 
 /// Under the pairing QR: what to do with it.
 const QR_CAPTION: &str = "scan with your phone's camera";
+
+/// In the empty license key field: what to put there. Not a mask, because
+/// the merchant's keys and a relay's own are not one shape.
+const KEY_PLACEHOLDER: &str = "paste the key from your purchase";
 
 /// The agent tiers list (T-443): a row per tier in the dialog's scope and
 /// one that makes a new one, dense like the sharing list because the last
@@ -264,7 +273,7 @@ fn draw_rows(
     headings: &[bool],
     field: Option<(&str, &crate::text::EditBuffer)>,
 ) {
-    draw_rows_with(f, app, idx, name, items, headings, field, None);
+    draw_rows_with(f, app, idx, name, items, headings, field, "", None);
 }
 
 /// A picture a row dialog draws with its rows (the pairing QR, T-497): `w`
@@ -301,7 +310,8 @@ fn place(screen: Rect, rows: u16, picture: &Picture) -> Option<Place> {
 }
 
 /// `draw_rows`, with a picture beside or under the rows when one fits. One
-/// that does not is left out: the rows still say everything it does.
+/// that does not is left out: the rows still say everything it does. An
+/// empty field shows `placeholder` dimmed after the cursor.
 #[allow(clippy::too_many_arguments)]
 fn draw_rows_with(
     f: &mut Frame,
@@ -311,6 +321,7 @@ fn draw_rows_with(
     items: &[(String, String)],
     headings: &[bool],
     field: Option<(&str, &crate::text::EditBuffer)>,
+    placeholder: &str,
     picture: Option<Picture>,
 ) {
     let theme = &app.theme;
@@ -361,8 +372,12 @@ fn draw_rows_with(
             theme.base()
         };
         let row_style = if selected { theme.selected_row() } else { Style::default() };
+        let mut hint = String::new();
         let text = match field {
             Some((lead, buf)) if selected => {
+                if buf.as_str().is_empty() {
+                    hint = truncate(placeholder, inner_w.saturating_sub(4 + lead.width()));
+                }
                 let budget = inner_w.saturating_sub(3 + lead.width() + 1);
                 let (shown, cx) =
                     crate::text::edit_window(buf.as_str(), buf.width_before_cursor(), budget);
@@ -374,11 +389,12 @@ fn draw_rows_with(
         // A heading sits one cell in, its rows three: the indent is the
         // section, the way the settings groups read.
         let lead = if heading { " " } else { "   " };
-        let pad = inner_w.saturating_sub(lead.len() + text.width());
+        let pad = inner_w.saturating_sub(lead.len() + text.width() + hint.width());
         lines.push(
             Line::from(vec![
                 Span::raw(lead),
                 Span::styled(text, style),
+                Span::styled(hint, theme.dim3()),
                 Span::raw(" ".repeat(pad)),
             ])
             .style(row_style),
