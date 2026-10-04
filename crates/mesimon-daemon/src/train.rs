@@ -5,16 +5,27 @@
 //! a restart forgets, the board re-arms on its next snapshot, and one ask
 //! per ticket may repeat under the fuse's cap.
 //!
+//! One part is kept (T-635): the asks whose turn is still open, in
+//! `train.json`. That record is the hold (`in_rebase_turn`), and a `U`
+//! handover in the middle of a rebase turn emptied it, so the new daemon's
+//! first pass asked the next REVIEW ticket onto the same tip. The fuse, the
+//! refusals and the settled asks stay in memory.
+//!
 //! Armed BY A CONNECTION: the train pastes into agents with no per-press
 //! gesture, so somebody must be watching. The arming client's writer `Arc`
 //! is held weakly; when its reader thread returns the `Arc` dies and
 //! `is_armed` reads false on its own, and `Msg::ClientGone` says so out
 //! loud. A closed board is a stopped train.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
+
+use mesimon_core::command::Notice;
+use serde::{Deserialize, Serialize};
+
+use crate::paths::Paths;
 
 /// Rebase asks on one ticket that suspend the train for it.
 pub const FUSE_LIMIT: usize = 6;
@@ -122,6 +133,31 @@ impl Train {
         &self.asked
     }
 
+    /// The asks whose turn is still open, as `train.json` keeps them.
+    pub fn open_asks(&self) -> BTreeMap<ulid::Ulid, OpenAsk> {
+        self.asked
+            .iter()
+            .filter(|(_, r)| !r.turn_over)
+            .map(|(t, r)| {
+                (*t, OpenAsk { base_oid: r.base_oid.clone(), at_ms: r.at_ms, by_hand: r.by_hand })
+            })
+            .collect()
+    }
+
+    /// Read `train.json`'s asks back at start: each is in its turn again,
+    /// and that turn's end settles it as it would have.
+    pub fn restore(&mut self, asks: impl IntoIterator<Item = (ulid::Ulid, OpenAsk)>) {
+        for (ticket, a) in asks {
+            let record = AskRecord {
+                base_oid: a.base_oid,
+                at_ms: a.at_ms,
+                by_hand: a.by_hand,
+                turn_over: false,
+            };
+            self.asked.insert(ticket, record);
+        }
+    }
+
     /// The ticket's agent stopped working: whatever ask it was in is over.
     pub fn settle(&mut self, ticket: ulid::Ulid) {
         if let Some(r) = self.asked.get_mut(&ticket) {
@@ -159,6 +195,110 @@ impl Train {
             .filter(|(t, b, _)| t == tip && b == base_tip)
             .map(|(_, _, d)| d.as_str())
     }
+}
+
+pub const TRAIN_SCHEMA: u32 = 1;
+
+/// A rebase ask whose turn has not ended, as `train.json` keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenAsk {
+    pub base_oid: String,
+    pub at_ms: u64,
+    #[serde(default)]
+    pub by_hand: bool,
+}
+
+/// The file. Every field defaults, so a file from an older build of this
+/// schema reads as what it held.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TrainFile {
+    pub schema_version: u32,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub asks: BTreeMap<ulid::Ulid, OpenAsk>,
+}
+
+impl TrainFile {
+    pub fn of(train: &Train) -> Self {
+        TrainFile { schema_version: TRAIN_SCHEMA, asks: train.open_asks() }
+    }
+
+    /// No asks, at this build's schema: what an absent file reads as.
+    pub fn default_of_schema() -> Self {
+        TrainFile { schema_version: TRAIN_SCHEMA, ..TrainFile::default() }
+    }
+}
+
+/// `Err(Some(v))` is a file from a NEWER mesimon: valid bytes this build
+/// must refuse rather than guess at. `Err(None)` is genuinely unparseable.
+fn parse(text: &str) -> std::result::Result<TrainFile, (Option<u32>, String)> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| (None, e.to_string()))?;
+    let found = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
+    if found > TRAIN_SCHEMA {
+        return Err((Some(found), format!("schema {found}")));
+    }
+    serde_json::from_value::<TrainFile>(v).map_err(|e| (None, e.to_string()))
+}
+
+/// Startup loader: the file, any notices, and whether writes are barred.
+/// It follows the other state files' contract: a newer build's bytes left
+/// untouched with writes barred, an unparseable file quarantined rather
+/// than clobbered. A barred train still holds for the run.
+pub fn load_or_recover(paths: &Paths) -> (TrainFile, Vec<Notice>, bool) {
+    let f = paths.train_file();
+    let mut notices = Vec::new();
+    if !f.is_file() {
+        return (TrainFile::default(), notices, false);
+    }
+    let text = match std::fs::read_to_string(&f) {
+        Ok(t) => t,
+        Err(e) => {
+            notices.push(
+                Notice::new(
+                    "quarantined",
+                    "the merge train's open asks could not be opened — not written to",
+                )
+                .with_path(f.display())
+                .with_detail(e.to_string()),
+            );
+            return (TrainFile::default(), notices, true);
+        }
+    };
+    let detail = match parse(&text) {
+        Ok(file) => return (file, notices, false),
+        Err((Some(found), _)) => {
+            notices.push(
+                Notice::new(
+                    "future_version",
+                    format!(
+                        "train.json was written by a newer mesimon (schema {found}, this build \
+                         reads {TRAIN_SCHEMA}) — left untouched and not written to"
+                    ),
+                )
+                .with_path(f.display()),
+            );
+            return (TrainFile::default(), notices, true);
+        }
+        Err((None, detail)) => detail,
+    };
+    let moved = crate::store::quarantine(&f);
+    notices.push(
+        Notice::new(
+            "quarantined",
+            match &moved {
+                Some(dest) => format!(
+                    "the merge train's open asks could not be read — the file was set aside as {}",
+                    dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                ),
+                None => {
+                    "the merge train's open asks could not be read — not written to".to_string()
+                }
+            },
+        )
+        .with_path(f.display())
+        .with_detail(detail),
+    );
+    (TrainFile::default(), notices, moved.is_none())
 }
 
 #[cfg(test)]
@@ -271,5 +411,39 @@ mod tests {
         assert!(train.refusal(ulid::Ulid(1), "a", "b").is_none());
         assert!(train.refusal(ulid::Ulid(2), "c", "b").is_none());
         assert!(train.asked_tips().contains_key(&ulid::Ulid(1)), "the asks are not refusals");
+    }
+
+    /// The open asks round-trip through `train.json`'s bytes (T-635): a
+    /// train ask and a hand ask come back in their turn, a settled one is
+    /// not written, and a newer build's file is refused.
+    #[test]
+    fn the_open_asks_round_trip_and_a_settled_one_is_not_kept() {
+        let mut train = Train::default();
+        let now = Instant::now();
+        let (a, b, c) = (ulid::Ulid(1), ulid::Ulid(2), ulid::Ulid(3));
+        train.record_ask(a, "tip".into(), 10, false, now);
+        train.record_ask(b, "tip".into(), 20, true, now);
+        train.record_ask(c, "tip".into(), 30, false, now);
+        train.settle(c);
+        let text = serde_json::to_string_pretty(&TrainFile::of(&train)).unwrap();
+        let back = parse(&text).unwrap();
+        assert_eq!(back.asks.len(), 2, "{text}");
+        let mut restored = Train::default();
+        restored.restore(back.asks);
+        assert!(restored.in_rebase_turn(a, "tip"));
+        assert!(restored.in_rebase_turn(b, "tip"));
+        assert!(!restored.in_rebase_turn(c, "tip"), "settled, not kept");
+        assert!(restored.asked().get(&b).is_some_and(|r| r.by_hand && r.at_ms == 20));
+        assert!(!restored.is_fused(a), "the fuse stays in memory");
+        restored.settle(a);
+        assert!(!restored.in_rebase_turn(a, "tip"), "its turn's end settles it");
+        assert_eq!(TrainFile::of(&restored).asks.keys().collect::<Vec<_>>(), vec![&b]);
+        // Nothing open writes no asks at all.
+        restored.forget(b);
+        let empty = serde_json::to_string(&TrainFile::of(&restored)).unwrap();
+        assert_eq!(empty, format!("{{\"schema_version\":{TRAIN_SCHEMA}}}"));
+        let newer = format!("{{\"schema_version\": {}}}", TRAIN_SCHEMA + 1);
+        assert!(matches!(parse(&newer), Err((Some(_), _))));
+        assert!(matches!(parse("{"), Err((None, _))));
     }
 }

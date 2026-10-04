@@ -88,6 +88,11 @@ impl Paths {
     pub fn crown_file(&self) -> PathBuf {
         self.state_dir.join("crown.json")
     }
+    /// The merge train's rebase asks whose turn is still open (T-635): the
+    /// hold a restart in the middle of one kept dropping.
+    pub fn train_file(&self) -> PathBuf {
+        self.state_dir.join("train.json")
+    }
     /// What each ticket's agents have spent, in tokens by hour and model, and
     /// how far each transcript has been read (T-327).
     pub fn costs_file(&self) -> PathBuf {

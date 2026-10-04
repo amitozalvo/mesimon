@@ -494,8 +494,13 @@ pub struct Daemon {
     /// ask waits behind the `≡` the way an unflagged one does.
     plan_accept_tries: HashMap<uuid::Uuid, u8>,
     /// The merge train (2026-09-04): armed by a connection, what it asked,
-    /// its fuse. See `crate::train`.
+    /// its fuse. See `crate::train`. Its open asks are kept in `train.json`
+    /// (T-635).
     train: crate::train::Train,
+    /// `train.json` could not be read, or a newer build wrote it.
+    train_barred: bool,
+    /// `train.json` as last written, so an unchanged one is not written again.
+    train_written: String,
     ticks: u64,
     feed: FeedWriter,
     /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
@@ -960,6 +965,8 @@ pub fn run(paths: Paths) -> Result<()> {
     notices.extend(cost_notices);
     let (crown_ledger, crown_notices, crown_barred) = crownledger::load_or_recover(&paths);
     notices.extend(crown_notices);
+    let (train_file, train_notices, train_barred) = crate::train::load_or_recover(&paths);
+    notices.extend(train_notices);
     let queued: Vec<QueuedAsk> = queue_entries
         .into_iter()
         .filter_map(|e| {
@@ -1104,6 +1111,8 @@ pub fn run(paths: Paths) -> Result<()> {
         plan_accept: HashMap::new(),
         plan_accept_tries: HashMap::new(),
         train: Default::default(),
+        train_barred,
+        train_written: String::new(),
         ticks: 0,
         feed,
         external: Vec::new(),
@@ -1204,6 +1213,8 @@ pub fn run(paths: Paths) -> Result<()> {
     };
     // The crown's ledger (T-602): what it was told, and what it is owed.
     d.restore_crown(crown_ledger);
+    // The train's open rebase asks (T-635): the hold through a restart.
+    d.restore_train(train_file);
     // The restored entries (T-418), judged once as any entry is (a gone
     // ticket, a seat someone took) and written back so the file is the list
     // again; each survivor is announced, so the feed says where the marks
@@ -4611,6 +4622,7 @@ impl Daemon {
         // hold for a ticket in its rebase turn lasts exactly that turn.
         if change.from != change.to && !mesimon_core::quiet::is_working(&snapshot) {
             self.train.settle(snapshot.ticket);
+            self.persist_train();
         }
         // A raised hand is answered by the NEXT turn beginning (T-311), not
         // by the one that raised it ending — that half is T-107's whole
@@ -7723,6 +7735,50 @@ impl Daemon {
         }
     }
 
+    /// The single write path for `train.json` (T-635): the train's asks
+    /// whose turn is still open, written when that set changed, so a quiet
+    /// board writes nothing.
+    fn persist_train(&mut self) {
+        if self.train_barred {
+            return;
+        }
+        let file = crate::train::TrainFile::of(&self.train);
+        let Ok(text) = serde_json::to_string_pretty(&file) else { return };
+        if text == self.train_written {
+            return;
+        }
+        if store::write_atomic(&self.paths.train_file(), &text, store::PRIVATE).is_ok() {
+            self.train_written = text;
+        }
+    }
+
+    /// Read `train.json` back at start (T-635). An ask whose ticket is gone,
+    /// or whose ticket has no agent that is working or not yet re-derived
+    /// (a Claude reads `Unknown{DaemonRestarted}` until its transcript or a
+    /// hook speaks), is dropped; the rest hold as they did, and the first
+    /// edge out of a working state settles them (`apply_change`).
+    fn restore_train(&mut self, file: crate::train::TrainFile) {
+        // No file reads as no asks, which is then not written.
+        self.train_written =
+            serde_json::to_string_pretty(&crate::train::TrainFile::default_of_schema())
+                .unwrap_or_default();
+        let asks: Vec<_> = file
+            .asks
+            .into_iter()
+            .filter(|(t, _)| {
+                self.board.ticket(*t).is_some()
+                    && self.board.sessions.iter().any(|s| {
+                        s.ticket == *t
+                            && (mesimon_core::quiet::is_working(s)
+                                || (s.kind.is_agent()
+                                    && matches!(s.state, SessionState::Unknown { .. })))
+                    })
+            })
+            .collect();
+        self.train.restore(asks);
+        self.persist_train();
+    }
+
     /// The single write path for `started.json`.
     fn persist_started(&self) {
         if self.started_barred {
@@ -8485,6 +8541,7 @@ impl Daemon {
         let ticket = self.board.tickets.remove(pos);
         self.moves.forget(id);
         self.train.forget(id);
+        self.persist_train();
         self.forget_queued(id, "queued_ask_dropped", "local", "board");
         self.owed.retain(|_, o| o.ticket != id);
         self.drop_crown_if(id);
@@ -9031,6 +9088,7 @@ impl Daemon {
                 by.is_human(),
                 Instant::now(),
             );
+            self.persist_train();
         }
         Response::Ok
     }
@@ -11507,6 +11565,7 @@ impl Daemon {
         };
         self.moves.forget(id);
         self.train.forget(id);
+        self.persist_train();
         let stamp = now_iso();
         let t = self.board.ticket_mut(id)?;
         t.archived = None;

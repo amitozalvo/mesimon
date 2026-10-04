@@ -461,6 +461,115 @@ fn a_ticket_in_its_rebase_turn_holds_the_next_ask_until_it_merges() {
     let _ = c.request(Command::Shutdown);
 }
 
+/// The hold for a rebase turn outlives a daemon restart (T-635). B is asked
+/// onto the moved base, lands the git step and keeps its turn; a `U`
+/// handover comes in the middle of it. The old hold lived in memory alone,
+/// so the new daemon's first pass asked C onto the same tip — a turn wasted,
+/// since B's merge moves the tip again. `train.json` keeps B's open ask: C
+/// waits through the restart, and is asked once, after B merges.
+#[test]
+fn a_rebase_turn_open_across_a_restart_still_holds_the_next_ask() {
+    let Some(h) = Harness::boot_with_env(
+        "train-restart",
+        Some(LOGGING_STUB),
+        &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let got = h.dir.join("got.txt");
+    let text = || std::fs::read_to_string(&got).unwrap_or_default();
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    let tmux_sock = h.paths.tmux_sock();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("train-restart");
+
+    let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
+    let (cid, sc, branch_c, wt_c) = ready(&mut c, "gamma");
+    // The base moves under both.
+    std::fs::write(repo.join("base.txt"), "base advanced\n").unwrap();
+    git(&repo, &["add", "base.txt"]);
+    git(&repo, &["commit", "-qm", "advance base"]);
+    wait_until(Duration::from_secs(15), "two panes", || {
+        tmux(&tmux_sock)
+            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= 2)
+            .unwrap_or(false)
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let asks = |branch: &str| {
+        text()
+            .lines()
+            .filter(|l| l.contains(&format!("Rebase your current branch {branch}")))
+            .count()
+    };
+    // C, then B: automove parks each on top, so REVIEW reads B, C.
+    for sid in [sc, sb] {
+        start(&mut c, sid);
+        stop(&mut c, sid);
+    }
+    wait_until(Duration::from_secs(5), "both in REVIEW", || {
+        let board = c.board();
+        [b, cid].iter().all(|t| board.ticket(*t).unwrap().column == "REVIEW")
+    });
+    let arm = |c: &mut TestClient| {
+        assert!(matches!(
+            c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+            Response::Ok
+        ));
+    };
+    arm(&mut c);
+    wait_until(Duration::from_secs(15), "B to be asked to rebase", || asks(&branch_b) == 1);
+    assert_eq!(asks(&branch_c), 0, "C is behind B in board order");
+
+    // B takes the turn and lands the git step; the tests run on.
+    start(&mut c, sb);
+    git(&wt_b, &["rebase", "-q", "main"]);
+    let kept = std::fs::read_to_string(h.paths.state_dir.join("train.json")).unwrap();
+    assert!(kept.contains(&b.to_string()), "B's open ask is kept: {kept}");
+    assert!(!kept.contains(&cid.to_string()), "{kept}");
+    drop(c);
+
+    // ---- the handover, in the middle of B's turn --------------------------
+    h.restart();
+    let mut c = h.client("train-restart-2");
+    // B's agent re-derives as running (here: its next hook frame), and the
+    // board re-arms the train on its first snapshot.
+    start(&mut c, sb);
+    arm(&mut c);
+    // Several passes on fresh flags: B is not mid-rebase any more, so only
+    // the kept ask holds C.
+    std::thread::sleep(Duration::from_millis(3500));
+    assert_eq!(asks(&branch_c), 0, "C asked while B's rebase turn runs: {}", text());
+
+    // B's turn ends: B merges, main moves, and C is asked onto the new tip.
+    stop(&mut c, sb);
+    wait_until(Duration::from_secs(15), "B to be merged after its rebase", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
+    });
+    wait_until(Duration::from_secs(15), "C to be asked to rebase", || asks(&branch_c) == 1);
+    let kept = std::fs::read_to_string(h.paths.state_dir.join("train.json")).unwrap();
+    assert!(!kept.contains(&b.to_string()), "B's ask settled with its turn: {kept}");
+    start(&mut c, sc);
+    git(&wt_c, &["rebase", "-q", "main"]);
+    stop(&mut c, sc);
+    wait_until(Duration::from_secs(15), "C to be merged after its rebase", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"])
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!((asks(&branch_b), asks(&branch_c)), (1, 1), "one ask each: {}", text());
+    let _ = c.request(Command::Shutdown);
+}
+
 /// A merge the CHECKOUT refuses (T-289). An untracked `alpha.txt` sits where
 /// the fast-forward would write one, so git refuses it — and before this the
 /// card went on saying `auto-merge ∙ next` for as long as the tree stayed

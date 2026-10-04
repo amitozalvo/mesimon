@@ -12807,8 +12807,9 @@ working ticket asked at the current tip whose ask is not yet over (`Train::in_re
 LATER turn at the same tip — the user prompting the agent again after it rebased — is settled
 and so a bystander, which is what T-351 asked for. The pass therefore goes merge A → ask B →
 (B's turn ends, B in REVIEW, ff) merge B → ask C: N asks for N tickets. `pending_items` reads the
-same gate, so C's owed row says `after T-B` while B's turn runs. The in-memory record dies with
-the daemon like the rest of `Train`, so a restart falls back to the old shape once, at worst.
+same gate, so C's owed row says `after T-B` while B's turn runs. The record was in memory alone
+and a restart fell back to the old shape once; since T-635 the open asks are kept in
+`train.json`, and a restart mid-rebase keeps the hold.
 
 E2e `merge_train_e2e::a_ticket_in_its_rebase_turn_holds_the_next_ask_until_it_merges`: three
 REVIEW tickets, A merges, B is asked and lands its git step without ending its turn; C is not
@@ -20719,3 +20720,24 @@ host) to the next welcome: every retry says "Reconnecting… Last received view 
 the spinner, and a page coming back to the foreground does not overwrite it with "Checking
 connection…". A first connect still says "Connecting…" and pairing "Pairing…". The pill and
 the hero card keep their diagnosis (Offline, Relay unreachable), which never alternated.
+
+## The train's open rebase asks survive a restart (T-635, 2026-10-04)
+
+T-634 measured the gap T-435 had accepted: the train asked T-623 to rebase at 18:50:25, a `U`
+handover at 18:52:03 emptied `Train::asked`, the new daemon re-derived T-623 as running, and its
+first pass at 18:52:13 asked T-632 onto the same tip. That turn is wasted once T-623 merges.
+`train.json` (schema 1, `persist_train`, barred and quarantined like the other state files)
+holds `ticket → { base_oid, at_ms, by_hand }` for every ask whose turn has not ended, hand `m`
+asks included. It is written when that set changes: an ask delivered, a settle in
+`apply_change`, a ticket deleted or restored from the archive (`Train::forget`). At start
+`restore_train` reads it back, keeping an ask only while its ticket is on the board and has an
+agent that is working or still `Unknown` (a Claude reads `Unknown{DaemonRestarted}` until a hook
+or its transcript speaks, so `is_working` alone would drop every ask). The first edge out of a
+working state settles it, as before; `train_busy` is unchanged, since `in_rebase_turn` reads the
+restored map. The fuse, the refusals and the settled asks stay in memory, so after a restart a
+ticket whose turn ended without the rebase may be asked again at the same tip, once.
+
+E2e `merge_train_e2e::a_rebase_turn_open_across_a_restart_still_holds_the_next_ask`: B is asked,
+lands its git step and keeps its turn; the daemon restarts; B's next hook frame makes it
+running and the train is re-armed; C is not asked across the passes, and is asked once after B
+merges. With the restore disabled, the test fails at the C assertion.
