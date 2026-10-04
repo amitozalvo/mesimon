@@ -210,6 +210,33 @@ export function StartSheet({ store }) {
   </dialog>`;
 }
 
+// Where a ticket's next agent works (T-642), the TUI's Shift+Tab: its own
+// worktree or the shared checkout, open until an agent stands in it or its
+// worktree is cut, and then said rather than offered.
+function WorkspaceChoice({ store, ticket }) {
+  const ws = ticket.workspace;
+  if (!ws || !store.canEdit("workspace")) return null;
+  const worktree = ws.kind === "worktree";
+  const note = ws.open
+    ? worktree
+      ? "Its worktree is cut when its agent starts."
+      : "Its agent works in your main checkout."
+    : ws.branch
+      ? "Its worktree is cut, so this stays."
+      : "Its agent is running there, so this stays.";
+  const pick = (to) => store.setWorkspace(ticket.id, to);
+  return html`<fieldset id="card-workspace" class="choices" disabled=${!ws.open}>
+    <legend>Workspace</legend>
+    <div class="choice-row">
+      <label class="choice"><input type="radio" name="card-workspace" value="shared" checked=${!worktree}
+        onChange=${() => pick(false)} /><span>Shared checkout</span></label>
+      <label class="choice"><input type="radio" name="card-workspace" value="worktree" checked=${worktree}
+        onChange=${() => pick(true)} /><span>Own worktree</span></label>
+    </div>
+    <p class="field-note">${note}</p>
+  </fieldset>`;
+}
+
 // A ticket's column and tags (T-530), opened from the ticket page's line:
 // each press goes to the board as it is made, as the board's own keys do,
 // and Done closes the sheet. Only the board's own tags are offered.
@@ -251,6 +278,7 @@ export function CardSheet({ store }) {
         </fieldset>
         <${TagChoices} allowed=${board.allowedTags} worn=${ticket.tags || []} disabled=${!store.canEdit("tag")}
           onToggle=${(tag) => store.toggleTicketTag(ticket.id, tag)} />
+        <${WorkspaceChoice} store=${store} ticket=${ticket} />
       </div>
       ${store.editError && html`<footer class="compose-foot"><p class="compose-error" role="alert">${store.editError}</p></footer>`}
     </div>

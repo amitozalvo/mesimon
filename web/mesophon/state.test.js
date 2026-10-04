@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Sessions, answerBusy, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
 import { afterWords, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS } from "./board.js";
-import { crownTouch } from "./lists.js";
+import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
 import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
 import { mergePage, tailAsk } from "./transcript.js";
@@ -587,6 +587,45 @@ test("a remembered board keeps who wears the crown, never what it last did (T-62
   const restored = new BoardState();
   restored.update(JSON.parse(JSON.stringify(board.snapshot())), { cached: true });
   assert.equal(crownTouch(restored, { ...restored.tickets[1], crowned: worker.crowned }), undefined);
+});
+test("a remembered board keeps a worktree's branch and state, never whether it may change (T-642)", () => {
+  const board = new BoardState();
+  board.update({
+    title: "Board",
+    columns: ["TODO"],
+    tickets: [
+      { id: "cut", key: "T-1", title: "Cut", column: "TODO", agent: null,
+        workspace: { kind: "worktree", branch: "msmn/T-1-cut", state: "ahead", ahead: 2, detail: "init failed ∙ exit 2" } },
+      { id: "open", key: "T-2", title: "Open", column: "TODO", agent: null, workspace: { kind: "shared", open: true } },
+      { id: "none", key: "T-3", title: "None", column: "TODO", agent: null },
+    ],
+  });
+  const [cut, open, none] = JSON.parse(JSON.stringify(board.snapshot())).tickets;
+  assert.deepEqual(cut.workspace, { kind: "worktree", branch: "msmn/T-1-cut", state: "ahead", ahead: 2 });
+  assert.deepEqual(open.workspace, { kind: "shared" });
+  assert.equal("workspace" in none, false);
+  board.mode = "board";
+  board.search = "msmn/t-1";
+  assert.deepEqual(board.visible().map((t) => t.id), ["cut"], "a branch finds its ticket");
+});
+test("a worktree's words say what it waits on or what is wrong, as the TUI's page (T-642)", () => {
+  assert.equal(worktreeWords({ state: "clean" }), "");
+  assert.equal(worktreeWords({ state: "ahead", ahead: 3 }), "3 to merge");
+  assert.equal(worktreeWords({ state: "behind" }), "main moved");
+  assert.equal(worktreeWords({ state: "provisioning", detail: "7/19" }), "being cut · 7/19");
+  assert.equal(worktreeWords({ state: "clean", detail: "init failed ∙ exit 2" }), "init failed ∙ exit 2");
+  assert.equal(worktreeWords({ state: "a newer word" }), "");
+});
+test("a workspace edit is worn until its answer, as a card edit (T-642)", async () => {
+  const { Edits } = await import("./edits.js");
+  const edits = new Edits();
+  const host = [{ id: "a", column: "TODO", workspace: { kind: "shared", open: true } }];
+  edits.sent(1, { board: "board-a", ticket: "a", op: "workspace",
+    patch: { workspace: { kind: "worktree", open: true, state: "planned" } } });
+  assert.deepEqual(edits.wear("board-a", host)[0].workspace, { kind: "worktree", open: true, state: "planned" });
+  assert.equal(edits.waiting("board-a", "a", "workspace"), true);
+  edits.take(1);
+  assert.deepEqual(edits.wear("board-a", host)[0].workspace, { kind: "shared", open: true });
 });
 test("the crown's words name whose agent did what, and a word it does not know as spelled (T-623)", () => {
   assert.equal(crownSentence({ action: "moved", by: "T-9" }), "T-9’s agent moved this ticket");

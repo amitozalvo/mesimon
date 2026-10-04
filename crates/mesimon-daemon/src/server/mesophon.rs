@@ -645,6 +645,8 @@ impl Daemon {
                     "rename",
                     "move",
                     "tag",
+                    // Where a ticket's next agent works (T-642).
+                    "workspace",
                     // Notes read and written from the ticket page (T-532).
                     "notes",
                     // A batch or several-choice question answered whole,
@@ -853,6 +855,9 @@ impl Daemon {
             }
             api::Request::Tag { ticket, group, name } => {
                 self.control_tag(&by, &ticket, group, name)
+            }
+            api::Request::Workspace { ticket, worktree } => {
+                self.control_workspace(&by, &ticket, worktree)
             }
             api::Request::Notes { ticket } => self.control_notes(&by, &ticket),
             api::Request::Note { ticket, note } => self.control_note(&by, &ticket, &note),
@@ -2098,6 +2103,54 @@ impl Daemon {
         Reply::Edited { ticket: id.to_string() }
     }
 
+    /// Where a ticket's next agent works, from the owner's phone (T-642):
+    /// the desk's Shift+Tab, `set_workspace` and its lock, so a ticket with
+    /// an agent in its directory or a worktree already cut refuses in the
+    /// desk's words. Choosing what is chosen writes nothing.
+    fn control_workspace(&mut self, by: &Principal, ticket: &str, worktree: bool) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_ticket(ticket) else {
+            return reject("ticket unavailable");
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::ChooseWorkspace, &Resource::Ticket { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        if self.team_content_only() {
+            return reject("this board has no repository on this machine");
+        }
+        let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
+        if (t.workspace_strategy() == WorkspaceStrategy::Worktree) == worktree {
+            return Reply::Edited { ticket: id.to_string() };
+        }
+        // The desk's own pick (`App::set_ticket_workspace`): a worktree, or
+        // back to the board's default.
+        let workspace = worktree.then_some(WorkspaceStrategy::Worktree);
+        if let Response::Err { message } = self.set_workspace(id, workspace) {
+            return reject(&message);
+        }
+        self.feed.board(by.actor(), "mesophon_set_workspace", Some(id));
+        Reply::Edited { ticket: id.to_string() }
+    }
+
+    /// A ticket's workspace as the phone's board reads it (T-642): the TUI
+    /// card's mark and whether Shift+Tab would take a change, none on a
+    /// board with no repository here.
+    fn control_workspace_of(&self, t: &Ticket) -> Option<api::Workspace> {
+        if self.team_content_only() {
+            return None;
+        }
+        let binding = self.worktrees.get(&t.id);
+        let open = binding.is_none()
+            && !self.board.sessions.iter().any(|s| s.ticket == t.id && s.state.has_pane());
+        let item = binding.map(|b| self.worktree_item(&t.id, b));
+        api::workspace(t.workspace_strategy(), open, item.as_ref())
+    }
+
     fn control_mail(&mut self, items: Vec<control::MailItem>) {
         let Some(board) = self.control.stored.as_ref().map(|s| s.board) else { return };
         let more = !items.is_empty();
@@ -2562,6 +2615,7 @@ impl Daemon {
                         self.crown_touches.get(&t.id),
                         mesimon_core::clock::now_ms(),
                     ),
+                    workspace: self.control_workspace_of(t),
                     agent: self.board.live_agent(t.id).map(|s| {
                         let (doing, said) = self.control_words(s);
                         self.control_agent(t, s, doing, said)

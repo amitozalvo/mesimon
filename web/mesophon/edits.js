@@ -1,8 +1,8 @@
-// The card edits this tab sent (T-530): a rename, a move or a tag, by
-// command id, until the host answers. While one waits the board wears it,
-// so a snapshot the host took before it had the edit cannot put the card
-// back for a moment. The answer, or a dropped connection, ends it, and the
-// next snapshot is the truth. Never replayed and never kept: after a drop or
+// The card edits this tab sent (T-530): a rename, a move, a tag or a
+// workspace (T-642), by command id, until the host answers. While one waits
+// the board wears it, so a snapshot the host took before it had the edit
+// cannot put the card back for a moment. The answer, or a dropped
+// connection, ends it, and the next snapshot is the truth. Never replayed and never kept: after a drop or
 // a reload the board itself says what took.
 export class Edits {
   constructor() {

@@ -53,6 +53,41 @@ export function CrownMark({ ticket, size }) {
   return html`<${Icon} name="crown" size=${size} width=${2.2} cls="crown-mark" /><span class="sr-only">Wears the crown: </span>`;
 }
 
+// A worktree's state as the TUI's card marks it (T-642): one character
+// beside the branch glyph, and the register it is drawn in. A shared
+// checkout has no mark.
+const WT_MARK = {
+  planned: ["·", "dormant", "worktree, cut when an agent starts"],
+  provisioning: ["…", "quiet", "worktree being cut"],
+  error: ["×", "err", "worktree failed"],
+  evicted: ["–", "quiet", "worktree removed"],
+  conflict: ["!", "err", "branch shared with another worktree"],
+  merged: ["✓", "quiet", "worktree merged"],
+  behind: ["↓", "ready", "main moved, rebase first"],
+  ahead: ["↑", "ready", "commits to merge"],
+  clean: ["", "quiet", "worktree"],
+};
+export function WorktreeMark({ ticket }) {
+  const mark = WT_MARK[ticket.workspace?.state];
+  if (!mark) return null;
+  return html`<span class=${`wt-mark wt-${mark[1]}`} title=${mark[2]}><${Icon} name="branch" size=${13} width=${2.2} />${mark[0] && html`<span aria-hidden="true">${mark[0]}</span>`}<span class="sr-only">${mark[2]}</span></span>`;
+}
+
+// The ticket page's words for its worktree (T-642), the TUI's branch row:
+// what it is waiting on or what is wrong, the progress or init detail.
+export function worktreeWords(ws) {
+  const words = {
+    provisioning: "being cut",
+    error: "failed · see your terminal",
+    evicted: "removed",
+    conflict: "branch shared!",
+    merged: "merged",
+    behind: "main moved",
+    ahead: `${ws.ahead || ""} to merge`.trim(),
+  }[ws.state];
+  return [words, ws.detail].filter(Boolean).join(" · ");
+}
+
 // The ticket's tags as the TUI paints them (T-506): the name on a ground of
 // its tint, in the page's ground ink.
 export function Tags({ ticket }) {
@@ -135,7 +170,7 @@ function Face({ store, ticket, board, column }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
   return html`<span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
-    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta"><${CrownWord} board=${board} ticket=${ticket} />${column && html`<span>${ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
+    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta"><${CrownWord} board=${board} ticket=${ticket} />${column && html`<span>${ticket.column}</span><span aria-hidden="true">·</span>`}<${WorktreeMark} ticket=${ticket} /><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
     ${agent && html`<span class=${`card-agent${agent.state === "needs attention" ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${stateWord(agent)}${since && ` · ${since}`}</span></span>`}
     <${Headline} agent=${agent} />`;
 }

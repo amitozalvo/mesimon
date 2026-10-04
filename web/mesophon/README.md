@@ -23,7 +23,7 @@ reload shows an edit) beside a host board built from this checkout.
   agent waits on you.
 - `starts.js`: the agents this tab started, per board and ticket: a clock while
   the host starts one, two ticks once its session runs, or why not.
-- `edits.js`: the card edits this tab sent (rename, move, tag) until the host
+- `edits.js`: the card edits this tab sent (rename, move, tag, workspace) until the host
   answers, worn on the board meanwhile so an earlier snapshot cannot undo them.
 - `sent.js`: the Sent list, per board: a filed ticket's status (a clock while
   sealed in this browser, one tick at the relay, two once landed; unsent,

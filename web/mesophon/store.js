@@ -574,7 +574,9 @@ export class Store {
     const item = this.edits.take(command);
     if (!item) return;
     if (reply.result === "rejected") {
-      const what = { rename: "Not renamed", move: "Not moved", tag: "Tags not changed" }[item.op];
+      const what = { rename: "Not renamed", move: "Not moved", tag: "Tags not changed", workspace: "Workspace not changed" }[
+        item.op
+      ];
       this.editError = `${what}: ${reply.message || "the terminal refused it."}`;
       this.say(this.editError);
     } else if (reply.result === "edited" && item.moved) this.say(`Moved ${item.key} to ${item.patch.column}`, "two");
@@ -635,10 +637,21 @@ export class Store {
     tags.sort((a, b) => a.group - b.group);
     this.edit(ticket, "tag", { group: tag.group, ...(worn ? {} : { name: tag.name }) }, { tags });
   }
-  // The sheet that moves a ticket and sets its tags, opened from its line.
+  // Its own worktree or the shared checkout (T-642), while the choice is
+  // open: the card wears the pick at once, a worktree as one not cut yet.
+  setWorkspace(id, worktree) {
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    const ws = ticket?.workspace;
+    if (!ws?.open || (ws.kind === "worktree") === worktree) return;
+    const workspace = { ...ws, kind: worktree ? "worktree" : "shared", state: worktree ? "planned" : "" };
+    this.edit(ticket, "workspace", { worktree }, { workspace });
+  }
+  // The sheet that moves a ticket, sets its tags and, while it is open,
+  // its workspace, opened from its line.
   openCardSheet(id) {
     const ticket = this.board?.tickets.find((t) => t.id === id);
-    if (!ticket || !(this.canEdit("move") || this.canEdit("tag"))) return;
+    const workspace = this.canEdit("workspace") && !!ticket?.workspace?.open;
+    if (!ticket || !(this.canEdit("move") || this.canEdit("tag") || workspace)) return;
     this.cardSheet = id;
     this.editError = "";
     this.emit();

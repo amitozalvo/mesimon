@@ -7119,6 +7119,73 @@ impl Daemon {
         }
     }
 
+    /// One worktree binding as the TUI's snapshot carries it, and as a
+    /// paired phone's board reads it (T-642).
+    fn worktree_item(&self, tid: &ulid::Ulid, b: &worktree::Binding) -> WorktreeItem {
+        WorktreeItem {
+            ticket: *tid,
+            branch: b.branch.clone(),
+            status: match &b.status {
+                BindingStatus::Queued => "queued",
+                BindingStatus::Provisioning => "provisioning",
+                BindingStatus::Attached => "attached",
+                BindingStatus::Evicted => "evicted",
+                BindingStatus::Error { .. } => "error",
+            }
+            .into(),
+            merged: self.wt_merged.get(tid).copied().unwrap_or(false),
+            merged_in: self.wt_merged_in.get(tid).cloned().unwrap_or_default(),
+            merged_oid: self.wt_merged_oid.get(tid).cloned().unwrap_or_default(),
+            conflict: !b.branch.is_empty() && self.wt_conflicts.contains(&b.branch),
+            ahead: self.wt_ahead.get(tid).copied().unwrap_or(0),
+            needs_rebase: self.wt_needs_rebase.get(tid).copied().unwrap_or(false),
+            detail: match &b.status {
+                BindingStatus::Error { stage, message } => Some(format!("{stage}: {message}")),
+                BindingStatus::Provisioning if self.wt_init.contains(tid) => {
+                    Some("init script running".into())
+                }
+                BindingStatus::Provisioning => {
+                    self.wt_progress.get(tid).map(|(d, t)| format!("{d}/{t}"))
+                }
+                // How the init script went, while it went wrong (T-614).
+                BindingStatus::Attached => b.init.as_ref().and_then(|r| r.detail()),
+                _ => None,
+            },
+            path: (b.status == BindingStatus::Attached).then(|| b.path.display().to_string()),
+            repos: if b.is_workspace() {
+                self.wt_repos
+                    .get(tid)
+                    .map(|legs| {
+                        legs.iter()
+                            .map(|l| WorktreeRepoItem {
+                                name: l.name.clone(),
+                                base: l.base.clone(),
+                                ahead: l.ahead,
+                                merged: l.merged,
+                                needs_rebase: l.needs_rebase,
+                                conflict: l.conflict,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_else(|| {
+                        b.repos
+                            .iter()
+                            .map(|r| WorktreeRepoItem {
+                                name: r.name.clone(),
+                                base: r.base.clone(),
+                                ahead: 0,
+                                merged: false,
+                                needs_rebase: false,
+                                conflict: false,
+                            })
+                            .collect()
+                    })
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
     fn snapshot(&self) -> Response {
         let grace = self
             .grace
@@ -7131,72 +7198,7 @@ impl Daemon {
                 live_sessions: g.sessions.len(),
             })
             .collect();
-        let worktrees = self
-            .worktrees
-            .iter()
-            .map(|(tid, b)| WorktreeItem {
-                ticket: *tid,
-                branch: b.branch.clone(),
-                status: match &b.status {
-                    BindingStatus::Queued => "queued",
-                    BindingStatus::Provisioning => "provisioning",
-                    BindingStatus::Attached => "attached",
-                    BindingStatus::Evicted => "evicted",
-                    BindingStatus::Error { .. } => "error",
-                }
-                .into(),
-                merged: self.wt_merged.get(tid).copied().unwrap_or(false),
-                merged_in: self.wt_merged_in.get(tid).cloned().unwrap_or_default(),
-                merged_oid: self.wt_merged_oid.get(tid).cloned().unwrap_or_default(),
-                conflict: !b.branch.is_empty() && self.wt_conflicts.contains(&b.branch),
-                ahead: self.wt_ahead.get(tid).copied().unwrap_or(0),
-                needs_rebase: self.wt_needs_rebase.get(tid).copied().unwrap_or(false),
-                detail: match &b.status {
-                    BindingStatus::Error { stage, message } => Some(format!("{stage}: {message}")),
-                    BindingStatus::Provisioning if self.wt_init.contains(tid) => {
-                        Some("init script running".into())
-                    }
-                    BindingStatus::Provisioning => {
-                        self.wt_progress.get(tid).map(|(d, t)| format!("{d}/{t}"))
-                    }
-                    // How the init script went, while it went wrong (T-614).
-                    BindingStatus::Attached => b.init.as_ref().and_then(|r| r.detail()),
-                    _ => None,
-                },
-                path: (b.status == BindingStatus::Attached).then(|| b.path.display().to_string()),
-                repos: if b.is_workspace() {
-                    self.wt_repos
-                        .get(tid)
-                        .map(|legs| {
-                            legs.iter()
-                                .map(|l| WorktreeRepoItem {
-                                    name: l.name.clone(),
-                                    base: l.base.clone(),
-                                    ahead: l.ahead,
-                                    merged: l.merged,
-                                    needs_rebase: l.needs_rebase,
-                                    conflict: l.conflict,
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_else(|| {
-                            b.repos
-                                .iter()
-                                .map(|r| WorktreeRepoItem {
-                                    name: r.name.clone(),
-                                    base: r.base.clone(),
-                                    ahead: 0,
-                                    merged: false,
-                                    needs_rebase: false,
-                                    conflict: false,
-                                })
-                                .collect()
-                        })
-                } else {
-                    Vec::new()
-                },
-            })
-            .collect();
+        let worktrees = self.worktrees.iter().map(|(tid, b)| self.worktree_item(tid, b)).collect();
         // Standing notices, plus any ticket whose flap fuse is currently
         // blown. The fuse is a real change in how the board behaves — cards
         // stop moving themselves — so it is said out loud rather than left

@@ -32,6 +32,10 @@ pub enum Action {
     MoveTicket,
     RenameTicket,
     TagTicket,
+    /// Choose where a ticket's next agent works, its own worktree or the
+    /// shared checkout (T-642), while nothing has locked the choice: the
+    /// fourth card edit, under the same rule as the three above.
+    ChooseWorkspace,
     /// Write, add or delete one note on one ticket (T-532): the owner's
     /// paired phone edits notes without `Mutate` on the ticket, which would
     /// also move, rename and merge it. An agent's `write_note` stays a
@@ -90,11 +94,14 @@ impl Decision {
 /// the keyboard or on their paired device, into a column, and nothing else.
 /// `StartAgent` is its one start, on a ticket; `authorize_execution` is the
 /// floor under it. `MoveTicket`, `RenameTicket` and `TagTicket` are its card
-/// edits, on the ticket (and a move's destination column); for everyone
-/// else they are `Mutate`. `Annotate` is its note edit, on a ticket (T-532).
+/// edits, on the ticket (and a move's destination column), and
+/// `ChooseWorkspace` the fourth (T-642); for everyone else they are `Mutate`. `Annotate` is its note edit, on a ticket (T-532).
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
-    if matches!(action, Action::MoveTicket | Action::RenameTicket | Action::TagTicket) {
+    if matches!(
+        action,
+        Action::MoveTicket | Action::RenameTicket | Action::TagTicket | Action::ChooseWorkspace
+    ) {
         let Principal::Paired { .. } = principal else {
             return authorize(principal, &Action::Mutate, resource);
         };
@@ -102,7 +109,10 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             (_, Resource::Ticket { .. }) | (Action::MoveTicket, Resource::Column { .. }) => {
                 Decision::Allow
             }
-            _ => deny("a paired device edits one ticket: its column, its title and its tags"),
+            _ => deny(
+                "a paired device edits one ticket: its column, its title, its tags and its \
+                 workspace",
+            ),
         };
     }
     if matches!(action, Action::PromptExisting | Action::ApproveExisting) {
@@ -149,7 +159,8 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             Action::Read => Decision::Allow,
             _ => deny(
                 "paired devices only read, prompt, answer existing permissions, file tickets, \
-                 start agents, move, rename and tag tickets and write notes",
+                 start agents, move, rename and tag tickets, choose their workspace and write \
+                 notes",
             ),
         },
         Principal::Agent { .. } => match (action, resource) {
@@ -171,9 +182,13 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 _,
             ) => deny("an agent cannot import external content"),
             // Answered as `Mutate` at the top.
-            (Action::MoveTicket | Action::RenameTicket | Action::TagTicket, _) => {
-                authorize(principal, &Action::Mutate, resource)
-            }
+            (
+                Action::MoveTicket
+                | Action::RenameTicket
+                | Action::TagTicket
+                | Action::ChooseWorkspace,
+                _,
+            ) => authorize(principal, &Action::Mutate, resource),
         },
         // A teammate on a shared board (T-215): tickets and notes per the
         // role the relay enforced, never a session, never the board's own
@@ -196,9 +211,13 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 _,
             ) => deny("a teammate cannot import external content"),
             // Answered as `Mutate` at the top.
-            (Action::MoveTicket | Action::RenameTicket | Action::TagTicket, _) => {
-                authorize(principal, &Action::Mutate, resource)
-            }
+            (
+                Action::MoveTicket
+                | Action::RenameTicket
+                | Action::TagTicket
+                | Action::ChooseWorkspace,
+                _,
+            ) => authorize(principal, &Action::Mutate, resource),
         },
     }
 }
@@ -354,7 +373,8 @@ mod tests {
         let ticket = Resource::Ticket { id: ulid::Ulid::nil() };
         let column = Resource::Column { name: "DONE".into() };
         let session = Resource::Session { id: uuid::Uuid::nil() };
-        let edits = [Action::MoveTicket, Action::RenameTicket, Action::TagTicket];
+        let edits =
+            [Action::MoveTicket, Action::RenameTicket, Action::TagTicket, Action::ChooseWorkspace];
         for edit in &edits {
             assert_eq!(authorize(&paired, edit, &ticket), Decision::Allow, "{edit:?}");
             for elsewhere in [Resource::Board, session.clone()] {
@@ -364,6 +384,7 @@ mod tests {
         assert_eq!(authorize(&paired, &Action::MoveTicket, &column), Decision::Allow);
         assert!(authorize(&paired, &Action::RenameTicket, &column).denied());
         assert!(authorize(&paired, &Action::TagTicket, &column).denied());
+        assert!(authorize(&paired, &Action::ChooseWorkspace, &column).denied());
         for resource in [&ticket, &column] {
             assert!(authorize(&paired, &Action::Mutate, resource).denied());
         }

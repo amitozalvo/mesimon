@@ -20759,3 +20759,51 @@ still says so. Not focusable, and no key: the Sharing dialog's Remote Control ro
 no wire or daemon change. Goldens `board_remote_control_120x30`,
 `board_remote_control_offline_120x30`, and the three `mesophon_*` headers. The older
 `board_remote_120x30` golden (T-335's team screen) is referenced by no test and was left alone.
+
+## Remote Control shows a ticket's worktree and sets its workspace (T-642, 2026-10-04, "remote control add worktree indication and ability to set workspace": "just like in TUI")
+
+**Built: the projection.** The board's `Ticket` gains `workspace` (`mesophon::Workspace`):
+`kind` (`worktree`, `shared`, `adopt`), `open`, and once a worktree is cut its `branch`, the
+card's `state` word, `ahead` and `detail`. `mesophon::workspace` builds it from the desk's own
+facts: the strategy, `open` exactly when `set_workspace` would take a change (no record with a
+pane, no binding), and the `WorktreeItem` the TUI's snapshot carries, now one helper
+(`Daemon::worktree_item`) for both. The state word follows `card::worktree_mark`'s order, what
+is wrong first: `planned` (asked for, not cut), `provisioning`, `error`, `evicted`, `conflict`,
+`merged`, `behind`, `ahead`, `clean`. Absent where the TUI says nothing and nothing can be
+chosen (a settled shared checkout), and on a content-only team board. **No path leaves**: a
+stage's error text can name one, so an `error` carries no detail; the branch names the
+worktree.
+
+**Built: the op.** `Request::Workspace { ticket, worktree }`, feature `workspace`, answered
+`Edited` or `Rejected`. It is the desk's Shift+Tab (`App::set_ticket_workspace`): a worktree,
+or back to the board's default, through `set_workspace` and its lock, so a refusal is in the
+desk's words. Choosing what is chosen writes nothing; feed rule `mesophon_set_workspace`.
+**Decided: `Action::ChooseWorkspace`, the fourth card edit**, under T-530's rule: `Paired` gets
+it on a `Resource::Ticket` and nothing else, and for every other principal it is answered as
+`Mutate`. `Paired` still has no `Mutate`. A viewer's copy refuses (`team_viewer_refusal`), and
+so does a content-only board. Live only, never through the mailbox, like T-530's edits.
+
+**Built: the page, where the TUI puts it.** A card carries the TUI's mark beside its key, the
+branch glyph and one character (`·` planned, `…`, `×`, `–`, `!`, `✓`, `↓`, `↑`), quiet, calm
+when something waits and `--err` when something is wrong, never the needs-you colour. The
+ticket page's head carries the TUI's row 4 as a line of its own once cut (`⎇ branch · 2 to
+merge`), and a workspace not cut yet as a chip on the ticket line (`shared`, `worktree`). The
+card sheet gains a **Workspace** choice (Shared checkout, Own worktree) set at the press and
+worn at once (`edits.js`); once an agent runs or the worktree is cut it is said, disabled, with
+why. The sheet opens for the workspace alone where it is the only edit. A remembered board keeps
+the kind, branch and state, never `open`; a branch finds its ticket in search.
+
+**Not built: the choice in the New ticket sheet** (the TUI composer's workspace row). A filed
+ticket gets its column's default, as at the desk, and the card sheet sets it once it lands.
+
+Verified: core units (the op's shape, the projection's words and its order, no path on the
+wire, `ChooseWorkspace` against `Mutate` for every principal), `cargo ut`, clippy on core and
+the daemon with `-D warnings`; 41 browser state and packaging tests (the remembered workspace,
+search by branch, the words, the worn edit); the UX suite in Chromium and WebKit at desktop,
+tablet and phone with a new workspace flow: the card mark, the branch row, the chip, the choice
+set and worn, a refusal putting it back, the host closing it, and an older host showing
+nothing. Screenshots read. **Not verified:** a physical phone; the relay's acceptance tests,
+which live in `mesimon-relay`; no daemon unit drives `control_workspace` (there is no daemon
+fixture for control ops; T-530's were tested the same way).
+
+**Owed:** a CHANGELOG line at the next release, and the relay's `ship.sh` after it merges.

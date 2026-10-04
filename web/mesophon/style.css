@@ -1645,6 +1645,39 @@ select {
 .chip-column {
   gap: 4px;
 }
+.chip-workspace {
+  gap: 4px;
+  padding: 0 8px 0 7px;
+}
+/* The ticket page's branch row (T-642): the name gives way to the state. */
+.workspace-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+.workspace-line .icon {
+  flex-shrink: 0;
+}
+.workspace-branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink2);
+}
+.workspace-state {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.workspace-state::before {
+  content: "·";
+  margin-right: 6px;
+  color: var(--ink4);
+}
 .add-tag {
   gap: 3px;
   padding: 0 8px 0 6px;
@@ -2632,6 +2665,24 @@ button.note-row:hover {
   display: inline-flex;
   align-items: center;
   color: var(--ink3);
+}
+/* A worktree on a card (T-642), the TUI's mark: the branch glyph and one
+   character, quiet unless something waits (calm) or is wrong. Never the
+   needs-you colour. */
+.wt-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  color: var(--ink3);
+}
+.wt-dormant {
+  color: var(--ink4);
+}
+.wt-ready {
+  color: var(--calm);
+}
+.wt-err {
+  color: var(--err);
 }
 .badge-quiet {
   background: var(--s3);

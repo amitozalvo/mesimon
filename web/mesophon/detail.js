@@ -5,7 +5,7 @@ import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
 import { Attention } from "./dialogs.js";
-import { CrownMark, StartButton, StartReceipt, Tags, ageWords, crownTouch, stateAge } from "./lists.js";
+import { CrownMark, StartButton, StartReceipt, Tags, ageWords, crownTouch, stateAge, worktreeWords } from "./lists.js";
 import { NotesCard, NoteReader } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
 import { queueWords, sendRefused, waitsOnYou } from "./queue.js";
@@ -194,17 +194,41 @@ function Title({ store, ticket }) {
     ${renames && html`<span id="rename-hint" class="sr-only">Rename</span>`}`;
 }
 
+// Whether the card sheet offers this ticket's workspace (T-642): a host
+// that takes the choice, and a choice still open, as the TUI's Shift+Tab.
+export const choosesWorkspace = (store, ticket) => store.canEdit("workspace") && !!ticket?.workspace?.open;
+
 // The ticket's tags and column (T-510), and with a host that takes the
 // card edits (T-530) one button that opens the sheet moving and tagging it.
+// A workspace not cut yet is a chip of its own (T-642): the choice the
+// sheet changes while it is open.
 function TicketLine({ store, ticket }) {
   const moves = store.canEdit("move");
   const tags = store.canEdit("tag") && store.board.allowedTags.length > 0;
   const add = tags && !ticket.tags?.length;
-  const chips = html`<${Tags} ticket=${ticket} />${add && html`<span class="chip chip-quiet add-tag"><${Icon} name="plus" size=${12} width=${2.4} /><span>Tag</span></span>`}<span class="chip chip-column">${ticket.column}${moves && html`<${Icon} name="chevronDown" size=${12} width=${2.4} />`}</span>`;
-  if (!moves && !tags) return html`<div class="chips">${chips}</div>`;
+  const ws = ticket.workspace;
+  const chooses = choosesWorkspace(store, ticket);
+  const chips = html`<${Tags} ticket=${ticket} />${add && html`<span class="chip chip-quiet add-tag"><${Icon} name="plus" size=${12} width=${2.4} /><span>Tag</span></span>`}<span class="chip chip-column">${ticket.column}${moves && html`<${Icon} name="chevronDown" size=${12} width=${2.4} />`}</span>${ws && !ws.branch && html`<span class="chip chip-quiet chip-workspace"><${Icon} name="branch" size=${12} width=${2.4} /><span>${ws.kind === "shared" ? "shared" : ws.kind}</span></span>`}`;
+  if (!moves && !tags && !chooses) return html`<div class="chips">${chips}</div>`;
+  const edits = moves && tags ? "Move or tag this ticket" : moves ? "Move this ticket" : tags ? "Tag this ticket" : "";
+  const hint = !chooses ? edits : edits ? `${edits}, or choose its workspace` : "Choose this ticket’s workspace";
   return html`<button id="card-line" type="button" class="chips chips-edit" aria-haspopup="dialog" aria-describedby="card-line-hint"
       onClick=${() => store.openCardSheet(ticket.id)}>${chips}</button>
-    <span id="card-line-hint" class="sr-only">${moves && tags ? "Move or tag this ticket" : moves ? "Move this ticket" : "Tag this ticket"}</span>`;
+    <span id="card-line-hint" class="sr-only">${hint}</span>`;
+}
+
+// Where the ticket's code lives once its worktree is cut (T-642), the TUI
+// page's branch row: the branch, then what it waits on or what is wrong.
+function WorkspaceLine({ ticket }) {
+  const ws = ticket?.workspace;
+  if (!ws?.branch) return null;
+  const words = worktreeWords(ws);
+  const tone = ["error", "conflict"].includes(ws.state) ? " wt-err" : ["ahead", "behind"].includes(ws.state) ? " wt-ready" : "";
+  return html`<p id="workspace-line" class="workspace-line">
+    <${Icon} name="branch" size=${14} width=${2.2} />
+    <span class="workspace-branch" title=${ws.branch}>${ws.branch}</span>
+    ${words && html`<span class=${`workspace-state${tone}`}>${words}</span>`}
+  </p>`;
 }
 
 // What the crown did, in a sentence (T-623), by the card's word. A word
@@ -286,6 +310,7 @@ export function Detail({ store, bp }) {
           ${started && html`<${StartReceipt} item=${start} agent=${agent} />`}
           <span class="selection-key">${ticket.key}</span>
         </div>`}
+        <${WorkspaceLine} ticket=${ticket} />
       </div>
     </header>
     <div class="detail-scroll">

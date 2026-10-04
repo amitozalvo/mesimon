@@ -68,7 +68,7 @@ export class BoardState {
             ? ["starting", "working"].includes(t.agent?.state)
             : t.agent?.state === "needs attention")) &&
         (!query ||
-          [t.key, t.title, t.column, t.agent?.provider, t.agent?.state, ...(t.tags || []).map((g) => g.name)]
+          [t.key, t.title, t.column, t.agent?.provider, t.agent?.state, t.workspace?.branch, ...(t.tags || []).map((g) => g.name)]
             .join(" ")
             .toLocaleLowerCase()
             .includes(query)),
@@ -93,7 +93,8 @@ export class BoardState {
     return this.columns.includes(this.defaultColumn) ? this.defaultColumn : this.columns[0] || "";
   }
   // What this browser may remember: keys, titles, columns, tags, note counts,
-  // the crown's seat and agent states. No queued text, tool input, dialogs,
+  // the crown's seat, the worktree's branch and state and agent states.
+  // Whether the workspace may still change is the live host's to say. No queued text, tool input, dialogs,
   // the agent's step and reply line (T-497) or the crown's last touch: those
   // are output, shown live and never kept.
   snapshot() {
@@ -103,7 +104,7 @@ export class BoardState {
       default_column: this.defaultColumn,
       column_descriptions: this.columnDescriptions,
       allowed_tags: this.allowedTags.map(({ group, name, tint }) => ({ group, name, tint })),
-      tickets: this.tickets.map(({ id, key, title, column, agent, tags, notes, noted, crown }) => ({
+      tickets: this.tickets.map(({ id, key, title, column, agent, tags, notes, noted, crown, workspace }) => ({
         id,
         key,
         title,
@@ -116,6 +117,15 @@ export class BoardState {
         // read are kept apart, in `notes:<grant>`.
         notes: Number.isInteger(notes) ? notes : 0,
         noted: typeof noted === "string" ? noted : "",
+        // Where its code lives (T-642), as the card marks it.
+        ...(workspace && {
+          workspace: {
+            kind: workspace.kind,
+            ...(workspace.branch && { branch: workspace.branch }),
+            ...(workspace.state && { state: workspace.state }),
+            ...(workspace.ahead && { ahead: workspace.ahead }),
+          },
+        }),
         agent: agent && {
           session: agent.session,
           provider: agent.provider,

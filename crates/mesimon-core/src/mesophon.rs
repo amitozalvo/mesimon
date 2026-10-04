@@ -172,6 +172,13 @@ pub enum Request {
         #[serde(default)]
         name: Option<String>,
     },
+    /// Where the ticket's next agent works (T-642): its own worktree, or
+    /// the shared checkout. The board's Shift+Tab from a phone, and refused
+    /// as the desk refuses it once an agent runs or a worktree is cut.
+    Workspace {
+        ticket: String,
+        worktree: bool,
+    },
     /// A ticket's notes (T-532): every note's row, the description first,
     /// and the description's body, which the ticket page shows.
     Notes {
@@ -374,6 +381,90 @@ pub struct Ticket {
     /// The crown's latest edit of this ticket, within the hour (T-623).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crowned: Option<Crowned>,
+    /// Where the ticket's code lives (T-642), when the TUI would say so or
+    /// the choice is still open; absent for a shared checkout that is
+    /// settled, and on a board with no repository on the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<Workspace>,
+}
+
+/// A ticket's workspace as a phone reads it (T-642): the TUI card's
+/// worktree mark and the ticket page's branch row. Words, never enums, so
+/// a newer host's word does not fail an older page. No path: the branch
+/// names the worktree.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Workspace {
+    /// `worktree`, `shared` or `adopt`: the ticket's choice.
+    pub kind: String,
+    /// The choice may still change: no agent stands in the directory and
+    /// no worktree is cut (the desk's `set_workspace` lock).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
+    /// The worktree's branch, once it has one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub branch: String,
+    /// The card's state word: `planned` (asked for, not cut yet),
+    /// `provisioning`, `error`, `evicted`, `conflict`, `merged`, `behind`,
+    /// `ahead` or `clean`. Empty for a shared checkout.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub state: String,
+    /// Commits on the branch the default branch lacks.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ahead: u32,
+    /// A provision's progress (`7/19`, `init script running`) or how the
+    /// init script failed; never a stage's error text, which may name a
+    /// path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// A ticket's workspace for a phone (T-642), from the desk's own facts:
+/// its strategy, whether `set_workspace` would take a change, and the
+/// worktree row the TUI draws. `None` where the TUI's card and page say
+/// nothing and nothing can be chosen.
+pub fn workspace(
+    strategy: crate::board::WorkspaceStrategy,
+    open: bool,
+    wt: Option<&crate::command::WorktreeItem>,
+) -> Option<Workspace> {
+    use crate::board::WorkspaceStrategy as S;
+    let kind = match strategy {
+        S::Worktree => "worktree",
+        S::SharedCheckout => "shared",
+        S::AdoptExisting => "adopt",
+    };
+    let Some(w) = wt else {
+        let planned = strategy == S::Worktree;
+        return (planned || open).then(|| Workspace {
+            kind: kind.into(),
+            open,
+            state: if planned { "planned".into() } else { String::new() },
+            ..Workspace::default()
+        });
+    };
+    // The card's order (`card::worktree_mark`): what is wrong first.
+    let state = match w.status.as_str() {
+        "queued" | "provisioning" => "provisioning",
+        "error" => "error",
+        "evicted" => "evicted",
+        _ if w.conflict => "conflict",
+        _ if w.merged => "merged",
+        _ if w.needs_rebase => "behind",
+        _ if w.ahead > 0 => "ahead",
+        _ => "clean",
+    };
+    Some(Workspace {
+        kind: kind.into(),
+        open,
+        branch: crate::text::scrub_text(&w.branch),
+        state: state.into(),
+        ahead: w.ahead,
+        detail: if state == "error" {
+            None
+        } else {
+            w.detail.as_deref().map(crate::text::scrub_text)
+        },
+    })
 }
 
 /// What the crown last did to a ticket (T-623), as the TUI's card says it
@@ -946,6 +1037,7 @@ mod tests {
             noted: String::new(),
             crown: false,
             crowned: None,
+            workspace: None,
         };
         let json = serde_json::to_value(&bare).unwrap();
         assert_eq!(
@@ -961,6 +1053,12 @@ mod tests {
             noted: "00ff00ff00ff00ff".into(),
             crown: true,
             crowned: Some(Crowned { action: "moved".into(), by: Some("T-9".into()), at: 1 }),
+            workspace: Some(Workspace {
+                kind: "worktree".into(),
+                state: "ahead".into(),
+                ahead: 3,
+                ..Workspace::default()
+            }),
             agent: bare.agent.clone().map(|a| Agent {
                 since: Some(1_790_000_000_000),
                 doing: Some("Bash(cargo test)".into()),
@@ -975,6 +1073,7 @@ mod tests {
         assert_eq!((back.notes, back.noted.as_str()), (2, "00ff00ff00ff00ff"));
         assert!(back.crown);
         assert_eq!(back.crowned, full.crowned);
+        assert_eq!(back.workspace, full.workspace);
         let agent = back.agent.unwrap();
         assert_eq!(
             (agent.since, agent.doing.as_deref(), agent.said.as_deref()),
@@ -1074,17 +1173,90 @@ mod tests {
             panic!("rename")
         };
         assert_eq!(title, "Fix it");
+        let Request::Workspace { worktree, .. } =
+            serde_json::from_str(r#"{"op":"workspace","ticket":"01J","worktree":true}"#).unwrap()
+        else {
+            panic!("workspace")
+        };
+        assert!(worktree);
         for bad in [
             r#"{"op":"rename","ticket":"01J"}"#,
             r#"{"op":"move","ticket":"01J"}"#,
             r#"{"op":"move","ticket":"01J","column":"DONE","force":true}"#,
             r#"{"op":"tag","ticket":"01J","group":1,"name":"NEW","register":true}"#,
+            r#"{"op":"workspace","ticket":"01J"}"#,
+            r#"{"op":"workspace","ticket":"01J","worktree":"adopt"}"#,
         ] {
             assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");
         }
         assert_eq!(
             serde_json::to_value(Reply::Edited { ticket: "01J".into() }).unwrap(),
             serde_json::json!({"result":"edited","ticket":"01J"})
+        );
+    }
+
+    /// A phone reads a ticket's workspace as the TUI's card marks it
+    /// (T-642): a settled shared checkout says nothing, an open one says it
+    /// is open, a worktree asked for is `planned`, and a cut one carries its
+    /// branch and the card's word, what is wrong first. A stage's error
+    /// text, which may name a path, never leaves.
+    #[test]
+    fn a_ticket_s_workspace_reads_as_the_card_marks_it() {
+        use crate::board::WorkspaceStrategy::{SharedCheckout, Worktree};
+        let item = |status: &str| crate::command::WorktreeItem {
+            ticket: ulid::Ulid::nil(),
+            branch: "msmn/T-1-fix".into(),
+            status: status.into(),
+            merged: false,
+            merged_in: String::new(),
+            merged_oid: String::new(),
+            conflict: false,
+            ahead: 0,
+            needs_rebase: false,
+            detail: None,
+            path: Some("/Users/me/state/worktrees/T-1-fix".into()),
+            repos: Vec::new(),
+        };
+        assert_eq!(workspace(SharedCheckout, false, None), None);
+        let open = workspace(SharedCheckout, true, None).unwrap();
+        assert_eq!((open.kind.as_str(), open.open, open.state.as_str()), ("shared", true, ""));
+        let planned = workspace(Worktree, true, None).unwrap();
+        assert_eq!((planned.kind.as_str(), planned.state.as_str()), ("worktree", "planned"));
+        assert_eq!(workspace(Worktree, false, None).unwrap().state, "planned");
+        let word = |w: crate::command::WorktreeItem| workspace(Worktree, false, Some(&w)).unwrap();
+        assert_eq!(word(item("queued")).state, "provisioning");
+        let provisioning = word(crate::command::WorktreeItem {
+            detail: Some("7/19".into()),
+            ..item("provisioning")
+        });
+        assert_eq!(provisioning.detail.as_deref(), Some("7/19"));
+        let failed = word(crate::command::WorktreeItem {
+            detail: Some("add: fatal: '/Users/me/x' exists".into()),
+            ..item("error")
+        });
+        assert_eq!((failed.state.as_str(), failed.detail), ("error", None));
+        assert_eq!(word(item("evicted")).state, "evicted");
+        let both = crate::command::WorktreeItem {
+            conflict: true,
+            merged: true,
+            needs_rebase: true,
+            ahead: 2,
+            ..item("attached")
+        };
+        assert_eq!(word(both.clone()).state, "conflict");
+        let both = crate::command::WorktreeItem { conflict: false, ..both };
+        assert_eq!(word(both.clone()).state, "merged");
+        let both = crate::command::WorktreeItem { merged: false, ..both };
+        assert_eq!(word(both.clone()).state, "behind");
+        let ahead = word(crate::command::WorktreeItem { needs_rebase: false, ..both });
+        assert_eq!((ahead.state.as_str(), ahead.ahead), ("ahead", 2));
+        let clean = word(item("attached"));
+        assert_eq!((clean.state.as_str(), clean.branch.as_str()), ("clean", "msmn/T-1-fix"));
+        let wire = serde_json::to_string(&clean).unwrap();
+        assert!(!wire.contains("/Users/"), "{wire}");
+        assert_eq!(
+            serde_json::to_value(&clean).unwrap(),
+            serde_json::json!({"kind":"worktree","branch":"msmn/T-1-fix","state":"clean"})
         );
     }
 
@@ -1107,6 +1279,7 @@ mod tests {
             noted: String::new(),
             crown: false,
             crowned: None,
+            workspace: None,
         };
         let json = serde_json::to_value(ticket(Some(Queue::default()))).unwrap();
         assert_eq!((&json["queued"], &json["queue"]), (&"next".into(), &serde_json::json!({})));

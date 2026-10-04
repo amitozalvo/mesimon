@@ -239,11 +239,15 @@ function fixture() {
     update() {
       this.reply(this.snapshot());
     },
-    // The host's rename, move or tag, as the daemon applies it.
+    // The host's rename, move, tag or workspace, as the daemon applies it.
     applyEdit(request) {
       const at = this.tickets.findIndex((t) => t.id === request.ticket);
       const ticket = this.tickets[at];
       if (request.op === "rename") ticket.title = request.title;
+      if (request.op === "workspace")
+        ticket.workspace = request.worktree
+          ? { kind: "worktree", open: true, state: "planned" }
+          : { kind: "shared", open: true };
       if (request.op === "tag") {
         const tags = (ticket.tags || []).filter((t) => t.group !== request.group);
         const tag = this.snapshot().allowed_tags.find((t) => t.group === request.group && t.name === request.name);
@@ -405,7 +409,7 @@ function fixture() {
               state.begin(request.ticket, id);
             }
           }
-          if (["rename", "move", "tag"].includes(request.op)) {
+          if (["rename", "move", "tag", "workspace"].includes(request.op)) {
             state.edits.push(request);
             if (state.editDisposition === "rejected") answer({ result: "rejected", message: state.editRefusal });
             else if (state.editDisposition !== "hold") {
@@ -1666,6 +1670,142 @@ async function editFlow(browser, engineName, size, viewport) {
   }
 }
 
+// Where a ticket's code lives (T-642), as the TUI says it and sets it: a
+// worktree's mark on its card and its branch row on its page, a choice not
+// cut yet as a chip, and the card sheet's Workspace choice while it is open,
+// refused in the host's words and said rather than offered once settled.
+async function workspaceFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => {
+    window.fixture.features.push("rename", "move", "tag", "workspace");
+    window.fixture.tickets[3].workspace = { kind: "shared", open: true };
+    window.fixture.tickets[5].workspace = { kind: "worktree", branch: "msmn/T-5-agent-task-5", state: "ahead", ahead: 2 };
+  });
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const overview = async () => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+    if (size === "desktop" && (await page.locator(".detail-scrim").count()))
+      await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
+  };
+  const shot = (name) =>
+    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+  const lastEdit = () => page.evaluate(() => fixture.edits.at(-1));
+  const sheet = page.locator("#card-sheet");
+  const mark = (id) => page.locator(`.ticket.card[data-id="${id}"] .wt-mark`);
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await page.locator('button[data-mode="board"]').locator("visible=true").click();
+    if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
+
+    // A cut worktree marks its card as the TUI's does; a shared checkout none.
+    assert.equal(await mark("ticket-5").textContent(), "↑commits to merge");
+    assert.match(await mark("ticket-5").getAttribute("class"), /wt-ready/);
+    assert.equal(await mark("ticket-3").count(), 0);
+
+    // Its page says the branch and what it waits on, and the sheet says
+    // why the choice is settled rather than offering it.
+    await page.locator('.ticket[data-id="ticket-5"]').click();
+    await page.locator("#workspace-line").waitFor();
+    assert.equal(await page.locator("#workspace-line .workspace-branch").textContent(), "msmn/T-5-agent-task-5");
+    assert.equal(await page.locator("#workspace-line .workspace-state").textContent(), "2 to merge");
+    assert.equal(await page.locator("#card-line .chip-workspace").count(), 0);
+    await shot("workspace-cut");
+    await page.locator("#card-line").click();
+    await sheet.waitFor({ state: "visible" });
+    assert(await sheet.getByRole("radio", { name: "Shared checkout", exact: true }).isDisabled());
+    assert(await sheet.getByRole("radio", { name: "Own worktree", exact: true }).isChecked());
+    assert.equal(await page.locator("#card-workspace .field-note").textContent(), "Its worktree is cut, so this stays.");
+    await page.locator("#card-done").click();
+    await sheet.waitFor({ state: "hidden" });
+
+    // A ticket not started: its choice is a chip, and the sheet sets it at
+    // the press. The card wears the pick at once.
+    await overview();
+    await page.locator('.ticket[data-id="ticket-3"]').click();
+    await page.locator("#card-line .chip-workspace").waitFor();
+    assert.equal(await page.locator("#card-line .chip-workspace").textContent(), "shared");
+    assert.equal(await page.locator("#workspace-line").count(), 0);
+    assert.equal(await page.locator("#card-line-hint").textContent(), "Move or tag this ticket, or choose its workspace");
+    await page.locator("#card-line").click();
+    await sheet.waitFor({ state: "visible" });
+    assert(await sheet.getByRole("radio", { name: "Shared checkout", exact: true }).isChecked());
+    await sheet.getByRole("radio", { name: "Own worktree", exact: true }).check();
+    assert.deepEqual(await lastEdit(), { op: "workspace", ticket: "ticket-3", worktree: true });
+    await until(page, () => document.querySelector("#card-line .chip-workspace").textContent === "worktree");
+    assert.equal(await page.locator("#card-workspace .field-note").textContent(), "Its worktree is cut when its agent starts.");
+    if (size !== "phone" || !(await page.locator("#back").isVisible()))
+      await until(page, () => document.querySelector('.ticket.card[data-id="ticket-3"] .wt-mark')?.classList.contains("wt-dormant"));
+    if (size === "phone") {
+      const short = await sheet.evaluate((node) =>
+        [...node.querySelectorAll("button, input")]
+          .filter((n) => n.getClientRects().length && n.type !== "radio" && n.getBoundingClientRect().height < 44)
+          .map((n) => n.id || n.textContent),
+      );
+      assert.deepEqual(short, []);
+    }
+    await shot("workspace-sheet");
+
+    // Refused: the sheet says why in the host's words, and the board's own
+    // word puts the pick back.
+    await page.evaluate(() => {
+      fixture.editDisposition = "rejected";
+      fixture.editRefusal = "workspace locked — an agent is running on this ticket";
+    });
+    await sheet.getByRole("radio", { name: "Shared checkout", exact: true }).click();
+    await until(page, () => document.querySelector("#card-sheet .compose-error")?.textContent.includes("Workspace not changed"));
+    assert.equal(
+      await sheet.locator(".compose-error").textContent(),
+      "Workspace not changed: workspace locked — an agent is running on this ticket",
+    );
+    await until(page, () => document.querySelector("#card-sheet input[value=worktree]").checked);
+    await page.locator("#card-done").click();
+    await sheet.waitFor({ state: "hidden" });
+
+    // Once its agent runs the host closes the choice: the chip stays, and
+    // the sheet no longer offers it.
+    await page.evaluate(() => {
+      fixture.tickets[3].workspace.open = false;
+      fixture.update();
+    });
+    await page.locator("#card-line").click();
+    await sheet.waitFor({ state: "visible" });
+    await until(page, () => document.querySelector("#card-workspace").disabled);
+    assert.equal(await page.locator("#card-workspace .field-note").textContent(), "Its agent is running there, so this stays.");
+    await page.locator("#card-done").click();
+    await sheet.waitFor({ state: "hidden" });
+
+    // An older host sends no workspace and takes none: nothing is said.
+    await page.evaluate(() => {
+      for (const t of fixture.tickets) delete t.workspace;
+      fixture.features = fixture.features.filter((f) => f !== "workspace");
+      fixture.channel().close();
+    });
+    await until(page, () => document.querySelector("#connection").textContent === "Connected" && !document.querySelector(".chip-workspace"));
+    await page.locator("#card-line").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.equal(await page.locator("#card-workspace").count(), 0);
+    await page.locator("#card-done").click();
+    assert.equal(await page.locator(".wt-mark, #workspace-line").count(), 0);
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: the worktree mark, the branch row, the workspace choice, its refusal and lock, and an older host passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-workspace-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 // A pairing QR (T-497): the code arrives in the link's fragment, fills the
 // field, leaves the address bar, and still waits for Connect.
 // A batch, or a question that takes several choices, is answered whole on
@@ -2871,6 +3011,7 @@ try {
         await ticketFlow(browser, engineName, size, viewport);
         await startFlow(browser, engineName, size, viewport);
         await editFlow(browser, engineName, size, viewport);
+        await workspaceFlow(browser, engineName, size, viewport);
         await batchFlow(browser, engineName, size, viewport);
         await notesFlow(browser, engineName, size, viewport);
         await chatFlow(browser, engineName, size, viewport);
