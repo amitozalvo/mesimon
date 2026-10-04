@@ -97,6 +97,8 @@ their text descriptive, bounded, and non-instructional.
   handover or stop the old daemon cleanly before manual runtime verification.
 - Do not launch an interactive Mesimon board from a Mesimon-managed agent pane. Prefer tests;
   perform explicitly requested manual TUI checks from an ordinary external terminal.
+- Public text (the site, README, `docs/`, release notes) is about Mesimon: no author biography,
+  location, origin story or self-praise. A line stays only if a reader needs it.
 
 ## Build and verification
 

@@ -662,6 +662,10 @@ metaphors and debugging history. Edit `CHANGELOG.md` and preserve release headin
 `core/src/relnotes.rs` compiles that file in, and `cargo ut` asserts every heading is dated, the
 tags are unique and newest-first, and the top entry is `v{CARGO_PKG_VERSION}`.
 
+**Public text is about mesimon** — the site, the README, `docs/`, release notes: no author
+biography, location, origin story or self-praise. A line stays only if a reader needs it to
+decide, install or use the tool (T-648 took "writes it in Israel" off the site).
+
 ## Boundaries
 
 - Apache-2.0 core. **The paid Teams relay is a separate, private repository (`mesimon-relay`)**
