@@ -20696,3 +20696,15 @@ the bump commit, after one run that passed but was not stamped: the repo's own u
 preflight. It was set aside for the gate and the ship, and on the author's word committed after
 the tag (`1af9d0dc`). **An untracked file at the root blocks both the stamp and the ship**:
 commit or exclude it before the gate, never after.
+
+## The host's control link keeps a heartbeat (T-640, 2026-10-04)
+
+"this terminal 'out of reach' from my remote control": the daemon's control socket to the
+relay read with a 100 ms timeout and never wrote unprompted, so a socket the relay dropped
+while the Mac slept stayed `ESTABLISHED` on the Mac with nothing to read. The relay pings
+every 15 s; two daemons measured 35 s apart took in 0 bytes, so neither was hosting and every
+paired browser read its terminal as out of reach until a daemon restart. `control_io::run` now
+keeps the relay's own clock (`beat`): a ping after 15 s without one sent, and the worker ends
+after 45 s without a frame read, which is the writer's `Offline` and a reconnect 5 s later.
+Rust's `Instant` on macOS does not run while the Mac sleeps, so a wake is noticed within 45 s
+of waking, not at once; the relay half needed nothing.
