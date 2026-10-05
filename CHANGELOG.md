@@ -1,20 +1,43 @@
 # Changelog
 
-Mesimon is in alpha. Releases may change state-file formats; when a format
-changes, the old file is preserved.
+Mesimon is in beta. A release that changes a state-file format says so in its
+notes, and the old file is preserved.
 
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
-## v0.1.0-alpha.40 — 2026-10-05
+## v0.1.0-beta.1 — 2026-10-06
 
 ### Added
 
+- **mesimon is in beta.**
 - **Remote Control is in every build.** Press Esc and open `Remote Control`;
   it no longer needs `MESIMON_MESOPHON=1` at startup.
 - **The board header's `remote` mark opens Remote Control.** `k` above the
   top row reaches the header, `h` and `l` select the mark, and Enter opens the
   dialog. Esc from it goes back to the mark.
+- **Remote Control can forget one board on a phone.** Open the board picker
+  under the board's name, press the bin beside a board, then `Forget`. The
+  other boards stay paired. A board whose computer still runs keeps listing
+  the phone until you revoke it there.
+
+### Changed
+
+- **`c` copies the ticket's id; press it again for its title, and a third
+  time for both.** It works on the board and on a ticket page, and no longer
+  starts an agent: Enter on a ticket you just created starts one, and on a
+  ticket page Enter on `+ agent session` starts one and Enter on a sleeping
+  session wakes it.
+- **The Esc menu's `Sharing` row is `Remote Control`,** and it opens Remote
+  Control's dialog directly: `Sign in`, `Enable`, `Pair a browser` and your
+  paired devices are its rows, with `Signed in as …` above them. The footer
+  reads `REMOTE CONTROL` there, and `mesimon mesophon setup` names the same
+  path.
+
+## v0.1.0-alpha.40 — 2026-10-05
+
+### Added
+
 - **Remote Control's New ticket sheet takes pictures in Details.** Paste a
   picture or use the picture bar, as in a note. The pictures are kept with the
   ticket once it is created.
@@ -23,11 +46,6 @@ in the Esc menu under `Release notes` and on GitHub.
 
 ### Changed
 
-- **The Esc menu's `Sharing` row is `Remote Control`,** and it opens Remote
-  Control's dialog directly: `Sign in`, `Enable`, `Pair a browser` and your
-  paired devices are its rows, with `Signed in as …` above them. The footer
-  reads `REMOTE CONTROL` there, and `mesimon mesophon setup` names the same
-  path.
 - **In Remote Control's Sent, a ticket that landed shows as its board card,**
   with its current column, tags and agent. An archived ticket reads
   `Archived`; one no longer on the board keeps the words it was sent with.

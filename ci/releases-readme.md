@@ -11,7 +11,7 @@ Your agent is the real Claude Code or Codex, in its own terminal: step into it a
 same prompt, the same slash commands and the same permission dialogs, and mesimon never sits
 between you and it.
 
-**Alpha.** It works and it is used every day, and it will change under you.
+**Beta.** It is used every day, and it still changes under you.
 
 ## Install
 

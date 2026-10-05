@@ -124,9 +124,10 @@ mod tests {
     use super::*;
 
     /// `v0.1.0-alpha.11` → a key that orders the way `semver` would for the
-    /// shapes this project mints: `x.y.z`, optionally `-alpha.N`, where a
-    /// final release outranks every prerelease of its number.
-    fn order_key(tag: &str) -> Option<(u64, u64, u64, u64)> {
+    /// shapes this project mints: `x.y.z`, optionally `-alpha.N` or
+    /// `-beta.N`, where every beta outranks every alpha of its number and a
+    /// final release outranks both.
+    fn order_key(tag: &str) -> Option<(u64, u64, u64, (u64, u64))> {
         let v = tag.strip_prefix('v')?;
         let (core, pre) = match v.split_once('-') {
             Some((c, p)) => (c, Some(p)),
@@ -138,10 +139,24 @@ mod tests {
             return None;
         }
         let n = match pre {
-            None => u64::MAX,
-            Some(p) => p.strip_prefix("alpha.")?.parse().ok()?,
+            None => (u64::MAX, 0),
+            Some(p) => match p.strip_prefix("alpha.") {
+                Some(n) => (0, n.parse().ok()?),
+                None => (1, p.strip_prefix("beta.")?.parse().ok()?),
+            },
         };
         Some((x, y, z, n))
+    }
+
+    #[test]
+    fn order_key_crosses_alpha_into_beta() {
+        let k = |t| order_key(t).unwrap_or_else(|| panic!("{t} has no key"));
+        assert!(k("v0.1.0-alpha.10") > k("v0.1.0-alpha.9"), "numeric, not lexical");
+        assert!(k("v0.1.0-beta.1") > k("v0.1.0-alpha.40"), "a beta outranks every alpha");
+        assert!(k("v0.1.0-beta.2") > k("v0.1.0-beta.1"));
+        assert!(k("v0.1.0") > k("v0.1.0-beta.9"), "a release outranks its prereleases");
+        assert!(k("v0.2.0-alpha.1") > k("v0.1.0"));
+        assert_eq!(order_key("v0.1.0-rc.1"), None, "a shape this project does not mint");
     }
 
     #[test]

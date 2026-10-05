@@ -21827,3 +21827,30 @@ browser until it is revoked in the Remote Control dialog; `docs/REMOTE-CONTROL.m
 **Tests.** `ux.test.js::forgetFlow` (Chromium and WebKit, phone size): a stale second board planted
 in IndexedDB, Keep forgets nothing, Forget leaves one row and no `sent:` record while the live
 board stays live, and the last board forgotten leaves the pairing screen and no boards.
+
+## v0.1.0-beta.1: the Remote Control launch is the first beta (T-675, 2026-10-06)
+
+**Decided (author): the release after alpha.40 is `0.1.0-beta.1`.** Alpha's own definition, the
+CHANGELOG header, was "releases may change state-file formats", and three criteria say that is
+no longer the product:
+1. **Formats held.** The last state-file format change was alpha.25 (22 September); the fifteen
+   releases since changed none.
+2. **Remote Control is in every build** (T-672), and the Esc menu row, the header chip and the
+   buying page's steps agree (T-637, T-666). alpha.40 shipped without T-672, so the live buying
+   page named a row the installed binary lacked; this release fixes that and takes money.
+3. **The author's hand check on a release build**, on a machine with no debug build: the install
+   line, `Esc` → `Remote Control` → `Sign in`, pair a phone, approve one permission from it. That
+   check, the tag, the push and `deploy/ship.sh all` are the author's, not this ticket's.
+
+**What the rename touched.** The workspace version. `CHANGELOG.md`: a `v0.1.0-beta.1` heading
+holding every entry that landed after the alpha.40 tag (T-672, T-637's row, T-666, plus T-674's
+`c` and T-673's forget-one-board, which had shipped with no entry), led by **mesimon is in
+beta.**; alpha.40's section is byte-identical to its tag; the header now says a release that
+changes a state-file format says so in its notes. `relnotes.rs`'s test `order_key` orders a
+prerelease as `(0, n)` for alpha, `(1, n)` for beta and `(MAX, 0)` for a final release, so
+newest-first holds across the boundary (`order_key_crosses_alpha_into_beta`). The public lines
+(README, `ci/releases-readme.md`, the site footer, the relay page's "Is this finished?") say
+**Beta.** in the same sentence shape. The updater needed no change: `newer_than` is
+`semver::Version`, which orders `beta.1` above `alpha.40`, and two assertions now pin it.
+Homebrew reads the version off the URL and orders beta above alpha; `install.sh` lists releases,
+not `/latest`. Neither changed.

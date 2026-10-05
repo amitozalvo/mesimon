@@ -772,10 +772,12 @@ mod tests {
         assert!(newer_than("v0.1.0", "0.1.0-alpha.9"), "a release outranks its own prereleases");
         assert!(newer_than("v0.2.0", "0.1.0"));
         assert!(newer_than("v0.1.0-alpha.10", "0.1.0-alpha.9"), "numeric, not lexical");
+        assert!(newer_than("v0.1.0-beta.1", "0.1.0-alpha.40"), "a beta outranks every alpha");
 
         assert!(!newer_than("v0.1.0-alpha.4", "0.1.0-alpha.4"), "equal is not an offer");
         assert!(!newer_than("v0.1.0-alpha.3", "0.1.0-alpha.4"), "never a downgrade");
         assert!(!newer_than("v0.1.0-alpha.9", "0.1.0"), "nor back into a prerelease");
+        assert!(!newer_than("v0.1.0-alpha.41", "0.1.0-beta.1"), "nor from a beta back to alpha");
         assert!(!newer_than("nightly", "0.1.0"), "unorderable offers nothing");
         assert!(!newer_than("v0.1.0-alpha.5", "not-a-version"));
         assert!(!newer_than("", "0.1.0"));

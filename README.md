@@ -16,8 +16,8 @@ between you and it.
 answer with Shift+Enter there, then merge its branch with `m`. Recorded with a scripted stand-in agent so the take is reproducible;
 [`assets/demo/`](assets/demo) re-records it.</sub>
 
-**Alpha.** It works and it is used every day, and it will change under you. Each version's
-changes are in the [CHANGELOG](CHANGELOG.md).
+**Beta.** It is used every day, and it still changes under you. Each version's changes are
+in the [CHANGELOG](CHANGELOG.md).
 
 ## What it does
 
