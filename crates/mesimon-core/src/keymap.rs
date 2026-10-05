@@ -895,6 +895,50 @@ impl Group {
         [Group::Navigate, Group::Ticket, Group::Sessions, Group::Worktree, Group::View, Group::App];
 }
 
+/// A chip on the board's own top row (T-305), left to right as drawn: the
+/// checkout's git clause, the keep-awake mark, Remote Control's mark (T-666).
+/// Each is there only while its fact holds, so the header's `h` and `l` step
+/// to the nearest chip that is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HeaderChip {
+    #[default]
+    Git,
+    Awake,
+    Remote,
+}
+
+impl HeaderChip {
+    pub const ALL: [HeaderChip; 3] = [HeaderChip::Git, HeaderChip::Awake, HeaderChip::Remote];
+
+    /// Whether the header draws this chip now.
+    pub fn present(self, c: &Ctx) -> bool {
+        match self {
+            HeaderChip::Git => c.git_repo,
+            HeaderChip::Awake => c.keep_awake,
+            HeaderChip::Remote => c.remote_mark,
+        }
+    }
+
+    /// The nearest drawn chip to the left, or `None` at the edge.
+    pub fn left(self, c: &Ctx) -> Option<HeaderChip> {
+        Self::ALL[..self as usize].iter().rev().copied().find(|h| h.present(c))
+    }
+
+    /// The nearest drawn chip to the right, or `None` at the edge.
+    pub fn right(self, c: &Ctx) -> Option<HeaderChip> {
+        Self::ALL[self as usize + 1..].iter().copied().find(|h| h.present(c))
+    }
+
+    /// The chip's name in a hint that steps onto it.
+    pub fn word(self) -> &'static str {
+        match self {
+            HeaderChip::Git => "repository",
+            HeaderChip::Awake => "keep awake",
+            HeaderChip::Remote => "remote control",
+        }
+    }
+}
+
 /// The settings hierarchy; leaf rows keep their existing actions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SettingsSection {
@@ -1381,8 +1425,11 @@ pub struct Ctx {
     /// Hold this machine awake while an agent is mid-turn (T-288) — the
     /// preference; the Settings row flips it.
     pub keep_awake: bool,
-    /// The header cursor is on the wake indicator rather than the git clause.
-    pub header_awake: bool,
+    /// The header chip the cursor is on, while the header has it.
+    pub header_chip: HeaderChip,
+    /// Remote Control is on, so the header draws its mark (T-641) and the
+    /// mark is a chip the header's cursor can stand on (T-666).
+    pub remote_mark: bool,
     /// And whether anything on this machine CAN hold it: false where the
     /// ladder found no rung, or `MESIMON_CAFFEINATE=off` said not to. False
     /// in a bare `Ctx` and in every test app, where no keeper was ever
@@ -5855,15 +5902,17 @@ static LINKS: &[Binding] = &[
 /// a cursor position, not a screen: nothing is drawn over the board, the
 /// cursor column keeps its painted band, and `j` walks straight back into it.
 ///
-/// Left/right select the enabled wake indicator or the git clause. Enter
-/// opens its settings row or checkout diff; `k` stays inert above the top row.
+/// Left/right step between the drawn chips (`HeaderChip`): the git clause,
+/// the wake indicator, Remote Control's mark. Enter opens the checkout diff,
+/// the keep-awake settings row or Remote Control's dialog; `k` stays inert
+/// above the top row.
 static HEADER: &[Binding] = &[
     Binding {
         keys: &[Key::Char('h'), Key::Left],
         verb: Verb::CursorLeft,
         show: "h",
-        hint: |_| "repository",
-        avail: |c| c.keep_awake && c.git_repo && c.header_awake,
+        hint: |c| c.header_chip.left(c).map_or("", HeaderChip::word),
+        avail: |c| c.header_chip.left(c).is_some(),
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -5873,8 +5922,8 @@ static HEADER: &[Binding] = &[
         keys: &[Key::Char('l'), Key::Right],
         verb: Verb::CursorRight,
         show: "l",
-        hint: |_| "keep awake",
-        avail: |c| c.keep_awake && c.git_repo && !c.header_awake,
+        hint: |c| c.header_chip.right(c).map_or("", HeaderChip::word),
+        avail: |c| c.header_chip.right(c).is_some(),
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -5895,8 +5944,12 @@ static HEADER: &[Binding] = &[
         keys: &[Key::Enter],
         verb: Verb::Act,
         show: "enter",
-        hint: |c| if c.header_awake { "keep awake settings" } else { "diff" },
-        avail: |c| if c.header_awake { c.keep_awake } else { c.git_repo },
+        hint: |c| match c.header_chip {
+            HeaderChip::Git => "diff",
+            HeaderChip::Awake => "keep awake settings",
+            HeaderChip::Remote => "remote control",
+        },
+        avail: |c| c.header_chip.present(c),
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -8718,7 +8771,7 @@ mod tests {
             assert_eq!(resolve(Scope::Header, key, &git), Some(Verb::CursorRight));
         }
         assert_eq!(hint_for(Scope::Header, Verb::Act, &git), Some(("enter", "diff")));
-        let awake = Ctx { header_awake: true, ..git.clone() };
+        let awake = Ctx { header_chip: HeaderChip::Awake, ..git.clone() };
         for key in [Key::Char('h'), Key::Left] {
             assert_eq!(resolve(Scope::Header, key, &awake), Some(Verb::CursorLeft));
         }
@@ -8733,6 +8786,39 @@ mod tests {
         let disabled = Ctx { keep_awake: false, ..alone };
         assert_eq!(resolve(Scope::Header, Key::Enter, &disabled), None);
         assert_eq!(SettingsSection::for_verb(Verb::KeepAwake), SettingsSection::Behaviour);
+    }
+
+    #[test]
+    fn header_remote_chip_is_reached_by_its_neighbours_and_named_in_their_hints() {
+        let all = Ctx { git_repo: true, keep_awake: true, remote_mark: true, ..Default::default() };
+        let awake = Ctx { header_chip: HeaderChip::Awake, ..all.clone() };
+        assert_eq!(hint_for(Scope::Header, Verb::CursorLeft, &awake), Some(("h", "repository")));
+        assert_eq!(
+            hint_for(Scope::Header, Verb::CursorRight, &awake),
+            Some(("l", "remote control"))
+        );
+        let remote = Ctx { header_chip: HeaderChip::Remote, ..all.clone() };
+        assert_eq!(hint_for(Scope::Header, Verb::CursorLeft, &remote), Some(("h", "keep awake")));
+        assert_eq!(resolve(Scope::Header, Key::Char('l'), &remote), None, "the right edge");
+        assert_eq!(resolve(Scope::Header, Key::Enter, &remote), Some(Verb::Act));
+        assert_eq!(hint_for(Scope::Header, Verb::Act, &remote), Some(("enter", "remote control")));
+        // An absent chip between two drawn ones is stepped over.
+        let no_awake = Ctx { keep_awake: false, ..all.clone() };
+        assert_eq!(
+            hint_for(Scope::Header, Verb::CursorRight, &no_awake),
+            Some(("l", "remote control"))
+        );
+        let remote_alone = Ctx { keep_awake: false, ..remote.clone() };
+        assert_eq!(
+            hint_for(Scope::Header, Verb::CursorLeft, &remote_alone),
+            Some(("h", "repository"))
+        );
+        // Remote Control off: no chip, so the key on it is inert.
+        let off = Ctx { remote_mark: false, ..remote };
+        assert_eq!(resolve(Scope::Header, Key::Enter, &off), None);
+        assert_eq!(resolve(Scope::Header, Key::Char('l'), &awake), Some(Verb::CursorRight));
+        let awake_off = Ctx { remote_mark: false, ..awake };
+        assert_eq!(resolve(Scope::Header, Key::Char('l'), &awake_off), None);
     }
 
     /// Archiving takes two presses; restoring takes one. The chord tail binds

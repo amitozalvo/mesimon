@@ -12,6 +12,9 @@ in the Esc menu under `Release notes` and on GitHub.
 
 - **Remote Control is in every build.** Press Esc and open `Remote Control`;
   it no longer needs `MESIMON_MESOPHON=1` at startup.
+- **The board header's `remote` mark opens Remote Control.** `k` above the
+  top row reaches the header, `h` and `l` select the mark, and Enter opens the
+  dialog. Esc from it goes back to the mark.
 - **Remote Control's New ticket sheet takes pictures in Details.** Paste a
   picture or use the picture bar, as in a note. The pictures are kept with the
   ticket once it is created.

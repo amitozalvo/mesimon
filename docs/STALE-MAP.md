@@ -21778,3 +21778,31 @@ it (`focus_session` resumes paneless records). The rail's trailer no longer says
 **Test seam.** Under `cfg(test)`, `clipboard::copy_status` records into a thread-local
 `COPIED` instead of running `pbcopy` or writing OSC 52, so no test writes the developer's
 clipboard.
+
+## The header's `remote` mark is a chip that opens Remote Control (T-666, 2026-10-05, "enter remote settings directly from remote hint on board titlebar")
+
+**Built.** The board's top row (T-305) had two chips, the git clause and the keep-awake mark,
+picked by `App::header_awake: bool`. It is now `keymap::HeaderChip` (`Git`, `Awake`, `Remote`,
+left to right as drawn), on `App::header_chip` and on `Ctx::header_chip` with a new
+`Ctx::remote_mark` (`control.enabled`). `HeaderChip::present`/`left`/`right` are the one
+answer to "which chips are drawn and which is next": the `HEADER` bindings' `h`/`l` are
+available exactly when a neighbour exists and hint its name ("repository", "keep awake",
+"remote control"), Enter is available when the selected chip is drawn, and the TUI's nav steps
+through the same functions, so an absent chip between two drawn ones is stepped over. Enter on
+the remote chip opens Remote Control's own dialog (`open_sharing(true)`, the body
+`Verb::Sharing`/`Verb::Mesophon` dispatch now shares), with `MESIMON_TEAMS=1` too: the chip
+names Remote Control, not sharing. `App::remote_from_header` records the road, and Esc from the
+dialog goes to `Mode::Normal` with the header still focused on the chip, as Esc from the
+keep-awake chip's Settings row does. Under the cursor the mark takes the awake chip's styling
+(`chrome::selected_chip`: the selected band, bold, `theme.sel` inks on its own ramp step); the
+` ∙ ` before it is not part of the chip.
+
+**Decided: `k` still lands on the leftmost chip drawn**, so `k` then Enter stays the diff on a
+git checkout. The brief offered the rightmost as the default; that would have turned a
+remembered `k k enter` into Remote Control on every board that has it on.
+
+**Decided: a chip that goes away hands the cursor to its nearest drawn neighbour, the left one
+first, and with none the board takes it** (`App::settle_header`, run after a pref change, a
+snapshot and a `Response::Mesophon`). It replaces the keep-awake-only reset in
+`after_pref_change` and also covers the git sample going away, which the old code left
+focused on nothing.

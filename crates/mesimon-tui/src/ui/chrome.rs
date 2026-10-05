@@ -17,7 +17,7 @@ use ratatui::Frame;
 
 use unicode_width::UnicodeWidthStr;
 
-use mesimon_core::keymap::{self, Binding, Ctx, Scope};
+use mesimon_core::keymap::{self, Binding, Ctx, HeaderChip, Scope};
 
 use crate::app::{App, InputPurpose, Mode, Screen};
 use crate::text::truncate;
@@ -99,11 +99,8 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     if app.prefs.keep_awake {
         let label = crate::glyphs::awake_label(theme.glyph_tier(), app.caffeinated);
         let mut style = if app.caffeinated { theme.base() } else { theme.dim3() };
-        if app.header_focus && app.header_awake && matches!(app.screen, Screen::Board) {
-            style = style.patch(theme.selected_row()).add_modifier(Modifier::BOLD);
-            if theme.selected_bg.is_some() {
-                style = style.fg(if app.caffeinated { theme.sel.base } else { theme.sel.dim3 });
-            }
+        if header_on(app, HeaderChip::Awake) {
+            style = selected_chip(theme, style, app.caffeinated);
         }
         awake.push(Span::raw(" "));
         awake.push(Span::styled(label, style));
@@ -176,7 +173,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         // (the Settings row) and what it will actually do is per ticket (the
         // card's `merge ∙ after T-3` row), so both halves already have a home.
         let room = (area.width as usize).saturating_sub(used + reserved);
-        let git = git_clause(app, room, app.header_focus && !app.header_awake);
+        let git = git_clause(app, room, header_on(app, HeaderChip::Git));
         let git_w: usize = super::spans_width(&git);
         spans.splice(git_at..git_at, git);
         let used = used + git_w;
@@ -191,6 +188,22 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// The board header's cursor is on `chip`: the header has it, on the board.
+fn header_on(app: &App, chip: HeaderChip) -> bool {
+    app.header_focus && app.header_chip == chip && matches!(app.screen, Screen::Board)
+}
+
+/// A header chip under the cursor: the selected row's band and bold, its ink
+/// kept on the ramp step it had (`lit` is `base`, otherwise `dim3`).
+fn selected_chip(theme: &crate::theme::Theme, style: Style, lit: bool) -> Style {
+    let style = style.patch(theme.selected_row()).add_modifier(Modifier::BOLD);
+    if theme.selected_bg.is_some() {
+        style.fg(if lit { theme.sel.base } else { theme.sel.dim3 })
+    } else {
+        style
+    }
+}
+
 /// Remote Control's mark (T-641): ` ∙ remote` while this board is open to
 /// paired browsers, and ` ∙ remote offline` while it is on but the relay is
 /// not reached — a phone cannot see the board then. Off, nothing: the quiet
@@ -203,11 +216,15 @@ fn remote_mark(app: &App) -> Vec<Span<'static>> {
         return Vec::new();
     }
     let theme = &app.theme;
-    let (word, style) = if app.control.connected {
+    let (word, mut style) = if app.control.connected {
         ("remote", theme.base())
     } else {
         ("remote offline", theme.dim3())
     };
+    // A chip the header's cursor stands on (T-666), as the awake mark is.
+    if header_on(app, HeaderChip::Remote) {
+        style = selected_chip(theme, style, app.control.connected);
+    }
     vec![Span::styled(" ∙ ".to_string(), theme.dim3()), Span::styled(word.to_string(), style)]
 }
 

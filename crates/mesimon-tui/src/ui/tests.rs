@@ -6,6 +6,7 @@ use mesimon_core::board::{
     Board, Column, ExitReason, FailReason, Reason, SessionKind, SessionRecord, SessionState,
     StopReason, Ticket,
 };
+use mesimon_core::keymap::HeaderChip;
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
@@ -7759,7 +7760,7 @@ fn golden_awake_120() {
     golden("board_awake_idle_120x30", &render(&app, 120, 30));
     app.cursor_row = None;
     app.header_focus = true;
-    app.header_awake = true;
+    app.header_chip = HeaderChip::Awake;
     golden("board_awake_focused_120x30", &render(&app, 120, 30));
 }
 
@@ -7810,7 +7811,7 @@ fn wake_activity_and_focus_never_move_the_header() {
             app.caffeinated = true;
             assert_eq!(render(&app, w, 30)[0], expected, "activity shifted header at {w}");
             app.header_focus = true;
-            app.header_awake = true;
+            app.header_chip = HeaderChip::Awake;
             assert_eq!(render(&app, w, 30)[0], expected, "focus shifted header at {w}");
         }
     }
@@ -7844,7 +7845,7 @@ fn wake_indicator_is_quiet_and_focus_is_visible() {
                 if held { app.theme.rest.base } else { app.theme.rest.dim3 }
             );
             app.header_focus = true;
-            app.header_awake = true;
+            app.header_chip = HeaderChip::Awake;
             let focused = cells(&app, 120, 30);
             assert_ne!(
                 plain[(x, 0)].style(),
@@ -7934,6 +7935,55 @@ fn golden_remote_control_120() {
     golden("board_remote_control_120x30", &render(&app, 120, 30));
     app.control.connected = false;
     golden("board_remote_control_offline_120x30", &render(&app, 120, 30));
+}
+
+/// The mark is a header chip (T-666): under the cursor it takes the awake
+/// chip's selection, on its own ramp step, and the footer offers its door.
+#[test]
+fn golden_remote_control_focused_120() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    app.seed_pref(|p| p.keep_awake = true);
+    app.control.enabled = true;
+    app.control.connected = true;
+    app.cursor_row = None;
+    app.header_focus = true;
+    app.header_chip = HeaderChip::Remote;
+    let screen = render(&app, 120, 30);
+    assert!(screen.last().unwrap().contains("enter remote control"), "{screen:?}");
+    golden("board_remote_control_focused_120x30", &screen);
+}
+
+#[test]
+fn remote_control_chip_focus_is_visible_and_never_attn() {
+    for flavor in Flavor::ALL {
+        for connected in [true, false] {
+            let mut app = App::for_test(fixture(false), Theme::new(flavor, Profile::TrueColor));
+            app.control.enabled = true;
+            app.control.connected = connected;
+            let plain = cells(&app, 120, 30);
+            let x = (0..120u16)
+                .find(|x| {
+                    plain[(*x, 0)].symbol() == "r"
+                        && (1..6).all(|i| {
+                            plain[(*x + i, 0)].symbol() == &"remote"[i as usize..=i as usize]
+                        })
+                })
+                .unwrap();
+            app.header_focus = true;
+            app.header_chip = HeaderChip::Remote;
+            let focused = cells(&app, 120, 30);
+            assert_ne!(plain[(x, 0)].style(), focused[(x, 0)].style(), "{flavor:?} invisible");
+            let ink =
+                if app.theme.selected_bg.is_some() { &app.theme.sel } else { &app.theme.rest };
+            let want = if connected { ink.base } else { ink.dim3 };
+            assert_eq!(focused[(x, 0)].fg, want, "{flavor:?}, connected={connected}");
+            assert_ne!(focused[(x, 0)].fg, app.theme.attn);
+            assert_ne!(focused[(x, 0)].bg, app.theme.attn);
+            // The separator before it is not part of the chip.
+            assert_eq!(plain[(x - 2, 0)].style(), focused[(x - 2, 0)].style());
+        }
+    }
 }
 
 /// PTY headroom stays hidden until 80% of the OS cap, then warns.

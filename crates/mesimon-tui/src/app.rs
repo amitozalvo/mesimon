@@ -20,7 +20,7 @@ use mesimon_core::board::{
 use mesimon_core::command::{
     Command, DiffTarget, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
 };
-use mesimon_core::keymap::{self, Ctx, Key, Scope, Verb};
+use mesimon_core::keymap::{self, Ctx, HeaderChip, Key, Scope, Verb};
 use mesimon_core::prefs::PrefKey;
 use mesimon_core::snooze::Preset;
 use ratatui::crossterm::event::{
@@ -1450,6 +1450,9 @@ pub struct App {
     pub team: mesimon_core::team::TeamInfo,
     pub control: mesimon_core::mesophon::Info,
     pub mesophon_dialog: bool,
+    /// Remote Control's dialog was opened by the header's `remote` chip
+    /// (T-666), so Esc puts the cursor back on the chip, not in the menu.
+    remote_from_header: bool,
     /// The license key dialog (T-647), one level under the sharing dialog's
     /// `Sign in` or `Signed in as …`: `sharing_rows` is its rows while set.
     pub key_dialog: bool,
@@ -1497,8 +1500,9 @@ pub struct App {
     /// The board header owns the cursor. Left/right select a section;
     /// down returns to the column header.
     pub header_focus: bool,
-    /// Selected header section: the enabled wake indicator, otherwise git.
-    pub header_awake: bool,
+    /// The header chip the cursor is on while the header has it: the git
+    /// clause, the wake indicator or Remote Control's mark.
+    pub header_chip: HeaderChip,
     /// Recent upward travel through tickets. Legacy terminals report held
     /// keys as presses, so a short quiet gap distinguishes reaching the top
     /// from deliberately stepping onto its header.
@@ -1869,6 +1873,7 @@ impl App {
             team: snap.team,
             control: snap.mesophon,
             mesophon_dialog: false,
+            remote_from_header: false,
             key_dialog: false,
             mesophon_available: false,
             theme,
@@ -1884,7 +1889,7 @@ impl App {
             cursor_col: 0,
             cursor_row: Some(0),
             header_focus: false,
-            header_awake: false,
+            header_chip: HeaderChip::Git,
             last_ticket_up: None,
             settings_section: keymap::SettingsSection::Root,
             column_agents: false,
@@ -2379,6 +2384,7 @@ impl App {
         self.seed_team_drafts();
         self.follow_ticket(followed);
         self.clamp_cursor();
+        self.settle_header();
         self.watch_join();
         // A member who left (or was removed while the dialog was up): the
         // dialog's rows are the members, and there are none now.
@@ -3577,6 +3583,46 @@ impl App {
         keymap::settings_items(&ctx).iter().position(|m| m.verb == verb).unwrap_or(0)
     }
 
+    /// The sharing dialog, or with `mesophon` (or while board sharing is
+    /// held, T-637) Remote Control's own. One dialog; it opens on the first
+    /// row that matters: the relay while there is no identity, this board's
+    /// first row otherwise.
+    fn open_sharing(&mut self, mesophon: bool) {
+        self.mesophon_dialog = mesophon || (!self.teams && self.mesophon_available);
+        self.key_dialog = false;
+        self.remote_from_header = false;
+        let rows = self.sharing_rows();
+        let signed = self.team.device.as_ref().is_some_and(|d| d.registered);
+        let idx = if signed {
+            rows.iter()
+                .position(|r| matches!(r, SharingRow::Heading("THIS BOARD")))
+                .map(|h| h + 1)
+                .filter(|i| rows.get(*i).is_some_and(SharingRow::selectable))
+        } else {
+            None
+        };
+        let idx = idx.unwrap_or_else(|| rows.iter().position(SharingRow::selectable).unwrap_or(0));
+        self.mode = Mode::Sharing { idx, editing: None, armed: false };
+    }
+
+    /// Keep the header's cursor on a chip that is drawn: one that went away
+    /// (keep awake or Remote Control turned off, the git sample lost) hands
+    /// it to its nearest neighbour, the left one first, and with none left
+    /// the board has it.
+    fn settle_header(&mut self) {
+        if !self.header_focus {
+            return;
+        }
+        let ctx = self.ctx();
+        if self.header_chip.present(&ctx) {
+            return;
+        }
+        match self.header_chip.left(&ctx).or_else(|| self.header_chip.right(&ctx)) {
+            Some(chip) => self.header_chip = chip,
+            None => (self.header_focus, self.header_chip) = (false, HeaderChip::Git),
+        }
+    }
+
     fn return_to_settings(&mut self, verb: Verb) {
         self.settings_section = keymap::SettingsSection::for_verb(verb);
         self.mode = Mode::Settings { idx: self.settings_row(verb) };
@@ -3665,10 +3711,7 @@ impl App {
     /// the write.
     fn after_pref_change(&mut self) {
         self.arm_appearance();
-        if !self.prefs.keep_awake && self.header_awake {
-            self.header_awake = false;
-            self.header_focus = self.header_focus && self.git.sampled;
-        }
+        self.settle_header();
         self.push_observer_prefs();
         // A Usage row moved what this board wants read: say so now, not at
         // the next snapshot. Before the first push the reconcile says it.
@@ -4887,7 +4930,8 @@ impl App {
             iterm2_status: self.terminal == crate::title::Terminal::ITerm2 { status: true },
             notify_dock_bounce: self.prefs.notify_dock_bounce,
             keep_awake: self.prefs.keep_awake,
-            header_awake: self.header_focus && self.header_awake,
+            header_chip: if self.header_focus { self.header_chip } else { HeaderChip::Git },
+            remote_mark: self.control.enabled,
             // False where no keeper was ever built (every test app), which
             // is what keeps a golden on the row's plain words.
             keep_awake_barred: self.caffeine.as_ref().is_some_and(|k| !k.possible()),
@@ -5966,29 +6010,10 @@ impl App {
             Verb::Notifications => self.mode = Mode::Notifications { idx: 0 },
             Verb::AgentPrompts => self.mode = Mode::Prompts { idx: 0, editing: None },
             // ---- board sharing (T-334, T-335) ------------------------------
-            // One dialog; it opens on the first row that matters: the relay
-            // while there is no identity, this board's first row otherwise.
             // With board sharing held (T-653) the menu row is Remote
             // Control's and opens its dialog at once (T-637): there is no
             // sharing dialog to pass through, so the identity sits in it.
-            Verb::Sharing | Verb::Mesophon => {
-                self.mesophon_dialog =
-                    verb == Verb::Mesophon || (!self.teams && self.mesophon_available);
-                self.key_dialog = false;
-                let rows = self.sharing_rows();
-                let signed = self.team.device.as_ref().is_some_and(|d| d.registered);
-                let idx = if signed {
-                    rows.iter()
-                        .position(|r| matches!(r, SharingRow::Heading("THIS BOARD")))
-                        .map(|h| h + 1)
-                        .filter(|i| rows.get(*i).is_some_and(SharingRow::selectable))
-                } else {
-                    None
-                };
-                let idx = idx
-                    .unwrap_or_else(|| rows.iter().position(SharingRow::selectable).unwrap_or(0));
-                self.mode = Mode::Sharing { idx, editing: None, armed: false };
-            }
+            Verb::Sharing | Verb::Mesophon => self.open_sharing(verb == Verb::Mesophon),
             // The row IS the field: Enter opens the template that stands
             // there now — theirs if they wrote one, mesimon's otherwise — so
             // a rewrite starts from the sentence being rewritten and not from
@@ -6782,8 +6807,12 @@ impl App {
                     }
                     self.last_ticket_up = self.cursor_row.filter(|r| *r > 0).map(|_| now);
                     if self.on_column_header() {
-                        self.header_focus = self.git.sampled || self.prefs.keep_awake;
-                        self.header_awake = !self.git.sampled && self.prefs.keep_awake;
+                        // The leftmost chip drawn: the git clause when there
+                        // is one, so `k` then Enter is still the diff.
+                        let ctx = self.ctx();
+                        let first = HeaderChip::ALL.into_iter().find(|h| h.present(&ctx));
+                        self.header_focus = first.is_some();
+                        self.header_chip = first.unwrap_or_default();
                         return;
                     }
                     self.cursor_row = match self.cursor_row {
@@ -6924,8 +6953,15 @@ impl App {
                 }
             }
             Scope::Header => match verb {
-                Verb::CursorLeft if self.git.sampled => self.header_awake = false,
-                Verb::CursorRight if self.prefs.keep_awake => self.header_awake = true,
+                Verb::CursorLeft | Verb::CursorRight => {
+                    let ctx = self.ctx();
+                    let to = if verb == Verb::CursorLeft {
+                        self.header_chip.left(&ctx)
+                    } else {
+                        self.header_chip.right(&ctx)
+                    };
+                    self.header_chip = to.unwrap_or(self.header_chip);
+                }
                 Verb::CursorDown => self.header_focus = false,
                 _ => {}
             },
@@ -6953,11 +6989,18 @@ impl App {
     fn act(&mut self, scope: Scope) -> Result<()> {
         match scope {
             Scope::Board => self.board_enter(),
-            Scope::Header if self.header_awake && self.prefs.keep_awake => {
-                self.return_to_settings(Verb::KeepAwake);
-                Ok(())
-            }
-            Scope::Header => self.open_checkout_diff(),
+            Scope::Header => match self.header_chip {
+                HeaderChip::Awake if self.prefs.keep_awake => {
+                    self.return_to_settings(Verb::KeepAwake);
+                    Ok(())
+                }
+                HeaderChip::Remote if self.control.enabled => {
+                    self.open_sharing(true);
+                    self.remote_from_header = true;
+                    Ok(())
+                }
+                _ => self.open_checkout_diff(),
+            },
             Scope::Ticket => {
                 if let Screen::Ticket { ticket, .. } = self.screen {
                     if let Some(note) = self.selected_note() {
@@ -7190,6 +7233,11 @@ impl App {
                         .position(|row| matches!(row, SharingRow::SignIn | SharingRow::Account))
                         .unwrap_or(0);
                     self.mode = Mode::Sharing { idx, editing: None, armed: false };
+                } else if self.remote_from_header {
+                    // Opened by the header's chip (T-666): back onto it.
+                    self.remote_from_header = false;
+                    self.mesophon_dialog = false;
+                    self.mode = Mode::Normal;
                 } else if self.mesophon_dialog && self.teams {
                     self.mesophon_dialog = false;
                     let idx = self
@@ -8152,7 +8200,10 @@ impl App {
 
     fn control_action(&mut self, action: mesimon_core::mesophon::LocalAction) -> Result<()> {
         match self.req(Command::Mesophon { action }) {
-            Response::Mesophon { info } => self.control = info,
+            Response::Mesophon { info } => {
+                self.control = info;
+                self.settle_header();
+            }
             Response::Err { message } => self.status = message,
             _ => self.status = "Remote Control is unavailable on this daemon".into(),
         }
@@ -19426,19 +19477,19 @@ mod tests {
             press(&mut app, 'k');
             press(&mut app, 'k');
             assert_eq!(app.scope(), Scope::Header);
-            assert_eq!(app.header_awake, !sampled);
+            assert_eq!(app.header_chip == HeaderChip::Awake, !sampled);
             if sampled {
                 app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-                assert!(app.header_awake);
+                assert_eq!(app.header_chip, HeaderChip::Awake);
                 app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
-                assert!(!app.header_awake);
+                assert_eq!(app.header_chip, HeaderChip::Git);
                 press(&mut app, 'l');
             }
-            assert!(app.header_awake);
+            assert_eq!(app.header_chip, HeaderChip::Awake);
             // Activity transitions leave the selection alone.
             for held in [true, false] {
                 app.caffeinated = held;
-                assert!(app.ctx().header_awake);
+                assert_eq!(app.ctx().header_chip, HeaderChip::Awake);
             }
             let before = sent.borrow().len();
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -19448,7 +19499,11 @@ mod tests {
             assert_eq!(keymap::settings_items(&app.ctx())[idx].verb, Verb::KeepAwake);
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
             assert!(!app.prefs.keep_awake);
-            assert!(!app.header_awake, "the removed indicator cannot retain the cursor");
+            assert_ne!(
+                app.header_chip,
+                HeaderChip::Awake,
+                "the removed indicator cannot retain the cursor"
+            );
             assert_eq!(app.header_focus, sampled, "fall back to git, or to the board");
             assert_eq!(sent.borrow().len(), before, "settings send no daemon commands");
             for _ in 0..3 {
@@ -19457,6 +19512,58 @@ mod tests {
             assert!(matches!(app.mode, Mode::Normal));
             assert_eq!(app.scope(), if sampled { Scope::Header } else { Scope::Board });
         }
+    }
+
+    #[test]
+    fn remote_chip_opens_remote_control_and_esc_returns_to_it() {
+        for sampled in [false, true] {
+            let mut app = app_three_columns();
+            app.git = mesimon_core::command::RepoGit {
+                sampled,
+                branch: if sampled { "main".into() } else { String::new() },
+                ..Default::default()
+            };
+            app.seed_pref(|p| p.keep_awake = true);
+            app.control.enabled = true;
+            press(&mut app, 'k');
+            press(&mut app, 'k');
+            assert_eq!(app.scope(), Scope::Header);
+            let first = if sampled { HeaderChip::Git } else { HeaderChip::Awake };
+            assert_eq!(app.header_chip, first, "the leftmost chip drawn");
+            press(&mut app, 'l');
+            if sampled {
+                press(&mut app, 'l');
+            }
+            assert_eq!(app.header_chip, HeaderChip::Remote);
+            press(&mut app, 'l');
+            assert_eq!(app.header_chip, HeaderChip::Remote, "the right edge holds");
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert!(matches!(app.mode, Mode::Sharing { .. }), "{:?}", app.mode);
+            assert!(app.mesophon_dialog, "Remote Control's own dialog");
+            app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+            assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+            assert_eq!(app.scope(), Scope::Header);
+            assert_eq!(app.header_chip, HeaderChip::Remote);
+            // Turned off under the cursor: the chip hands it to its neighbour.
+            app.control.enabled = false;
+            app.settle_header();
+            assert_eq!(app.header_chip, HeaderChip::Awake);
+            press(&mut app, 'h');
+            assert_eq!(app.header_chip, if sampled { HeaderChip::Git } else { HeaderChip::Awake });
+        }
+    }
+
+    #[test]
+    fn remote_chip_alone_holds_the_header() {
+        let mut app = app_three_columns();
+        app.control.enabled = true;
+        press(&mut app, 'k');
+        press(&mut app, 'k');
+        assert_eq!(app.scope(), Scope::Header);
+        assert_eq!(app.header_chip, HeaderChip::Remote);
+        app.control.enabled = false;
+        app.settle_header();
+        assert!(!app.header_focus, "no chip left: the board has the cursor");
     }
 
     #[test]
@@ -19471,13 +19578,13 @@ mod tests {
         press(&mut app, 'k');
         press(&mut app, 'k');
         press(&mut app, 'l');
-        assert!(app.header_awake);
+        assert_eq!(app.header_chip, HeaderChip::Awake);
         press(&mut app, 'j');
         assert!(app.on_column_header());
         press(&mut app, 'k');
         press(&mut app, 'l');
         press(&mut app, 'h');
-        assert!(!app.header_awake);
+        assert_eq!(app.header_chip, HeaderChip::Git);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.screen, Screen::Diff));
     }
