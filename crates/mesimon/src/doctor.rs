@@ -730,7 +730,7 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
     // before 2.1.287, and the probe asks again by itself.
     if v.mods_off {
         return rec(Level::Ok, "claude road", value).advice(format!(
-            "Nothing is needed from you: this Claude Code does not let mesimon's mod report (mods are off, or a Team or Enterprise account keeps hook events from a person's plugins), so launches take the hook set, which reports and serves the board as before. mesimon asks again at its next start and every 6 hours, and takes the mod once Claude Code lets it report. {advice}"
+            "Nothing is needed from you: Claude Code has mods turned off, or keeps hook events from a person's plugins (a Team or Enterprise account). The hook set then reports each session as it did before 2.1.287, alone or beside the mod, which still carries the prompts and the board's tools where it loads. mesimon asks again at its next start and every 6 hours. {advice}"
         ));
     }
     let level = if v.fallback { Level::Warn } else { Level::Ok };
@@ -1296,11 +1296,11 @@ mod tests {
         assert!(advice.starts_with("Nothing is needed from you"), "{advice}");
         // T-650: a Team or Enterprise account keeps the hook events from the
         // mod. The same flag, the verdict's own words, the same advice.
-        let deaf = "claude 2.1.289: hook events do not reach the mod in this Claude Code (seen 11:44; a Team or Enterprise account, or managed settings); the hook set is used";
+        let deaf = "claude 2.1.289: hook events do not reach the mod in this Claude Code (seen 11:44; a Team or Enterprise account, or managed settings); the hook set reports beside it";
         write_verdict(
             &paths,
             &RoadVerdict {
-                road: Road::Hooks,
+                road: Road::Mod,
                 setting: "auto".into(),
                 source: auto,
                 probe: Some(deaf.into()),
@@ -1310,7 +1310,7 @@ mod tests {
             },
         );
         let r = super::claude_road(&paths);
-        assert_eq!(r.value, format!("hooks ∙ {deaf}"));
+        assert_eq!(r.value, format!("mod ∙ {deaf}"));
         assert!(matches!(r.level, super::Level::Ok), "nothing to fix");
         let advice = r.advice.unwrap_or_default();
         assert!(advice.starts_with("Nothing is needed from you"), "{advice}");

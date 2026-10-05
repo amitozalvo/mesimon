@@ -110,6 +110,12 @@ pub struct LaunchContext<'a> {
     /// `$.tool.register`, so no `--mcp-config` and no `--allowedTools` ride
     /// argv. Claude only; Codex's launch is always `Hooks`.
     pub road: mesimon_core::road::Road,
+    /// Whether the generated hook set rides argv (`--settings`): on the hook
+    /// set's road always; on the mod's only where this Claude Code keeps the
+    /// hook events from the mod (T-650, `Verdict::ClassicOff`), and the hook
+    /// set reports beside it while the mod keeps the prompts, the answers,
+    /// the tools, the gate and the quota windows. Decided with the road.
+    pub hook_set: bool,
 }
 
 pub struct LaunchSpec {

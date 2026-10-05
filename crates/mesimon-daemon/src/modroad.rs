@@ -34,8 +34,10 @@
 //! mod then loads, serves the tools and takes a `submit`, and never hears
 //! `SessionStart`, `UserPromptSubmit` or `Stop`. No probe sees the seating;
 //! a launch whose bridge polled and whose `SessionStart` never came is
-//! relaunched on the hook set and writes [`Verdict::ClassicOff`], which
-//! expires as the mods-off one does.
+//! relaunched with the hook set beside its mod and writes
+//! [`Verdict::ClassicOff`], which expires as the mods-off one does: the mod
+//! keeps the prompts, the answers, the tools, the gate and the quota
+//! windows, and the hook set reports the events, as it did before 2.1.287.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -222,10 +224,11 @@ pub enum Verdict {
     ModsOff { version: String, seen_at: u64 },
     /// The mod loads and this Claude Code keeps the hook events from it
     /// (T-650): a launch's bridge polled and no `SessionStart` followed, so
-    /// it was relaunched on the hook set. A Team or Enterprise account, or
-    /// managed settings, seat `cc-plugin-sec-default`, which hands every
-    /// `classic.*` event past a person's plugins. `seen_at` (epoch ms) is
-    /// when; the verdict is asked again after [`MODS_OFF_TTL_MS`].
+    /// it was relaunched with the hook set beside its mod, and so is every
+    /// launch after. A Team or Enterprise account, or managed settings, seat
+    /// `cc-plugin-sec-default`, which hands every `classic.*` event past a
+    /// person's plugins. `seen_at` (epoch ms) is when; the verdict is asked
+    /// again after [`MODS_OFF_TTL_MS`].
     ClassicOff { version: String, seen_at: u64 },
     /// The mod validates and `claude plugin test` failed on the load probe
     /// in other words: the mod is not proven to load.
@@ -237,6 +240,18 @@ pub enum Verdict {
 impl Verdict {
     pub fn passed(&self) -> bool {
         matches!(self, Verdict::Passed { .. })
+    }
+
+    /// Whether `auto` takes the mod: it is proven to load, heard (`Passed`)
+    /// or not (`ClassicOff`, T-650).
+    pub fn loads(&self) -> bool {
+        matches!(self, Verdict::Passed { .. } | Verdict::ClassicOff { .. })
+    }
+
+    /// Whether the hook set rides beside the mod (T-650): the mod loads and
+    /// this Claude Code keeps the hook events from it.
+    pub fn deaf(&self) -> bool {
+        matches!(self, Verdict::ClassicOff { .. })
     }
 
     pub fn version(&self) -> Option<&str> {
@@ -265,7 +280,7 @@ impl Verdict {
                 clock_of(*seen_at)
             ),
             Verdict::ClassicOff { version, seen_at } => format!(
-                "claude {version}: hook events do not reach the mod in this Claude Code (seen {}; a Team or Enterprise account, or managed settings); the hook set is used",
+                "claude {version}: hook events do not reach the mod in this Claude Code (seen {}; a Team or Enterprise account, or managed settings); the hook set reports beside it",
                 clock_of(*seen_at)
             ),
             Verdict::LoadFailed { version, error } => {
@@ -464,10 +479,10 @@ pub struct RoadVerdict {
     #[serde(default)]
     pub fallback: bool,
     /// The fallback is Claude Code's own, and nothing is asked of the
-    /// person: it turned mods off (T-598), or it keeps the hook events from
-    /// them (T-650, a Team or Enterprise account). The probe's line says
-    /// which. The key keeps its first name for the `doctor` of an older
-    /// build.
+    /// person: it turned mods off (T-598, the hook set alone), or it keeps
+    /// the hook events from them (T-650, a Team or Enterprise account: the
+    /// hook set beside the mod). The probe's line says which. The key keeps
+    /// its first name for the `doctor` of an older build.
     #[serde(default)]
     pub mods_off: bool,
 }
@@ -673,8 +688,13 @@ mod tests {
             "{line}"
         );
         assert!(line.contains("a Team or Enterprise account, or managed settings"), "{line}");
-        assert!(line.ends_with("); the hook set is used"), "{line}");
+        assert!(line.ends_with("); the hook set reports beside it"), "{line}");
         assert_eq!(deaf.verdict.version(), Some("2.1.289"));
+        // The mod is taken either way; the hook set rides only beside a deaf one.
+        assert!(deaf.verdict.loads() && deaf.verdict.deaf());
+        assert!(!off.verdict.loads() && !off.verdict.deaf());
+        let passed = Verdict::Passed { version: "2.1.289".into() };
+        assert!(passed.loads() && !passed.deaf());
         // Both round-trip through the cache file.
         let dir = tempfile::tempdir().unwrap();
         let p = paths(dir.path());

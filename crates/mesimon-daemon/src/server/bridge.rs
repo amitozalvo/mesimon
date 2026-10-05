@@ -22,10 +22,13 @@
 //! `auto` takes the mod only where the mod is proven to load (T-598): a
 //! launch whose mod never reports is relaunched on the hook set
 //! (`relaunch_silent_mods`), and the probe learns that this Claude Code has
-//! mods off, so the launches after it take the hook set at once. The same
-//! road for a mod that loads and is kept from the hook events (T-650): a
-//! bridge that polled with no `SessionStart` behind it is the sign, and the
-//! verdict is `ClassicOff`.
+//! mods off, so the launches after it take the hook set at once. A mod that
+//! loads and is kept from the hook events (T-650, a Team or Enterprise
+//! account) is relaunched with the hook set BESIDE it: a bridge that polled
+//! with no `SessionStart` behind it is the sign, the verdict is
+//! `ClassicOff`, and every launch after carries both — the mod for the
+//! prompts, the answers, the tools, the gate and the quota windows, the
+//! hook set for the events (`frames_by_mod` is false on such a record).
 
 use super::*;
 use crate::modroad::{self, Probe, RoadVerdict, Verdict};
@@ -66,6 +69,16 @@ struct Bridge {
     since: u64,
 }
 
+/// What a Claude launch got from `Daemon::launch_road`: its road, the folder
+/// `--plugin-dir` names when that is the mod, and whether the hook set rides
+/// argv (`--settings`) — on `hooks` always, on the mod only beside a deaf one
+/// (T-650).
+pub(super) struct Pick {
+    pub(super) road: Road,
+    pub(super) folder: Option<std::path::PathBuf>,
+    pub(super) hook_set: bool,
+}
+
 /// What the request in hand asked the writer to park (`Daemon::mod_park`).
 pub(super) enum Park {
     Next { session: uuid::Uuid },
@@ -84,9 +97,10 @@ pub(super) struct ModRoad {
     waiters: HashMap<uuid::Uuid, Waiter>,
     pings: HashMap<String, Ping>,
     bridges: HashMap<uuid::Uuid, Bridge>,
-    /// The records relaunched on the hook set this daemon life (T-598):
-    /// each once, and each stays on the hook set until the daemon restarts.
-    relaunched: std::collections::HashSet<uuid::Uuid>,
+    /// The records relaunched this daemon life and why (T-598, T-650): each
+    /// once, and each keeps what its silence taught — the hook set alone, or
+    /// the hook set beside its mod — until the daemon restarts.
+    relaunched: HashMap<uuid::Uuid, Silence>,
     /// A mods-off verdict this daemon read at start: asked again once, before
     /// its six hours are up (T-598).
     recheck: bool,
@@ -133,6 +147,14 @@ impl Silence {
             Silence::Deaf { .. } => Verdict::ClassicOff { version, seen_at },
         }
     }
+
+    /// Where the relaunch goes, for the journal.
+    fn road_words(self) -> &'static str {
+        match self {
+            Silence::Unloaded { .. } => "on the hook set",
+            Silence::Deaf { .. } => "with the hook set beside its mod",
+        }
+    }
 }
 
 fn reply_now(reply: Sender<ClientReply>, response: Response) {
@@ -140,34 +162,40 @@ fn reply_now(reply: Sender<ClientReply>, response: Response) {
 }
 
 impl Daemon {
-    /// The road this launch takes, and the folder `--plugin-dir` names when
-    /// it is the mod. Decided once per launch and stamped on the record in
-    /// the same block (`spawn_session`, `resume_session`). Claude only, and
-    /// nothing is laid or probed for a launch the seam sends on `hooks`. A
-    /// record relaunched on the hook set this daemon life stays there
-    /// (T-598), whatever a probe has said since.
-    pub(super) fn launch_road(
-        &mut self,
-        kind: SessionKind,
-        session: uuid::Uuid,
-    ) -> (Road, Option<std::path::PathBuf>) {
+    /// The road this launch takes, the folder `--plugin-dir` names when it
+    /// is the mod, and whether the hook set rides argv: on `hooks` always,
+    /// on the mod only beside a deaf one (T-650). Decided once per launch
+    /// and stamped on the record in the same block (`spawn_session`,
+    /// `resume_session`). Claude only, and nothing is laid or probed for a
+    /// launch the seam sends on `hooks`. A record relaunched this daemon
+    /// life keeps what its silence taught (T-598, T-650), whatever a probe
+    /// has said since.
+    pub(super) fn launch_road(&mut self, kind: SessionKind, session: uuid::Uuid) -> Pick {
         if kind != SessionKind::Claude {
-            return (Road::Hooks, None);
+            return Pick { road: Road::Hooks, folder: None, hook_set: true };
         }
         let setting = modroad::read_setting();
-        let (mut road, probe_line) = match setting.pref {
-            RoadPref::Hooks => (Road::Hooks, None),
-            RoadPref::Mod => (Road::Mod, None),
+        let (mut road, probe_line, mut beside) = match setting.pref {
+            RoadPref::Hooks => (Road::Hooks, None, false),
+            RoadPref::Mod => (Road::Mod, None, false),
             RoadPref::Auto => self.auto_road(),
         };
-        if road == Road::Mod
-            && setting.pref == RoadPref::Auto
-            && self.modroad.relaunched.contains(&session)
-        {
-            road = Road::Hooks;
-            self.journal.line(&format!(
-                "session {session} stays on the hook set: its mod never reported once this daemon life"
-            ));
+        if road == Road::Mod && setting.pref == RoadPref::Auto {
+            match self.modroad.relaunched.get(&session) {
+                Some(Silence::Unloaded { .. }) => {
+                    road = Road::Hooks;
+                    self.journal.line(&format!(
+                        "session {session} stays on the hook set: its mod never reported once this daemon life"
+                    ));
+                }
+                Some(Silence::Deaf { .. }) if !beside => {
+                    beside = true;
+                    self.journal.line(&format!(
+                        "session {session} keeps the hook set beside its mod: its mod heard no SessionStart once this daemon life"
+                    ));
+                }
+                _ => {}
+            }
         }
         let mut folder = None;
         if road == Road::Mod {
@@ -176,6 +204,7 @@ impl Daemon {
                 road = Road::Hooks;
             }
         }
+        let hook_set = road == Road::Hooks || beside;
         self.note_road(RoadVerdict {
             road,
             setting: setting.pref.word().into(),
@@ -184,10 +213,10 @@ impl Daemon {
             lay_error: self.modroad.lay_error.clone(),
             fallback: false,
             mods_off: self.modroad.probe.as_ref().is_some_and(Probe::claude_off)
-                && road == Road::Hooks
+                && hook_set
                 && setting.pref == RoadPref::Auto,
         });
-        (road, folder)
+        Pick { road, folder, hook_set }
     }
 
     /// Lay the mod (only what is missing or differs, so a folder something
@@ -211,17 +240,22 @@ impl Daemon {
     }
 
     /// `auto`: the mod once a probe of the Claude Code a launch would run
-    /// passed for this binary and this mod; `hooks` until then, and a probe
+    /// passed for this binary and this mod, with the hook set beside it
+    /// where the verdict is deaf (T-650); `hooks` until then, and a probe
     /// is started. A binary that changed since (Claude Code updates itself)
-    /// is probed again before it is trusted, and a mods-off verdict is asked
-    /// again when it is due (T-598) while this launch takes the hook set.
-    fn auto_road(&mut self) -> (Road, Option<String>) {
+    /// is probed again before it is trusted, and a mods-off or a classic-off
+    /// verdict is asked again when it is due (T-598) while this launch takes
+    /// what the verdict says.
+    fn auto_road(&mut self) -> (Road, Option<String>, bool) {
         let bin = modroad::claude_binary(self.shell_env.path.as_deref());
         let key = bin.as_deref().and_then(modroad::probe_key);
         let cached = self.modroad.probe.as_ref().filter(|p| Some(&p.key) == key.as_ref());
         if let Some(p) = cached {
-            let answer =
-                (if p.verdict.passed() { Road::Mod } else { Road::Hooks }, Some(p.verdict.line()));
+            let answer = (
+                if p.verdict.loads() { Road::Mod } else { Road::Hooks },
+                Some(p.verdict.line()),
+                p.verdict.deaf(),
+            );
             if self.mods_off_due(p) {
                 if let (Some(bin), Some(key)) = (bin, key) {
                     self.start_road_probe(bin, key);
@@ -236,7 +270,7 @@ impl Daemon {
             }
             _ => "no claude on the captured PATH",
         };
-        (Road::Hooks, Some(line.into()))
+        (Road::Hooks, Some(line.into()), false)
     }
 
     /// Every Claude launch asks `auto` (T-588), so the probe is not left for
@@ -309,13 +343,17 @@ impl Daemon {
     fn learn_road(&mut self, probe: Probe) {
         let had_passed = self.modroad.probe.as_ref().is_some_and(|p| p.verdict.passed());
         let passes = probe.verdict.passed();
+        let loads = probe.verdict.loads();
         modroad::save_probe(&self.paths, &probe);
         let line = probe.verdict.line();
         if had_passed && !passes {
             self.feed.board_outcome("automation", "claude_road_fallback", None, &line);
-            self.journal.line(&format!("claude road falls back to hooks: {line}"));
+            self.journal.line(&format!(
+                "claude road {}: {line}",
+                if loads { "keeps the mod and adds the hook set" } else { "falls back to hooks" }
+            ));
         } else if had_passed != passes || self.modroad.probe.is_none() {
-            let word = if passes { "mod" } else { "hooks" };
+            let word = if loads { "mod" } else { "hooks" };
             self.feed.board_outcome("automation", &format!("claude_road:{word}"), None, &line);
         }
         let setting = modroad::read_setting();
@@ -323,7 +361,7 @@ impl Daemon {
         self.modroad.probe = Some(probe);
         if setting.pref == RoadPref::Auto {
             self.note_road(RoadVerdict {
-                road: if passes { Road::Mod } else { Road::Hooks },
+                road: if loads { Road::Mod } else { Road::Hooks },
                 setting: setting.pref.word().into(),
                 source: setting.source,
                 probe: Some(line),
@@ -363,8 +401,9 @@ impl Daemon {
     /// reads `starting up` for the session's whole life. The author's board
     /// measures `SessionStart` 1–2 s after the spawn, before or beside the
     /// bridge's first poll, so a wait after that poll is a wide margin. The
-    /// relaunch is the same, and the verdict is `ClassicOff`, asked again
-    /// as the mods-off one is.
+    /// relaunch keeps the mod (its down roads and its tools work) and adds
+    /// the hook set beside it for the events; the verdict is `ClassicOff`,
+    /// asked again as the mods-off one is.
     ///
     /// The order against `rescue_silent_mods` (T-577), which arms a silent
     /// mod launch's words for the paste road at twice the bridge wait: this
@@ -386,7 +425,7 @@ impl Daemon {
                 r.kind == SessionKind::Claude
                     && r.frames_by_mod()
                     && r.state == SessionState::Spawning
-                    && !self.modroad.relaunched.contains(&r.id)
+                    && !self.modroad.relaunched.contains_key(&r.id)
             })
             .map(|r| (r.id, now.saturating_sub(r.state_changed_at.unwrap_or(now))))
             .filter(|(_, age)| *age >= wait)
@@ -428,7 +467,8 @@ impl Daemon {
             .is_ok_and(|screen| composer::read(&screen) != Composer::Absent)
     }
 
-    /// End a silent mod launch and launch it again on the hook set.
+    /// End a silent mod launch and launch it again with the hook set: alone
+    /// for a mod that never came up, beside the mod for one that is deaf.
     fn relaunch_on_hooks(&mut self, id: uuid::Uuid, silence: Silence, now: u64) -> bool {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
         let ticket = rec.ticket;
@@ -437,11 +477,11 @@ impl Daemon {
         let conversed = rec.transcript_path.is_some() || rec.claude_session_id.is_some();
         let plan = rec.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan");
         let reason = silence.reason();
-        self.modroad.relaunched.insert(id);
-        self.journal.line(&format!("session {id}: {reason}; relaunched on the hook set"));
+        self.modroad.relaunched.insert(id, silence);
+        self.journal.line(&format!("session {id}: {reason}; relaunched {}", silence.road_words()));
         // This Claude Code does not load the mod, or keeps the hook events
-        // from it: every later `auto` launch takes the hook set at once,
-        // until a probe says it loads again.
+        // from it: every later `auto` launch takes the hook set at once —
+        // alone, or beside the mod — until a probe says otherwise.
         if let Some(p) = self.modroad.probe.clone().filter(|p| p.verdict.passed()) {
             let version = p.verdict.version().unwrap_or_default().to_string();
             self.learn_road(Probe { key: p.key, verdict: silence.verdict(version, now) });
@@ -458,11 +498,13 @@ impl Daemon {
                 match owed {
                     Some(mut owed) => {
                         // Words the rescue pasted into the old pane are the
-                        // new pane's to receive.
+                        // new pane's to receive: by paste on the hook set
+                        // alone, down the mod's `submit` where it rides
+                        // beside (the hook set's `SessionStart` arms them).
                         if owed.parked.is_none() {
                             owed.parked = owed.sent.take();
                         }
-                        owed.mod_road = false;
+                        owed.mod_road = matches!(silence, Silence::Deaf { .. });
                         owed.next_press = None;
                         owed.ready_by = None;
                         owed.bridge_by = None;

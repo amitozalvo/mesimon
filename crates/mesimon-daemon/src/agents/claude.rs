@@ -90,11 +90,12 @@ fn flags(context: &LaunchContext<'_>) -> Vec<String> {
 }
 
 /// The hook set's `--settings` pair, written for this session: on the hook
-/// set's road only. On the mod road (T-577) the mod relays every event the
-/// set reported, holds the gate and runs `mesimon approve`, so no settings
-/// file is written and none is passed.
+/// set's road, and beside the mod where Claude Code keeps the hook events
+/// from it (T-650). On the mod road otherwise (T-577) the mod relays every
+/// event the set reported, holds the gate and runs `mesimon approve`, so no
+/// settings file is written and none is passed.
 fn hook_set(context: &LaunchContext<'_>) -> Result<Vec<String>, String> {
-    if context.road == mesimon_core::road::Road::Mod {
+    if !context.hook_set {
         return Ok(Vec::new());
     }
     let settings = hook_settings::write_settings(context.paths, context.session, &mesimon_bin())
@@ -270,6 +271,7 @@ mod tier_tests {
             tier,
             mod_dir: None,
             road: mesimon_core::road::Road::Hooks,
+            hook_set: true,
         }
     }
 
@@ -343,6 +345,7 @@ mod tier_tests {
             tools: AgentTools::Full,
             brief: true,
             road,
+            hook_set: road == Road::Hooks,
             ..context(&paths, Tier::builtin(AgentProvider::ClaudeCode))
         };
         let hooks = flags(&on(Road::Hooks));
@@ -365,8 +368,17 @@ mod tier_tests {
             SessionState::Sleeping,
         );
         let woke = Claude.resume(&on(Road::Mod), &rec).unwrap();
-        for flag in ["--mcp-config", "--allowedTools"] {
+        for flag in ["--mcp-config", "--allowedTools", "--settings"] {
             assert!(pair(&woke.argv, flag).is_empty(), "{flag}: {:?}", woke.argv);
+        }
+        // T-650: where Claude Code keeps the hook events from the mod, the
+        // hook set rides beside it, and the tools stay the mod's.
+        let beside = LaunchContext { hook_set: true, mod_dir: Some("/m".into()), ..on(Road::Mod) };
+        let both = Claude.resume(&beside, &rec).unwrap();
+        assert_eq!(pair(&both.argv, "--settings").len(), 1, "{:?}", both.argv);
+        assert_eq!(pair(&both.argv, "--plugin-dir"), ["/m"]);
+        for flag in ["--mcp-config", "--allowedTools"] {
+            assert!(pair(&both.argv, flag).is_empty(), "{flag}: {:?}", both.argv);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

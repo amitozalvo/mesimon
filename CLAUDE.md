@@ -363,8 +363,11 @@ events arrive (T-650):** a Team or Enterprise account, or managed settings, seat
 `cc-plugin-sec-default` outermost, whose `classic.*` hook hands every classic event past a
 person's plugins, so the mod loads, serves the tools and takes a `submit` and never hears
 `SessionStart`; a mod launch whose bridge polled and whose `SessionStart` has not come a bridge
-wait later is relaunched on the hook set the same way, verdict `ClassicOff`, same clock. A
-`submit` the mod reports `entered` clears `unsent`: the agent has the words.
+wait later is relaunched **with the hook set beside its mod** (`--settings` and `--plugin-dir`
+both; `frames_by_mod` false, so the hook set reports and the mod keeps the prompts, the answers,
+the tools, the gate and the quota windows), verdict `ClassicOff`, same clock, and every launch
+after carries both at once. A `submit` the mod reports `entered` clears `unsent`: the agent has
+the words.
 The hook set, `mesimon gate` and `mesimon mcp`'s server stay whole for an older Claude Code and
 Codex. The daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`),
 never a push from the writer thread. The mod spells nothing on promise 3's never-list (a unit

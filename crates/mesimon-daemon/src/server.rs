@@ -11897,12 +11897,12 @@ impl Daemon {
         let id = uuid::Uuid::new_v4();
         // The road (T-574), decided once and stamped below with the argv it
         // shaped.
-        let (road, mod_folder) = self.launch_road(kind, id);
+        let pick = self.launch_road(kind, id);
+        let road = pick.road;
         let spec = if let Some(adapter) = crate::agents::adapter(kind) {
-            match adapter.start(
-                &self.launch_context(id, ticket, kind, &cwd, plan, mod_folder),
-                &id.to_string(),
-            ) {
+            match adapter
+                .start(&self.launch_context(id, ticket, kind, &cwd, plan, &pick), &id.to_string())
+            {
                 Ok(spec) => spec,
                 Err(message) => return Response::Err { message },
             }
@@ -12802,7 +12802,7 @@ impl Daemon {
         kind: SessionKind,
         cwd: &'a std::path::Path,
         plan: bool,
-        mod_folder: Option<std::path::PathBuf>,
+        pick: &bridge::Pick,
     ) -> LaunchContext<'a> {
         LaunchContext {
             paths: &self.paths,
@@ -12820,12 +12820,13 @@ impl Daemon {
                 .unwrap_or_default(),
             // The laid mod when the launch's road is the mod (T-574);
             // T-573's research seam names another folder over it.
-            road: if mod_folder.is_some() {
+            road: if pick.folder.is_some() {
                 mesimon_core::road::Road::Mod
             } else {
                 mesimon_core::road::Road::Hooks
             },
-            mod_dir: mod_dir().or(mod_folder),
+            mod_dir: mod_dir().or_else(|| pick.folder.clone()),
+            hook_set: pick.hook_set,
         }
     }
 
@@ -12833,7 +12834,7 @@ impl Daemon {
         &self,
         rec: &SessionRecord,
         plan: bool,
-        mod_folder: Option<std::path::PathBuf>,
+        pick: &bridge::Pick,
     ) -> std::result::Result<LaunchSpec, String> {
         let context = self.launch_context(
             rec.id,
@@ -12841,7 +12842,7 @@ impl Daemon {
             rec.kind,
             std::path::Path::new(&rec.cwd),
             plan,
-            mod_folder,
+            pick,
         );
         crate::agents::adapter(rec.kind)
             .ok_or_else(|| "shells do not have agent conversations".to_string())?
@@ -13065,7 +13066,8 @@ impl Daemon {
             None
         };
         // A wake re-decides the road (T-574), as it re-reads the tier.
-        let (road, mod_folder) = self.launch_road(rec.kind, rec.id);
+        let pick = self.launch_road(rec.kind, rec.id);
+        let road = pick.road;
         let spec = if startup_retry {
             match adapter.start(
                 &self.launch_context(
@@ -13074,7 +13076,7 @@ impl Daemon {
                     rec.kind,
                     std::path::Path::new(&rec.cwd),
                     plan,
-                    mod_folder.clone(),
+                    &pick,
                 ),
                 &rec.id.to_string(),
             ) {
@@ -13091,7 +13093,7 @@ impl Daemon {
                             rec.kind,
                             std::path::Path::new(&rec.cwd),
                             plan,
-                            mod_folder.clone(),
+                            &pick,
                         ),
                         &new_id.to_string(),
                     ) {
@@ -13099,7 +13101,7 @@ impl Daemon {
                         Err(message) => return Response::Err { message },
                     }
                 }
-                None => match self.resume_argv(&rec, plan, mod_folder.clone()) {
+                None => match self.resume_argv(&rec, plan, &pick) {
                     Ok(a) => a,
                     Err(message) => return Response::Err { message },
                 },
