@@ -7898,7 +7898,8 @@ impl App {
                 if busy == "redeeming" {
                     "the relay is checking the license key".into()
                 } else if self.team.lapsed {
-                    "access lapsed: shared boards are read-only ∙ enter for a new license key".into()
+                    "access lapsed: shared boards are read-only ∙ enter for a new license key"
+                        .into()
                 } else {
                     "license key and sign out ∙ enter opens".into()
                 },
@@ -8170,8 +8171,11 @@ impl App {
                 Ok(())
             }
             SharingRow::LicenseKey => {
-                let text =
-                    if self.team_signed_in() { String::new() } else { self.team_code_draft.clone() };
+                let text = if self.team_signed_in() {
+                    String::new()
+                } else {
+                    self.team_code_draft.clone()
+                };
                 open(self, EditBuffer::from_text(text, ACCESS_CODE_MAX_BYTES));
                 Ok(())
             }
@@ -8194,7 +8198,8 @@ impl App {
             }
             SharingRow::SignIn if self.sign_in_wants_key() => {
                 self.key_dialog = true;
-                let buf = EditBuffer::from_text(self.team_code_draft.clone(), ACCESS_CODE_MAX_BYTES);
+                let buf =
+                    EditBuffer::from_text(self.team_code_draft.clone(), ACCESS_CODE_MAX_BYTES);
                 self.mode = Mode::Sharing { idx: 0, editing: Some(buf), armed: false };
                 Ok(())
             }
@@ -14972,12 +14977,7 @@ mod tests {
         assert_eq!(app.scope(), Scope::Sharing);
         assert_eq!(
             app.sharing_rows(),
-            [
-                SharingRow::Heading("YOU"),
-                SharingRow::Relay,
-                SharingRow::Name,
-                SharingRow::SignIn
-            ]
+            [SharingRow::Heading("YOU"), SharingRow::Relay, SharingRow::Name, SharingRow::SignIn]
         );
         // The relay field is prefilled with the hosted relay (T-514); a
         // self-hoster kills the line and types their own.

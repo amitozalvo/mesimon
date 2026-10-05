@@ -307,6 +307,14 @@ pub struct SessionRecord {
     /// mod launch passes no hook set (`frames_by_mod`).
     #[serde(default, skip_serializing_if = "crate::road::Road::is_hooks")]
     pub road: crate::road::Road,
+    /// The mod launch reports from Claude Code's native events
+    /// (`MESIMON_MOD_NATIVE=1`, T-658): where Claude Code keeps the classic
+    /// hook events from a person's plugins (a Team or Enterprise account),
+    /// the mod relays from its own events and a one-entry hook set rides
+    /// beside it for permissions alone. Stamped with the road at every
+    /// launch and wake.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native: bool,
     /// Codex's exact resumable thread, independent of Mesimon's record UUID.
     /// Opaque: a provider may change its identifier format without changing
     /// board identity. Never replace this with a thread-tree session ID.
@@ -471,12 +479,14 @@ impl Unsent {
 }
 
 impl SessionRecord {
-    /// Whether this record's pane reports through the mod alone (T-577): a
-    /// mod launch from a build that passes no hook set. A record launched on
-    /// the mod by an earlier build still carries `--settings` on its argv and
+    /// Whether this record's pane reports through the mod (T-577): a mod
+    /// launch from a build that passes no hook set, or a native one (T-658),
+    /// whose `--settings` holds the permission hooks alone. A record launched
+    /// on the mod beside the whole hook set (T-650, or an earlier build)
     /// reports through the hook set until its next wake, which re-decides.
     pub fn frames_by_mod(&self) -> bool {
-        self.road == crate::road::Road::Mod && !self.argv.iter().any(|a| a == "--settings")
+        self.road == crate::road::Road::Mod
+            && (self.native || !self.argv.iter().any(|a| a == "--settings"))
     }
 
     /// Words that never reached this seat's agent (T-570), while there is a
@@ -540,6 +550,7 @@ impl SessionRecord {
             claude_session_id: None,
             pane_key: None,
             road: crate::road::Road::Hooks,
+            native: false,
             codex_thread_id: None,
             codex_generation: None,
             codex_observed_seq: 0,
@@ -2761,6 +2772,13 @@ mod tests {
         assert!(!rec(Road::Mod, &["claude", "--settings", "/s.json", "--plugin-dir", "/m"])
             .frames_by_mod());
         assert!(!rec(Road::Hooks, &["claude", "--settings", "/s.json"]).frames_by_mod());
+        // T-658: a native launch's `--settings` is the permission hooks
+        // alone, and the mod reports the rest.
+        let mut native = rec(Road::Mod, &["claude", "--settings", "/s.json", "--plugin-dir", "/m"]);
+        native.native = true;
+        assert!(native.frames_by_mod());
+        native.road = Road::Hooks;
+        assert!(!native.frames_by_mod(), "the hook set's road is never the mod's");
     }
 
     use super::*;

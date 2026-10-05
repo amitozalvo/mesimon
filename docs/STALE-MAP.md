@@ -21130,3 +21130,52 @@ mode's classifier after `ask`; the quota auto-resume notifications; MCP elicitat
 hooks `session.start/end/compact`, `turn.start/step/complete`, `tool.call`, `tool.check`,
 `session.measure`, `session.receive`, the classic set; calls `$.agent.list`, `$.session.*`,
 `$.env.get` on literal names, as the validator requires).
+
+## A Team or Enterprise launch is native: the mod with `MESIMON_MOD_NATIVE=1` and a one-entry hook set for permissions (T-658, 2026-10-05, native road 2 of 3)
+
+**Built.** The daemon's half of T-651's go. Under a `ClassicOff` verdict (the probe read a Team
+or Enterprise account or managed settings, or a launch's bridge polled and heard no
+`SessionStart`) a Claude launch is no longer the mod beside the whole hook set (T-650): it is the
+mod with `MESIMON_MOD_NATIVE=1` in the pane, the switch the sibling ticket ("native road 1 of 3")
+reads in `register.ts` to relay from Claude Code's native events, plus `--settings` naming a file
+that holds `PermissionRequest` alone, its two entries exactly as the whole set spells them (the
+`mesimon hook` observer and `mesimon approve --hold …`).
+
+- `hook_settings::HookSet { Full, PermissionOnly, None }` is the one fact `launch_road` decides
+  (`Pick::hook_set`, `LaunchContext::hook_set`); `agents/claude.rs::hook_set()` writes the
+  matching file at `<state>/hooks/<uuid>.json`, so a wake rewrites it for its road.
+  `render_permission_settings` shares `permission_entries` with the whole set, and its test holds
+  the two equal.
+- `SessionRecord::native` (`#[serde(default)]`), stamped with the road at spawn and wake.
+  `frames_by_mod` is `road == Mod && (native || no --settings)`: on a native record the mod's
+  relays are the session's although `--settings` rides argv. A T-650 record (beside, not native)
+  keeps the hook set's frames until its next wake re-decides.
+- `on_hook`'s drop rule keeps `PermissionRequest` from the hook set on a native record: the one
+  hook-set event such a pane carries. The mod relays nothing for permissions under the switch,
+  so no frame is read twice. `RemotePermission` was never a relayed event and passes as before.
+- A deaf relaunch (`relaunch_silent_mods`, `Silence::Deaf`) goes through `launch_road` and comes
+  back native; the `relaunched` entry keeps it native for the record's daemon life. A probe-native
+  launch whose mod still hears nothing (a mod laid before the switch) is judged once and relaunched
+  native again, and `rescue_silent_mods` nets its words after that: the sequencing the ticket
+  allows until both halves are on main.
+- Words: the verdict line ends "the plugin reports from its own events, with one hook for
+  permissions"; the journal says "relaunched native, with one hook for permissions beside its
+  mod"; `doctor`'s advice and `docs/USING.md` say the mod reports from Claude Code's own events
+  and one hook reports permission requests.
+
+**Not built, on purpose.** `fake_claude_mod.py` speaks no native events: the stand-in engine runs
+the bridge and relays the mod's own reports, and the e2es send the native relays as mod-road
+frames (`hook_send_road(…, Some("mod"))`), which is what the relay set produces. The
+native→classic mapping is the mod ticket's unit tests. `MESIMON_MOD_NATIVE` is not yet in
+`the_mod_relays_exactly_what_the_hook_set_reports`' pane-variable list: the mod does not read it
+until the sibling ticket lands, which adds it there.
+
+**Tests.** `cargo ut` (the permission-only set and its traps, `frames_by_mod` on a native record,
+the three hook-set kinds through `Claude::resume`, the verdict line, doctor's line).
+`mod_auto_e2e` on both passes: the enterprise test now asserts the native shape (record, argv,
+the file's one event, the pane's `MESIMON_MOD_NATIVE=1` from the stub's `env.txt`, no
+`--mcp-config`, no relaunch), then a mod-road `SessionStart` leaves `starting up`, a hook-set
+`Stop` is dropped, a hook-set `PermissionRequest` reads needs-you, and a mod-road
+`UserPromptSubmit` acks the brief, sent once down the mod; the deaf test's relaunch is native and
+its words go down the mod's `submit` once the mod's own `SessionStart` arms them.
+`mod_turns_e2e` on both passes.

@@ -727,10 +727,11 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
     // Claude Code turning mods off (T-598), or keeping the hook events from
     // them on a Team or Enterprise account (T-650), is its own call and
     // costs the board nothing: the hook set carries every session as it did
-    // before 2.1.287, and the probe asks again by itself.
+    // before 2.1.287, or the mod reports from Claude Code's own events with
+    // one hook for permissions (T-658), and the probe asks again by itself.
     if v.mods_off {
         return rec(Level::Ok, "claude road", value).advice(format!(
-            "Nothing is needed from you: Claude Code has mods turned off, or keeps hook events from a person's plugins (a Team or Enterprise account). The hook set then reports each session as it did before 2.1.287, alone or beside the mod, which still carries the prompts and the board's tools where it loads. mesimon asks again at its next start and every 6 hours. {advice}"
+            "Nothing is needed from you: Claude Code has mods turned off, or keeps hook events from a person's plugins (a Team or Enterprise account). With mods off, the hook set reports each session as it did before 2.1.287. On a Team or Enterprise account the mod still loads: it reports each session from Claude Code's own events and carries the prompts and the board's tools, and one hook beside it reports permission requests. mesimon asks again at its next start and every 6 hours. {advice}"
         ));
     }
     let level = if v.fallback { Level::Warn } else { Level::Ok };
@@ -1296,7 +1297,7 @@ mod tests {
         assert!(advice.starts_with("Nothing is needed from you"), "{advice}");
         // T-650: a Team or Enterprise account keeps the hook events from the
         // mod. The same flag, the verdict's own words, the same advice.
-        let deaf = "claude 2.1.289: hook events do not reach the mod in this Claude Code (seen 11:44; an enterprise account); the hook set reports beside it";
+        let deaf = "claude 2.1.289: hook events do not reach the mod in this Claude Code (seen 11:44; an enterprise account); the plugin reports from its own events, with one hook for permissions";
         write_verdict(
             &paths,
             &RoadVerdict {

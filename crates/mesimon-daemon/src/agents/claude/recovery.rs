@@ -663,8 +663,11 @@ mod recovery_tests {
         let history = History::new();
         history.append(serde_json::json!({"uuid":"reply", "type":"assistant", "message":{
             "stop_reason":"end_turn", "content":[{"type":"text","text":"Committed."}]}}));
-        history.append(serde_json::json!({"uuid":"hooks", "type":"system", "subtype":"stop_hook_summary"}));
-        history.append(serde_json::json!({"uuid":"end", "type":"system", "subtype":"turn_duration"}));
+        history.append(
+            serde_json::json!({"uuid":"hooks", "type":"system", "subtype":"stop_hook_summary"}),
+        );
+        history
+            .append(serde_json::json!({"uuid":"end", "type":"system", "subtype":"turn_duration"}));
         let mut record = record(SessionState::RequiresAction { reason: Reason::Question });
         record.transcript_path = Some(history.0.display().to_string());
         let mut recovery = ClaudeRecovery::default();
@@ -703,10 +706,9 @@ mod recovery_tests {
         record.state = SessionState::RequiresAction { reason: Reason::Question };
         record.state_changed_at = Some(1000);
         let held = recovery.poll(&record, RecoverySample::Transcript, 990_000);
-        assert!(held.iter().all(|o| !matches!(
-            o.signal,
-            Signal::TranscriptHint { kind: TailHint::TurnComplete }
-        )));
+        assert!(held
+            .iter()
+            .all(|o| !matches!(o.signal, Signal::TranscriptHint { kind: TailHint::TurnComplete })));
         assert!(held.iter().any(|o| matches!(
             o.signal,
             Signal::TranscriptHint { kind: TailHint::AskUserQuestion }

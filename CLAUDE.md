@@ -364,12 +364,13 @@ events arrive (T-650):** a Team or Enterprise account, or managed settings, seat
 person's plugins, so the mod loads, serves the tools and takes a `submit` and never hears
 `SessionStart`. The probe's fourth step reads it where it can: `claude auth status --json`'s
 `subscriptionType` (`team`, `enterprise`) or a managed-settings file on the machine is
-`ClassicOff` before any launch, and every launch then carries **the hook set beside its mod**
-(`--settings` and `--plugin-dir` both; `frames_by_mod` false, so the hook set reports and the mod
-keeps the prompts, the answers, the tools, the gate and the quota windows). What the probe cannot
-see (remotely served managed settings) a launch finds: a mod launch whose bridge polled and whose
-`SessionStart` has not come a bridge wait later is relaunched the same way and writes the same
-verdict, same clock as `ModsOff`. A `submit` the mod reports `entered` clears `unsent`: the agent
+`ClassicOff` before any launch, and every launch then is **native** (T-658): the mod with
+`MESIMON_MOD_NATIVE=1`, which relays from Claude Code's own events in the hook set's names, and
+`--settings` naming a one-entry file, `PermissionRequest` alone (`HookSet::PermissionOnly`;
+`SessionRecord::native`, so `frames_by_mod` holds with `--settings` on argv and `on_hook` takes
+that one hook-set event). What the probe cannot see (remotely served managed settings) a launch
+finds: a mod launch whose bridge polled and whose `SessionStart` has not come a bridge wait later
+is relaunched the same way and writes the same verdict, same clock as `ModsOff`. A `submit` the mod reports `entered` clears `unsent`: the agent
 has the words.
 The hook set, `mesimon gate` and `mesimon mcp`'s server stay whole for an older Claude Code and
 Codex. The daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`),

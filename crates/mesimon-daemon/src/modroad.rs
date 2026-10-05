@@ -38,10 +38,10 @@
 //! on this machine; either is [`Verdict::ClassicOff`] before any launch. What
 //! the probe cannot see (managed settings served remotely) a launch finds:
 //! one whose bridge polled and whose `SessionStart` never came is relaunched
-//! with the hook set beside its mod and writes the same verdict, which
-//! expires as the mods-off one does. Under it the mod keeps the prompts, the
-//! answers, the tools, the gate and the quota windows, and the hook set
-//! reports the events, as it did before 2.1.287.
+//! and writes the same verdict, which expires as the mods-off one does.
+//! Under it a launch is native (T-658): the mod gets `MESIMON_MOD_NATIVE=1`
+//! and reports from Claude Code's own events (T-651), and a one-entry hook
+//! set rides beside it for the permission dialog alone.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -227,7 +227,8 @@ pub enum Verdict {
     /// ms) is when; the verdict is asked again after [`MODS_OFF_TTL_MS`].
     ModsOff { version: String, seen_at: u64 },
     /// The mod loads and this Claude Code keeps the hook events from it
-    /// (T-650): every launch carries the hook set beside its mod. A Team or
+    /// (T-650): every launch is native (T-658), the mod reporting from its
+    /// own events with the permission hooks beside it. A Team or
     /// Enterprise account, or managed settings, seat `cc-plugin-sec-default`,
     /// which hands every `classic.*` event past a person's plugins. `found`
     /// says how the probe knew (the account, the managed-settings file, or a
@@ -257,8 +258,8 @@ impl Verdict {
         matches!(self, Verdict::Passed { .. } | Verdict::ClassicOff { .. })
     }
 
-    /// Whether the hook set rides beside the mod (T-650): the mod loads and
-    /// this Claude Code keeps the hook events from it.
+    /// Whether the mod launches native (T-650, T-658): it loads and this
+    /// Claude Code keeps the hook events from it.
     pub fn deaf(&self) -> bool {
         matches!(self, Verdict::ClassicOff { .. })
     }
@@ -289,7 +290,7 @@ impl Verdict {
                 clock_of(*seen_at)
             ),
             Verdict::ClassicOff { version, seen_at, found } => format!(
-                "claude {version}: hook events do not reach the mod in this Claude Code (seen {}; {}); the hook set reports beside it",
+                "claude {version}: hook events do not reach the mod in this Claude Code (seen {}; {}); the plugin reports from its own events, with one hook for permissions",
                 clock_of(*seen_at),
                 if found.is_empty() { FOUND_UNSAID } else { found }
             ),
@@ -542,7 +543,7 @@ pub struct RoadVerdict {
     /// The fallback is Claude Code's own, and nothing is asked of the
     /// person: it turned mods off (T-598, the hook set alone), or it keeps
     /// the hook events from them (T-650, a Team or Enterprise account: the
-    /// hook set beside the mod). The probe's line says which. The key keeps
+    /// native mod, T-658). The probe's line says which. The key keeps
     /// its first name for the `doctor` of an older build.
     #[serde(default)]
     pub mods_off: bool,
@@ -759,7 +760,12 @@ mod tests {
         assert_eq!(v(&max, true), deaf(FOUND_BY_MANAGED));
         let line = v(&team, false).line();
         assert!(line.contains("(seen "), "{line}");
-        assert!(line.contains("; a team account); the hook set reports beside it"), "{line}");
+        assert!(
+            line.contains(
+                "; a team account); the plugin reports from its own events, with one hook for permissions"
+            ),
+            "{line}"
+        );
         assert_eq!(deaf_account("garbage"), None);
         assert_eq!(deaf_account(r#"{"subscriptionType":"pro"}"#), None);
         // A `probe.json` from before `found` reads with the general words.
@@ -809,9 +815,14 @@ mod tests {
             "{line}"
         );
         assert!(line.contains(FOUND_BY_LAUNCH), "{line}");
-        assert!(line.ends_with("); the hook set reports beside it"), "{line}");
+        assert!(
+            line.ends_with(
+                "); the plugin reports from its own events, with one hook for permissions"
+            ),
+            "{line}"
+        );
         assert_eq!(deaf.verdict.version(), Some("2.1.289"));
-        // The mod is taken either way; the hook set rides only beside a deaf one.
+        // The mod is taken either way; native only where it is deaf.
         assert!(deaf.verdict.loads() && deaf.verdict.deaf());
         assert!(!off.verdict.loads() && !off.verdict.deaf());
         let passed = Verdict::Passed { version: "2.1.289".into() };

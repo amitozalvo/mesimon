@@ -12,7 +12,7 @@ use super::{
     AgentAdapter, AgentCapabilities, AgentPreview, ExternalOwner, LaunchContext, LaunchSpec,
     ObservationMode, ResumePolicy,
 };
-use crate::hook_settings::{self, mesimon_bin};
+use crate::hook_settings::{self, mesimon_bin, HookSet};
 
 pub struct Claude;
 
@@ -89,17 +89,20 @@ fn flags(context: &LaunchContext<'_>) -> Vec<String> {
     argv
 }
 
-/// The hook set's `--settings` pair, written for this session: on the hook
-/// set's road, and beside the mod where Claude Code keeps the hook events
-/// from it (T-650). On the mod road otherwise (T-577) the mod relays every
-/// event the set reported, holds the gate and runs `mesimon approve`, so no
-/// settings file is written and none is passed.
+/// The hook set's `--settings` pair, written for this session: the whole
+/// set on the hook set's road, and the permission entries alone beside a
+/// native mod (T-658), where Claude Code keeps the hook events from the mod
+/// and the mod reports from its own. On the mod road otherwise (T-577) the
+/// mod relays every event the set reported, holds the gate and runs
+/// `mesimon approve`, so no settings file is written and none is passed.
 fn hook_set(context: &LaunchContext<'_>) -> Result<Vec<String>, String> {
-    if !context.hook_set {
-        return Ok(Vec::new());
+    let (paths, session, bin) = (context.paths, context.session, mesimon_bin());
+    let settings = match context.hook_set {
+        HookSet::None => return Ok(Vec::new()),
+        HookSet::Full => hook_settings::write_settings(paths, session, &bin),
+        HookSet::PermissionOnly => hook_settings::write_permission_settings(paths, session, &bin),
     }
-    let settings = hook_settings::write_settings(context.paths, context.session, &mesimon_bin())
-        .map_err(|e| format!("hook settings: {e}"))?;
+    .map_err(|e| format!("hook settings: {e}"))?;
     Ok(vec!["--settings".into(), settings.display().to_string()])
 }
 
@@ -271,7 +274,7 @@ mod tier_tests {
             tier,
             mod_dir: None,
             road: mesimon_core::road::Road::Hooks,
-            hook_set: true,
+            hook_set: HookSet::Full,
         }
     }
 
@@ -345,7 +348,7 @@ mod tier_tests {
             tools: AgentTools::Full,
             brief: true,
             road,
-            hook_set: road == Road::Hooks,
+            hook_set: if road == Road::Hooks { HookSet::Full } else { HookSet::None },
             ..context(&paths, Tier::builtin(AgentProvider::ClaudeCode))
         };
         let hooks = flags(&on(Road::Hooks));
@@ -371,15 +374,31 @@ mod tier_tests {
         for flag in ["--mcp-config", "--allowedTools", "--settings"] {
             assert!(pair(&woke.argv, flag).is_empty(), "{flag}: {:?}", woke.argv);
         }
-        // T-650: where Claude Code keeps the hook events from the mod, the
-        // hook set rides beside it, and the tools stay the mod's.
-        let beside = LaunchContext { hook_set: true, mod_dir: Some("/m".into()), ..on(Road::Mod) };
-        let both = Claude.resume(&beside, &rec).unwrap();
+        // T-658: where Claude Code keeps the hook events from the mod, the
+        // permission entries alone ride beside it, and the tools stay the
+        // mod's. The file is rewritten for the road each launch takes.
+        let read = |argv: &[String]| -> serde_json::Value {
+            let path = pair(argv, "--settings")[0];
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        };
+        let events = |v: &serde_json::Value| v["hooks"].as_object().unwrap().len();
+        let native = LaunchContext {
+            hook_set: HookSet::PermissionOnly,
+            mod_dir: Some("/m".into()),
+            ..on(Road::Mod)
+        };
+        let both = Claude.resume(&native, &rec).unwrap();
         assert_eq!(pair(&both.argv, "--settings").len(), 1, "{:?}", both.argv);
         assert_eq!(pair(&both.argv, "--plugin-dir"), ["/m"]);
         for flag in ["--mcp-config", "--allowedTools"] {
             assert!(pair(&both.argv, flag).is_empty(), "{flag}: {:?}", both.argv);
         }
+        let file = read(&both.argv);
+        assert_eq!(events(&file), 1, "{file}");
+        assert!(file["hooks"].get("PermissionRequest").is_some(), "{file}");
+        let whole = Claude.resume(&on(Road::Hooks), &rec).unwrap();
+        assert_eq!(pair(&whole.argv, "--settings"), pair(&both.argv, "--settings"));
+        assert!(events(&read(&whole.argv)) > 1, "the hook set's road gets the whole set");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

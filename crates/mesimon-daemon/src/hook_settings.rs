@@ -202,30 +202,69 @@ pub fn render_settings(
     for ev in SINGLE_EVENTS {
         hooks.insert(ev.into(), Value::Array(vec![e(ev, None, None)]));
     }
-    hooks.insert(
-        "PermissionRequest".into(),
-        Value::Array(vec![
-            e("PermissionRequest", None, None),
-            json!({
-                "hooks": [{"type": "command", "command": hook_bin.display().to_string(),
-                    "args": ["approve", "--sock", hook_sock.display().to_string(),
-                        "--session", session.to_string(),
-                        "--hold", PERMISSION_HOLD_SECS.to_string()],
-                    "timeout": PERMISSION_HOLD_SECS + 10}]
-            }),
-        ]),
-    );
+    hooks.insert("PermissionRequest".into(), permission_entries(hook_bin, hook_sock, session));
     json!({ "hooks": hooks })
+}
+
+/// `PermissionRequest`'s two entries: the observer, and `mesimon approve`,
+/// which holds the dialog for a paired person's answer (T-632). The same in
+/// the whole set and in the permission-only one.
+fn permission_entries(hook_bin: &Path, hook_sock: &Path, session: uuid::Uuid) -> Value {
+    Value::Array(vec![
+        entry(hook_bin, hook_sock, session, "PermissionRequest", None, None),
+        json!({
+            "hooks": [{"type": "command", "command": hook_bin.display().to_string(),
+                "args": ["approve", "--sock", hook_sock.display().to_string(),
+                    "--session", session.to_string(),
+                    "--hold", PERMISSION_HOLD_SECS.to_string()],
+                "timeout": PERMISSION_HOLD_SECS + 10}]
+        }),
+    ])
+}
+
+/// The permission-only set (T-658): `PermissionRequest`'s two entries and
+/// nothing else, for a native mod launch. Where Claude Code keeps the
+/// classic hook events from a person's plugins, the mod reports from its
+/// own events, and a permission dialog is the one moment those do not give
+/// it (`tool.check` resolving `ask` holds the dialog undrawn, T-651).
+pub fn render_permission_settings(hook_bin: &Path, hook_sock: &Path, session: uuid::Uuid) -> Value {
+    json!({ "hooks": { "PermissionRequest": permission_entries(hook_bin, hook_sock, session) } })
+}
+
+/// Which generated hook file a Claude launch passes as `--settings`
+/// (`Daemon::launch_road`): the whole set on the hook set's road, none on a
+/// mod that hears the hook events (T-577), the permission entries alone
+/// beside a native one (T-658).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookSet {
+    Full,
+    PermissionOnly,
+    None,
 }
 
 /// Write `state_dir/hooks/<session>.json`, mode 0600. Returns the abs path.
 pub fn write_settings(paths: &Paths, session: uuid::Uuid, hook_bin: &Path) -> Result<PathBuf> {
+    let value =
+        render_settings(hook_bin, &paths.hook_sock(), session, &paths.board_dir, &paths.state_dir);
+    write_file(paths, session, &value)
+}
+
+/// The permission-only set at the same path, mode 0600: a wake rewrites the
+/// file for the road it takes.
+pub fn write_permission_settings(
+    paths: &Paths,
+    session: uuid::Uuid,
+    hook_bin: &Path,
+) -> Result<PathBuf> {
+    let value = render_permission_settings(hook_bin, &paths.hook_sock(), session);
+    write_file(paths, session, &value)
+}
+
+fn write_file(paths: &Paths, session: uuid::Uuid, value: &Value) -> Result<PathBuf> {
     let dir = paths.hooks_dir();
     std::fs::create_dir_all(&dir)?;
     let file = dir.join(format!("{session}.json"));
-    let value =
-        render_settings(hook_bin, &paths.hook_sock(), session, &paths.board_dir, &paths.state_dir);
-    std::fs::write(&file, serde_json::to_string_pretty(&value)?)?;
+    std::fs::write(&file, serde_json::to_string_pretty(value)?)?;
     std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     Ok(file)
 }
@@ -612,6 +651,42 @@ mod tests {
                 assert!(args[sock_pos + 1].as_str().unwrap().starts_with('/'), "sock abs");
             }
         }
+    }
+
+    fn permission_only() -> Value {
+        render_permission_settings(
+            Path::new("/abs/mesimon"),
+            Path::new("/tmp/mesimon-1/abcd/hook.sock"),
+            uuid::Uuid::nil(),
+        )
+    }
+
+    /// T-658: the native launch's file is `PermissionRequest` alone, its
+    /// two entries spelled exactly as the whole set spells them, under the
+    /// same traps: the exec form, no `if`, no matcher (the event takes
+    /// none), no `async` (the approve holds a decision), bounded timeouts.
+    #[test]
+    fn the_permission_only_set_is_the_whole_sets_permission_entries() {
+        let v = permission_only();
+        let events: Vec<&String> = v["hooks"].as_object().unwrap().keys().collect();
+        assert_eq!(events, ["PermissionRequest"]);
+        assert_eq!(v["hooks"]["PermissionRequest"], rendered()["hooks"]["PermissionRequest"]);
+        let all = entries(&v);
+        assert_eq!(all.len(), 2);
+        let subcommands: Vec<&Value> = all.iter().map(|(_, e)| &e["hooks"][0]["args"][0]).collect();
+        assert_eq!(subcommands, [&json!("hook"), &json!("approve")]);
+        for (ev, e) in all {
+            assert!(e.get("matcher").is_none(), "matcher on {ev}");
+            assert!(e.get("if").is_none(), "`if` on {ev}");
+            for h in e["hooks"].as_array().unwrap() {
+                assert_eq!(h["type"], json!("command"));
+                assert!(h["command"].as_str().unwrap().starts_with('/'), "hook bin abs");
+                assert!(h["args"].is_array(), "the exec form: command plus args");
+                assert!(h.get("if").is_none() && h.get("async").is_none(), "{h}");
+                assert!(h["timeout"].as_u64().is_some_and(|t| t <= PERMISSION_HOLD_SECS + 10));
+            }
+        }
+        assert_eq!(permission_only(), permission_only());
     }
 
     #[test]

@@ -241,6 +241,7 @@ mod tests {
             claude_session_id: None,
             pane_key: None,
             road: crate::road::Road::Hooks,
+            native: false,
             codex_thread_id: None,
             codex_generation: None,
             codex_observed_seq: 0,

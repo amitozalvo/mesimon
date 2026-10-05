@@ -1444,11 +1444,17 @@ impl Daemon {
         cwd: &std::path::Path,
         session: uuid::Uuid,
         kind: SessionKind,
-        road: mesimon_core::road::Road,
+        pick: &bridge::Pick,
     ) -> Vec<(String, String)> {
+        let road = pick.road;
         let mut env = self.session_vars(ticket, cwd);
         if road == mesimon_core::road::Road::Mod {
             env.extend(self.mod_vars(session));
+            // The native relays (T-658): this Claude Code keeps the classic
+            // hook events from the mod, so it reports from its own.
+            if pick.native() {
+                env.push(("MESIMON_MOD_NATIVE".into(), "1".into()));
+            }
             // The tier the mod registers (T-577), as the shim's `--tools`:
             // what it LISTS; the daemon checks the tier at every call.
             let tools = self.agent_tools_for(ticket);
@@ -3550,15 +3556,19 @@ impl Daemon {
         // Every received frame is feed-logged by NAME only — never its
         // payload (D11: prompt text is read, never stored).
         // A hook-set frame for a session whose pane reports through the mod
-        // alone (T-577) came from nothing mesimon launched there: the pane
-        // has no hook set. Tmux's `pane-died` and the gate's report are not
-        // the hook set's events and pass.
+        // (T-577) came from nothing mesimon launched there: the pane has no
+        // hook set, or a native one's holds `PermissionRequest` alone
+        // (T-658), the one event its mod does not relay. Tmux's `pane-died`
+        // and the gate's and the approve's reports are not the hook set's
+        // events and pass.
         if frame.road == Road::Hooks
             && mesimon_core::road::RELAYED_EVENTS.contains(&frame.event.as_str())
             && self
                 .resolve_session(&frame.session)
                 .and_then(|id| self.board.sessions.iter().find(|s| s.id == id))
-                .is_some_and(|rec| rec.frames_by_mod())
+                .is_some_and(|rec| {
+                    rec.frames_by_mod() && !(rec.native && frame.event == "PermissionRequest")
+                })
         {
             return;
         }
@@ -11922,12 +11932,13 @@ impl Daemon {
         rec.codex_generation = spec.generation;
         rec.started_by = started_by;
         rec.road = road;
+        rec.native = pick.native();
         if kind == SessionKind::Codex {
             rec.agent_preview_path =
                 Some(crate::agents::codex::preview_path(&self.paths, id).display().to_string());
             rec.pending_prefill = true;
         }
-        let launch = self.launch(&argv, &self.launch_vars(ticket, &cwd, id, kind, road));
+        let launch = self.launch(&argv, &self.launch_vars(ticket, &cwd, id, kind, &pick));
         match self.backend.spawn(&rec.sid16(), &cwd, &launch) {
             Ok(pane) => rec.pane_key = Some(pane),
             Err(e) => return Response::Err { message: format!("spawn failed: {e}") },
@@ -13154,7 +13165,7 @@ impl Daemon {
         }
         self.reaping.remove(&sid); // a fresh pane must not meet a stale reap
         let _ = self.backend.kill_session(&sid); // clear any dead remain-on-exit pane
-        let launch = self.launch(&argv, &self.launch_vars(ticket, &cwd, id, rec.kind, road));
+        let launch = self.launch(&argv, &self.launch_vars(ticket, &cwd, id, rec.kind, &pick));
         let pane = match self.backend.spawn(&sid, &cwd, &launch) {
             Ok(pane) => pane,
             Err(e) => {
@@ -13181,6 +13192,7 @@ impl Daemon {
             rec.pane_key = Some(pane);
             rec.argv = argv;
             rec.road = road;
+            rec.native = pick.native();
             rec.codex_generation = spec.generation;
             rec.codex_plan_dialog_seen = false;
             rec.codex_plan_dismissed_turn = None;

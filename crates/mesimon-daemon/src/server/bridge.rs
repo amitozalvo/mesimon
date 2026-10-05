@@ -24,13 +24,14 @@
 //! (`relaunch_silent_mods`), and the probe learns that this Claude Code has
 //! mods off, so the launches after it take the hook set at once. A mod that
 //! loads and is kept from the hook events (T-650, a Team or Enterprise
-//! account) is relaunched with the hook set BESIDE it: a bridge that polled
-//! with no `SessionStart` behind it is the sign, the verdict is
-//! `ClassicOff`, and every launch after carries both — the mod for the
-//! prompts, the answers, the tools, the gate and the quota windows, the
-//! hook set for the events (`frames_by_mod` is false on such a record).
+//! account) is relaunched NATIVE (T-658): a bridge that polled with no
+//! `SessionStart` behind it is the sign, the verdict is `ClassicOff`, and
+//! every launch after carries the mod with `MESIMON_MOD_NATIVE=1`, which
+//! reports from Claude Code's own events, and a one-entry hook set beside
+//! it for the permission dialog, the one moment those events do not give.
 
 use super::*;
+use crate::hook_settings::HookSet;
 use crate::modroad::{self, Probe, RoadVerdict, Verdict};
 use mesimon_core::road::{
     ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_FILL, MOD_LOAD_FAILED, MOD_PONG,
@@ -70,13 +71,21 @@ struct Bridge {
 }
 
 /// What a Claude launch got from `Daemon::launch_road`: its road, the folder
-/// `--plugin-dir` names when that is the mod, and whether the hook set rides
-/// argv (`--settings`) — on `hooks` always, on the mod only beside a deaf one
-/// (T-650).
+/// `--plugin-dir` names when that is the mod, and which hook file rides argv
+/// (`--settings`) — the whole set on `hooks`, the permission entries alone
+/// beside a native mod (T-658), none for a mod that hears.
 pub(super) struct Pick {
     pub(super) road: Road,
     pub(super) folder: Option<std::path::PathBuf>,
-    pub(super) hook_set: bool,
+    pub(super) hook_set: HookSet,
+}
+
+impl Pick {
+    /// The mod reports from Claude Code's native events (T-658): the pane's
+    /// `MESIMON_MOD_NATIVE=1`, and the record's `native`.
+    pub(super) fn native(&self) -> bool {
+        self.hook_set == HookSet::PermissionOnly
+    }
 }
 
 /// What the request in hand asked the writer to park (`Daemon::mod_park`).
@@ -99,7 +108,7 @@ pub(super) struct ModRoad {
     bridges: HashMap<uuid::Uuid, Bridge>,
     /// The records relaunched this daemon life and why (T-598, T-650): each
     /// once, and each keeps what its silence taught — the hook set alone, or
-    /// the hook set beside its mod — until the daemon restarts.
+    /// the native mod (T-658) — until the daemon restarts.
     relaunched: HashMap<uuid::Uuid, Silence>,
     /// A mods-off verdict this daemon read at start: asked again once, before
     /// its six hours are up (T-598).
@@ -154,7 +163,7 @@ impl Silence {
     fn road_words(self) -> &'static str {
         match self {
             Silence::Unloaded { .. } => "on the hook set",
-            Silence::Deaf { .. } => "with the hook set beside its mod",
+            Silence::Deaf { .. } => "native, with one hook for permissions beside its mod",
         }
     }
 }
@@ -165,19 +174,20 @@ fn reply_now(reply: Sender<ClientReply>, response: Response) {
 
 impl Daemon {
     /// The road this launch takes, the folder `--plugin-dir` names when it
-    /// is the mod, and whether the hook set rides argv: on `hooks` always,
-    /// on the mod only beside a deaf one (T-650). Decided once per launch
-    /// and stamped on the record in the same block (`spawn_session`,
+    /// is the mod, and which hook file rides argv: the whole set on `hooks`,
+    /// the permission entries alone beside a native mod (T-658), where the
+    /// verdict is deaf, and none for a mod that hears. Decided once per
+    /// launch and stamped on the record in the same block (`spawn_session`,
     /// `resume_session`). Claude only, and nothing is laid or probed for a
     /// launch the seam sends on `hooks`. A record relaunched this daemon
     /// life keeps what its silence taught (T-598, T-650), whatever a probe
     /// has said since.
     pub(super) fn launch_road(&mut self, kind: SessionKind, session: uuid::Uuid) -> Pick {
         if kind != SessionKind::Claude {
-            return Pick { road: Road::Hooks, folder: None, hook_set: true };
+            return Pick { road: Road::Hooks, folder: None, hook_set: HookSet::Full };
         }
         let setting = modroad::read_setting();
-        let (mut road, probe_line, mut beside) = match setting.pref {
+        let (mut road, probe_line, mut native) = match setting.pref {
             RoadPref::Hooks => (Road::Hooks, None, false),
             RoadPref::Mod => (Road::Mod, None, false),
             RoadPref::Auto => self.auto_road(),
@@ -190,10 +200,10 @@ impl Daemon {
                         "session {session} stays on the hook set: its mod never reported once this daemon life"
                     ));
                 }
-                Some(Silence::Deaf { .. }) if !beside => {
-                    beside = true;
+                Some(Silence::Deaf { .. }) if !native => {
+                    native = true;
                     self.journal.line(&format!(
-                        "session {session} keeps the hook set beside its mod: its mod heard no SessionStart once this daemon life"
+                        "session {session} stays native: its mod heard no SessionStart once this daemon life"
                     ));
                 }
                 _ => {}
@@ -206,7 +216,11 @@ impl Daemon {
                 road = Road::Hooks;
             }
         }
-        let hook_set = road == Road::Hooks || beside;
+        let hook_set = match road {
+            Road::Hooks => HookSet::Full,
+            Road::Mod if native => HookSet::PermissionOnly,
+            Road::Mod => HookSet::None,
+        };
         self.note_road(RoadVerdict {
             road,
             setting: setting.pref.word().into(),
@@ -215,7 +229,7 @@ impl Daemon {
             lay_error: self.modroad.lay_error.clone(),
             fallback: false,
             mods_off: self.modroad.probe.as_ref().is_some_and(Probe::claude_off)
-                && hook_set
+                && hook_set != HookSet::None
                 && setting.pref == RoadPref::Auto,
         });
         Pick { road, folder, hook_set }
@@ -242,8 +256,8 @@ impl Daemon {
     }
 
     /// `auto`: the mod once a probe of the Claude Code a launch would run
-    /// passed for this binary and this mod, with the hook set beside it
-    /// where the verdict is deaf (T-650); `hooks` until then, and a probe
+    /// passed for this binary and this mod, native where the verdict is
+    /// deaf (T-650, T-658); `hooks` until then, and a probe
     /// is started. A binary that changed since (Claude Code updates itself)
     /// is probed again before it is trusted, and a mods-off or a classic-off
     /// verdict is asked again when it is due (T-598) while this launch takes
@@ -409,9 +423,12 @@ impl Daemon {
     /// reads `starting up` for the session's whole life. The author's board
     /// measures `SessionStart` 1–2 s after the spawn, before or beside the
     /// bridge's first poll, so a wait after that poll is a wide margin. The
-    /// relaunch keeps the mod (its down roads and its tools work) and adds
-    /// the hook set beside it for the events; the verdict is `ClassicOff`,
-    /// asked again as the mods-off one is.
+    /// relaunch keeps the mod (its down roads and its tools work) and makes
+    /// it native (T-658): `MESIMON_MOD_NATIVE=1` has it report from Claude
+    /// Code's own events, and the permission hooks ride beside it; the
+    /// verdict is `ClassicOff`, asked again as the mods-off one is. A native
+    /// launch that hears nothing (a mod laid before the switch) is relaunched
+    /// the same way, once, and the rescue nets its words after that.
     ///
     /// The order against `rescue_silent_mods` (T-577), which arms a silent
     /// mod launch's words for the paste road at twice the bridge wait: this
@@ -475,8 +492,8 @@ impl Daemon {
             .is_ok_and(|screen| composer::read(&screen) != Composer::Absent)
     }
 
-    /// End a silent mod launch and launch it again with the hook set: alone
-    /// for a mod that never came up, beside the mod for one that is deaf.
+    /// End a silent mod launch and launch it again: on the hook set alone
+    /// for a mod that never came up, native for one that is deaf (T-658).
     fn relaunch_on_hooks(&mut self, id: uuid::Uuid, silence: Silence, now: u64) -> bool {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
         let ticket = rec.ticket;
@@ -488,8 +505,8 @@ impl Daemon {
         self.modroad.relaunched.insert(id, silence);
         self.journal.line(&format!("session {id}: {reason}; relaunched {}", silence.road_words()));
         // This Claude Code does not load the mod, or keeps the hook events
-        // from it: every later `auto` launch takes the hook set at once —
-        // alone, or beside the mod — until a probe says otherwise.
+        // from it: every later `auto` launch takes the hook set alone, or the
+        // native mod, at once, until a probe says otherwise.
         if let Some(p) = self.modroad.probe.clone().filter(|p| p.verdict.passed()) {
             let version = p.verdict.version().unwrap_or_default().to_string();
             self.learn_road(Probe { key: p.key, verdict: silence.verdict(version, now) });
@@ -507,8 +524,8 @@ impl Daemon {
                     Some(mut owed) => {
                         // Words the rescue pasted into the old pane are the
                         // new pane's to receive: by paste on the hook set
-                        // alone, down the mod's `submit` where it rides
-                        // beside (the hook set's `SessionStart` arms them).
+                        // alone, down the native mod's `submit` (its own
+                        // `SessionStart` arms them).
                         if owed.parked.is_none() {
                             owed.parked = owed.sent.take();
                         }
