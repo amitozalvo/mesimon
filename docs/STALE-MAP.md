@@ -21211,3 +21211,23 @@ tail's lag no longer reaches the card, but the lag itself is unexplained.
 **Tests.** `restart_e2e::restart_recovers_working_from_a_board_tool_call`: a restart mid-turn
 with a silent transcript holds `Unknown` past two tail polls, and one agent `get_ticket` lifts
 it to `Running`. It fails with the call removed.
+
+## Tests sized to the change, not the full suite per ticket (T-661, 2026-10-05)
+
+**Asked.** Every finished or rebased ticket ran `cargo nextest run --workspace`; was it worth it?
+
+**Measured** over every ticket-worktree transcript from 2026-09-05 to 2026-10-05 (a nextest
+`Summary` line of 500+ tests is a full run): 230 full runs in 115 sessions on 112 tickets, median
+73 s of test time (p90 116 s) on top of relinking every e2e binary. 138 of them followed a rebase
+ask. 11 were red: 10 went green on a rerun with no edit between (load and first-exec flakes:
+`the_checkout_stands_on_the_wire` ×3, the train's two, `m4_worktree_lifecycle`, …), and one was
+real — T-227's schema bump broke the snooze e2e, which pinned the schema literal. **No rebase's
+full run caught anything.**
+
+**Decided.** The rule lives in this repository's contract (CLAUDE.md, AGENTS.md), not in
+`AgentPrompt::Rebase`, whose "run the tests" is mesimon's words to every user's repository. A
+rebase is `cargo ut` + a build, plus an area's e2es only where a resolved code conflict sits; a
+finished ticket is `cargo ut` + the e2es its diff reaches, and the full suite once only for a
+daemon, wire, state-schema, tmux-backend or harness change (T-227's class). The release gate
+keeps the full suite on both roads, so a regression that slips is caught before a tag, at the
+cost of a bisect.

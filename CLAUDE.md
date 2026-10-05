@@ -24,7 +24,18 @@ checkout dedicated to one ticket, with `MESIMON_TICKET` and `MESIMON_WORKTREE_BR
 environment. Work and commit freely on that branch, and **commit your work when done**:
 uncommitted changes cannot merge and block cleanup. When asked to rebase, rebase onto the
 default branch, resolve conflicts, then run the tests and fix failures before reporting done.
-Never `git checkout main` there (it will fail — main belongs to another worktree) and never
+**"The tests" are sized to the change, not the whole suite every time** (T-661: 230 full runs in
+ticket worktrees, 11 red, 10 of them load flakes and 0 caught by a rebase):
+- **A rebase** is `cargo ut` + `cargo build --workspace`. Add the e2e binaries of an area only
+  when a conflict you resolved was in that area's code (a STALE-MAP or CHANGELOG conflict is not).
+- **Finishing a ticket** is `cargo ut` + the `<area>_e2e` binaries the diff can reach. Run
+  `cargo nextest run --workspace` once, at the end, only when the diff changes the daemon, the
+  wire (`core/src/command.rs`, `core/src/mcp.rs`), a state file's schema, the tmux backend or
+  the e2e harness — the one real catch was a schema bump an unrelated e2e pinned. A TUI-, docs-
+  or `ci/`-only diff never needs it.
+- The release gate (`ci/test-run.py`, both roads) is the full-suite backstop and is unchanged.
+
+In a ticket worktree, never `git checkout main` (it will fail — main belongs to another worktree) and never
 merge or push to main yourself: the user merges through mesimon, fast-forward only, so a green
 rebased branch is the deliverable. **Never call Claude Code's `EnterWorktree` tool** — a
 worktree is the ticket's workspace setting, cut by mesimon. `EnterWorktree` changes the process

@@ -92,6 +92,11 @@ their text descriptive, bounded, and non-instructional.
   that branch because uncommitted work blocks Mesimon's merge and cleanup flow.
 - Rebase an `msmn/` branch only when asked. Never check out, merge into, or push `main` from a
   ticket worktree; the user performs the fast-forward merge through Mesimon.
+- Size the tests to the change. After a rebase: `cargo ut` and `cargo build --workspace`, plus
+  an area's e2e binaries only where a resolved conflict was in that area's code. Finishing a
+  ticket: `cargo ut` and the e2e binaries the diff can reach; `cargo nextest run --workspace`
+  once, at the end, only for a daemon, wire, state-schema, tmux-backend or e2e-harness change.
+  The release gate keeps the full suite (T-661).
 - Do not use destructive Git commands unless the user explicitly requests them.
 - A daemon process keeps running after rebuilds. After daemon-side changes, use the TUI's `U`
   handover or stop the old daemon cleanly before manual runtime verification.
