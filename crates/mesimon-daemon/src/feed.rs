@@ -104,7 +104,7 @@ impl FeedWriter {
         decision: &attention::Decision,
     ) {
         if decision.before == decision.after
-            && matches!(source, "tail" | "activity" | "status" | "probe")
+            && matches!(source, "tail" | "activity" | "status" | "probe" | "agent_call")
         {
             return; // repeated passive probes do not grow the journal every poll
         }

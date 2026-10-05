@@ -4811,6 +4811,33 @@ impl Daemon {
     ///
     /// The shim that speaks MCP runs inside the agent's own process tree and
     /// is therefore untrusted. It holds none of this.
+    /// A board tool call is the agent's own word that its session is in a
+    /// turn (T-660), refused or not. On the mod road a registered tool fires
+    /// no `PreToolUse` and no `PostToolUse`, so a turn spent on board tools
+    /// and thinking sent the machine nothing: after a restart T-650's lead
+    /// wore `Unknown{DaemonRestarted}` for two and a half minutes, through
+    /// three `create_ticket`s and two `start_agent`s, until its reply. The
+    /// call may be a subagent's, so it is heard as a nested tool start: it
+    /// lifts `Unknown` and an inferred idle, keeps a park's clock, and leaves
+    /// a stated idle and a held dialog alone.
+    fn hear_agent_call(&mut self, session: uuid::Uuid) {
+        let principal = Principal::Automation { rule: "agent_call".into() };
+        if matches!(
+            authorize(&principal, &Action::Mutate, &Resource::Session { id: session }),
+            Decision::Deny { .. }
+        ) {
+            return;
+        }
+        let now = now_ms();
+        let signal = Signal::ToolStarted { nested: true };
+        let Some(change) = self.observe_signal(session, &signal, now, "agent_call") else {
+            return;
+        };
+        if self.apply_change(session, &change, None, Some("agent_call")) {
+            self.persist_and_notify();
+        }
+    }
+
     fn handle_agent(&mut self, session: uuid::Uuid, cmd: Command) -> Response {
         if !mcp::agent_allows(&cmd) {
             return Response::Err { message: "not available to an agent session".into() };
@@ -4846,6 +4873,7 @@ impl Daemon {
             }
             return self.mod_next(session, ack, pane, speaks);
         }
+        self.hear_agent_call(session);
         // The column's tier (T-117), against the ticket's column as it
         // stands NOW — the shim listed the tools of the column at spawn, and
         // the model reads the tier it is on in the refusal.

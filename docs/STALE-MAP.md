@@ -21179,3 +21179,35 @@ the file's one event, the pane's `MESIMON_MOD_NATIVE=1` from the stub's `env.txt
 `UserPromptSubmit` acks the brief, sent once down the mod; the deaf test's relaunch is native and
 its words go down the mod's `submit` once the mod's own `SessionStart` arms them.
 `mod_turns_e2e` on both passes.
+
+## A board tool call says the turn is live (T-660, 2026-10-05, "T-650 is working, called tools and thinkin, but mesimon still marked it as unknown until it sent a message")
+
+**Seen.** The daemon restarted at 11:19:40 (the `U` handover to alpha.39) while T-650's lead, on
+the mod road alone, was mid-turn. Reconcile set it to `Unknown{DaemonRestarted}`, as designed,
+to wait for the next hook or the transcript tail. For the next 160 s the lead thought for 40 s,
+then made three `create_ticket` calls, two `get_ticket` calls and two `start_agent` calls, all
+of them board tools. The feed holds no frame from it between the restart and the `TranscriptHint`
+at 11:22:20, one second after the third `create_ticket`. Its whole life shows 178 `PostToolUse`
+frames, every one from an engine tool, and none from a registered tool: a call the mod's
+`tool.call` hook answers fires no `PostToolUse` (already a measured trap). So a turn spent on
+board tools and thinking sends the attention machine nothing.
+
+**Shipped.** `Daemon::hear_agent_call`: every command reaching `handle_agent` (every tool, refused
+or not; never `ModNext`, the bridge's poll) feeds the session's machine
+`Signal::ToolStarted { nested: true }` under `Automation { rule: "agent_call" }`. Nested because
+the daemon cannot tell a lead's call from a subagent's. That row already exists for this:
+it lifts `Unknown` and a Low/Medium idle to `Running`, refreshes a park's background clock, and
+leaves a stated (High) idle and a held dialog alone. On the hook set's road the engine's own
+`PreToolUse` for the MCP tool says the same thing, and the call adds nothing. The feed drops
+unchanged `agent_call` decisions the way it drops the passive probes', so a working session's
+tool calls do not fill the journal.
+
+**Not explained.** In a replay of T-650's transcript lines through `ClaudeRecovery` and a fresh
+machine, the tail commits `ToolInFlight` at the first `create_ticket` line (11:21:34). The live
+daemon committed it only at the third (11:22:19), which matches a cursor minted after
+11:22:03. Nothing in the feed or the journal says why. The board call now arrives first, so the
+tail's lag no longer reaches the card, but the lag itself is unexplained.
+
+**Tests.** `restart_e2e::restart_recovers_working_from_a_board_tool_call`: a restart mid-turn
+with a silent transcript holds `Unknown` past two tail polls, and one agent `get_ticket` lifts
+it to `Running`. It fails with the call removed.
