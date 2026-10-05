@@ -541,6 +541,14 @@ will not show up in our tests until they break something.
 - **A `tool.call` hook that throws is skipped** (2.1.287, T-577): a built-in tool then runs
   unjudged, and a registered tool reads to the model as "Claude requested permissions to use …
   but you haven't granted it yet". A gate or a tool hook never throws; it denies.
+- **`claude plugin validate` reads a hooks module by its spelling** (2.1.289, T-651): every `$`
+  call is `$.noun.event(...)` at the call site (never `$.session[k]()` or a noun passed as a
+  value), `on` takes a string literal, `$.env.get` a literal name, and an event registered twice
+  with no matcher is refused. A helper that loops over names fails validation and never loads.
+- **A `tool.check` hook that holds its verdict holds the permission dialog undrawn** (2.1.289,
+  T-651): the pane reads `Waiting…` until the hook resolves `ask`, so a decision awaited there is
+  phone-or-terminal, never both. And no `Notification{permission_prompt}` fires for a dialog on
+  2.1.289; `tool.check → ask` is that moment.
 - **A registered tool answers with `{ result: <text> }`** (the model reads it verbatim) or an
   array of API content blocks (an image is `{ type: 'image', source: { type: 'base64', … } }`);
   an MCP-shaped `{ content, isError }` is refused ("does not match its output shape"), and a
