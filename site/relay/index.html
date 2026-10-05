@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>The mesimon relay — Remote Control</title>
-<meta name="description" content="The hosted mesimon relay lets your phone watch and answer your agents, end-to-end encrypted. $5 a month or $48 a year, per computer. Board sharing for teams is coming.">
-<meta property="og:title" content="The mesimon relay">
-<meta property="og:description" content="Remote Control for mesimon: your agents on your phone, end-to-end encrypted.">
+<title>Remote Control for mesimon — your agents on your phone</title>
+<meta name="description" content="Remote Control for mesimon: answer your agents' permissions, questions and plans from your phone, read their conversations, and file tickets from anywhere. $5 a month per computer; phones are free.">
+<meta property="og:title" content="Remote Control for mesimon">
+<meta property="og:description" content="Answer your agents from your phone. $5 a month per computer; phones are free.">
 <meta property="og:url" content="https://mesimon.dev/relay/">
 <meta property="og:image" content="https://mesimon.dev/favicon.png">
 <link rel="icon" href="../favicon.png">
@@ -16,47 +16,106 @@
 <main>
 
 <header class="hero">
-  <nav class="crumb" aria-label="Site"><a href="../">mesimon</a> / relay</nav>
-  <h1>The mesimon relay</h1>
-  <p class="lede">Your agents on your phone.</p>
+  <nav class="crumb" aria-label="Site"><a href="../">mesimon</a> / Remote Control</nav>
+  <h1>Remote Control</h1>
+  <p class="lede">Answer your agents from your phone. $5 a month per computer; phones are
+  free.</p>
 </header>
 
-<section aria-labelledby="what">
-  <h2 id="what">What you get</h2>
-  <ul>
-    <li><strong>Your agents on your phone.</strong> Pair a phone browser at
-    <code>remote.mesimon.dev</code> to watch your agents work, answer a permission or a
-    question, send a prompt and file a ticket. It is end-to-end encrypted: the relay carries
-    your board and cannot read it.</li>
-    <li><strong>Coming soon: board sharing.</strong> One board on every teammate's computer,
-    on the same subscription.</li>
-  </ul>
+<section class="feature bare" aria-labelledby="what">
+  <div>
+    <p class="label">What you get</p>
+    <h2 id="what">Your agents, from your phone</h2>
+    <p class="lead">Your agents keep working at your desk. Your phone shows what each one is
+    doing and lights when one stops for you.</p>
+    <ul>
+      <li><strong>Answer on the card.</strong> A permission, a question with choices, or a
+      plan: tap, and the agent carries on. The card says when the agent took the answer.</li>
+      <li><strong>Read the conversation as it happens</strong>, and write back. Send a prompt
+      now, or queue it for the agent's next turn.</li>
+      <li><strong>File a ticket from anywhere.</strong> If your computer is asleep, the ticket
+      waits and lands when it is back, exactly once.</li>
+      <li><strong>Start an agent</strong> on a ticket, pick its tier, move it, rename it, tag
+      it, read and edit its notes.</li>
+      <li><strong>Pair by scanning a code</strong> from the board. Add the page to your home
+      screen and it opens like an app, offline too.</li>
+    </ul>
+    <p class="fine">End-to-end encrypted: the service carries your board and your agents' words
+    in a form it cannot read.</p>
+    <p class="soon"><strong>Coming soon: board sharing.</strong> One board on every teammate's
+    computer, on the same subscription.</p>
+  </div>
+  <figure class="phone">
+    <img src="../remote.png" width="390" height="844" alt="Remote Control on a phone: the Now screen, a permission request on a card with Deny and Approve once under it, and two working agents below">
+    <img src="../remote-conversation.png" width="390" height="844" alt="A ticket page on the phone: the agent's conversation, its tool calls one per line, and the composer with Queue and Steer" loading="lazy">
+  </figure>
 </section>
 
 <section aria-labelledby="price">
   <h2 id="price">Price</h2>
-  <p class="amount"><strong>$5 a month</strong> or <strong>$48 a year</strong>, per computer.</p>
-  <p>Phones and paired browsers are free. One key is one computer, and you can move it to
-  another computer from your Polar customer portal.</p>
-  <p><a class="buy" href="https://buy.polar.sh/polar_cl_Mkn5y15YJFDGwtR1pg6ymegcNvoCpYjRm15Mg2wJQpx">Buy a key</a></p>
+  <div class="plans">
+    <div class="plan first">
+      <p class="kind">Monthly</p>
+      <p class="amt">$5 <small>a month</small></p>
+      <p class="sub">per computer · cancel any time</p>
+      <a class="buy" href="https://buy.polar.sh/polar_cl_Mkn5y15YJFDGwtR1pg6ymegcNvoCpYjRm15Mg2wJQpx">Get it monthly</a>
+    </div>
+    <div class="plan">
+      <span class="ribbon">20% less</span>
+      <p class="kind">Yearly</p>
+      <p class="amt">$48 <small>a year</small></p>
+      <p class="sub">per computer · that is $4 a month</p>
+      <a class="buy quiet" href="https://buy.polar.sh/polar_cl_Mkn5y15YJFDGwtR1pg6ymegcNvoCpYjRm15Mg2wJQpx">Get it yearly</a>
+    </div>
+  </div>
+  <p>One subscription covers one computer. <strong>Phones, tablets and browsers are free</strong>,
+  as many as you like. Your license key arrives by email the moment you pay, and you can move it
+  to another computer from your Polar customer portal.</p>
 </section>
 
-<section aria-labelledby="after">
-  <h2 id="after">After you buy</h2>
-  <ol>
-    <li>Your license key arrives by email, and it is in your Polar customer portal.</li>
-    <li>In mesimon, press <kbd>Esc</kbd>, open <strong>Remote Control</strong> and choose
-    <strong>Sign in</strong>. The relay field already reads <code>relay.mesimon.dev:443</code>.</li>
-    <li>Paste the key in the <strong>License key</strong> dialog. Then <strong>Enable</strong>
-    this board, choose <strong>Pair a browser</strong> and scan the code with your phone.</li>
+<section aria-labelledby="setup">
+  <h2 id="setup">Set up in two minutes</h2>
+  <ol class="steps">
+    <li><span>Buy. The license key is in the email Polar sends you, and in your Polar customer
+    portal.</span></li>
+    <li><span>In mesimon, press <kbd>Esc</kbd>, open <strong>Remote Control</strong> and choose
+    <strong>Sign in</strong>. Paste the key in the <strong>License key</strong> dialog. The relay
+    field already reads <code>relay.mesimon.dev:443</code>.</span></li>
+    <li><span>Choose <strong>Enable</strong>, then <strong>Pair a browser</strong>, and scan the
+    code with your phone's camera. The page opens paired; add it to your home screen.</span></li>
   </ol>
-  <p>If your subscription lapses, a paired phone keeps its live view, and a ticket it files
-  while your computer is away waits until you enter a new key.</p>
 </section>
 
-<section aria-labelledby="own">
-  <h2 id="own">Run your own</h2>
-  <p>The relay also runs on your own server, and a relay you run needs no key.</p>
+<section aria-labelledby="questions">
+  <h2 id="questions">Questions</h2>
+  <dl class="faq">
+    <dt>What counts as a computer?</dt>
+    <dd>One installed mesimon that signs in. A laptop and a desktop are two. Phones and browsers
+    are never counted.</dd>
+    <dt>What happens if I stop paying?</dt>
+    <dd>Nothing is lost. Your board stays on your computer as it always was, your phone keeps
+    its live view, and a ticket it files while your computer is away waits until you subscribe
+    again.</dd>
+    <dt>Who can read my board?</dt>
+    <dd>You, and only you. The board, the notes and your agents' words are encrypted on your
+    computer before they leave it; the service routes them and cannot read them. It stores the
+    encrypted records, which phones belong to which computer, your display name and public
+    keys, and the seat your key holds. A ticket your phone files while your computer is away is
+    deleted after 30 days.</dd>
+    <dt>Does my computer have to stay on?</dt>
+    <dd>Yes. Your agents run there; the phone talks to them through the service. mesimon can
+    keep a Mac awake while agents work: <em>Settings › Keep the machine awake</em>.</dd>
+    <dt>Which agents does the phone answer?</dt>
+    <dd>Claude Code's permissions, questions and plans are answered from the phone. Codex
+    sessions take prompts from the phone and answer their own dialogs at the desk.</dd>
+    <dt>Can my team use it?</dt>
+    <dd>Each person pairs their own phone to their own computer today. Sharing one board between
+    teammates' computers is coming, on this same subscription.</dd>
+    <dt>Is this finished?</dt>
+    <dd>No. mesimon is in alpha, used every day, and it will change under you. If something
+    breaks, write to <a href="mailto:support@mesimon.dev">support@mesimon.dev</a> and it is
+    read.</dd>
+  </dl>
 </section>
 
 <section aria-labelledby="terms">
@@ -67,17 +126,11 @@
     <a href="https://polar.sh/legal/checkout-buyer-terms">Buyer Terms</a>, refunds included,
     and its <a href="https://polar.sh/legal/privacy-policy">Privacy Policy</a> apply to your
     purchase.</li>
-    <li><strong>Cancelling.</strong> Cancel any time in your Polar customer portal. It takes
-    effect at the end of the period you paid for.</li>
-    <li><strong>What the relay stores.</strong> Your encrypted board records; routing metadata,
-    meaning which computers belong to which boards and in what role; each computer's public
-    keys and the display name you sign in with; and Polar's id for the seat your key holds on
-    that computer, never the key. The relay names the seat to Polar by the computer's device id.
-    What a phone leaves for a computer that is away is deleted after 30 days. To have your
-    computer and its boards removed, write to support.</li>
+    <li><strong>Cancelling.</strong> Any time, in your Polar customer portal. It takes effect
+    at the end of the period you paid for.</li>
+    <li><strong>Removal.</strong> To have your computer and its boards removed from the
+    service, write to <a href="mailto:support@mesimon.dev">support@mesimon.dev</a>.</li>
     <li><strong>This site</strong> has no analytics and sets no cookies.</li>
-    <li><strong>Alpha.</strong> The service is in alpha and may change.</li>
-    <li><strong>Support.</strong> <a href="mailto:support@mesimon.dev">support@mesimon.dev</a></li>
   </ul>
 </section>
 

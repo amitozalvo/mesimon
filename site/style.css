@@ -221,3 +221,118 @@ footer {
      sliver of it; Copy is how a phone takes it anyway. */
   .cmd code { font-size: 0.85rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 }
+
+/* Remote Control (T-637): the paid feature as a section of the page, named
+   the way the board names a section (small mono capitals), with the phone
+   beside the words on a desktop and under them on a phone. The price is a
+   sentence; the plan cards are ink on the ground, no new colour. */
+.feature {
+  display: grid;
+  grid-template-columns: 1fr 15rem;
+  gap: 2rem;
+  align-items: start;
+  margin: 4rem 0 0;
+  padding-top: 3rem;
+  border-top: 1px solid var(--line);
+}
+.feature.bare { margin-top: 2.5rem; padding-top: 0; border-top: 0; }
+.feature h2 { margin: 0 0 0.75rem; font-size: 1.75rem; line-height: 1.15; }
+.feature .lead { color: var(--ink); font-size: 1.1rem; line-height: 1.45; }
+.feature .phone { margin: 0; justify-self: end; }
+.feature .phone img {
+  display: block;
+  width: 15rem;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line2);
+  border-radius: 1.5rem;
+  background: var(--screen);
+}
+.feature .phone img + img { margin-top: 1.5rem; }
+.label {
+  margin: 0 0 0.9rem;
+  font: 500 0.78rem/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+.label b { color: var(--ink); font-weight: 500; }
+.fine { color: var(--ink3); font-size: 0.88rem; }
+.soon {
+  margin: 1.25rem 0 0;
+  padding: 0.75rem 1rem;
+  border: 1px dashed var(--line2);
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+.price {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.5rem 2rem;
+  align-items: center;
+  margin: 3rem 0 0;
+  padding: 1.5rem;
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  background: var(--s1);
+}
+.price .big { color: var(--ink); font-size: 2.25rem; font-weight: 600; line-height: 1; letter-spacing: -0.01em; }
+.price .big small { color: var(--ink2); font-size: 1rem; font-weight: 400; letter-spacing: 0; }
+.price .alt { margin: 0.3rem 0 0; color: var(--ink2); font-size: 0.95rem; }
+.price p { margin: 0; }
+.ctarow { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin: 0.6rem 0 0; }
+.buy.quiet { background: transparent; color: var(--ink); border: 1px solid var(--line2); }
+.buy.quiet:hover { background: var(--s2); }
+.plans { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0 0.75rem; }
+.plan {
+  position: relative;
+  padding: 1.25rem 1.25rem 1.1rem;
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  background: var(--s1);
+}
+.plan.first { border-color: var(--ink); }
+.plan .kind { color: var(--ink3); font-size: 0.78rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
+.plan .amt { margin: 0.3rem 0 0.1rem; color: var(--ink); font-size: 2.1rem; font-weight: 600; line-height: 1.1; letter-spacing: -0.01em; }
+.plan .amt small { color: var(--ink2); font-size: 1rem; font-weight: 400; }
+.plan .sub { margin: 0 0 0.9rem; color: var(--ink3); font-size: 0.9rem; }
+.plan .buy { display: block; text-align: center; }
+.plan .ribbon {
+  position: absolute;
+  top: -0.7rem;
+  right: 1rem;
+  padding: 0.1rem 0.6rem;
+  border: 1px solid var(--line2);
+  border-radius: 999px;
+  background: var(--s2);
+  color: var(--ink);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.steps { counter-reset: step; list-style: none; display: grid; gap: 0.75rem; margin: 0 0 1rem; padding: 0; }
+.steps li { display: grid; grid-template-columns: 2rem 1fr; gap: 0.75rem; align-items: start; margin: 0; }
+.steps li::before {
+  counter-increment: step;
+  content: counter(step);
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--line2);
+  border-radius: 50%;
+  background: var(--s1);
+  color: var(--ink);
+  font: 600 0.9rem/2rem var(--mono);
+  text-align: center;
+}
+.faq dt { margin-top: 1rem; color: var(--ink); font-weight: 600; }
+.faq dd { margin: 0.2rem 0 0; }
+@media (max-width: 700px) {
+  .feature { grid-template-columns: 1fr; }
+  .feature .phone { justify-self: center; }
+  /* One phone under the words is a picture; two is a scroll. */
+  .feature .phone img + img { display: none; }
+  .price { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .plans { grid-template-columns: 1fr; }
+}

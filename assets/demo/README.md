@@ -16,6 +16,18 @@ assets/demo/record.sh ticket-page  # ticket-page.gif, about 11 seconds
 This needs [VHS](https://github.com/charmbracelet/vhs) (`brew install vhs`), python3 and tmux.
 The argument names a tape in this directory; the tape's `Output` line says where its GIF goes.
 
+The two Remote Control pictures, `remote.png` (the Now screen with a permission on its card)
+and `remote-conversation.png` (a ticket page with the agent's conversation), are not tapes:
+they are the real Remote Control page, driven on its own UX-test fixture with a seeded board,
+no relay and no key. From `web/mesophon`, after `npm ci`:
+
+```sh
+npm run shot:remote                # writes both into this directory, 390 px at twice the density
+```
+
+`web/mesophon/remote-shot.mjs` holds the board it seeds; the README, mesimon.dev and its
+Remote Control page (`ci/site.sh` copies them) all show these two files.
+
 What each file does:
 
 - **`record.sh`** builds a throwaway sandbox under `/tmp`: its own `HOME`, and a small git repo

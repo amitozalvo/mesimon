@@ -33,6 +33,9 @@ changes are in the [CHANGELOG](CHANGELOG.md).
 - **Agents keep running when you close the board.** A background process holds every session,
   and the next time you open the board everything is where you left it. Idle agents can sleep
   and wake into the same conversation.
+- **Answer your agents from your phone.** Remote Control pairs a phone or another browser to
+  your board, so a permission, a question or a plan can be answered from wherever you are.
+  [More on mesimon.dev](https://mesimon.dev/#remote).
 
 ## Install
 
@@ -105,6 +108,16 @@ its notes.
 <sub>The crowned agent runs the board, and you keep the crown: `ctrl-o` on its card takes it
 back. [More on the crown](docs/USING.md#the-crown-one-agent-runs-the-board).</sub>
 
+**Remote Control.** Pair your phone from `esc` › Remote Control and answer your agents from
+wherever you are.
+
+<img src="assets/demo/remote.png" width="330" alt="Remote Control on a phone: the Now screen, a permission request on a card with Deny and Approve once under it, and two working agents below">
+
+<sub>The card lights on your phone when an agent needs you. Tap to approve, deny, pick an
+answer or accept a plan, and file a ticket from the **+** button; it lands when your computer
+is back. Remote Control is a subscription: [what it does and how to set it
+up](https://mesimon.dev/relay/) is on mesimon.dev. Sharing a board with teammates is next.</sub>
+
 ## Three promises
 
 1. **A strict write allowlist.** mesimon writes to a short list of paths, every one named, and
@@ -122,6 +135,7 @@ breaking one, [report it](SECURITY.md).
 
 - [Using mesimon](docs/USING.md): the board, settings, keyboard layouts, pictures in notes, what
   your agents can see, updating and stopping everything.
+- [Remote Control](https://mesimon.dev/relay/): your agents on your phone, on mesimon.dev.
 - [What is useful to report](TESTING.md), and how to report a [security issue](SECURITY.md).
 - [All the docs](docs/README.md), including the design record and the architecture.
 

@@ -21715,3 +21715,44 @@ variable is no longer needed.
 
 **Tests.** None changed: the TUI tests set `mesophon_available` themselves, and no e2e drives
 Remote Control's start. `cargo ut` and `cargo build --workspace`.
+
+## mesimon.dev and the README sell Remote Control; the relay page is its buying page (T-637, 2026-10-05, "promote mesimon remote control in github and mesimon.dev")
+
+**Built.** The proposal the author approved (its artifact is on the ticket) as three pages.
+`site/index.html` gains, after "What it does", a Remote Control section under a rule and a
+title line set as the board sets a section label (`REMOTE CONTROL · $5 a month`, small mono
+capitals), the headline "Your agents, from your phone", four things you do from it, and the
+phone beside the words (under them on a phone); then a price strip, the price as one sentence
+with the monthly figure first and the yearly as the alternative marked 20% less, both buttons
+to the buying page. `site/relay/index.html` is rewritten as that buying page: `Remote Control`
+is its title, "What you get" with both phone pictures, two plan cards (monthly outlined and
+first, yearly beside it), the setup in three steps in the dialog's own words (Esc → Remote
+Control → Sign in → License key → Enable → Pair a browser), seven questions a $5 decision
+still asks, and the terms shortened. The README gains one bullet, one tour entry with the phone
+picture and one link, and no price: it says Remote Control exists and sends the reader to
+mesimon.dev, which sells; the releases README gets the bullet. New CSS is `.feature`, `.label`,
+`.price`, `.plans`, `.steps`, `.faq`, `.soon`; the page still has no saturated colour of its
+own (the amber in the picture is the product's).
+
+**Decided: never "relay", "key", "ciphertext", "Mesophon" or "preview" in sales copy.** A
+buyer does not care that there is a relay; the word stays only as the address the dialog
+prefills. Encryption is one line under the feature it protects. Board sharing is named once per
+page, as coming soon, and nowhere else (T-653 holds it; the reason is not public text).
+
+**Decided: the pictures are the real page on its test fixture, not drawings and not the
+sandbox.** `web/mesophon/remote-shot.mjs` (`npm run shot:remote`) serves the client as
+`ux.test.js` does, pairs with the fixture code, seeds five tickets (one on a permission, two
+working, one idle, one unstarted) and a seven-row transcript, and screenshots the Now screen
+and a ticket page at 390 px, twice the density, Graphite. Real client, real words, no Docker,
+reproducible in ten seconds; the sandbox road (T-542) would have needed a running relay and a
+real board. `web/mesophon/test-results/` was never an option: its screenshots are the fixture's
+own filler text.
+
+**Refuted: a Teams section.** The proposal's first version sold Remote Control and Teams as one
+subscription; the author took Teams out on 2026-10-05 and the pages say "coming soon" once.
+Also refuted: "Run your own" on the buying page, which promised a self-hosted relay with no
+public image to download; it is gone until there is one.
+
+**Not here, by design.** Publishing (`ci/site.sh --publish`) is the author's and waits for
+the release that carries T-672 (Remote Control on in every build), or the page sells what the
+installed binary cannot show. The Polar products' names and order are the author's dashboard.

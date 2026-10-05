@@ -38,6 +38,10 @@ own. [Requirements in detail](https://github.com/amitozalvo/mesimon/blob/main/do
 
 Re-running the install line is how you update. With Homebrew, `brew upgrade mesimon`.
 
+**Answer your agents from your phone.** Remote Control pairs a phone or another browser to your
+board, so a permission, a question or a plan can be answered from wherever you are.
+[More on mesimon.dev](https://mesimon.dev/#remote).
+
 ## Three promises
 
 1. **A strict write allowlist.** mesimon writes to a short list of paths, every one named, and

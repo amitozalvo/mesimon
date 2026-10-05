@@ -46,6 +46,7 @@ for p in $pages; do
 done
 cp site/style.css site/site.js site/CNAME site/.nojekyll site/robots.txt site/sitemap.xml "$out/"
 cp assets/demo.gif "$out/demo.gif"
+cp assets/demo/remote.png assets/demo/remote-conversation.png "$out/"
 cp assets/mascot/resting.png "$out/favicon.png"
 for f in plex-sans-latin.woff2 plex-sans-hebrew-500.woff2 plex-mono-400-latin.woff2 OFL.txt; do
   cp "web/mesophon/fonts/$f" "$out/fonts/"
