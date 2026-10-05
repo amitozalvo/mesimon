@@ -130,6 +130,33 @@ pub const RELAYED_EVENTS: [&str; 17] = [
     "PostCompact",
 ];
 
+/// The subset of [`RELAYED_EVENTS`] the mod builds from Claude Code's native
+/// events under `MESIMON_MOD_NATIVE=1` (T-657), for a Team or Enterprise
+/// account whose security default keeps every classic event from a person's
+/// mod (T-650, T-651). Same names, same shapes, so ingest reads them
+/// unchanged; `SessionStart` carries `session_id` and `cwd` and no
+/// `transcript_path` (the daemon finds the file by id), and a `StopFailure`
+/// comes with `error: "unknown"` and `native: true` (the class is the
+/// transcript's). Not here, by design: `PermissionRequest` (a one-entry hook
+/// set rides beside the mod on that road, two-sided where a `tool.check`
+/// held for the phone would hold the dialog undrawn), `PermissionDenied`,
+/// `Notification`, `Elicitation` and `ElicitationResult` (nothing native
+/// stands for them). The daemon's unit test holds this list to `register.ts`.
+pub const NATIVE_EVENTS: [&str; 12] = [
+    "SessionStart",
+    "SessionEnd",
+    "StopFailure",
+    "PreToolUse",
+    "PostToolUse",
+    "UserPromptSubmit",
+    "Stop",
+    "SubagentStart",
+    "SubagentStop",
+    "TeammateIdle",
+    "PreCompact",
+    "PostCompact",
+];
+
 /// The event the mod answers a [`ModCommand::Ping`] with, relayed through
 /// `mesimon hook --road mod` with the ping's id as its reason: the round trip
 /// daemon → bridge → mod → hook.sock, whole.

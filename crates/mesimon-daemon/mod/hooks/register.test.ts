@@ -862,3 +862,296 @@ test('a turn whose windows could not be read still sends its count', async ($, o
   expect(frame.argv.slice(7, 10)).toEqual(['ModUsage', '--reason', 'aborted'])
   expect(JSON.parse(frame.stdin)).toEqual({ turnId: 't3', reason: 'aborted', durationMs: 5 })
 })
+
+// ---- The native road (T-657): under `MESIMON_MOD_NATIVE=1` the classic
+// relays are silent and the same frames, by the hook set's names and
+// shapes, come from the engine's own events. What the live Claude Code
+// fires is measured in STALE-MAP (T-651, T-657); these hold the shapes.
+
+const NATIVE_ENV = { ...ENV, MESIMON_MOD_NATIVE: '1' }
+const eventsOf = (runs: Run[]) => runs.map(r => r.argv[r.argv.indexOf('--event') + 1])
+const bodyOf = (r: Run) => JSON.parse(r.stdin)
+const only = (runs: Run[], event: string) => runs.filter(r => eventsOf([r])[0] === event)
+
+/** A native session: the variables, a bridge that is refused for good, and `$.session.id()` from `id`. */
+function nativeSession(on: any, id = { value: 'sid-1' }) {
+  mock.env(on, NATIVE_ENV)
+  mock.clock(on)
+  on('process.spawn', async function* () {
+    return { value: { code: 3, signal: null } }
+  } as any)
+  on('session.id', () => ({ value: id.value }) as any)
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }) as any)
+  on('turn.complete', () => ({ text: '' }) as any)
+  on('session.end', ($: any, e: any) => ({ sessionId: e.sessionId }) as any)
+  return recordRuns(on)
+}
+
+const TURN = { answer: 'done', durationMs: 1200, isAborted: false, turnId: 't1', reason: 'answer' }
+// A compaction's transcript: one message in, one left (the engine refuses an empty list either way).
+const MESSAGES = [{ role: 'user', text: 'Reply ONE.', toolUses: [] }]
+
+test('native: the classic events relay nothing, and the permission dialog is left to the hook set beside the mod', async ($, on) => {
+  const runs = nativeSession(on)
+  on('classic.Stop', () => ({}) as any)
+  on('classic.SessionStart', () => ({}) as any)
+  on('classic.UserPromptSubmit', () => ({}) as any)
+  on('classic.PermissionRequest', () => ({}) as any)
+  on('classic.SessionEnd', () => ({}) as any)
+  await $.classic.Stop({ stop_hook_active: false } as any)
+  await $.classic.SessionStart({ source: 'startup' } as any)
+  await $.classic.UserPromptSubmit({ prompt: 'go' } as any)
+  const r: any = await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'touch x' } } as any)
+  await $.classic.SessionEnd({ reason: 'other' } as any)
+  await settle()
+  expect(r.decision).toBe(undefined)
+  expect(runs.filter(r => r.argv[1] === 'approve').length).toBe(0)
+  expect(eventsOf(runs)).toEqual([])
+})
+
+test('native: off the switch (unset, or any word but 1) nothing native relays and the classic road is as it was', async ($, on) => {
+  mock.env(on, { ...ENV, MESIMON_MOD_NATIVE: '0' })
+  const runs = recordRuns(on)
+  on('session.id', () => ({ value: 'sid-1' }) as any)
+  on('session.end', () => ({ sessionId: 'sid-1' }) as any)
+  on('turn.start', () => ({ turnId: 't1' }) as any)
+  on('turn.complete', () => ({ text: '' }) as any)
+  on('agent.spawn', () => ({ model: 'm', agentId: 'a1' }) as any)
+  on('session.receive', ($: any, e: any) => ({ text: e.text }) as any)
+  on('session.compact', () => ({ messages: MESSAGES, tokensBefore: 10, tokensAfter: 2 }) as any)
+  on('tool.call', () => ({ result: { type: 'text', file: { filePath: '/x', content: '', numLines: 0, startLine: 1, totalLines: 0 } } }) as any)
+  on('classic.Stop', () => ({}) as any)
+  await $.session.end({ reason: 'clear', sessionId: 'sid-1', resume: { id: 'sid-1' } } as any)
+  await $.turn.start({ text: 'go', turnId: 't1' } as any)
+  await $.turn.complete(TURN as any)
+  await $.agent.spawn({ tool_use_id: 'ta', prompt: 'p', description: 'd', subagentType: 'Explore', provider: { plugin: 'engine', tier: 'core' } } as any)
+  await $.session.receive({ origin: { kind: 'peer', teammate: 'scout' }, text: '{"type":"idle_notification"}' } as any)
+  await $.session.compact({ trigger: 'manual', messages: MESSAGES } as any)
+  await $.tool.call({ tool: 'Read', tool_use_id: 'tr', file_path: '/x' } as any)
+  await $.classic.Stop({ stop_hook_active: false } as any)
+  await settle()
+  expect(eventsOf(runs)).toEqual(['ModUsage', 'Stop'])
+})
+
+test('native: session.start is the SessionStart{startup}, with the id and the cwd and no derived path', async ($, on) => {
+  const runs = nativeSession(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as any)
+  await settle()
+  const start = only(runs, 'SessionStart')
+  expect(start.length).toBe(1)
+  expect(start[0].argv.slice(7, 12)).toEqual(['SessionStart', '--reason', 'startup', '--road', 'mod'])
+  expect(bodyOf(start[0])).toEqual({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'sid-1', cwd: '/repo' })
+})
+
+test('native: a /clear is the SessionEnd with its reason, then at the next turn with a new id a SessionStart{clear} before the UserPromptSubmit', async ($, on) => {
+  const id = { value: 'sid-1' }
+  const runs = nativeSession(on, id)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as any)
+  await $.session.end({ reason: 'clear', sessionId: 'sid-1', resume: { id: 'sid-1' } } as any)
+  id.value = 'sid-2'
+  await $.turn.start({ text: 'Reply TWO.', turnId: 't2' } as any)
+  await $.turn.start({ text: 'Reply THREE.', turnId: 't3' } as any)
+  await settle()
+  expect(eventsOf(runs)).toEqual(['SessionStart', 'SessionEnd', 'SessionStart', 'UserPromptSubmit', 'UserPromptSubmit'])
+  const end = only(runs, 'SessionEnd')[0]
+  expect(end.argv.slice(7, 10)).toEqual(['SessionEnd', '--reason', 'clear'])
+  expect(bodyOf(end)).toEqual({ hook_event_name: 'SessionEnd', reason: 'clear', session_id: 'sid-1' })
+  const clear = only(runs, 'SessionStart')[1]
+  expect(clear.argv.slice(7, 10)).toEqual(['SessionStart', '--reason', 'clear'])
+  expect(bodyOf(clear)).toEqual({ hook_event_name: 'SessionStart', source: 'clear', session_id: 'sid-2', cwd: '/repo' })
+  const prompts = only(runs, 'UserPromptSubmit').map(bodyOf)
+  expect(prompts).toEqual([
+    { hook_event_name: 'UserPromptSubmit', prompt: 'Reply TWO.', session_id: 'sid-2' },
+    { hook_event_name: 'UserPromptSubmit', prompt: 'Reply THREE.', session_id: 'sid-2' },
+  ])
+  // An in-session /resume is the same edge, with the end's own word.
+  await $.session.end({ reason: 'resume', sessionId: 'sid-2', resume: { id: 'sid-2' } } as any)
+  id.value = 'sid-3'
+  await $.turn.start({ text: 'go', turnId: 't4' } as any)
+  await settle()
+  expect(only(runs, 'SessionStart')[2].argv.slice(7, 10)).toEqual(['SessionStart', '--reason', 'resume'])
+})
+
+test('native: a turn\'s end is the Stop before the ModUsage; a subagent\'s is its SubagentStop by its spawn\'s type; an API error is a StopFailure with no class; an interrupt is nothing', async ($, on) => {
+  const runs = nativeSession(on)
+  on('agent.list', () => ({ value: [] }) as any)
+  on('agent.spawn', () => ({ model: 'm', agentId: 'a7' }) as any)
+  await $.agent.spawn({ tool_use_id: 'ta', prompt: 'p', description: 'Quick test agent', subagentType: 'Explore', provider: { plugin: 'engine', tier: 'core' } } as any)
+  await $.turn.complete(TURN as any)
+  await $.turn.complete({ ...TURN, turnId: 't2', agentId: 'a7' } as any)
+  await $.turn.complete({ ...TURN, turnId: 't3', answer: '', reason: 'error' } as any)
+  await $.turn.complete({ ...TURN, turnId: 't4', answer: '', isAborted: true, reason: 'aborted' } as any)
+  await settle()
+  expect(eventsOf(runs)).toEqual([
+    'SubagentStart', 'Stop', 'ModUsage', 'SubagentStop', 'ModUsage', 'StopFailure', 'ModUsage', 'ModUsage',
+  ])
+  expect(bodyOf(only(runs, 'SubagentStart')[0])).toEqual({ hook_event_name: 'SubagentStart', agent_id: 'a7', agent_type: 'Explore' })
+  expect(bodyOf(only(runs, 'Stop')[0])).toEqual({ hook_event_name: 'Stop', stop_hook_active: false, background_tasks: [] })
+  expect(bodyOf(only(runs, 'SubagentStop')[0])).toEqual({ hook_event_name: 'SubagentStop', agent_id: 'a7', agent_type: 'Explore' })
+  const failure = only(runs, 'StopFailure')[0]
+  expect(failure.argv.slice(7, 10)).toEqual(['StopFailure', '--reason', 'unknown'])
+  expect(bodyOf(failure)).toEqual({ hook_event_name: 'StopFailure', error: 'unknown', native: true })
+})
+
+test('native: every tool call is a PreToolUse and its result a PostToolUse as it came; a refusal or a tool\'s error is the PreToolUse alone', async ($, on) => {
+  const runs = nativeSession(on)
+  const file = { filePath: '/x', content: 'hi', numLines: 1, startLine: 1, totalLines: 1 }
+  on('tool.call', ($: any, e: any) => {
+    if (e.tool === 'Read') return { result: { type: 'text', file } } as any
+    if (e.tool === 'Write') return { deny: 'no' } as any
+    return { isError: true, result: 'Error: exit 1', text: 'Error: exit 1' } as any
+  })
+  await $.tool.call({ tool: 'Read', tool_use_id: 't1', file_path: '/x', consent: 'The user pressed "1: Yes"' } as any)
+  await $.tool.call({ tool: 'Write', tool_use_id: 't2', file_path: '/y', content: 'z' } as any)
+  await $.tool.call({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', command: 'false' } as any)
+  await settle()
+  expect(eventsOf(runs)).toEqual(['PreToolUse', 'PostToolUse', 'PreToolUse', 'PreToolUse'])
+  const [pre, post, denied, errored] = runs.map(bodyOf)
+  expect(pre).toEqual({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_use_id: 't1', tool_input: { file_path: '/x' } })
+  expect(post).toEqual({
+    hook_event_name: 'PostToolUse', tool_name: 'Read', tool_use_id: 't1', tool_input: { file_path: '/x' },
+    tool_response: { type: 'text', file },
+  })
+  expect(denied.tool_name).toBe('Write')
+  // A subagent's call names its agent, as the hook set's stdin did.
+  expect(errored).toEqual({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: 't3', tool_input: { command: 'false' }, agent_id: 'a1' })
+})
+
+test('native: a refused plan is the dialog\'s dismissal, said as ModAnswer declined; a refused question is said once', async ($, on) => {
+  const runs = nativeSession(on)
+  on('tool.call', () => ({ isError: true, result: 'Error: The user doesn\'t want to proceed with this tool use.', text: 'The user doesn\'t want to proceed.' }) as any)
+  await $.tool.call({ tool: 'ExitPlanMode', tool_use_id: 'tp', plan: '# Plan\n\n1. a.txt', planFilePath: '/h/.claude/plans/p.md' } as any)
+  await $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'tq', questions: QUESTIONS } as any)
+  // A subagent's refused plan is not the session's dialog.
+  await $.tool.call({ tool: 'ExitPlanMode', tool_use_id: 'ts', agentId: 'a1', plan: 'p' } as any)
+  await settle()
+  expect(eventsOf(runs)).toEqual(['PreToolUse', 'ModAnswer', 'PreToolUse', 'ModAnswer', 'PreToolUse'])
+  const declined = only(runs, 'ModAnswer')
+  expect(declined.map(reasonOf)).toEqual(['declined', 'declined'])
+  expect(bodyOf(declined[0])).toEqual({ hook_event_name: 'PostToolUse', tool_name: 'ExitPlanMode', tool_use_id: 'tp', tool_input: { plan: '# Plan\n\n1. a.txt' } })
+  expect(bodyOf(declined[1]).tool_name).toBe('AskUserQuestion')
+})
+
+test('native: a question the board answers is its ModAnswer alone, with no PostToolUse twin; one the person answers is a PostToolUse', async ($, on) => {
+  mock.env(on, NATIVE_ENV)
+  const runs = recordRuns(on)
+  let person = false
+  on('tool.call', () => (person ? { result: { questions: QUESTIONS, answers: { 'Which colour?': 'red' } }, text: 'answered', isReadOnly: true } : new Promise(() => undefined)) as any)
+  bridgeSaying(on, [JSON.stringify({ id: '01Q', kind: 'answer', tool_use_id: 'toolu_9', answers: { 'Which colour?': 'blue' } })])
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  on('session.id', () => ({ value: 'sid-1' }) as any)
+  const call = $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'toolu_9', questions: QUESTIONS } as any)
+  await settle()
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as any)
+  const r: any = await call
+  expect(r.result.answers).toEqual({ 'Which colour?': 'blue' })
+  await settle()
+  expect(only(runs, 'ModAnswer').map(reasonOf)).toEqual(['answered'])
+  expect(only(runs, 'PostToolUse').length).toBe(0)
+  expect(only(runs, 'PreToolUse').length).toBe(1)
+  person = true
+  await $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'toolu_10', questions: QUESTIONS } as any)
+  await settle()
+  expect(only(runs, 'PostToolUse').map(r => bodyOf(r).tool_use_id)).toEqual(['toolu_10'])
+})
+
+test('native: the task ledger lists a backgrounded command on the Stop as a shell until its notification, a background agent as a subagent until the list says it is over, and nothing a TaskStop ended', async ($, on) => {
+  const runs = nativeSession(on)
+  let agents: any[] = []
+  on('agent.list', () => ({ value: agents }) as any)
+  on('agent.spawn', () => ({ model: 'm', agentId: 'a9' }) as any)
+  on('tool.call', ($: any, e: any) => {
+    if (e.tool === 'Bash') return { result: { stdout: '', stderr: '', interrupted: false, isImage: false, noOutputExpected: false, backgroundTaskId: 'bsh1' } } as any
+    if (e.tool === 'Monitor') return { result: { taskId: 'mon1', timeoutMs: 0, persistent: true } } as any
+    if (e.tool === 'Agent') return { result: { isAsync: true, status: 'async_launched', agentId: 'a9', description: 'Background agent test', prompt: 'p' } } as any
+    return { result: { message: 'stopped' } } as any
+  })
+  const stops = () => only(runs, 'Stop').map(r => bodyOf(r).background_tasks)
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'tb', command: 'sleep 6; echo bg_done', run_in_background: true } as any)
+  await $.turn.complete(TURN as any)
+  await settle()
+  expect(stops()).toEqual([[{ id: 'bsh1', type: 'shell', status: 'running', description: 'sleep 6; echo bg_done', command: 'sleep 6; echo bg_done' }]])
+  await $.turn.start({ text: '<task-notification>\n<task-id>bsh1</task-id>\n<tool-use-id>tb</tool-use-id>\n<status>completed</status>\n</task-notification>', turnId: 't2' } as any)
+  await $.turn.complete({ ...TURN, turnId: 't2' } as any)
+  await settle()
+  expect(stops()[1]).toEqual([])
+  // The agent: its spawn gives the type, the tool result starts the row.
+  await $.agent.spawn({ tool_use_id: 'ta', prompt: 'p', description: 'Background agent test', subagentType: 'Explore', provider: { plugin: 'engine', tier: 'core' } } as any)
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'ta', description: 'Background agent test', prompt: 'p', subagent_type: 'Explore', run_in_background: true } as any)
+  agents = [{ id: 'a9', description: 'Background agent test', type: 'Explore', status: 'running' }]
+  await $.turn.complete({ ...TURN, turnId: 't3' } as any)
+  await settle()
+  expect(stops()[2]).toEqual([{ id: 'a9', type: 'subagent', status: 'running', description: 'Background agent test', agent_type: 'Explore' }])
+  agents = [{ id: 'a9', description: 'Background agent test', type: 'Explore', status: 'completed' }]
+  await $.turn.complete({ ...TURN, turnId: 't4' } as any)
+  await settle()
+  expect(stops()[3]).toEqual([])
+  // A watch, stopped by hand.
+  await $.tool.call({ tool: 'Monitor', tool_use_id: 'tm', command: 'tail -f x', description: 'watch x' } as any)
+  await $.turn.complete({ ...TURN, turnId: 't5' } as any)
+  await $.tool.call({ tool: 'TaskStop', tool_use_id: 'tx', task_id: 'mon1' } as any)
+  await $.turn.complete({ ...TURN, turnId: 't6' } as any)
+  await settle()
+  expect(stops()[4]).toEqual([{ id: 'mon1', type: 'shell', status: 'running', description: 'watch x' }])
+  expect(stops()[5]).toEqual([])
+  // A subagent's own backgrounded command is not the lead's work (T-483).
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'tb2', agentId: 'a1', command: 'sleep 9', run_in_background: true } as any)
+  await $.turn.complete({ ...TURN, turnId: 't7' } as any)
+  await settle()
+  expect(stops()[6]).toEqual([])
+})
+
+test('native: a teammate is a SubagentStart by its name, a teammate row on the Stop with the list\'s status, a TeammateIdle with its team from its idle notice, and a SubagentStop at its turn\'s end', async ($, on) => {
+  const runs = nativeSession(on)
+  let status = 'running'
+  on('agent.list', () => ({ value: [{ id: 'ascout-1', teammateId: 'scout@team-9', description: 'Test agent', type: 'general-purpose', status, name: 'scout' }] }) as any)
+  on('agent.spawn', () => ({ model: 'm', agentId: 'ascout-1', teammateId: 'scout@team-9' }) as any)
+  on('session.receive', ($: any, e: any) => ({ text: e.text }) as any)
+  await $.agent.spawn({ tool_use_id: 'ta', prompt: 'Reply hello.', description: 'Test agent', subagentType: 'general-purpose', provider: { plugin: 'engine', tier: 'core' } } as any)
+  await $.turn.complete(TURN as any)
+  await $.turn.complete({ ...TURN, turnId: 't2', agentId: 'ascout-1', answer: 'hello' } as any)
+  await $.session.receive({ origin: { kind: 'peer', teammate: 'scout', isVerified: true }, text: '{"type":"idle_notification","from":"scout","idleReason":"available","result":"hello"}' } as any)
+  // A teammate's message that is no idle notice, and a delivery from elsewhere: nothing.
+  await $.session.receive({ origin: { kind: 'peer', teammate: 'scout', isVerified: true }, text: 'plain words' } as any)
+  await $.session.receive({ origin: { kind: 'task-notification' }, text: '{"type":"idle_notification"}' } as any)
+  status = 'idle'
+  await $.turn.complete({ ...TURN, turnId: 't3' } as any)
+  await settle()
+  expect(eventsOf(runs)).toEqual(['SubagentStart', 'Stop', 'ModUsage', 'SubagentStop', 'ModUsage', 'TeammateIdle', 'Stop', 'ModUsage'])
+  expect(bodyOf(only(runs, 'SubagentStart')[0])).toEqual({ hook_event_name: 'SubagentStart', agent_id: 'ascout-1', agent_type: 'scout' })
+  expect(bodyOf(only(runs, 'Stop')[0]).background_tasks).toEqual([{ id: 'ascout-1', type: 'teammate', status: 'running', description: 'Test agent' }])
+  expect(bodyOf(only(runs, 'SubagentStop')[0])).toEqual({ hook_event_name: 'SubagentStop', agent_id: 'ascout-1', agent_type: 'scout' })
+  expect(bodyOf(only(runs, 'TeammateIdle')[0])).toEqual({ hook_event_name: 'TeammateIdle', teammate_name: 'scout', team_name: 'team-9' })
+  expect(bodyOf(only(runs, 'Stop')[1]).background_tasks).toEqual([{ id: 'ascout-1', type: 'teammate', status: 'idle', description: 'Test agent' }])
+})
+
+test('native: a compaction is PreCompact, SessionStart{compact} and PostCompact in the hook set\'s order; a vetoed one is the PreCompact alone; a precompute is nothing', async ($, on) => {
+  const runs = nativeSession(on)
+  let veto = false
+  on('session.compact', () => (veto ? { skip: 'nothing to compact' } : { messages: MESSAGES, tokensBefore: 35536, tokensAfter: 3780 }) as any)
+  await $.session.compact({ trigger: 'manual', messages: MESSAGES } as any)
+  await settle()
+  expect(eventsOf(runs)).toEqual(['PreCompact', 'SessionStart', 'PostCompact'])
+  expect(bodyOf(runs[0])).toEqual({ hook_event_name: 'PreCompact', trigger: 'manual' })
+  expect(runs[1].argv.slice(7, 10)).toEqual(['SessionStart', '--reason', 'compact'])
+  expect(bodyOf(runs[1])).toEqual({ hook_event_name: 'SessionStart', source: 'compact', session_id: 'sid-1' })
+  expect(bodyOf(runs[2])).toEqual({ hook_event_name: 'PostCompact', trigger: 'manual' })
+  veto = true
+  await $.session.compact({ trigger: 'auto', messages: MESSAGES } as any)
+  await settle()
+  expect(eventsOf(runs).slice(3)).toEqual(['PreCompact'])
+  veto = false
+  await $.session.compact({ trigger: 'precompute', messages: MESSAGES } as any)
+  await settle()
+  expect(eventsOf(runs).length).toBe(4)
+})
+
+test('native: tool.check is not hooked: the verdict beneath passes through and nothing is relayed', async ($, on) => {
+  const runs = nativeSession(on)
+  on('tool.check', () => ({ decision: 'ask', reason: 'touch needs approval' }) as any)
+  const r: any = await $.tool.check({ tool: 'Bash', input: { command: 'touch one.txt' }, tool_use_id: 't1' } as any)
+  await settle()
+  expect(r.decision).toBe('ask')
+  expect(eventsOf(runs)).toEqual([])
+})

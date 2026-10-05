@@ -383,6 +383,12 @@ that one hook-set event). What the probe cannot see (remotely served managed set
 finds: a mod launch whose bridge polled and whose `SessionStart` has not come a bridge wait later
 is relaunched the same way and writes the same verdict, same clock as `ModsOff`. A `submit` the mod reports `entered` clears `unsent`: the agent
 has the words.
+**The mod's half of that road (T-657)**: under `MESIMON_MOD_NATIVE=1` the mod's `classic.*` relays
+go silent and the same frames, by the hook set's names and shapes (`road::NATIVE_EVENTS`), are
+built from `session.*`, `turn.*`, `tool.call` and `agent.spawn`, which the security default lets
+through; the `Stop`'s task list is the one adapter in the mod, a `StopFailure` comes with
+`error: unknown` and `native: true` (the daemon reads the class off the transcript, T-659), and
+`PermissionRequest` is that one-entry hook set's, never a `tool.check` the mod holds.
 The hook set, `mesimon gate` and `mesimon mcp`'s server stay whole for an older Claude Code and
 Codex. The daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`),
 never a push from the writer thread. The mod spells nothing on promise 3's never-list (a unit

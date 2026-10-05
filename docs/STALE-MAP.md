@@ -21285,3 +21285,140 @@ new prompt, a plain reply), every class through `parse_hook` off a fabricated tr
 unwritten row keeping `unknown`, a hook-set frame untouched by a transcript that says otherwise,
 and the recovery's re-read (rate, minute, native only). No e2e covers `StopFailure`, so none was
 added.
+
+## The mod relays the board's events from the native hooks under `MESIMON_MOD_NATIVE=1` (T-657, 2026-10-05, native road 1 of 3)
+
+**Seen.** T-650: on a Team or Enterprise account, or under managed settings, Claude Code 2.1.289
+seats `cc-plugin-sec-default` outermost and its `classic.*` hook hands every classic event past
+a person's mod, so mesimon's mod was deaf there and the hook set rode beside it. T-651 measured
+the native events that do reach the mod and decided go, as three tickets: the mod's relay set
+(this one), the daemon's launch shape (2 of 3) and the failed turn's class from the transcript
+(3 of 3).
+
+**Built.** `register.ts` reads `MESIMON_MOD_NATIVE` with the four pane variables (one read per
+event, kept once whole, T-594) and, when it is `1`, every `classic.*` relay goes silent
+(`relayClassic`; the hooks stay registered) and the same frames go up through `mesimon hook
+--road mod` by the hook set's names and shapes, from the engine's own events:
+- `session.start` → `SessionStart{source: startup, session_id: $.session.id(), cwd}`, no
+  `transcript_path` (the daemon finds `<id>.jsonl` under its projects root; past 200 characters
+  the engine hashes the slug). `session.end` → `SessionEnd{reason, session_id}`, awaited. A
+  `/clear` fires no native start: at the next `turn.start` whose id differs from the last seen,
+  `SessionStart{clear}` goes before the `UserPromptSubmit` (a `session.end{resume}` before it
+  gives `resume`).
+- `turn.start` → `UserPromptSubmit{prompt}`. `turn.complete` without `agentId` →
+  `Stop{stop_hook_active: false, background_tasks}`; with one → `SubagentStop{agent_id,
+  agent_type}`; `reason: error` → `StopFailure{error: "unknown", native: true}`, matcher
+  `unknown`; `reason: aborted` → nothing, as the hook set's Stop never fires on an interrupt.
+  Each goes before the turn's `ModUsage`.
+- `tool.call` (one broad hook, registered first, so outermost: measured, a gate-refused write
+  relays its `PreToolUse` and the `GateDenied`, and the result of a board tool or a board-
+  answered question is seen) → `PreToolUse{tool_name, tool_use_id, tool_input, agent_id?}` for
+  every tool before `next` (`consent` stripped: an envelope key, no argument) and
+  `PostToolUse{…, tool_response: result}` after, for a result that is neither a `deny` nor
+  `isError` (the hook set fires `PostToolUse` for neither). An `isError` on `ExitPlanMode` (the
+  session's own) → `ModAnswer declined` with the plan's input, beside the question's existing
+  one; a question the board answered is said by its `ModAnswer answered` alone (`boardAnswered`).
+- `agent.spawn` → `SubagentStart{agent_id, agent_type}`: the type from `subagentType`, or a
+  teammate's name (`teammateId` before the `@`), as the hook set spells it.
+- `session.receive{origin: peer}` whose text is the `idle_notification` JSON →
+  `TeammateIdle{teammate_name, team_name}`. `session.compact` (`manual`, `auto`) → `PreCompact`
+  before `next`, then `SessionStart{compact}` and `PostCompact` after, the hook set's measured
+  order; a vetoed one (`skip`) gives the first alone; `precompute` and `plugin` give nothing.
+- `tool.check`: not hooked. `PermissionRequest`, `PermissionDenied`, `Notification`,
+  `Elicitation`, `ElicitationResult`: nothing native stands for them; `road::NATIVE_EVENTS` is
+  the list the daemon's unit test holds the source to.
+**The task list is the one adapter in the mod.** A ledger of `{id, type, status, description}`
+rows: Bash's `backgroundTaskId` and Monitor's `taskId` are `shell` (with `command` for the
+first; 2.1.283 labels both so), an Agent result's `agentId` with `isAsync` a `subagent` with its
+`agent_type`, a spawn's `teammateId` a `teammate` keyed by the agent's own id (so the daemon's
+registry closes the `SubagentStart` it opened under that id, which the hook set's registry id
+never did). A row ends with the `<task-id>` of a `task-notification` prompt, a `TaskStop`, or a
+status that is over (`completed|failed|killed|stopped|cancelled|interrupted`); at each main
+`turn.complete` the rows are read against `$.agent.list()` (an agent the list holds live that the
+ledger never saw is added), and a finished row is not listed, as the hook set drops one. A
+subagent's backgrounded command is not recorded (T-483).
+
+**Measured, on this Mac (2.1.289, Max account, Haiku, the laid mod with the switch on beside a
+parity hook set, in a private tmux; `native_measure.py` in the session's scratchpad, after
+`drive.py`'s harness; the diff is a note on the ticket).** Four scenarios, the native frames
+against the hook set's for the same calls:
+1. *Lifecycle*: `SessionStart{startup}` with the same `session_id` and `cwd`; `UserPromptSubmit`
+   with the same `prompt`; `Stop` with the same list; `SessionEnd{clear}`; `SessionStart{clear}`
+   with the new id, one prompt later than the hook set's; `SessionEnd{prompt_input_exit}`. The
+   hook set fired one phantom `SubagentStop{agent_type: ""}`; the native road none.
+2. *Dialogs*: the question answered, `PreToolUse` and `PostToolUse` with the same
+   `tool_response`; the hook set's `PostToolUse.tool_input` additionally carries `answers` and
+   `annotations` (the engine rewrites the input for that hook), which the daemon never reads.
+   The question refused: `ModAnswer declined` and a `Stop` where the hook set fires nothing at all
+   (no `PostToolUse`, T-447, and **no `Stop`**: the turn's end after a refusal is the native
+   road's alone). The permission dialog: `PreToolUse`, `PostToolUse`, `Stop` identical; the hook
+   set's `PermissionRequest` and `Notification{permission_prompt}` have no native twin (the
+   one-entry hook set beside the mod carries the first). The plan approved: every frame
+   identical, `tool_response.plan` included; the hook set's `PostToolUse.tool_input` is `{}`
+   (2.1.259 strips it), the native one is the input as it came. A gate-refused write: native
+   `PreToolUse` then `GateDenied`, no `PostToolUse`; the hook set, with the mod's gate denying
+   at `tool.call`, fired no `PreToolUse` for it (the classic hooks ride inside `tool.call`).
+3. *Tasks*: the shell row identical (`id`, `shell`, `running`, the command as description and
+   `command`), gone after the notification on both roads; the background agent row identical
+   (`subagent`, `agent_type: Explore`), gone on both once over. A foreground `Agent` call on
+   2.1.289 answers `isAsync: true` and `async_launched` too, so its row is kept and closed by its
+   `SubagentStop` before the main `Stop`: `[]` on both roads. The teammate row differs by
+   design: id the agent's own (`ascout-…`) where the hook set's is a registry id (`tkq0tnj2o`),
+   description the Agent call's `description` where the hook set's is the prompt, and status
+   the list's (`idle` once it idled) where the hook set says `running` for life. `TeammateIdle`
+   identical (`teammate_name`, `team_name`). `SubagentStop`: 3 native, the three agents, with
+   their types; 13 classic, ten of them the engine's helper loops with `agent_type: ""`. A
+   subagent's `PreToolUse`/`PostToolUse` carry `agent_id` on both; the hook set adds
+   `agent_type`, which the daemon never reads. `SendMessage`'s `tool_input` is the model's
+   arguments natively (`to`, `message`) where the hook set's carries `recipient`, `content`,
+   `summary`, `type` beside them; the daemon reads `to`. **One more turn start**: a teammate's
+   message to the lead is a `turn.start` (`Another Claude session sent a message:`) and the
+   native road relays it as `UserPromptSubmit`; the hook set fired no `UserPromptSubmit` for
+   those two turns (their `Stop`s came alone). The daemon takes every `UserPromptSubmit` as a
+   turn's start, an owed Enter's ack and `asked_by_hand`, as it already does for a
+   task-notification's; the daemon ticket weighs whether to read the prompt's head.
+4. *Compaction*: `PreCompact{manual}`, `SessionStart{compact}` (same id), `PostCompact{manual}`,
+   identical in order and fields.
+No field differed from the hook set's spelling where the daemon reads it. `transcript_path` is
+absent by design on every `SessionStart`. The pane key rides the header (`TMUX`/`TMUX_PANE`).
+
+**Decided.**
+1. *One read, one road.* The switch is read in the same `Promise.all` as the four variables and
+   kept with them: a classic hook that read the switch and then the variables would read twice
+   in one event, and the T-594 fixture (the first read of an event fails) rightly refuses that.
+2. *The native hook is outermost.* Registration order is nesting order (measured): the broad
+   `tool.call` hook is registered before the gate, the tools and the question hold, so it sees a
+   deny, a board tool's answer and the board's answer to a question, and skips the
+   `PostToolUse` of the last by `boardAnswered`.
+3. *A refused plan is said on the native road only.* `ModAnswer declined` for `ExitPlanMode`
+   is new and gated on the switch, so a classic-road session behaves exactly as before; the
+   daemon's `on_mod_answer` already dismisses a held dialog on it. The classic road could take
+   the same line later (one `relay` in the question hook's shape).
+4. *The teammate row is the agent's.* Keyed by `agent.spawn`'s `agentId`, with the list's
+   status: the daemon's registry then closes the `SubagentStart` row by the same id, which the
+   hook set's distinct registry id never did (the registry ended it by snapshot absence), and an
+   idle teammate reads `idle` without a `TeammateIdle` frame to weigh.
+5. *Nothing on an interrupt, a `Stop` after a refusal.* The hook set's Stop never fires on an
+   interrupt and did not fire after a refused question; the native road follows the first (an
+   interrupted turn is not an end-turn) and relays the second (the composer is back, the turn
+   is over: measured, and the better fact).
+6. *Not derived: the transcript path.* The daemon finds `<id>.jsonl` by id under `projects/` as
+   the census walks it (the daemon ticket); a derived slug would be wrong past 200 characters.
+7. *Not built here:* the daemon's switch (`mod_vars` untouched; `ClassicOff` still adds the hook
+   set beside the mod), the fake engine's native vocabulary for the e2e pass, the failed
+   turn's class, the one-entry `PermissionRequest` hook set. A lost `session.start` read (its
+   dispatch abandoned) loses that `SessionStart`, as a lost `classic.SessionStart` does today;
+   the daemon's silent-mod rescue stands for both.
+
+**Tests.** `register.test.ts`: twelve native cases (the classic events silent under the switch;
+off, or any word but `1`, nothing native and the classic road as before; `SessionStart{startup}`
+with id and cwd; the `/clear` edge and the `/resume` word; `Stop` before `ModUsage`,
+`SubagentStop` by its spawn's type, `StopFailure{unknown}`, nothing on `aborted`; every tool's
+`PreToolUse`/`PostToolUse`, none after a deny or an error, `consent` stripped, a subagent's
+`agent_id`; the refused plan and the refused question said once; the board-answered question
+with no `PostToolUse` twin; the ledger over a shell, a background agent, a Monitor watch, a
+`TaskStop` and a subagent's shell; the teammate's four frames; the compaction's order, a veto, a
+precompute; `tool.check` unhooked). `claude plugin validate` and `claude plugin test` pass on
+the laid folder (`mod_plugin`, 52 tests). `hook_settings`'s list test holds `road::NATIVE_EVENTS`
+to the source (each relayed by its literal name, the rest by none, the eight native hooks
+registered) and `MESIMON_MOD_NATIVE` to the variables read. `cargo ut` green.

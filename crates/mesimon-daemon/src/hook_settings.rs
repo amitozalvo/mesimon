@@ -402,8 +402,26 @@ mod tests {
             "MESIMON_MOD_GATE_STATE",
             "MESIMON_MOD_GATE_ALLOW",
             "MESIMON_MOD_TOOLS",
+            "MESIMON_MOD_NATIVE",
         ] {
             assert!(src.contains(&format!("$.env.get('{var}')")), "{var}");
+        }
+        // The native road (T-657) builds each of its events from an engine
+        // event and relays it by the hook set's name, spelled as a literal at
+        // the call site; the rest of the relayed set has no native source
+        // and is relayed by nothing there.
+        for event in mesimon_core::road::NATIVE_EVENTS {
+            assert!(mesimon_core::road::RELAYED_EVENTS.contains(&event), "{event}");
+            assert!(src.contains(&format!("relay($, '{event}',")), "{event} is not relayed natively");
+        }
+        for event in mesimon_core::road::RELAYED_EVENTS {
+            if mesimon_core::road::NATIVE_EVENTS.contains(&event) {
+                continue;
+            }
+            assert!(!src.contains(&format!("relay($, '{event}',")), "{event} has no native source");
+        }
+        for hook in ["session.start", "session.end", "turn.start", "turn.complete", "tool.call", "agent.spawn", "session.receive", "session.compact"] {
+            assert!(src.contains(&format!("on('{hook}',")), "{hook}");
         }
     }
 

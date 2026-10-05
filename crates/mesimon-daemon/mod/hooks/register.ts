@@ -46,6 +46,13 @@
 //    read whole; a read that fails is tried again by the next event, and the
 //    one that succeeds reports the failures before it as `ModLoadFailed`
 //    (T-594).
+//  - NATIVE (T-657): under `MESIMON_MOD_NATIVE=1` the classic relays go
+//    silent and the same frames, by the hook set's names and shapes, are
+//    built from the engine's own events (`session.*`, `turn.*`, `tool.call`,
+//    `agent.spawn`), which a Team or Enterprise account's security default
+//    lets through where it keeps every `classic.*` event from a person's
+//    mod (T-650, T-651). One named adapter: the `Stop`'s task list, kept
+//    here from the tool results that start a task and `$.agent.list()`.
 //
 // It holds no policy. Every decision is the daemon's.
 //
@@ -72,9 +79,11 @@
 //   MESIMON_MOD_GATE_STATE the state dir
 //   MESIMON_MOD_GATE_ALLOW the worktrees under it, the agent's own
 //   MESIMON_MOD_TOOLS      the tier of tools to register (off: unset)
+//   MESIMON_MOD_NATIVE     `1`: relay from the native events (T-657); else
+//                          from the classic ones, as before
 import type { Register } from 'claude-code'
 
-type Config = { bin: string; hookSock: string; orchSock: string; session: string }
+type Config = { bin: string; hookSock: string; orchSock: string; session: string; native: boolean }
 type Roots = { board: string; state: string; allow: string }
 
 // The hook set's matchers (`hook_settings.rs`), so each relayed frame has a
@@ -94,6 +103,26 @@ const STOP_FAILURE_MATCHERS = [
   'unknown',
 ]
 const PRE_TOOL_USE_TOOLS = ['AskUserQuestion', 'ExitPlanMode']
+
+// ---- The native road (T-657). A task row the `Stop` lists, as the hook
+// set's `background_tasks` spells one (2.1.283–2.1.289, T-483, T-651): a
+// shell for a backgrounded command and a Monitor watch alike, a `subagent`
+// with its `agent_type`, a `teammate`. A row whose status is one of these
+// is over and is listed no more, as the hook set drops a finished task.
+type Row = {
+  id: string
+  type: string
+  status: string
+  description: string
+  command?: string
+  agent_type?: string
+  teammateId?: string
+}
+const TASK_OVER = ['completed', 'failed', 'killed', 'stopped', 'cancelled', 'interrupted']
+const LEDGER_MAX = 64
+// The compactions the hook set reports (`PreCompact`'s `trigger` words); a
+// `precompute` is speculative and a `plugin`'s is not the person's session.
+const COMPACT_TRIGGERS = ['manual', 'auto']
 
 // ---- The gate (T-577): `mesimon gate`'s rules, in-process. The structured
 // writes it judges, and what the model reads when one is refused: each
@@ -168,20 +197,37 @@ let toolsRun: Promise<void> | undefined
 // `tool.call` beneath its `classic.PreToolUse` (which carries none).
 const agents = new Map<string, string>()
 const AGENTS_MAX = 64
+// What the native road (T-657) keeps between events: the session's cwd, the last
+// session id seen (a `/clear` fires no `session.start`: the next turn's id
+// differing from it is the new conversation), the last `session.end`'s
+// reason, the task ledger, the type each spawned agent was given (for its
+// `SubagentStop`), and the questions the board answered, whose `PostToolUse`
+// the `ModAnswer` report already is.
+let cwd: string | undefined
+let seenId: string | undefined
+let lastEnd: string | undefined
+const ledger = new Map<string, Row>()
+const spawned = new Map<string, string>()
+const boardAnswered = new Set<string>()
 
-/** The four variables, read at once; a short read throws, naming what is unset. */
+/**
+ * The four variables, read at once, and the native road's switch beside
+ * them (T-657; unset is the classic road); a short read throws, naming what
+ * is unset.
+ */
 async function load($: any): Promise<Config> {
-  const [bin, hookSock, orchSock, session] = await Promise.all([
+  const [bin, hookSock, orchSock, session, native] = await Promise.all([
     $.env.get('MESIMON_MOD_BIN'),
     $.env.get('MESIMON_MOD_HOOK_SOCK'),
     $.env.get('MESIMON_MOD_ORCH_SOCK'),
     $.env.get('MESIMON_MOD_SESSION'),
+    $.env.get('MESIMON_MOD_NATIVE'),
   ])
   if (!bin || !hookSock || !orchSock || !session) {
     const unset = Object.entries({ bin, hookSock, orchSock, session }).filter(([, v]) => !v)
     throw new Error(`unset: ${unset.map(([k]) => k).join(', ')}`)
   }
-  return { bin, hookSock, orchSock, session }
+  return { bin, hookSock, orchSock, session, native: native === '1' }
 }
 
 /**
@@ -220,6 +266,16 @@ async function settings($: any, at: string): Promise<Config | undefined> {
   // failed left both to the first event that reads them.
   if (started) void bringUp($, config)
   return config
+}
+
+/**
+ * Whether this session relays from the native events (T-657): the pane's
+ * `MESIMON_MOD_NATIVE`, read with the variables and kept with them. An
+ * event whose read failed is on no road for its own life: it relays
+ * nothing either way, and the next event reads again.
+ */
+async function nativeRoad($: any, at: string): Promise<boolean> {
+  return (await settings($, at))?.native === true
 }
 
 /**
@@ -389,18 +445,40 @@ async function relay($: any, event: string, reason: string | undefined, body: un
   try {
     const c = await settings($, event)
     if (!c) return
-    const argv = [c.bin, 'hook', '--sock', c.hookSock, '--session', c.session, '--event', event]
-    if (reason !== undefined) argv.push('--reason', reason)
-    argv.push('--road', 'mod')
-    const run = runAfter($, tail, argv, JSON.stringify(body ?? {}))
-    tail = run.then(
-      () => undefined,
-      () => undefined,
-    )
-    if (wait) await run
+    await send($, c, event, reason, body, wait)
   } catch {
     // A frame that never left: the daemon is down or the host went.
   }
+}
+
+/**
+ * A classic event's relay: silent under the native road (T-657), where the
+ * same frame is built from the engine's own event, and such an account
+ * fires no classic event for a person's mod anyway. One read of the
+ * variables for the event: a second after a failed one is the same
+ * abandoned dispatch's (T-594).
+ */
+async function relayClassic($: any, event: string, reason: string | undefined, body: unknown, wait: boolean) {
+  try {
+    const c = await settings($, event)
+    if (!c || c.native) return
+    await send($, c, event, reason, body, wait)
+  } catch {
+    // As above.
+  }
+}
+
+/** The frame itself, once the variables are in hand. */
+async function send($: any, c: Config, event: string, reason: string | undefined, body: unknown, wait: boolean) {
+  const argv = [c.bin, 'hook', '--sock', c.hookSock, '--session', c.session, '--event', event]
+  if (reason !== undefined) argv.push('--reason', reason)
+  argv.push('--road', 'mod')
+  const run = runAfter($, tail, argv, JSON.stringify(body ?? {}))
+  tail = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  if (wait) await run
 }
 
 /**
@@ -446,10 +524,25 @@ async function approve($: any, e: unknown): Promise<unknown> {
  * noted by its call's id (`agents`).
  */
 export function preToolUseBody(e: any, agentId?: string): Record<string, unknown> {
-  const { tool, tool_use_id, agentId: own, ...tool_input } = e ?? {}
+  // `consent` rides a `tool.call` envelope alone (the person's words for the
+  // press that raised the call) and is no argument of the tool's.
+  const { tool, tool_use_id, agentId: own, consent, ...tool_input } = e ?? {}
+  void consent
   const body: Record<string, unknown> = { hook_event_name: 'PreToolUse', tool_name: tool, tool_use_id, tool_input }
   const agent = typeof own === 'string' ? own : agentId
   if (typeof agent === 'string') body.agent_id = agent
+  return body
+}
+
+/**
+ * The hook set's `PostToolUse` stdin, from a `tool.call` envelope and the
+ * result it resolved with (T-657): `tool_response` is the tool's record as
+ * it came, which T-651 measured byte-identical to the hook set's.
+ */
+export function postToolUseBody(e: any, response: unknown): Record<string, unknown> {
+  const body = preToolUseBody(e)
+  body.hook_event_name = 'PostToolUse'
+  body.tool_response = response
   return body
 }
 
@@ -463,6 +556,146 @@ export function answeredBody(id: string, questions: unknown, response?: unknown)
   }
   if (response !== undefined) body.tool_response = response
   return body
+}
+
+/**
+ * The `ModAnswer declined` report for a refused plan (T-657): the dialog's
+ * dismissal the hook set never fires (T-447), a fact the native result
+ * carries as `isError`. Same shape as the question's, the plan's input.
+ */
+export function planDeclinedBody(id: string, plan: unknown): Record<string, unknown> {
+  const tool_input: Record<string, unknown> = {}
+  if (plan !== undefined) tool_input.plan = plan
+  return { hook_event_name: 'PostToolUse', tool_name: 'ExitPlanMode', tool_use_id: id, tool_input }
+}
+
+/** A `SessionStart` as the hook set spells it, less the path the daemon finds by id (T-657). */
+export function startBody(source: string, sessionId: string | undefined, dir: string | undefined): Record<string, unknown> {
+  const body: Record<string, unknown> = { hook_event_name: 'SessionStart', source }
+  if (typeof sessionId === 'string') body.session_id = sessionId
+  if (typeof dir === 'string') body.cwd = dir
+  return body
+}
+
+/** A `PreCompact` or `PostCompact` as the hook set spells it (T-657). */
+export function compactBody(event: string, trigger: unknown, agentId?: string): Record<string, unknown> {
+  const body: Record<string, unknown> = { hook_event_name: event, trigger }
+  if (typeof agentId === 'string') body.agent_id = agentId
+  return body
+}
+
+// ---- The task ledger (T-657): the one adapter the native road keeps, where
+// the hook set's `Stop` lists `background_tasks` and `turn.complete` lists
+// nothing. A row begins with the tool result that starts a task, is read
+// against `$.agent.list()` at each turn's end, and ends with the task's
+// notification, a `TaskStop`, or a status that says it is over.
+
+function keep(row: Row) {
+  ledger.set(row.id, row)
+  if (ledger.size > LEDGER_MAX) ledger.delete(ledger.keys().next().value as string)
+}
+
+/**
+ * A tool result that starts a task (the lead's; a subagent's shells die
+ * with it, T-483): Bash's `backgroundTaskId` and Monitor's `taskId` are
+ * shells, as 2.1.283 labels both; an Agent's `agentId` with `isAsync` is a
+ * subagent. A teammate's row is `agent.spawn`'s (its id is the agent's).
+ */
+export function taskStarted(e: any, result: any): Row | undefined {
+  if (typeof e?.agentId === 'string' || !result || typeof result !== 'object') return undefined
+  switch (e?.tool) {
+    case 'Bash': {
+      const id = result.backgroundTaskId
+      if (typeof id !== 'string') return undefined
+      const command = typeof e.command === 'string' ? e.command : ''
+      return { id, type: 'shell', status: 'running', description: command, command }
+    }
+    case 'Monitor': {
+      const id = result.taskId
+      if (typeof id !== 'string') return undefined
+      return { id, type: 'shell', status: 'running', description: String(e.description ?? '') }
+    }
+    case 'Agent':
+    case 'Task': {
+      const id = result.agentId
+      if (typeof id !== 'string' || result.isAsync !== true) return undefined
+      const row: Row = { id, type: 'subagent', status: 'running', description: String(result.description ?? e.description ?? '') }
+      const kind = spawned.get(id) ?? e.subagent_type
+      if (typeof kind === 'string') row.agent_type = kind
+      return row
+    }
+    default:
+      return undefined
+  }
+}
+
+/** A task the lead stopped by hand: `TaskStop`'s `task_id` is a row's id, or a teammate's name or address. */
+function taskStopped(e: any) {
+  const id = e?.task_id
+  if (typeof id !== 'string') return
+  for (const [key, row] of ledger) {
+    if (key === id || row.teammateId === id || row.teammateId?.split('@')[0] === id) ledger.delete(key)
+  }
+}
+
+/**
+ * The notification that ends a background task is a prompt (T-651:
+ * `<task-notification>` with `<task-id>` in `turn.start`'s text, never a
+ * `session.receive`).
+ */
+export function taskNotified(text: unknown): string | undefined {
+  if (typeof text !== 'string' || !text.includes('<task-notification>')) return undefined
+  const m = /<task-id>([^<]+)<\/task-id>/.exec(text)
+  return m ? m[1].trim() : undefined
+}
+
+/**
+ * The `Stop`'s `background_tasks` (T-657): every row still open, its status
+ * read off `$.agent.list()` where the list has it, plus any agent the list
+ * holds live that the ledger never saw start. A row whose status is over
+ * is dropped, as the hook set drops a finished task.
+ */
+export function backgroundTasks(listed: unknown): Record<string, unknown>[] {
+  if (Array.isArray(listed)) {
+    for (const a of listed) {
+      if (typeof a?.id !== 'string' || typeof a?.status !== 'string') continue
+      const row = ledger.get(a.id)
+      if (row) {
+        row.status = a.status
+      } else if (!TASK_OVER.includes(a.status)) {
+        const teammate = typeof a.teammateId === 'string'
+        const row: Row = {
+          id: a.id,
+          type: teammate ? 'teammate' : 'subagent',
+          status: a.status,
+          description: String(a.description ?? ''),
+        }
+        if (teammate) row.teammateId = a.teammateId
+        else if (typeof a.type === 'string') row.agent_type = a.type
+        keep(row)
+      }
+    }
+  }
+  const out: Record<string, unknown>[] = []
+  for (const [id, row] of ledger) {
+    if (TASK_OVER.includes(row.status)) {
+      ledger.delete(id)
+      continue
+    }
+    const listed: Record<string, unknown> = { id: row.id, type: row.type, status: row.status, description: row.description }
+    if (row.command !== undefined) listed.command = row.command
+    if (row.agent_type !== undefined) listed.agent_type = row.agent_type
+    out.push(listed)
+  }
+  return out
+}
+
+/** The team a teammate's row names, `<name>@<team>`, if a row does. */
+function teamOf(name: string): string | undefined {
+  for (const row of ledger.values()) {
+    if (row.teammateId?.startsWith(`${name}@`)) return row.teammateId.slice(name.length + 1)
+  }
+  return undefined
 }
 
 /**
@@ -509,7 +742,7 @@ async function fillPrompt($: any, id: string, text: string) {
 
 async function relaySingle($: any, e: any, next: any) {
   const event = String(next.event).replace(/^classic\./, '')
-  void relay($, event, undefined, e, false)
+  void relayClassic($, event, undefined, e, false)
   return next(e)
 }
 
@@ -624,12 +857,40 @@ export function usageBody(e: any, usage: unknown, limits?: unknown): Record<stri
  */
 async function turnComplete($: any, e: any, next: any) {
   const result = await next(e)
+  const agent = typeof e?.agentId === 'string' ? e.agentId : undefined
   let limits: unknown
-  if (typeof e?.agentId !== 'string') {
+  if (!agent) {
     try {
       limits = (await $.session.usage())?.rateLimits
     } catch {
       limits = undefined
+    }
+  }
+  // The native road (T-657): the hook set's frame for this turn's end comes
+  // first, as `classic.Stop` came before the mod's report. A subagent's or a
+  // teammate's turn is its `SubagentStop`; the main loop's is a `Stop` with
+  // the task list, or a `StopFailure` with no class when the API ended it
+  // (the transcript's tail has the words), and nothing on an interrupt, for
+  // which the hook set's Stop never fires.
+  if (await nativeRoad($, 'turn.complete')) {
+    if (agent) {
+      const row = ledger.get(agent)
+      if (row && row.type === 'subagent') row.status = 'completed'
+      const kind = spawned.get(agent) ?? row?.teammateId?.split('@')[0] ?? row?.agent_type
+      const body: Record<string, unknown> = { hook_event_name: 'SubagentStop', agent_id: agent }
+      if (typeof kind === 'string') body.agent_type = kind
+      void relay($, 'SubagentStop', undefined, body, false)
+    } else if (e?.reason === 'error') {
+      void relay($, 'StopFailure', 'unknown', { hook_event_name: 'StopFailure', error: 'unknown', native: true }, false)
+    } else if (e?.reason !== 'aborted') {
+      let listed: unknown
+      try {
+        listed = await $.agent.list()
+      } catch {
+        listed = undefined
+      }
+      const body = { hook_event_name: 'Stop', stop_hook_active: false, background_tasks: backgroundTasks(listed) }
+      void relay($, 'Stop', undefined, body, false)
     }
   }
   void relay($, 'ModUsage', String(e?.reason ?? 'answer'), usageBody(e, e?.usage ?? result?.usage, limits), false)
@@ -645,26 +906,179 @@ export const register: Register = on => {
     // bridge's first poll, so the tools are listed before any turn it
     // starts, and a session.start held by them is one more dispatch to lose.
     started = true
-    await settings($, 'session.start')
+    const c = await settings($, 'session.start')
+    // The native road (T-657): the process's one `session.start` is the
+    // hook set's `SessionStart{startup}`; a resume the daemon knows from its
+    // own launch and keeps its own word. The id names the transcript, which
+    // the daemon finds under its projects root as the census does: the path
+    // is not derived here (past 200 characters the engine hashes its slug).
+    // One read of the variables for the event, so a failed one is read
+    // again by the next event alone (T-594).
+    if (c?.native) {
+      cwd = typeof (e as any)?.cwd === 'string' ? (e as any).cwd : cwd
+      let id: string | undefined
+      try {
+        id = await $.session.id()
+      } catch {
+        id = undefined
+      }
+      if (typeof id === 'string') seenId = id
+      void relay($, 'SessionStart', 'startup', startBody('startup', id, cwd), false)
+    }
     return result
   })
 
+  // ---- The native road (T-657), event by event. Each hook relays only
+  // under the switch and otherwise passes the event on untouched. Every
+  // `$` read is the hook's own (T-594).
+  on('session.end', async ($, e, next) => {
+    const reason = String((e as any)?.reason ?? 'other')
+    if (await nativeRoad($, 'session.end')) {
+      lastEnd = reason
+      const body: Record<string, unknown> = { hook_event_name: 'SessionEnd', reason }
+      if (typeof (e as any)?.sessionId === 'string') body.session_id = (e as any).sessionId
+      // Awaited, as the classic one is: the process may be gone before an
+      // unawaited relay runs.
+      if (SESSION_END_REASONS.includes(reason)) await relay($, 'SessionEnd', reason, body, true)
+    }
+    return next(e)
+  })
+  on('turn.start', async ($, e, next) => {
+    if (await nativeRoad($, 'turn.start')) {
+      let id: string | undefined
+      try {
+        id = await $.session.id()
+      } catch {
+        id = undefined
+      }
+      // A `/clear` fires no `session.start` (T-651): the conversation that
+      // ended with `session.end{clear}` is followed by one whose id the
+      // next turn reads. An in-session `/resume` is the same edge with the
+      // end's own word.
+      if (typeof id === 'string') {
+        if (seenId !== undefined && id !== seenId) {
+          const source = lastEnd === 'resume' ? 'resume' : 'clear'
+          void relay($, 'SessionStart', source, startBody(source, id, cwd), false)
+        }
+        seenId = id
+      }
+      const text = (e as any)?.text
+      const ended = taskNotified(text)
+      if (ended !== undefined) ledger.delete(ended)
+      const body: Record<string, unknown> = { hook_event_name: 'UserPromptSubmit', prompt: typeof text === 'string' ? text : '' }
+      if (typeof id === 'string') body.session_id = id
+      void relay($, 'UserPromptSubmit', undefined, body, false)
+    }
+    return next(e)
+  })
+  // Every tool call, before and after: the hook set's `PreToolUse` (the
+  // daemon reads the two dialog tools as dialogs and every other as the
+  // session working) and its `PostToolUse` with the result as it came. No
+  // `PostToolUse` for a refused call or a tool's error, for which the hook
+  // set fires none either; a refused plan is the dialog's dismissal, said
+  // as the question's is (`ModAnswer declined`); a question the board
+  // answered is said by its `ModAnswer answered` alone.
+  on('tool.call', async ($, e, next) => {
+    if (!(await nativeRoad($, 'tool.call'))) return next(e)
+    void relay($, 'PreToolUse', undefined, preToolUseBody(e), false)
+    const r: any = await next(e)
+    const { tool, tool_use_id: id, agentId } = e as any
+    if (r?.deny !== undefined) return r
+    if (r?.isError) {
+      if (tool === 'ExitPlanMode' && typeof id === 'string' && typeof agentId !== 'string') {
+        void relay($, 'ModAnswer', 'declined', planDeclinedBody(id, (e as any).plan), false)
+      }
+      return r
+    }
+    if (typeof id === 'string' && boardAnswered.delete(id)) return r
+    const row = taskStarted(e, r?.result)
+    if (row) keep(row)
+    if (tool === 'TaskStop') taskStopped(e)
+    void relay($, 'PostToolUse', undefined, postToolUseBody(e, r?.result), false)
+    return r
+  })
+  on('agent.spawn', async ($, e, next) => {
+    const r: any = await next(e)
+    if ((await nativeRoad($, 'agent.spawn')) && typeof r?.agentId === 'string') {
+      // A teammate's `agent_type` is its name, as the hook set gives it; the
+      // row the `Stop` lists is keyed by the agent's own id, so the daemon's
+      // registry closes the `SubagentStart` it opened under that id.
+      const teammate = typeof r.teammateId === 'string' ? r.teammateId : undefined
+      const kind = teammate ? teammate.split('@')[0] : String((e as any)?.subagentType ?? '')
+      if (teammate) {
+        keep({ id: r.agentId, type: 'teammate', status: 'running', description: String((e as any)?.description ?? ''), teammateId: teammate })
+      } else {
+        spawned.set(r.agentId, kind)
+        if (spawned.size > LEDGER_MAX) spawned.delete(spawned.keys().next().value as string)
+      }
+      void relay($, 'SubagentStart', undefined, { hook_event_name: 'SubagentStart', agent_id: r.agentId, agent_type: kind }, false)
+    }
+    return r
+  })
+  on('session.receive', async ($, e, next) => {
+    if (await nativeRoad($, 'session.receive')) {
+      // A teammate's idle notice (T-651): a peer delivery whose text is the
+      // `idle_notification` JSON. Everything else is the conversation's.
+      const origin = (e as any)?.origin
+      if (origin?.kind === 'peer' && typeof origin.teammate === 'string' && typeof (e as any)?.agentId !== 'string') {
+        let kind: unknown
+        try {
+          kind = JSON.parse(String((e as any)?.text ?? ''))?.type
+        } catch {
+          kind = undefined
+        }
+        if (kind === 'idle_notification') {
+          const body: Record<string, unknown> = { hook_event_name: 'TeammateIdle', teammate_name: origin.teammate }
+          const team = teamOf(origin.teammate)
+          if (team !== undefined) body.team_name = team
+          void relay($, 'TeammateIdle', undefined, body, false)
+        }
+      }
+    }
+    return next(e)
+  })
+  on('session.compact', async ($, e, next) => {
+    // The hook set's order (T-651): `PreCompact`, `SessionStart{compact}`,
+    // `PostCompact`, the same id throughout. A vetoed compaction fires the
+    // first alone.
+    const trigger = (e as any)?.trigger
+    const agent = typeof (e as any)?.agentId === 'string' ? (e as any).agentId : undefined
+    const relayed = (await nativeRoad($, 'session.compact')) && COMPACT_TRIGGERS.includes(trigger)
+    if (relayed) void relay($, 'PreCompact', undefined, compactBody('PreCompact', trigger, agent), false)
+    const r: any = await next(e)
+    if (relayed && r?.skip === undefined) {
+      if (!agent) {
+        let id: string | undefined
+        try {
+          id = await $.session.id()
+        } catch {
+          id = undefined
+        }
+        void relay($, 'SessionStart', 'compact', startBody('compact', id, cwd), false)
+      }
+      void relay($, 'PostCompact', undefined, compactBody('PostCompact', trigger, agent), false)
+    }
+    return r
+  })
+
   // ---- The relay, event by event: the hook set's names, not `classic.*`,
-  // which also delivers the verbose tier mesimon never registers.
+  // which also delivers the verbose tier mesimon never registers. Silent
+  // under the native road (T-657): such an account fires none of these,
+  // and one that did would be relayed twice.
   on('classic.SessionStart', async ($, e, next) => {
     const source = (e as any).source
-    if (SESSION_START_SOURCES.includes(source)) void relay($, 'SessionStart', source, e, false)
+    if (SESSION_START_SOURCES.includes(source)) void relayClassic($, 'SessionStart', source, e, false)
     return next(e)
   })
   on('classic.SessionEnd', async ($, e, next) => {
     // Awaited: the process may be gone before an unawaited relay runs.
     const reason = (e as any).reason
-    if (SESSION_END_REASONS.includes(reason)) await relay($, 'SessionEnd', reason, e, true)
+    if (SESSION_END_REASONS.includes(reason)) await relayClassic($, 'SessionEnd', reason, e, true)
     return next(e)
   })
   on('classic.StopFailure', async ($, e, next) => {
     const error = (e as any).error
-    if (STOP_FAILURE_MATCHERS.includes(error)) void relay($, 'StopFailure', error, e, false)
+    if (STOP_FAILURE_MATCHERS.includes(error)) void relayClassic($, 'StopFailure', error, e, false)
     return next(e)
   })
   on('classic.PreToolUse', async ($, e, next) => {
@@ -673,7 +1087,7 @@ export const register: Register = on => {
       const id = (e as any).tool_use_id
       const agent = typeof id === 'string' ? agents.get(id) : undefined
       if (typeof id === 'string') agents.delete(id)
-      void relay($, 'PreToolUse', undefined, preToolUseBody(e, agent), false)
+      void relayClassic($, 'PreToolUse', undefined, preToolUseBody(e, agent), false)
     }
     return next(e)
   })
@@ -772,6 +1186,7 @@ export const register: Register = on => {
     const questions = (e as any).questions
     if (first.who === 'board') {
       const result = { questions, answers: first.answers }
+      boardAnswered.add(call)
       void relay($, 'ModAnswer', 'answered', answeredBody(call, questions, result), false)
       void native.then(() => undefined)
       return { result } as any
@@ -791,7 +1206,12 @@ export const register: Register = on => {
   on('classic.SubagentStop', relaySingle)
   on('classic.TeammateIdle', relaySingle)
   on('classic.PermissionRequest', async ($, e, next) => {
-    void relay($, 'PermissionRequest', undefined, e, false)
+    // Under the native road (T-657) the daemon passes a one-entry hook set
+    // beside the mod for this event (a settings hook is no plugin, so the
+    // security default lets it run two-sided); were this to fire there, the
+    // hook set's entry has relayed it and `mesimon approve` runs there too.
+    if (await nativeRoad($, 'PermissionRequest')) return next(e)
+    void relayClassic($, 'PermissionRequest', undefined, e, false)
     // Beside whatever else answers the dialog, as the hook set's two
     // entries ran side by side; a person's phone answer is the one taken.
     const theirs = next(e)
