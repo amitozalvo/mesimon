@@ -32,12 +32,16 @@
 //! `cc-plugin-sec-default` outermost, whose `classic.*` hook hands every
 //! classic hook event past a person's plugins (`next.to(e, "append")`). The
 //! mod then loads, serves the tools and takes a `submit`, and never hears
-//! `SessionStart`, `UserPromptSubmit` or `Stop`. No probe sees the seating;
-//! a launch whose bridge polled and whose `SessionStart` never came is
-//! relaunched with the hook set beside its mod and writes
-//! [`Verdict::ClassicOff`], which expires as the mods-off one does: the mod
-//! keeps the prompts, the answers, the tools, the gate and the quota
-//! windows, and the hook set reports the events, as it did before 2.1.287.
+//! `SessionStart`, `UserPromptSubmit` or `Stop`. The probe's fourth step
+//! reads what seats it where it can: `claude auth status --json`'s
+//! `subscriptionType` (`team`, `enterprise`) and the managed-settings file
+//! on this machine; either is [`Verdict::ClassicOff`] before any launch. What
+//! the probe cannot see (managed settings served remotely) a launch finds:
+//! one whose bridge polled and whose `SessionStart` never came is relaunched
+//! with the hook set beside its mod and writes the same verdict, which
+//! expires as the mods-off one does. Under it the mod keeps the prompts, the
+//! answers, the tools, the gate and the quota windows, and the hook set
+//! reports the events, as it did before 2.1.287.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -223,13 +227,18 @@ pub enum Verdict {
     /// ms) is when; the verdict is asked again after [`MODS_OFF_TTL_MS`].
     ModsOff { version: String, seen_at: u64 },
     /// The mod loads and this Claude Code keeps the hook events from it
-    /// (T-650): a launch's bridge polled and no `SessionStart` followed, so
-    /// it was relaunched with the hook set beside its mod, and so is every
-    /// launch after. A Team or Enterprise account, or managed settings, seat
-    /// `cc-plugin-sec-default`, which hands every `classic.*` event past a
-    /// person's plugins. `seen_at` (epoch ms) is when; the verdict is asked
-    /// again after [`MODS_OFF_TTL_MS`].
-    ClassicOff { version: String, seen_at: u64 },
+    /// (T-650): every launch carries the hook set beside its mod. A Team or
+    /// Enterprise account, or managed settings, seat `cc-plugin-sec-default`,
+    /// which hands every `classic.*` event past a person's plugins. `found`
+    /// says how the probe knew (the account, the managed-settings file, or a
+    /// launch whose mod heard no `SessionStart`); `seen_at` (epoch ms) is
+    /// when; the verdict is asked again after [`MODS_OFF_TTL_MS`].
+    ClassicOff {
+        version: String,
+        seen_at: u64,
+        #[serde(default)]
+        found: String,
+    },
     /// The mod validates and `claude plugin test` failed on the load probe
     /// in other words: the mod is not proven to load.
     LoadFailed { version: String, error: String },
@@ -279,9 +288,10 @@ impl Verdict {
                 "claude {version}: mods are off in this Claude Code (seen {}); the hook set is used",
                 clock_of(*seen_at)
             ),
-            Verdict::ClassicOff { version, seen_at } => format!(
-                "claude {version}: hook events do not reach the mod in this Claude Code (seen {}; a Team or Enterprise account, or managed settings); the hook set reports beside it",
-                clock_of(*seen_at)
+            Verdict::ClassicOff { version, seen_at, found } => format!(
+                "claude {version}: hook events do not reach the mod in this Claude Code (seen {}; {}); the hook set reports beside it",
+                clock_of(*seen_at),
+                if found.is_empty() { FOUND_UNSAID } else { found }
             ),
             Verdict::LoadFailed { version, error } => {
                 format!("claude plugin test failed on {version}: {error}")
@@ -290,6 +300,13 @@ impl Verdict {
         }
     }
 }
+
+/// A classic-off verdict from a `probe.json` written before `found` was.
+const FOUND_UNSAID: &str = "a Team or Enterprise account, or managed settings";
+/// How a launch found it (`Silence::Deaf`'s verdict).
+pub const FOUND_BY_LAUNCH: &str = "a launch's mod heard no SessionStart";
+/// How the probe found it on this machine's managed-settings file.
+pub const FOUND_BY_MANAGED: &str = "managed settings on this machine";
 
 /// `HH:MM` local, for a verdict's line (`--:--` where libc cannot say).
 fn clock_of(ms: u64) -> String {
@@ -354,17 +371,50 @@ pub fn save_probe(paths: &Paths, probe: &Probe) {
 const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 const VALIDATE_TIMEOUT: Duration = Duration::from_secs(60);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(60);
+const ACCOUNT_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Run the probe. `version`, `validate` and `load` (`claude plugin test` on
-/// the load probe) are whole command lines, the launcher included (the
-/// pane's environment, as a launch gets it: an environment that turns
-/// Claude Code's flags service off loads mods, and the probe must see what
-/// the pane will). Runs on a worker: a cold Claude Code takes seconds to
-/// answer. `now_ms` stamps a mods-off verdict.
+/// The managed-settings file Claude Code reads on this machine, by its
+/// documented path: present, Claude Code seats its security default
+/// outermost ("this machine has managed settings", T-650). Managed settings
+/// served remotely, by MDM profile or the registry are not seen here; a
+/// launch finds those.
+pub fn managed_settings_present() -> bool {
+    let path = if cfg!(target_os = "macos") {
+        "/Library/Application Support/ClaudeCode/managed-settings.json"
+    } else {
+        "/etc/claude-code/managed-settings.json"
+    };
+    Path::new(path).is_file()
+}
+
+/// What `claude auth status --json` says that seats the security default
+/// (T-650): a `subscriptionType` of `team` or `enterprise`. `None` for any
+/// other account, and for an answer that is not that JSON.
+pub fn deaf_account(status: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(status.trim()).ok()?;
+    let kind = value.get("subscriptionType")?.as_str()?.trim().to_ascii_lowercase();
+    match kind.as_str() {
+        "team" => Some("a team account".into()),
+        "enterprise" => Some("an enterprise account".into()),
+        _ => None,
+    }
+}
+
+/// Run the probe. `version`, `validate`, `load` (`claude plugin test` on
+/// the load probe) and `account` (`claude auth status --json`) are whole
+/// command lines, the launcher included (the pane's environment, as a
+/// launch gets it: an environment that turns Claude Code's flags service
+/// off loads mods, and the probe must see what the pane will). `managed`
+/// is [`managed_settings_present`]. Runs on a worker: a cold Claude Code
+/// takes seconds to answer. `now_ms` stamps a mods-off or classic-off
+/// verdict. An account the command cannot say is not held against the mod:
+/// a launch finds a deaf one (T-650).
 pub fn probe(
     version: &[String],
     validate: &[String],
     load: &[String],
+    account: &[String],
+    managed: bool,
     cwd: &Path,
     now_ms: u64,
 ) -> Verdict {
@@ -386,12 +436,23 @@ pub fn probe(
         Err(error) => return Verdict::ValidateFailed { version, error },
     }
     match run_bounded(load, cwd, LOAD_TIMEOUT) {
-        Ok(out) if out.code == Some(0) => Verdict::Passed { version },
+        Ok(out) if out.code == Some(0) => {}
         Ok(out) if format!("{}\n{}", out.stdout, out.stderr).contains(MODS_OFF_WORDS) => {
-            Verdict::ModsOff { version, seen_at: now_ms }
+            return Verdict::ModsOff { version, seen_at: now_ms };
         }
-        Ok(out) => Verdict::LoadFailed { version, error: first_error(&out) },
-        Err(error) => Verdict::LoadFailed { version, error },
+        Ok(out) => return Verdict::LoadFailed { version, error: first_error(&out) },
+        Err(error) => return Verdict::LoadFailed { version, error },
+    }
+    if managed {
+        return Verdict::ClassicOff { version, seen_at: now_ms, found: FOUND_BY_MANAGED.into() };
+    }
+    let found = match run_bounded(account, cwd, ACCOUNT_TIMEOUT) {
+        Ok(out) if out.code == Some(0) => deaf_account(&out.stdout),
+        _ => None,
+    };
+    match found {
+        Some(found) => Verdict::ClassicOff { version, seen_at: now_ms, found },
+        None => Verdict::Passed { version },
     }
 }
 
@@ -581,7 +642,7 @@ mod tests {
             "echo 'Validating hooks'; echo '✘ Found 1 error:'; echo '  ❯ modules./x.ts: $ is assigned'; exit 1",
         );
         let v = |a: &str, b: &str| {
-            probe(&[a.to_string()], &[b.to_string()], std::slice::from_ref(&pass), d, 7)
+            probe(&[a.to_string()], &[b.to_string()], std::slice::from_ref(&pass), &[], false, d, 7)
         };
         assert_eq!(v(&new, &pass), Verdict::Passed { version: "2.1.287".into() });
         assert_eq!(v(&old, &pass), Verdict::TooOld { version: "2.1.286".into() });
@@ -598,6 +659,8 @@ mod tests {
                 &[d.join("missing").display().to_string()],
                 std::slice::from_ref(&pass),
                 std::slice::from_ref(&pass),
+                &[],
+                false,
                 d,
                 7
             ),
@@ -631,6 +694,8 @@ mod tests {
                 std::slice::from_ref(&new),
                 std::slice::from_ref(&pass),
                 &[load.to_string()],
+                &[],
+                false,
                 d,
                 42,
             )
@@ -652,6 +717,58 @@ mod tests {
         assert!(line.ends_with("); the hook set is used"), "{line}");
     }
 
+    /// T-650: loading is not hearing. The probe's fourth step reads the
+    /// account: a `team` or `enterprise` one, or a managed-settings file on
+    /// this machine, is a classic-off verdict before any launch, with how it
+    /// was found; any other account, or an answer that says nothing, is
+    /// passed (a launch finds a deaf mod the probe could not see).
+    #[test]
+    fn the_probe_reads_the_account_that_seats_the_security_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let new = script(d, "new", "echo '2.1.289 (Claude Code)'");
+        let pass = script(d, "pass", "echo '✔ Validation passed'");
+        let account = |name: &str, json: &str| script(d, name, &format!("echo '{json}'"));
+        let max = account("max", r#"{"loggedIn":true,"subscriptionType":"max"}"#);
+        let team = account("team", r#"{"loggedIn":true,"subscriptionType":"team"}"#);
+        let ent = account("ent", r#"{"loggedIn":true,"subscriptionType":"Enterprise"}"#);
+        let mute = account("mute", "");
+        let gone = script(d, "gone", "echo 'not logged in' >&2; exit 1");
+        let v = |account: &str, managed: bool| {
+            probe(
+                std::slice::from_ref(&new),
+                std::slice::from_ref(&pass),
+                std::slice::from_ref(&pass),
+                &[account.to_string()],
+                managed,
+                d,
+                9,
+            )
+        };
+        let passed = Verdict::Passed { version: "2.1.289".into() };
+        assert_eq!(v(&max, false), passed);
+        assert_eq!(v(&mute, false), passed);
+        assert_eq!(v(&gone, false), passed);
+        let deaf = |found: &str| Verdict::ClassicOff {
+            version: "2.1.289".into(),
+            seen_at: 9,
+            found: found.into(),
+        };
+        assert_eq!(v(&team, false), deaf("a team account"));
+        assert_eq!(v(&ent, false), deaf("an enterprise account"));
+        assert_eq!(v(&max, true), deaf(FOUND_BY_MANAGED));
+        let line = v(&team, false).line();
+        assert!(line.contains("(seen "), "{line}");
+        assert!(line.contains("; a team account); the hook set reports beside it"), "{line}");
+        assert_eq!(deaf_account("garbage"), None);
+        assert_eq!(deaf_account(r#"{"subscriptionType":"pro"}"#), None);
+        // A `probe.json` from before `found` reads with the general words.
+        let old: Verdict =
+            serde_json::from_str(r#"{"verdict":"classic_off","version":"2.1.289","seen_at":9}"#)
+                .unwrap();
+        assert!(old.line().contains(FOUND_UNSAID), "{}", old.line());
+    }
+
     /// T-598: a mods-off verdict is asked again six hours after it was seen,
     /// and so is a classic-off one (T-650); a passing one, or one the
     /// binary's version settles, is not.
@@ -661,7 +778,11 @@ mod tests {
         let at = |verdict| Probe { key: key.clone(), verdict };
         let seen = 1_000_000;
         let off = at(Verdict::ModsOff { version: "2.1.288".into(), seen_at: seen });
-        let deaf = at(Verdict::ClassicOff { version: "2.1.289".into(), seen_at: seen });
+        let deaf = at(Verdict::ClassicOff {
+            version: "2.1.289".into(),
+            seen_at: seen,
+            found: FOUND_BY_LAUNCH.into(),
+        });
         for p in [&off, &deaf] {
             assert!(p.claude_off());
             assert!(!p.recheck_due(seen));
@@ -687,7 +808,7 @@ mod tests {
             ),
             "{line}"
         );
-        assert!(line.contains("a Team or Enterprise account, or managed settings"), "{line}");
+        assert!(line.contains(FOUND_BY_LAUNCH), "{line}");
         assert!(line.ends_with("); the hook set reports beside it"), "{line}");
         assert_eq!(deaf.verdict.version(), Some("2.1.289"));
         // The mod is taken either way; the hook set rides only beside a deaf one.

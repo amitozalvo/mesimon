@@ -22,7 +22,8 @@ use mesimon_core::road::Road;
 fn stub(version: &str) -> String {
     format!(
         "#!/bin/sh\ncase \"$1\" in\n  --version) echo '{version} (Claude Code)'; exit 0 ;;\n  \
-         plugin) echo '✔ Validation passed'; exit 0 ;;\nesac\nexec sleep 300\n"
+         plugin) echo '✔ Validation passed'; exit 0 ;;\n  \
+         auth) echo '{{\"subscriptionType\":\"max\"}}'; exit 0 ;;\nesac\nexec sleep 300\n"
     )
 }
 
@@ -100,15 +101,22 @@ fn a_claude_code_too_old_for_mods_launches_on_the_hook_set() {
 }
 
 /// A stand-in for a Claude Code whose mods are off (T-598): it answers the
-/// probe as `stub` does (`plugin test` with `test`'s words), and as a
-/// session paints its composer and keeps every line it reads. It loads no
-/// mod, so on the mod road it reports nothing, as 2.1.288 did with its
-/// remote flag off.
+/// probe as `stub` does (`plugin test` with `test`'s words, `auth status`
+/// with a Max account), and as a session paints its composer and keeps
+/// every line it reads. It loads no mod, so on the mod road it reports
+/// nothing, as 2.1.288 did with its remote flag off.
 fn silent_stub(test: &str) -> String {
+    silent_stub_on(test, "max")
+}
+
+/// `silent_stub` on an `account` (`subscriptionType`, T-650).
+fn silent_stub_on(test: &str, account: &str) -> String {
     format!(
         "#!/bin/sh\ncase \"$1 $2\" in\n  --version*) echo '2.1.288 (Claude Code)'; exit 0 ;;\n  \
          'plugin validate') echo '✔ Validation passed'; exit 0 ;;\n  \
-         'plugin test') {test} ;;\nesac\n{COMPOSER}stty -icanon 2>/dev/null\n\
+         'plugin test') {test} ;;\n  \
+         'auth status') echo '{{\"loggedIn\":true,\"subscriptionType\":\"{account}\"}}'; exit 0 ;;\n\
+         esac\n{COMPOSER}stty -icanon 2>/dev/null\n\
          while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n"
     )
 }
@@ -339,6 +347,36 @@ fn a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_with
     assert!(rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
     let _ = c.request(Command::KillSession { id: sid });
     let _ = c.request(Command::KillSession { id: next });
+}
+
+/// T-650: the probe's account step. `claude auth status --json` says the
+/// account is `enterprise`, so Claude Code seats its security default and
+/// the mod will hear no classic event: the verdict is classic-off before any
+/// launch, and the first launch already carries the hook set beside its
+/// mod, with nothing relaunched.
+#[test]
+fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_carries_both() {
+    let stub = silent_stub_on(TEST_PASSES, "enterprise");
+    let env = [("MESIMON_CLAUDE_ROAD", "auto")];
+    let Some(h) = Harness::boot_bare("mod-auto-enterprise", Some(&stub), &env) else { return };
+    wait_until(Duration::from_secs(30), "the startup probe's verdict", || {
+        road_json(&h).is_some_and(|v| v["mods_off"] == true)
+    });
+    let v = road_json(&h).unwrap();
+    assert_eq!(v["road"], "mod", "{v}");
+    let line = v["probe"].as_str().unwrap();
+    assert!(line.contains("hook events do not reach the mod"), "{line}");
+    assert!(line.contains("an enterprise account"), "{line}");
+    assert!(line.ends_with("the hook set reports beside it"), "{line}");
+    let probe = probe_json(&h).unwrap();
+    assert_eq!(probe["verdict"], "classic_off", "{probe}");
+    assert_eq!(probe["found"], "an enterprise account", "{probe}");
+    let rec = launch(&h);
+    assert_eq!(rec.road, Road::Mod);
+    assert!(rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
+    assert!(rec.argv.iter().any(|a| a == "--settings"), "{:?}", rec.argv);
+    assert!(!rec.argv.iter().any(|a| a == "--mcp-config"), "{:?}", rec.argv);
+    assert!(!feed_has(&h, "claude_road_relaunch"), "nothing to relaunch");
 }
 
 /// T-598: the probe's load step. A Claude Code that refuses `claude plugin

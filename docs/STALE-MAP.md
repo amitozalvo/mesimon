@@ -20978,7 +20978,20 @@ behind the running turn). Cost was counted from `ModUsage` while the card read `
    `ModAnswer`, `ModFill` and the quota windows read as on every mod session, the cost from the
    tail. The launch words go down the mod's `submit` once the hook set's `SessionStart` arms
    them. `LaunchContext::hook_set` is the fact, decided with the road (`launch_road` returns it).
-3. *The verdict is `ClassicOff { version, seen_at }`*, beside `ModsOff`: the same clock
+3. *The probe reads the account first* (the author: "but cant we get the mod to work seamlessly
+   even in enterprise accounts?"). A fourth probe step runs `claude auth status --json`
+   (local, instant, read-only: `subscriptionType` is `max`, `pro`, `team`, `enterprise`) and
+   checks the managed-settings file at Claude Code's documented path
+   (`/Library/Application Support/ClaudeCode/managed-settings.json`, `/etc/claude-code/…` on
+   Linux). `team` or `enterprise`, or the file, is `ClassicOff` before any launch, with `found`
+   saying which ("an enterprise account", "managed settings on this machine"), so the first
+   launch already carries both and nothing is relaunched. An account the command cannot say
+   passes: the 10 s relaunch stays as the net for what the probe cannot see (managed settings
+   served remotely, by MDM profile or the registry), and writes `found: a launch's mod heard no
+   SessionStart`. Verified on the author's Max account (`subscriptionType: "max"`); the work
+   Mac's answer is assumed `enterprise` from the session header ("Claude Enterprise") and the
+   binary's `qjr`, which reads the same organization type.
+4. *The verdict is `ClassicOff { version, seen_at, found }`*, beside `ModsOff`: the same clock
    (`MODS_OFF_TTL_MS`, asked again at the next daemon start), the same `road.json` flag
    (`mods_off`, kept by name for an older doctor), `road: mod`, its own line: "hook events do not
    reach the mod in this Claude Code (seen HH:MM; a Team or Enterprise account, or managed
@@ -20987,16 +21000,31 @@ behind the running turn). Cost was counted from `ModUsage` while the card read `
    became `Probe::claude_off` (either). Doctor's advice says both causes and asks nothing.
    Settings-file hooks are not plugins and the security default does not touch them, which is
    why the board worked on that Mac before the mod road.
-4. *A `submit` the mod reports `entered` clears `unsent`.* The engine took the prompt (its turn
+5. *A `submit` the mod reports `entered` clears `unsent`.* The engine took the prompt (its turn
    begun, or queued behind the running one): the agent has the words, and a resend would send
    them twice. The ack stays `UserPromptSubmit`.
-5. *Not built: relaying from the native events.* `session.start`/`session.end`,
-   `turn.start`/`turn.complete` and `tool.call` pass the security default and could carry the
-   board's reporting on such an account without the hook set, but their payloads are not the
-   hook set's (`transcript_path`, `stop_hook_active`, teammates, background tasks), which the
-   attention machine reads. The hook set beside the mod carries those accounts whole.
+6. *Not built: the mod alone on such an account, relaying from the native events.* The security
+   default's register (`ue`, whole) reroutes `classic.*`, `prompt.section/context/compose`,
+   `skill.prompt`, `attribution.text` and `settings.read` past a person's plugins; `session.*`,
+   `turn.start/step/complete`, `tool.call`, `tool.check` (judged first, re-judged on the
+   organization's plugins only where a user plugin lifted a deny rule) and `tool.register`
+   (refused only under a managed MCP allowlist) reach them. So a mod could rebuild most of the
+   board's signals there: `SessionStart` from `session.start` plus `$.session.id()`/`cwd()`,
+   `UserPromptSubmit` from `turn.start`, `Stop` from `turn.complete`, the dialogs from
+   `tool.call`, `PermissionRequest` from `tool.check`. Not whole: no `Notification`, no
+   `background_tasks` or teammates on a `Stop`, no failure class, every payload shape to measure
+   on an account the author's Mac is not. A research ticket on the mod road's own scale
+   (T-573…T-598), and a second adapter for the attention machine to trust; the hook set beside
+   the mod gives the same experience today. An org admin who enables mesimon's plugin in managed
+   settings makes it the organization's, and it then hears everything.
 
-**Tests.** `mod_auto_e2e::a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_with_the_hook_set`
+**Tests.** `mod_auto_e2e::an_enterprise_account_is_read_by_the_probe_and_the_first_launch_carries_both`
+(the stub's `auth status` says `enterprise`: `classic_off` with `found` in `probe.json` before
+any launch, `road: mod`, the first launch with `--settings` and `--plugin-dir` and no
+`--mcp-config`, no `claude_road_relaunch`); the probe's account step in `modroad`'s unit tests
+(`max`, a mute or failed `auth status` pass; `team`, `Enterprise` and the managed file are
+classic-off; an older `probe.json` without `found` reads with the general words);
+`mod_auto_e2e::a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_with_the_hook_set`
 (the stand-in engine beside an `auto` stub, by the harness's `FAKE_MOD` mark; no `SessionStart`
 sent; the relaunch within the bridge wait of the first poll with `--settings` and `--plugin-dir`
 both and no `--mcp-config`, `classic_off` in `probe.json`, `road: mod`; the new pane's bridge up,

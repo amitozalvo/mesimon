@@ -1296,7 +1296,7 @@ mod tests {
         assert!(advice.starts_with("Nothing is needed from you"), "{advice}");
         // T-650: a Team or Enterprise account keeps the hook events from the
         // mod. The same flag, the verdict's own words, the same advice.
-        let deaf = "claude 2.1.289: hook events do not reach the mod in this Claude Code (seen 11:44; a Team or Enterprise account, or managed settings); the hook set reports beside it";
+        let deaf = "claude 2.1.289: hook events do not reach the mod in this Claude Code (seen 11:44; an enterprise account); the hook set reports beside it";
         write_verdict(
             &paths,
             &RoadVerdict {

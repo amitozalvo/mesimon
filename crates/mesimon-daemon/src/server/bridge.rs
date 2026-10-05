@@ -144,7 +144,9 @@ impl Silence {
     fn verdict(self, version: String, seen_at: u64) -> Verdict {
         match self {
             Silence::Unloaded { .. } => Verdict::ModsOff { version, seen_at },
-            Silence::Deaf { .. } => Verdict::ClassicOff { version, seen_at },
+            Silence::Deaf { .. } => {
+                Verdict::ClassicOff { version, seen_at, found: modroad::FOUND_BY_LAUNCH.into() }
+            }
         }
     }
 
@@ -319,14 +321,20 @@ impl Daemon {
             &[bin.clone(), "plugin".into(), "validate".into(), folder.display().to_string()],
             &[],
         );
-        let load = self
-            .launch(&[bin, "plugin".into(), "test".into(), load_probe.display().to_string()], &[]);
+        let load = self.launch(
+            &[bin.clone(), "plugin".into(), "test".into(), load_probe.display().to_string()],
+            &[],
+        );
+        // The account that seats Claude Code's security default (T-650).
+        let account = self.launch(&[bin, "auth".into(), "status".into(), "--json".into()], &[]);
+        let managed = modroad::managed_settings_present();
         let cwd = self.paths.state_dir.clone();
         let tx = self.tx.clone();
         self.modroad.probing = true;
         self.modroad.recheck = false;
         std::thread::spawn(move || {
-            let verdict = modroad::probe(&version, &validate, &load, &cwd, now_ms());
+            let verdict =
+                modroad::probe(&version, &validate, &load, &account, managed, &cwd, now_ms());
             let _ = tx.send(Msg::RoadProbed(Probe { key, verdict }));
         });
     }
