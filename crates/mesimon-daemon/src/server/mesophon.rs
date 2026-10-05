@@ -311,9 +311,6 @@ impl Control {
 }
 impl Daemon {
     pub(super) fn control_start(&mut self) {
-        if !cfg!(debug_assertions) && std::env::var("MESIMON_MESOPHON").as_deref() != Ok("1") {
-            return;
-        }
         match std::fs::read(self.paths.state_dir.join("mesophon.json")) {
             Ok(bytes) => match serde_json::from_slice::<Stored>(&bytes) {
                 Ok(s)
@@ -370,9 +367,6 @@ impl Daemon {
     }
     pub(super) fn control_local(&mut self, action: LocalAction) -> Response {
         let fail = |m: &str| Response::Err { message: m.into() };
-        if !cfg!(debug_assertions) && std::env::var("MESIMON_MESOPHON").as_deref() != Ok("1") {
-            return fail("Mesophon preview is not enabled");
-        }
         if self.control.barred && !matches!(action, LocalAction::Disable) {
             return Response::Mesophon { info: self.control_info() };
         }

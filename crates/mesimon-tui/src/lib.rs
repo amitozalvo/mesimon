@@ -220,12 +220,10 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.clock = localtime::at;
     // Whether a ticket may grow its own shell (T-300) — same rule again.
     app.ticket_shells = ticket_shells();
-    // Remote Control: a development build offers it; a release build only
-    // with `MESIMON_MESOPHON=1`. Board sharing (T-335) is offered only with
-    // `MESIMON_TEAMS=1` in every build, and Remote Control does not bring it
+    // Remote Control is in every build (T-672). Board sharing (T-335) stays
+    // behind `MESIMON_TEAMS=1` (T-653), and Remote Control does not bring it
     // along (`mesimon_core::team::enabled` says why).
-    app.mesophon_available =
-        cfg!(debug_assertions) || std::env::var("MESIMON_MESOPHON").as_deref() == Ok("1");
+    app.mesophon_available = true;
     app.teams = mesimon_core::team::enabled();
     // The board's outward voice (T-282), on a thread of its own since T-291:
     // it owns a second daemon connection and keeps speaking through a

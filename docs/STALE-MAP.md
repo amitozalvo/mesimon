@@ -21695,3 +21695,23 @@ three reminted for the footer word only (`mesophon_pair_120x30`, `mesophon_pair_
 build or under `MESIMON_MESOPHON=1` (`tui/lib.rs::run`, `daemon/server/mesophon.rs::control_start`
 and `control_local`), so the released binary has no `Remote Control` row at all; a ticket of its
 own, before the buying page is promoted.
+
+## Remote Control is in every build: the `MESIMON_MESOPHON` gate is gone (T-672, 2026-10-05, "Remote Control is on in every build: the MESIMON_MESOPHON gate goes")
+
+**Built.** The TUI sets `mesophon_available` true in every build (`tui/lib.rs::run`), and the
+daemon's `control_start` and `control_local` no longer return early (or refuse with "Mesophon
+preview is not enabled") when a release build lacks `MESIMON_MESOPHON=1`. The `barred` check and
+everything beneath it are unchanged. Nothing in `crates/` reads the variable now.
+
+**Why.** The gate was the alpha.23 browser preview's: Remote Control shipped to anyone who asked
+for it by name and to nobody by default. The paid launch outgrew it. The buying page (T-637)
+sells Remote Control and tells a buyer to press Esc and open it, and the binary the install line
+gives them had no such row. This was T-637's "Fix first" item, owed before the pages are promoted.
+
+**Untouched.** Board sharing stays behind `MESIMON_TEAMS=1` (T-653) and
+`mesimon_core::team::enabled` is as it was; Remote Control being on does not bring sharing along.
+`docs/REMOTE-CONTROL.md` opens with Esc → Remote Control, and the alpha.40 CHANGELOG says the
+variable is no longer needed.
+
+**Tests.** None changed: the TUI tests set `mesophon_available` themselves, and no e2e drives
+Remote Control's start. `cargo ut` and `cargo build --workspace`.

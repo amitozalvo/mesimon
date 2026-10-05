@@ -10,6 +10,8 @@ in the Esc menu under `Release notes` and on GitHub.
 
 ### Added
 
+- **Remote Control is in every build.** Press Esc and open `Remote Control`;
+  it no longer needs `MESIMON_MESOPHON=1` at startup.
 - **Remote Control's New ticket sheet takes pictures in Details.** Paste a
   picture or use the picture bar, as in a note. The pictures are kept with the
   ticket once it is created.

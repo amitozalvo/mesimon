@@ -4,9 +4,7 @@ Remote Control (Mesophon) lets your own browser **view tickets, read an agent’
 conversation or its screen, send a prompt, answer supported Claude dialogs, file new tickets, move, rename
 and tag tickets, start an agent on a ticket, and read and edit a ticket's notes**. It works on
 desktop and phone.
-Debug builds include Remote Control automatically. In release builds, set
-`MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Remote Control**, sign in to your
-relay, and enable this board.
+Open **Esc → Remote Control**, sign in to your relay, and enable this board.
 
 Signing in registers this Mac with the relay once; the sign-in rows are the relay's address
 and your display name. The address is prefilled with the hosted relay,
