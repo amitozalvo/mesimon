@@ -1,7 +1,8 @@
 // Writing a ticket: the New ticket sheet and Sent's one-line bar share one
 // draft in the store. A ticket lands quietly: nothing here starts an agent.
 import { html, useLayoutEffect, useRef } from "./html.js";
-import { Icon } from "./icons.js";
+import { Icon, Tick } from "./icons.js";
+import { PictureBar, pastePictures } from "./notepad.js";
 import { DESCRIPTION_MAX_BYTES, PROMPT_MAX_BYTES } from "./store.js";
 
 // Where the ticket is going, and how it gets there from here (T-497): live,
@@ -54,6 +55,9 @@ function TagChoices({ allowed, worn, onToggle, disabled = false }) {
 
 export function NewTicket({ store }) {
   const ref = useRef();
+  // Where the cursor was last left in the details, which a picked picture
+  // goes to (T-670); none yet, and it goes at the end.
+  const caret = useRef();
   const draft = store.draft();
   const board = store.board;
   useLayoutEffect(() => {
@@ -64,8 +68,13 @@ export function NewTicket({ store }) {
   });
   if (!board) return html`<dialog id="new-ticket-sheet" class="compose" ref=${ref}></dialog>`;
   const dest = destination(store);
-  const ready = store.canSend && !!draft.title.trim();
+  const busy = !!draft.sending || draft.reading > 0;
+  const ready = store.canSend && !!draft.title.trim() && !busy;
   const about = board.columnDescriptions[draft.column];
+  const mark = (e) => {
+    caret.current = e.currentTarget.selectionStart;
+  };
+  const addPictures = (files, at) => store.addTicketPictures(files, at);
   const oversize = new TextEncoder().encode(draft.description).length > DESCRIPTION_MAX_BYTES;
   return html`<dialog id="new-ticket-sheet" class="compose" ref=${ref} aria-labelledby="new-ticket-heading"
       onCancel=${(e) => {
@@ -92,11 +101,15 @@ export function NewTicket({ store }) {
         </p>
         <label class="field">Title<input id="new-title" type="text" dir="auto" maxlength="500" autocomplete="off"
           enterkeyhint="send" required autofocus placeholder="What needs doing?" value=${draft.title}
-          onInput=${(e) => store.setComposer("title", e.currentTarget.value)} /></label>
+          readOnly=${!!draft.sending} onInput=${(e) => store.setComposer("title", e.currentTarget.value)} /></label>
         <label class="field"><span>Details <span class="muted">(optional)</span></span><textarea id="new-description"
           rows="4" dir="auto" placeholder="Details, links, what done looks like. Markdown works." value=${draft.description}
-          aria-invalid=${String(oversize)}
-          onInput=${(e) => store.setComposer("description", e.currentTarget.value)}
+          aria-invalid=${String(oversize)} readOnly=${!!draft.sending} onClick=${mark} onKeyUp=${mark} onSelect=${mark}
+          onInput=${(e) => {
+            mark(e);
+            store.setComposer("description", e.currentTarget.value);
+          }}
+          onPaste=${(e) => pastePictures(e, store.canFilePictures, addPictures, caret)}
           onKeyDown=${(e) => {
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
               e.preventDefault();
@@ -104,6 +117,8 @@ export function NewTicket({ store }) {
             }
           }}></textarea></label>
         ${oversize && html`<p class="compose-error">Details must fit in 32 KiB.</p>`}
+        <${PictureBar} id="new-picture" can=${store.canFilePictures} draft=${draft} caret=${caret}
+          onAdd=${addPictures} onRemove=${(n) => store.removeTicketPicture(n)} />
         <fieldset class="choices">
           <legend>Column</legend>
           <div class="choice-row">${board.columns.map((column) => html`<label class="choice" key=${column}>
@@ -114,6 +129,7 @@ export function NewTicket({ store }) {
         <${TagChoices} allowed=${board.allowedTags} worn=${draft.tags} onToggle=${(tag) => store.toggleTag(tag)} />
       </div>
       <footer class="compose-foot">
+        ${draft.sending && html`<p class="note-sending" role="status"><${Tick} state="clock" /><span>${draft.sending}</span></p>`}
         ${draft.error && html`<p class="compose-error" role="alert">${draft.error}</p>`}
         <button id="send-ticket" type="submit" class="btn btn-pri compose-send" disabled=${!ready}>
           <${Icon} name="send" size=${18} /><span>Send ticket</span></button>
@@ -129,8 +145,8 @@ export function QuickNew({ store }) {
   const board = store.board;
   if (!board) return null;
   const draft = store.draft();
-  const extras = !!draft.description.trim() || draft.tags.length > 0;
-  const ready = store.canSend && !!draft.title.trim();
+  const extras = !!draft.description.trim() || draft.tags.length > 0 || draft.pictures.length > 0;
+  const ready = store.canSend && !!draft.title.trim() && !draft.sending && !draft.reading;
   return html`<form id="quick-new" class="quick-new" onSubmit=${(e) => {
     e.preventDefault();
     store.sendTicket();

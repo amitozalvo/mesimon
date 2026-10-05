@@ -440,7 +440,8 @@ function fixture() {
             if (request.offset !== u.bytes || u.complete)
               answer({ result: "rejected", message: "attachment upload offset mismatch" });
             else {
-              Object.assign(u, { bytes: u.bytes + atob(request.data).length, pieces: u.pieces + 1, complete: request.complete });
+              Object.assign(u, { bytes: u.bytes + atob(request.data).length, pieces: u.pieces + 1, complete: request.complete,
+                ticket: request.ticket });
               answer({ result: "uploaded", upload: id });
             }
           }
@@ -955,7 +956,7 @@ async function notesFlow(browser, engineName, size, viewport) {
         ],
       };
     }
-    window.fixture.features.push("notes", "pictures");
+    window.fixture.features.push("notes", "pictures", "filed_pictures");
     window.fixture.stampNotes();
     addEventListener("beforeunload", () => localStorage.setItem("fixture-notes", JSON.stringify(window.fixture.notes)));
   });
@@ -1185,6 +1186,44 @@ async function notesFlow(browser, engineName, size, viewport) {
       fixture.stampNotes();
     });
     await withPicture.waitFor({ state: "detached" });
+
+    // A picture in a new ticket's details (T-670): picked into the New
+    // ticket sheet, sent in pieces that name no ticket, then the create
+    // that links it, live even to a host that keeps mail.
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+    await page.locator(size === "phone" ? "#new-ticket-fab" : "#new-ticket").click();
+    const composer = page.locator("#new-ticket-sheet");
+    await composer.waitFor({ state: "visible" });
+    await page.locator("#new-title").fill("Pictured ticket");
+    await page.locator("#new-description").fill("Looks like this:\n\n");
+    const before = Object.keys(await page.evaluate(() => fixture.uploads)).length;
+    await page.locator("#new-picture").setInputFiles({ name: "filed.png", mimeType: "image/png", buffer: png });
+    await composer.locator(".note-pic").first().waitFor();
+    assert.match(await page.locator("#new-description").inputValue(), /^Looks like this:\n\n\[Image #1\]$/);
+    await page.locator("#new-picture").setInputFiles({ name: "extra.png", mimeType: "image/png", buffer: png });
+    await until(page, () => document.querySelectorAll("#new-ticket-sheet .note-pic").length === 2);
+    await shot("ticket-picture");
+    await composer.getByRole("button", { name: "Remove Image #2" }).click();
+    await until(page, () => document.querySelectorAll("#new-ticket-sheet .note-pic").length === 1);
+    const deposits = await page.evaluate(() => fixture.deposits.length);
+    await page.locator("#send-ticket").click();
+    await composer.waitFor({ state: "hidden" });
+    await toast("Landed as");
+    const filed = await page.evaluate(() => fixture.creates.at(-1));
+    const id = `pic-${before}`;
+    assert.deepEqual([filed.title, filed.uploads], ["Pictured ticket", [id]]);
+    assert.equal(filed.description, `Looks like this:\n\n[Image #1](mesimon-attachment:${id})`);
+    const filedUpload = await page.evaluate((id) => fixture.uploads[id], id);
+    assert(filedUpload.complete && filedUpload.pieces >= 2 && filedUpload.ticket === undefined, JSON.stringify(filedUpload));
+    assert.equal(Object.keys(await page.evaluate(() => fixture.uploads)).length, before + 1, "the removed picture never went up");
+    assert.equal(await page.evaluate(() => fixture.deposits.length), deposits, "a pictured ticket is never sealed");
+    // The sheet starts the next ticket empty.
+    await page.locator(size === "phone" ? "#new-ticket-fab" : "#new-ticket").click();
+    await composer.waitFor({ state: "visible" });
+    assert.equal(await composer.locator(".note-pic").count(), 0);
+    assert.equal(await page.locator("#new-description").inputValue(), "");
+    await composer.getByRole("button", { name: "Cancel" }).click();
+    await composer.waitFor({ state: "hidden" });
 
     // A ticket without notes offers a description.
     await open("ticket-4");

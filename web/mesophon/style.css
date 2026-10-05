@@ -2285,7 +2285,7 @@ button.note-row:hover {
 .note-bytes[data-over="true"] {
   color: var(--err);
 }
-/* Pictures in a note (T-629): the sheet's thumbnails, drawn on a canvas */
+/* Pictures in a note (T-629) and a new ticket's details (T-670): thumbnails drawn on a canvas */
 .note-pics {
   display: flex;
   flex-wrap: wrap;

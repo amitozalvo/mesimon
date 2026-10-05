@@ -141,6 +141,12 @@ pub enum Request {
         column: Option<String>,
         #[serde(default)]
         tags: Vec<TagPick>,
+        /// Pictures this browser uploaded for the description (T-670), each
+        /// linked from it as a note links one, and kept only with the ticket.
+        /// Sent only to a host that says `filed_pictures`: an older one
+        /// refuses the field.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        uploads: Vec<String>,
     },
     /// Start an agent on a ticket that has none, or wake the one asleep
     /// on it (T-498, T-510): the board's Shift+Enter from a phone. The
@@ -223,9 +229,12 @@ pub enum Request {
     /// `upload` begins one at offset zero and the answer names it, and
     /// `complete` ends it, when the host checks it is a whole PNG. `data`
     /// is base64 of at most `PICTURE_CHUNK_BYTES`. An upload that waits ten
-    /// minutes unsaved is let go.
+    /// minutes unsaved is let go. No `ticket` is a picture for the
+    /// description of a ticket not filed yet (T-670), which only a host
+    /// that says `filed_pictures` reads.
     Upload {
-        ticket: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<String>,
         #[serde(default)]
         upload: Option<String>,
         offset: usize,
@@ -933,7 +942,7 @@ mod tests {
     /// default, and a field the host does not know is refused, not dropped.
     #[test]
     fn a_filed_ticket_needs_a_title_and_defaults_the_rest() {
-        let Request::Create { title, description, column, tags } =
+        let Request::Create { title, description, column, tags, uploads } =
             serde_json::from_str(r#"{"op":"create","title":"Fix it"}"#).unwrap()
         else {
             panic!("create")
@@ -942,6 +951,7 @@ mod tests {
             (title.as_str(), description.as_str(), column, tags),
             ("Fix it", "", None, vec![])
         );
+        assert!(uploads.is_empty());
         let full = r#"{"op":"create","title":"t","description":"d","column":"TODO","tags":[{"group":1,"name":"BUG"}]}"#;
         let Request::Create { column, tags, .. } = serde_json::from_str(full).unwrap() else {
             panic!("create")
@@ -976,6 +986,30 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");
         }
+    }
+
+    /// A picture piece for a ticket not filed yet names no ticket, and is
+    /// spelled without one (T-670); the filing that links it names it.
+    #[test]
+    fn a_picture_for_a_ticket_not_filed_yet_names_no_ticket() {
+        let piece = r#"{"op":"upload","offset":0,"data":"AA=="}"#;
+        let Request::Upload { ticket, upload, .. } = serde_json::from_str(piece).unwrap() else {
+            panic!("upload")
+        };
+        assert_eq!((ticket, upload), (None, None));
+        let filed = Request::Upload {
+            ticket: None,
+            upload: None,
+            offset: 0,
+            data: "AA==".into(),
+            complete: false,
+        };
+        assert!(!serde_json::to_string(&filed).unwrap().contains("ticket"));
+        let create = r#"{"op":"create","title":"t","description":"[Image #1](mesimon-attachment:01J)","uploads":["01J"]}"#;
+        let Request::Create { uploads, .. } = serde_json::from_str(create).unwrap() else {
+            panic!("create")
+        };
+        assert_eq!(uploads, vec!["01J".to_string()]);
     }
 
     /// A letter is a note edit only when it says so: phase 3's tickets have

@@ -238,8 +238,10 @@ function Thumb({ bitmap }) {
   return html`<canvas ref=${ref} class="note-pic-thumb" aria-hidden="true"></canvas>`;
 }
 
-function Pictures({ store, draft, caret }) {
-  const can = store.canAddPictures;
+// A draft's pictures and the button that picks more: the note sheet's
+// (T-629) and the New ticket sheet's details (T-670). `onAdd` answers
+// where the next picture goes, which `caret` keeps.
+export function PictureBar({ id, can, draft, caret, onAdd, onRemove }) {
   if (!can && !draft.pictures.length) return null;
   const busy = !!draft.sending;
   return html`<div class="note-pics">
@@ -248,19 +250,29 @@ function Pictures({ store, draft, caret }) {
         <${Thumb} bitmap=${p.thumb} />
         <span class="note-pic-name">Image #${p.n}</span>
         <button type="button" class="note-pic-drop" aria-label=${`Remove Image #${p.n}`} disabled=${busy}
-          onClick=${() => store.removePicture(p.n)}><${Icon} name="x" size=${14} /></button>
+          onClick=${() => onRemove(p.n)}><${Icon} name="x" size=${14} /></button>
       </li>`)}
     </ul>`}
     ${can && html`<label class="btn btn-quiet note-pic-add" data-busy=${String(busy || draft.reading > 0)}>
-      <input id="note-picture" type="file" accept="image/*" multiple class="sr-only" disabled=${busy}
+      <input id=${id} type="file" accept="image/*" multiple class="sr-only" disabled=${busy}
         onChange=${async (e) => {
           const files = [...e.currentTarget.files];
           e.currentTarget.value = "";
-          const at = await store.addPictures(files, caret.current);
+          const at = await onAdd(files, caret.current);
           if (at !== undefined) caret.current = at;
         }} />
       <${Icon} name="image" size=${17} /><span>${draft.reading > 0 ? "Reading…" : "Picture"}</span></label>`}
   </div>`;
+}
+
+// A pasted image goes in as a picked one; anything else pastes as text.
+export function pastePictures(e, can, onAdd, caret) {
+  const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
+  if (!files.length || !can) return;
+  e.preventDefault();
+  onAdd(files, e.currentTarget.selectionStart).then((at) => {
+    if (at !== undefined) caret.current = at;
+  });
 }
 
 export function NoteSheet({ store }) {
@@ -315,13 +327,7 @@ export function NoteSheet({ store }) {
             mark(e);
             store.setNoteText(e.currentTarget.value);
           }}
-          onPaste=${async (e) => {
-            const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
-            if (!files.length || !store.canAddPictures) return;
-            e.preventDefault();
-            const at = await store.addPictures(files, e.currentTarget.selectionStart);
-            if (at !== undefined) caret.current = at;
-          }}
+          onPaste=${(e) => pastePictures(e, store.canAddPictures, (files, at) => store.addPictures(files, at), caret)}
           onKeyDown=${(e) => {
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
               e.preventDefault();
@@ -330,7 +336,8 @@ export function NoteSheet({ store }) {
           }}></textarea></label>
       </div>
       <footer class="compose-foot note-sheet-foot">
-        <${Pictures} store=${store} draft=${draft} caret=${caret} />
+        <${PictureBar} id="note-picture" can=${store.canAddPictures} draft=${draft} caret=${caret}
+          onAdd=${(files, at) => store.addPictures(files, at)} onRemove=${(n) => store.removePicture(n)} />
         ${draft.sending && html`<p class="note-sending" role="status"><${Tick} state="clock" /><span>${draft.sending}</span></p>`}
         ${draft.error && html`<p class="compose-error" role="alert">${draft.error}</p>`}
         <div class="note-sheet-row">

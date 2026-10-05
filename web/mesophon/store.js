@@ -49,7 +49,15 @@ const emptyDraft = (board) => ({
   tags: [],
   error: "",
   replaces: undefined,
+  // Pictures the details name (T-670), as a note's draft holds them.
+  pictures: [],
+  reading: 0,
+  sending: "",
 });
+// A draft's held thumbnails, let go with the draft.
+const dropThumbs = (draft) => {
+  for (const p of draft?.pictures || []) p.thumb?.close?.();
+};
 
 export class Store {
   constructor(Browser) {
@@ -705,10 +713,19 @@ export class Store {
   get canSend() {
     return this.collects || this.canFile;
   }
+  // Whether a ticket's details can carry a picture now (T-670): it goes up
+  // live, never through the mailbox, to a host that takes it before the
+  // ticket exists.
+  get canFilePictures() {
+    return this.canFile && !!this.connection?.features?.includes("filed_pictures");
+  }
   // The one draft, for the board on screen; another board starts afresh.
   draft() {
     const board = this.active?.pin.board;
-    if (this.composer.board !== board) this.composer = emptyDraft(board);
+    if (this.composer.board !== board) {
+      dropThumbs(this.composer);
+      this.composer = emptyDraft(board);
+    }
     const draft = this.composer;
     if (this.board && !this.board.columns.includes(draft.column)) draft.column = this.board.landing();
     if (this.board)
@@ -732,6 +749,7 @@ export class Store {
     this.emit();
   }
   setComposer(field, value) {
+    if (this.composer.sending) return;
     this.draft()[field] = value;
     this.composer.error = "";
     this.emit();
@@ -748,7 +766,7 @@ export class Store {
     const draft = this.draft();
     const board = this.active?.pin.board;
     const title = draft.title.trim();
-    if (!title || !board) return;
+    if (!title || !board || draft.sending || draft.reading) return;
     if (!this.canSend) {
       draft.error = this.live
         ? "This terminal’s mesimon is too old to take tickets from here. Update it, then send again."
@@ -762,11 +780,42 @@ export class Store {
       return;
     }
     const ticket = { title, description: draft.description, column: draft.column, tags: draft.tags.slice() };
+    const held = new Map(draft.pictures.map((p) => [p.n, p]));
+    const pictures = unlinked(ticket.description).filter((n) => held.has(n)).map((n) => held.get(n));
+    if (pictures.length) {
+      if (!this.canFilePictures) {
+        draft.error = "Pictures need your terminal online.";
+        this.emit();
+        return;
+      }
+      draft.error = "";
+      return this.sendPicturedTicket(board, draft, ticket, pictures);
+    }
     if (this.collects) return this.sealTicket(board, draft, ticket);
+    this.fileTicket(board, draft, ticket);
+  }
+  // The pictures the details name go up one by one, then the ticket that
+  // links them (T-670), which the host files whole or not at all.
+  async sendPicturedTicket(board, draft, ticket, pictures) {
+    const current = () => this.composer === draft;
+    const ids = await this.sendPictures(draft, pictures, undefined, current);
+    if (!ids || !current()) return;
+    const description = linked(ticket.description, ids);
+    if (new TextEncoder().encode(description).length > DESCRIPTION_MAX_BYTES) {
+      draft.error = "Details must fit in 32 KiB.";
+      this.emit();
+      return;
+    }
+    this.fileTicket(board, draft, ticket, description, [...ids.values()]);
+  }
+  // Sent live. Sent keeps the words as written, without the pictures'
+  // links: the host lets a refused ticket's pictures go.
+  fileTicket(board, draft, ticket, description = ticket.description, uploads = []) {
     const item = this.sent.add(board, ticket);
     const c = this.connection;
     const id = c.request(
-      { op: "create", ...ticket, tags: ticket.tags.map(({ group, name }) => ({ group, name })) },
+      { op: "create", ...ticket, description, tags: ticket.tags.map(({ group, name }) => ({ group, name })),
+        ...(uploads.length ? { uploads } : {}) },
       sentContext(item),
     );
     if (id === undefined) {
@@ -779,7 +828,8 @@ export class Store {
     this.sent.sent(item, id, c.incarnation);
     if (draft.replaces) this.sent.remove(draft.replaces);
     // The column stays for the next one; a run of tickets often shares it.
-    Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined });
+    dropThumbs(draft);
+    Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined, pictures: [] });
     this.persistSent(board);
     this.say("Sending to your board…", "clock");
     this.emit();
@@ -834,7 +884,8 @@ export class Store {
     }
     const item = this.sent.add(board, ticket, Date.now(), envelope);
     if (draft.replaces) this.sent.remove(draft.replaces);
-    Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined });
+    dropThumbs(draft);
+    Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined, pictures: [] });
     this.persistSent(board);
     if (!this.deposit(item))
       this.say(
@@ -951,7 +1002,10 @@ export class Store {
   }
   editWords(item, words = item) {
     const draft = this.draft();
+    if (draft.sending) return;
+    dropThumbs(draft);
     Object.assign(draft, {
+      pictures: [],
       title: words.title,
       description: words.description,
       column: words.column,
@@ -1157,7 +1211,7 @@ export class Store {
   }
   closeNoteSheet() {
     if (!this.noteDraft) return;
-    for (const p of this.noteDraft.pictures || []) p.thumb?.close?.();
+    dropThumbs(this.noteDraft);
     this.noteDraft = undefined;
     this.emit();
   }
@@ -1171,7 +1225,18 @@ export class Store {
   // desk's editor names one. Answers where the next one would go.
   async addPictures(files, at) {
     const draft = this.noteDraft;
-    if (!draft || draft.sending || !this.canAddPictures) return;
+    if (!draft || !this.canAddPictures) return;
+    return this.readPictures(draft, "text", files, at, () => this.noteDraft === draft);
+  }
+  // The same for a new ticket's details (T-670).
+  async addTicketPictures(files, at) {
+    const draft = this.draft();
+    if (!this.canFilePictures) return;
+    return this.readPictures(draft, "description", files, at, () => this.composer === draft);
+  }
+  // Each file read into `draft`, named in its `field` while `current()`.
+  async readPictures(draft, field, files, at, current) {
+    if (draft.sending) return;
     for (const file of files) {
       draft.reading += 1;
       this.emit();
@@ -1182,14 +1247,14 @@ export class Store {
         draft.error = e.message;
       }
       draft.reading -= 1;
-      if (this.noteDraft !== draft || draft.sending) {
+      if (!current() || draft.sending) {
         made?.thumb.close?.();
         return undefined;
       }
       if (made) {
-        const n = nextNumber(draft.text, draft.pictures.map((p) => p.n));
-        const placed = insertToken(draft.text, at, n);
-        Object.assign(draft, { text: placed.text, error: "", confirmDelete: false });
+        const n = nextNumber(draft[field], draft.pictures.map((p) => p.n));
+        const placed = insertToken(draft[field], at, n);
+        Object.assign(draft, { [field]: placed.text, error: "", confirmDelete: false });
         at = placed.at;
         draft.pictures.push({ n, ...made });
       }
@@ -1198,13 +1263,18 @@ export class Store {
     return at;
   }
   removePicture(n) {
-    const draft = this.noteDraft;
+    this.dropPicture(this.noteDraft, "text", n);
+  }
+  removeTicketPicture(n) {
+    this.dropPicture(this.composer, "description", n);
+  }
+  dropPicture(draft, field, n) {
     if (!draft || draft.sending) return;
     const at = draft.pictures.findIndex((p) => p.n === n);
     if (at < 0) return;
     draft.pictures[at].thumb?.close?.();
     draft.pictures.splice(at, 1);
-    draft.text = withoutPicture(draft.text, n);
+    draft[field] = withoutPicture(draft[field], n);
     this.emit();
   }
   // One request answered as a promise, for an upload's pieces in turn. A
@@ -1219,44 +1289,55 @@ export class Store {
       else this.asking = reject;
     });
   }
-  async uploadPicture(draft, bytes) {
+  // One picture's pieces in order, for a note on `ticket`, or with none
+  // for a ticket not filed yet (T-670).
+  async uploadPicture(bytes, ticket, current) {
     let upload;
     let offset = 0;
     while (offset < bytes.length) {
-      if (this.noteDraft !== draft) throw new Error("cancelled");
+      if (!current()) throw new Error("cancelled");
       const { data, end } = pieceOf(bytes, offset);
-      const reply = await this.ask({ op: "upload", ticket: draft.ticket, ...(upload ? { upload } : {}), offset, data,
-        complete: end >= bytes.length });
+      const reply = await this.ask({ op: "upload", ...(ticket ? { ticket } : {}), ...(upload ? { upload } : {}),
+        offset, data, complete: end >= bytes.length });
       if (reply.result !== "uploaded") throw new Error(reply.message || "the terminal refused it");
       upload = reply.upload;
       offset = end;
     }
     return upload;
   }
-  // The pictures the words name go up one by one, then the note that
-  // links them, in one write the host keeps whole or not at all.
-  async savePictured(draft, pictures) {
-    const words = draft.text;
+  // `pictures` up one by one, saying so on `draft`: their host ids by
+  // number, or nothing once one failed, which the draft says.
+  async sendPictures(draft, pictures, ticket, current) {
     const ids = new Map();
-    const fail = (error) => {
-      draft.sending = "";
-      draft.error = error;
-      this.emit();
-    };
     try {
       for (const [i, p] of pictures.entries()) {
         draft.sending = pictures.length > 1 ? `Sending picture ${i + 1} of ${pictures.length}…` : "Sending picture…";
         this.emit();
-        ids.set(p.n, await this.uploadPicture(draft, p.bytes));
+        ids.set(p.n, await this.uploadPicture(p.bytes, ticket, current));
       }
     } catch (e) {
-      if (this.noteDraft === draft) fail(`Picture not sent: ${e.message}.`);
-      return;
+      draft.sending = "";
+      if (current()) {
+        draft.error = `Picture not sent: ${e.message}.`;
+        this.emit();
+      }
+      return undefined;
     }
-    if (this.noteDraft !== draft) return;
-    const text = linked(words, ids);
-    if (new TextEncoder().encode(text).length > NOTE_MAX_BYTES) return fail("Notes must fit in 32 KiB.");
     draft.sending = "";
+    return ids;
+  }
+  // The pictures the words name go up one by one, then the note that
+  // links them, in one write the host keeps whole or not at all.
+  async savePictured(draft, pictures) {
+    const words = draft.text;
+    const current = () => this.noteDraft === draft;
+    const ids = await this.sendPictures(draft, pictures, draft.ticket, current);
+    if (!ids || !current()) return;
+    const text = linked(words, ids);
+    if (new TextEncoder().encode(text).length > NOTE_MAX_BYTES) {
+      draft.error = "Notes must fit in 32 KiB.";
+      return this.emit();
+    }
     this.finishSave(draft, text, [...ids.values()]);
   }
   // Delete asks once more, in place.
@@ -1305,7 +1386,7 @@ export class Store {
       draft.error = error;
       return this.emit();
     }
-    for (const p of draft.pictures) p.thumb?.close?.();
+    dropThumbs(draft);
     if (draft.replaces) this.noteMail.remove(draft.replaces);
     this.noteDraft = undefined;
     if (deleting && this.reading?.note === draft.note) this.closeNote();

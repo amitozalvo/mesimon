@@ -21614,3 +21614,48 @@ new id is learned and drops the known path, the same id again changes nothing). 
 enterprise test now sends the native start's real shape, asserts no path after it, plants
 `<claude home>/projects/-tmp/<id>.jsonl` and reads the path on the record after the mod-road
 `Stop`.
+
+## Remote Control puts pictures in a new ticket's details (T-670, 2026-10-05, "attach pictures in description in remote control")
+
+**Asked.** The title alone. Read as: the New ticket sheet's **Details** takes pictures the way
+the note sheet has since T-629. Editing an existing description already did (it is the note
+sheet); filing a ticket from the phone did not, and the desk's composer always had.
+
+**Built: the wire.** A `filed_pictures` feature. `Request::Create` gains `uploads`
+(`skip_serializing_if` empty), and `Request::Upload`'s `ticket` is optional: no ticket is a
+piece for a ticket not filed yet, authorized `FileTicket` on the board's landing column
+(`Annotate` needs a ticket that does not exist). The keeping gate is the `Create`, as the
+`WriteNote` is a note's: `control_create_pictured` prepares the grant's uploads against the
+sanitized description, hands them to `mint_full` in the `Mint`'s note (the desk composer's own
+road, T-243, which saves the pictures beside the note or deletes the ticket's dir), commits them
+on `Created` and lets them go on any refusal. `control_create`'s envelope became `Via`: `Mail`
+(the envelope, never pictures) or `Live` (the owner and uploads). Both shapes changed only for
+a host that says `filed_pictures`: the request enums are `deny_unknown_fields`, and an older
+host reading a ticketless `Upload` would drop the peer.
+
+**Decided: a pictured ticket goes live, even to a host that keeps mail.** T-497 seals every
+ticket for a mailbox host; a letter has nowhere to put picture bytes (T-629's reasoning). Live
+and pictured, the page sends `create` over the channel; away, it says "Pictures need your
+terminal online." and the **Picture** button is not offered. A ticket without pictures is
+unchanged.
+
+**Decided: Sent keeps the words as written.** The Sent entry holds `[Image #N]`, not the linked
+words: the host discards a refused ticket's uploads, so an edited retry sends the token as text
+rather than a link to a picture that is gone. Pictures live in the draft only, in memory.
+
+**Built: the page.** The note sheet's picture bar is `notepad.js::PictureBar` (and
+`pastePictures`), shared with `compose.js::NewTicket`, which puts it under Details. The store's
+picture code takes the draft, its field (`text` or `description`) and a "still current" check
+(`readPictures`, `dropPicture`, `sendPictures`, `uploadPicture(bytes, ticket?, current)`); the
+composer's draft carries `pictures`, `reading` and `sending`, the title and details are read-only
+while pieces go up, and Sent's quick bar counts a picture as an extra.
+
+**Tests.** Core: `a_picture_for_a_ticket_not_filed_yet_names_no_ticket`, and `Create`'s
+`uploads` defaults empty. Page: the notes flow (Chromium and WebKit, desktop, tablet, phone)
+picks two pictures into a new ticket, removes one, sends, and asserts the pieces named no
+ticket, the `create` names the one upload with the linked words, nothing went to the mailbox,
+and the next sheet opens empty. **Not verified:** the daemon end of a live `create` with uploads
+(no phone e2e exists; the pieces are T-629's `Uploads` and T-243's mint, each tested), a
+physical phone, and the hosted relay, which serves the page and needs its `ship.sh`. **Owed:**
+a CHANGELOG line at the next bump — **Added:** Remote Control can add pictures to a new
+ticket's details.

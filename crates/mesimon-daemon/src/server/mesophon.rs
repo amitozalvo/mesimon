@@ -658,6 +658,9 @@ impl Daemon {
                     // Pictures in notes, `Upload` and `WriteNote`'s
                     // `uploads` (T-629).
                     "pictures",
+                    // Pictures in a filed ticket's description, `Create`'s
+                    // `uploads` and an `Upload` with no ticket (T-670).
+                    "filed_pictures",
                     // The conversation read from its transcript (T-626).
                     "transcript",
                     // A tier picked for a start or a prompt (T-643).
@@ -847,8 +850,9 @@ impl Daemon {
                 .and_then(|r| r.get(&command))
                 .cloned()
                 .unwrap_or(Reply::delivery("unknown")),
-            api::Request::Create { title, description, column, tags } => {
-                self.control_create(&by, title, description, column, &tags, None)
+            api::Request::Create { title, description, column, tags, uploads } => {
+                let pictures = (grant, uploads);
+                self.control_create_pictured(&by, title, description, column, &tags, pictures)
             }
             api::Request::Start { ticket, prompt, tier } => {
                 self.control_start_agent(&by, (grant, device, command.id), &ticket, prompt, tier)
@@ -874,7 +878,8 @@ impl Daemon {
                 }
             }
             api::Request::Upload { ticket, upload, offset, data, complete } => {
-                self.control_upload(&by, grant, &ticket, upload.as_deref(), offset, &data, complete)
+                let ticket = ticket.as_deref();
+                self.control_upload(&by, grant, ticket, upload.as_deref(), offset, &data, complete)
             }
             api::Request::TellAgent { ticket, note } => {
                 self.control_tell_agent(&by, &ticket, &note)
@@ -1815,6 +1820,34 @@ impl Daemon {
         Reply::delivery(if sent { "decision_sent" } else { "unknown" })
     }
 
+    /// A ticket filed live from the owner's phone, with the pictures its
+    /// description links (T-670): the uploads are kept only with the ticket
+    /// they were sent for, and a refusal lets them go, so a retry uploads
+    /// afresh, as a refused pictured note write does.
+    fn control_create_pictured(
+        &mut self,
+        by: &Principal,
+        title: String,
+        description: String,
+        column: Option<String>,
+        tags: &[api::TagPick],
+        (grant, uploads): (BoardId, Vec<String>),
+    ) -> Reply {
+        let owner = crate::attachments::Owner::Grant(grant.to_hex());
+        let ids: Vec<ulid::Ulid> =
+            uploads.iter().filter_map(|u| ulid::Ulid::from_string(u).ok()).collect();
+        let reply = if ids.len() == uploads.len() {
+            let via = Via::Live(&owner, &ids);
+            self.control_create(by, title, description, column, tags, via)
+        } else {
+            Reply::Rejected { message: "unknown picture".into() }
+        };
+        if matches!(reply, Reply::Rejected { .. }) {
+            self.uploads.discard(&owner, &ids);
+        }
+        reply
+    }
+
     /// A ticket filed from the owner's phone (T-497): the composer's mint,
     /// landing quietly. A paired device starts nothing, so nothing here
     /// spawns, provisions or prompts.
@@ -1825,7 +1858,7 @@ impl Daemon {
         description: String,
         column: Option<String>,
         tags: &[api::TagPick],
-        envelope: Option<ObjectId>,
+        via: Via<'_>,
     ) -> Reply {
         let reject = |message: String| Reply::Rejected { message };
         let Some(column) = column.or_else(|| self.board.landing_column()) else {
@@ -1852,18 +1885,35 @@ impl Daemon {
             return reject(message);
         }
         let note = mesimon_core::board::sanitize_note(&description);
+        let (envelope, uploads) = match via {
+            Via::Mail(envelope) => (Some(envelope.to_hex()), &[][..]),
+            Via::Live(_, ids) => (None, ids),
+        };
+        let images = match via {
+            Via::Live(owner, ids) if !ids.is_empty() => {
+                if note.trim().is_empty() {
+                    return reject("pictures need a description".into());
+                }
+                match self.uploads.prepare(owner, ids, &note) {
+                    Ok(images) => images,
+                    Err(e) => return reject(format!("could not save pictures: {e:#}")),
+                }
+            }
+            _ => Vec::new(),
+        };
         let mint = Mint {
             column,
             title,
             workspace: None,
             from: None,
             tags,
-            note: Some((note, Vec::new())),
+            note: Some((note, images)),
             tier: None,
-            envelope: envelope.map(ObjectId::to_hex),
+            envelope,
         };
         match self.mint_full(by, mint) {
             Ok(id) => {
+                self.uploads.committed(uploads);
                 self.feed.board(by.actor(), "mesophon_create_ticket", Some(id));
                 let (key, column) = self
                     .board
@@ -2249,7 +2299,7 @@ impl Daemon {
             .collect();
         let by = Principal::Paired { device: grant.device.to_hex(), grant: grant.id.to_hex() };
         let reply =
-            self.control_create(&by, ticket.title, ticket.description, column, &tags, Some(id));
+            self.control_create(&by, ticket.title, ticket.description, column, &tags, Via::Mail(id));
         if let Reply::Created { ticket, key, column } = &reply {
             if let Some(mut s) = self.control.stored.clone() {
                 s.filed.push(Filed {
@@ -2440,25 +2490,36 @@ impl Daemon {
 
     /// One piece of a picture from a phone (T-629), staged under its grant
     /// the way the desk's is staged under its connection, so a reconnect
-    /// mid-upload carries on. Asked as the note write it is for.
+    /// mid-upload carries on. Asked as the note write it is for, or with no
+    /// ticket as the filing whose description it is for (T-670); either way
+    /// the gate that keeps it is the write that links it.
     #[allow(clippy::too_many_arguments)]
     fn control_upload(
         &mut self,
         by: &Principal,
         grant: BoardId,
-        ticket: &str,
+        ticket: Option<&str>,
         upload: Option<&str>,
         offset: usize,
         data: &str,
         complete: bool,
     ) -> Reply {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
-        let Some(id) = self.control_note_ticket(ticket) else {
-            return reject("ticket unavailable");
+        let decision = match ticket {
+            Some(ticket) => {
+                let Some(id) = self.control_note_ticket(ticket) else {
+                    return reject("ticket unavailable");
+                };
+                authorize(by, &Action::Annotate, &Resource::Ticket { id })
+            }
+            None => {
+                let Some(name) = self.board.landing_column() else {
+                    return reject("the board has no columns");
+                };
+                authorize(by, &Action::FileTicket, &Resource::Column { name })
+            }
         };
-        if let Decision::Deny { reason } =
-            authorize(by, &Action::Annotate, &Resource::Ticket { id })
-        {
+        if let Decision::Deny { reason } = decision {
             return reject(&format!("denied: {reason}"));
         }
         if let Some(message) = self.team_viewer_refusal() {
@@ -3368,6 +3429,15 @@ impl NoteGate<'_> {
 
 /// The note a phone's write lands on, `None` for a fresh one, or why it
 /// stops. `rev` is the revision the browser opened; none skips the check.
+/// How a phone's ticket reached the host: sealed in the mailbox, named by
+/// its envelope so a replay lands once (T-497), or live, with the pictures
+/// its description links (T-670).
+#[derive(Clone, Copy)]
+enum Via<'a> {
+    Mail(ObjectId),
+    Live(&'a crate::attachments::Owner, &'a [ulid::Ulid]),
+}
+
 fn note_gate<'a>(
     t: &'a Ticket,
     note: Option<&str>,

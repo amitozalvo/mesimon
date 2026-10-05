@@ -463,7 +463,7 @@ mod tests {
         .unwrap();
         let (mut b, _) = Channel::client(&w, &browser).unwrap();
         let request = Request::Upload {
-            ticket: "01JZZZZZZZZZZZZZZZZZZZZZZZ".into(),
+            ticket: Some("01JZZZZZZZZZZZZZZZZZZZZZZZ".into()),
             upload: Some("01JZZZZZZZZZZZZZZZZZZZZZZZ".into()),
             offset: 9 * 1024 * 1024,
             data: "A".repeat(PICTURE_CHUNK_BYTES.div_ceil(3) * 4),
