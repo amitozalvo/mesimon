@@ -42,7 +42,7 @@ use mesimon_core::command::{Command, Response};
 use mesimon_core::notify::{Coalescer, Detail, Differ, Post, Presence, Sound, Voice};
 
 use crate::client::{Client, Transport};
-use crate::notify::{Channels, Console};
+use crate::notify::{Channels, Console, Delivery};
 
 /// How often the thread looks. The coalescing window is 5 s, so a quarter of
 /// a second is far below anything a person can perceive on a channel whose
@@ -79,6 +79,16 @@ pub struct NotifyPrefs {
     pub sound_done: Sound,
     /// iTerm2 bounces its dock icon once on a needs-you post (T-492).
     pub dock_bounce: bool,
+    /// The terminal posts the banner, by its own escape, and no helper of
+    /// ours is launched (T-676).
+    pub by_terminal: bool,
+}
+
+impl NotifyPrefs {
+    /// How this post goes out, for the `Say`.
+    fn delivery(&self) -> Delivery {
+        Delivery { bounce: self.dock_bounce, by_terminal: self.by_terminal }
+    }
 }
 
 impl From<&crate::prefs::Prefs> for NotifyPrefs {
@@ -92,6 +102,7 @@ impl From<&crate::prefs::Prefs> for NotifyPrefs {
             sound_needs_you: p.notify_sound_needs_you,
             sound_done: p.notify_sound_done,
             dock_bounce: p.notify_dock_bounce && crate::title::iterm2_direct(),
+            by_terminal: p.notify_via == crate::prefs::NotifyVia::Terminal,
         }
     }
 }
@@ -296,12 +307,13 @@ fn title_of(repo_root: &Path) -> String {
 /// How a post reaches a person. A closure rather than a `Channels` field so a
 /// test can drive the whole worker without a program on the machine ever
 /// being run — the same seam `App::notify` being `None` used to be.
-/// The second argument: bounce the dock for this post (iTerm2, T-492).
-type Say = Box<dyn FnMut(&Post, bool) + Send>;
+/// The second argument is how: bounce the dock (iTerm2, T-492), and whether
+/// the terminal posts the banner (T-676).
+type Say = Box<dyn FnMut(&Post, Delivery) + Send>;
 
 fn say_through(ch: Channels, console: Arc<Console>, shared: Arc<Shared>) -> Say {
-    Box::new(move |p, bounce| {
-        if let Err(e) = crate::notify::post(&ch, p, &console, bounce) {
+    Box::new(move |p, how| {
+        if let Err(e) = crate::notify::post(&ch, p, &console, how) {
             // The status line belongs to the main loop; leave it there for
             // the next tick to take, and never stop the board over a banner.
             *shared.trouble.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -355,7 +367,7 @@ impl Worker {
     fn run(mut self, ctrl: &Receiver<Ctrl>) {
         loop {
             match ctrl.recv_timeout(BEAT) {
-                Ok(Ctrl::Preview(s)) => (self.say)(&Post::sound_only(s), false),
+                Ok(Ctrl::Preview(s)) => (self.say)(&Post::sound_only(s), Delivery::default()),
                 Err(RecvTimeoutError::Timeout) => {}
                 // The board is gone, and so is the thread. This is the off
                 // switch D15 asked for: the process dying is what stops it.
@@ -432,7 +444,7 @@ impl Worker {
         if post.is_silent() {
             return;
         }
-        (self.say)(&post, prefs.dock_bounce);
+        (self.say)(&post, prefs.delivery());
     }
 
     /// Is the person still inside the pane they attached to? (T-299)
@@ -587,6 +599,8 @@ mod tests {
         board: Arc<Mutex<Board>>,
         moved: Sender<()>,
         said: Arc<Mutex<Vec<Post>>>,
+        /// How each post was handed over, beside it.
+        how: Arc<Mutex<Vec<Delivery>>>,
         quiet: Arc<Mutex<Option<u64>>>,
     }
 
@@ -617,13 +631,17 @@ mod tests {
         let (moved, events) = channel();
         let shared = Arc::new(Shared::new(prefs));
         let said: Arc<Mutex<Vec<Post>>> = Default::default();
+        let how: Arc<Mutex<Vec<Delivery>>> = Default::default();
         let mut worker = Worker::new(
             PathBuf::from("/repo"),
             "board".into(),
             shared.clone(),
             Box::new({
-                let said = said.clone();
-                move |p: &Post, _| said.lock().expect("said").push(p.clone())
+                let (said, how) = (said.clone(), how.clone());
+                move |p: &Post, d: Delivery| {
+                    said.lock().expect("said").push(p.clone());
+                    how.lock().expect("how").push(d);
+                }
             }),
         );
         let quiet: Arc<Mutex<Option<u64>>> = Default::default();
@@ -637,7 +655,7 @@ mod tests {
         // never dials, so the worker is handed its connection above and owes
         // exactly this one look.
         worker.owes_look = true;
-        let mut rig = Rig { worker, shared, board, moved, said, quiet };
+        let mut rig = Rig { worker, shared, board, moved, said, how, quiet };
         rig.beat();
         assert!(rig.said().is_empty(), "an opening board announces no backlog");
         rig
@@ -706,6 +724,7 @@ mod tests {
             sound_needs_you: Sound::Glass,
             sound_done: Sound::Tink,
             dock_bounce: false,
+            by_terminal: false,
         }
     }
 
@@ -735,6 +754,25 @@ mod tests {
         assert_eq!(post.sound, Sound::Glass);
         r.beat();
         assert!(r.said().is_empty(), "and nothing is repeated on the next beat");
+    }
+
+    /// The `Delivered by` row reaches the post (T-676): the Say is told the
+    /// terminal posts it, and the bounce rides beside it unchanged.
+    #[test]
+    fn the_delivered_by_row_reaches_the_say() {
+        let mut r = rig(on());
+        r.change(block);
+        assert_eq!(r.how.lock().expect("how").pop(), Some(Delivery::default()));
+        let mut r = rig(NotifyPrefs { by_terminal: true, dock_bounce: true, ..on() });
+        r.change(block);
+        assert_eq!(
+            r.how.lock().expect("how").pop(),
+            Some(Delivery { bounce: true, by_terminal: true })
+        );
+        let mut p = crate::prefs::Prefs::default();
+        assert!(!NotifyPrefs::from(&p).by_terminal, "mesimon posts it by default");
+        p.notify_via = crate::prefs::NotifyVia::Terminal;
+        assert!(NotifyPrefs::from(&p).by_terminal);
     }
 
     /// T-291's bug, end to end: the terminal has focus and the board is not
@@ -1017,7 +1055,7 @@ mod tests {
             shared,
             Box::new({
                 let said = said.clone();
-                move |p: &Post, _| said.lock().expect("said").push(p.clone())
+                move |p: &Post, _: Delivery| said.lock().expect("said").push(p.clone())
             }),
         );
         let (tx, rx) = channel();

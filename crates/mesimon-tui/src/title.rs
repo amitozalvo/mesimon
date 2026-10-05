@@ -78,29 +78,83 @@ const FOCUS_TITLE_CHARS: usize = 32;
 pub(crate) enum Terminal {
     /// iTerm2 and no tmux in between. `status`: 3.7 or later, where the
     /// session-status escape and `SetProfileProperty` exist.
-    ITerm2 { status: bool },
+    ITerm2 {
+        status: bool,
+    },
     /// The user's own tmux: `TERM_PROGRAM` is rewritten to `tmux` in every
     /// pane, which is the one reliable negative — `__CFBundleIdentifier`
     /// is inherited and stale in there.
     OuterTmux,
+    /// The three other terminals that post a system notification from an
+    /// escape of their own (T-676): kitty (OSC 99), WezTerm and Ghostty
+    /// (OSC 777). Named for the notifications row only; every iTerm2 row
+    /// treats them as `Other`.
+    Kitty,
+    WezTerm,
+    Ghostty,
     #[default]
     Other,
 }
 
-pub(crate) fn terminal() -> Terminal {
-    classify(
-        std::env::var("TERM_PROGRAM").ok().as_deref(),
-        std::env::var("__CFBundleIdentifier").ok().as_deref(),
-        std::env::var("TERM_PROGRAM_VERSION").ok().as_deref(),
-    )
+impl Terminal {
+    /// The escape this terminal posts a banner from, or `None` where it
+    /// cannot (T-676): Terminal.app, an outer tmux, anything unknown.
+    pub(crate) fn poster(self) -> Option<crate::notify::Poster> {
+        use crate::notify::Poster;
+        match self {
+            Terminal::ITerm2 { .. } => Some(Poster::Osc9),
+            Terminal::Kitty => Some(Poster::Osc99),
+            Terminal::WezTerm | Terminal::Ghostty => Some(Poster::Osc777),
+            Terminal::OuterTmux | Terminal::Other => None,
+        }
+    }
 }
 
-fn classify(term_program: Option<&str>, bundle: Option<&str>, version: Option<&str>) -> Terminal {
-    if term_program.is_some_and(|v| v.eq_ignore_ascii_case("tmux")) {
+pub(crate) fn terminal() -> Terminal {
+    let var = |k: &str| std::env::var(k).ok();
+    classify(&Seen {
+        term_program: var("TERM_PROGRAM").as_deref(),
+        bundle: var("__CFBundleIdentifier").as_deref(),
+        version: var("TERM_PROGRAM_VERSION").as_deref(),
+        term: var("TERM").as_deref(),
+        kitty_window: var("KITTY_WINDOW_ID").as_deref(),
+    })
+}
+
+/// The environment words `classify` reads.
+#[derive(Default)]
+struct Seen<'a> {
+    term_program: Option<&'a str>,
+    bundle: Option<&'a str>,
+    version: Option<&'a str>,
+    term: Option<&'a str>,
+    kitty_window: Option<&'a str>,
+}
+
+fn classify(e: &Seen) -> Terminal {
+    let program = |name: &str| e.term_program.is_some_and(|v| v.eq_ignore_ascii_case(name));
+    if program("tmux") {
         return Terminal::OuterTmux;
     }
-    if bundle == Some("com.googlecode.iterm2") || term_program == Some("iTerm.app") {
-        return Terminal::ITerm2 { status: version.is_some_and(|v| at_least(v, (3, 7))) };
+    if e.bundle == Some("com.googlecode.iterm2") || e.term_program == Some("iTerm.app") {
+        return Terminal::ITerm2 { status: e.version.is_some_and(|v| at_least(v, (3, 7))) };
+    }
+    // `TERM_PROGRAM`, where it is set, outranks the inherited words: VS
+    // Code started from a kitty shell keeps `KITTY_WINDOW_ID` and the
+    // bundle id, and is not kitty.
+    let unnamed = e.term_program.is_none_or(str::is_empty);
+    let kitty = e.kitty_window.is_some_and(|v| !v.is_empty())
+        || e.term == Some("xterm-kitty")
+        || e.bundle == Some("net.kovidgoyal.kitty");
+    if program("kitty") || (unnamed && kitty) {
+        return Terminal::Kitty;
+    }
+    if program("WezTerm") || (unnamed && e.bundle == Some("com.github.wez.wezterm")) {
+        return Terminal::WezTerm;
+    }
+    let ghostty = e.term == Some("xterm-ghostty") || e.bundle == Some("com.mitchellh.ghostty");
+    if program("ghostty") || (unnamed && ghostty) {
+        return Terminal::Ghostty;
     }
     Terminal::Other
 }
@@ -417,15 +471,48 @@ mod tests {
     fn iterm2_is_named_directly_and_never_through_an_outer_tmux() {
         let old = Terminal::ITerm2 { status: false };
         let new = Terminal::ITerm2 { status: true };
-        assert_eq!(classify(None, Some("com.googlecode.iterm2"), Some("3.6.11")), old);
-        assert_eq!(classify(Some("iTerm.app"), None, Some("3.7.0beta2")), new);
-        assert_eq!(classify(Some("iTerm.app"), None, Some("4.0")), new);
-        assert_eq!(classify(Some("iTerm.app"), None, None), old, "no version: the old escapes");
-        let tmux = classify(Some("tmux"), Some("com.googlecode.iterm2"), Some("3.7"));
+        let c = |term_program, bundle, version| {
+            classify(&Seen { term_program, bundle, version, ..Seen::default() })
+        };
+        assert_eq!(c(None, Some("com.googlecode.iterm2"), Some("3.6.11")), old);
+        assert_eq!(c(Some("iTerm.app"), None, Some("3.7.0beta2")), new);
+        assert_eq!(c(Some("iTerm.app"), None, Some("4.0")), new);
+        assert_eq!(c(Some("iTerm.app"), None, None), old, "no version: the old escapes");
+        let tmux = c(Some("tmux"), Some("com.googlecode.iterm2"), Some("3.7"));
         assert_eq!(tmux, Terminal::OuterTmux);
-        assert_eq!(classify(Some("ghostty"), None, Some("1.3.1")), Terminal::Other);
+        assert_eq!(c(Some("Apple_Terminal"), None, Some("455")), Terminal::Other);
         assert!(!at_least("3", (3, 7)));
         assert!(!at_least("beta", (3, 7)));
+    }
+
+    /// The three other terminals that post a banner (T-676), each by its
+    /// own words, and never through an outer tmux or under a program that
+    /// names itself something else.
+    #[test]
+    fn kitty_wezterm_and_ghostty_are_named_and_post_banners() {
+        use crate::notify::Poster;
+        let kitty = Seen { kitty_window: Some("1"), term: Some("xterm-kitty"), ..Seen::default() };
+        assert_eq!(classify(&kitty), Terminal::Kitty);
+        assert_eq!(
+            classify(&Seen { term: Some("xterm-kitty"), ..Seen::default() }),
+            Terminal::Kitty
+        );
+        let wez = Seen { term_program: Some("WezTerm"), ..Seen::default() };
+        assert_eq!(classify(&wez), Terminal::WezTerm);
+        let ghostty =
+            Seen { term_program: Some("ghostty"), version: Some("1.3.1"), ..Seen::default() };
+        assert_eq!(classify(&ghostty), Terminal::Ghostty);
+        let in_tmux = Seen { term_program: Some("tmux"), ..kitty };
+        assert_eq!(classify(&in_tmux), Terminal::OuterTmux);
+        let vscode =
+            Seen { term_program: Some("vscode"), kitty_window: Some("1"), ..Seen::default() };
+        assert_eq!(classify(&vscode), Terminal::Other, "an inherited kitty id is not kitty");
+        assert_eq!(Terminal::ITerm2 { status: false }.poster(), Some(Poster::Osc9));
+        assert_eq!(Terminal::Kitty.poster(), Some(Poster::Osc99));
+        assert_eq!(Terminal::WezTerm.poster(), Some(Poster::Osc777));
+        assert_eq!(Terminal::Ghostty.poster(), Some(Poster::Osc777));
+        assert_eq!(Terminal::OuterTmux.poster(), None);
+        assert_eq!(Terminal::Other.poster(), None);
     }
 
     /// The icon rides `SetProfileProperty` as base64 JSON, and off puts

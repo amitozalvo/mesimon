@@ -3,10 +3,11 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-
-    Keymap validator      >╭─ NOTIFICATIONS ────────────────────────────────────────────────╮
-                           │   Notifications: on                                            │
+                           ╭─ NOTIFICATIONS ────────────────────────────────────────────────╮
+    Keymap validator      >│   Notifications: on                                            │
                            │     an OS banner and a sound ∙ only while this board is open ~ │
+                           │   Delivered by: mesimon                                        │
+                           │     mesimon posts it with the mascot; a managed Mac may audit~ │
                            │   Also when a turn finishes                                    │
                            │     the card's ✔ ∙ enter keeps it to the blocked ones          │
                            │   The agent's words: quoted                                    │
@@ -22,7 +23,6 @@
                            │   Dock bounce when an agent needs you: off                     │
                            │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
 
 
 

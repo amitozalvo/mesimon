@@ -4929,6 +4929,8 @@ impl App {
             iterm2: matches!(self.terminal, crate::title::Terminal::ITerm2 { .. }),
             iterm2_status: self.terminal == crate::title::Terminal::ITerm2 { status: true },
             notify_dock_bounce: self.prefs.notify_dock_bounce,
+            notify_via_terminal: self.prefs.notify_via == crate::prefs::NotifyVia::Terminal,
+            terminal_posts: self.terminal.poster().is_some(),
             keep_awake: self.prefs.keep_awake,
             header_chip: if self.header_focus { self.header_chip } else { HeaderChip::Git },
             remote_mark: self.control.enabled,
@@ -6200,6 +6202,21 @@ impl App {
                     "the dock stays still"
                 };
                 self.set_pref(word, |p| p.notify_dock_bounce = on);
+            }
+            // T-676: who posts the banner. No fallback, so the status line
+            // says at once when the terminal chosen cannot post one.
+            Verb::NotifyVia => {
+                let via = self.prefs.notify_via.next();
+                let word = match via {
+                    crate::prefs::NotifyVia::Mesimon => "mesimon posts the banner",
+                    crate::prefs::NotifyVia::Terminal if self.terminal.poster().is_some() => {
+                        "your terminal posts the banner"
+                    }
+                    crate::prefs::NotifyVia::Terminal => {
+                        "your terminal posts the banner ∙ this one cannot, so none will show"
+                    }
+                };
+                self.set_pref(word, |p| p.notify_via = via);
             }
             // T-288. No push of any kind: the BOARD holds the machine
             // awake, so the daemon is never told — the next tick's `drive`
@@ -21035,6 +21052,35 @@ mod tests {
 
     /// The door and the list: Enter opens it, Esc lands back on the row that
     /// did, and the four rows under the switch appear only while it is on.
+    /// The `Delivered by` row (T-676): Enter cycles mesimon and the
+    /// terminal, and the detail is honest about a terminal that cannot post
+    /// — no fallback, so it says none will show.
+    #[test]
+    fn the_delivered_by_row_cycles_and_says_when_the_terminal_cannot_post() {
+        let mut app = app_three_columns();
+        let row = |app: &App| {
+            let ctx = app.ctx();
+            let item = keymap::notify_items(&ctx)
+                .into_iter()
+                .find(|m| m.verb == Verb::NotifyVia)
+                .expect("the row, under the switch");
+            ((item.label)(&ctx), (item.detail)(&ctx))
+        };
+        assert_eq!(row(&app).0, "Delivered by: mesimon");
+        assert!(row(&app).1.contains("with the mascot"), "{}", row(&app).1);
+        let ctx = app.ctx();
+        app.dispatch(Verb::NotifyVia, Key::Enter, Scope::Notifications, &ctx).expect("the row");
+        assert_eq!(app.prefs.notify_via, crate::prefs::NotifyVia::Terminal);
+        assert_eq!(row(&app).0, "Delivered by: your terminal");
+        assert_eq!(row(&app).1, "this terminal cannot post banners; none will show");
+        assert!(app.status.contains("none will show"), "{}", app.status);
+        app.terminal = crate::title::Terminal::Kitty;
+        assert_eq!(row(&app).1, "your terminal posts it, signed as itself; no mascot");
+        let ctx = app.ctx();
+        app.dispatch(Verb::NotifyVia, Key::Enter, Scope::Notifications, &ctx).expect("the row");
+        assert_eq!(app.prefs.notify_via, crate::prefs::NotifyVia::Mesimon);
+    }
+
     #[test]
     fn the_notifications_door_opens_and_pops_back() {
         let mut app = app_three_columns();
@@ -21048,7 +21094,7 @@ mod tests {
         assert_eq!(keymap::notify_items(&app.ctx()).len(), 1, "off, the list is its switch");
         enter(&mut app);
         assert!(app.prefs.notify, "the first row is the switch");
-        assert_eq!(keymap::notify_items(&app.ctx()).len(), 8);
+        assert_eq!(keymap::notify_items(&app.ctx()).len(), 9);
         app.on_key(KeyCode::Esc, KeyModifiers::NONE).expect("esc");
         assert_eq!(
             app.mode,
@@ -21135,7 +21181,10 @@ mod tests {
             assert!(matches!(app.mode, Mode::Normal), "{key} did something: {:?}", app.mode);
         }
         // Copying the ticket is reading it (T-674): a viewer may.
-        assert_eq!(keymap::resolve(Scope::Board, Key::Char('c'), &app.ctx()), Some(Verb::CopyTicket));
+        assert_eq!(
+            keymap::resolve(Scope::Board, Key::Char('c'), &app.ctx()),
+            Some(Verb::CopyTicket)
+        );
         let footer = footer_text(&app);
         assert!(footer.contains("Synced ∙ 3 members ∙ you read only"), "{footer}");
         assert!(!footer.contains("rename"), "{footer}");

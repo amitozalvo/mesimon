@@ -573,6 +573,9 @@ pub enum Verb {
     TabIcon,
     /// The notifications row for iTerm2's dock bounce (T-492).
     NotifyDockBounce,
+    /// The notifications row for who posts the banner (T-676): mesimon's
+    /// helper or the terminal.
+    NotifyVia,
     /// The Settings door to the Terminal rows.
     SettingsTerminal,
     /// The subscription quota (T-327). `Usage` is the menu row that opens
@@ -1422,6 +1425,11 @@ pub struct Ctx {
     pub iterm2_status: bool,
     /// iTerm2 bounces its dock icon when an agent needs you (T-492).
     pub notify_dock_bounce: bool,
+    /// The terminal posts the banner, not mesimon's helper (T-676).
+    pub notify_via_terminal: bool,
+    /// And the terminal the board runs in can post one (iTerm2, kitty,
+    /// WezTerm or Ghostty, directly): the row says so when it cannot.
+    pub terminal_posts: bool,
     /// Hold this machine awake while an agent is mid-turn (T-288) — the
     /// preference; the Settings row flips it.
     pub keep_awake: bool,
@@ -4957,10 +4965,10 @@ fn prompt_detail(ctx: &Ctx, which: crate::prompts::AgentPrompt) -> String {
 
 /// The notifications list, one level under Settings (T-282).
 ///
-/// Five rows, each one idea, in the order somebody would meet them: whether
-/// at all, then which moments, then what they sound like, then the one
-/// exception about the banner. Rows two to five are gated on the first, so
-/// the list is a single row until it is turned on — the `MergeTrainNotice`
+/// One idea per row, in the order somebody would meet them: whether at
+/// all, then who posts it (T-676), then which moments, then what they
+/// sound like, then the exceptions about the banner. Every row after the
+/// first is gated on it, so the list is a single row until it is turned on — the `MergeTrainNotice`
 /// shape, which is what keeps a preference list from offering settings for
 /// a thing that is off.
 pub static NOTIFY_ITEMS: &[MenuItem] = &[
@@ -4984,6 +4992,31 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
             }
         },
         avail: always,
+        key: "",
+    },
+    // Who posts the banner (T-676), under the switch: on a managed Mac every
+    // launch of mesimon's helper is one audited prompt, and the terminal can
+    // post the same banner signed as itself. No fallback between the two —
+    // a terminal that cannot post shows nothing, and the row says so.
+    MenuItem {
+        verb: Verb::NotifyVia,
+        label: |c| {
+            if c.notify_via_terminal {
+                "Delivered by: your terminal".into()
+            } else {
+                "Delivered by: mesimon".into()
+            }
+        },
+        detail: |c| {
+            if !c.notify_via_terminal {
+                "mesimon posts it with the mascot; a managed Mac may audit the launch".into()
+            } else if c.terminal_posts {
+                "your terminal posts it, signed as itself; no mascot".into()
+            } else {
+                "this terminal cannot post banners; none will show".into()
+            }
+        },
+        avail: |c| c.notify,
         key: "",
     },
     MenuItem {
@@ -5311,6 +5344,7 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::TabSubtitle => PrefKey::TabSubtitle,
         Verb::TabIcon => PrefKey::TabIcon,
         Verb::NotifyDockBounce => PrefKey::NotifyDockBounce,
+        Verb::NotifyVia => PrefKey::NotifyVia,
         Verb::KeepAwake => PrefKey::KeepAwake,
         Verb::NotifyToggle => PrefKey::Notify,
         Verb::NotifyDone => PrefKey::NotifyDone,

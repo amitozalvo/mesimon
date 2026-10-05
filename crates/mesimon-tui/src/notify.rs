@@ -72,6 +72,15 @@
 //! payload**: it is a constant script plus one id this module validated,
 //! single-quoted by `sh_line` — argv's rule kept where argv is not on offer.
 //!
+//! **`Delivered by: your terminal`** (T-676) is a row, not a rung: it takes
+//! the banner off the ladder altogether and hands it to the terminal the
+//! board runs in, by that terminal's own escape ([`Poster`]) — iTerm2's
+//! OSC 9, kitty's OSC 99, WezTerm's and Ghostty's OSC 777 — so the banner is
+//! posted under the terminal's signature and no program of ours is launched.
+//! A terminal with no escape shows nothing: falling back to the helper would
+//! launch exactly what the row was chosen to keep from launching.
+//! `MESIMON_NOTIFY=off` still silences it; the sound ladder is untouched.
+//!
 //! **The sound ladder** is `MESIMON_SOUND` (`off` or a program) → `afplay` on
 //! macOS → `paplay` / `pw-play` / `canberra-gtk-play` on Linux → the terminal
 //! bell, which is the rung nothing can take away.
@@ -101,6 +110,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use mesimon_core::notify::{Post, Sound};
@@ -447,6 +457,57 @@ impl Player {
     }
 }
 
+/// The escape a terminal posts a system notification from (T-676), for the
+/// `Delivered by: your terminal` row. The terminal draws the banner under
+/// its own signature; nothing of ours is launched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Poster {
+    /// iTerm2: `OSC 9 ; <text> BEL`, one text.
+    Osc9,
+    /// kitty: `OSC 99`, a title chunk and then a body chunk under one id.
+    Osc99,
+    /// WezTerm and Ghostty: `OSC 777 ; notify ; <title> ; <body> ST`.
+    Osc777,
+}
+
+impl Poster {
+    /// The bytes to write, from fields already scrubbed (`Fields::of`), so
+    /// no ESC, BEL or newline can close the sequence early. `id` ties
+    /// kitty's two chunks into one notification.
+    fn escape(self, f: &Fields, id: u32) -> String {
+        match self {
+            Poster::Osc9 => osc9(&f.title, &f.folded),
+            Poster::Osc99 => format!(
+                "\x1b]99;i={id}:d=0;{}\x1b\\\x1b]99;i={id}:p=body;{}\x1b\\",
+                f.title, f.folded
+            ),
+            // The title ends at the first `;`, so a board named with one
+            // would push the rest into the body.
+            Poster::Osc777 => {
+                format!("\x1b]777;notify;{};{}\x1b\\", f.title.replace(';', ","), f.folded)
+            }
+        }
+    }
+
+    /// What `doctor` calls it.
+    fn word(self) -> &'static str {
+        match self {
+            Poster::Osc9 => "iTerm2 (OSC 9)",
+            Poster::Osc99 => "kitty (OSC 99)",
+            Poster::Osc777 => "OSC 777",
+        }
+    }
+}
+
+/// How one post goes out, from the notification preferences: whether the
+/// dock bounces (iTerm2, T-492) and whether the terminal posts the banner
+/// rather than the ladder (T-676).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Delivery {
+    pub bounce: bool,
+    pub by_terminal: bool,
+}
+
 /// Both rungs, resolved once. `lib.rs` parks this on `App`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Channels {
@@ -466,6 +527,9 @@ pub struct Channels {
     /// The installed helper bundle, discovered without running it. An actual
     /// macOS post prepares a private signed Mesimon copy under `icon_dir`.
     pub notifier_app: Option<PathBuf>,
+    /// The escape this terminal posts a banner from, for the `your
+    /// terminal` road (T-676). `None` where it cannot post one.
+    pub poster: Option<Poster>,
 }
 
 /// The two ladders. The group is not resolved here — this function knows no
@@ -486,6 +550,7 @@ pub fn find() -> Channels {
         icon_dir: None,
         notifier_app: which_on_path("terminal-notifier")
             .and_then(|path| crate::notification_app::discover(&path)),
+        poster: crate::title::terminal().poster(),
         click: find_click(
             std::env::var("MESIMON_TERM_BUNDLE").ok().as_deref(),
             std::env::var("MESIMON_TERM_REVEAL").ok().as_deref(),
@@ -837,19 +902,32 @@ impl Console {
 /// the board says `opening …` and never `opened`. A rung that writes an
 /// escape and finds the terminal handed over says nothing and reports no
 /// error: not raising a banner is not a failure to report.
-pub fn post(ch: &Channels, p: &Post, console: &Console, bounce: bool) -> std::io::Result<()> {
-    post_with(ch, p, console, bounce, |argv| launch(argv, None))
+pub fn post(ch: &Channels, p: &Post, console: &Console, how: Delivery) -> std::io::Result<()> {
+    post_with(ch, p, console, how, |argv| launch(argv, None), write_stdout)
 }
+
+/// kitty's notification id (T-676): one per banner, so a new one never
+/// lands on top of the chunks of the last.
+static KITTY_ID: AtomicU32 = AtomicU32::new(1);
 
 fn post_with(
     ch: &Channels,
     p: &Post,
     console: &Console,
-    bounce: bool,
+    how: Delivery,
     launch: impl Fn(&[String]) -> std::io::Result<()>,
+    emit: impl Fn(&str) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let mut icon_error = None;
-    if !p.body.is_empty() {
+    if !p.body.is_empty() && how.by_terminal && ch.banner != Banner::Off {
+        // The terminal posts it, or nobody does (T-676): no helper is built
+        // or launched on this road, a terminal without an escape included.
+        if let Some(poster) = ch.poster {
+            let f = Fields::of(p);
+            let id = KITTY_ID.fetch_add(1, Ordering::Relaxed);
+            console.write_if_held(|| emit(&poster.escape(&f, id)))?;
+        }
+    } else if !p.body.is_empty() {
         let f = Fields::of(p);
         match ch.banner.argv(ch.group.as_deref(), ch.click.as_ref(), &f) {
             Some(mut argv) => {
@@ -890,10 +968,10 @@ fn post_with(
                 launch(&argv)?;
             }
             None if ch.banner == Banner::Osc => {
-                console.write_if_held(|| write_osc9(&f.title, &f.folded))?
+                console.write_if_held(|| emit(&osc9(&f.title, &f.folded)))?
             }
             None if ch.banner == Banner::Kitty => {
-                console.write_if_held(|| write_osc99(&f.title, &f.folded))?
+                console.write_if_held(|| emit(&osc99(&f.title, &f.folded)))?
             }
             None => {}
         }
@@ -902,14 +980,14 @@ fn post_with(
     // attention event. The same lock and the same silence off screen as
     // the escape rungs; every other terminal ignores the sequence, and
     // `bounce` is already false anywhere but iTerm2 direct.
-    if bounce && p.needs_you {
-        console.write_if_held(write_bounce)?;
+    if how.bounce && p.needs_you {
+        console.write_if_held(|| emit(BOUNCE))?;
     }
     if !p.sound.is_off() {
         match ch.player.argv(p.sound) {
             Some(argv) => launch(&argv)?,
             None if ch.player == Player::Off => {}
-            None => console.write_if_held(ring_bell)?,
+            None => console.write_if_held(|| emit(BELL))?,
         }
     }
     match icon_error {
@@ -972,45 +1050,41 @@ fn field(raw: &str) -> String {
     text::cap_bytes(&text::scrub_text(raw), MAX_FIELD).to_string()
 }
 
-/// OSC 9 has one text, not three fields — so they are joined with the
-/// separator every other line of mesimon uses. Written straight to stdout the
-/// way `osc::copy_to_clipboard` writes OSC 52: between draws, no `execute!`,
-/// and nothing on screen moves, so no redraw is owed.
-fn write_osc9(title: &str, body: &str) -> std::io::Result<()> {
+/// An escape rung's bytes, written straight to stdout the way
+/// `osc::copy_to_clipboard` writes OSC 52: between draws, no `execute!`, and
+/// nothing on screen moves, so no redraw is owed. The one writer `post`
+/// hands `post_with`; a test hands it a recorder.
+fn write_stdout(bytes: &str) -> std::io::Result<()> {
     let mut out = std::io::stdout();
-    if title.is_empty() {
-        write!(out, "\x1b]9;{body}\x07")?;
-    } else {
-        write!(out, "\x1b]9;{title} ∙ {body}\x07")?;
-    }
+    out.write_all(bytes.as_bytes())?;
     out.flush()
+}
+
+/// OSC 9 has one text, not three fields — so they are joined with the
+/// separator every other line of mesimon uses.
+fn osc9(title: &str, body: &str) -> String {
+    if title.is_empty() {
+        format!("\x1b]9;{body}\x07")
+    } else {
+        format!("\x1b]9;{title} ∙ {body}\x07")
+    }
 }
 
 /// kitty's OSC 99, the simplest documented form: empty metadata, and the
 /// payload is the title. ST-terminated, as kitty's own examples are; the
 /// click action defaults to focusing the window.
-fn write_osc99(title: &str, body: &str) -> std::io::Result<()> {
-    let mut out = std::io::stdout();
+fn osc99(title: &str, body: &str) -> String {
     if title.is_empty() {
-        write!(out, "\x1b]99;;{body}\x1b\\")?;
+        format!("\x1b]99;;{body}\x1b\\")
     } else {
-        write!(out, "\x1b]99;;{title} ∙ {body}\x1b\\")?;
+        format!("\x1b]99;;{title} ∙ {body}\x1b\\")
     }
-    out.flush()
 }
 
 /// iTerm2's `RequestAttention=once`: one dock bounce, nothing to cancel.
-fn write_bounce() -> std::io::Result<()> {
-    let mut out = std::io::stdout();
-    write!(out, "\x1b]1337;RequestAttention=once\x07")?;
-    out.flush()
-}
+const BOUNCE: &str = "\x1b]1337;RequestAttention=once\x07";
 
-fn ring_bell() -> std::io::Result<()> {
-    let mut out = std::io::stdout();
-    write!(out, "\x07")?;
-    out.flush()
-}
+const BELL: &str = "\x07";
 
 /// Whether a click will do anything, for the line below. `Some` only where
 /// the answer is about the rung that ANSWERED: promising a click on a rung
@@ -1039,19 +1113,35 @@ fn click_words(banner: &Banner, click: Option<&Click>) -> Option<String> {
     }
 }
 
+/// Who posts the banner, as `doctor` says it (T-676): the ladder's rung
+/// under `Delivered by: mesimon`, the terminal's escape under `your
+/// terminal` — or that nothing will, where the terminal has none.
+fn banner_words(ch: &Channels, by_terminal: bool) -> String {
+    match (by_terminal, ch.poster) {
+        (false, _) => ch.banner.word(),
+        (true, _) if ch.banner == Banner::Off => Banner::Off.word(),
+        (true, Some(poster)) => format!("your terminal, {}", poster.word()),
+        (true, None) => "your terminal, which cannot post banners — none will show \
+                         (Settings ∙ Notifications ∙ Delivered by)"
+            .into(),
+    }
+}
+
 /// What `mesimon doctor` says: whether it is on, which rungs answered, and
 /// both sounds. The rungs are named even while it is off, because "would it
 /// work if I turned it on" is the question somebody reads this line to ask.
 pub fn doctor_line() -> String {
     let p = &crate::prefs::load_home().prefs;
     let ch = find();
+    let by_terminal = p.notify_via == crate::prefs::NotifyVia::Terminal;
+    let banner = banner_words(&ch, by_terminal);
     // Asked once and said in BOTH arms: "would it work if I turned it on" is
-    // the whole reason the off arm names its rungs at all.
-    let click = click_words(&ch.banner, ch.click.as_ref());
+    // the whole reason the off arm names its rungs at all. A click is the
+    // helper's gift, so the terminal's road promises none.
+    let click = click_words(&ch.banner, ch.click.as_ref()).filter(|_| !by_terminal);
     if !p.notify {
         let mut off = format!(
-            "off (Settings ∙ Notifications turns it on) — would use {} and {}",
-            ch.banner.word(),
+            "off (Settings ∙ Notifications turns it on) — would use {banner} and {}",
             ch.player.word()
         );
         if let Some(c) = click {
@@ -1060,7 +1150,7 @@ pub fn doctor_line() -> String {
         }
         return off;
     }
-    let mut parts = vec![format!("on ∙ {}", ch.banner.word())];
+    let mut parts = vec![format!("on ∙ {banner}")];
     parts.push(format!("needs-you {}", p.notify_sound_needs_you.name()));
     if p.notify_done {
         parts.push(format!("finished {}", p.notify_sound_done.name()));
@@ -1093,7 +1183,7 @@ pub fn doctor_line() -> String {
     // spawns a program with null stdio and speaks through a handover. Said
     // apart from the in-pane PREFERENCE above, which is a choice; this is a
     // property of the rung that answered.
-    if matches!(ch.banner, Banner::Osc | Banner::Kitty) {
+    if (by_terminal && ch.poster.is_some()) || matches!(ch.banner, Banner::Osc | Banner::Kitty) {
         parts.push("this rung cannot reach you mid-handover — a helper program can".into());
     }
     if p.notify_dock_bounce {
@@ -1143,8 +1233,9 @@ mod tests {
             click: None,
             icon_dir: Some(dir.clone()),
             notifier_app: None,
+            poster: None,
         };
-        post(&ch, &Post::sound_only(Sound::Off), &Console::default(), false).unwrap();
+        post(&ch, &Post::sound_only(Sound::Off), &Console::default(), Delivery::default()).unwrap();
         ch.banner = Banner::Off;
         let p = Post {
             needs_you: true,
@@ -1153,7 +1244,7 @@ mod tests {
             body: "needs you".into(),
             sound: Sound::Off,
         };
-        post(&ch, &p, &Console::default(), false).unwrap();
+        post(&ch, &p, &Console::default(), Delivery::default()).unwrap();
         assert!(!dir.exists());
     }
 
@@ -1171,6 +1262,7 @@ mod tests {
             click: Some(click(ITERM2_ID)),
             icon_dir: Some(root.join("notifications")),
             notifier_app: Some(source),
+            poster: None,
         };
         let p = Post {
             needs_you: false,
@@ -1180,10 +1272,17 @@ mod tests {
             sound: Sound::Off,
         };
         let calls = std::cell::RefCell::new(Vec::new());
-        let error = post_with(&ch, &p, &Console::default(), false, |argv| {
-            calls.borrow_mut().push(argv.to_vec());
-            Ok(())
-        })
+        let error = post_with(
+            &ch,
+            &p,
+            &Console::default(),
+            Delivery::default(),
+            |argv| {
+                calls.borrow_mut().push(argv.to_vec());
+                Ok(())
+            },
+            |_| Ok(()),
+        )
         .unwrap_err();
         assert!(error.to_string().contains("app icon unavailable"));
         let calls = calls.into_inner();
@@ -1229,6 +1328,7 @@ mod tests {
             click: None,
             icon_dir: Some(root.join("notifications")),
             notifier_app: None,
+            poster: None,
         };
         let p = Post {
             needs_you: true,
@@ -1238,10 +1338,17 @@ mod tests {
             sound: Sound::Off,
         };
         let calls = std::cell::RefCell::new(Vec::new());
-        post_with(&ch, &p, &Console::default(), false, |argv| {
-            calls.borrow_mut().push(argv.to_vec());
-            Ok(())
-        })
+        post_with(
+            &ch,
+            &p,
+            &Console::default(),
+            Delivery::default(),
+            |argv| {
+                calls.borrow_mut().push(argv.to_vec());
+                Ok(())
+            },
+            |_| Ok(()),
+        )
         .unwrap();
         let calls = calls.into_inner();
         assert_eq!(calls.len(), 1);
@@ -1769,6 +1876,7 @@ mod tests {
             click: None,
             icon_dir: None,
             notifier_app: None,
+            poster: None,
         };
         let p = Post {
             needs_you: false,
@@ -1778,8 +1886,8 @@ mod tests {
             sound: Sound::Glass,
         };
         let console = Console::default();
-        assert!(post(&ch, &p, &console, false).is_ok());
-        assert!(post(&ch, &Post::sound_only(Sound::Off), &console, false).is_ok());
+        assert!(post(&ch, &p, &console, Delivery::default()).is_ok());
+        assert!(post(&ch, &Post::sound_only(Sound::Off), &console, Delivery::default()).is_ok());
     }
 
     /// T-291's honest limit, as a rule rather than a sentence: an escape rung
@@ -1805,5 +1913,130 @@ mod tests {
         console.set_held(true);
         go(&console, &mut wrote);
         assert_eq!(wrote, 2, "and the return gives them back");
+    }
+
+    /// What one post under `Delivered by: your terminal` (T-676) launched
+    /// and wrote, on a ladder whose helper would otherwise answer.
+    fn by_terminal(poster: Option<Poster>, banner: Banner, p: &Post) -> (Vec<Vec<String>>, String) {
+        let ch = Channels {
+            banner,
+            player: Player::Custom("ding".into()),
+            group: Some("mesimon-1".into()),
+            click: Some(click(ITERM2_ID)),
+            icon_dir: Some(PathBuf::from("/nonexistent/msmn-notify-terminal")),
+            notifier_app: Some(PathBuf::from("/nonexistent/terminal-notifier.app")),
+            poster,
+        };
+        let launched = std::cell::RefCell::new(Vec::new());
+        let wrote = std::cell::RefCell::new(String::new());
+        post_with(
+            &ch,
+            p,
+            &Console::default(),
+            Delivery { bounce: false, by_terminal: true },
+            |argv| {
+                launched.borrow_mut().push(argv.to_vec());
+                Ok(())
+            },
+            |bytes| {
+                wrote.borrow_mut().push_str(bytes);
+                Ok(())
+            },
+        )
+        .expect("nothing on this road can fail");
+        (launched.into_inner(), wrote.into_inner())
+    }
+
+    fn banner_post() -> Post {
+        Post {
+            needs_you: true,
+            title: "mesimon - simbly".into(),
+            subtitle: "T-1 ∙ Add auth".into(),
+            body: "needs you".into(),
+            sound: Sound::Off,
+        }
+    }
+
+    /// Each terminal gets its own escape, built from the scrubbed fields,
+    /// and no program of ours is launched — not the helper, not the applet.
+    #[test]
+    fn the_terminal_posts_its_own_escape_and_nothing_is_launched() {
+        let p = banner_post();
+        let (launched, wrote) = by_terminal(Some(Poster::Osc9), Banner::TerminalNotifier, &p);
+        assert!(launched.is_empty(), "{launched:?}");
+        assert_eq!(wrote, "\x1b]9;mesimon - simbly ∙ T-1 ∙ Add auth ∙ needs you\x07");
+
+        let (launched, wrote) = by_terminal(Some(Poster::Osc99), Banner::Osascript, &p);
+        assert!(launched.is_empty(), "{launched:?}");
+        let (title, body) = wrote.split_once("\x1b\\").expect("two chunks");
+        let id = title.strip_prefix("\x1b]99;i=").and_then(|t| t.split_once(':')).expect("an id").0;
+        assert_eq!(title, format!("\x1b]99;i={id}:d=0;mesimon - simbly"));
+        assert_eq!(body, format!("\x1b]99;i={id}:p=body;T-1 ∙ Add auth ∙ needs you\x1b\\"));
+
+        let (launched, wrote) = by_terminal(Some(Poster::Osc777), Banner::NotifySend, &p);
+        assert!(launched.is_empty(), "{launched:?}");
+        assert_eq!(wrote, "\x1b]777;notify;mesimon - simbly;T-1 ∙ Add auth ∙ needs you\x1b\\");
+    }
+
+    /// A word from a payload cannot close the sequence early, and a `;` in a
+    /// board's name cannot move OSC 777's title into its body.
+    #[test]
+    fn a_terminal_escape_carries_only_scrubbed_words() {
+        let p = Post {
+            title: "mesimon - a;b".into(),
+            subtitle: "T-1 ∙ \x1b]9;evil\x07".into(),
+            body: "needs you\x1b\\ now".into(),
+            ..banner_post()
+        };
+        for poster in [Poster::Osc9, Poster::Osc99, Poster::Osc777] {
+            let (_, wrote) = by_terminal(Some(poster), Banner::Osascript, &p);
+            let closers = wrote.matches('\x07').count() + wrote.matches("\x1b\\").count();
+            let chunks = if poster == Poster::Osc99 { 2 } else { 1 };
+            assert_eq!(closers, chunks, "{poster:?}: {wrote:?}");
+            let escapes = match poster {
+                Poster::Osc9 => 1,
+                Poster::Osc99 => 4,
+                Poster::Osc777 => 2,
+            };
+            assert_eq!(wrote.matches('\x1b').count(), escapes, "{poster:?}: {wrote:?}");
+        }
+        let (_, wrote) = by_terminal(Some(Poster::Osc777), Banner::Osascript, &p);
+        assert!(wrote.starts_with("\x1b]777;notify;mesimon - a,b;"), "{wrote:?}");
+    }
+
+    /// No fallback: a terminal that cannot post shows nothing and launches
+    /// nothing, `MESIMON_NOTIFY=off` still silences the road, and the sound
+    /// goes its own way on either.
+    #[test]
+    fn a_terminal_that_cannot_post_shows_nothing_and_the_sound_still_plays() {
+        let p = banner_post();
+        let (launched, wrote) = by_terminal(None, Banner::TerminalNotifier, &p);
+        assert!(launched.is_empty() && wrote.is_empty(), "{launched:?} {wrote:?}");
+        let (launched, wrote) = by_terminal(Some(Poster::Osc9), Banner::Off, &p);
+        assert!(launched.is_empty() && wrote.is_empty(), "{launched:?} {wrote:?}");
+        let chime = Post { sound: Sound::Glass, ..banner_post() };
+        let (launched, wrote) = by_terminal(None, Banner::TerminalNotifier, &chime);
+        assert_eq!(launched, vec![vec!["ding".to_string(), "Glass".to_string()]]);
+        assert!(wrote.is_empty());
+    }
+
+    /// `doctor` names who posts it, and says so when nobody will.
+    #[test]
+    fn doctor_names_the_terminal_or_says_none_will_show() {
+        let mut ch = Channels {
+            banner: Banner::TerminalNotifier,
+            player: Player::Off,
+            group: None,
+            click: None,
+            icon_dir: None,
+            notifier_app: None,
+            poster: Some(Poster::Osc99),
+        };
+        assert_eq!(banner_words(&ch, false), "terminal-notifier");
+        assert_eq!(banner_words(&ch, true), "your terminal, kitty (OSC 99)");
+        ch.poster = None;
+        assert!(banner_words(&ch, true).contains("none will show"));
+        ch.banner = Banner::Off;
+        assert_eq!(banner_words(&ch, true), "off");
     }
 }

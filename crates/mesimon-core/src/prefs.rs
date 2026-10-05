@@ -50,6 +50,11 @@ pub enum PrefKey {
     /// iTerm2 bounces its dock icon once when an agent needs you (T-492).
     /// A notification, so it sits in that list and under that switch.
     NotifyDockBounce,
+    /// Who posts the banner (T-676): a named value — `mesimon` (the
+    /// helper, with the mascot; the default) or `terminal` (the terminal
+    /// the board runs in, by an escape, signed as itself). About the
+    /// terminal, so per machine.
+    NotifyVia,
     /// The board's reply row (T-365): which rung `p`/`P` left it on.
     Peek,
     /// The crown's actions strike their tickets with a bolt (T-544). On by
@@ -74,7 +79,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 34] = [
+    pub const ALL: [PrefKey; 35] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::SnoozeNeedsYou,
@@ -99,6 +104,7 @@ impl PrefKey {
         PrefKey::NotifySoundNeedsYou,
         PrefKey::NotifySoundDone,
         PrefKey::NotifyDockBounce,
+        PrefKey::NotifyVia,
         PrefKey::Peek,
         PrefKey::CrownLightning,
         PrefKey::UsageLine,
@@ -138,6 +144,7 @@ impl PrefKey {
             PrefKey::NotifySoundNeedsYou => "notify_sound_needs_you",
             PrefKey::NotifySoundDone => "notify_sound_done",
             PrefKey::NotifyDockBounce => "notify_dock_bounce",
+            PrefKey::NotifyVia => "notify_via",
             PrefKey::Peek => "peek",
             PrefKey::CrownLightning => "crown_lightning",
             PrefKey::UsageLine => "usage_line",
@@ -161,7 +168,8 @@ impl PrefKey {
     /// crown's lightning (T-544) is motion on the screen, which is about
     /// the person watching it, so one switch holds for every board. The
     /// usage line's seven (T-327) are about the person's subscription,
-    /// which is one sign-in whichever board shows it.
+    /// which is one sign-in whichever board shows it. Who posts the banner
+    /// (T-676) is a question about the terminal, so it is the machine's.
     pub fn board_overridable(self) -> bool {
         !matches!(
             self,
@@ -174,6 +182,7 @@ impl PrefKey {
                 | PrefKey::TabColor
                 | PrefKey::TabSubtitle
                 | PrefKey::TabIcon
+                | PrefKey::NotifyVia
                 | PrefKey::WeekStart
                 | PrefKey::Peek
                 | PrefKey::CrownLightning
@@ -215,6 +224,7 @@ impl PrefKey {
             PrefKey::NotifySoundNeedsYou => "needs-you sound",
             PrefKey::NotifySoundDone => "done sound",
             PrefKey::NotifyDockBounce => "dock bounce",
+            PrefKey::NotifyVia => "Delivered by",
             PrefKey::Peek => "replies",
             PrefKey::CrownLightning => "crown lightning",
             PrefKey::UsageLine => "usage line",
@@ -239,6 +249,7 @@ impl PrefKey {
                 | PrefKey::WeekStart
                 | PrefKey::NotifySoundNeedsYou
                 | PrefKey::NotifySoundDone
+                | PrefKey::NotifyVia
                 | PrefKey::Peek
                 | PrefKey::UsageLine
                 | PrefKey::UsageResets
@@ -278,6 +289,7 @@ mod tests {
                 PrefKey::TabColor,
                 PrefKey::TabSubtitle,
                 PrefKey::TabIcon,
+                PrefKey::NotifyVia,
                 PrefKey::Peek,
                 PrefKey::CrownLightning,
                 PrefKey::UsageLine,

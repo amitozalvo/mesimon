@@ -472,6 +472,14 @@ gains terminal-notifier shows a second "Mesimon" under System Settings › Notif
 first banners from a new identity may not show until macOS has asked you to allow them. On Linux
 the notifier is `notify-send`, where present.
 
+The **Delivered by** row under the switch chooses who posts the banner. `mesimon` (the default) is
+the road above: the mascot, and on a managed Mac each launch of that helper may be audited.
+`your terminal` has iTerm2, kitty, WezTerm or Ghostty post it with an escape sequence, signed as
+the terminal itself and without the mascot; nothing of mesimon's is launched. In any other
+terminal, or inside your own tmux, `your terminal` shows no banner at all rather than falling back
+to the helper. Sounds play the same on both, and a banner written by the terminal is not posted
+while the board's terminal is handed to an agent pane or an editor.
+
 ## Pictures in notes
 
 Pictures can be pasted into a ticket note or new-ticket description with **Ctrl+V**

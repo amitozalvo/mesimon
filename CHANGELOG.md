@@ -20,6 +20,11 @@ in the Esc menu under `Release notes` and on GitHub.
   under the board's name, press the bin beside a board, then `Forget`. The
   other boards stay paired. A board whose computer still runs keeps listing
   the phone until you revoke it there.
+- **Settings › Notifications has a `Delivered by` row.** `mesimon` posts the
+  banner with the mascot; `your terminal` lets iTerm2, kitty, WezTerm or
+  Ghostty post it instead, so a managed Mac has no app of mesimon's to ask
+  about. In other terminals `your terminal` shows no banner; sounds play
+  either way.
 
 ### Changed
 

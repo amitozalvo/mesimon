@@ -252,6 +252,40 @@ impl CardCorner {
     }
 }
 
+/// Who posts a banner (T-676): mesimon's own helper, with the mascot, or
+/// the terminal the board runs in, by an escape and signed as itself — so
+/// a managed Mac that audits every launch has nothing of ours to audit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NotifyVia {
+    #[default]
+    Mesimon,
+    Terminal,
+}
+
+impl NotifyVia {
+    pub const fn key(self) -> &'static str {
+        match self {
+            NotifyVia::Mesimon => "mesimon",
+            NotifyVia::Terminal => "terminal",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "mesimon" => Some(NotifyVia::Mesimon),
+            "terminal" => Some(NotifyVia::Terminal),
+            _ => None,
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            NotifyVia::Mesimon => NotifyVia::Terminal,
+            NotifyVia::Terminal => NotifyVia::Mesimon,
+        }
+    }
+}
+
 /// When the quota line names a window's reset time (T-327).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UsageResets {
@@ -401,6 +435,10 @@ pub(crate) struct Prefs {
     /// Off by default, under the notifications switch like the rest of
     /// its group; inert on every other terminal and inside an outer tmux.
     pub notify_dock_bounce: bool,
+    /// Who posts the banner (T-676): mesimon's helper by default, or the
+    /// terminal. Per machine, and never a fallback from one to the other:
+    /// a terminal that cannot post shows nothing.
+    pub notify_via: NotifyVia,
     /// The rung `p`/`P` left the board's reply row on (T-365), so the next
     /// board opens the way this one was left. Off by default — absent is
     /// how every board opened before the key existed — and the setter's
@@ -457,6 +495,7 @@ impl Default for Prefs {
             notify_sound_needs_you: Sound::Glass,
             notify_sound_done: Sound::Tink,
             notify_dock_bounce: false,
+            notify_via: NotifyVia::Mesimon,
             peek: PeekLevel::Off,
             crown_lightning: true,
             usage_line: UsageLine::Near,
@@ -487,6 +526,7 @@ const TAB_COLOR_KEY: &str = PrefKey::TabColor.name();
 const TAB_SUBTITLE_KEY: &str = PrefKey::TabSubtitle.name();
 const TAB_ICON_KEY: &str = PrefKey::TabIcon.name();
 const NOTIFY_DOCK_BOUNCE_KEY: &str = PrefKey::NotifyDockBounce.name();
+const NOTIFY_VIA_KEY: &str = PrefKey::NotifyVia.name();
 const KEEP_AWAKE_KEY: &str = PrefKey::KeepAwake.name();
 const NOTIFY_KEY: &str = PrefKey::Notify.name();
 const NOTIFY_DONE_KEY: &str = PrefKey::NotifyDone.name();
@@ -643,6 +683,7 @@ impl Prefs {
             PrefKey::NotifySoundNeedsYou => self.notify_sound_needs_you.name(),
             PrefKey::NotifySoundDone => self.notify_sound_done.name(),
             PrefKey::NotifyDockBounce => onoff(self.notify_dock_bounce),
+            PrefKey::NotifyVia => self.notify_via.key(),
             PrefKey::Peek => self.peek.key(),
             PrefKey::CrownLightning => onoff(self.crown_lightning),
             PrefKey::UsageLine => self.usage_line.key(),
@@ -728,6 +769,13 @@ impl Prefs {
             .is_some_and(|v| UsageResets::from_key(v).is_none())
         {
             doc.insert(USAGE_RESETS_KEY.into(), Value::from(self.usage_resets.key()));
+        }
+        if !doc
+            .get(NOTIFY_VIA_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| NotifyVia::from_key(v).is_none())
+        {
+            doc.insert(NOTIFY_VIA_KEY.into(), Value::from(self.notify_via.key()));
         }
         if !doc
             .get(CARD_CORNER_KEY)
@@ -830,6 +878,7 @@ impl BoardPrefs {
             | PrefKey::TabColor
             | PrefKey::TabSubtitle
             | PrefKey::TabIcon
+            | PrefKey::NotifyVia
             | PrefKey::Peek
             | PrefKey::UsageLine
             | PrefKey::UsageFiveHour
@@ -1037,6 +1086,11 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let usage_model = flag(USAGE_MODEL_KEY, true);
     let usage_claude = flag(USAGE_CLAUDE_KEY, true);
     let usage_codex = flag(USAGE_CODEX_KEY, true);
+    let notify_via = doc
+        .get(NOTIFY_VIA_KEY)
+        .and_then(Value::as_str)
+        .and_then(NotifyVia::from_key)
+        .unwrap_or_default();
     let card_corner = doc
         .get(CARD_CORNER_KEY)
         .and_then(Value::as_str)
@@ -1067,6 +1121,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         notify_sound_needs_you,
         notify_sound_done,
         notify_dock_bounce,
+        notify_via,
         peek,
         crown_lightning,
         usage_line,
@@ -1200,7 +1255,10 @@ pub fn tab_title_doctor_line() -> String {
         crate::title::Terminal::OuterTmux => {
             parts.push("inside your own tmux ∙ only the title reaches the tab".into())
         }
-        crate::title::Terminal::Other => {}
+        crate::title::Terminal::Kitty
+        | crate::title::Terminal::WezTerm
+        | crate::title::Terminal::Ghostty
+        | crate::title::Terminal::Other => {}
     }
     if matches!(crate::title::terminal(), crate::title::Terminal::ITerm2 { .. }) {
         parts.push("a (job) suffix is Settings › Profiles › General › Title".into());
@@ -1342,6 +1400,34 @@ mod tests {
         assert_eq!(l.prefs.notify_sound_needs_you, Sound::Hero);
         assert_eq!(l.prefs.notify_sound_done, Sound::Off);
         assert!(l.notice.is_none());
+    }
+
+    /// Who posts the banner (T-676): a file without the key reads as today
+    /// (mesimon's helper), a pick round-trips, and a word this build does
+    /// not know reads as the default and is not written over.
+    #[test]
+    fn who_delivers_the_banner_defaults_to_mesimon_and_round_trips() {
+        let p = scratch("notify-via");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"notify":true}"#).unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.notify_via, NotifyVia::Mesimon, "absent is today's road");
+        l.prefs.notify_via = l.prefs.notify_via.next();
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert_eq!(l.prefs.notify_via, NotifyVia::Terminal);
+        assert_eq!(l.prefs.word(PrefKey::NotifyVia), "terminal");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["notify_via"], "terminal");
+        std::fs::write(&p, r#"{"schema_version":1,"notify_via":"pigeon"}"#).unwrap();
+        let l = load(&p);
+        assert_eq!(l.prefs.notify_via, NotifyVia::Mesimon, "a foreign word reads as the default");
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["notify_via"], "pigeon", "and is not written over");
+        let mut board = BoardPrefs::default();
+        board.doc.insert("notify_via".into(), Value::from("terminal"));
+        assert_eq!(l.prefs.overlay(&board).notify_via, NotifyVia::Mesimon, "the machine's alone");
     }
 
     /// A sound name this build does not know is a newer build's pick: it

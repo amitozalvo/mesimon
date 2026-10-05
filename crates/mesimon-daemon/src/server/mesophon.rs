@@ -2292,8 +2292,14 @@ impl Daemon {
             .filter(|t| self.board.tag_def(t.group, &t.name).is_some())
             .collect();
         let by = Principal::Paired { device: grant.device.to_hex(), grant: grant.id.to_hex() };
-        let reply =
-            self.control_create(&by, ticket.title, ticket.description, column, &tags, Via::Mail(id));
+        let reply = self.control_create(
+            &by,
+            ticket.title,
+            ticket.description,
+            column,
+            &tags,
+            Via::Mail(id),
+        );
         if let Reply::Created { ticket, key, column } = &reply {
             if let Some(mut s) = self.control.stored.clone() {
                 s.filed.push(Filed {

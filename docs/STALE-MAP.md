@@ -21854,3 +21854,51 @@ newest-first holds across the boundary (`order_key_crosses_alpha_into_beta`). Th
 `semver::Version`, which orders `beta.1` above `alpha.40`, and two assertions now pin it.
 Homebrew reads the version off the URL and orders beta above alpha; `install.sh` lists releases,
 not `/latest`. Neither changed.
+
+## `Delivered by`: the banner is posted by mesimon or by the terminal (T-676, 2026-10-06, "Notifications: a `Delivered by` row cycles who posts the banner, mesimon or your terminal")
+
+**Why.** On a managed Mac (BeyondTrust, Jamf) each launch of an unsigned-publisher program is one
+audited prompt, and every banner mesimon posts is such a launch: the private terminal-notifier copy
+or the `osacompile` applet, both signed ad hoc. iTerm2, kitty, WezTerm and Ghostty post a system
+notification from an escape under their own Developer ID, so a banner they post launches nothing
+of ours.
+
+**Shipped.** A machine pref, `notify_via` (`mesimon` | `terminal`, absent = `mesimon`, a foreign
+word kept on save), the second row of Settings › Notifications under the master switch:
+`Delivered by: mesimon` / `Delivered by: your terminal`, Enter cycles. Machine-only
+(`board_overridable` false): which terminal the board runs in is the machine's fact, not a repo's.
+`title::Terminal` gained `Kitty`, `WezTerm` and `Ghostty` (by `TERM_PROGRAM`; with no
+`TERM_PROGRAM`, by `KITTY_WINDOW_ID`/`TERM=xterm-kitty`/`TERM=xterm-ghostty`/the bundle id, so a VS
+Code started from a kitty shell is not kitty), and `Terminal::poster()` maps each to its escape
+(`notify::Poster`): iTerm2 `OSC 9 ; text BEL`; kitty `OSC 99 ; i=<id>:d=0 ; title ST` then
+`OSC 99 ; i=<id>:p=body ; body ST` (a process-wide counter for the id, so a new banner never joins
+the last one's chunks); WezTerm and Ghostty `OSC 777 ; notify ; title ; body ST`, a `;` in the
+title turned to `,` because the title ends at the first one. Every rung's iTerm2-only rows still
+read the three as `Other`.
+
+**The road.** `NotifyPrefs::by_terminal` → `notify::Delivery { bounce, by_terminal }`, the `Say`'s
+second argument (it was the bounce alone) → `post_with`, where the terminal road skips the banner
+ladder entirely: no helper prepared, no applet built, no argv launched. The escape goes through
+`Console::write_if_held` like OSC 9 always did, so it is silent while the board's terminal is
+handed over (T-291's limit, now the road's); `doctor` says so. The sound ladder and the dock
+bounce are untouched. `MESIMON_NOTIFY=off` still silences the road (it is the test seam and the
+explicit kill); any other `MESIMON_NOTIFY` value is outranked by the row, which is the newer and
+visible choice. `post_with` gained an `emit` seam, so every escape (the bell and the bounce
+included) is built as a string and a test records it instead of writing to stdout.
+
+**Refuted: an automatic fallback.** Where the terminal cannot post (Terminal.app, the user's own
+tmux, anything unknown) the road shows nothing and launches nothing. Falling back to the helper
+would launch exactly the program the person chose this row to avoid, on a machine where that launch
+is the cost; a fallback that defeats the choice is worse than an honest blank. The row's detail
+says it in the person's words ("this terminal cannot post banners; none will show"), the status
+line says it on the press, and `doctor`'s notifications line says it.
+
+**Tests.** `notify::tests::the_terminal_posts_its_own_escape_and_nothing_is_launched` (each
+escape, byte for byte, nothing launched on a ladder whose helper would answer),
+`a_terminal_escape_carries_only_scrubbed_words`,
+`a_terminal_that_cannot_post_shows_nothing_and_the_sound_still_plays`,
+`doctor_names_the_terminal_or_says_none_will_show`; `notifier::tests::the_delivered_by_row_reaches_the_say`;
+`title::tests::kitty_wezterm_and_ghostty_are_named_and_post_banners`;
+`prefs::tests::who_delivers_the_banner_defaults_to_mesimon_and_round_trips`;
+`app::tests::the_delivered_by_row_cycles_and_says_when_the_terminal_cannot_post`; the two
+Notifications goldens gained the row.
