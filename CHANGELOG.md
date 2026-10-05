@@ -6,6 +6,53 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.39 — 2026-10-05
+
+### Added
+
+- **Remote Control picks the agent tier when it starts an agent or sends a
+  prompt.** The start sheet lists the board's tiers with the ticket's own
+  selected, and the composer offers them beside Queue and Steer. A running
+  agent switches tier when it next goes idle, and the prompt waits until then.
+- **Remote Control shows whether a ticket has its own worktree, and can set
+  its workspace.** The ticket page shows the branch; the card sheet's
+  Workspace choice sets Shared checkout or Own worktree while the ticket can
+  still change it, and says why once it cannot.
+- **The board's header reads `remote` while Remote Control is on, and
+  `remote offline` while the board cannot reach the relay.** Paired phones
+  cannot see the board while it reads `remote offline`.
+
+### Changed
+
+- **Sharing signs in with a license key.** `Sign in` (Esc → Sharing) opens a
+  `LICENSE KEY` dialog with `Get a license key` under the field; once signed
+  in, `Signed in as …` opens it again with `New license key` and `Sign out`.
+  The `Access code` and `Enter a code` rows are gone.
+- **Remote Control shows one `Reconnecting` line with a spinner while the
+  board is out of reach**, in place of a banner that switched between
+  connecting and disconnected every few seconds.
+- **On the phone, a press on a ticket's title renames it;** the pencil is
+  gone. In Sent, a landed ticket opens from its bubble, and the Open link is
+  gone.
+
+### Fixed
+
+- **On a Claude Team or Enterprise account, cards follow the agent from its
+  first prompt.** Claude Code there keeps its hook events from a person's
+  plugins, so cards read `starting up` and `brief not sent` while the agent
+  worked, and Shift+Enter sent the brief a second time. mesimon now checks the
+  account before the first launch, reports those sessions the old way beside
+  the plugin (which still carries prompts, answers and the board's tools), and
+  never resends a brief the agent already has; `mesimon doctor` says when this
+  applies.
+- **Remote Control reconnects by itself after the Mac sleeps.** The board
+  could stay out of reach of every paired phone until mesimon restarted.
+- **A restart while the merge train waits for a rebase keeps it waiting.** It
+  had asked the next REVIEW ticket to rebase onto the same tip.
+- **A card no longer stays on a question for fifteen minutes after the agent
+  finished its turn.** This happened when the question never appeared in the
+  agent's conversation.
+
 ## v0.1.0-alpha.38 — 2026-10-03
 
 ### Added
