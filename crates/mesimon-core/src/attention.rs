@@ -364,6 +364,18 @@ pub enum Signal {
     TranscriptHint {
         kind: TailHint,
     },
+    /// The restart's re-derivation found the turn OVER (T-663): the record
+    /// came back `Unknown{DaemonRestarted}` over a turn the last daemon saw
+    /// open, and the transcript's last word is that turn's close, stamped
+    /// after the spell began (`tail::turn_done_since`, the same word
+    /// `StatusFileIdle { turn_done }` reads). A `Stop` sent while no daemon
+    /// listened is lost, never queued — `mesimon hook` fails open by design
+    /// — so no hook will ever say it. This is not a claim the tail guesses
+    /// at: the closed turn on disk is the turn, and it is the one edge
+    /// `on_done` and the crown's wake listen for, so it is Medium, as the
+    /// status file's `turn_done` is. A close the tail cannot date, or dated
+    /// before the spell, stays `TranscriptHint { TurnComplete }` at Low.
+    TranscriptTurnEnded,
 }
 
 /// A `background_tasks[]` entry that is an in-process teammate (Claude Code
@@ -1104,6 +1116,16 @@ impl Machine {
                     TailHint::StaleQuiet => S::Idle { stop_reason: StopReason::Unknown },
                 };
                 Some((s, Confidence::Low))
+            }
+            // Only out of the restart's own `Unknown` (T-663): that is the
+            // one spell whose turn no hook can close, and the adapter sends
+            // this only there. Anywhere else the tail is a hint, above.
+            Signal::TranscriptTurnEnded => {
+                if self.state == (S::Unknown { reason: UnknownReason::DaemonRestarted }) {
+                    Some((S::Idle { stop_reason: StopReason::EndTurn }, Confidence::Medium))
+                } else {
+                    None
+                }
             }
         }
     }
@@ -2025,6 +2047,63 @@ mod tests {
         // background task's completion frame that turned out not to exist;
         // `a_turn_resumed_without_a_prompt_shows_on_its_first_tool_frame`
         // holds the rule that replaced it.)
+    }
+
+    /// T-663: a turn that ended while no daemon listened. The record comes
+    /// back `Unknown{DaemonRestarted}` and the tail dates its close after
+    /// the spell began: that is the turn's end at Medium, the edge
+    /// `on_done` takes, and it lands once — said again it is the same
+    /// state and nothing. The hint's word for a close the tail cannot
+    /// date stays Low, where automove refuses. Out of any other state,
+    /// the stale clock's `Unknown` included, the signal is no rule at all.
+    /// And Medium is not High: a park the transcript cannot tell from an
+    /// end is still corrected by its subagent's stop.
+    #[test]
+    fn a_turn_the_restart_found_closed_ends_at_medium_once() {
+        let settings = crate::board::template_settings("IN PROGRESS").unwrap();
+        let restarted = || {
+            Machine::restore(
+                SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
+                Confidence::High,
+                0,
+            )
+        };
+        let mut m = restarted();
+        let c = m.apply(&Signal::TranscriptTurnEnded, 1_000).expect("the turn's end");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(c.confidence, Confidence::Medium);
+        assert!(!c.attention_added);
+        assert_eq!(
+            crate::automove::automove(&settings, &c.to, c.confidence),
+            Some("REVIEW"),
+            "the edge on_done listens for"
+        );
+        assert!(m.apply(&Signal::TranscriptTurnEnded, 2_000).is_none(), "once");
+        assert_eq!(m.confidence(), Confidence::Medium);
+        let c = m.apply(&Signal::SubagentStop, 3_000).expect("a park's subagent speaks");
+        assert_eq!(c.to, SessionState::Running);
+
+        let mut low = restarted();
+        let c = low
+            .apply(&Signal::TranscriptHint { kind: TailHint::TurnComplete }, 1_000)
+            .expect("the hint");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(c.confidence, Confidence::Low);
+        assert_eq!(crate::automove::automove(&settings, &c.to, c.confidence), None);
+
+        for state in [
+            SessionState::Running,
+            SessionState::Spawning,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Idle { stop_reason: StopReason::Background },
+            SessionState::RequiresAction { reason: Reason::Plan },
+            SessionState::unknown(),
+            SessionState::Unknown { reason: UnknownReason::SupervisorDead },
+            SessionState::Unknown { reason: UnknownReason::ObservationLost },
+        ] {
+            let mut other = Machine::new(state.clone(), 0);
+            assert!(other.apply(&Signal::TranscriptTurnEnded, 1_000).is_none(), "{state:?}");
+        }
     }
 
     #[test]

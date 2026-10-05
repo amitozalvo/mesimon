@@ -5,7 +5,9 @@ use super::tail::{self, TailCursor};
 use crate::agents::{AgentRecovery, RecoveryChannel, RecoveryObservation, RecoverySample};
 use mesimon_core::adopt::{classify_tail_record, SessionsPidFile, TailEvent, TailTool};
 use mesimon_core::attention::{self, Signal, TailHint};
-use mesimon_core::board::{FailReason, Provenance, Reason, SessionRecord, SessionState};
+use mesimon_core::board::{
+    FailReason, Provenance, Reason, SessionRecord, SessionState, UnknownReason,
+};
 use std::path::PathBuf;
 
 const TAIL_QUIET_MS: u64 = 45_000;
@@ -249,9 +251,17 @@ impl ClaudeRecovery {
         // too: the stale clock demotes a held dialog the tail stopped
         // showing, and that cursor saw no new line to read (T-649: a card
         // wore `Unknown`'s turning glyph for good over a finished turn).
+        // The restart's seed has one proof before the hint (T-663): the
+        // turn the last daemon left open closed on the tail after it did.
+        let mut closed = None;
         let backfill = if unknown && !self.rested {
             self.rested = true;
-            resting_hint(&path, now)
+            if turn_closed_in_the_gap(record, &path) {
+                closed = Some(observation(Signal::TranscriptTurnEnded, "tail"));
+                None
+            } else {
+                resting_hint(&path, now)
+            }
         } else if fresh && abort_only {
             record
                 .state_changed_at
@@ -337,15 +347,34 @@ impl ClaudeRecovery {
         {
             hints.push((TailHint::StaleQuiet, None));
         }
-        hints
+        closed
             .into_iter()
-            .map(|(kind, preview)| RecoveryObservation {
+            .chain(hints.into_iter().map(|(kind, preview)| RecoveryObservation {
                 signal: Signal::TranscriptHint { kind },
                 preview,
                 source: "tail",
-            })
+            }))
             .collect()
     }
+}
+
+/// The restart's one proof (T-663). Reconcile leaves a Claude whose turn the
+/// last daemon saw open at `Unknown{DaemonRestarted}` with `state_changed_at`
+/// untouched, so that stamp is still the moment the spell began; and the
+/// transcript's last word dates the turn's close at or after it. A `Stop`
+/// sent into the restart's window is lost, never queued (`mesimon hook`
+/// fails open by design), and nothing later says it — the next edge is the
+/// next prompt — so the seed's Low `TurnComplete` left two tickets in
+/// IN PROGRESS with their turns over (the author's board, 2026-10-05). The
+/// same `turn_done_since` the status-file probe trusts at Medium: an undated
+/// close, or one older than the spell (the next turn's recordless Esc), is
+/// the resting hint at Low as before, and a prompt or a tool result after
+/// the close is an open turn and no close at all. Only the restart's own
+/// `Unknown`: the stale clock's has a daemon listening, whose hooks are the
+/// word for a turn it did not hear.
+fn turn_closed_in_the_gap(record: &SessionRecord, path: &std::path::Path) -> bool {
+    record.state == (SessionState::Unknown { reason: UnknownReason::DaemonRestarted })
+        && record.state_changed_at.is_some_and(|since| tail::turn_done_since(path, since))
 }
 /// Pane silent past this while `Running` means the turn is no longer in
 /// flight — the recordless Esc-interrupt catch (spike S-E: an interrupt fires
@@ -754,6 +783,90 @@ mod recovery_tests {
             o.signal,
             Signal::TranscriptHint { kind: TailHint::AskUserQuestion }
         )));
+    }
+
+    /// T-663: a turn that ended while no daemon was up. The record comes
+    /// back `Unknown{DaemonRestarted}` over the spell the last daemon left
+    /// it in, and the tail dates the turn's close after that spell began:
+    /// the restart's seed is the turn's end, once per spell, never the Low
+    /// hint. A spell begun after the close (the next turn's recordless Esc)
+    /// and the stale clock's `Unknown` over the same tail get the hint as
+    /// before; an undated close too; and a prompt after the close is an
+    /// open turn, seeded from how it rests.
+    #[test]
+    fn a_turn_closed_after_the_spell_began_is_the_restarts_turn_end() {
+        let at = |s: &str| mesimon_core::adopt::iso_ms(s).unwrap();
+        let prompt = "2026-10-05T12:05:26.000Z"; // the train's rebase ask
+        let close = "2026-10-05T12:06:10.000Z"; // inside the restart's window
+        let history = History::new();
+        history.append(serde_json::json!({"uuid":"p", "type":"user", "timestamp":prompt,
+            "message":{"content":"Rebase your current branch"}}));
+        history.append(serde_json::json!({"uuid":"r", "type":"assistant", "timestamp":close,
+            "message":{"stop_reason":"end_turn", "content":[{"type":"text","text":"Rebased."}]}}));
+        history.append(serde_json::json!({"uuid":"h", "type":"system",
+            "subtype":"stop_hook_summary", "timestamp":"2026-10-05T12:06:10.400Z"}));
+        history.append(serde_json::json!({"type":"last-prompt", "lastPrompt":"Rebase"}));
+        let restarted = SessionState::Unknown { reason: UnknownReason::DaemonRestarted };
+        let mut record = record(restarted.clone());
+        record.transcript_path = Some(history.0.display().to_string());
+        record.state_changed_at = Some(at(prompt) + 100); // Running since the prompt's ack
+        let now = at(close) + 60_000;
+        let mut recovery = ClaudeRecovery::default();
+        assert!(recovery.needs_poll(&record, RecoveryChannel::Transcript, now));
+        let seeded = recovery.poll(&record, RecoverySample::Transcript, now);
+        assert!(
+            matches!(
+                seeded[..],
+                [RecoveryObservation {
+                    signal: Signal::TranscriptTurnEnded,
+                    source: "tail",
+                    preview: None
+                }]
+            ),
+            "{seeded:?}"
+        );
+        assert!(
+            recovery.poll(&record, RecoverySample::Transcript, now + 2_000).is_empty(),
+            "once per spell"
+        );
+        let hint = |observations: &[RecoveryObservation]| {
+            matches!(
+                observations[..],
+                [RecoveryObservation {
+                    signal: Signal::TranscriptHint { kind: TailHint::TurnComplete },
+                    ..
+                }]
+            )
+        };
+        // Running since after the close: that turn wrote nothing yet.
+        let mut later = ClaudeRecovery::default();
+        record.state_changed_at = Some(at(close) + 5_000);
+        assert!(later.needs_poll(&record, RecoveryChannel::Transcript, now));
+        assert!(hint(&later.poll(&record, RecoverySample::Transcript, now)));
+        // The stale clock's Unknown over the same tail: a daemon was listening.
+        let mut stale = ClaudeRecovery::default();
+        record.state = SessionState::unknown();
+        record.state_changed_at = Some(at(prompt) + 100);
+        assert!(stale.needs_poll(&record, RecoveryChannel::Transcript, now));
+        assert!(hint(&stale.poll(&record, RecoverySample::Transcript, now)));
+        // A prompt typed after the close: the turn is open, nothing is proven,
+        // and a fresh file says nothing of how it rests.
+        history.append(serde_json::json!({"uuid":"p2", "type":"user",
+            "timestamp":"2026-10-05T12:06:40.000Z", "message":{"content":"and push"}}));
+        let mut open = ClaudeRecovery::default();
+        record.state = restarted;
+        assert!(open.needs_poll(&record, RecoveryChannel::Transcript, now));
+        assert!(open.poll(&record, RecoverySample::Transcript, now).is_empty());
+        // An undated close, the shape an older transcript rests in: the hint.
+        let undated = History::new();
+        undated.append(serde_json::json!({"uuid":"u1", "type":"assistant",
+            "message":{"stop_reason":"end_turn", "content":[{"type":"text","text":"done"}]}}));
+        undated
+            .append(serde_json::json!({"uuid":"u2", "type":"system", "subtype":"turn_duration"}));
+        record.transcript_path = Some(undated.0.display().to_string());
+        let mut plain = ClaudeRecovery::default();
+        assert!(plain.needs_poll(&record, RecoveryChannel::Transcript, now));
+        assert!(hint(&plain.poll(&record, RecoverySample::Transcript, now)));
     }
 
     #[test]

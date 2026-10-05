@@ -352,7 +352,12 @@ record keeps the key it spawned (`SessionRecord.pane_key`); a wake reuses the se
 the session uuid, never the pane, so a death frame from another pane is dropped
 (`straggler_death`) and no tmux is asked. A frame or record without a key is trusted. After a daemon restart our sessions sit at
 `Unknown{DaemonRestarted}` and re-derive from the transcript tail at Low confidence until a hook
-re-asserts; reconcile never trusts stale claims.
+re-asserts; reconcile never trusts stale claims. **One thing on that tail is not a claim** (T-663):
+a turn the last daemon saw open whose close the transcript dates after that spell began is the
+turn's end, at Medium (`Signal::TranscriptTurnEnded`, `recovery::turn_closed_in_the_gap`), so
+`on_done` and the crown hear a turn whose `Stop` fell into the restart's window — `mesimon hook`
+fails open, so that `Stop` was lost, never queued. An undated close, or one older than the spell,
+stays the Low hint.
 
 **The mod road carries a Claude session alone (T-577), and the road is `auto`, never a setting
 (T-588).** A Claude launch on a Claude Code ≥ 2.1.287 whose `claude plugin validate` passes (the

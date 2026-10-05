@@ -14,7 +14,7 @@ use common::*;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{Confidence, SessionKind, SessionState, UnknownReason};
+use mesimon_core::board::{Confidence, SessionKind, SessionState, StopReason, UnknownReason};
 use mesimon_core::command::{Command, Response};
 
 /// Both tests set the same process-global env vars — serialize them.
@@ -292,6 +292,123 @@ fn restart_recovers_done_from_a_resting_transcript() {
     let _ = c.request(Command::KillSession { id: sid });
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon2.join().unwrap();
+}
+
+/// `YYYY-MM-DDTHH:MM:SS.fffZ` for an epoch ms, as Claude Code stamps a
+/// transcript record (`adopt::iso_ms` reads it back).
+fn iso(ms: u64) -> String {
+    let (days, rem) = (ms / 86_400_000, ms % 86_400_000);
+    // civil_from_days (Hinnant): proleptic Gregorian, 1970-01-01 = day 0.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rem / 3_600_000,
+        rem % 3_600_000 / 60_000,
+        rem % 60_000 / 1000,
+        rem % 1000
+    )
+}
+
+/// T-663: the `Stop` of a turn that ends while no daemon is up is lost —
+/// `mesimon hook` fails open, by design — and the restart's re-derivation
+/// was a Low `Idle{EndTurn}` that automove refuses, so the card sat in
+/// IN PROGRESS with its turn over (the author's board, 2026-10-05, two
+/// tickets). The turn's close, dated after the spell the last daemon left
+/// the record in, is the turn's end at Medium: `on_done` moves the card
+/// once, and nothing moves it again.
+#[test]
+fn a_turn_that_ends_while_the_daemon_is_down_still_moves_its_ticket() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Paints forever: the pane reads alive across the restart.
+    const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do echo tick; sleep 0.3; done\n";
+    let Some(h) =
+        Harness::boot_with_env("restart-done", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
+    else {
+        return;
+    };
+    let now = mesimon_core::clock::now_ms;
+    let stamp = now();
+    assert_eq!(mesimon_core::adopt::iso_ms(&iso(stamp)), Some(stamp), "the stamp reads back");
+    let hook_sock = h.paths.hook_sock();
+    let transcript = h.dir.join("transcript.jsonl");
+    let prompt = serde_json::json!({"uuid":"p", "type":"user", "timestamp": iso(now()),
+        "message":{"role":"user","content":"rebase"}});
+    std::fs::write(&transcript, format!("{prompt}\n")).unwrap();
+    let mut c = h.client("restart-done");
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "restart-done".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    hook_send(
+        &hook_sock,
+        &sid.to_string(),
+        "SessionStart",
+        &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
+    );
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"session_id":"x"}"#);
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    let column = |c: &mut TestClient| c.board().ticket(ticket).unwrap().column.clone();
+    wait_until(Duration::from_secs(5), "on_working to IN PROGRESS", || {
+        column(&mut c) == "IN PROGRESS"
+    });
+    drop(c);
+
+    // The turn ends inside the window: its close lands on disk, stamped
+    // now, and the Stop that would have said so reaches nobody.
+    h.restart_after(|| {
+        let close = serde_json::json!({"uuid":"r", "type":"assistant", "timestamp": iso(now()),
+            "message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Rebased."}]}});
+        let summary = serde_json::json!({"uuid":"h", "type":"system",
+            "subtype":"stop_hook_summary", "timestamp": iso(now())});
+        let latch = serde_json::json!({"type":"last-prompt", "lastPrompt":"rebase"});
+        let mut f = std::fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+        writeln!(f, "{close}\n{summary}\n{latch}").unwrap();
+    });
+    let mut c = h.client("restart-done-2");
+    wait_until(Duration::from_secs(10), "on_done to REVIEW after the restart", || {
+        column(&mut c) == "REVIEW"
+    });
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record");
+    assert_eq!(rec.state, SessionState::Idle { stop_reason: StopReason::EndTurn });
+    assert_eq!(rec.confidence, Confidence::Medium, "the closed turn is the turn, not a hint");
+
+    // Several tail polls on: one move, and the card stays where it went.
+    std::thread::sleep(Duration::from_secs(3));
+    let feed = std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
+    let moves = feed
+        .lines()
+        .filter(|l| {
+            l.contains("\"kind\":\"movement_decision\"")
+                && l.contains(&ticket.to_string())
+                && l.contains("\"destination\":\"REVIEW\"")
+                && l.contains("\"outcome\":\"moved\"")
+        })
+        .count();
+    assert_eq!(moves, 1, "once and never twice:\n{feed}");
+    assert_eq!(column(&mut c), "REVIEW");
+    let _ = c.request(Command::KillSession { id: sid });
 }
 
 /// T-660: after a restart, a turn spent on board tools and thinking writes

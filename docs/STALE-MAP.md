@@ -21457,3 +21457,64 @@ or joins. mesimon-relay's `board_e2e` spawns its daemons with `MESIMON_TEAMS=1` 
 peer's `drop`, and under load the kernel had not made the close visible (`recv` answered
 `EAGAIN`). Both now poll it first (`await_peer_closed`, 2 ms steps, 1 s bound). The probe and
 `PermissionWait` are unchanged: the daemon asks again every tick.
+
+## A turn that ends while the daemon is down still moves its ticket (T-663, 2026-10-05, "the 2 tickets in progress did not move to review for some reason")
+
+**Seen.** The author restarted the daemon by hand (`daemon.log`: `stopping: SIGTERM` 12:05:36,
+`started` 12:06:50); T-662's rebase turn and T-653's turn ended inside those 74 s. `mesimon hook`
+fails open when the socket is absent — a missing daemon must be invisible to the agent — so both
+`Stop`s were lost, not queued. After the restart each record sat at `Unknown{DaemonRestarted}`,
+the transcript seed read the resting tail's close as `TranscriptHint{TurnComplete}` at Low, and
+`automove::explain` refuses Low ("the observe tier may misread a transcript"). The cards read
+`idle` in IN PROGRESS under `on_done → REVIEW`, and nothing later supplied the edge: the next one
+is the next prompt. T-140's shutdown flush (2026-09-01) covers a `Stop` heard and still settling;
+this is the `Stop` that was never heard. The crown's side already took a turn's end at any
+confidence (T-602, `crown_recheck`), which is why its wake said `after a restart` while the card
+stayed put.
+
+**Picked: option 1 — the restart's re-derivation knows a proven close from a guess.** The ticket
+weighed three: (1) at re-derivation, a close the tail dates after the record's last known turn
+start is the turn-end edge; (2) replay every provable edge for every restored record before the
+first tick; (3) a notice on the card. (3) hands a person a fact the board holds. (2) is (1) with
+a second read of every transcript outside the adapter, and the adapter's seed already runs once
+per `Unknown` spell on the first tail poll (`rested`). So (1), inside the existing seed:
+
+- **The proof** (`recovery::turn_closed_in_the_gap`): the record is `Unknown{DaemonRestarted}` —
+  reconcile's word for a Claude the last daemon saw `Running` (or `Spawning` on a wake, or a
+  second restart), with `state_changed_at` untouched, so it is still the moment that spell
+  began — and `tail::turn_done_since(path, state_changed_at)` holds: walking back from the end,
+  the first record that speaks is a close (`stop_reason: end_turn`, `stop_hook_summary`,
+  `turn_duration`) stamped at or after the spell. The same word the status-file probe trusts at
+  Medium (`StatusFileIdle { turn_done }`, simbly T-11). A `user` record or a mid-turn assistant
+  record after the close is `Open` — the next turn — and the hint path runs as before.
+- **The signal** (`Signal::TranscriptTurnEnded`): the machine takes it out of
+  `Unknown{DaemonRestarted}` alone, to `Idle{EndTurn}` at **Medium**, and from any other state
+  it is no rule — the stale clock's `Unknown{NoSignal}` has a daemon listening, whose hooks are
+  the word for a turn it did not hear. Medium, not High: still an inference about a hook that
+  never came, and Medium is what `on_done` takes and what a later `SubagentStop` still corrects.
+  `delay_for(Unknown → Idle)` is 0, so it commits on the first tail poll, two seconds in, and
+  `apply_change` runs automove and `turn_ended(end_turn: true)` as for any Medium `EndTurn`.
+- **Once.** The seed runs once per `Unknown` spell; the commit leaves `Unknown`, the transcript
+  channel drops the cursor for an `Idle` record, and a second restart finds `Idle{EndTurn}`,
+  which reconcile keeps (sticky). The machine answers the same signal again with nothing.
+- **What stays Low:** a close with no timestamp (an older transcript's shape —
+  `restart_recovers_done_from_a_resting_transcript` still asserts Low), a close dated before the
+  spell (the next turn's recordless Esc), and every seed for an `Unknown` that is not the
+  restart's.
+- **The movegate is untouched**: no undo inside 60 s is about another actor, depth zero holds,
+  and the fuse's memory is empty after a restart; the move is `Automation{automove}` with
+  `turn_of` the session, as every turn-edge move is.
+
+**Not proven, accepted.** The transcript cannot tell a park from an end: a lead whose turn
+closed while background subagents ran would have had `Stop{blocking_tasks}` → `Idle{Background}`,
+a park with no `on_done`. The lost-`Stop` case reads it as the end and moves the card; the
+subagents' `SubagentStop` after the restart promotes a Medium idle back to `Running`
+(`subagent_stop_corrects_tail_derived_done`'s rule) and `on_working` brings the card back. Task
+liveness is not persisted (`background::Registry`), so nothing at restart could say otherwise.
+
+Verified: `attention::a_turn_the_restart_found_closed_ends_at_medium_once` (the rule, the
+automove edge, once, the correction, no rule elsewhere),
+`recovery::a_turn_closed_after_the_spell_began_is_the_restarts_turn_end` (the proof and its four
+refusals), e2e `restart_e2e::a_turn_that_ends_while_the_daemon_is_down_still_moves_its_ticket`
+(`Harness::restart_after` writes the close inside the window; REVIEW at Medium, one `moved`
+line, nothing moves it again), `cargo ut`, `restart_e2e`, `mod_turns_e2e`.

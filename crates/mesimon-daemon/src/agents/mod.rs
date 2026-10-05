@@ -155,6 +155,7 @@ pub enum RecoverySample {
     Transcript,
 }
 
+#[derive(Debug)]
 pub struct RecoveryObservation {
     pub signal: mesimon_core::attention::Signal,
     pub preview: Option<String>,
