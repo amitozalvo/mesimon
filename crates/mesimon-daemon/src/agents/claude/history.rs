@@ -10,7 +10,8 @@ use mesimon_core::adopt::{
 use mesimon_core::mesophon::{RowKind, TranscriptRow};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Exact existing Claude recovery rule: a learned path only vouches for the
 /// requested conversation if its filename matches; otherwise check each
@@ -24,14 +25,34 @@ pub(super) fn missing(record: &mesimon_core::board::SessionRecord, projects: &Pa
             return false;
         }
     }
-    if let Ok(dirs) = std::fs::read_dir(projects) {
-        for directory in dirs.flatten() {
-            if directory.path().join(&name).is_file() {
-                return false;
-            }
+    locate(identity, projects).is_none()
+}
+
+/// Where `<identity>.jsonl` sits under Claude's projects root: the one road
+/// to the file for a launch whose frames name no path (the native road,
+/// T-657; T-669's "it left no transcript"), and the walk a wake takes for a
+/// conversation that moved with its cwd. Claude Code homes the file under a
+/// directory named for the process cwd — a slug it hashes past 200
+/// characters — so the directory is never derived, only walked. Where two
+/// directories hold the id (a cross-directory resume), the freshest is the
+/// conversation, as the census keeps it. `None` before the file is written,
+/// which is before the first prompt.
+pub(super) fn locate(identity: uuid::Uuid, projects: &Path) -> Option<PathBuf> {
+    let name = format!("{identity}.jsonl");
+    let dirs = std::fs::read_dir(projects).ok()?;
+    let mut found: Option<(PathBuf, SystemTime)> = None;
+    for directory in dirs.flatten() {
+        let path = directory.path().join(&name);
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let written = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        if found.as_ref().is_none_or(|(_, newest)| written > *newest) {
+            found = Some((path, written));
         }
     }
-    true
+    found.map(|(path, _)| path)
 }
 
 /// The first window a peek reads. The agent's last words sit ~16 KiB back at
@@ -484,6 +505,32 @@ mod tests {
         record.transcript_path = Some(exact.display().to_string());
         assert!(!missing(&record, &projects));
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// T-669 (the author's work Mac, a Team account: "no transcript on peak
+    /// or ticket page"): a native launch's frames name no path, so the
+    /// daemon walks the projects root for the id. Nothing before the file
+    /// is written; the freshest of two, as the census reads it.
+    #[test]
+    fn a_transcript_is_located_by_id_under_the_projects_root_freshest_first() {
+        let probe = tmp("locate");
+        let projects = probe.parent().unwrap().join("projects");
+        let id = uuid::Uuid::from_u128(669);
+        assert_eq!(locate(id, &projects), None, "no projects root yet");
+        std::fs::create_dir_all(projects.join("-work-a")).unwrap();
+        std::fs::create_dir_all(projects.join("-work-b")).unwrap();
+        assert_eq!(locate(id, &projects), None, "not written before the first prompt");
+        let older = projects.join("-work-a").join(format!("{id}.jsonl"));
+        std::fs::write(&older, "first home").unwrap();
+        assert_eq!(locate(id, &projects).as_deref(), Some(older.as_path()));
+        let newer = projects.join("-work-b").join(format!("{id}.jsonl"));
+        std::fs::write(&newer, "moved with its cwd").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::open(&newer).unwrap().set_modified(later).unwrap();
+        assert_eq!(locate(id, &projects).as_deref(), Some(newer.as_path()), "the freshest");
+        let other = uuid::Uuid::from_u128(670);
+        assert_eq!(locate(other, &projects), None, "another id is another conversation");
+        std::fs::remove_dir_all(probe.parent().unwrap()).ok();
     }
 
     /// T-604 (the author: "transcript not showing latest … showing 1 before"):

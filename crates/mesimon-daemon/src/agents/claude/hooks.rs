@@ -332,6 +332,16 @@ pub fn transcript_of(frame: &HookFrame) -> Option<String> {
     frame.payload.get("transcript_path").and_then(Value::as_str).map(str::to_string)
 }
 
+/// The conversation a `SessionStart` names when it names no path: the
+/// native road's start (T-657) carries `session_id` alone, the stem the hook
+/// set's `transcript_path` would have. `SessionStart` only, as the path is.
+pub fn identity_of(frame: &HookFrame) -> Option<uuid::Uuid> {
+    if frame.event != "SessionStart" {
+        return None;
+    }
+    frame.payload.get("session_id").and_then(Value::as_str)?.parse().ok()
+}
+
 /// The one exception to D24: the file MOVED. Claude Code homes a transcript
 /// under a project dir derived from the process cwd, and its `EnterWorktree`
 /// tool changes that cwd mid-session — the file is re-homed on the spot and

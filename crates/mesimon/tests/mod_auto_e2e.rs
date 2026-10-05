@@ -435,18 +435,22 @@ fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
     wait_until(Duration::from_secs(10), "the bridge", || {
         matches!(c.request(Command::ModPing { session: sid }), Response::ModPonged { .. })
     });
+    // The native start's shape (T-657): the id and the cwd, no path.
     hook_send_road(
         &hook_sock,
         &sid.to_string(),
         "SessionStart",
         Some("startup"),
         None,
-        r#"{"session_id":"x","transcript_path":"/tmp/t-658.jsonl","cwd":"/tmp"}"#,
+        &format!(r#"{{"session_id":"{sid}","cwd":"/tmp","source":"startup"}}"#),
         Some("mod"),
     );
     wait_until(Duration::from_secs(5), "the mod's SessionStart", || {
         record(&mut c, sid).state != SessionState::Spawning
     });
+    let rec = record(&mut c, sid);
+    assert_eq!(rec.claude_session_id, None, "the launch's own id");
+    assert_eq!(rec.transcript_path, None, "nothing written before the first prompt");
     let got = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
     wait_until(Duration::from_secs(10), "the brief down the mod", || {
         got().contains("mesimon-658-brief")
@@ -487,6 +491,32 @@ fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
     wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
     assert_eq!(got().matches("mesimon-658-brief").count(), 1, "{}", got());
     assert!(!feed_has(&h, "claude_road_relaunch"), "nothing to relaunch");
+
+    // T-669 (the work Mac: "no transcript on peak or ticket page"): no frame
+    // on this road names the transcript, so once Claude Code has written
+    // `<id>.jsonl` under its projects root the next frame finds it there,
+    // and the card, the preview and the costs read it.
+    let home = h.dir.join("claude-home").join("projects").join("-tmp");
+    std::fs::create_dir_all(&home).unwrap();
+    let transcript = home.join(format!("{sid}.jsonl"));
+    std::fs::write(
+        &transcript,
+        "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\
+         \"content\":[{\"type\":\"text\",\"text\":\"Hello.\"}]}}\n",
+    )
+    .unwrap();
+    hook_send_road(
+        &hook_sock,
+        &sid.to_string(),
+        "Stop",
+        None,
+        None,
+        r#"{"stop_hook_active":false,"background_tasks":[]}"#,
+        Some("mod"),
+    );
+    wait_until(Duration::from_secs(5), "the transcript found by id", || {
+        record(&mut c, sid).transcript_path.as_deref() == Some(transcript.to_str().unwrap())
+    });
     let _ = c.request(Command::KillSession { id: sid });
 }
 

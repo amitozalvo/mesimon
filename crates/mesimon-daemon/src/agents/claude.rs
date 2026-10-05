@@ -157,6 +157,32 @@ impl AgentAdapter for Claude {
         } else if let Some(path) = hooks::transcript_moved(frame, record) {
             record.transcript_path = Some(path);
             result.metadata_changed = true;
+        } else {
+            // The native road names no path (T-657): its `SessionStart`
+            // carries the id, and the file is found under Claude's projects
+            // root the way the census walks it (T-669). Claude Code writes
+            // nothing before the first prompt, so the walk repeats on each
+            // frame until the file is there. A new id (`/clear`, an
+            // in-session `/resume`) is a new conversation: the path the
+            // record knew was the last one's.
+            if let Some(identity) = hooks::identity_of(frame) {
+                let learned = (identity != record.id).then_some(identity);
+                if record.claude_session_id != learned {
+                    record.claude_session_id = learned;
+                    record.transcript_path = None;
+                    result.metadata_changed = true;
+                }
+            }
+            if record.kind == mesimon_core::board::SessionKind::Claude
+                && record.transcript_path.is_none()
+            {
+                let identity = record.claude_session_id.unwrap_or(record.id);
+                let projects = crate::census::claude_home().join("projects");
+                if let Some(found) = history::locate(identity, &projects) {
+                    record.transcript_path = Some(found.display().to_string());
+                    result.metadata_changed = true;
+                }
+            }
         }
         result.signal = hooks::signal_with_background(frame, &mut record.background_tasks);
         result.detail = hooks::detail_of(frame);
@@ -494,6 +520,40 @@ mod failure_tests {
 
     fn prompt() -> serde_json::Value {
         serde_json::json!({"uuid": "p", "type": "user", "message": {"content": "go"}})
+    }
+
+    fn session_start(source: &str, session_id: uuid::Uuid) -> crate::ingest::HookFrame {
+        let header = serde_json::json!({"v": 1, "session": "s", "event": "SessionStart",
+            "reason": source});
+        let payload = serde_json::json!({"session_id": session_id.to_string(), "cwd": "/repo",
+            "source": source});
+        let bytes = format!("{header}\n{payload}");
+        crate::ingest::parse_frame(bytes.as_bytes()).unwrap()
+    }
+
+    /// T-669: a native `SessionStart` names no path, only the id. The
+    /// launch's own id teaches nothing; a `/clear`'s new id is a new
+    /// conversation, so the record learns it and drops the path it knew
+    /// (the walk for the new file is the projects root's, `history::locate`).
+    #[test]
+    fn a_native_session_start_teaches_its_id_and_a_new_id_drops_the_known_path() {
+        let (mut record, path) = record_on(&[prompt()]);
+        let known = record.transcript_path.clone();
+        let seen = Claude.parse_hook(&session_start("startup", record.id), &mut record);
+        assert!(!seen.metadata_changed, "the launch's own id is known");
+        assert_eq!(record.claude_session_id, None);
+        assert_eq!(record.transcript_path, known, "the path stands");
+
+        let cleared = uuid::Uuid::new_v4();
+        let seen = Claude.parse_hook(&session_start("clear", cleared), &mut record);
+        assert!(seen.metadata_changed);
+        assert_eq!(record.claude_session_id, Some(cleared));
+        assert_eq!(record.transcript_path, None, "the known file was the last conversation's");
+
+        let seen = Claude.parse_hook(&session_start("compact", cleared), &mut record);
+        assert!(!seen.metadata_changed, "the same id again changes nothing");
+        assert_eq!(record.claude_session_id, Some(cleared));
+        let _ = std::fs::remove_file(path);
     }
 
     /// T-659: every class the hook set's matcher names is read off the

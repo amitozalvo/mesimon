@@ -21575,3 +21575,42 @@ board keeps it, and measures it at `receivedAt` as T-560 does.
 **Tests.** `state.test.js` covers the cut, the order, an agent ticket staying in its own group,
 the filter, a search and a remembered board; `ux.test.js`'s Now run lists a minute-old ticket
 under "Recently created" with `1 new` in the count, every engine and size.
+
+## A native launch finds its transcript by id under Claude's projects root (T-669, 2026-10-05, the author's work Mac: "Created one, ran it using shift enter, then no transcript on peak or ticket page")
+
+**Seen.** On the work Mac (a Team account, so every launch is native since T-658) the agent
+answered "Hello." in its pane and the card's peek and the ticket page's PREVIEW read `done ∙ it
+left no transcript`. The zone says that when the record has no `transcript_path`. On the hook
+set's road the path rides every `SessionStart` (D24); on the native road the mod's
+`SessionStart` carries `session_id` and `cwd` and no path, by T-657's decision 6 ("the daemon
+finds `<id>.jsonl` by id under `projects/` as the census walks it — the daemon ticket"), and
+T-658, the daemon ticket, built the launch shape and not the walk. So a native record never
+learned its path: no peek, no PREVIEW, no cost count from the mod's `ModUsage` (fenced on the
+path) nor from the tail, no failed turn's class off the transcript (T-659), and the parked
+seat's zone would have said "no conversation to resume". The enterprise e2e sent its mod-road
+`SessionStart` with a `transcript_path` the real mod never sends, which is why it was green.
+
+**Built.** `Claude::parse_hook`'s third branch: a frame that names no path (none of the native
+road's do) and a Claude record with no `transcript_path` walks `claude_home()/projects/*/` for
+`<identity>.jsonl` (`history::locate`, which `missing` now shares: the freshest where two
+directories hold the id, as the census keeps a cross-directory resume) and takes it. Claude Code
+writes nothing before the first prompt, so the walk repeats on each frame until the file is
+there — at most a `SessionStart` and a `UserPromptSubmit` before it is, 479 stats each on this
+Mac — and the `Stop` that ends "just say hello" finds it before its `ModUsage` counts the turn.
+A `SessionStart` with no path teaches the record its `session_id` (`hooks::identity_of`) the
+way the hook set's path stem did: the launch's own id (`--session-id`) teaches nothing; a new
+one (`/clear`, an in-session `/resume`) is a new conversation, so the known path is dropped and
+the walk finds the new file. The projects directory is never derived from the cwd (the engine
+hashes the slug past 200 characters); it is only walked.
+
+**Decided.** The native `PermissionRequest`, the one hook-set frame a native pane carries, names
+the real path and is not read for it: `SessionStart` stays the only source (D24), and a record
+with no path finds it on the next frame anyway. A Bash record (a shell pane speaks the hook
+protocol too) never walks: its id is no conversation.
+
+**Tests.** `cargo ut`: `locate` (none before the file, the freshest of two, another id is
+another conversation); `parse_hook` on a native `SessionStart` (the own id teaches nothing, a
+new id is learned and drops the known path, the same id again changes nothing). `mod_auto_e2e`'s
+enterprise test now sends the native start's real shape, asserts no path after it, plants
+`<claude home>/projects/-tmp/<id>.jsonl` and reads the path on the record after the mod-road
+`Stop`.
