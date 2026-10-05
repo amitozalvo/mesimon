@@ -5676,6 +5676,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         }
     }
 
+    /// A dropped peer's close is not visible to a `recv` at once under load
+    /// (the daemon asks again every tick); a test waits the kernel out.
+    fn await_peer_closed(stream: &UnixStream) {
+        let until = Instant::now() + Duration::from_secs(1);
+        while !permission_peer_closed(stream) {
+            assert!(Instant::now() < until, "the dropped peer's close never showed");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     /// T-632: a phone's answer is held past a minute, for whichever paired
     /// device comes back to it, until its run goes or its device is revoked.
     #[test]
@@ -5688,6 +5698,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert!(p.lapsed(later, |_| false), "a revoked phone ends it");
         assert!(p.lapsed(p.deadline, |g| g == phone), "a day ends it");
         drop(hook);
+        await_peer_closed(&p.stream);
         assert!(p.lapsed(Instant::now(), |g| g == phone), "a hook set's run gone ends it");
     }
 
@@ -5702,6 +5713,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         p.note_closed(now);
         assert_eq!(p.closed, None, "open while its run lives");
         drop(hook);
+        await_peer_closed(&p.stream);
         p.note_closed(now);
         assert_eq!(p.closed, Some(now));
         assert!(!p.lapsed(now, |g| g == phone), "within the grace");
