@@ -24,10 +24,10 @@ in the Esc menu under `Release notes` and on GitHub.
 
 ### Changed
 
-- **Sharing signs in with a license key.** `Sign in` (Esc → Sharing) opens a
-  `LICENSE KEY` dialog with `Get a license key` under the field; once signed
-  in, `Signed in as …` opens it again with `New license key` and `Sign out`.
-  The `Access code` and `Enter a code` rows are gone.
+- **Remote Control signs in with a license key.** `Sign in` (Esc → Sharing →
+  Remote Control) opens a `LICENSE KEY` dialog with `Get a license key` under
+  the field; once signed in, `Signed in as …` opens it again with `New license
+  key` and `Sign out`. The `Access code` and `Enter a code` rows are gone.
 - **Remote Control shows one `Reconnecting` line with a spinner while the
   board is out of reach**, in place of a banner that switched between
   connecting and disconnected every few seconds.
@@ -40,11 +40,11 @@ in the Esc menu under `Release notes` and on GitHub.
 - **On a Claude Team or Enterprise account, cards follow the agent from its
   first prompt.** Claude Code there keeps its hook events from a person's
   plugins, so cards read `starting up` and `brief not sent` while the agent
-  worked, and Shift+Enter sent the brief a second time. mesimon now checks the
-  account before the first launch, reports those sessions the old way beside
-  the plugin (which still carries prompts, answers and the board's tools), and
-  never resends a brief the agent already has; `mesimon doctor` says when this
-  applies.
+  worked, and Shift+Enter sent the brief a second time. The plugin now reports
+  those sessions from Claude Code's own events and still carries prompts,
+  answers and the board's tools, one hook reports permission requests so the
+  phone and the terminal can both answer them, a brief the agent already has
+  is never sent again, and `mesimon doctor` says when this applies.
 - **Remote Control reconnects by itself after the Mac sleeps.** The board
   could stay out of reach of every paired phone until mesimon restarted.
 - **A restart while the merge train waits for a rebase keeps it waiting.** It
