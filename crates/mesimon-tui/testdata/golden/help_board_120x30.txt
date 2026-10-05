@@ -6,22 +6,22 @@
                                     ✻ claude          ⠋ >1y
    ╭─ KEYS ∙ board ─────────────────────────────────────────────────────────────────────────────────────────────────╮
    │ MOVE AROUND                     TICKETS                                           SESSIONS                     │
-   │   hjkl      move around           o         new ticket                              c         agent            │
-   │   g         top of column         > <       move card, stay on original column      x         sleep sessions   │
-   │   G         bottom of column      HJKL      move card                                                          │
-   │   enter     go to the agent       O         new column                            VIEW                         │
-   │   space     ticket page           r         rename                                  !         terminal         │
-   │   /         search                ^o        crown                                   p         show replies     │
-   │                                   tab       describe                                P         show every reply │
-   │                                   n         note                                    $         show costs       │
-   │                                   ^t        tags                                                               │
-   │                                   a         archive                               APP                          │
-   │                                   z         snooze                                  esc       menu             │
-   │                                   d         delete                                  q         quit             │
-   │                                                                                     ?         keys             │
-   │                                                                                     ^L        redraw           │
+   │   hjkl      move around           o         new ticket                              x         sleep sessions   │
+   │   g         top of column         c         copy id                                                            │
+   │   G         bottom of column      > <       move card, stay on original column    VIEW                         │
+   │   enter     go to the agent       HJKL      move card                               !         terminal         │
+   │   space     ticket page           O         new column                              p         show replies     │
+   │   /         search                r         rename                                  P         show every reply │
+   │                                   ^o        crown                                   $         show costs       │
+   │                                   tab       describe                                                           │
+   │                                   n         note                                  APP                          │
+   │                                   ^t        tags                                    esc       menu             │
+   │                                   a         archive                                 q         quit             │
+   │                                   z         snooze                                  ?         keys             │
+   │                                   d         delete                                  ^L        redraw           │
    │                                                                                     ^Z        suspend mesimon  │
    ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 
 
 

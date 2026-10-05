@@ -412,6 +412,10 @@ pub enum Verb {
     OpenTicket,
     TicketScreen,
     Rename,
+    /// `c` (T-674): copy the ticket's key to the clipboard; a second press
+    /// on the same ticket copies its title, a third the two together, and
+    /// round again. Any other verb starts the cycle over.
+    CopyTicket,
     /// `y y` — copy the selected board card.
     DuplicatePrefix,
     Duplicate,
@@ -508,7 +512,6 @@ pub enum Verb {
     /// often: what changed is a question for after an update, not a key.
     ReleaseNotes,
     // ---- sessions ----
-    Agent,
     Shell,
     /// Shift+Enter on the board: open a one-line field on the selected card
     /// and put what is typed there in front of the ticket's live claude,
@@ -996,6 +999,8 @@ pub struct Ctx {
     /// A card is under the cursor. Without it there is nothing to rename,
     /// move, delete, archive or start a session on.
     pub has_ticket: bool,
+    /// What the next `c` copies (T-674): 0 the key, 1 the title, 2 both.
+    pub copy_step: u8,
     /// More than one column exists — otherwise there is nowhere to move to.
     pub multi_column: bool,
     /// The selected ticket has at least one session record.
@@ -1694,6 +1699,15 @@ fn send_hint(c: &Ctx) -> &'static str {
 /// The key stays live there so it can say why; only the hint stands down.
 /// (A workspace of repositories held it too until T-368: a worktree there
 /// now cuts one worktree per nested repo.)
+/// `c`'s word (T-674): what this press puts on the clipboard.
+fn copy_hint(c: &Ctx) -> &'static str {
+    match c.copy_step {
+        0 => "copy id",
+        1 => "copy title",
+        _ => "copy id + title",
+    }
+}
+
 /// The ask key's word for ONE seat, at every stage of it: the board card's
 /// Shift+Enter and the ticket page's (T-476) say the same thing, because
 /// they open the same field on the same seat.
@@ -2010,34 +2024,23 @@ static BOARD: &[Binding] = &[
         prio: 30,
     },
     Binding {
-        // Overlay-only on the board (`prio: 0`). Starting a session is the
-        // ticket page's subject — `enter`/`space` one row up lead there and
-        // the footer teaches those — so the board's cells go to what only the
-        // board can do. The key still works from here for anyone who knows it.
+        // Overlay-only (`prio: 0`), as the session key it replaced was
+        // (T-674: `c` started or attached an agent, which `enter` on the
+        // ticket page already does). The hint names what this press copies.
         keys: &[Key::Char('c')],
-        verb: Verb::Agent,
+        verb: Verb::CopyTicket,
         show: "c",
-        hint: |c| {
-            // Live but paneless is exactly Sleeping: the press wakes the
-            // parked conversation and attaches, so the hint says so.
-            if c.ticket_has_agent && !c.ticket_promptable {
-                "wake agent"
-            } else if c.ticket_has_agent {
-                AGENT_WORD
-            } else {
-                "start agent"
-            }
-        },
+        hint: copy_hint,
         avail: |c| c.has_ticket,
         class: Class::Plain,
-        group: Group::Sessions,
-        mutates: true,
+        group: Group::Ticket,
+        mutates: false,
         prio: 0,
     },
     Binding {
-        // Overlay-only for the same reason as `c` above, and gated with the
-        // ticket page's own two (T-300): where a ticket may not grow a
-        // shell, the board may not start one either.
+        // Overlay-only: starting a session is the ticket page's subject,
+        // and gated with the ticket page's own two (T-300): where a ticket
+        // may not grow a shell, the board may not start one either.
         keys: &[Key::Char('s')],
         verb: Verb::Shell,
         show: "s",
@@ -2725,29 +2728,15 @@ static TICKET: &[Binding] = &[
         prio: 21,
     },
     Binding {
+        // The board's `c` (T-674), on the page about the same ticket.
         keys: &[Key::Char('c')],
-        verb: Verb::Agent,
+        verb: Verb::CopyTicket,
         show: "c",
-        hint: |c| {
-            // Live but paneless is exactly Sleeping: the press wakes the
-            // parked conversation and attaches, so the hint says so.
-            // Otherwise SILENT — the key stays bound, the trailer under the
-            // rail stops naming it. A claude that is up is a row already
-            // listed, which `enter` on that row says (author 2026-09-03),
-            // and an EMPTY seat is the `+ agent session` row, which says
-            // the same thing about starting one (T-300). Both would be a
-            // second spelling of a row the reader is looking at.
-            if c.ticket_has_agent && !c.ticket_promptable {
-                "wake agent"
-            } else {
-                ""
-            }
-        },
+        hint: copy_hint,
         avail: always,
         class: Class::Plain,
-        group: Group::Sessions,
-        mutates: true,
-        // Under the rail (T-158): the sessions' keys sit under the sessions.
+        group: Group::Ticket,
+        mutates: false,
         prio: 0,
     },
     Binding {
@@ -6995,6 +6984,20 @@ pub fn overlay(scope: Scope, ctx: &Ctx) -> Vec<(Group, Vec<(&'static str, &'stat
 mod tests {
     use super::*;
 
+    /// T-674: `c` copies, on the board and on the ticket page alike, and
+    /// its word follows the cycle — id, title, both. It starts no session.
+    #[test]
+    fn c_copies_and_names_what_it_copies() {
+        for scope in [Scope::Board, Scope::Ticket] {
+            let mut ctx = Ctx { has_ticket: true, ..Ctx::default() };
+            assert_eq!(resolve(scope, Key::Char('c'), &ctx), Some(Verb::CopyTicket));
+            for (step, word) in [(0, "copy id"), (1, "copy title"), (2, "copy id + title")] {
+                ctx.copy_step = step;
+                assert_eq!(hint_for(scope, Verb::CopyTicket, &ctx), Some(("c", word)));
+            }
+        }
+    }
+
     /// T-406: mesimon runs more than one provider, so no hint names one.
     /// Every seat word is `agent`, whichever provider is seated or default,
     /// and the Settings `Provider:` row is the one place a name is spelled.
@@ -7007,14 +7010,11 @@ mod tests {
                 rich_keys: true,
                 ..Ctx::default()
             };
-            assert_eq!(hint_for(Scope::Board, Verb::Agent, &ctx), Some(("c", "start agent")));
             assert_eq!(
                 hint_for(Scope::Board, Verb::Prompt, &ctx),
                 Some(("shift+enter", "start + ask agent"))
             );
             ctx.ticket_has_agent = true;
-            assert_eq!(hint_for(Scope::Board, Verb::Agent, &ctx), Some(("c", "wake agent")));
-            assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &ctx), Some(("c", "wake agent")));
             ctx.ticket_promptable = true;
             assert_eq!(
                 hint_for(Scope::Board, Verb::Prompt, &ctx),
@@ -8434,7 +8434,7 @@ mod tests {
             ..Default::default()
         };
         for (key, verb) in [
-            (Key::Char('c'), Verb::Agent),
+            (Key::Char('c'), Verb::CopyTicket),
             (Key::Char('s'), Verb::Shell),
             (Key::Char('r'), Verb::Rename),
             (Key::Char('d'), Verb::DeletePrefix),
@@ -8846,21 +8846,12 @@ mod tests {
     }
 
     /// What replaced the pair of spawn hints under an empty rail (T-300): a
-    /// row, and Enter. One act, one spelling — so `c` on the ticket page has
-    /// exactly one word left, and it is for the seat that is already taken.
+    /// row, and Enter. One act, one spelling.
     #[test]
     fn the_offer_is_a_row_and_the_key_that_said_it_stands_down() {
         let offered = Ctx { sel_new_agent: true, ticket_rail_rows: 1, ..Default::default() };
         assert_eq!(resolve(Scope::Ticket, Key::Enter, &offered), Some(Verb::Act));
         assert_eq!(hint_for(Scope::Ticket, Verb::Act, &offered), Some(("enter", "start agent")));
-        assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &offered), None, "no second spelling");
-        // The one word `c` keeps: a parked claude holds the seat, so there is
-        // no row to offer and the key is what wakes it.
-        let parked = Ctx { ticket_has_agent: true, ..Default::default() };
-        assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &parked), Some(("c", "wake agent")));
-        // A claude that is up says nothing here either: `enter` on its row does.
-        let up = Ctx { ticket_promptable: true, ..parked };
-        assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &up), None);
         // And the rail walks on rows, not on sessions: one row is not a list,
         // two are — whether or not either is a session.
         assert_eq!(resolve(Scope::Ticket, Key::Char('j'), &offered), None);
@@ -8884,7 +8875,7 @@ mod tests {
     #[test]
     fn shift_stays_on_one_axis() {
         let t = Ctx { sel_session: true, ticket_shells: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Ticket, Key::Char('c'), &t), Some(Verb::Agent));
+        assert_eq!(resolve(Scope::Ticket, Key::Char('c'), &t), Some(Verb::CopyTicket));
         // `C` is gone: a ticket holds one claude, and the second seat is a
         // shell (STALE-MAP "One claude per ticket"). Shift on `c` is inert.
         assert_eq!(resolve(Scope::Ticket, Key::Char('C'), &t), None);

@@ -9,16 +9,16 @@
                        ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                   ⠋ ✻ claude               >1y
                  ╭─ KEYS ∙ ticket ───────────────────────────────────────────────────────────────────╮             >1y
                  │ MOVE AROUND                   TICKETS                 SESSIONS                    │
-                 │   jk        select session      ^o        crown         enter     focus           │
-                 │   q         board               r         rename        !         terminal        │
-                 │                                 n         describe      x         sleep           │
-                 │                                 N         new note                                │
-                 │                                 ^t        tags        APP                         │
-                 │                                 a         archive       ?         keys            │
-    ● working    │                                 z         snooze        ^L        redraw          │
-    nothing said │                                 d         delete        ^Z        suspend mesimon │
+                 │   jk        select session      c         copy id       enter     focus           │
+                 │   q         board               ^o        crown         !         terminal        │
+                 │                                 r         rename        x         sleep           │
+                 │                                 n         describe                                │
+                 │                                 N         new note    APP                         │
+                 │                                 ^t        tags          ?         keys            │
+    ● working    │                                 a         archive       ^L        redraw          │
+    nothing said │                                 z         snooze        ^Z        suspend mesimon │
+                 │                                 d         delete                                  │
                  ╰───────────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

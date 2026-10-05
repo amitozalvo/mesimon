@@ -1629,11 +1629,11 @@ fn draw_rail(
         );
     }
 
-    // What is left of the sessions' own keys: `c` only while a parked claude
-    // is there to wake, `s` only where a ticket may still grow a shell
-    // (T-300), `x` only on a selected row. All three can stand down, and
-    // then the rail carries no trailer at all.
-    lines.extend(trailer(&[keymap::Verb::Agent, keymap::Verb::Shell, keymap::Verb::Sleep]));
+    // What is left of the sessions' own keys: `s` only where a ticket may
+    // still grow a shell (T-300), `x` only on a selected row. Both can stand
+    // down, and then the rail carries no trailer at all. (`c` woke a parked
+    // claude here until T-674; `enter` on its row does that.)
+    lines.extend(trailer(&[keymap::Verb::Shell, keymap::Verb::Sleep]));
 
     // ---- the notes, under the sessions ------------------------------------
     // Same shape as the sessions: a heading with the count, one row each —

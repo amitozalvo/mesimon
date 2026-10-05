@@ -1458,6 +1458,9 @@ pub struct App {
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
     resume_refused: Option<uuid::Uuid>,
+    /// `c`'s cycle (T-674): the ticket the last press copied from and what
+    /// it copied (0 id, 1 title, 2 both). Any other verb clears it.
+    copy_cycle: Option<(ulid::Ulid, u8)>,
     /// The m flow's dialog (T-431): open from the first `m` until the
     /// second performs what it names, Esc declines, or a stray key cancels
     /// — never while a merge is running inside it.
@@ -1870,6 +1873,7 @@ impl App {
             mesophon_available: false,
             theme,
             resume_refused: None,
+            copy_cycle: None,
             merge_dialog: None,
             adopt_armed: None,
             merge_sent: None,
@@ -4604,6 +4608,7 @@ impl App {
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
             col_offers_word: cs.offers().word(),
             has_ticket: subject.is_some(),
+            copy_step: subject.map_or(0, |id| self.copy_step(id)),
             multi_column: self.columns().len() > 1,
             ticket_has_sessions: !sessions.is_empty(),
             // The daemon's spawn gate, the same fact: `live_claude` counts a
@@ -5264,6 +5269,9 @@ impl App {
     /// One exhaustive match on [`Verb`]. Adding a binding to the table without
     /// handling it here does not compile.
     fn dispatch(&mut self, verb: Verb, key: Key, scope: Scope, ctx: &Ctx) -> Result<()> {
+        if verb != Verb::CopyTicket {
+            self.copy_cycle = None;
+        }
         match verb {
             // ---- global ----------------------------------------------------
             Verb::Help => self.help = true,
@@ -5470,6 +5478,7 @@ impl App {
                     self.open_note_editor(ticket, None)?;
                 }
             }
+            Verb::CopyTicket => self.copy_ticket(),
             Verb::DuplicatePrefix => {
                 if let Some(id) = self.subject() {
                     self.duplicate_armed = Some(id);
@@ -6223,16 +6232,9 @@ impl App {
                 self.refresh()?;
             }
             // ---- sessions --------------------------------------------------
-            Verb::Agent | Verb::Shell => {
+            Verb::Shell => {
                 if let Some(id) = self.subject() {
-                    // The seat's own provider where it holds one; an empty
-                    // seat starts the ticket's tier's (T-443).
-                    let kind = if verb == Verb::Agent {
-                        self.agent_kind_for(id)
-                    } else {
-                        SessionKind::Bash
-                    };
-                    self.focus_kind_or_spawn(id, kind)?;
+                    self.focus_kind_or_spawn(id, SessionKind::Bash)?;
                 }
             }
             Verb::ShellNew => {
@@ -6690,6 +6692,40 @@ impl App {
     /// The ticket a verb acts on: the shown ticket on the ticket screen and on
     /// a branch diff, the cursor card on the board. A checkout diff is about
     /// no ticket, and says so.
+    /// What `c` copies next from `ticket` (T-674): the step after the last
+    /// press when that press was on this ticket, else the id.
+    fn copy_step(&self, ticket: ulid::Ulid) -> u8 {
+        match self.copy_cycle {
+            Some((id, step)) if id == ticket => (step + 1) % 3,
+            _ => 0,
+        }
+    }
+
+    /// `c`: one step of the copy cycle, said on the status line with the
+    /// next step's word, so the second press is discoverable from the first.
+    fn copy_ticket(&mut self) {
+        let Some(id) = self.subject() else { return };
+        let Some(t) = self.board.ticket(id) else { return };
+        let step = self.copy_step(id);
+        let (subject, text) = match step {
+            0 => ("id", t.short_key.clone()),
+            1 => ("title", t.title.clone()),
+            _ => ("id + title", format!("{} {}", t.short_key, t.title)),
+        };
+        let status = crate::clipboard::copy_status(&format!("{} {subject}", t.short_key), &text);
+        let next = match step {
+            0 => "title",
+            1 => "id + title",
+            _ => "id",
+        };
+        self.status = if status.ends_with(" copied") {
+            format!("{status} ∙ c again copies the {next}")
+        } else {
+            status
+        };
+        self.copy_cycle = Some((id, step));
+    }
+
     fn subject(&self) -> Option<ulid::Ulid> {
         match &self.screen {
             Screen::Ticket { ticket, .. } => Some(*ticket),
@@ -15550,7 +15586,8 @@ mod tests {
                 let ctx = app.ctx();
                 assert!(ctx.ticket_has_agent);
                 assert!(!app.new_agent_row(ulid::Ulid(1)), "a parked agent holds the seat");
-                press(&mut app, 'c');
+                app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+                app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
                 assert!(!sent_contains(&sent, "SpawnSession"));
                 assert!(sent_contains(&sent, &sid.to_string()));
                 assert_eq!(sent_contains(&sent, "ResumeSession"), state == SessionState::Sleeping);
@@ -15764,12 +15801,11 @@ mod tests {
     #[test]
     fn codex_project_uses_codex_for_all_new_session_gestures() {
         use mesimon_core::board::AgentProvider;
-        for gesture in ["c", "rail", "compose", "prompt"] {
+        for gesture in ["rail", "compose", "prompt"] {
             let mut board = board_three_columns();
             board.agent_provider = AgentProvider::Codex;
             let (mut app, sent) = App::for_test_logged(board, theme(), false);
             match gesture {
-                "c" => press(&mut app, 'c'),
                 "rail" => {
                     app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
                     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -17987,29 +18023,49 @@ mod tests {
         assert!(app.pending_attach.is_none(), "no handover");
     }
 
-    /// A ticket holds one claude (2026-09-02). `c` on a parked one is a wake
-    /// — the resume road, then the attach — and never a second spawn beside
-    /// it; the hint says the same word. `c` on a ticket with none starts one.
+    /// `c` copies the ticket (T-674): its id, then its title, then the two
+    /// together, round again; the status line says what landed and what the
+    /// next press copies. It starts, wakes and attaches nothing.
     #[test]
-    fn c_wakes_a_parked_claude_instead_of_starting_a_second() {
-        let (mut app, sent, sid) = app_with_claude(SessionState::Sleeping, false);
-        assert_eq!(
-            keymap::hint_for(Scope::Board, Verb::Agent, &app.ctx()),
-            Some(("c", "wake agent"))
-        );
-        press(&mut app, 'c');
-        assert!(
-            sent_contains(&sent, &format!("ResumeSession {{ id: {sid}")),
-            "{:?}",
-            sent.borrow()
-        );
+    fn c_cycles_id_title_and_both_and_starts_nothing() {
+        let copied = || crate::clipboard::COPIED.with(|c| c.borrow().last().cloned());
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        let want = [
+            ("copy id", "T-1", "T-1 id copied ∙ c again copies the title"),
+            ("copy title", "ticket 1", "T-1 title copied ∙ c again copies the id + title"),
+            ("copy id + title", "T-1 ticket 1", "T-1 id + title copied ∙ c again copies the id"),
+            ("copy id", "T-1", "T-1 id copied ∙ c again copies the title"),
+        ];
+        for (hint, text, status) in want {
+            assert_eq!(
+                keymap::hint_for(Scope::Board, Verb::CopyTicket, &app.ctx()),
+                Some(("c", hint))
+            );
+            press(&mut app, 'c');
+            assert_eq!(copied().as_deref(), Some(text));
+            assert_eq!(app.status, status);
+        }
+        assert!(!sent_contains(&sent, "ResumeSession"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "FocusStart"), "{:?}", sent.borrow());
 
-        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
-        assert_eq!(keymap::hint_for(Scope::Board, Verb::Agent, &app.ctx()), Some(("c", "agent")));
+        // Any other verb starts the cycle over, and so does another ticket.
         press(&mut app, 'c');
-        assert!(sent_contains(&sent, "FocusStart"), "{:?}", sent.borrow());
-        assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
+        press(&mut app, 'j');
+        press(&mut app, 'k');
+        press(&mut app, 'c');
+        assert_eq!(copied().as_deref(), Some("T-1"));
+        press(&mut app, 'j');
+        press(&mut app, 'c');
+        assert_eq!(copied().as_deref(), Some("T-2"));
+
+        // The ticket page's `c` is the same cycle on the page's ticket.
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        press(&mut app, 'c');
+        assert_eq!(copied().as_deref(), Some("T-1"));
+        press(&mut app, 'c');
+        assert_eq!(copied().as_deref(), Some("ticket 1"));
+        assert!(matches!(app.screen, Screen::Ticket { .. }), "no handover");
     }
 
     /// The legacy floor. A terminal that cannot spell Shift+Enter sends a
@@ -20938,7 +20994,9 @@ mod tests {
         let mut app = app_joined();
         let ctx = app.ctx();
         assert!(ctx.content_only && !ctx.team_viewer);
-        assert_eq!(keymap::resolve(Scope::Board, Key::Char('c'), &ctx), None);
+        // `c` copies the ticket (T-674), which needs no checkout.
+        assert_eq!(keymap::resolve(Scope::Board, Key::Char('c'), &ctx), Some(Verb::CopyTicket));
+        assert_eq!(keymap::resolve(Scope::Board, Key::Char('s'), &ctx), None);
         assert_eq!(keymap::resolve(Scope::Board, Key::Char('v'), &ctx), None);
         assert_eq!(keymap::resolve(Scope::Board, Key::Char('!'), &ctx), None);
         let footer = footer_text(&app);
@@ -20965,10 +21023,12 @@ mod tests {
             b.role = "viewer".into();
         }
         assert!(app.ctx().team_viewer);
-        for key in ['r', 'n', 'a', 'd', 'x', 'c'] {
+        for key in ['r', 'n', 'a', 'd', 'x'] {
             press(&mut app, key);
             assert!(matches!(app.mode, Mode::Normal), "{key} did something: {:?}", app.mode);
         }
+        // Copying the ticket is reading it (T-674): a viewer may.
+        assert_eq!(keymap::resolve(Scope::Board, Key::Char('c'), &app.ctx()), Some(Verb::CopyTicket));
         let footer = footer_text(&app);
         assert!(footer.contains("Synced ∙ 3 members ∙ you read only"), "{footer}");
         assert!(!footer.contains("rename"), "{footer}");

@@ -238,6 +238,7 @@ mod tests {
 
 /// Request a clipboard write from the terminal. OSC 52 has no acknowledgement;
 /// callers must distinguish this request from a successful native copy.
+#[cfg_attr(test, allow(dead_code))]
 pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     use std::io::Write;
     let mut out = std::io::stdout();

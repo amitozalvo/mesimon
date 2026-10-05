@@ -21756,3 +21756,25 @@ public image to download; it is gone until there is one.
 **Not here, by design.** Publishing (`ci/site.sh --publish`) is the author's and waits for
 the release that carries T-672 (Remote Control on in every build), or the page sells what the
 installed binary cannot show. The Polar products' names and order are the author's dashboard.
+
+## `c` copies the ticket: id, title, both; it no longer starts an agent (T-674, 2026-10-05, "copy ticket id by pressing c on a ticket")
+
+**Shipped.** `c` on the board (a card under the cursor) and on a ticket page is
+`Verb::CopyTicket`: the first press copies the ticket's key (`T-12`), a second on the same
+ticket its title, a third `T-12 <title>`, and round again. `App::copy_cycle` holds the ticket
+and the step; any other verb clears it in `App::dispatch`, and so does a press on another
+ticket, so the cycle never carries across cards. The status line says what landed and what the
+next press copies ("T-12 id copied ∙ c again copies the title"); the help overlay's hint names
+the next step (`Ctx::copy_step`). It goes through `clipboard::copy_status` like every other
+copy. Group `Ticket`, `mutates: false`, so a viewer and a joined board both have it. Overlay-only
+(`prio: 0`) on both screens, as the key it replaced was.
+
+**Decided (author): `Verb::Agent` is gone, not moved.** `c` started, woke or attached the
+ticket's agent, and the author found it unintuitive. Every road it served has another
+spelling: on the board `enter` attaches a hot agent and starts one on a freshly created ticket;
+on the ticket page `enter` on `+ agent session` starts one and `enter` on a sleeping row wakes
+it (`focus_session` resumes paneless records). The rail's trailer no longer says `c wake agent`.
+
+**Test seam.** Under `cfg(test)`, `clipboard::copy_status` records into a thread-local
+`COPIED` instead of running `pbcopy` or writing OSC 52, so no test writes the developer's
+clipboard.

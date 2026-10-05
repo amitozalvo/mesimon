@@ -71,8 +71,8 @@ If a card lights before then, its agent is asking you something. Press `shift+en
 card to answer it, or `enter` to go into the agent's own terminal; `ctrl-]` brings you back.
 
 `shift+enter` needs a terminal that reports it, such as iTerm2, Ghostty, kitty or WezTerm. If
-`?` does not list it, press `enter` in step 4 to save the ticket, then `c` to start its agent,
-and type the task into it.
+`?` does not list it, press `enter` in step 4 to save the ticket, then `enter` again to start
+its agent, and type the task into it.
 
 `?` lists every key on the screen you are on. Closing the board does not stop your agents:
 [Stopping everything](docs/USING.md#stopping-everything) says how to.

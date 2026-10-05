@@ -115,7 +115,9 @@ marked; `tab` takes them out again.
 <sub>Three letters narrow fifteen tickets to one, and `enter` scrolls the board to its card.</sub>
 
 In the new-ticket composer, `shift-tab` cycles between the shared checkout and a dedicated
-worktree; that choice locks once a session exists. On a ticket page: `c` starts an agent session,
+worktree; that choice locks once a session exists. On the board or a ticket page, `c` copies the
+ticket's id; press it again for the title, and a third time for the id and title together. On a
+ticket page: `enter` on `+ agent session` starts an agent session and on a sleeping one wakes it,
 `!` opens a terminal in the ticket's worktree or checkout, and `enter` steps into a live session:
 its own terminal takes over your whole screen. `ctrl-]` (or `ctrl-5`) steps back out to where you
 were. `v` shows the diff once there is a worktree, and `m` on the branch line merges it:

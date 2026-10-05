@@ -44,6 +44,9 @@ fn select(
     })
 }
 
+// The tests' copies record instead (`COPIED`), so only the tests' own
+// selection cases reach the helpers below.
+#[cfg_attr(test, allow(dead_code))]
 fn find() -> Option<Native> {
     select(
         ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"].iter().any(|v| std::env::var_os(v).is_some()),
@@ -133,7 +136,21 @@ fn status(subject: &str, result: io::Result<bool>) -> String {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// What the tests' copies would have put on the clipboard, newest last:
+    /// a test never writes the developer's real one.
+    pub(crate) static COPIED: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub(crate) fn copy_status(subject: &str, text: &str) -> String {
+    #[cfg(test)]
+    let result = {
+        COPIED.with(|c| c.borrow_mut().push(text.to_string()));
+        Ok(true)
+    };
+    #[cfg(not(test))]
     let result = match find() {
         Some(native) => native_copy(&native, text, Duration::from_secs(2)).map(|()| true),
         None => crate::osc::copy_to_clipboard(text).map(|()| false),
