@@ -52,6 +52,9 @@ const RENEW_WINDOW: u64 = 86_400;
 /// its no.
 const RENEW_AGAIN: u64 = 6 * 3_600;
 const _: () = assert!(RENEW_AGAIN < RENEW_WINDOW);
+/// What a share or a join answers while board sharing is off
+/// (`mesimon_core::team::enabled`).
+const TEAMS_OFF: &str = "board sharing is off; start mesimon with MESIMON_TEAMS=1 to use it";
 
 pub(super) struct TeamCtx {
     jobs: Sender<Job>,
@@ -531,6 +534,9 @@ impl Daemon {
     }
 
     pub(super) fn team_share(&mut self, notes: bool) -> Response {
+        if !mesimon_core::team::enabled() {
+            return err(TEAMS_OFF);
+        }
         if !self.team.signed_in() {
             return err("sign in to the relay first");
         }
@@ -590,6 +596,9 @@ impl Daemon {
     }
 
     pub(super) fn team_join(&mut self, code: String) -> Response {
+        if !mesimon_core::team::enabled() {
+            return err(TEAMS_OFF);
+        }
         if !self.team.signed_in() {
             return err("sign in to the relay first");
         }
@@ -635,6 +644,13 @@ impl Daemon {
         }
         self.team.grant_tick(self.ticks, now_secs());
         let Some(board) = self.team.board() else { return };
+        // Board sharing off (`team::enabled`): a board shared or joined
+        // earlier is not synced, so nothing is asked of the relay about it
+        // and nothing it answers is applied. Unshare and leave still work.
+        if !mesimon_core::team::enabled() {
+            self.team.sync_word = "offline";
+            return;
+        }
         let ticks = self.ticks;
         // A join in progress is a conversation, not a heartbeat: the joiner
         // has no key yet and asks after one at every pull, and an owner with
@@ -1029,6 +1045,11 @@ impl Daemon {
     /// The member list landed. The owner hands keys to every verified joiner
     /// who has none; everyone learns who is on the board.
     fn team_on_members(&mut self, members: Vec<Member>) {
+        // Sharing off: no roster is taken and no key is wrapped, whatever
+        // asked. `team_tick` sends nothing, and this holds on its own.
+        if !mesimon_core::team::enabled() {
+            return;
+        }
         let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else { return };
         let me = keys.id();
         let Some(state) = self.team.state.as_mut() else { return };
@@ -1311,6 +1332,9 @@ impl Daemon {
     }
 
     fn team_apply(&mut self, record: StoredRecord) {
+        if !mesimon_core::team::enabled() {
+            return;
+        }
         let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else { return };
         let Some(state) = self.team.state.as_ref() else { return };
         let Some(board) = state.board_id() else { return };

@@ -1517,8 +1517,8 @@ pub struct App {
     /// relay listed before it, so the one that appears is the one to open.
     /// Cleared by the daemon's answer, either way.
     join_watch: Option<Vec<String>>,
-    /// Board sharing's doors are offered (`Ctx::teams`): a development
-    /// build, or `MESIMON_TEAMS=1`, which `lib.rs` reads — never `App::new`.
+    /// Board sharing's doors are offered (`Ctx::teams`): `MESIMON_TEAMS=1`,
+    /// which `lib.rs` reads — never `App::new`, whose test default is on.
     pub teams: bool,
     /// The root of a team board to open instead of this one (T-335): the
     /// main loop leaves and execs `mesimon open <root>` — a different root

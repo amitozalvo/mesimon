@@ -30,6 +30,17 @@ pub const HOSTED_RELAY: &str = "relay.mesimon.dev:443";
 /// dialog's `Get a license key` opens it.
 pub const CHECKOUT_URL: &str = "https://mesimon.dev/relay";
 
+/// Whether board sharing runs at all: only with `MESIMON_TEAMS=1`, in every
+/// build, until T-655 and T-656 land. Off, the TUI offers no `Publish this
+/// board` or `Join a board` row, `mesimon join` is not a command, and the
+/// daemon refuses a share or a join and syncs no board it already shares or
+/// joined. Remote Control is not behind it: it signs in to the same relay but
+/// never syncs a board. The TUI reads it in `lib.rs::run` and the daemon at
+/// the moment it decides, from the environment it was spawned with.
+pub fn enabled() -> bool {
+    std::env::var_os("MESIMON_TEAMS").is_some_and(|v| v == "1")
+}
+
 /// Whether `relay` (as typed: `host[:port]`, maybe a space and a pin) is the
 /// hosted relay, on either of its ports. A self-hosted relay mints its own
 /// codes and sells nothing, so the dialog offers the checkout for this one

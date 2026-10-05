@@ -1536,11 +1536,10 @@ pub struct Ctx {
     pub team_owner_name: String,
     /// Boards this device belongs to, as the relay lists them.
     pub team_boards: usize,
-    /// Board sharing is offered at all: a development build, or
-    /// `MESIMON_TEAMS=1`. Off, the menu's `Sharing` row is not a row, and
-    /// nothing else changes.
-    /// A board already shared or joined keeps working: the daemon syncs
-    /// whatever its state file says, and the gate is only on the doors.
+    /// Board sharing is offered at all: `MESIMON_TEAMS=1`
+    /// (`team::enabled`). Off, the menu's `Sharing` row is Remote Control's
+    /// alone, or not a row. The daemon holds the same gate: it refuses a
+    /// share or a join and syncs no board already shared or joined.
     pub teams: bool,
     pub mesophon: bool,
 }
@@ -9355,8 +9354,8 @@ mod tests {
             .any(|b| (b.hint)(&acting) == "publish"));
     }
 
-    /// Sharing is behind a door that only a development build (or
-    /// `MESIMON_TEAMS=1`) opens: without `Ctx::teams` none of the three
+    /// Sharing is behind a door that only `MESIMON_TEAMS=1` opens:
+    /// without `Ctx::teams` none of the three
     /// rows is offered, and with it all three are.
     #[test]
     fn the_team_doors_are_closed_unless_teams_is_on() {

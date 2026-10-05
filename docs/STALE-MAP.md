@@ -21422,3 +21422,30 @@ precompute; `tool.check` unhooked). `claude plugin validate` and `claude plugin 
 the laid folder (`mod_plugin`, 52 tests). `hook_settings`'s list test holds `road::NATIVE_EVENTS`
 to the source (each relayed by its literal name, the rest by none, the eight native hooks
 registered) and `MESIMON_MOD_NATIVE` to the variables read. `cargo ut` green.
+
+## Board sharing is held behind `MESIMON_TEAMS=1` in every build (T-653, 2026-10-05, "will disabling the teams board publish feature close the vulns? until we fix? (keeping remote control)")
+
+Board sharing (Teams) is off unless `MESIMON_TEAMS=1` is in the environment, in a development
+build as in a release, until T-655 and T-656 land; the relay half of the reason is in
+mesimon-relay's STALE-MAP under T-653. Remote Control is not held: it keeps its own
+development-build default and `MESIMON_MESOPHON=1`.
+
+1. *One gate, three readers.* `mesimon_core::team::enabled` is the switch. The TUI reads it in
+   `lib.rs::run` for `Ctx::teams`; `mesimon join` is not a command without it; the daemon reads
+   it at the moment it decides, from the environment it was spawned with.
+2. *Remote Control no longer brings sharing along.* `lib.rs::run` used to set `teams` whenever
+   Remote Control was available, so turning Remote Control on offered `Publish this board` and
+   `Join a board` too, and `sharing_rows`' Remote-Control-only branch could never run. It runs
+   now: the Sharing dialog shows the account and Remote Control's row alone.
+3. *The doors were not enough.* The old gate hid the rows and nothing else: a board shared or
+   joined earlier kept syncing. Off, the daemon now refuses `ShareBoard` and `JoinBoard` with
+   the line that names the variable, and `team_tick` stops after the grant's renewal (which
+   Remote Control's sign-in needs), so no board is pulled, pushed, keyed or rotated and the
+   board's sync word reads `offline`. `Unshare` and `Leave` still answer, for a person who
+   starts with the variable to stop sharing.
+4. *Not a schema change.* `team.json` is untouched; a board shared before syncs again the first
+   time its daemon starts with the variable.
+
+**Tests.** `cargo ut` green with the keymap door test reworded; no e2e in this repository shares
+or joins. mesimon-relay's `board_e2e` spawns its daemons with `MESIMON_TEAMS=1` (its branch
+`msmn/T-653-security-audit`).
