@@ -283,6 +283,11 @@ Disabling Remote Control removes every grant for this board; re-enabling require
 pairing. **Forget this browser** removes the browser’s local identity and remembered
 boards; revoke on the host to remove the corresponding grants too.
 
+To remove one board from the browser, open the board picker under the board’s name, press
+the bin beside that board and then **Forget**. The other boards stay paired. Use it for a
+board whose host is gone; a board whose host still runs keeps listing the browser until you
+revoke it there.
+
 ## What is stored where
 
 The daemon stores `mesophon.json` (mode 0600) in its existing per-board state
@@ -301,7 +306,7 @@ while it is only in this browser) and up to 50 settled ones: title, column, tags
 status and when it was picked up, and the details only of a ticket that has not landed.
 The notes kept are those of the 40 tickets whose notes were read most recently: each note's
 name, author and time, and the bodies read; a note edit is kept, with its words, until the
-terminal answers it. Revocation and **Forget this browser** delete all three. The page’s service worker keeps a
+terminal answers it. Revocation and **Forget this browser** delete all three, and forgetting one board deletes its own. The page’s service worker keeps a
 copy of the page’s own files (HTML, scripts, styles, fonts, icons and the Wasm module)
 in the browser’s Cache Storage, and nothing of the board. The conversation, the screen and unsent prompts remain in memory. The relay routes encrypted content and stores routing metadata for
 Mesophon, plus the tickets and note edits that wait for an away terminal and the terminal’s answers:

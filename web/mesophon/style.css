@@ -829,6 +829,26 @@ select {
   color: var(--ink3);
   font-size: 0.75rem;
 }
+/* A board's Forget (T-673) sits beside its row and asks once in place. */
+.side-board-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.side-board-forget {
+  width: 36px;
+  height: 36px;
+  color: var(--ink3);
+}
+.side-board-ask {
+  gap: 4px;
+  padding-right: 4px;
+  background: var(--s2);
+}
+.side-board-ask .btn {
+  min-height: 36px;
+  flex-shrink: 0;
+}
 .hops {
   margin: 0;
   padding: 0 6px;

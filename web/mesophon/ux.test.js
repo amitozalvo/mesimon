@@ -2350,6 +2350,102 @@ async function backFlow(browser, engineName) {
   }
 }
 
+// Forgetting one board (T-673): a board whose host is gone is forgotten from
+// the picker, after a second word, and the live one stays connected; the last
+// one forgotten leaves the pairing screen and nothing kept.
+async function forgetFlow(browser, engineName) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const identity = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const open = indexedDB.open("mesophon", 1);
+          open.onsuccess = () => {
+            const get = open.result.transaction("device").objectStore("device").get("identity");
+            get.onsuccess = () => resolve(get.result);
+          };
+        }),
+    );
+  const picker = async () => {
+    if (await page.locator("#back").isVisible()) await page.locator("#back").click();
+    if (!(await page.locator("#board-picker").isVisible())) await page.locator("#board-menu").click();
+    await page.locator("#board-picker").click();
+    await page.locator("#board-list").waitFor();
+  };
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await until(page, () => document.querySelector("#shell")?.dataset.link === "live");
+    // A board paired by an earlier test, whose host is gone.
+    await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const open = indexedDB.open("mesophon", 1);
+          open.onsuccess = () => {
+            const store = open.result.transaction("device", "readwrite").objectStore("device");
+            const get = store.get("identity");
+            get.onsuccess = () => {
+              const identity = get.result;
+              identity.boards.push({ pin: { board: "board-gone" }, title: "Old test board" });
+              store.put(identity, "identity").onsuccess = () =>
+                store.put({ items: [] }, "sent:board-gone").onsuccess = resolve;
+            };
+          };
+        }),
+    );
+    await page.reload();
+    await until(page, () => document.querySelector("#shell")?.dataset.link === "live");
+    await picker();
+    const rows = page.locator("#board-list .side-board-row");
+    assert.equal(await rows.count(), 2);
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-forget-list.png`) });
+    await page.getByRole("menuitem", { name: "Forget Old test board on this browser" }).click();
+    assert.match(await page.locator("#board-list .side-board-ask").textContent(), /Forget Old test board here\?/);
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-forget-ask.png`) });
+    await page.locator("#board-list .side-board-no").click();
+    assert.equal(await rows.count(), 2, "Keep forgets nothing");
+    await page.getByRole("menuitem", { name: "Forget Old test board on this browser" }).click();
+    await page.locator("#board-list .side-board-yes").click();
+    await page.locator("#board-list").waitFor({ state: "hidden" });
+    assert.match(await page.locator("#connection").textContent(), /Forgot Old test board/);
+    assert.deepEqual((await identity()).boards.map((b) => b.pin.board), ["board-a"]);
+    assert.equal(
+      await page.evaluate(
+        () =>
+          new Promise((resolve) => {
+            const open = indexedDB.open("mesophon", 1);
+            open.onsuccess = () => {
+              const get = open.result.transaction("device").objectStore("device").get("sent:board-gone");
+              get.onsuccess = () => resolve(get.result ?? null);
+            };
+          }),
+      ),
+      null,
+    );
+    assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.link), "live", "the live board stays");
+
+    // The last board forgotten: the pairing screen, and nothing kept.
+    await picker();
+    await page.getByRole("menuitem", { name: /^Forget .* on this browser$/ }).click();
+    await page.locator("#board-list .side-board-yes").click();
+    await until(page, () => !document.querySelector("#pair").disabled);
+    assert.deepEqual((await identity()).boards, []);
+    assert.deepEqual(errors, []);
+    console.log(`${engineName}: forget one board, then the last passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-forget-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 // Home screen and no signal (T-497): the service worker keeps the page, so a
 // load with no network opens the kept copy. It shows the remembered board,
 // takes a ticket with a clock, opens no socket, and becomes the relay's own
@@ -3282,6 +3378,7 @@ try {
       await pairLinkFlow(browser, engineName);
       await backFlow(browser, engineName);
       await keptFlow(browser, engineName);
+      await forgetFlow(browser, engineName);
     } finally {
       await browser.close();
     }

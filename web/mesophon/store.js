@@ -80,6 +80,8 @@ export class Store {
     this.settingsOpen = false;
     // The sidebar's board picker (T-510), open under the board's name.
     this.boardMenuOpen = false;
+    // The board a Forget press in that menu asks about (T-673).
+    this.forgetting = undefined;
     // The first-prompt sheet a start opens (T-510): the ticket and the words.
     this.startAsk = undefined;
     this.theme = "system";
@@ -331,6 +333,52 @@ export class Store {
   openBoardMenu(open) {
     if (this.boardMenuOpen === open) return;
     this.boardMenuOpen = open;
+    this.forgetting = undefined;
+    this.emit();
+  }
+  askForget(board) {
+    this.forgetting = board;
+    this.emit();
+  }
+  // One paired board forgotten on this browser (T-673): its pairing and
+  // everything kept for it go, and the others stay. Nothing tells its host,
+  // which may be long gone; a live one still lists this browser until it is
+  // revoked there.
+  async forgetBoard(id) {
+    this.forgetting = undefined;
+    const chosen = this.identity?.boards.find((b) => b.pin.board === id);
+    if (!chosen) return this.emit();
+    const shown = this.active === chosen;
+    if (shown) {
+      this.connection.stop();
+      this.mailbox?.want(false);
+      clearAlerts();
+      this.live = false;
+      this.active = this.board = this.entry = undefined;
+    }
+    this.sessions.purge(id);
+    this.starts.purge(id);
+    this.edits.purge(id);
+    this.boards.delete(id);
+    const dropped = this.forgetRemembered(id);
+    if (this.composer.board === id) this.composer = emptyDraft(undefined);
+    if (this.returnBoard === chosen) this.returnBoard = undefined;
+    this.identity.boards = this.identity.boards.filter((b) => b !== chosen);
+    if (this.identity.lastBoard === id) this.identity.lastBoard = undefined;
+    this.boardMenuOpen = false;
+    const name = chosen.title || "Paired board";
+    try {
+      await Promise.all([this.save(), dropped]);
+      this.status = `Forgot ${name} on this browser.`;
+    } catch {
+      this.status = `Could not forget ${name}. Clear this site's browser storage.`;
+    }
+    if (shown) {
+      const next = this.identity.boards.find((b) => !b.revoked) || this.identity.boards[0];
+      if (next) return this.openBoard(next);
+      this.showPairing();
+      this.pairReady = true;
+    }
     this.emit();
   }
   navigateTicket(boardId, ticket) {
@@ -1637,6 +1685,7 @@ export class Store {
     this.sessions.entries.clear();
     this.sessions.targets.clear();
     this.boards.clear();
+    this.forgetting = undefined;
     this.remembered.clear();
     this.sent = new Sent();
     this.sentLoaded.clear();

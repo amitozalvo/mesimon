@@ -21806,3 +21806,24 @@ first, and with none the board takes it** (`App::settle_header`, run after a pre
 snapshot and a `Response::Mesophon`). It replaces the keep-awake-only reset in
 `after_pref_change` and also covers the git sample going away, which the old code left
 focused on nothing.
+
+## Forget one board on the phone (T-673, 2026-10-05, "Remote Control: forget one paired board from the phone")
+
+**Built.** Each row of the phone page's board picker carries a bin (`.side-board-forget`); a press
+turns the row into "Forget <name> here?" with **Forget** and **Keep**, and Forget runs
+`Store::forgetBoard`: the board's pairing leaves `identity.boards`, its kept board, Sent list and
+notes go through `forgetRemembered` (IndexedDB `dropBoards(board)`), its sessions, starts and
+edits are purged, and `lastBoard`/`returnBoard` let go of it. If it was the board on screen, the
+connection stops and the next paired board opens, or the pairing screen when none is left.
+
+**Why.** The only removal was **Forget this browser**, which drops every board and the device
+identity. A board paired against a host that no longer exists (an old test, a reinstalled
+machine) could not be revoked from its host and so sat in the picker for good.
+
+**Local only, on purpose.** There is no wire frame from a browser that withdraws its own grant, and
+the case that asked for this is a host that is gone. A live host keeps the grant and lists the
+browser until it is revoked in the Remote Control dialog; `docs/REMOTE-CONTROL.md` says so.
+
+**Tests.** `ux.test.js::forgetFlow` (Chromium and WebKit, phone size): a stale second board planted
+in IndexedDB, Keep forgets nothing, Forget leaves one row and no `sent:` record while the live
+board stays live, and the last board forgotten leaves the pairing screen and no boards.

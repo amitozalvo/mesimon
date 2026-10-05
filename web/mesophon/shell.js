@@ -235,7 +235,8 @@ function Settings({ store }) {
 }
 
 // The board's name under the brand is the picker (T-510): a press lists
-// every paired board and the way to pair one more.
+// every paired board and the way to pair one more, and each board's bin
+// forgets that one on this browser after a second word (T-673).
 function BoardPicker({ store }) {
   const open = store.boardMenuOpen;
   return html`<button id="board-picker" type="button" class="side-sub side-pick" aria-haspopup="menu"
@@ -248,12 +249,27 @@ function BoardMenu({ store }) {
   const boards = store.identity?.boards || [];
   const link = store.link;
   return html`<div id="board-list" class="board-menu" role="menu" aria-label="Paired boards">
-    ${boards.map((b) => html`<button type="button" role="menuitem" class="side-board" key=${b.pin.board}
-      aria-current=${String(b === store.active)} onClick=${() => store.switchBoard(b.pin.board)}>
-      <span class=${`hop-dot${b === store.active && store.live ? " ok" : ""}`} aria-hidden="true"></span>
-      <span class="side-board-name">${b.title || "Paired board"}</span>
-      <span class="side-board-state">${b.revoked ? "Access removed" : b === store.active ? linkLabel[link] : ""}</span>
-    </button>`)}
+    ${boards.map((b) => {
+      const name = b.title || "Paired board";
+      if (store.forgetting === b.pin.board)
+        return html`<div role="none" class="side-board side-board-ask" key=${b.pin.board}>
+          <span class="side-board-name">Forget ${name} here?</span>
+          <button type="button" role="menuitem" class="btn btn-quiet btn-danger side-board-yes"
+            onClick=${() => store.forgetBoard(b.pin.board)}>Forget</button>
+          <button type="button" role="menuitem" class="btn btn-quiet side-board-no"
+            onClick=${() => store.askForget(undefined)}>Keep</button>
+        </div>`;
+      return html`<div role="none" class="side-board-row" key=${b.pin.board}>
+        <button type="button" role="menuitem" class="side-board"
+          aria-current=${String(b === store.active)} onClick=${() => store.switchBoard(b.pin.board)}>
+          <span class=${`hop-dot${b === store.active && store.live ? " ok" : ""}`} aria-hidden="true"></span>
+          <span class="side-board-name">${name}</span>
+          <span class="side-board-state">${b.revoked ? "Access removed" : b === store.active ? linkLabel[link] : ""}</span>
+        </button>
+        <button type="button" role="menuitem" class="icon-btn side-board-forget" aria-label=${`Forget ${name} on this browser`}
+          title="Forget" onClick=${() => store.askForget(b.pin.board)}><${Icon} name="trash" size=${16} /></button>
+      </div>`;
+    })}
     <button id="add-board" type="button" role="menuitem" class="side-board side-board-add" onClick=${() => store.showPairing()}>
       <${Icon} name="plus" size=${16} /><span class="side-board-name">Pair a board</span></button>
   </div>`;
