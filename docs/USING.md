@@ -224,7 +224,9 @@ Each ticket has one live agent seat across both providers.
 Where Claude Code is 2.1.287 or newer, mesimon loads its own mod into each Claude session it
 starts, in place of the hooks and the MCP server it generates for an older one; `mesimon doctor`
 says which of the two a session got. The mod reports the session's events to the board, refuses
-its writes to the board's files and serves its board tools.
+its writes to the board's files and serves its board tools. On a Team or Enterprise account,
+Claude Code keeps its hook events from a person's plugins, so sessions there get the hooks and
+the MCP server instead; `mesimon doctor` says so, and nothing is needed from you.
 Through the mod, a session gets its brief and every prompt you send it as your own words, whole,
 without anything typed into its pane, and a question it asks is answered straight in its dialog
 when you answer from Remote Control or the crown does. A session without the mod has its prompts

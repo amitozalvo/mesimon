@@ -20924,3 +20924,70 @@ skips. Not fixed: which fork sent the frame and why the mod's `tool.call` map ga
 The About section no longer says who writes mesimon or where, and neither footer says "Made in
 Israel"; both keep the copyright line. This supersedes that part of T-520: the page is about the
 product, and nothing on it should be there that a reader does not need.
+
+## A Team or Enterprise account keeps the hook events from the mod: `auto` relaunches on the hook set (T-650, 2026-10-05, the author's work Mac: "ticket started with shift+enter, prompt was sent, mesimon thought it didn't send")
+
+**Seen.** On a Mac signed into a Claude Enterprise organization, Claude Code 2.1.289, build
+alpha.38: a composed start took the mod road, the brief went in, Claude worked a four-minute
+turn and wrote its note with the board's tools, and the card read `starting up` with `brief not
+sent ∙ shift+enter resend` for the whole of it. The resend went down the mod ("Prompt from the
+mesimon plugin" in the transcript; "Already done"), and the mark stayed. The feed for that session
+held `ModUsage` (two turns) and one `ModSubmit`, every one `"road":"mod"`, and not one
+`SessionStart`, `UserPromptSubmit` or `Stop`. The author's own Mac, same Claude Code, same build,
+reports every event.
+
+**Measured, in the 2.1.289 binary.** Claude Code ships `cc-plugin-sec-default@builtin`
+("Security default: seated outermost on a machine with managed settings and for Team and
+Enterprise organizations unless managed prependPlugins is set … keeps the organization's classic
+hooks, prompt content, settings and tool policy out of reach of the plugins a person installs").
+Its seating rule (`qjr`): listed in managed `prependPlugins`, else managed settings present, else
+the organization is `team` or `enterprise`. Its register is one line per event family, and for
+the classic hooks it is `e("classic.*", (n, o, t) => t.to(o, "append"))`: every classic event is
+handed to the `append` tier, past `user`, where a person's plugin sits, `--plugin-dir` included
+(the tiers are `prepend, user, append, builtin, core`, and a prepend plugin may `to` only
+`append`, `builtin` or `core`). `session.start`, `tool.call` and `turn.complete` are not on its
+list. So on such an account the mod loads, registers the tools, brings its bridge up, takes a
+`submit` and reports its turns, and hears no classic event for its life. `allowManagedHooksOnly`
+and `disableAllHooks` are a different thing: the loader (`BHt`) refuses a non-managed hooks module
+under either, the load probe says `ModsOff`, and the mod never loads. The probe cannot see the
+seating: `claude plugin test` on a module that registers nothing passes.
+
+**What the board did with it.** No `SessionStart` by 20 s: `rescue_silent_mods` armed the brief
+on the paste road (the unlabelled first prompt). No `UserPromptSubmit`: ten presses, then
+`prompt_submit_gave_up` and `unsent`. Shift+Enter: `mod_speaks(submit)` was true, so the brief
+went down the mod a second time, `ModSubmit` 56 ms after the first turn's `ModUsage` (queued
+behind the running turn). Cost was counted from `ModUsage` while the card read `starting up`.
+
+**Decided.**
+1. *A second silence for `relaunch_silent_mods`.* T-598 judged a mod launch silent when its
+   bridge never polled; it skipped one whose bridge had, leaving that to the paste rescue. Now a
+   record on the mod alone, still `spawning`, whose bridge has polled from its pane a bridge wait
+   (10 s) or more ago with no `SessionStart` behind it, is relaunched on the hook set the same way
+   (`Silence::Deaf`; journal "no SessionStart from its mod N s after its bridge first polled: this
+   Claude Code keeps the hook events from the mod"; feed `claude_road_relaunch`). The composer
+   must show, as before. The author's board measures `SessionStart` 1.0–2.0 s after the spawn
+   over 18 mod launches, before or beside the bridge's first poll, so ten seconds after that poll
+   is a wide margin. A bridge now remembers when it first polled from its pane (`Bridge::since`).
+2. *The verdict is `ClassicOff { version, seen_at }`*, beside `ModsOff`: the same clock
+   (`MODS_OFF_TTL_MS`, asked again at the next daemon start), the same `road.json` flag
+   (`mods_off`, kept by name for an older doctor), its own line: "hook events do not reach the
+   mod in this Claude Code (seen HH:MM; a Team or Enterprise account, or managed settings); the
+   hook set is used". `Probe::mods_off` became `Probe::claude_off` (either). Doctor's advice says
+   both causes and asks nothing. Every later `auto` launch takes the hook set at once, as T-598's
+   does; settings-file hooks are not plugins and the security default does not touch them, which
+   is why the board worked on that Mac before the mod road.
+3. *A `submit` the mod reports `entered` clears `unsent`.* The engine took the prompt (its turn
+   begun, or queued behind the running one): the agent has the words, and a resend would send
+   them twice. The ack stays `UserPromptSubmit`.
+4. *Not built: relaying from the native events.* `session.start`/`session.end`,
+   `turn.start`/`turn.complete` and `tool.call` pass the security default and could carry the
+   board on such an account, but their payloads are not the hook set's (`transcript_path`,
+   `stop_hook_active`, teammates, background tasks), which the attention machine reads. The hook
+   set already carries those accounts whole.
+
+**Tests.** `mod_auto_e2e::a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_on_the_hook_set`
+(the stand-in engine beside an `auto` stub, by the harness's `FAKE_MOD` mark; no `SessionStart`
+sent; the relaunch within the bridge wait of the first poll, `classic_off` in `probe.json`,
+the brief by paste once, the next launch on the hook set at once); the verdict's expiry and line
+in `modroad`'s unit tests; doctor's line. `mod_turns_e2e` unchanged and green: a refused submit
+still keeps `unsent`, and the `entered` of its resend now clears it before the ack does.

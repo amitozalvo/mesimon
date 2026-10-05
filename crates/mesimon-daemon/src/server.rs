@@ -4155,7 +4155,10 @@ impl Daemon {
     }
 
     /// The mod's report on a `submit` (T-575), the frame's id as its reason.
-    /// `entered` is the receipt again; a submit the engine refused
+    /// `entered` is the receipt again, and delivery (T-650): the prompt is
+    /// the session's, its turn begun or queued behind the running one, so
+    /// words the card called unsent are not, and its resend would send them
+    /// twice. The ack stays `UserPromptSubmit`. A submit the engine refused
     /// (`dropped`: a hook beneath blocked it) or that threw (`rejected`)
     /// keeps the words unsent, the card's `brief not sent` and its resend,
     /// as a launch whose composer never painted does.
@@ -4164,6 +4167,15 @@ impl Daemon {
         let outcome = frame.payload["outcome"].as_str().unwrap_or("");
         if outcome == "entered" {
             self.mod_taken(id, fid);
+            let delivered = self
+                .board
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == id)
+                .is_some_and(|rec| rec.unsent.take().is_some());
+            if delivered {
+                self.persist_and_notify();
+            }
             return;
         }
         let ours = self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(fid));

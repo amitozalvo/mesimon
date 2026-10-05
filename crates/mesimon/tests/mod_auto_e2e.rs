@@ -237,6 +237,93 @@ fn a_mod_launch_that_never_reports_is_relaunched_on_the_hook_set() {
     let _ = c.request(Command::KillSession { id: next });
 }
 
+/// T-650: a Team or Enterprise account. Claude Code seats
+/// `cc-plugin-sec-default` outermost there, whose `classic.*` hook hands
+/// every classic event past a person's plugins: the mod loads, its bridge
+/// polls and its tools serve, and `SessionStart`, `UserPromptSubmit` and
+/// `Stop` never reach it. The probe passes (nothing in `claude plugin test`
+/// sees the seating), so under `auto` the launch is judged by its silence:
+/// a bridge that polled with no `SessionStart` a bridge wait later is
+/// relaunched on the hook set, the words kept for the new pane, the probe
+/// learns that the hook events do not reach the mod, and the next launch
+/// takes the hook set at once.
+#[test]
+fn a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_on_the_hook_set() {
+    let env = [
+        ("MESIMON_CLAUDE_ROAD", "auto"),
+        ("MESIMON_MOD_BRIDGE_WAIT_MS", "1500"),
+        // The stand-in engine beside the stub: it brings the bridge up and
+        // relays the mod's own reports, and no classic event (a test sends
+        // those itself, and this one does not).
+        (FAKE_MOD, "1"),
+    ];
+    let Some(h) = Harness::boot_bare("mod-auto-deaf", Some(&silent_stub(TEST_PASSES)), &env) else {
+        return;
+    };
+    wait_until(Duration::from_secs(30), "the startup probe", || {
+        road_json(&h).is_some_and(|v| v["road"] == "mod")
+    });
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("auto-deaf");
+    let ticket =
+        ticket_with_brief(&mut c, "deaf mod", "## Brief\n\nmesimon-650-brief arrives once");
+    let sid = composed(&mut c, ticket);
+    let first = record(&mut c, sid);
+    assert_eq!(first.road, Road::Mod);
+    assert!(first.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", first.argv);
+
+    // The bridge polls (the mod is up) and no SessionStart follows: a bridge
+    // wait after that first poll the launch is relaunched on the hook set,
+    // and the journal's reason says the bridge had polled.
+    wait_until(Duration::from_secs(10), "the relaunch on the hook set", || {
+        let rec = record(&mut c, sid);
+        rec.road == Road::Hooks && rec.argv.iter().any(|a| a == "--settings")
+    });
+    let rec = record(&mut c, sid);
+    assert!(!rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
+    assert_eq!(rec.state, SessionState::Spawning);
+    assert!(rec.pending_submit, "the words are still owed");
+    wait_until(Duration::from_secs(5), "the feed's two lines", || {
+        feed_has(&h, "claude_road_relaunch") && feed_has(&h, "claude_road_fallback")
+    });
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap_or_default();
+    assert!(journal.contains("after its bridge first polled"), "{journal}");
+    assert!(journal.contains("relaunched on the hook set"), "{journal}");
+    let probe = probe_json(&h).expect("probe.json");
+    assert_eq!(probe["verdict"], "classic_off", "{probe}");
+    assert_eq!(probe["version"], "2.1.288", "{probe}");
+    let road = road_json(&h).unwrap();
+    assert_eq!(road["road"], "hooks");
+    assert_eq!(road["mods_off"], true, "{road}");
+    assert!(road["probe"].as_str().unwrap().contains("hook events do not reach the mod"), "{road}");
+
+    // The hook set's SessionStart arms the words, which go once, by paste.
+    hook_send_with(
+        &hook_sock,
+        &sid.to_string(),
+        "SessionStart",
+        Some("startup"),
+        r#"{"session_id":"x","transcript_path":"/tmp/t-650.jsonl","cwd":"/tmp"}"#,
+    );
+    let got = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
+    wait_until(Duration::from_secs(10), "the brief by paste", || {
+        got().contains("mesimon-650-brief")
+    });
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    assert_eq!(got().matches("mesimon-650-brief").count(), 1, "{}", got());
+    assert!(record(&mut c, sid).unsent.is_none());
+
+    // The next launch takes the hook set at once.
+    let other = ticket_with_brief(&mut c, "the next one", "## Brief\n\nmesimon-650-next");
+    let next = composed(&mut c, other);
+    let rec = record(&mut c, next);
+    assert_eq!(rec.road, Road::Hooks);
+    assert!(rec.argv.iter().any(|a| a == "--settings"), "{:?}", rec.argv);
+    let _ = c.request(Command::KillSession { id: sid });
+    let _ = c.request(Command::KillSession { id: next });
+}
+
 /// T-598: the probe's load step. A Claude Code that refuses `claude plugin
 /// test` in the flag's words has mods off, and every launch takes the hook
 /// set from the first.

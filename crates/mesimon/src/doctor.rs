@@ -724,12 +724,13 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
         return rec(Level::Warn, "claude road", value)
             .advice(format!("The mod could not be laid, so launches take the hook set: {e}"));
     }
-    // Claude Code turning mods off (T-598) is its own call and costs the
-    // board nothing: the hook set carries every session as it did before
-    // 2.1.287, and the probe asks again by itself.
+    // Claude Code turning mods off (T-598), or keeping the hook events from
+    // them on a Team or Enterprise account (T-650), is its own call and
+    // costs the board nothing: the hook set carries every session as it did
+    // before 2.1.287, and the probe asks again by itself.
     if v.mods_off {
         return rec(Level::Ok, "claude road", value).advice(format!(
-            "Nothing is needed from you: Claude Code has mods turned off, so launches take the hook set, which reports and serves the board as before. mesimon asks again at its next start and every 6 hours, and takes the mod once Claude Code loads it. {advice}"
+            "Nothing is needed from you: this Claude Code does not let mesimon's mod report (mods are off, or a Team or Enterprise account keeps hook events from a person's plugins), so launches take the hook set, which reports and serves the board as before. mesimon asks again at its next start and every 6 hours, and takes the mod once Claude Code lets it report. {advice}"
         ));
     }
     let level = if v.fallback { Level::Warn } else { Level::Ok };
@@ -1293,6 +1294,27 @@ mod tests {
         assert!(matches!(r.level, super::Level::Ok), "nothing to fix");
         let advice = r.advice.unwrap_or_default();
         assert!(advice.starts_with("Nothing is needed from you"), "{advice}");
+        // T-650: a Team or Enterprise account keeps the hook events from the
+        // mod. The same flag, the verdict's own words, the same advice.
+        let deaf = "claude 2.1.289: hook events do not reach the mod in this Claude Code (seen 11:44; a Team or Enterprise account, or managed settings); the hook set is used";
+        write_verdict(
+            &paths,
+            &RoadVerdict {
+                road: Road::Hooks,
+                setting: "auto".into(),
+                source: auto,
+                probe: Some(deaf.into()),
+                lay_error: None,
+                fallback: true,
+                mods_off: true,
+            },
+        );
+        let r = super::claude_road(&paths);
+        assert_eq!(r.value, format!("hooks ∙ {deaf}"));
+        assert!(matches!(r.level, super::Level::Ok), "nothing to fix");
+        let advice = r.advice.unwrap_or_default();
+        assert!(advice.starts_with("Nothing is needed from you"), "{advice}");
+        assert!(advice.contains("Team or Enterprise"), "{advice}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

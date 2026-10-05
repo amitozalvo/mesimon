@@ -358,7 +358,13 @@ armed on the paste road (`rescue_silent_mods`, feed `mod_silent`): no hook set w
 `claude plugin test` on a one-test folder (`modroad::LOAD_PROBE`), whose refusal is a `ModsOff`
 verdict; and under `auto` a silent mod launch whose bridge never polled is relaunched on the hook
 set first (`relaunch_silent_mods`, feed `claude_road_relaunch`), once per record per daemon life,
-writing `ModsOff` too. `ModsOff` is asked again at the next daemon start and after 6 h.
+writing `ModsOff` too. `ModsOff` is asked again at the next daemon start and after 6 h. **And only where its hook
+events arrive (T-650):** a Team or Enterprise account, or managed settings, seats Claude Code's
+`cc-plugin-sec-default` outermost, whose `classic.*` hook hands every classic event past a
+person's plugins, so the mod loads, serves the tools and takes a `submit` and never hears
+`SessionStart`; a mod launch whose bridge polled and whose `SessionStart` has not come a bridge
+wait later is relaunched on the hook set the same way, verdict `ClassicOff`, same clock. A
+`submit` the mod reports `entered` clears `unsent`: the agent has the words.
 The hook set, `mesimon gate` and `mesimon mcp`'s server stay whole for an older Claude Code and
 Codex. The daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`),
 never a push from the writer thread. The mod spells nothing on promise 3's never-list (a unit
@@ -512,6 +518,13 @@ will not show up in our tests until they break something.
   never loads. `claude plugin test` refuses in its words ("hooks modules are turned off"). No
   local override exists in the public build; `DISABLE_GROWTHBOOK=1` reads every flag's default,
   this one's on, and is the rig's pin alone (`MESIMON_RIG_NO_FLAGS`). Never write `~/.claude.json`.
+- **Claude Code seats its `cc-plugin-sec-default` outermost on a Team or Enterprise account, or
+  under managed settings** (2.1.289, T-650), and that plugin's `classic.*` hook is one line,
+  `next.to(e, "append")`: a person's mod, `--plugin-dir` included, gets `session.start`,
+  `tool.call` and `turn.complete` and never a classic hook event. `claude plugin validate` and
+  `claude plugin test` pass all the same; the feed shows `ModUsage` and `ModSubmit` and no
+  `SessionStart`. The seating rule is `qjr` in the binary; `allowManagedHooksOnly` and
+  `disableAllHooks` are a different thing (the module is not loaded at all).
 - **A mod's `submit` fires `UserPromptSubmit` as a typed prompt does, but an answer the mod
   returns in a dialog's place fires no `PostToolUse`**: the mod's `ModAnswer` report is that edge.
 - **A mod's `$` call in flight fails with its dispatch when that dispatch is abandoned**

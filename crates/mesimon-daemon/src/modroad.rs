@@ -26,6 +26,16 @@
 //! verdict ([`Verdict::ModsOff`]); that verdict expires
 //! ([`Probe::recheck_due`]), so a Claude Code that turns mods back on gets
 //! the mod again with nobody asked.
+//!
+//! Loading is not hearing (T-650): on a Team or Enterprise account, or a
+//! machine with managed settings, Claude Code 2.1.289 seats its own
+//! `cc-plugin-sec-default` outermost, whose `classic.*` hook hands every
+//! classic hook event past a person's plugins (`next.to(e, "append")`). The
+//! mod then loads, serves the tools and takes a `submit`, and never hears
+//! `SessionStart`, `UserPromptSubmit` or `Stop`. No probe sees the seating;
+//! a launch whose bridge polled and whose `SessionStart` never came is
+//! relaunched on the hook set and writes [`Verdict::ClassicOff`], which
+//! expires as the mods-off one does.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -210,6 +220,13 @@ pub enum Verdict {
     /// never reported and was relaunched on the hook set. `seen_at` (epoch
     /// ms) is when; the verdict is asked again after [`MODS_OFF_TTL_MS`].
     ModsOff { version: String, seen_at: u64 },
+    /// The mod loads and this Claude Code keeps the hook events from it
+    /// (T-650): a launch's bridge polled and no `SessionStart` followed, so
+    /// it was relaunched on the hook set. A Team or Enterprise account, or
+    /// managed settings, seat `cc-plugin-sec-default`, which hands every
+    /// `classic.*` event past a person's plugins. `seen_at` (epoch ms) is
+    /// when; the verdict is asked again after [`MODS_OFF_TTL_MS`].
+    ClassicOff { version: String, seen_at: u64 },
     /// The mod validates and `claude plugin test` failed on the load probe
     /// in other words: the mod is not proven to load.
     LoadFailed { version: String, error: String },
@@ -228,6 +245,7 @@ impl Verdict {
             | Verdict::TooOld { version }
             | Verdict::ValidateFailed { version, .. }
             | Verdict::ModsOff { version, .. }
+            | Verdict::ClassicOff { version, .. }
             | Verdict::LoadFailed { version, .. } => Some(version),
             _ => None,
         }
@@ -244,6 +262,10 @@ impl Verdict {
             }
             Verdict::ModsOff { version, seen_at } => format!(
                 "claude {version}: mods are off in this Claude Code (seen {}); the hook set is used",
+                clock_of(*seen_at)
+            ),
+            Verdict::ClassicOff { version, seen_at } => format!(
+                "claude {version}: hook events do not reach the mod in this Claude Code (seen {}; a Team or Enterprise account, or managed settings); the hook set is used",
                 clock_of(*seen_at)
             ),
             Verdict::LoadFailed { version, error } => {
@@ -277,20 +299,25 @@ pub struct Probe {
 }
 
 impl Probe {
-    /// Whether this verdict is to be asked again (T-598): a mods-off one
-    /// [`MODS_OFF_TTL_MS`] after it was seen. A verdict about a binary that
-    /// changed since is asked by the key, and every other verdict stands
-    /// until then: it was read off the binary and the mod, which a key
-    /// names.
+    /// Whether this verdict is to be asked again (T-598): a mods-off one, or
+    /// a classic-off one (T-650), [`MODS_OFF_TTL_MS`] after it was seen. A
+    /// verdict about a binary that changed since is asked by the key, and
+    /// every other verdict stands until then: it was read off the binary and
+    /// the mod, which a key names.
     pub fn recheck_due(&self, now_ms: u64) -> bool {
         match &self.verdict {
-            Verdict::ModsOff { seen_at, .. } => now_ms.saturating_sub(*seen_at) >= MODS_OFF_TTL_MS,
+            Verdict::ModsOff { seen_at, .. } | Verdict::ClassicOff { seen_at, .. } => {
+                now_ms.saturating_sub(*seen_at) >= MODS_OFF_TTL_MS
+            }
             _ => false,
         }
     }
 
-    pub fn mods_off(&self) -> bool {
-        matches!(self.verdict, Verdict::ModsOff { .. })
+    /// Claude Code's own fallback, which asks nothing of the person: it has
+    /// mods off (T-598), or it keeps the hook events from them (T-650).
+    /// Either is a verdict with a clock, asked again when it is due.
+    pub fn claude_off(&self) -> bool {
+        matches!(self.verdict, Verdict::ModsOff { .. } | Verdict::ClassicOff { .. })
     }
 }
 
@@ -436,8 +463,11 @@ pub struct RoadVerdict {
     /// `auto` fell back after a passing probe: say so loudly.
     #[serde(default)]
     pub fallback: bool,
-    /// The fallback is Claude Code's own: it turned mods off (T-598), and
-    /// nothing is asked of the person.
+    /// The fallback is Claude Code's own, and nothing is asked of the
+    /// person: it turned mods off (T-598), or it keeps the hook events from
+    /// them (T-650, a Team or Enterprise account). The probe's line says
+    /// which. The key keeps its first name for the `doctor` of an older
+    /// build.
     #[serde(default)]
     pub mods_off: bool,
 }
@@ -607,31 +637,51 @@ mod tests {
         assert!(line.ends_with("); the hook set is used"), "{line}");
     }
 
-    /// T-598: a mods-off verdict is asked again six hours after it was seen;
-    /// a passing one, or one the binary's version settles, is not.
+    /// T-598: a mods-off verdict is asked again six hours after it was seen,
+    /// and so is a classic-off one (T-650); a passing one, or one the
+    /// binary's version settles, is not.
     #[test]
     fn a_mods_off_verdict_expires_and_no_other_does() {
         let key = ProbeKey { path: "/c".into(), mtime_ms: 1, len: 1, digest: digest() };
         let at = |verdict| Probe { key: key.clone(), verdict };
         let seen = 1_000_000;
         let off = at(Verdict::ModsOff { version: "2.1.288".into(), seen_at: seen });
-        assert!(off.mods_off());
-        assert!(!off.recheck_due(seen));
-        assert!(!off.recheck_due(seen + MODS_OFF_TTL_MS - 1));
-        assert!(off.recheck_due(seen + MODS_OFF_TTL_MS));
-        assert!(!off.recheck_due(0), "a clock behind the stamp is not past it");
+        let deaf = at(Verdict::ClassicOff { version: "2.1.289".into(), seen_at: seen });
+        for p in [&off, &deaf] {
+            assert!(p.claude_off());
+            assert!(!p.recheck_due(seen));
+            assert!(!p.recheck_due(seen + MODS_OFF_TTL_MS - 1));
+            assert!(p.recheck_due(seen + MODS_OFF_TTL_MS));
+            assert!(!p.recheck_due(0), "a clock behind the stamp is not past it");
+        }
         for verdict in [
             Verdict::Passed { version: "2.1.288".into() },
             Verdict::TooOld { version: "2.1.286".into() },
             Verdict::LoadFailed { version: "2.1.288".into(), error: "x".into() },
         ] {
-            assert!(!at(verdict).recheck_due(seen + 10 * MODS_OFF_TTL_MS));
+            let p = at(verdict);
+            assert!(!p.claude_off());
+            assert!(!p.recheck_due(seen + 10 * MODS_OFF_TTL_MS));
         }
-        // It round-trips through the cache file.
+        // T-650: the classic-off line names what was seen and the account
+        // that does it, and ends on the road taken.
+        let line = deaf.verdict.line();
+        assert!(
+            line.starts_with(
+                "claude 2.1.289: hook events do not reach the mod in this Claude Code (seen "
+            ),
+            "{line}"
+        );
+        assert!(line.contains("a Team or Enterprise account, or managed settings"), "{line}");
+        assert!(line.ends_with("); the hook set is used"), "{line}");
+        assert_eq!(deaf.verdict.version(), Some("2.1.289"));
+        // Both round-trip through the cache file.
         let dir = tempfile::tempdir().unwrap();
         let p = paths(dir.path());
         save_probe(&p, &off);
         assert_eq!(load_probe(&p), Some(off));
+        save_probe(&p, &deaf);
+        assert_eq!(load_probe(&p), Some(deaf));
     }
 
     #[test]

@@ -22,7 +22,10 @@
 //! `auto` takes the mod only where the mod is proven to load (T-598): a
 //! launch whose mod never reports is relaunched on the hook set
 //! (`relaunch_silent_mods`), and the probe learns that this Claude Code has
-//! mods off, so the launches after it take the hook set at once.
+//! mods off, so the launches after it take the hook set at once. The same
+//! road for a mod that loads and is kept from the hook events (T-650): a
+//! bridge that polled with no `SessionStart` behind it is the sign, and the
+//! verdict is `ClassicOff`.
 
 use super::*;
 use crate::modroad::{self, Probe, RoadVerdict, Verdict};
@@ -55,10 +58,12 @@ struct Ping {
 }
 
 /// A session's bridge as its last poll described it: the pane it polls
-/// from and the kinds its mod reads. Kept while that pane is the record's.
+/// from, the kinds its mod reads, and when its first poll from that pane
+/// came (epoch ms). Kept while that pane is the record's.
 struct Bridge {
     pane: Option<String>,
     speaks: Vec<String>,
+    since: u64,
 }
 
 /// What the request in hand asked the writer to park (`Daemon::mod_park`).
@@ -92,8 +97,41 @@ impl ModRoad {
     /// launch or a probe needs it, so a board on `hooks` writes nothing.
     pub(super) fn start(paths: &Paths) -> Self {
         let probe = modroad::load_probe(paths);
-        let recheck = probe.as_ref().is_some_and(Probe::mods_off);
+        let recheck = probe.as_ref().is_some_and(Probe::claude_off);
         ModRoad { probe, recheck, ..Default::default() }
+    }
+}
+
+/// Why a mod launch is judged silent (`relaunch_silent_mods`): its mod never
+/// came up (T-598), or it came up and heard no `SessionStart` (T-650). Each
+/// is a reason for the journal and the feed, and a verdict for the probe.
+#[derive(Debug, Clone, Copy)]
+enum Silence {
+    /// No bridge `age` ms after the launch, with the composer shown.
+    Unloaded { age: u64 },
+    /// The bridge polled `polled` ms ago and no `SessionStart` followed.
+    Deaf { polled: u64 },
+}
+
+impl Silence {
+    fn reason(self) -> String {
+        match self {
+            Silence::Unloaded { age } => format!(
+                "no SessionStart and no bridge from its mod {} s after the launch",
+                age.div_ceil(1000)
+            ),
+            Silence::Deaf { polled } => format!(
+                "no SessionStart from its mod {} s after its bridge first polled: this Claude Code keeps the hook events from the mod",
+                polled.div_ceil(1000)
+            ),
+        }
+    }
+
+    fn verdict(self, version: String, seen_at: u64) -> Verdict {
+        match self {
+            Silence::Unloaded { .. } => Verdict::ModsOff { version, seen_at },
+            Silence::Deaf { .. } => Verdict::ClassicOff { version, seen_at },
+        }
     }
 }
 
@@ -145,7 +183,7 @@ impl Daemon {
             probe: probe_line,
             lay_error: self.modroad.lay_error.clone(),
             fallback: false,
-            mods_off: self.modroad.probe.as_ref().is_some_and(Probe::mods_off)
+            mods_off: self.modroad.probe.as_ref().is_some_and(Probe::claude_off)
                 && road == Road::Hooks
                 && setting.pref == RoadPref::Auto,
         });
@@ -218,10 +256,10 @@ impl Daemon {
         }
     }
 
-    /// A mods-off verdict to ask again (T-598): one read at this daemon's
-    /// start, or one older than `MODS_OFF_TTL_MS`.
+    /// A mods-off (T-598) or classic-off (T-650) verdict to ask again: one
+    /// read at this daemon's start, or one older than `MODS_OFF_TTL_MS`.
     fn mods_off_due(&self, probe: &Probe) -> bool {
-        probe.mods_off() && (self.modroad.recheck || probe.recheck_due(now_ms()))
+        probe.claude_off() && (self.modroad.recheck || probe.recheck_due(now_ms()))
     }
 
     fn start_road_probe(&mut self, bin: std::path::PathBuf, key: modroad::ProbeKey) {
@@ -281,7 +319,7 @@ impl Daemon {
             self.feed.board_outcome("automation", &format!("claude_road:{word}"), None, &line);
         }
         let setting = modroad::read_setting();
-        let mods_off = probe.mods_off();
+        let mods_off = probe.claude_off();
         self.modroad.probe = Some(probe);
         if setting.pref == RoadPref::Auto {
             self.note_road(RoadVerdict {
@@ -315,14 +353,26 @@ impl Daemon {
     /// pane's `SessionStart`, and the probe learns that this Claude Code has
     /// mods off. Once per record per daemon life.
     ///
+    /// The second silence is a mod that loaded and hears nothing (T-650):
+    /// its bridge polled from the pane, which takes the mod's `session.start`
+    /// and its tools, and no `SessionStart` has come a bridge wait after that
+    /// first poll. On a Team or Enterprise account Claude Code seats
+    /// `cc-plugin-sec-default` outermost, whose `classic.*` hook hands every
+    /// classic event past a person's plugins, so this is every launch there:
+    /// the mod takes a `submit` and reports its turns' cost while the board
+    /// reads `starting up` for the session's whole life. The author's board
+    /// measures `SessionStart` 1–2 s after the spawn, before or beside the
+    /// bridge's first poll, so a wait after that poll is a wide margin. The
+    /// relaunch is the same, and the verdict is `ClassicOff`, asked again
+    /// as the mods-off one is.
+    ///
     /// The order against `rescue_silent_mods` (T-577), which arms a silent
     /// mod launch's words for the paste road at twice the bridge wait: this
     /// is judged first in the tick, at the bridge wait, and a relaunched
     /// record is on the hook set, so the rescue never sees it. The rescue
-    /// stays for the `mod` seam, for a launch whose bridge polled and whose
-    /// `SessionStart` still never came, for a pane a dialog held past it
-    /// (its words then wait on the composer, and a relaunch that follows
-    /// takes them back), and for a relaunch that failed.
+    /// stays for the `mod` seam, for a pane a dialog held past it (its words
+    /// then wait on the composer, and a relaunch that follows takes them
+    /// back), and for a relaunch that failed.
     pub(super) fn relaunch_silent_mods(&mut self, now: u64) -> bool {
         if modroad::read_setting().pref != RoadPref::Auto {
             return false;
@@ -343,15 +393,30 @@ impl Daemon {
             .collect();
         let mut changed = false;
         for (id, age) in due {
-            if self.mod_bridged(id) {
-                continue;
-            }
+            let silence = match self.mod_bridged_since(id) {
+                // The mod loaded: it is heard from once its bridge has had a
+                // wait of its own to be followed by the pane's `SessionStart`.
+                Some(since) => {
+                    let polled = now.saturating_sub(since);
+                    if polled < wait {
+                        continue;
+                    }
+                    Silence::Deaf { polled }
+                }
+                None => Silence::Unloaded { age },
+            };
             if !self.composer_shown(id) {
                 continue;
             }
-            changed |= self.relaunch_on_hooks(id, age, now);
+            changed |= self.relaunch_on_hooks(id, silence, now);
         }
         changed
+    }
+
+    /// When the session's bridge first polled from the record's own pane
+    /// (epoch ms), while it is up (`mod_bridged`).
+    fn mod_bridged_since(&self, session: uuid::Uuid) -> Option<u64> {
+        self.mod_bridged(session).then(|| self.modroad.bridges.get(&session).map(|b| b.since))?
     }
 
     /// Whether a Claude pane shows its composer (`composer::read`).
@@ -364,27 +429,22 @@ impl Daemon {
     }
 
     /// End a silent mod launch and launch it again on the hook set.
-    fn relaunch_on_hooks(&mut self, id: uuid::Uuid, age: u64, now: u64) -> bool {
+    fn relaunch_on_hooks(&mut self, id: uuid::Uuid, silence: Silence, now: u64) -> bool {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
         let ticket = rec.ticket;
         let prior = rec.state.clone();
         let pending_submit = rec.pending_submit;
         let conversed = rec.transcript_path.is_some() || rec.claude_session_id.is_some();
         let plan = rec.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan");
-        let reason = format!(
-            "no SessionStart and no bridge from its mod {} s after the launch",
-            age.div_ceil(1000)
-        );
+        let reason = silence.reason();
         self.modroad.relaunched.insert(id);
         self.journal.line(&format!("session {id}: {reason}; relaunched on the hook set"));
-        // This Claude Code does not load the mod: every later `auto` launch
-        // takes the hook set at once, until a probe says it loads again.
+        // This Claude Code does not load the mod, or keeps the hook events
+        // from it: every later `auto` launch takes the hook set at once,
+        // until a probe says it loads again.
         if let Some(p) = self.modroad.probe.clone().filter(|p| p.verdict.passed()) {
             let version = p.verdict.version().unwrap_or_default().to_string();
-            self.learn_road(Probe {
-                key: p.key,
-                verdict: Verdict::ModsOff { version, seen_at: now },
-            });
+            self.learn_road(Probe { key: p.key, verdict: silence.verdict(version, now) });
         }
         // The words are the new pane's (a wake drops what the old one owed),
         // and its own `SessionStart` arms them, on the paste road.
@@ -570,7 +630,12 @@ impl Daemon {
         // The first poll from this pane is the mod come up: what a launch
         // parked for it goes down now (T-575).
         let first = self.modroad.bridges.get(&session).is_none_or(|b| b.pane != pane);
-        self.modroad.bridges.insert(session, Bridge { pane, speaks });
+        let since = if first {
+            now_ms()
+        } else {
+            self.modroad.bridges.get(&session).map_or_else(now_ms, |b| b.since)
+        };
+        self.modroad.bridges.insert(session, Bridge { pane, speaks, since });
         for id in taken {
             self.mod_taken(session, &id);
         }

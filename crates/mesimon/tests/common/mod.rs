@@ -87,6 +87,11 @@ pub fn test_road() -> &'static str {
 /// The in-pane half of the stand-in engine for the mod road (T-574).
 pub const FAKE_CLAUDE_MOD: &str = include_str!("fake_claude_mod.py");
 
+/// A test's mark that its stub runs the stand-in engine beside it whatever
+/// road the daemon's seam names (`TestFixture::spawn`); never in a child's
+/// environment.
+pub const FAKE_MOD: &str = "MESIMON_TEST_FAKE_MOD";
+
 /// Test configuration is per child, never process-global. In particular a
 /// missing stub must not launch the developer's installed, authenticated agent.
 pub struct TestFixture {
@@ -161,9 +166,13 @@ impl TestFixture {
         let mut env = self.env.borrow().clone();
         // Under the mod road a daemon's Claude panes run the stand-in engine
         // beside the stub (T-574). Wrapped on this spawn's copy of the env,
-        // so a restart wraps the original once, never a wrapper.
+        // so a restart wraps the original once, never a wrapper. A test on
+        // `auto` that wants the engine beside its stub all the same (T-650:
+        // a mod that loads and hears nothing) says so with `FAKE_MOD`, a
+        // mark the harness alone reads.
+        let fake_mod = env.remove(FAKE_MOD).is_some();
         if argv.get(1).map(String::as_str) == Some("daemon")
-            && env.get("MESIMON_CLAUDE_ROAD").map(String::as_str) == Some("mod")
+            && (fake_mod || env.get("MESIMON_CLAUDE_ROAD").map(String::as_str) == Some("mod"))
         {
             if let Some(stub) = env.get("MESIMON_CLAUDE_BIN").cloned() {
                 env.insert("MESIMON_CLAUDE_BIN".into(), self.wrap_for_mod(&stub));
