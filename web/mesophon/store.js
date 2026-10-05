@@ -246,11 +246,15 @@ export class Store {
   }
 
   // ---- navigation --------------------------------------------------------
-  detail(open, push = false) {
+  // On a phone the ticket is a screen of its own and the system's Back closes
+  // it (T-667): every way it opens (a tap, a notification's link, the
+  // selection remembered at boot or on a board switch) leaves an entry to go
+  // back from, or Back leaves the app.
+  detail(open) {
     if (open && !this.detailOpen) this.outputKey = undefined;
     this.detailOpen = open;
     if (!open) this.focus = "row";
-    if (push && narrow() && !history.state?.detail) history.pushState({ detail: true }, "");
+    if (open && narrow() && !history.state?.detail) history.pushState({ detail: true }, "");
   }
   select(id) {
     if (!this.board) return;
@@ -259,7 +263,7 @@ export class Store {
     this.board.selected = id;
     this.active.selected = id;
     this.persist();
-    this.detail(true, true);
+    this.detail(true);
     this.focus = "selection";
     this.sync();
     this.preview();

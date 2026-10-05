@@ -2220,6 +2220,55 @@ async function pairLinkFlow(browser, engineName) {
   }
 }
 
+// The system's Back on a phone (T-667): a ticket the page opens by itself, the
+// one remembered at launch, closes to the list it came from, and the page
+// stays; only Back from the list leaves.
+async function backFlow(browser, engineName) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  let page = await context.newPage();
+  const errors = [];
+  const watch = (p) => p.on("pageerror", (error) => errors.push(String(error)));
+  watch(page);
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').click();
+    await until(page, () => document.querySelector("#shell").dataset.detail === "true");
+    await until(
+      page,
+      () =>
+        new Promise((resolve) => {
+          const open = indexedDB.open("mesophon", 1);
+          open.onsuccess = () => {
+            const get = open.result.transaction("device").objectStore("device").get("identity");
+            get.onsuccess = () => resolve(get.result?.boards?.[0]?.selected === "ticket-0");
+          };
+        }),
+    );
+    // Launched again from the home screen: a page with no history behind it.
+    await page.close();
+    page = await context.newPage();
+    watch(page);
+    await page.goto(origin);
+    await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-0");
+    await page.goBack();
+    await until(page, () => document.querySelector("#shell").dataset.detail === "false");
+    assert.equal(await page.evaluate(() => location.origin), new URL(origin).origin, "Back stays in the page");
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    assert.equal(await page.locator("#list-title").textContent(), "Now");
+    assert.deepEqual(errors, []);
+    console.log(`${engineName}: the system's Back closes a remembered ticket passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-back-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 // Home screen and no signal (T-497): the service worker keeps the page, so a
 // load with no network opens the kept copy. It shows the remembered board,
 // takes a ticket with a clock, opens no socket, and becomes the relay's own
@@ -3133,6 +3182,7 @@ try {
         await chatFlow(browser, engineName, size, viewport);
       }
       await pairLinkFlow(browser, engineName);
+      await backFlow(browser, engineName);
       await keptFlow(browser, engineName);
     } finally {
       await browser.close();

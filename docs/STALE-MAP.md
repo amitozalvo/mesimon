@@ -21518,3 +21518,21 @@ automove edge, once, the correction, no rule elsewhere),
 refusals), e2e `restart_e2e::a_turn_that_ends_while_the_daemon_is_down_still_moves_its_ticket`
 (`Harness::restart_after` writes the close inside the window; REVIEW at Medium, one `moved`
 line, nothing moves it again), `cargo ut`, `restart_e2e`, `mod_turns_e2e`.
+
+## The phone's Back closes a ticket the page opened by itself (T-667, 2026-10-05, "Remote control back button on a ticket overlay should not exit the app")
+
+On a phone the ticket page is a screen of its own, and the system's Back is meant to close it
+(`Store::back`/`popstate`, a `{ detail: true }` history entry). Only a tap pushed that entry:
+`select` passed `push`, while the three other ways the page opens a ticket did not — the
+selection remembered at launch (`openBoard` from `boot`, the home-screen case), a board switch
+to one with a selection, and a notification's `#board=…&ticket=…` link (`boot`,
+`navigateTicket`). With no entry behind the ticket, Back left the page; from the home screen
+that closes the app. `Store::detail(true)` now pushes whenever a phone shows the ticket and the
+current entry is not already one, so every opener leaves the same entry and Back lands on the
+list the board was on (Now, Board or Sent). A reload keeps `history.state`, so no second entry
+is stacked. Wide screens are unchanged: the ticket is a pane or the Board's side panel there,
+and no entry is pushed.
+
+Verified: `ux.test.js` `backFlow` (Chromium, WebKit: a ticket opened, the page launched again
+in a fresh tab, `goBack` closes it to Now and stays on the page; without the fix the page
+leaves), the phone and tablet UX flows on both engines, `state.test.js`.
