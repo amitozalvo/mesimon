@@ -8776,6 +8776,33 @@ fn the_search_list_scrolls_by_one_to_keep_the_cursor_on_screen() {
     assert!(rows(&app)[0].contains("Zebra 20"), "{:?}", rows(&app));
 }
 
+/// With board sharing held (T-653) the menu's row is Remote Control's and
+/// opens its dialog at once (T-637): signed out, the sign-in rows under
+/// `REMOTE CONTROL ∙ NOT SIGNED IN`; signed in, the identity above this
+/// board's rows, the footer's word Remote Control's too.
+#[test]
+fn golden_remote_control_from_the_menu() {
+    let mut app = app_graphite(fixture_archived());
+    app.mesophon_available = true;
+    app.teams = false;
+    app.seed_team_drafts_for_test();
+    // The state the menu row leaves (`remote_control_is_the_menu_row_when_
+    // sharing_is_held` walks the row itself): Remote Control's dialog, on
+    // the relay row signed out and on Enable signed in.
+    app.mesophon_dialog = true;
+    app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("REMOTE CONTROL ∙ NOT SIGNED IN")), "{lines:?}");
+    golden("remote_control_signed_out_120x30", &lines);
+    app.team.device = crate::app::shared_team_fixture().device;
+    let enable = app.sharing_rows().iter().position(|r| *r == SharingRow::ControlEnable);
+    app.mode = Mode::Sharing { idx: enable.expect("enable"), editing: None, armed: false };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("REMOTE CONTROL ∙ OFF")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("Signed in as")), "{lines:?}");
+    golden("remote_control_signed_in_120x30", &lines);
+}
+
 #[test]
 fn golden_mesophon_pair_and_revoke() {
     let mut app = app_graphite(fixture_archived());

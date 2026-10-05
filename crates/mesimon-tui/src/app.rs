@@ -5959,8 +5959,12 @@ impl App {
             // ---- board sharing (T-334, T-335) ------------------------------
             // One dialog; it opens on the first row that matters: the relay
             // while there is no identity, this board's first row otherwise.
+            // With board sharing held (T-653) the menu row is Remote
+            // Control's and opens its dialog at once (T-637): there is no
+            // sharing dialog to pass through, so the identity sits in it.
             Verb::Sharing | Verb::Mesophon => {
-                self.mesophon_dialog = verb == Verb::Mesophon;
+                self.mesophon_dialog =
+                    verb == Verb::Mesophon || (!self.teams && self.mesophon_available);
                 self.key_dialog = false;
                 let rows = self.sharing_rows();
                 let signed = self.team.device.as_ref().is_some_and(|d| d.registered);
@@ -7150,7 +7154,7 @@ impl App {
                         .position(|row| matches!(row, SharingRow::SignIn | SharingRow::Account))
                         .unwrap_or(0);
                     self.mode = Mode::Sharing { idx, editing: None, armed: false };
-                } else if self.mesophon_dialog {
+                } else if self.mesophon_dialog && self.teams {
                     self.mesophon_dialog = false;
                     let idx = self
                         .sharing_rows()
@@ -7159,6 +7163,9 @@ impl App {
                         .unwrap_or(0);
                     self.mode = Mode::Sharing { idx, editing: None, armed: false };
                 } else {
+                    // Remote Control's dialog opened from the menu (T-637)
+                    // goes back to it.
+                    self.mesophon_dialog = false;
                     self.mode = Mode::Menu { idx: self.menu_row(Verb::Sharing) };
                 }
             }
@@ -7698,7 +7705,9 @@ impl App {
             ];
         }
         let mut rows = Vec::new();
-        if !self.mesophon_dialog {
+        // The identity belongs to the sharing dialog (T-513); with board
+        // sharing held there is none, so Remote Control's carries it (T-637).
+        if !self.mesophon_dialog || !self.teams {
             rows.extend([SharingRow::Heading("YOU"), SharingRow::Account]);
         }
         rows.push(SharingRow::Heading("THIS BOARD"));
@@ -7853,6 +7862,8 @@ impl App {
                 },
                 if editing {
                     "self-hosted: replace with host[:port], a space, its pin".into()
+                } else if !self.teams {
+                    "where your phone reaches this board ∙ enter edits".into()
                 } else {
                     "where shared boards meet ∙ enter edits".into()
                 },
@@ -7866,6 +7877,8 @@ impl App {
                 },
                 if editing {
                     "what teammates see on your edits ∙ up to sixty-four characters".into()
+                } else if !self.teams {
+                    "the name this computer signs in with ∙ enter edits".into()
                 } else {
                     "what teammates see on your edits ∙ enter edits".into()
                 },
@@ -15249,9 +15262,12 @@ mod tests {
         app.teams = false;
         assert!(!keymap::menu_items(&app.ctx()).iter().any(|row| row.verb == Verb::Mesophon));
         app.dispatch(Verb::Sharing, Key::Enter, Scope::Menu, &app.ctx()).unwrap();
-        assert!(!app.mesophon_dialog);
+        // Sharing held: the row opens Remote Control's own dialog (T-637).
+        assert!(app.mesophon_dialog);
         assert!(!app.sharing_rows().contains(&SharingRow::Publish));
         app.teams = true;
+        app.dispatch(Verb::Sharing, Key::Enter, Scope::Menu, &app.ctx()).unwrap();
+        assert!(!app.mesophon_dialog);
         assert!(app.sharing_rows().contains(&SharingRow::Publish));
         let opener =
             app.sharing_rows().iter().position(|r| *r == SharingRow::RemoteControl).unwrap();
@@ -15288,6 +15304,46 @@ mod tests {
         app.mesophon_available = true;
         app.team.device = None;
         assert!(!app.sharing_rows().contains(&SharingRow::RemoteControl), "signed out, no door");
+    }
+
+    /// With board sharing held (T-653) the menu row is Remote Control's
+    /// (T-637): it opens Remote Control's dialog at once, signed out on the
+    /// sign-in rows and signed in with the identity above this board's
+    /// rows, and Esc goes back to the menu, not to a sharing dialog.
+    #[test]
+    fn remote_control_is_the_menu_row_when_sharing_is_held() {
+        let (mut app, _sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.mesophon_available = true;
+        app.teams = false;
+        let ctx = app.ctx();
+        let row = keymap::menu_items(&ctx).into_iter().find(|m| m.verb == Verb::Sharing).unwrap();
+        assert_eq!((row.label)(&ctx), "Remote Control: not signed in");
+        app.dispatch(Verb::Sharing, Key::Enter, Scope::Menu, &ctx).unwrap();
+        assert!(app.mesophon_dialog, "the row opens Remote Control's dialog");
+        let rows = app.sharing_rows();
+        assert_eq!(rows.last(), Some(&SharingRow::SignIn), "{rows:?}");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.mesophon_dialog);
+        assert_eq!(app.mode, Mode::Menu { idx: app.menu_row(Verb::Sharing) });
+        app.team.device = shared_team_fixture().device;
+        let ctx = app.ctx();
+        assert_eq!((row.label)(&ctx), "Remote Control");
+        app.dispatch(Verb::Sharing, Key::Enter, Scope::Menu, &ctx).unwrap();
+        assert!(app.mesophon_dialog);
+        let rows = app.sharing_rows();
+        assert_eq!(rows[0], SharingRow::Heading("YOU"), "the identity is in here: {rows:?}");
+        assert_eq!(rows[1], SharingRow::Account);
+        assert!(rows.contains(&SharingRow::ControlEnable), "{rows:?}");
+        assert!(!rows.contains(&SharingRow::RemoteControl), "no door to itself: {rows:?}");
+        assert!(!rows.contains(&SharingRow::Publish));
+        let enable = rows.iter().position(|r| *r == SharingRow::ControlEnable).unwrap();
+        assert_eq!(app.mode, Mode::Sharing { idx: enable, editing: None, armed: false });
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Menu { idx: app.menu_row(Verb::Sharing) });
+        // With sharing on, the identity stays the sharing dialog's.
+        app.teams = true;
+        app.dispatch(Verb::Mesophon, Key::Enter, Scope::Sharing, &app.ctx()).unwrap();
+        assert_eq!(app.sharing_rows()[0], SharingRow::Heading("THIS BOARD"));
     }
 
     /// Signed in, the YOU section is the one row that says who (T-513):

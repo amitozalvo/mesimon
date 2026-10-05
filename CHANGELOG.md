@@ -18,6 +18,11 @@ in the Esc menu under `Release notes` and on GitHub.
 
 ### Changed
 
+- **The Esc menu's `Sharing` row is `Remote Control`,** and it opens Remote
+  Control's dialog directly: `Sign in`, `Enable`, `Pair a browser` and your
+  paired devices are its rows, with `Signed in as …` above them. The footer
+  reads `REMOTE CONTROL` there, and `mesimon mesophon setup` names the same
+  path.
 - **In Remote Control's Sent, a ticket that landed shows as its board card,**
   with its current column, tags and agent. An archived ticket reads
   `Archived`; one no longer on the board keeps the words it was sent with.

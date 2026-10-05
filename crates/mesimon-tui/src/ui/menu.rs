@@ -118,7 +118,10 @@ pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
     let title = if app.key_dialog {
         "LICENSE KEY".to_string()
     } else if app.mesophon_dialog {
-        let state = if !app.control.enabled {
+        let signed = app.team.device.as_ref().is_some_and(|d| d.registered);
+        let state = if !signed {
+            "NOT SIGNED IN"
+        } else if !app.control.enabled {
             "OFF"
         } else if app.control.connected {
             "CONNECTED"

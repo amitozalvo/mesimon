@@ -10,7 +10,7 @@ use mesimon_team::{
 const USAGE: &str = "usage: mesimon mesophon setup [--check]\n\
 Checks your signed-in relay and opens the browser app. --check only checks.\n\
 For this Mac, configure the relay with WEB_ORIGIN=http://localhost:8444.\n\
-In the TUI, open Esc → Sharing → Remote Control, enable the board, and choose Pair a browser.";
+In the TUI, open Esc → Remote Control, enable the board, and choose Pair a browser.";
 
 pub fn run(args: &[String]) -> Result<()> {
     if matches!(args, [arg] if arg == "--help" || arg == "-h") {
@@ -42,7 +42,7 @@ pub fn run(args: &[String]) -> Result<()> {
     if origin.starts_with("http:") {
         println!("This Mac only. No certificate setup is needed.");
     }
-    println!("In Mesimon: Esc → Sharing → Remote Control → Enable this board → Pair a browser.");
+    println!("In Mesimon: Esc → Remote Control → Enable this board → Pair a browser.");
     if !check {
         let opener = if cfg!(target_os = "macos") { "/usr/bin/open" } else { "xdg-open" };
         let status = std::process::Command::new(opener)

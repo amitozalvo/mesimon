@@ -4090,11 +4090,19 @@ static MENU_ITEMS: &[MenuItem] = &[
     // board stands and opens the one dialog: signed out it says so and the
     // dialog starts on the identity; shared it names the members and the
     // sync; joined it names the owner. Sign-in, publishing, inviting,
-    // joining and leaving are all rows of that dialog.
+    // joining and leaving are all rows of that dialog. With board sharing
+    // held (T-653) the row is Remote Control's alone and says so (T-637):
+    // the dialog it opens is Remote Control's, with the identity inside.
     MenuItem {
         verb: Verb::Sharing,
         label: |c| {
-            if c.team_shared && !c.team_owner {
+            if !c.teams {
+                if c.team_signed_in {
+                    "Remote Control".into()
+                } else {
+                    "Remote Control: not signed in".into()
+                }
+            } else if c.team_shared && !c.team_owner {
                 format!("Shared by {} ∙ {}", c.team_owner_name, c.team_sync)
             } else if c.team_shared {
                 format!("Shared with {} ∙ {}", plural(c.team_members, "member"), c.team_sync)
@@ -4105,7 +4113,11 @@ static MENU_ITEMS: &[MenuItem] = &[
             }
         },
         detail: |c| {
-            if !c.team_signed_in {
+            if !c.teams && !c.team_signed_in {
+                "sign in with a license key to pair your phone".into()
+            } else if !c.teams {
+                "pair a phone or a browser to this board ∙ license key, sign out".into()
+            } else if !c.team_signed_in {
                 "sign in to a relay to share this board or join one".into()
             } else if c.team_shared && !c.team_owner {
                 format!("{} ∙ your boards ∙ leave", plural(c.team_members, "member"))
@@ -9346,6 +9358,14 @@ mod tests {
         };
         assert_eq!((row.label)(&joined), "Shared by Amit ∙ synced");
         assert!((row.detail)(&joined).contains("leave"));
+        // Board sharing held (T-653): the row is Remote Control's and says
+        // so, whatever a board shared earlier still reports (T-637).
+        let control = Ctx { mesophon: true, ..Default::default() };
+        assert_eq!((row.label)(&control), "Remote Control: not signed in");
+        assert!((row.detail)(&control).contains("license key"));
+        let control_in = Ctx { team_signed_in: true, team_shared: true, ..control.clone() };
+        assert_eq!((row.label)(&control_in), "Remote Control");
+        assert!((row.detail)(&control_in).contains("pair a phone"));
         assert_eq!(resolve(Scope::Sharing, Key::Enter, &out), None);
         let acting = Ctx { sharing_enter_word: "publish", ..Default::default() };
         assert_eq!(resolve(Scope::Sharing, Key::Enter, &acting), Some(Verb::Act));

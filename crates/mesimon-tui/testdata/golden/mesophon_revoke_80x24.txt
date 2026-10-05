@@ -21,4 +21,4 @@
 
 
 
- MESOPHON  jk select ∙ enter revoke ∙ esc close                          ? keys
+ REMOTE CONTROL  jk select ∙ enter revoke ∙ esc close                    ? keys

@@ -21659,3 +21659,39 @@ and the next sheet opens empty. **Not verified:** the daemon end of a live `crea
 physical phone, and the hosted relay, which serves the page and needs its `ship.sh`. **Owed:**
 a CHANGELOG line at the next bump — **Added:** Remote Control can add pictures to a new
 ticket's details.
+
+## The menu's row is `Remote Control`, and opens its dialog at once while sharing is held (T-637, 2026-10-05, "rename Sharing in settings to Remote Control since we now ship remote control only")
+
+**Built.** With board sharing held (T-653, `Ctx::teams` false) the Esc menu's `Verb::Sharing`
+row reads `Remote Control` / `Remote Control: not signed in`, its detail is about pairing a
+phone and the license key, and Enter opens Remote Control's dialog directly
+(`mesophon_dialog` set in the dispatch arm when `!teams && mesophon_available`). The sharing
+dialog used to stand between: signed in it held `YOU ∙ Signed in as …` and `THIS BOARD ∙ Remote
+Control`, one door to a dialog of the same name. So Remote Control's dialog now carries the
+identity (`YOU`, `Account`) when sharing is held, reversing T-513's "no YOU in here" for that
+case only; signed out it shows the sign-in rows, under `REMOTE CONTROL ∙ NOT SIGNED IN` (a new
+title state in `draw_sharing`). Esc from it goes back to the menu, not to a sharing dialog. The
+footer's mode word there is `REMOTE CONTROL`, no longer `MESOPHON`, a codename a person never
+reads elsewhere. With `MESIMON_TEAMS=1` nothing changes: the row, the sharing dialog, its door
+and the identity's place are as T-513 and T-647 left them.
+
+**Why the flatten and not the label alone.** Renaming the row and keeping the dialog would have
+read Esc → Remote Control → `Remote Control` → Remote Control: two nested dialogs named the
+same, the outer one holding one row. The buying page's steps (T-637) now read Esc → Remote
+Control → Sign in → License key → Enable → Pair a browser, which is what the binary does.
+
+**Words outside the binary** moved with it: `mesimon mesophon setup`'s two sentences,
+`docs/REMOTE-CONTROL.md`'s opening path, the relay page and its thanks page.
+
+**Tests.** `the_sharing_row_names_where_the_board_stands` covers the held case;
+`remote_control_is_the_menu_row_when_sharing_is_held` walks the menu road both ways and checks
+the Teams road is untouched; `mesophon_enable_and_revoke_use_the_local_control_surface` now
+expects Remote Control's dialog from the row while sharing is held, and turns sharing on to walk
+the door. Goldens: two new (`remote_control_signed_out_120x30`, `remote_control_signed_in_120x30`),
+three reminted for the footer word only (`mesophon_pair_120x30`, `mesophon_pair_80x40`,
+`mesophon_revoke_80x24`).
+
+**Still owed, from the same ticket's map:** Remote Control is offered only in a development
+build or under `MESIMON_MESOPHON=1` (`tui/lib.rs::run`, `daemon/server/mesophon.rs::control_start`
+and `control_local`), so the released binary has no `Remote Control` row at all; a ticket of its
+own, before the buying page is promoted.

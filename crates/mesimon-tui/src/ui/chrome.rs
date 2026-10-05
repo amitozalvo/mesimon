@@ -573,7 +573,7 @@ fn mode_word(app: &App) -> Option<&'static str> {
         Mode::ColumnSettings { naming: Some(_), .. } => "NAME",
         Mode::ColumnSettings { describing: Some(_), .. } => "DESCRIPTION",
         Mode::Sharing { .. } if app.key_dialog => "LICENSE KEY",
-        Mode::Sharing { .. } if app.mesophon_dialog => "MESOPHON",
+        Mode::Sharing { .. } if app.mesophon_dialog => "REMOTE CONTROL",
         _ => scope.word(),
     };
     let resting = matches!(

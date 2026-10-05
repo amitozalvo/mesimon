@@ -37,4 +37,4 @@
 
 
 
- MESOPHON  jk select ∙ enter copy ∙ esc close                            ? keys
+ REMOTE CONTROL  jk select ∙ enter copy ∙ esc close                      ? keys
