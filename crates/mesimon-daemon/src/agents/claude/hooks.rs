@@ -128,6 +128,50 @@ pub fn signal_with_background(frame: &HookFrame, tasks: &mut Registry) -> Option
     signal
 }
 
+/// The hook set's `StopFailure` class word → its class. The transcript's
+/// error row spells the same words (`tail::api_error`, T-659).
+pub fn failure_class(word: Option<&str>) -> StopFailureClass {
+    match word {
+        Some("rate_limit") => StopFailureClass::RateLimit,
+        Some("overloaded") => StopFailureClass::Overloaded,
+        Some("authentication_failed") => StopFailureClass::AuthenticationFailed,
+        Some("oauth_org_not_allowed") => StopFailureClass::OauthOrgNotAllowed,
+        Some("billing_error") => StopFailureClass::BillingError,
+        Some("invalid_request") => StopFailureClass::InvalidRequest,
+        Some("model_not_found") => StopFailureClass::ModelNotFound,
+        Some("max_output_tokens") => StopFailureClass::MaxOutputTokens,
+        Some("server_error") => StopFailureClass::ServerError,
+        _ => StopFailureClass::Unknown,
+    }
+}
+
+/// A `StopFailure` that says no class and no message: the native road's
+/// (T-659), whose `turn.complete { reason: "error" }` carries neither, so
+/// the mod relays `error: "unknown"` and `native: true`. A frame that names
+/// a class — the hook set's, or a native one that somehow does — is its own
+/// word and is never re-read.
+pub fn failure_unsaid(frame: &HookFrame) -> bool {
+    if frame.event != "StopFailure" {
+        return false;
+    }
+    let word =
+        frame.reason.as_deref().or_else(|| frame.payload.get("error").and_then(Value::as_str));
+    let native = frame.payload.get("native").and_then(Value::as_bool) == Some(true);
+    let message = frame
+        .payload
+        .get("last_assistant_message")
+        .and_then(Value::as_str)
+        .is_some_and(|m| !m.trim().is_empty());
+    failure_class(word) == StopFailureClass::Unknown && (native || !message)
+}
+
+/// The card excerpt for a failure read off the transcript: `detail_of`'s
+/// treatment of `last_assistant_message`.
+pub fn failure_detail(text: &str) -> Option<String> {
+    let text = sanitize(text);
+    (!text.is_empty()).then_some(text)
+}
+
 pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
     let reason = frame.reason.as_deref();
     match frame.event.as_str() {
@@ -194,18 +238,9 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
         "StopFailure" => Some(Signal::StopFailure {
             // The matcher IS the error class (spike S-A); `error` is the
             // payload cross-check when the argv reason is missing.
-            class: match reason.or_else(|| frame.payload.get("error").and_then(Value::as_str)) {
-                Some("rate_limit") => StopFailureClass::RateLimit,
-                Some("overloaded") => StopFailureClass::Overloaded,
-                Some("authentication_failed") => StopFailureClass::AuthenticationFailed,
-                Some("oauth_org_not_allowed") => StopFailureClass::OauthOrgNotAllowed,
-                Some("billing_error") => StopFailureClass::BillingError,
-                Some("invalid_request") => StopFailureClass::InvalidRequest,
-                Some("model_not_found") => StopFailureClass::ModelNotFound,
-                Some("max_output_tokens") => StopFailureClass::MaxOutputTokens,
-                Some("server_error") => StopFailureClass::ServerError,
-                _ => StopFailureClass::Unknown,
-            },
+            class: failure_class(
+                reason.or_else(|| frame.payload.get("error").and_then(Value::as_str)),
+            ),
         }),
         // The approval dialog for the two interaction tools IS the plan/
         // question moment — a generic Permission here would clobber the

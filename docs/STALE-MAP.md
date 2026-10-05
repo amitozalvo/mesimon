@@ -21231,3 +21231,57 @@ finished ticket is `cargo ut` + the e2es its diff reaches, and the full suite on
 daemon, wire, state-schema, tmux-backend or harness change (T-227's class). The release gate
 keeps the full suite on both roads, so a regression that slips is caught before a tag, at the
 cost of a bisect.
+
+## A native failed turn reads its class and message off the transcript (T-659, 2026-10-05, native road 3 of 3)
+
+On the native road a failed turn is `turn.complete { reason: "error" }` and nothing else (T-651's
+"An API error"), so the mod relays `StopFailure { error: "unknown", native: true }` and a Team or
+Enterprise card read every failure as a plain one: no Throttled, no Auth, no message.
+
+**Measured** (Claude Code 2.1.289, `claude -p` in a scratch folder; print mode only, the
+interactive pane was not measured). Every failed turn closes on ONE `assistant` record:
+
+```json
+{"type":"assistant","message":{"model":"<synthetic>","stop_reason":"stop_sequence",
+  "usage":{"input_tokens":0,"output_tokens":0,…},
+  "content":[{"type":"text","text":"<the rendered error>"}]},
+ "error":"<class word>","isApiErrorMessage":true,"apiErrorStatus":<http status>, …}
+```
+
+| How | `error` | `apiErrorStatus` | text |
+|---|---|---|---|
+| `--model claude-no-such-model-0` | `model_not_found` | 404 | There's an issue with the selected model (claude-no-such-model-0). It may not exist or you may not have access to it. Run --model to pick a different model. |
+| an invalid `ANTHROPIC_API_KEY` | `authentication_failed` | 401 | Failed to authenticate. API Error: 401 API key is invalid. |
+| `CLAUDE_CODE_MAX_OUTPUT_TOKENS=1` | `max_output_tokens` (also `apiError`) | absent | API Error: Claude's response exceeded the 1 output token maximum. … |
+
+The `error` word is the hook set's `StopFailure` matcher word, so one table maps both
+(`hooks::failure_class`). Before the closing record, a retried failure writes one `system` row per
+attempt (`subtype: "api_error"`, `error: { status, formatted }`, `retryAttempt`, `maxRetries:
+10`; the 401 retried ten times over ~3 minutes): those are mid-turn and never the class. Only
+latches (`last-prompt`, `cost-state`) follow the closing record. A rate limit, an overload, a
+billing or org refusal and a server error were not reachable from here; their words come from the
+matcher list, which the measured three match exactly.
+
+**Built.**
+- `tail::api_error`: newest first over the 64 KiB tail, skipping latches, attachments and `system`
+  rows; the first `assistant` record with `isApiErrorMessage` is the error (`error`, else
+  `apiError`; text by `adopt::assistant_text`); any other `user` or `assistant` record stops the
+  walk, so an error behind a newer prompt or a turn whose error is unwritten says nothing.
+- `Claude::parse_hook`: a `StopFailure` whose class is `unknown` and that is `native: true` or
+  carries no `last_assistant_message` (`hooks::failure_unsaid`) is re-read there, before the
+  signal leaves: the class becomes the signal's, the text the detail, through `detail_of`'s
+  sanitizer. A frame that names a class — every hook-set frame — is never re-read.
+- The late write. The frame can beat the row by milliseconds, and the existing tail affirm could
+  not take it: a `Failed` record is not polled on the transcript channel at all (rank 9, neither
+  attention nor `Running`), and the cursor's hints are `TranscriptHint`s, which carry no class.
+  So `recovery.rs` polls a **native** record at `Failed { Unknown }` every 2 s for the spell's
+  first minute (`FAILURE_REREAD_MS`, `FAILURE_REREAD_SPELL_MS`) and, on an error row with a class,
+  sends `Signal::StopFailure { class }` with the text as its preview. The machine takes a
+  `StopFailure` from any state, so the card moves to Throttled, Auth or the sharper Failed. A
+  minute on, `unknown` stands. The branch drops the cursor, so the spell after mints its own.
+
+**Tests.** `cargo ut`: `tail`'s reading (retry rows, the unflushed prompt, an older error behind a
+new prompt, a plain reply), every class through `parse_hook` off a fabricated transcript, an
+unwritten row keeping `unknown`, a hook-set frame untouched by a transcript that says otherwise,
+and the recovery's re-read (rate, minute, native only). No e2e covers `StopFailure`, so none was
+added.

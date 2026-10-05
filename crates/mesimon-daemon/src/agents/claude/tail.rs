@@ -114,6 +114,52 @@ pub fn aborted_since(path: &Path, since: u64) -> bool {
     false
 }
 
+/// The API error a failed turn ends on, as the transcript renders it.
+pub struct ApiError {
+    /// The hook set's class word (`rate_limit`, `model_not_found`, …).
+    pub class: String,
+    /// The rendered text, the hook set's `last_assistant_message`.
+    pub text: Option<String>,
+}
+
+/// The error the LAST turn failed on, if the transcript says it yet (T-659).
+/// Claude Code closes a failed turn with one `assistant` record of model
+/// `<synthetic>` carrying `isApiErrorMessage: true`, the class in `error` in
+/// the hook set's own words, and the rendered message as its one text block
+/// (2.1.289, measured for `model_not_found`, `authentication_failed` and
+/// `max_output_tokens`). The walk skips latches, attachments and `system`
+/// rows — a retry's `api_error` row is one, written mid-turn and not the
+/// class — and stops at the first other `user` or `assistant` record: an
+/// error row behind a newer prompt or reply belongs to an older turn, and a
+/// turn whose error is not flushed yet has its prompt or its last reply as
+/// the last word.
+pub fn api_error(path: &Path) -> Option<ApiError> {
+    use serde_json::Value;
+    for v in tail_records(path)? {
+        if v.get("uuid").is_none() {
+            continue;
+        }
+        match v.get("type").and_then(Value::as_str) {
+            Some("assistant") => {
+                if v.get("isApiErrorMessage").and_then(Value::as_bool) != Some(true) {
+                    return None;
+                }
+                let class = v
+                    .get("error")
+                    .or_else(|| v.get("apiError"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let text = mesimon_core::adopt::assistant_text(&v).map(str::to_string);
+                return Some(ApiError { class, text });
+            }
+            Some("user") => return None,
+            _ => continue,
+        }
+    }
+    None
+}
+
 /// The parsed records of the last 64 KiB, NEWEST first. The window may open
 /// mid-record, so the first line of a truncated read is dropped; a line that
 /// is not JSON is skipped (09 §4.3: never resync).
@@ -209,6 +255,20 @@ impl TailCursor {
         }
         lines
     }
+}
+
+/// A failed turn's closing record as Claude Code 2.1.289 writes it (T-659,
+/// measured: `--model claude-no-such-model-0`, an invalid
+/// `ANTHROPIC_API_KEY`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS=1`), trimmed of the
+/// envelope fields nothing here reads.
+#[cfg(test)]
+pub(crate) fn error_row(class: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({"uuid": format!("err-{class}"), "type": "assistant",
+        "timestamp": "2026-10-05T11:35:48.686Z",
+        "message": {"model": "<synthetic>", "role": "assistant", "stop_reason": "stop_sequence",
+            "stop_sequence": "", "type": "message", "usage": {"input_tokens": 0, "output_tokens": 0},
+            "content": [{"type": "text", "text": text}]},
+        "error": class, "isApiErrorMessage": true, "apiErrorStatus": 404})
 }
 
 #[cfg(test)]
@@ -418,5 +478,46 @@ mod tests {
         write(&[prompt, call, abort]);
         assert!(!turn_in_flight(&path, at(t0), quiet));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// T-659: the error row the failed turn closed on, in the hook set's
+    /// words; a retry's `system` row is skipped, and an error behind a newer
+    /// prompt, or a turn whose error is not written yet, says nothing.
+    #[test]
+    fn a_failed_turns_error_row_is_its_class_and_message() {
+        let path = tmp("api-error");
+        let line = |v: serde_json::Value| format!("{v}\n");
+        let prompt = serde_json::json!({"uuid":"p", "type":"user", "message":{"content":"say hi"}});
+        let retry = serde_json::json!({"uuid":"r", "type":"system", "subtype":"api_error",
+            "level":"error", "error":{"status":401, "formatted":"401 API key is invalid."},
+            "retryAttempt":1, "maxRetries":10});
+        std::fs::write(&path, line(prompt.clone()) + &line(retry.clone())).unwrap();
+        assert!(api_error(&path).is_none(), "not flushed: the prompt is the last word");
+        let failed = error_row(
+            "authentication_failed",
+            "Failed to authenticate. API Error: 401 API key is invalid.",
+        );
+        let latch = serde_json::json!({"type":"last-prompt", "lastPrompt":"say hi"});
+        std::fs::write(&path, line(prompt.clone()) + &line(retry) + &line(failed) + &line(latch))
+            .unwrap();
+        let error = api_error(&path).unwrap();
+        assert_eq!(error.class, "authentication_failed");
+        assert_eq!(
+            error.text.as_deref(),
+            Some("Failed to authenticate. API Error: 401 API key is invalid.")
+        );
+        // The next prompt opens a turn the old error does not speak for.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        write!(file, "{}", line(prompt)).unwrap();
+        assert!(api_error(&path).is_none());
+        // A reply that is not an error is the turn's last word.
+        std::fs::write(
+            &path,
+            line(serde_json::json!({"uuid":"a", "type":"assistant",
+            "message":{"stop_reason":"end_turn", "content":[{"type":"text","text":"hi"}]}})),
+        )
+        .unwrap();
+        assert!(api_error(&path).is_none());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

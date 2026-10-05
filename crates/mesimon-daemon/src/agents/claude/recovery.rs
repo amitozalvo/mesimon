@@ -5,7 +5,7 @@ use super::tail::{self, TailCursor};
 use crate::agents::{AgentRecovery, RecoveryChannel, RecoveryObservation, RecoverySample};
 use mesimon_core::adopt::{classify_tail_record, SessionsPidFile, TailEvent, TailTool};
 use mesimon_core::attention::{self, Signal, TailHint};
-use mesimon_core::board::{Provenance, Reason, SessionRecord, SessionState};
+use mesimon_core::board::{FailReason, Provenance, Reason, SessionRecord, SessionState};
 use std::path::PathBuf;
 
 const TAIL_QUIET_MS: u64 = 45_000;
@@ -14,6 +14,12 @@ const TAIL_QUIET_MS: u64 = 45_000;
 /// one 64 KiB read a minute per waiting session keeps it re-armed with
 /// margin to spare (T-363).
 const WAIT_AFFIRM_MS: u64 = 60_000;
+/// How often a native failed turn whose class the frame could not say is
+/// re-read off the tail, and for how long (T-659). The race is the frame
+/// beating Claude Code's write of the error row by milliseconds; a minute
+/// of two-second reads covers a slow flush and then gives up on `unknown`.
+const FAILURE_REREAD_MS: u64 = 2_000;
+const FAILURE_REREAD_SPELL_MS: u64 = 60_000;
 
 #[derive(Default)]
 pub(super) struct ClaudeRecovery {
@@ -25,6 +31,8 @@ pub(super) struct ClaudeRecovery {
     affirmed_at: Option<u64>,
     /// Whether this `Unknown` spell has been seeded from the resting tail.
     rested: bool,
+    /// Last time a native `Failed { Unknown }` was re-read for its class.
+    failure_read_at: Option<u64>,
 }
 
 /// The transcript's word for a held dialog: the tail event that says THIS
@@ -46,6 +54,15 @@ fn observe_only(record: &SessionRecord) -> bool {
 fn abort_only(record: &SessionRecord) -> bool {
     !observe_only(record)
         && (record.state == SessionState::Running || attention::is_attention(&record.state))
+}
+
+/// A native failed turn the frame could not class (T-659): the mod relays
+/// `unknown`, and the adapter's read of the tail at the frame found no error
+/// row yet. The re-read below is the only road that corrects it.
+fn failure_unread(record: &SessionRecord) -> bool {
+    record.native
+        && record.state == SessionState::Failed { reason: FailReason::Unknown }
+        && record.transcript_path.is_some()
 }
 
 fn observation(signal: Signal, source: &'static str) -> RecoveryObservation {
@@ -84,6 +101,14 @@ impl AgentRecovery for ClaudeRecovery {
                 eligible
             }
             RecoveryChannel::Transcript => {
+                if failure_unread(record) {
+                    let spell = now.saturating_sub(record.state_changed_at.unwrap_or(now));
+                    return spell < FAILURE_REREAD_SPELL_MS
+                        && self
+                            .failure_read_at
+                            .is_none_or(|at| now.saturating_sub(at) >= FAILURE_REREAD_MS);
+                }
+                self.failure_read_at = None;
                 let eligible = record.transcript_path.is_some()
                     && ((observe_only(record) && record.state.is_live())
                         || (!observe_only(record)
@@ -196,6 +221,22 @@ impl ClaudeRecovery {
         let Some(path) = record.transcript_path.as_deref().map(PathBuf::from) else {
             return Vec::new();
         };
+        if failure_unread(record) {
+            // A later spell mints its own cursor: the lines of this one are
+            // the failure's, and nothing the abort-only class reads.
+            self.cursor = None;
+            self.failure_read_at = Some(now);
+            return tail::api_error(&path)
+                .map(|error| (super::hooks::failure_class(Some(&error.class)), error.text))
+                .filter(|(class, _)| *class != attention::StopFailureClass::Unknown)
+                .map(|(class, text)| RecoveryObservation {
+                    signal: Signal::StopFailure { class },
+                    preview: text.as_deref().and_then(super::hooks::failure_detail),
+                    source: "tail",
+                })
+                .into_iter()
+                .collect();
+        }
         let abort_only = abort_only(record);
         let fresh = self.cursor.as_ref().is_none_or(|cursor| cursor.path != path);
         let unknown = matches!(record.state, SessionState::Unknown { .. });
@@ -772,5 +813,41 @@ mod recovery_tests {
         record.transcript_path = None;
         let observations = recovery.poll(&record, silent(), now);
         assert!(matches!(observations[0].signal, Signal::PaneQuiet));
+    }
+
+    /// T-659: a native failed turn whose frame beat the transcript's write
+    /// stays `unknown` only until the error row lands; the re-read runs every
+    /// two seconds for a minute, on a native record only.
+    #[test]
+    fn a_native_failure_takes_its_class_off_the_tail_once_written() {
+        let history = History::new();
+        history.append(serde_json::json!({"uuid":"p", "type":"user", "message":{"content":"go"}}));
+        let mut record = record(SessionState::Failed { reason: FailReason::Unknown });
+        record.transcript_path = Some(history.0.display().to_string());
+        let mut recovery = ClaudeRecovery::default();
+        assert!(
+            !recovery.needs_poll(&record, RecoveryChannel::Transcript, 1000),
+            "the hook set's road: its frame named the class"
+        );
+        record.native = true;
+        assert!(recovery.needs_poll(&record, RecoveryChannel::Transcript, 1000));
+        assert!(recovery.poll(&record, RecoverySample::Transcript, 1000).is_empty());
+        assert!(!recovery.needs_poll(&record, RecoveryChannel::Transcript, 2000), "rate-limited");
+        history.append(super::tail::error_row("rate_limit", "API Error: Rate limit reached"));
+        assert!(recovery.needs_poll(&record, RecoveryChannel::Transcript, 3000));
+        let read = recovery.poll(&record, RecoverySample::Transcript, 3000);
+        assert!(matches!(
+            read[..],
+            [RecoveryObservation {
+                signal: Signal::StopFailure { class: attention::StopFailureClass::RateLimit },
+                ..
+            }]
+        ));
+        assert_eq!(read[0].preview.as_deref(), Some("API Error: Rate limit reached"));
+        // A minute on, `unknown` is the answer.
+        assert!(!recovery.needs_poll(&record, RecoveryChannel::Transcript, 61_000));
+        // A class the frame did say is never re-read.
+        record.state = SessionState::Failed { reason: FailReason::Server };
+        assert!(!recovery.needs_poll(&record, RecoveryChannel::Transcript, 4000));
     }
 }

@@ -161,6 +161,21 @@ impl AgentAdapter for Claude {
         result.signal = hooks::signal_with_background(frame, &mut record.background_tasks);
         result.detail = hooks::detail_of(frame);
         result.plan = hooks::plan_of(frame);
+        // A native failed turn names no class (T-659): the transcript's
+        // error row does. Not flushed yet, `unknown` stands and the
+        // recovery's re-read corrects it.
+        if hooks::failure_unsaid(frame) {
+            if let Some(error) = record
+                .transcript_path
+                .as_deref()
+                .and_then(|p| tail::api_error(std::path::Path::new(p)))
+            {
+                result.signal = Some(mesimon_core::attention::Signal::StopFailure {
+                    class: hooks::failure_class(Some(&error.class)),
+                });
+                result.detail = error.text.as_deref().and_then(hooks::failure_detail);
+            }
+        }
         result
     }
 
@@ -437,5 +452,97 @@ mod tier_tests {
             woke.argv
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+    use mesimon_core::attention::{Signal, StopFailureClass};
+    use mesimon_core::board::{SessionKind, SessionState};
+
+    fn stop_failure(payload: serde_json::Value, reason: &str) -> crate::ingest::HookFrame {
+        let header =
+            serde_json::json!({"v": 1, "session": "s", "event": "StopFailure", "reason": reason});
+        let bytes = format!("{header}\n{payload}");
+        crate::ingest::parse_frame(bytes.as_bytes()).unwrap()
+    }
+
+    fn native() -> crate::ingest::HookFrame {
+        stop_failure(
+            serde_json::json!({"session_id": "x", "error": "unknown", "native": true}),
+            "unknown",
+        )
+    }
+
+    fn record_on(rows: &[serde_json::Value]) -> (SessionRecord, std::path::PathBuf) {
+        let path =
+            std::env::temp_dir().join(format!("msmn-failure-{}.jsonl", uuid::Uuid::new_v4()));
+        let text: String = rows.iter().map(|r| format!("{r}\n")).collect();
+        std::fs::write(&path, text).unwrap();
+        let mut record = SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            vec!["claude".into()],
+            "/repo".into(),
+            SessionState::Running,
+        );
+        record.transcript_path = Some(path.display().to_string());
+        (record, path)
+    }
+
+    fn prompt() -> serde_json::Value {
+        serde_json::json!({"uuid": "p", "type": "user", "message": {"content": "go"}})
+    }
+
+    /// T-659: every class the hook set's matcher names is read off the
+    /// error row in the same word, with its text for the card.
+    #[test]
+    fn a_native_failure_reads_its_class_and_message_off_the_transcript() {
+        let classes = [
+            ("rate_limit", StopFailureClass::RateLimit),
+            ("overloaded", StopFailureClass::Overloaded),
+            ("authentication_failed", StopFailureClass::AuthenticationFailed),
+            ("oauth_org_not_allowed", StopFailureClass::OauthOrgNotAllowed),
+            ("billing_error", StopFailureClass::BillingError),
+            ("invalid_request", StopFailureClass::InvalidRequest),
+            ("model_not_found", StopFailureClass::ModelNotFound),
+            ("max_output_tokens", StopFailureClass::MaxOutputTokens),
+            ("server_error", StopFailureClass::ServerError),
+            ("unknown", StopFailureClass::Unknown),
+        ];
+        for (word, class) in classes {
+            let text = format!("API Error: {word}");
+            let (mut record, path) = record_on(&[prompt(), tail::error_row(word, &text)]);
+            let seen = Claude.parse_hook(&native(), &mut record);
+            assert_eq!(seen.signal, Some(Signal::StopFailure { class }), "{word}");
+            assert_eq!(seen.detail.as_deref(), Some(text.as_str()), "{word}");
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Not flushed yet: `unknown` stands (the recovery's re-read corrects
+    /// it). A frame naming its class — the hook set's — is never re-read,
+    /// whatever the transcript says.
+    #[test]
+    fn an_unwritten_row_keeps_unknown_and_a_said_class_is_untouched() {
+        let (mut record, path) = record_on(&[prompt()]);
+        let seen = Claude.parse_hook(&native(), &mut record);
+        assert_eq!(seen.signal, Some(Signal::StopFailure { class: StopFailureClass::Unknown }));
+        assert_eq!(seen.detail.as_deref(), Some("unknown"));
+        let _ = std::fs::remove_file(path);
+
+        let (mut record, path) =
+            record_on(&[prompt(), tail::error_row("server_error", "API Error: 500")]);
+        let hooked = stop_failure(
+            serde_json::json!({"session_id": "x", "error": "rate_limit",
+                "last_assistant_message": "API Error: Rate limit reached"}),
+            "rate_limit",
+        );
+        let seen = Claude.parse_hook(&hooked, &mut record);
+        assert_eq!(seen.signal, Some(Signal::StopFailure { class: StopFailureClass::RateLimit }));
+        assert_eq!(seen.detail.as_deref(), Some("API Error: Rate limit reached"));
+        let _ = std::fs::remove_file(path);
     }
 }
