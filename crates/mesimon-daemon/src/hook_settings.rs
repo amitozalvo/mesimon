@@ -412,7 +412,10 @@ mod tests {
         // and is relayed by nothing there.
         for event in mesimon_core::road::NATIVE_EVENTS {
             assert!(mesimon_core::road::RELAYED_EVENTS.contains(&event), "{event}");
-            assert!(src.contains(&format!("relay($, '{event}',")), "{event} is not relayed natively");
+            assert!(
+                src.contains(&format!("relay($, '{event}',")),
+                "{event} is not relayed natively"
+            );
         }
         for event in mesimon_core::road::RELAYED_EVENTS {
             if mesimon_core::road::NATIVE_EVENTS.contains(&event) {
@@ -420,7 +423,16 @@ mod tests {
             }
             assert!(!src.contains(&format!("relay($, '{event}',")), "{event} has no native source");
         }
-        for hook in ["session.start", "session.end", "turn.start", "turn.complete", "tool.call", "agent.spawn", "session.receive", "session.compact"] {
+        for hook in [
+            "session.start",
+            "session.end",
+            "turn.start",
+            "turn.complete",
+            "tool.call",
+            "agent.spawn",
+            "session.receive",
+            "session.compact",
+        ] {
             assert!(src.contains(&format!("on('{hook}',")), "{hook}");
         }
     }
