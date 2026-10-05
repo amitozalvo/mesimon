@@ -6,6 +6,33 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.40 — 2026-10-05
+
+### Added
+
+- **Remote Control's New ticket sheet takes pictures in Details.** Paste a
+  picture or use the picture bar, as in a note. The pictures are kept with the
+  ticket once it is created.
+- **Remote Control's Now page lists tickets created in the last hour under
+  `Recently created`**, newest first, while no agent works on them.
+
+### Changed
+
+- **In Remote Control's Sent, a ticket that landed shows as its board card,**
+  with its current column, tags and agent. An archived ticket reads
+  `Archived`; one no longer on the board keeps the words it was sent with.
+
+### Fixed
+
+- **On a Claude Team or Enterprise account, the ticket page shows the agent's
+  conversation again.** It read "it left no transcript", and the ticket's
+  token usage was not counted.
+- **A ticket moves on when its agent finishes a turn while mesimon restarts
+  or updates.** It could stay in IN PROGRESS after the turn had ended.
+- **On the phone, Back closes a ticket that opened by itself** (at launch,
+  after a board switch or from a notification) instead of leaving Remote
+  Control.
+
 ## v0.1.0-alpha.39 — 2026-10-05
 
 ### Added
