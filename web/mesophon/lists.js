@@ -166,11 +166,12 @@ function stateWord(agent) {
 // A ticket, drawn the same wherever it is listed (T-533): the title; its
 // tags, with the key at the right (and the column, where the list around it
 // is not that column); the agent's state and age; and, live, what it is on.
-function Face({ store, ticket, board, column }) {
+// An archived ticket (T-665) says so where its column would be.
+function Face({ store, ticket, board, column, archived }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
   return html`<span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
-    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta"><${CrownWord} board=${board} ticket=${ticket} />${column && html`<span>${ticket.column}</span><span aria-hidden="true">·</span>`}<${WorktreeMark} ticket=${ticket} /><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
+    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta"><${CrownWord} board=${board} ticket=${ticket} />${(column || archived) && html`<span class=${archived ? "archived-word" : undefined}>${archived ? "Archived" : ticket.column}</span><span aria-hidden="true">·</span>`}<${WorktreeMark} ticket=${ticket} /><span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
     ${agent && html`<span class=${`card-agent${agent.state === "needs attention" ? " attn-ink" : ""}`}><${StateMark} ticket=${ticket} /><span>${agent.provider} · ${stateWord(agent)}${since && ` · ${since}`}</span></span>`}
     <${Headline} agent=${agent} />`;
 }
@@ -410,8 +411,11 @@ function SentItem({ store, board, item }) {
   const said = saidOf[item.status];
   if (item.status === "withdrawn")
     return html`<p class="sent-gone" data-id=${item.id}>You unsent “<span dir="auto">${item.title}</span>”</p>`;
-  // A landed ticket still on the board opens from the bubble itself (T-645).
-  const opens = item.status === "landed" && !!item.ticket && board.tickets.some((t) => t.id === item.ticket);
+  // A landed ticket is the board's own card while the host has it (T-665):
+  // its column, tags and agent as they are now, and on the board it opens
+  // the ticket. One no longer on the board keeps the words it was sent with.
+  const landed = item.status === "landed" && !!item.ticket;
+  const where = landed ? board.whereIs(item.ticket) : {};
   const tick = tickFor(item);
   // Still on its way: it can be edited or taken back until the host has it.
   const waiting = item.status === "local" || item.status === "relay";
@@ -422,13 +426,17 @@ function SentItem({ store, board, item }) {
       <span>→ ${item.column}</span>
       ${item.tags.map((t) => html`<span class=${`tag tint-${t.tint}`} key=${`${t.group}:${t.name}`}>${t.name}</span>`)}
       <span>${clock(item.at)}</span>
-      ${tick && html`<span class="sent-tick" title=${item.picked ? "Picked up" : said}><${Tick} state=${tick} /><span class="sr-only">${item.picked ? "Picked up" : said}</span></span>`}
+      ${tick && !landed && html`<span class="sent-tick" title=${item.picked ? "Picked up" : said}><${Tick} state=${tick} /><span class="sr-only">${item.picked ? "Picked up" : said}</span></span>`}
     </span>`;
+  const sys = (words) => html`<p class="sent-sys"><span class="sent-tick" title=${item.picked ? "Picked up" : said}><${Tick} state=${tick} /><span class="sr-only">${item.picked ? "Picked up" : said}</span></span><span>${words}</span></p>`;
   return html`<article class="sent-item" data-status=${item.status} data-picked=${item.picked?.by} data-id=${item.id}
+    data-where=${landed ? (where.archived ? "archived" : where.ticket ? "board" : "gone") : undefined}
     aria-label=${`${item.title}, ${item.picked ? "picked up" : said}`}>
-    ${opens
-      ? html`<button type="button" class="sent-bubble" onClick=${() => store.openSent(item.id)}>${bubble}</button>`
-      : html`<div class="sent-bubble">${bubble}</div>`}
+    ${where.archived
+      ? html`<div class="ticket card card-archived" data-id=${where.ticket.id}><${Face} store=${store} ticket=${where.ticket} board=${board} archived=${true} /></div>`
+      : where.ticket
+        ? html`<${Card} store=${store} ticket=${where.ticket} board=${board} column=${true} />`
+        : html`<div class="sent-bubble">${bubble}</div>`}
     ${waiting && html`<div class="sent-waiting" role="group" aria-label=${said}>
       <p>${item.status === "local"
         ? store.link === "nonet"
@@ -440,7 +448,7 @@ function SentItem({ store, board, item }) {
         <button type="button" class="btn btn-quiet" onClick=${() => store.editSent(item.id)}>Edit</button>
       </div>
     </div>`}
-    ${item.status === "landed" && html`<p class="sent-sys"><${Tick} state="two" /><span>Landed as ${item.key} in ${item.column}</span></p>`}
+    ${landed && sys(`Landed as ${item.key} in ${item.column} · ${clock(item.at)}${where.ticket ? "" : " · no longer on the board"}`)}
     ${item.picked && html`<p class="sent-sys sent-picked"><${Tick} state="picked" /><span>${pickedLine(item)}</span></p>`}
     ${(item.status === "unknown" || item.status === "rejected") && html`<div class="sent-problem" role="group" aria-label=${said}>
       <p>${item.status === "unknown"

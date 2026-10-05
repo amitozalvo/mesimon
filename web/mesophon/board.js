@@ -35,6 +35,9 @@ export class BoardState {
     // The agent tiers a start or a prompt may pick (T-643): live only, as
     // the pick is, so a remembered board has none.
     this.tiers = [];
+    // The tickets paired browsers filed that are archived now (T-665):
+    // Sent's own, never on the board. Absent from an older host.
+    this.archived = [];
   }
   update(reply, { cached = false, at = Date.now() } = {}) {
     Object.assign(this, {
@@ -45,6 +48,7 @@ export class BoardState {
       columnDescriptions: reply.column_descriptions || {},
       allowedTags: Array.isArray(reply.allowed_tags) ? reply.allowed_tags : [],
       tiers: Array.isArray(reply.tiers) ? reply.tiers : [],
+      archived: Array.isArray(reply.archived) ? reply.archived : [],
       cached,
       receivedAt: at,
     });
@@ -57,6 +61,14 @@ export class BoardState {
   }
   get current() {
     return this.tickets.find((t) => t.id === this.selected);
+  }
+  // Where a ticket this browser filed is now (T-665): on the board, archived,
+  // or neither (deleted, or a host that does not say).
+  whereIs(id) {
+    const live = this.tickets.find((t) => t.id === id);
+    if (live) return { ticket: live };
+    const archived = this.archived.find((t) => t.id === id);
+    return archived ? { ticket: archived, archived: true } : {};
   }
   visible() {
     const query = this.search.toLocaleLowerCase().trim();
@@ -112,7 +124,16 @@ export class BoardState {
   // the agent's step and reply line (T-497) or the crown's last touch: those
   // are output, shown live and never kept.
   snapshot() {
+    const card = ({ id, key, title, column, tags }) => ({
+      id,
+      key,
+      title,
+      column,
+      tags: (tags || []).map(({ group, name, tint }) => ({ group, name, tint })),
+    });
     return {
+      // Sent's archived tickets (T-665), as their cards read: no agent.
+      ...(this.archived.length && { archived: this.archived.map(card) }),
       title: this.title,
       columns: this.columns,
       default_column: this.defaultColumn,

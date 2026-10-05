@@ -211,6 +211,7 @@ function fixture() {
         title: "Mesimon",
         columns: ["TODO", "IN PROGRESS", "DONE"],
         tickets: this.tickets,
+        ...(this.archived?.length ? { archived: this.archived } : {}),
         default_column: "TODO",
         column_descriptions: { TODO: "for work that can and should be done soon" },
         allowed_tags: [
@@ -627,9 +628,9 @@ async function ticketFlow(browser, engineName, size, viewport) {
     assert.match(await page.locator('.sent-item[data-picked="desk"]').textContent(), /Opened at your desk · \d/);
     assert.equal(await page.locator('.sent-item[data-picked="desk"] .sent-tick .tick-picked').count(), 1);
     await shot("sent-picked");
-    // The bubble itself opens the ticket (T-645): no separate Open.
+    // The board's own card opens the ticket (T-645, T-665): no separate Open.
     assert.doesNotMatch(await status("landed").first().textContent(), /\bOpen\b/);
-    await status("landed").first().locator("button.sent-bubble").click();
+    await status("landed").first().locator('.ticket.card[data-id="mailed-1"]').click();
     await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-200");
     await overview();
     await mode("board");
@@ -643,6 +644,47 @@ async function ticketFlow(browser, engineName, size, viewport) {
       await sheet.waitFor({ state: "hidden" });
     }
     await mode("sent");
+    // A landed ticket is the board's card (T-665): the column it is in now
+    // and its agent, not where it was sent.
+    const landedCard = page.locator('.sent-item[data-where="board"] .ticket.card[data-id="mailed-1"]');
+    await page.evaluate(() => {
+      const t = fixture.tickets.find((t) => t.id === "mailed-1");
+      t.column = "DONE";
+      t.agent = { session: "mailed-agent", provider: "claude", state: "working", promptable: true };
+      fixture.update();
+    });
+    await until(page, () =>
+      /DONE/.test(document.querySelector('.sent-item .ticket.card[data-id="mailed-1"] .ticket-meta')?.textContent || ""));
+    assert.match(await landedCard.textContent(), /claude · working/);
+    assert.match(await status("landed").first().textContent(), /Landed as T-200 in TODO/);
+    await shot("sent-live-card");
+    // Archived, it stays in Sent and says so, and opens nothing.
+    await page.evaluate(() => {
+      const at = fixture.tickets.findIndex((t) => t.id === "mailed-1");
+      const [t] = fixture.tickets.splice(at, 1);
+      fixture.parked = { ...t, column: "TODO", agent: null };
+      fixture.archived = [{ ...t, agent: null }];
+      fixture.update();
+    });
+    const archived = page.locator('.sent-item[data-where="archived"]');
+    await archived.locator('.card-archived[data-id="mailed-1"]').waitFor();
+    assert.match(await archived.locator(".ticket-meta").textContent(), /Archived/);
+    assert.doesNotMatch(await archived.textContent(), /working/);
+    assert.equal(await archived.locator("button").count(), 0);
+    await shot("sent-archived");
+    // Gone from both, it keeps the words it was sent with.
+    await page.evaluate(() => {
+      fixture.archived = [];
+      fixture.update();
+    });
+    const gone = page.locator('.sent-item[data-where="gone"]');
+    await gone.waitFor();
+    assert.match(await gone.textContent(), /Phone ticket <b>stays text<\/b>.*no longer on the board/s);
+    await page.evaluate(() => {
+      fixture.tickets.push(fixture.parked);
+      fixture.update();
+    });
+    await landedCard.waitFor();
     await page.locator("#quick-column").selectOption("IN PROGRESS");
     await page.locator("#quick-title").fill("Quick one");
     await page.locator("#quick-title").press("Enter");

@@ -700,6 +700,12 @@ pub enum Reply {
         /// ring for an empty seat, in its order.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tiers: Vec<TierOption>,
+        /// The tickets paired browsers filed that are archived now (T-665),
+        /// newest archive first, each with no agent: Sent says what became of
+        /// its ticket instead of losing it. Never in `tickets`, which an
+        /// older page draws on the board. Absent from an older host.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        archived: Vec<Ticket>,
     },
     Preview {
         lines: Vec<String>,
@@ -1023,18 +1029,20 @@ mod tests {
             column_descriptions: BTreeMap::new(),
             allowed_tags: vec![],
             tiers: vec![],
+            archived: vec![],
         };
         let json = serde_json::to_value(&bare).unwrap();
         assert_eq!(
             json,
             serde_json::json!({"result":"board","title":"b","columns":["TODO"],"tickets":[]})
         );
-        let Reply::Board { default_column, allowed_tags, tiers, .. } =
+        let Reply::Board { default_column, allowed_tags, tiers, archived, .. } =
             serde_json::from_value(json).unwrap()
         else {
             panic!("board")
         };
         assert!(default_column.is_none() && allowed_tags.is_empty() && tiers.is_empty());
+        assert!(archived.is_empty());
         let created = serde_json::to_value(Reply::Created {
             ticket: "01J".into(),
             key: "T-7".into(),

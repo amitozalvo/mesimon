@@ -2916,6 +2916,22 @@ button.sent-bubble {
 button.sent-bubble:hover {
   background: var(--s3);
 }
+/* A landed ticket is the board's card (T-665), as wide as a bubble; an
+   archived one is quiet and opens nothing. */
+.sent-item > .ticket.card {
+  max-width: min(88%, 460px);
+}
+.ticket.card.card-archived {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line2);
+}
+.ticket.card.card-archived .ticket-title {
+  color: var(--ink2);
+}
+.archived-word {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
 .sent-item[data-status="sending"] .sent-bubble {
   opacity: 0.82;
 }
@@ -3508,6 +3524,7 @@ button.sent-bubble:hover {
     display: none;
   }
   .sent-bubble,
+  .sent-item > .ticket.card,
   .sent-problem {
     max-width: 92%;
   }

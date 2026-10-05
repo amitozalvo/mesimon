@@ -21536,3 +21536,24 @@ and no entry is pushed.
 Verified: `ux.test.js` `backFlow` (Chromium, WebKit: a ticket opened, the page launched again
 in a fresh tab, `goBack` closes it to Now and stays on the page; without the fix the page
 leaves), the phone and tablet UX flows on both engines, `state.test.js`.
+
+
+## Remote Control's Sent shows a landed ticket as the board's card, archived included (T-665, 2026-10-05, "remote control sent tab tickets show updated state")
+
+A landed item in Sent was a bubble of the words it was sent with: the column it was sent to,
+its tags then, no agent. **Now** a landed ticket still on the board is the same `Card` Now and
+Board draw (its column, tags, worktree mark and agent state as they are now; it opens the ticket,
+replacing T-645's bubble button and `store.openSent`), with the history beneath it: `Landed as
+T-… in COLUMN · time` (the ticks moved there) and the picked-up line. **Archived** tickets were
+never sent to a phone, so an archived ticket's item read as if it had been deleted. The board
+reply now carries `archived`: every ticket a paired browser filed (`Ticket::from_phone`) that is
+archived, newest archive first, at most 50 (Sent's `KEEP`), each with no agent and no queue,
+never in `tickets` (an older page would draw them on the board), and dropped first after the
+agents' words when a board is over its budget. Sent draws one as the card with `ARCHIVED` where
+the column goes, in an outlined quiet card that opens nothing. A ticket in neither list (deleted,
+or an older host) keeps the bubble, its landed line ending `· no longer on the board`. The
+remembered board keeps the archived cards' id, key, title, column and tags. **Not done**:
+opening an archived ticket from Sent: the host refuses notes on an archived ticket and the
+ticket page has no read-only state. Verified with `npm test` in `web/mesophon` (move, archive and
+delete of a landed ticket on every engine and size), a `state.test.js` case for `whereIs` and the
+snapshot, `sent_reads_a_phone_s_archived_tickets_newest_first`, and the full nextest run.

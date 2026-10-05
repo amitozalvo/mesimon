@@ -58,6 +58,9 @@ const FILED_KEEP: usize = 256;
 /// Past this many bytes a board goes to the browser without its agents'
 /// words, well inside the 48 KiB an answer may carry.
 const BOARD_WORDS_BUDGET: usize = 40 * 1024;
+/// How many archived tickets a phone filed ride the board (T-665): as many
+/// as Sent keeps (`KEEP` in `web/mesophon/sent.js`).
+const ARCHIVED_SENT: usize = 50;
 struct Peer {
     grant: BoardId,
     device: DeviceId,
@@ -2612,46 +2615,69 @@ impl Daemon {
             tickets: columns
                 .iter()
                 .flat_map(|c| self.board.column_tickets(&c.name))
-                .map(|t| (t, self.queued.iter().find(|q| q.ticket == t.id)))
-                .map(|(t, q)| api::Ticket {
-                    id: t.id.to_string(),
-                    queued: q.map(|q| q.text.clone()),
-                    queue: q.map(|q| self.control_queue(q)),
-                    key: t.short_key.clone(),
-                    title: t.title.clone(),
-                    column: t.column.clone(),
-                    tags: projected_tags(&self.board, t),
-                    picked: projected_pickup(t),
-                    notes: u32::try_from(t.notes.len()).unwrap_or(u32::MAX),
-                    noted: api::notes_stamp(&t.notes),
-                    crown: self.board.is_crowned(t.id),
-                    tier: Some(book.of_ticket(t.id).id),
-                    crowned: projected_crown_touch(
-                        &self.board,
-                        self.crown_touches.get(&t.id),
-                        mesimon_core::clock::now_ms(),
-                    ),
-                    workspace: self.control_workspace_of(t),
-                    agent: self.board.live_agent(t.id).map(|s| {
+                .map(|t| {
+                    let mut row = self.control_card(t, &book);
+                    let q = self.queued.iter().find(|q| q.ticket == t.id);
+                    row.queued = q.map(|q| q.text.clone());
+                    row.queue = q.map(|q| self.control_queue(q));
+                    row.agent = self.board.live_agent(t.id).map(|s| {
                         let (doing, said) = self.control_words(s);
                         self.control_agent(t, s, doing, said)
-                    }),
+                    });
+                    row
                 })
                 .collect(),
+            // A phone's own tickets, once archived (T-665): no agent, no
+            // queue, since an archived ticket has neither on the board.
+            archived: sent_archived(&self.board).map(|t| self.control_card(t, &book)).collect(),
         };
         // A transcript no live agent reads any more leaves the cache.
         let live: HashSet<&str> = self.board.sessions.iter().filter_map(preview_path).collect();
         self.control.words.borrow_mut().retain(|path, _| live.contains(path.as_str()));
         // The board must fit one answer (`Control::answer`'s cap): the
-        // agents' words are what a crowded board goes without first.
-        if serde_json::to_vec(&reply).is_ok_and(|v| v.len() > BOARD_WORDS_BUDGET) {
+        // agents' words are what a crowded board goes without first, then
+        // the archived tickets Sent reads.
+        let over =
+            |reply: &Reply| serde_json::to_vec(reply).is_ok_and(|v| v.len() > BOARD_WORDS_BUDGET);
+        if over(&reply) {
             if let Reply::Board { tickets, .. } = &mut reply {
                 for agent in tickets.iter_mut().filter_map(|t| t.agent.as_mut()) {
                     (agent.doing, agent.said) = (None, None);
                 }
             }
         }
+        if over(&reply) {
+            if let Reply::Board { archived, .. } = &mut reply {
+                archived.clear();
+            }
+        }
         reply
+    }
+
+    /// A ticket as a phone's card reads it, without its agent or its queued
+    /// words, which only a ticket on the board has.
+    fn control_card(&self, t: &Ticket, book: &mesimon_core::tier::Book<'_>) -> api::Ticket {
+        api::Ticket {
+            id: t.id.to_string(),
+            queued: None,
+            queue: None,
+            key: t.short_key.clone(),
+            title: t.title.clone(),
+            column: t.column.clone(),
+            tags: projected_tags(&self.board, t),
+            picked: projected_pickup(t),
+            notes: u32::try_from(t.notes.len()).unwrap_or(u32::MAX),
+            noted: api::notes_stamp(&t.notes),
+            crown: self.board.is_crowned(t.id),
+            tier: Some(book.of_ticket(t.id).id),
+            crowned: projected_crown_touch(
+                &self.board,
+                self.crown_touches.get(&t.id),
+                mesimon_core::clock::now_ms(),
+            ),
+            workspace: self.control_workspace_of(t),
+            agent: None,
+        }
     }
 
     /// One agent as a phone sees it: its state word and since when, its
@@ -3396,6 +3422,12 @@ fn projected_crown_touch(
 
 /// A phone's ticket once it was picked up (T-497), on the browser's clock
 /// unit; nothing for a ticket no phone filed.
+/// The archived tickets a phone's Sent reads (T-665): filed by a paired
+/// browser, newest archive first, at most `ARCHIVED_SENT`.
+fn sent_archived(board: &Board) -> impl Iterator<Item = &Ticket> {
+    board.archived_tickets().into_iter().filter(|t| t.from_phone()).take(ARCHIVED_SENT)
+}
+
 fn projected_pickup(t: &Ticket) -> Option<api::Picked> {
     let p = t.picked.as_ref().filter(|_| t.from_phone())?;
     let at = mesimon_core::board::stamp_secs(&p.at)? * 1000;
@@ -5388,6 +5420,56 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             None,
             "a doer no longer on the board is named by nobody"
         );
+    }
+
+    /// Sent reads a phone's own tickets once archived (T-665): never a
+    /// person's, never one still on the board, the newest archive first and
+    /// no more than Sent keeps.
+    #[test]
+    fn sent_reads_a_phone_s_archived_tickets_newest_first() {
+        let mut board = Board::with_default_columns();
+        let ticket = |n: u128, by: &str, archived_at: Option<u64>| Ticket {
+            id: ulid::Ulid(n),
+            short_key: format!("T-{n}"),
+            title: format!("ticket {n}"),
+            column: "TODO".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            created_by: by.into(),
+            created_from: None,
+            entered_at: None,
+            woke_at: None,
+            manual_merge: false,
+            execution_policy: Default::default(),
+            tier: None,
+            envelope: None,
+            workspace: None,
+            import_origin: None,
+            raised: None,
+            previous_column: None,
+            picked: None,
+            tags: Vec::new(),
+            notes: Vec::new(),
+            archived: archived_at.map(|at| mesimon_core::board::Archived {
+                at: format!("@{at}"),
+                by: "local".into(),
+                until: None,
+                needs_you: false,
+            }),
+        };
+        board.tickets.push(ticket(1, "device:ab12", None));
+        board.tickets.push(ticket(2, "local", Some(1_790_000_002)));
+        board.tickets.push(ticket(3, "device:ab12", Some(1_790_000_001)));
+        board.tickets.push(ticket(4, "device:cd34", Some(1_790_000_003)));
+        let keys =
+            |board: &Board| sent_archived(board).map(|t| t.short_key.clone()).collect::<Vec<_>>();
+        assert_eq!(keys(&board), ["T-4", "T-3"]);
+        for n in 10..(10 + ARCHIVED_SENT as u128) {
+            board.tickets.push(ticket(n, "device:ab12", Some(1_790_000_000)));
+        }
+        let kept = keys(&board);
+        assert_eq!(kept.len(), ARCHIVED_SENT);
+        assert_eq!(&kept[..2], ["T-4", "T-3"], "the oldest archives are dropped first");
     }
 
     fn agent(ticket: ulid::Ulid, kind: SessionKind, state: SessionState) -> SessionRecord {

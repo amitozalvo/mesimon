@@ -565,6 +565,32 @@ test("a remembered board keeps tags and since, never the agent's step or reply",
   restored.search = "bug";
   assert.equal(restored.visible().length, 1, "a tag's name finds its ticket, remembered too");
 });
+test("a ticket this browser filed is on the board, archived or gone, remembered too (T-665)", () => {
+  const board = new BoardState();
+  board.update({
+    title: "Board",
+    columns: ["TODO"],
+    tickets: [ticket("live", "s")],
+    archived: [{ id: "old", key: "T-9", title: "Old", column: "DONE", agent: null, queued: "never kept",
+      tags: [{ group: 1, name: "BUG", tint: 3, extra: "dropped" }] }],
+  });
+  assert.equal(board.whereIs("live").ticket.id, "live");
+  assert.equal(board.whereIs("live").archived, undefined);
+  assert.deepEqual(board.whereIs("old"), { ticket: board.archived[0], archived: true });
+  assert.deepEqual(board.whereIs("deleted"), {});
+  assert.equal(board.visible().some((t) => t.id === "old"), false, "never on the board");
+  const kept = JSON.parse(JSON.stringify(board.snapshot()));
+  assert.deepEqual(kept.archived, [
+    { id: "old", key: "T-9", title: "Old", column: "DONE", tags: [{ group: 1, name: "BUG", tint: 3 }] },
+  ]);
+  const restored = new BoardState();
+  restored.update(kept, { cached: true });
+  assert.equal(restored.whereIs("old").archived, true);
+  // An older host says nothing of archived tickets: gone, as far as it says.
+  restored.update({ title: "Board", columns: ["TODO"], tickets: [] });
+  assert.deepEqual(restored.whereIs("old"), {});
+  assert.equal("archived" in JSON.parse(JSON.stringify(restored.snapshot())), false);
+});
 test("a remembered board keeps who wears the crown, never what it last did (T-623)", () => {
   const board = new BoardState();
   const now = Date.now();

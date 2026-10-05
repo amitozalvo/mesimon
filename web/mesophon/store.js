@@ -988,10 +988,6 @@ export class Store {
     this.persistSent(item.board);
     this.emit();
   }
-  openSent(id) {
-    const item = this.sent.get(id);
-    if (item?.ticket && this.board?.tickets.some((t) => t.id === item.ticket)) this.select(item.ticket);
-  }
   // The tickets this browser filed, by id; one set per render.
   sentHere() {
     if (this.hereAt !== this.version) {
