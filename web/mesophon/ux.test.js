@@ -2464,6 +2464,23 @@ try {
             "Recently idle1",
           );
           assert.equal(await page.locator('.ticket[data-id="ticket-6"]').count(), 0);
+          // A ticket created within the hour is listed under the agents
+          // (T-668), and counted as new.
+          await page.evaluate(() => {
+            fixture.tickets.push({ id: "ticket-new", key: "T-99", title: "Just filed", column: "TODO", agent: null, created: Date.now() - 60000 });
+            fixture.update();
+          });
+          await page.locator('.ticket[data-id="ticket-new"]').waitFor();
+          assert.equal(
+            await page.locator('.group:has(.ticket[data-id="ticket-new"]) .group-label').textContent(),
+            "Recently created1",
+          );
+          assert.match(await page.locator("#count").textContent(), / · 1 new$/);
+          await page.evaluate(() => {
+            fixture.tickets.pop();
+            fixture.update();
+          });
+          await until(page, () => !document.querySelector('.ticket[data-id="ticket-new"]'));
           // A ticket is one card in Now and on the Board (T-533): its tags
           // show in both, a needs-you card wears the same face, and Now adds
           // only the column, which the Board says by where the card stands.

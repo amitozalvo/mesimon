@@ -1,5 +1,6 @@
 // The work list: Now (agents grouped by the host's state word, a stopped
-// one only for an hour; T-560), Board (every ticket, by column) and Sent
+// one only for an hour, T-560; then the tickets created within the hour,
+// T-668), Board (every ticket, by column) and Sent
 // (the tickets this browser filed). A ticket is the same card in Now and on
 // the Board (T-533); a card is a button, and the pressed one is selected.
 import { html, useLayoutEffect, useRef, useState } from "./html.js";
@@ -290,8 +291,8 @@ function Waiting({ store }) {
 }
 
 export function NowList({ store, board, live }) {
-  const { needs, working, idle } = board.sections();
-  const empty = !needs.length && !working.length && !idle.length;
+  const { needs, working, idle, created } = board.sections();
+  const empty = !needs.length && !working.length && !idle.length && !created.length;
   return html`
     <${Asleep} store=${store} />
     <${Waiting} store=${store} />
@@ -303,6 +304,9 @@ export function NowList({ store, board, live }) {
     </${Group}>`}
     ${idle.length > 0 && html`<${Group} label="Recently idle" count=${idle.length}>
       <div class="cards">${idle.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} column=${true} />`)}</div>
+    </${Group}>`}
+    ${created.length > 0 && html`<${Group} label="Recently created" count=${created.length}>
+      <div class="cards">${created.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} column=${true} />`)}</div>
     </${Group}>`}
     ${empty && html`<p class="empty">${board.search
       ? "No tickets match your search."

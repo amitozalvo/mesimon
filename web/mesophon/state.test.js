@@ -389,6 +389,31 @@ test("Now keeps a stopped agent for an hour; the Board keeps it always (T-560)",
   assert.deepEqual(remembered.sections().idle.map((t) => t.id), ["fresh", "older-host"]);
 });
 
+test("Now lists a ticket created within the hour, newest first, under its agents (T-668)", () => {
+  const now = Date.now();
+  const rows = ["old", "new", "newer", "agent", "older-host"].map((id) => ticket(id));
+  rows[0].created = now - RECENT_MS - 60000;
+  rows[1].created = now - 30 * 60000;
+  rows[2].created = now - 60000;
+  Object.assign(rows[3], ticket("agent", "s"), { created: now - 60000 });
+  const board = new BoardState();
+  board.update({ title: "Board", columns: ["TODO"], tickets: rows });
+  const { working, created } = board.sections();
+  assert.deepEqual(working.map((t) => t.id), ["agent"]);
+  assert.deepEqual(created.map((t) => t.id), ["newer", "new"]);
+  // The filters are about agents: a new ticket has none.
+  board.filter = "running";
+  assert.deepEqual(board.sections().created, []);
+  board.filter = "all";
+  board.search = "old";
+  assert.deepEqual(board.visible(), []);
+  board.search = "";
+  // A remembered board keeps when each was created, and measures it then.
+  const remembered = new BoardState();
+  remembered.update(board.snapshot(), { cached: true, at: now });
+  assert.deepEqual(remembered.sections().created.map((t) => t.id), ["newer", "new"]);
+});
+
 test("a remembered board keeps no prompt text, tool input or dialog", () => {
   const board = new BoardState();
   const row = ticket("one", "session");

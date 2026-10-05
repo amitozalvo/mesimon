@@ -7,12 +7,17 @@ const phase = (ticket) =>
       : "idle";
 // How long a stopped agent stays on Now (T-560): about an hour.
 export const RECENT_MS = 3600000;
-// Whether Now lists this agent: one that needs you or works, always; any
-// other only while its state is under an hour old at `now`. An age it cannot
-// tell (an older host sends no since) keeps the agent.
-const recent = (ticket, now) => {
-  const age = now - ticket.agent?.since;
-  return phase(ticket) !== "idle" || !(age >= RECENT_MS);
+// Which of Now's groups lists a ticket at `now`, if any: an agent that needs
+// you or works, always; any other agent only while its state is under an
+// hour old, and an age it cannot tell (an older host sends no since) keeps
+// it. A ticket Now lists by no agent is listed while it is under an hour
+// old (T-668), so one just filed is there to start.
+const nowGroup = (ticket, now) => {
+  if (ticket.agent) {
+    const age = now - ticket.agent.since;
+    if (phase(ticket) !== "idle" || !(age >= RECENT_MS)) return phase(ticket);
+  }
+  return now - ticket.created < RECENT_MS ? "created" : undefined;
 };
 
 export class BoardState {
@@ -76,8 +81,7 @@ export class BoardState {
     const now = this.cached ? this.receivedAt : Date.now();
     const visible = this.tickets.filter(
       (t) =>
-        (this.mode === "board" || t.agent) &&
-        (this.mode !== "agents" || recent(t, now)) &&
+        (this.mode === "board" || (this.mode === "agents" ? nowGroup(t, now) : t.agent)) &&
         (this.mode !== "agents" ||
           this.filter === "all" ||
           (this.filter === "running"
@@ -93,15 +97,18 @@ export class BoardState {
     if (this.mode === "agents")
       visible.sort(
         (a, b) =>
-          Number(b.agent.state === "needs attention") -
-          Number(a.agent.state === "needs attention"),
+          Number(b.agent?.state === "needs attention") -
+          Number(a.agent?.state === "needs attention"),
       );
     return visible;
   }
-  // Now's three groups, by the host's own state word and nothing else.
+  // Now's groups: the agents by the host's own state word and nothing else,
+  // then the tickets created within the hour, newest first (T-668).
   sections() {
-    const groups = { needs: [], working: [], idle: [] };
-    for (const ticket of this.visible()) groups[phase(ticket)].push(ticket);
+    const now = this.cached ? this.receivedAt : Date.now();
+    const groups = { needs: [], working: [], idle: [], created: [] };
+    for (const ticket of this.visible()) groups[nowGroup(ticket, now)].push(ticket);
+    groups.created.sort((a, b) => b.created - a.created);
     return groups;
   }
   // The tiers a ticket may pick (T-643), the desk's `^n` ring: a seat that
@@ -119,7 +126,8 @@ export class BoardState {
     return this.columns.includes(this.defaultColumn) ? this.defaultColumn : this.columns[0] || "";
   }
   // What this browser may remember: keys, titles, columns, tags, note counts,
-  // the crown's seat, the worktree's branch and state and agent states.
+  // when each was created, the crown's seat, the worktree's branch and state
+  // and agent states.
   // Whether the workspace may still change is the live host's to say. No queued text, tool input, dialogs,
   // the agent's step and reply line (T-497) or the crown's last touch: those
   // are output, shown live and never kept.
@@ -139,7 +147,7 @@ export class BoardState {
       default_column: this.defaultColumn,
       column_descriptions: this.columnDescriptions,
       allowed_tags: this.allowedTags.map(({ group, name, tint }) => ({ group, name, tint })),
-      tickets: this.tickets.map(({ id, key, title, column, agent, tags, notes, noted, crown, workspace }) => ({
+      tickets: this.tickets.map(({ id, key, title, column, agent, tags, notes, noted, crown, workspace, created }) => ({
         id,
         key,
         title,
@@ -152,6 +160,7 @@ export class BoardState {
         // read are kept apart, in `notes:<grant>`.
         notes: Number.isInteger(notes) ? notes : 0,
         noted: typeof noted === "string" ? noted : "",
+        ...(Number.isFinite(created) && { created }),
         // Where its code lives (T-642), as the card marks it.
         ...(workspace && {
           workspace: {

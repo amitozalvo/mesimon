@@ -416,6 +416,11 @@ pub struct Ticket {
     /// the board's default. Absent from an older host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
+    /// When the ticket was created (T-668): milliseconds since the epoch,
+    /// the host's clock. Now lists a ticket created within the hour.
+    /// Absent from an older host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<u64>,
 }
 
 /// A ticket's workspace as a phone reads it (T-642): the TUI card's
@@ -1087,6 +1092,7 @@ mod tests {
             crowned: None,
             workspace: None,
             tier: None,
+            created: None,
         };
         let json = serde_json::to_value(&bare).unwrap();
         assert_eq!(
@@ -1109,6 +1115,7 @@ mod tests {
                 ..Workspace::default()
             }),
             tier: Some("01K".into()),
+            created: Some(1_789_000_000_000),
             agent: bare.agent.clone().map(|a| Agent {
                 since: Some(1_790_000_000_000),
                 doing: Some("Bash(cargo test)".into()),
@@ -1126,6 +1133,7 @@ mod tests {
         assert_eq!(back.crowned, full.crowned);
         assert_eq!(back.workspace, full.workspace);
         assert_eq!(back.tier.as_deref(), Some("01K"));
+        assert_eq!(back.created, Some(1_789_000_000_000));
         let agent = back.agent.unwrap();
         assert_eq!(agent.tier.as_deref(), Some("claude"));
         assert_eq!(
@@ -1341,6 +1349,7 @@ mod tests {
             crowned: None,
             workspace: None,
             tier: None,
+            created: None,
         };
         let json = serde_json::to_value(ticket(Some(Queue::default()))).unwrap();
         assert_eq!((&json["queued"], &json["queue"]), (&"next".into(), &serde_json::json!({})));

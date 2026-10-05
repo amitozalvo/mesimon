@@ -324,10 +324,13 @@ function WorkList({ store, bp }) {
     node.scrollTop = mode === "sent" ? node.scrollHeight : board.scroll[mode];
   }, [board, mode, store.detailOpen, bp, sent.length]);
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  // Now counts its agents, and the tickets it lists by none as new (T-668).
+  const now = mode === "agents" && board?.visible();
+  const fresh = now ? now.filter((t) => !t.agent).length : 0;
   const count = !board
     ? ""
     : mode === "agents"
-      ? plural(board.visible().length, "agent")
+      ? [plural(now.length - fresh, "agent"), fresh && `${fresh} new`].filter(Boolean).join(" · ")
       : mode === "board"
         ? plural(board.visible().length, "ticket")
         : `${sent.length} sent`;

@@ -2670,6 +2670,7 @@ impl Daemon {
             noted: api::notes_stamp(&t.notes),
             crown: self.board.is_crowned(t.id),
             tier: Some(book.of_ticket(t.id).id),
+            created: mesimon_core::board::stamp_secs(&t.created_at).map(|s| s * 1000),
             crowned: projected_crown_touch(
                 &self.board,
                 self.crown_touches.get(&t.id),

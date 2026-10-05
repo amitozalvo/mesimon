@@ -21557,3 +21557,21 @@ opening an archived ticket from Sent: the host refuses notes on an archived tick
 ticket page has no read-only state. Verified with `npm test` in `web/mesophon` (move, archive and
 delete of a landed ticket on every engine and size), a `state.test.js` case for `whereIs` and the
 snapshot, `sent_reads_a_phone_s_archived_tickets_newest_first`, and the full nextest run.
+
+## Now lists a ticket created within the hour (T-668, 2026-10-05, "Remote control \"recently created\" section in now page")
+
+**Now's fourth group is "Recently created".** Now listed agents only, so a ticket filed from the
+phone (or at the desk) vanished from Now the moment it landed and had to be found on the Board
+to start it. A ticket Now lists by no agent group is now listed under the agents while it is
+under an hour old (`RECENT_MS`, T-560's window), newest first. One `nowGroup` in `board.js`
+decides a ticket's group for both `visible()` and `sections()`, so the header count, the groups
+and a search on Now agree. The needs/running filters are about agents and drop the group. The
+header reads `N agents · M new` when the group is not empty.
+
+**The wire.** `mesophon::Ticket.created` is the ticket's `created_at` in milliseconds, the
+host's clock, absent from an older host (whose tickets never enter the group). A remembered
+board keeps it, and measures it at `receivedAt` as T-560 does.
+
+**Tests.** `state.test.js` covers the cut, the order, an agent ticket staying in its own group,
+the filter, a search and a remembered board; `ux.test.js`'s Now run lists a minute-old ticket
+under "Recently created" with `1 new` in the count, every engine and size.
