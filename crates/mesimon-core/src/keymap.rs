@@ -1322,11 +1322,10 @@ pub struct Ctx {
     /// holds more than the tier it is on.
     pub tier_cycle: bool,
     /// The Default tier row, in the scope the dialog is in: the tier's
-    /// name, its launch in words, the name Enter would select, and — in
-    /// board scope — whether the board sets one and the machine's name.
+    /// name, its launch in words, and — in board scope — whether the board
+    /// sets one and the machine's name.
     pub tier_default: String,
     pub tier_default_summary: String,
-    pub tier_default_next: String,
     pub tier_default_here: bool,
     pub tier_machine_default: String,
     /// The board's own default where it differs from the machine's, for the
@@ -4027,6 +4026,63 @@ pub struct MenuItem {
     pub key: &'static str,
 }
 
+/// The three spellings in which a row's detail may name Enter (T-677). A
+/// detail says one fact the label lacks — what the value means, what it
+/// costs, or why the row is inert — and the footer already says what Enter
+/// does, so these are the presses a footer word cannot carry.
+pub const HINT_ENTER_WORDS: [&str; 3] =
+    ["enter again confirms", "enter tries again", "enter copies it"];
+
+/// Every string literal in `src` (Rust source; comments skipped) that names
+/// Enter outside [`HINT_ENTER_WORDS`]. The tests that hold the hint rule read
+/// the item lists and the sharing rows through it.
+pub fn hints_explaining_enter(src: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut chars = src.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.peek() == Some(&'/') => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            '\'' => {
+                // A char literal ('"' among them) or a lifetime: neither
+                // opens a string.
+                if chars.next() == Some('\\') {
+                    for c in chars.by_ref() {
+                        if c == '\'' {
+                            break;
+                        }
+                    }
+                } else if chars.peek() == Some(&'\'') {
+                    chars.next();
+                }
+            }
+            '"' => {
+                let mut lit = String::new();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        c => lit.push(c),
+                    }
+                }
+                let low = lit.to_lowercase();
+                if low.contains("enter ") && !HINT_ENTER_WORDS.iter().any(|w| low.contains(w)) {
+                    found.push(lit);
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
 static MENU_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::Reload,
@@ -4160,7 +4216,7 @@ static MENU_ITEMS: &[MenuItem] = &[
             if !c.teams && !c.team_signed_in {
                 "sign in with a license key to pair your phone".into()
             } else if !c.teams {
-                "pair a phone or a browser to this board ∙ license key, sign out".into()
+                "pair a phone or a browser to this board".into()
             } else if !c.team_signed_in {
                 "sign in to a relay to share this board or join one".into()
             } else if c.team_shared && !c.team_owner {
@@ -4199,9 +4255,9 @@ static MENU_ITEMS: &[MenuItem] = &[
         verb: Verb::Settings,
         label: |_| "Settings".into(),
         // Names what is behind the door, and fits the row: the detail's
-        // budget is 56 cells, so the list is the interesting half rather than
-        // all seven rows (it named four of six before this).
-        detail: |_| "appearance, notifications, behaviour, agents".into(),
+        // budget is 56 cells, so it names the five sections and not the rows
+        // that sit at the root beside them.
+        detail: |_| "appearance, notifications, behaviour, agents, terminal".into(),
         avail: always,
         key: "",
     },
@@ -4242,7 +4298,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 }
             )
         },
-        detail: |_| "default for this board ∙ Queue waits for idle; Steer sends now".into(),
+        detail: |_| "Queue waits for the agent's idle ∙ Steer sends now".into(),
         avail: always,
         key: "",
     },
@@ -4294,14 +4350,11 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 format!("{} ∙ for dark and light terminals", c.theme_blurb)
             } else if c.theme_os_barred {
                 format!(
-                    "dark: {} ∙ light: {} ∙ this OS did not say which ∙ the launch theme stays",
+                    "dark: {} ∙ light: {} ∙ the OS did not say which",
                     c.theme_dark, c.theme_light
                 )
             } else {
-                format!(
-                    "dark: {} ∙ light: {} ∙ switches with the OS's light/dark",
-                    c.theme_dark, c.theme_light
-                )
+                format!("dark: {} ∙ light: {} ∙ follows the OS", c.theme_dark, c.theme_light)
             }
         },
         avail: always,
@@ -4327,11 +4380,11 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         detail: |c| {
             if c.notify {
                 format!(
-                    "a banner and a sound when an agent needs you ∙ {} ∙ enter opens them",
+                    "a banner and a sound when an agent needs you ∙ {}",
                     or(c.notify_sound_needs_you, "Glass")
                 )
             } else {
-                "the board says nothing outside its own window ∙ enter opens them".into()
+                "the board says nothing outside its own window".into()
             }
         },
         avail: always,
@@ -4356,12 +4409,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             if c.keep_awake_barred {
                 "nothing on this machine can hold it awake ∙ mesimon doctor says what would".into()
             } else if c.keep_awake {
-                "no idle sleep while an agent is mid-turn ∙ only while this board is open ∙ \
-                 enter turns it off"
-                    .into()
+                "no idle sleep while an agent is mid-turn ∙ only while this board is open".into()
             } else {
-                "the machine sleeps on its own clock while an agent works ∙ enter keeps it awake"
-                    .into()
+                "the machine sleeps on its own clock, agents or not".into()
             }
         },
         avail: always,
@@ -4376,13 +4426,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 "Status line at the bottom".into()
             }
         },
-        detail: |c| {
-            if c.status_top {
-                "tmux's bar over an agent's pane ∙ enter moves it down".into()
-            } else {
-                "tmux's bar over an agent's pane ∙ enter moves it up".into()
-            }
-        },
+        detail: |_| "tmux's bar over an agent's pane".into(),
         avail: always,
         key: "",
     },
@@ -4401,9 +4445,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.crown_lightning {
-                "a bolt to each card the crown touches ∙ enter stills it".into()
+                "a bolt on each card the crown touches".into()
             } else {
-                "the card still says what the crown did ∙ enter turns it on".into()
+                "the card still says what the crown did".into()
             }
         },
         avail: always,
@@ -4421,9 +4465,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         label: |c| format!("Tab title: {}", or(c.tab_title_word, "off")),
         detail: |c| {
             if c.tab_title {
-                "enter cycles: off, project name, mesimon ∙ project name".into()
+                String::new()
             } else {
-                "the tab keeps its own title ∙ enter names it after the board".into()
+                "the tab keeps its own title".into()
             }
         },
         avail: always,
@@ -4498,8 +4542,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         label: |c| format!("Tab colour when needs you: {}", or(c.tab_color_word, "off")),
         detail: |c| {
             if c.iterm2 && c.iterm2_status {
-                "the theme's attention colour ∙ enter cycles: off, the tab's dot, the whole tab"
-                    .into()
+                "the theme's attention colour, on the tab's dot or the whole tab".into()
             } else if c.iterm2 {
                 "the whole tab works here ∙ the dot needs the iTerm2 3.7 beta".into()
             } else {
@@ -4558,10 +4601,10 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         verb: Verb::UsageShow,
         label: |c| format!("Show: {}", or(c.usage_line_word, "near a limit")),
         detail: |c| match or(c.usage_line_word, "near a limit") {
-            "near a limit" => "silent until a provider warns ∙ enter cycles".into(),
-            "every window" => "each provider's windows, above the keys ∙ enter cycles".into(),
-            "the headline" => "one number a provider, the one it picks ∙ enter cycles".into(),
-            _ => "nothing above the keys, and nothing read ∙ the menu's Usage still reads".into(),
+            "near a limit" => "silent until a provider warns".into(),
+            "every window" => "each provider's windows, above the keys".into(),
+            "the headline" => "one number a provider, the one it picks".into(),
+            _ => "nothing above the keys ∙ the menu's Usage still reads".into(),
         },
         avail: always,
         key: "",
@@ -4583,7 +4626,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::UsageModel,
         label: |c| on_off("Per-model windows", c.usage_model),
-        detail: |_| "a week scoped to one model, named as the provider names it".into(),
+        detail: |_| "one week per model, named as the provider names it".into(),
         avail: always,
         key: "",
     },
@@ -4591,8 +4634,8 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         verb: Verb::UsageResets,
         label: |c| format!("Reset times: {}", or(c.usage_resets_word, "near a limit")),
         detail: |c| match or(c.usage_resets_word, "near a limit") {
-            "near a limit" => "beside a window the provider warns about ∙ enter cycles".into(),
-            _ => "enter cycles: near a limit, always, never".into(),
+            "near a limit" => "beside a window the provider warns about".into(),
+            _ => String::new(),
         },
         avail: always,
         key: "",
@@ -4618,7 +4661,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             if c.card_cost {
                 "each ticket's cost at API prices, an estimate ∙ $ on the board".into()
             } else {
-                "how long the card has sat ∙ enter or $ shows its cost".into()
+                "how long the card has sat ∙ $ on the board shows cost".into()
             }
         },
         avail: always,
@@ -4636,9 +4679,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.snooze_needs_you {
-                "lit until you look at it ∙ enter makes it quiet".into()
+                "lit until you look at it".into()
             } else {
-                "it just reappears ∙ enter lights it until you look".into()
+                "it reappears unlit".into()
             }
         },
         avail: always,
@@ -4648,12 +4691,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::WeekStart,
         label: |c| format!("Week starts on {}", or(c.week_start_word, "Monday")),
-        detail: |c| {
-            format!(
-                "z's last rung: next {} 9:00 ∙ enter cycles the day",
-                or(c.week_start_word, "Monday")
-            )
-        },
+        detail: |c| format!("z's last rung: next {} 9:00", or(c.week_start_word, "Monday")),
         avail: always,
         key: "",
     },
@@ -4669,7 +4707,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             } else if c.merge_train {
                 "merges quiet REVIEW branches, asks idle agents to rebase ∙ arming…".into()
             } else {
-                "mesimon merges and asks to rebase for you while the board is quiet ∙ enter turns it on".into()
+                "merges quiet REVIEW branches and asks idle agents to rebase, while this board is open".into()
             }
         },
         avail: always,
@@ -4686,10 +4724,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.merge_train_notice {
-                "pastes the merged notice into the agent ∙ starts a turn ∙ enter keeps it quiet"
-                    .into()
+                "pastes the merged notice into the agent, which starts a turn".into()
             } else {
-                "the card's ⎇✓ says it ∙ enter tells the agent too".into()
+                "the card's ⎇✓ says it ∙ the agent is not told".into()
             }
         },
         avail: |c| c.merge_train,
@@ -4707,25 +4744,19 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         label: |c| format!("Default tier: {}", or(&c.tier_default, crate::tier::CLAUDE)),
         detail: |c| {
             if !c.pref_scope_board && !c.tier_board_uses.is_empty() {
-                format!(
-                    "this board uses {} (b) ∙ {} ∙ enter selects {}",
-                    c.tier_board_uses, c.tier_default_summary, c.tier_default_next
-                )
+                format!("this board uses {} (b) ∙ {}", c.tier_board_uses, c.tier_default_summary)
             } else if !c.pref_scope_board {
                 format!(
-                    "{} ∙ what a ticket starts on unless ^n picks its own ∙ enter selects {}",
-                    c.tier_default_summary, c.tier_default_next
+                    "what a ticket starts on unless ^n picks its own ∙ {}",
+                    c.tier_default_summary
                 )
             } else if c.tier_default_here {
                 format!(
-                    "set here ∙ machine: {} ∙ {} ∙ enter selects {}",
-                    c.tier_machine_default, c.tier_default_summary, c.tier_default_next
+                    "set here ∙ machine: {} ∙ {}",
+                    c.tier_machine_default, c.tier_default_summary
                 )
             } else {
-                format!(
-                    "inherited ∙ {} ∙ enter sets {} here",
-                    c.tier_default_summary, c.tier_default_next
-                )
+                format!("inherited from the machine ∙ {}", c.tier_default_summary)
             }
         },
         avail: always,
@@ -4742,7 +4773,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.pref_scope_board {
-                "this board's tiers, and its own versions of the machine's ∙ enter opens".into()
+                "this board's tiers, and its own versions of the machine's".into()
             } else {
                 "a name for a launch: provider, model, effort ∙ ^n cycles a ticket through them"
                     .into()
@@ -4764,8 +4795,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             }
         },
         detail: |_| {
-            "start_agent on the crowned ticket ∙ a sleeping agent frees its seat ∙ enter cycles off / 1 / 2 / 3 / 5 / 8"
-                .into()
+            "agents the crown may have running at once ∙ a sleeping one frees its seat".into()
         },
         avail: always,
         key: "",
@@ -4784,9 +4814,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         label: |c| format!("Crown mode: {}", c.crown_mode.word()),
         detail: |c| {
             if c.crown_mode.sends() {
-                "agents it started take its asks without ^y, and it answers their questions and plans ∙ yours wait for you ∙ enter supervises".into()
+                "its agents take its asks and answers without you ∙ yours still wait for you".into()
             } else {
-                "its asks wait on the card for ^y ∙ every question and plan waits for you ∙ enter makes it autonomous".into()
+                "its asks wait on the card for ^y ∙ every question and plan waits for you".into()
             }
         },
         avail: always,
@@ -4807,10 +4837,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.crown_archives {
-                "it may archive and restore tickets, reclaiming a merged worktree ∙ enter turns off"
-                    .into()
+                "archive and restore, reclaiming a merged worktree".into()
             } else {
-                "it may not archive or restore tickets ∙ enter lets it".into()
+                "only a person archives".into()
             }
         },
         avail: always,
@@ -4830,10 +4859,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         // sessions already running keep whatever they were born with.
         detail: |c| {
             if c.mcp_tools {
-                "the seven board tools every spawn carries ∙ enter takes them away".into()
+                "the board tools every spawn carries".into()
             } else {
-                "spawns carry no tools ∙ a session cannot see its ticket ∙ live panes keep theirs"
-                    .into()
+                "a new session cannot see its ticket ∙ live panes keep theirs".into()
             }
         },
         avail: always,
@@ -4857,9 +4885,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             if !c.mcp_tools {
                 "needs the agent tools on ∙ the brief names get_ticket".into()
             } else if c.system_prompt {
-                "in every spawn's system prompt ∙ enter turns it off".into()
+                "one line in every spawn's system prompt".into()
             } else {
-                "one line: read the ticket first ∙ enter shows it first".into()
+                "one line: read the ticket first ∙ shown to you before it is on".into()
             }
         },
         avail: always,
@@ -4877,7 +4905,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             if !c.mcp_tools {
                 "needs the agent tools on ∙ create_ticket is one of them".into()
             } else {
-                "where an agent's create_ticket lands unplaced ∙ enter cycles".into()
+                "where an agent's create_ticket lands unplaced".into()
             }
         },
         // A board with no columns has nowhere to land: no row rather than a
@@ -4985,10 +5013,9 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
         // to consent to and not a thing to discover afterwards.
         detail: |c| {
             if c.notify {
-                "an OS banner and a sound ∙ only while this board is open ∙ enter turns them off"
-                    .into()
+                "an OS banner and a sound ∙ only while this board is open".into()
             } else {
-                "an OS banner and a sound when an agent needs you ∙ enter turns them on".into()
+                "an OS banner and a sound when an agent needs you".into()
             }
         },
         avail: always,
@@ -5030,9 +5057,9 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.notify_done {
-                "the card's ✔ ∙ enter keeps it to the blocked ones".into()
+                "the card's ✔, said out loud".into()
             } else {
-                "a blocked agent only ∙ enter says a landed turn too".into()
+                String::new()
             }
         },
         avail: |c| c.notify,
@@ -5053,9 +5080,9 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.notify_words {
-                "its last line, on the banner ∙ enter names only the ticket".into()
+                "its last line, on the banner".into()
             } else {
-                "the ticket and the reason word only ∙ enter quotes it".into()
+                "the ticket and the reason only".into()
             }
         },
         avail: |c| c.notify,
@@ -5066,14 +5093,14 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
         label: |c| {
             format!("Sound when an agent needs you: {}", or(c.notify_sound_needs_you, "Glass"))
         },
-        detail: |_| "enter cycles the ring and plays what it names".into(),
+        detail: |_| "a pick plays it".into(),
         avail: |c| c.notify,
         key: "",
     },
     MenuItem {
         verb: Verb::NotifySoundDone,
         label: |c| format!("Sound when a turn finishes: {}", or(c.notify_sound_done, "Tink")),
-        detail: |_| "a quieter one, so the two are told apart without looking".into(),
+        detail: |_| "a pick plays it".into(),
         avail: |c| c.notify && c.notify_done,
         key: "",
     },
@@ -5088,9 +5115,9 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.notify_focused {
-                "a banner over the board that already says it ∙ enter quiets it".into()
+                "a banner over a board that already shows it".into()
             } else {
-                "the card already says so ∙ the sound plays either way ∙ enter shows it".into()
+                "the sound still plays".into()
             }
         },
         avail: |c| c.notify,
@@ -5110,9 +5137,9 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.notify_in_pane {
-                "said about the very pane you are attached to ∙ enter quiets it".into()
+                "about the pane you are attached to".into()
             } else {
-                "its own pane already showed you ∙ sound too ∙ enter says it anyway".into()
+                "the pane already showed you ∙ no sound either".into()
             }
         },
         avail: |c| c.notify,
@@ -5378,15 +5405,19 @@ pub fn item_detail(item: &MenuItem, c: &Ctx) -> String {
     let Some(key) = pref_key(item.verb, c) else {
         return base;
     };
+    let with =
+        |word: &str| if base.is_empty() { word.to_string() } else { format!("{word} ∙ {base}") };
     if !key.board_overridable() {
-        return format!("(machine) ∙ {base}");
+        return with("(machine)");
     }
     // The scope word comes FIRST: a detail longer than the row reveals its
     // tail marquee-style, and which scope holds the value is the one fact
     // this dialog exists to show.
     match c.board_overrides.iter().find(|(k, _)| *k == key) {
-        Some((_, machine)) => format!("set here ∙ machine: {machine} ∙ {base} ∙ inherit last"),
-        None => format!("inherited ∙ {base} ∙ enter sets it here"),
+        Some((_, machine)) => {
+            format!("{} ∙ inherit last", with(&format!("set here ∙ machine: {machine}")))
+        }
+        None => with("inherited"),
     }
 }
 
@@ -5438,9 +5469,9 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         },
         detail: |c| {
             if c.col_new {
-                "type it ∙ enter adds the column after the cursor's".into()
+                "added after the cursor's column".into()
             } else {
-                "enter edits it in place ∙ every ticket in it follows".into()
+                "every ticket in it follows".into()
             }
         },
         avail: |c| c.col_new || c.col_naming,
@@ -5469,7 +5500,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::SortColumn,
         label: |c| format!("Sort now: {}", or(c.col_sort_word, "newest first")),
-        detail: |_| "h l pick the order ∙ enter sorts the cards once".into(),
+        detail: |_| "h l pick the order ∙ one sort, now".into(),
         avail: |c| !c.col_new,
         key: "",
     },
@@ -5552,7 +5583,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
                 format!("When agent starts working: move to {}", c.col_on_working)
             }
         },
-        detail: |_| "enter cycles the other columns, then stay".into(),
+        detail: |_| "the card moves there on its own".into(),
         avail: |c| !c.col_new,
         key: "",
     },
@@ -5565,7 +5596,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
                 format!("When agent ends a turn: move to {}", c.col_on_done)
             }
         },
-        detail: |_| "enter cycles the other columns, then stay".into(),
+        detail: |_| "the card moves there on its own".into(),
         avail: |c| !c.col_new,
         key: "",
     },
@@ -5577,7 +5608,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
             0 => "Sleep idle agents: off".into(),
             minutes => format!("Sleep idle agents after {minutes} min"),
         },
-        detail: |_| "any agent idle at its prompt ∙ enter cycles off / 1 / 5 / 15 / 60 min".into(),
+        detail: |_| "any agent idle at its prompt".into(),
         avail: |c| !c.col_new && !c.claude_unused,
         key: "",
     },
@@ -5591,7 +5622,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ColumnReclaim,
         label: |c| format!("Offer: {}", or(c.col_offers_word, "off")),
-        detail: |_| "enter cycles off, sleep, archive, sleep + archive".into(),
+        detail: |_| "for finished tickets here: sleep their agents, archive them, or both".into(),
         avail: |c| !c.col_new,
         key: "",
     },
@@ -7114,13 +7145,11 @@ mod tests {
             settings_section: SettingsSection::Agents,
             tier_default: "claude".into(),
             tier_default_summary: "Claude Code ∙ its own model".into(),
-            tier_default_next: "codex".into(),
             ..Ctx::default()
         };
         let row = settings_items(&ctx).into_iter().find(|r| r.verb == Verb::DefaultTier).unwrap();
         assert_eq!((row.label)(&ctx), "Default tier: claude");
         assert!((row.detail)(&ctx).contains("Claude Code"));
-        assert!((row.detail)(&ctx).contains("enter selects codex"));
     }
 
     /// The agent-prompt list (T-353): three rows, one per sentence mesimon
@@ -9547,6 +9576,44 @@ mod tests {
             }
             assert_eq!(resolve(s, Key::Char('?'), &ctx), Some(Verb::Help), "{s:?}");
         }
+    }
+
+    /// A row's detail says one fact the label lacks, never what Enter does:
+    /// the footer under every dialog already says it (T-677). Read off this
+    /// file's source, every literal a `detail:` closure can return.
+    #[test]
+    fn a_hint_never_explains_enter() {
+        let src = include_str!("keymap.rs");
+        let (mut lists, mut details) = (0, 0);
+        // Spelled in two halves, so this test's own source is not a list.
+        let opens = ["_ITEMS: &[MenuItem]", " = &["].concat();
+        let mut rest = src;
+        while let Some(at) = rest.find(&opens) {
+            let list = &rest[at..];
+            let list = &list[..list.find("\n];").expect("an item list ends")];
+            lists += 1;
+            for (i, _) in list.match_indices("detail:") {
+                let body = &list[i..];
+                let body = &body[..body.find("avail:").expect("a detail precedes avail")];
+                details += 1;
+                let bad = hints_explaining_enter(body);
+                assert!(bad.is_empty(), "a hint explains Enter: {bad:?}");
+            }
+            rest = &rest[at + list.len()..];
+        }
+        assert_eq!(lists, 5, "MENU, SETTINGS, PROMPT, NOTIFY and COLUMN items");
+        // And the words board scope puts around every one of them.
+        let scoped = &src[src.find("pub fn item_detail(").unwrap()..];
+        let scoped = &scoped[..scoped.find("\n}\n").unwrap()];
+        assert!(hints_explaining_enter(scoped).is_empty(), "{scoped}");
+        assert!(details > 80, "only {details} details read: the scan lost its lists");
+
+        // The scanner itself: the three spellings pass, anything else does not.
+        assert!(hints_explaining_enter(r#"x("a ∙ enter again confirms")"#).is_empty());
+        assert!(hints_explaining_enter(r#"x("{error} ∙ enter tries again")"#).is_empty());
+        assert!(hints_explaining_enter(r#"x("a ∙ enter copies it") // enter opens"#).is_empty());
+        assert!(hints_explaining_enter("('\"', \"until the cursor enters it\")").is_empty());
+        assert_eq!(hints_explaining_enter(r#"x("a ∙ Enter cycles")"#), ["a ∙ Enter cycles"]);
     }
 
     /// The footer never crowds out the one hint that finds the others.

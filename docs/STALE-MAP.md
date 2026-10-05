@@ -21902,3 +21902,41 @@ escape, byte for byte, nothing launched on a ladder whose helper would answer),
 `prefs::tests::who_delivers_the_banner_defaults_to_mesimon_and_round_trips`;
 `app::tests::the_delivered_by_row_cycles_and_says_when_the_terminal_cannot_post`; the two
 Notifications goldens gained the row.
+
+## Settings hints say one fact the label lacks, never what Enter does (T-677, 2026-10-06, "Settings hints say one fact the label lacks, never what Enter does, and a test holds the rule")
+
+**The rule.** A row's `detail` says one fact its label lacks: what the value means, what it
+costs, or why the row is inert. It never explains Enter (the footer under every dialog already
+says `enter toggle`, `enter cycle`, `enter open`) and never restates the label; an empty detail is
+fine. Three spellings may name Enter, because no footer word carries them: a two-press row's
+`∙ enter again confirms`, a retry's `{error} ∙ enter tries again`, and a copy row's `∙ enter
+copies it` (`keymap::HINT_ENTER_WORDS`). Before this, sixty-one of eighty-two rows ended in an
+Enter clause; the author (T-637): "explaining what happens when clicking enter is basically like
+chewing for the user."
+
+**What changed.** Every `detail` in `MENU_ITEMS`, `SETTINGS_ITEMS`, `NOTIFY_ITEMS` and
+`COLUMN_ITEMS`; board scope's `item_detail` lost its `∙ enter sets it here` tail (an empty base
+now reads `inherited` alone); `sharing_words` and `member_words` lost `∙ enter edits`/`∙ enter
+opens`, and every two-press row (sign out, revoke, stop sharing, leave, remove a member) now says
+`enter again confirms` in both states; the license-key field says `saving signs in` / `saving
+sends it`, the fact the footer's `save` does not; the board-scope status line is "settings for
+this board ∙ b returns a row to the machine's". The Tiers dialog (`tier_row_words`,
+`tier_field_words`) took the same rule: `h l switches`/`h l steps` stay, since h and l are not in
+its footer, and an armed removal says `enter again confirms` on its label. `Ctx::tier_default_next`
+went with the Default tier row's `enter selects {}`; nothing else read it.
+
+**Two hints were wrong.** Agent tools said "the seven board tools" (there are eight; the row now
+names no number), and Auto merge off said it works "while the board is quiet" (it runs while the
+board is open, on quiet REVIEW branches). A stage direction went too: the done sound's "a quieter
+one, so the two are told apart without looking" is now "a pick plays it", as its sibling's is.
+
+**The test.** `keymap::tests::a_hint_never_explains_enter` reads `keymap.rs` itself, takes each
+`static *_ITEMS: &[MenuItem]` list and every literal a `detail:` closure holds (to its `avail:`),
+plus `item_detail`'s body, and asserts none names Enter outside the three spellings
+(`keymap::hints_explaining_enter`, a literal scanner that skips comments and char literals). It
+also asserts five lists and more than eighty details were read, so a renamed list fails rather
+than passing on nothing. `app::tests::a_sharing_or_tier_hint_never_explains_enter` runs the same
+scanner over `sharing_words`, `member_words`, `tier_row_words` and `tier_field_words`, each sliced
+to its closing brace (the brief's "to the next `pub fn`" would have swept in the key handlers'
+status lines, which are not hints). Thirty-one goldens reminted; every removed phrase is an Enter
+clause, a restated label or a stage direction.

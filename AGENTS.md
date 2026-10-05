@@ -56,6 +56,10 @@ Preserve these boundaries:
   the MCP shim, which is an untrusted transport process.
 - Rendering changes must preserve the tested color and geometry laws. Regenerate goldens only
   for deliberate visual changes and inspect their diffs.
+- A settings or dialog row's `detail` says one fact the label lacks (what the value means, what
+  it costs, or why the row is inert), never what Enter does and never the label again; empty is
+  fine. Three spellings name Enter: `∙ enter again confirms`, `{error} ∙ enter tries again`,
+  `∙ enter copies it` (`keymap::HINT_ENTER_WORDS`; `a_hint_never_explains_enter`, T-677).
 - The mascot's pixels live in `assets/mascot/shin.txt` and its engine in
   `crates/mesimon-tui/src/creature.rs`; the notification PNGs and the installer's welcome are
   that engine's goldens (`MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`).

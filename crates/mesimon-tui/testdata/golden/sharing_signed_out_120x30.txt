@@ -15,7 +15,7 @@
                            │   Display name: not set                                        │
                            │   Sign in                                                      │
                            │                                                                │
-                           │     where shared boards meet ∙ enter edits                     │
+                           │     where shared boards meet                                   │
                            ╰─────────────────────────── jk select ∙ enter edit ∙ esc close ─╯
 
 

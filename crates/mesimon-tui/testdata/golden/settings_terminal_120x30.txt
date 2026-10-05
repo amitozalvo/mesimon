@@ -6,7 +6,7 @@
 
     Keymap validator      >╭─ TERMINAL ─────────────────────────────────────────────────────╮
                            │   Tab title: mesimon ∙ project name                            │
-                           │     enter cycles: off, project name, mesimon ∙ project name    │
+                           │                                                                │
                            │   Tab title counts needs-you: off                              │
                            │     2 need you ∙ project, while any ticket does                │
                            │   Tab title follows the open session: on                       │

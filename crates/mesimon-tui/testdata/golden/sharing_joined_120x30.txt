@@ -18,7 +18,7 @@
                            │   Sam's board ∙ viewer                                         │
                            │   your board ∙ owner                                           │
                            │                                                                │
-                           │     owner Sam ∙ enter opens it in place of this board          │
+                           │     owner Sam ∙ opens in place of this board                   │
                            ╰─────────────────────────── jk select ∙ enter open ∙ esc close ─╯
 
 

@@ -19,7 +19,7 @@
                            │ OTHER BOARDS                                                   │
                            │   Join a board with a code                                     │
                            │                                                                │
-                           │     enter removes them ∙ the key rotates for the others        │
+                           │     the key rotates for the others ∙ enter again confirms      │
                            ╰───────────────────────── jk select ∙ enter remove ∙ esc close ─╯
 
 

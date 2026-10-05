@@ -14,7 +14,7 @@
                            │   Get a license key                                            │
                            │   Sign out?                                                    │
                            │                                                                │
-                           │     shared boards stop syncing on this machine ∙ enter again   │
+                           │     shared boards stop syncing here ∙ enter again confirms     │
                            ╰─────────────────────── jk select ∙ enter sign out ∙ esc close ─╯
 
 

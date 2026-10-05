@@ -1,20 +1,20 @@
  BOARD   mesimon › kanban-tui   6 tickets
   ╭─ AGENTS ∙ 1/8 ───────────────────────────────────────╮
   │   Default tier: claude                               │
-  │     Claude Code ∙ its own model ∙ what a ticket sta~ │
+  │     what a ticket starts on unless ^n picks its own~ │
   │   Tiers: none yet                                    │
   │     a name for a launch: provider, model, effort ∙ ~ │
   │   Agent brief: off                                   │
-  │     one line: read the ticket first ∙ enter shows i~ │
+  │     one line: read the ticket first ∙ shown to you ~ │
   │   Agent tools: on                                    │
-  │     the seven board tools every spawn carries ∙ ent~ │
+  │     the board tools every spawn carries              │
   │   Agent prompts: mesimon's words                     │
   │     what mesimon types at an agent about a rebase, ~ │
   │ Crown                                                │
   │   Crown may start 3 agents at once                   │
-  │     start_agent on the crowned ticket ∙ a sleeping ~ │
+  │     agents the crown may have running at once ∙ a s~ │
   │   Crown mode: autonomous                             │
-  │     agents it started take its asks without ^y, and~ │
+  │     its agents take its asks and answers without yo~ │
   │                                                      │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
  SETTINGS                                            ? keys

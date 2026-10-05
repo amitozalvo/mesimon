@@ -13,7 +13,7 @@
                            ╭─ NEW COLUMN ───────────────────────────────────────────────────╮
                            │   Name: qa                                                     │
                            │                                                                │
-                           │     type it ∙ enter adds the column after the cursor's         │
+                           │     added after the cursor's column                            │
                            ╰────────────────────────────────────── enter save ∙ esc cancel ─╯
 
 

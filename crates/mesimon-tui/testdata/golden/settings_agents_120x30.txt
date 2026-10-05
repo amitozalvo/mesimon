@@ -5,22 +5,22 @@
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
                            ╭─ AGENTS ───────────────────────────────────────────────────────╮
     Keymap validator      >│   Default tier: claude                                         │
-                           │     Claude Code ∙ its own model ∙ what a ticket starts on unl~ │
+                           │     what a ticket starts on unless ^n picks its own ∙ Claude ~ │
                            │   Tiers: none yet                                              │
                            │     a name for a launch: provider, model, effort ∙ ^n cycles ~ │
                            │   Agent brief: off                                             │
-                           │     one line: read the ticket first ∙ enter shows it first     │
+                           │     one line: read the ticket first ∙ shown to you before it ~ │
                            │   Agent tools: on                                              │
-                           │     the seven board tools every spawn carries ∙ enter takes t~ │
+                           │     the board tools every spawn carries                        │
                            │   Agent prompts: mesimon's words                               │
                            │     what mesimon types at an agent about a rebase, a merge, a~ │
                            │ Crown                                                          │
                            │   Crown may start 3 agents at once                             │
-                           │     start_agent on the crowned ticket ∙ a sleeping agent free~ │
+                           │     agents the crown may have running at once ∙ a sleeping on~ │
                            │   Crown mode: autonomous                                       │
-                           │     agents it started take its asks without ^y, and it answer~ │
+                           │     its agents take its asks and answers without you ∙ yours ~ │
                            │   Crown archives tickets: off                                  │
-                           │     it may not archive or restore tickets ∙ enter lets it      │
+                           │     only a person archives                                     │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
 
 

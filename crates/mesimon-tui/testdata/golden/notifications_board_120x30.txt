@@ -9,17 +9,17 @@
                            │   Delivered by: mesimon                                        │
                            │     (machine) ∙ mesimon posts it with the mascot; a managed M~ │
                            │   Also when a turn finishes                                    │
-                           │     inherited ∙ the card's ✔ ∙ enter keeps it to the blocked ~ │
+                           │     inherited ∙ the card's ✔, said out loud                    │
                            │   The agent's words: quoted                                    │
-                           │     inherited ∙ its last line, on the banner ∙ enter names on~ │
+                           │     inherited ∙ its last line, on the banner                   │
                            │   Sound when an agent needs you: Glass                         │
-                           │     inherited ∙ enter cycles the ring and plays what it names~ │
+                           │     inherited ∙ a pick plays it                                │
                            │   Sound when a turn finishes: Tink                             │
-                           │     inherited ∙ a quieter one, so the two are told apart with~ │
+                           │     inherited ∙ a pick plays it                                │
                            │   Banner while the board is focused: quiet                     │
-                           │     inherited ∙ the card already says so ∙ the sound plays ei~ │
+                           │     inherited ∙ the sound still plays                          │
                            │   Inside the agent's own pane: silent                          │
-                           │     inherited ∙ its own pane already showed you ∙ sound too ∙~ │
+                           │     inherited ∙ the pane already showed you ∙ no sound either  │
                            │   Dock bounce when an agent needs you: off                     │
                            │     inherited ∙ iTerm2 only ∙ this terminal is not iTerm2, so~ │
                            ╰────────────── jk select ∙ enter choose ∙ b machine ∙ esc back ─╯

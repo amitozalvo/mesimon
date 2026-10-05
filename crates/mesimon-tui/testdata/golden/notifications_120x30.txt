@@ -5,21 +5,21 @@
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
                            ╭─ NOTIFICATIONS ────────────────────────────────────────────────╮
     Keymap validator      >│   Notifications: on                                            │
-                           │     an OS banner and a sound ∙ only while this board is open ~ │
+                           │     an OS banner and a sound ∙ only while this board is open   │
                            │   Delivered by: mesimon                                        │
                            │     mesimon posts it with the mascot; a managed Mac may audit~ │
                            │   Also when a turn finishes                                    │
-                           │     the card's ✔ ∙ enter keeps it to the blocked ones          │
+                           │     the card's ✔, said out loud                                │
                            │   The agent's words: quoted                                    │
-                           │     its last line, on the banner ∙ enter names only the ticket │
+                           │     its last line, on the banner                               │
                            │   Sound when an agent needs you: Glass                         │
-                           │     enter cycles the ring and plays what it names              │
+                           │     a pick plays it                                            │
                            │   Sound when a turn finishes: Tink                             │
-                           │     a quieter one, so the two are told apart without looking   │
+                           │     a pick plays it                                            │
                            │   Banner while the board is focused: quiet                     │
-                           │     the card already says so ∙ the sound plays either way ∙ e~ │
+                           │     the sound still plays                                      │
                            │   Inside the agent's own pane: silent                          │
-                           │     its own pane already showed you ∙ sound too ∙ enter says ~ │
+                           │     the pane already showed you ∙ no sound either              │
                            │   Dock bounce when an agent needs you: off                     │
                            │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯

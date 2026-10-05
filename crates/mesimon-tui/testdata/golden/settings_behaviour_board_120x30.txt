@@ -9,17 +9,17 @@
                            │   Auto merge: on                                               │
                            │     set here ∙ machine: on ∙ merges quiet REVIEW branches, as~ │
                            │   Auto merge tells the agent after a merge                     │
-                           │     inherited ∙ pastes the merged notice into the agent ∙ sta~ │
+                           │     inherited ∙ pastes the merged notice into the agent, whic~ │
                            │   Keep this machine awake: off                                 │
-                           │     inherited ∙ the machine sleeps on its own clock while an ~ │
+                           │     inherited ∙ the machine sleeps on its own clock, agents o~ │
                            │   Snooze returns with needs-you                                │
-                           │     inherited ∙ lit until you look at it ∙ enter makes it qui~ │
+                           │     inherited ∙ lit until you look at it                       │
                            │   Week starts on Monday                                        │
-                           │     (machine) ∙ z's last rung: next Monday 9:00 ∙ enter cycle~ │
+                           │     (machine) ∙ z's last rung: next Monday 9:00                │
                            │   Default column: TODO                                         │
-                           │     where an agent's create_ticket lands unplaced ∙ enter cyc~ │
+                           │     where an agent's create_ticket lands unplaced              │
                            │   Follow-ups: Queue                                            │
-                           │     default for this board ∙ Queue waits for idle; Steer send~ │
+                           │     Queue waits for the agent's idle ∙ Steer sends now         │
                            ╰────────────── jk select ∙ enter choose ∙ b machine ∙ esc back ─╯
 
 

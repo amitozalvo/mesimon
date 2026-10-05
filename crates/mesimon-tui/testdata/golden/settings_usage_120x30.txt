@@ -6,21 +6,21 @@
 
     Keymap validator      >╭─ USAGE ────────────────────────────────────────────────────────╮
                            │   Show: near a limit                                           │
-                           │     silent until a provider warns ∙ enter cycles               │
+                           │     silent until a provider warns                              │
                            │   5-hour window: on                                            │
                            │     the rolling session window, 5h on the line                 │
                            │   Weekly window: on                                            │
                            │     the week over every model                                  │
                            │   Per-model windows: on                                        │
-                           │     a week scoped to one model, named as the provider names it │
+                           │     one week per model, named as the provider names it         │
                            │   Reset times: near a limit                                    │
-                           │     beside a window the provider warns about ∙ enter cycles    │
+                           │     beside a window the provider warns about                   │
                            │   Claude: on                                                   │
                            │     a quiet claude -p asks /usage ∙ no prompt, no tokens       │
                            │   Codex: on                                                    │
                            │     a session's own reports, else a quiet app-server           │
                            │   Card corner: age                                           $ │
-                           │     how long the card has sat ∙ enter or $ shows its cost      │
+                           │     how long the card has sat ∙ $ on the board shows cost      │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
 
 

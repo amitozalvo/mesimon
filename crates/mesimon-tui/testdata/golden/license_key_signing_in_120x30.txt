@@ -14,7 +14,7 @@
                            │   License key: paste the key from your purchase                │
                            │   Get a license key                                            │
                            │                                                                │
-                           │     paste it whole ∙ enter signs in                            │
+                           │     paste it whole ∙ saving signs in                           │
                            ╰────────────────────────────────────── enter save ∙ esc cancel ─╯
 
 

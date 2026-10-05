@@ -16,7 +16,7 @@
                            │   Description: this repo: anything touching the daemon's writ~ │
                            │   Use the machine's                                            │
                            │                                                                │
-                           │     enter twice ∙ drops this board's version ∙ the machine's ~ │
+                           │     drops this board's version ∙ the machine's comes back      │
                            ╰────────────────────────── jk select ∙ enter revert ∙ esc back ─╯
 
 

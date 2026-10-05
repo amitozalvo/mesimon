@@ -6,11 +6,11 @@
                                            N   E   O
   ╭─ APPEARANCE ─────────────────────────────────────────╮
   │   Theme: graphite                                    │
-  │     dark: graphite ∙ light: chalk ∙ switches with t~ │
+  │     dark: graphite ∙ light: chalk ∙ follows the OS   │
   │   Status line at the bottom                          │
-  │     tmux's bar over an agent's pane ∙ enter moves i~ │
+  │     tmux's bar over an agent's pane                  │
   │   Crown's actions: lightning                         │
-  │     a bolt to each card the crown touches ∙ enter s~ │
+  │     a bolt on each card the crown touches            │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
 
 

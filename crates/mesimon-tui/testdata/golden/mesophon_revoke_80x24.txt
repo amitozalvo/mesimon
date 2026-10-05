@@ -13,7 +13,7 @@
        │   Revoke My phone                                              │
        │   Disable Remote Control                                       │
        │                                                                │
-       │     paired to this board ∙ enter twice revokes access          │
+       │     paired to this board ∙ enter again confirms                │
        ╰───────────────────────── jk select ∙ enter revoke ∙ esc close ─╯
 
 

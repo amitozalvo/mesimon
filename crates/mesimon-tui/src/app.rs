@@ -5034,7 +5034,6 @@ impl App {
             tier_cycle: false,
             tier_default: String::new(),
             tier_default_summary: String::new(),
-            tier_default_next: String::new(),
             tier_default_here: false,
             tier_machine_default: String::new(),
             tier_board_uses: String::new(),
@@ -5379,8 +5378,7 @@ impl App {
             Verb::PrefScope => {
                 self.settings_board_scope = !self.settings_board_scope;
                 self.status = if self.settings_board_scope {
-                    "settings for this board ∙ enter sets a row here ∙ b returns to the machine's"
-                        .into()
+                    "settings for this board ∙ b returns a row to the machine's".into()
                 } else {
                     "the machine's settings ∙ b sets one for this board".into()
                 };
@@ -7951,7 +7949,7 @@ impl App {
                         .map(|d| d.name.as_str())
                         .unwrap_or("device")
                 ),
-                "paired to this board ∙ enter twice revokes access".into(),
+                "paired to this board ∙ enter again confirms".into(),
                 "revoke",
             ),
             SharingRow::Heading(word) => ((*word).to_string(), String::new(), ""),
@@ -7964,9 +7962,9 @@ impl App {
                 if editing {
                     "self-hosted: replace with host[:port], a space, its pin".into()
                 } else if !self.teams {
-                    "where your phone reaches this board ∙ enter edits".into()
+                    "where your phone reaches this board".into()
                 } else {
-                    "where shared boards meet ∙ enter edits".into()
+                    "where shared boards meet".into()
                 },
                 "edit",
             ),
@@ -7979,9 +7977,9 @@ impl App {
                 if editing {
                     "what teammates see on your edits ∙ up to sixty-four characters".into()
                 } else if !self.teams {
-                    "the name this computer signs in with ∙ enter edits".into()
+                    "the name this computer signs in with".into()
                 } else {
-                    "what teammates see on your edits ∙ enter edits".into()
+                    "what teammates see on your edits".into()
                 },
                 "edit",
             ),
@@ -8012,10 +8010,9 @@ impl App {
                 if busy == "redeeming" {
                     "the relay is checking the license key".into()
                 } else if self.team.lapsed {
-                    "access lapsed: shared boards are read-only ∙ enter for a new license key"
-                        .into()
+                    "access lapsed ∙ a new license key restores it".into()
                 } else {
-                    "license key and sign out ∙ enter opens".into()
+                    "license key and sign out".into()
                 },
                 "open",
             ),
@@ -8032,7 +8029,7 @@ impl App {
                     // Never the key itself: a screen may be recorded.
                     "License key: set".into()
                 };
-                let then = if signed { "enter sends it" } else { "enter signs in" };
+                let then = if signed { "saving sends it" } else { "saving signs in" };
                 let detail = match &self.mode {
                     Mode::Sharing { editing: Some(buf), .. } => {
                         if mesimon_core::team::looks_like_license_key(buf.as_str()) {
@@ -8049,11 +8046,10 @@ impl App {
                         "license key accepted ∙ this machine's access is extended".into()
                     }
                     _ if signed && self.team.lapsed => {
-                        "access lapsed: shared boards are read-only until a key lands ∙ enter edits"
-                            .into()
+                        "access lapsed: shared boards are read-only until a key lands".into()
                     }
-                    _ if signed => "extends this machine's access ∙ enter edits".into(),
-                    _ => "this relay signs in with one ∙ enter edits".into(),
+                    _ if signed => "extends this machine's access".into(),
+                    _ => "this relay signs in with one".into(),
                 };
                 (label, detail, "edit")
             }
@@ -8069,12 +8065,12 @@ impl App {
             ),
             SharingRow::SignOut if armed => (
                 "Sign out?".into(),
-                "shared boards stop syncing on this machine ∙ enter again".into(),
+                "shared boards stop syncing here ∙ enter again confirms".into(),
                 "sign out",
             ),
             SharingRow::SignOut => (
                 "Sign out".into(),
-                "this machine forgets its device key ∙ enter asks once more".into(),
+                "this machine forgets its device key ∙ enter again confirms".into(),
                 "sign out",
             ),
             SharingRow::Publish if busy == "sharing" => {
@@ -8122,12 +8118,12 @@ impl App {
             }
             SharingRow::Unshare if armed => (
                 "Stop sharing?".into(),
-                "the board vanishes for every member ∙ enter again".into(),
+                "the board vanishes for every member ∙ enter again confirms".into(),
                 "stop sharing",
             ),
             SharingRow::Unshare => (
                 "Stop sharing".into(),
-                "members lose the board ∙ your copy stays ∙ enter asks once more".into(),
+                "members lose the board ∙ your copy stays ∙ enter again confirms".into(),
                 "stop sharing",
             ),
             SharingRow::Leave if busy == "leaving" => {
@@ -8135,12 +8131,12 @@ impl App {
             }
             SharingRow::Leave if armed => (
                 "Leave this board?".into(),
-                "nothing new reaches this copy ∙ enter again".into(),
+                "nothing new reaches this copy ∙ enter again confirms".into(),
                 "leave",
             ),
             SharingRow::Leave => (
                 "Leave this board".into(),
-                "the owner can invite you again ∙ enter asks once more".into(),
+                "the owner can invite you again ∙ enter again confirms".into(),
                 "leave",
             ),
             SharingRow::Join if busy == "joining" => {
@@ -8148,7 +8144,7 @@ impl App {
             }
             SharingRow::Join => {
                 let detail = if error.starts_with("joining") {
-                    format!("{error} ∙ enter tries another code")
+                    format!("{error} ∙ enter tries again")
                 } else {
                     "a one-time code from the board's owner ∙ opens the board".into()
                 };
@@ -8165,7 +8161,7 @@ impl App {
                 };
                 let label = format!("{name} ∙ {}", b.role);
                 let detail = if b.root.is_some() {
-                    format!("owner {} ∙ enter opens it in place of this board", b.owner_name)
+                    format!("owner {} ∙ opens in place of this board", b.owner_name)
                 } else if b.role == "owner" {
                     "shared from a checkout on this machine ∙ open it from there".to_string()
                 } else {
@@ -8205,9 +8201,9 @@ impl App {
             "joined ∙ your daemon hands them the board key on its next pass".to_string()
         } else if armed {
             label = format!("Remove {}?", m.display_name);
-            "they lose the board and the key rotates ∙ enter again".to_string()
+            "they lose the board and the key rotates ∙ enter again confirms".to_string()
         } else {
-            "enter removes them ∙ the key rotates for the others".to_string()
+            "the key rotates for the others ∙ enter again confirms".to_string()
         };
         if busy && removable {
             return ("Removing…".into(), "the relay is rotating the key".into(), "");
@@ -15194,10 +15190,10 @@ mod tests {
         assert_eq!(app.scope(), Scope::Input, "the cursor is already in the field");
         assert!(!sent.borrow().iter().any(|s| s.contains("TeamSignIn")));
         let detail = app.sharing_words(&SharingRow::LicenseKey, false).1;
-        assert_eq!(detail, "paste it whole ∙ enter signs in");
+        assert_eq!(detail, "paste it whole ∙ saving signs in");
         assert!(app.on_paste("MSMN-7A3K-M9Q2-XB4D-H8FN").unwrap());
         let detail = app.sharing_words(&SharingRow::LicenseKey, false).1;
-        assert!(detail.ends_with("a license key ∙ enter signs in"), "{detail}");
+        assert!(detail.ends_with("a license key ∙ saving signs in"), "{detail}");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
             sent.borrow().iter().any(|s| s.contains("TeamSignIn") && s.contains("MSMN-7A3K")),
@@ -15304,6 +15300,29 @@ mod tests {
         app.mode = Mode::Menu { idx: 0 };
         app.dispatch(Verb::Sharing, Key::Enter, Scope::Menu, &app.ctx()).unwrap();
         assert_eq!(app.mode, Mode::Sharing { idx: 1, editing: None, armed: false });
+    }
+
+    /// The sharing rows and the tier dialog hold `keymap`'s hint rule
+    /// (T-677): a detail never explains Enter beyond the three spellings in
+    /// `HINT_ENTER_WORDS`. Read off the source, a method's body at a time.
+    #[test]
+    fn a_sharing_or_tier_hint_never_explains_enter() {
+        fn body<'a>(src: &'a str, head: &str) -> &'a str {
+            let at = src.find(head).unwrap_or_else(|| panic!("{head} is gone"));
+            let rest = &src[at..];
+            &rest[..rest.find("\n    }\n").expect("a method ends")]
+        }
+        let app = include_str!("app.rs");
+        let tiers = include_str!("app/tiers.rs");
+        for (src, head) in [
+            (app, "pub fn sharing_words("),
+            (app, "fn member_words("),
+            (tiers, "fn tier_row_words("),
+            (tiers, "fn tier_field_words("),
+        ] {
+            let bad = keymap::hints_explaining_enter(body(src, head));
+            assert!(bad.is_empty(), "{head} explains Enter: {bad:?}");
+        }
     }
 
     /// The sharing dialog (T-334): publishing always takes the notes
@@ -16148,7 +16167,7 @@ mod tests {
         });
         let row = items.iter().find(|m| m.verb == Verb::ThemePick).unwrap();
         let detail = (row.detail)(&app.ctx());
-        assert!(detail.contains("switches with the OS"), "{detail}");
+        assert!(detail.ends_with("follows the OS"), "{detail}");
         // One again: the thread's handle goes; the ground stays where it is.
         app.set_pref("graphite for light terminals", |p| p.light = Flavor::Graphite);
         assert!(app.appearance.is_none());
@@ -21311,7 +21330,7 @@ mod tests {
         assert!(app.join_watch.is_none());
         assert!(app.pending_switch.is_none());
         let (_, detail, word) = app.sharing_words(&SharingRow::Join, false);
-        assert_eq!(detail, "joining: not found ∙ enter tries another code");
+        assert_eq!(detail, "joining: not found ∙ enter tries again");
         assert_eq!(word, "join");
     }
 

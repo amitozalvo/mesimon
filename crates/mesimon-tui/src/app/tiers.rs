@@ -333,10 +333,6 @@ impl App {
             if self.settings_board_scope { default.clone() } else { book.machine_default() };
         c.tier_default = shown.name.clone();
         c.tier_default_summary = shown.summary();
-        c.tier_default_next = match self.default_next() {
-            Some(t) => t.name,
-            None => "inherit".into(),
-        };
         c.tier_default_here = book.board_default().is_some();
         c.tier_machine_default = book.machine_default().name;
         c.tier_board_uses = match book.board_default() {
@@ -453,19 +449,19 @@ impl App {
                         Source::Machine => {
                             "machine ∙ an edit here makes this board's own version".to_string()
                         }
-                        other => format!("{} ∙ enter edits", other.word()),
+                        other => other.word().to_string(),
                     }
                 } else {
-                    "every board ∙ enter edits".to_string()
+                    "every board".to_string()
                 };
                 (label, detail)
             }
             TierRow::New => (
                 "+ new tier".to_string(),
                 if board {
-                    "a tier for this board alone ∙ enter names it".into()
+                    "a tier for this board alone".into()
                 } else {
-                    "a tier for every board ∙ enter names it".into()
+                    "a tier for every board".into()
                 },
             ),
         }
@@ -616,11 +612,11 @@ impl App {
         match field {
             TierField::Name => (
                 format!("Name: {}", t.name),
-                "enter renames ∙ tickets keep their tier by id, whatever it is called".into(),
+                "tickets keep their tier by id, whatever it is called".into(),
             ),
             TierField::Provider => (
                 format!("Provider: {}", t.provider.label()),
-                "enter or h l switches ∙ a model is its provider's own, so it is cleared".into(),
+                "h l switches ∙ a model is its provider's own, so it is cleared".into(),
             ),
             TierField::Model => (
                 format!("Model: {}", if t.model.is_empty() { "its own" } else { &t.model }),
@@ -633,10 +629,9 @@ impl App {
             TierField::Effort => (
                 format!("Effort: {}", t.effort.word()),
                 if claude {
-                    "claude --effort ∙ enter or h l steps ∙ default leaves Claude Code's own".into()
+                    "claude --effort ∙ h l steps ∙ default leaves Claude Code's own".into()
                 } else {
-                    "codex model_reasoning_effort ∙ enter or h l steps ∙ default leaves Codex's own"
-                        .into()
+                    "codex model_reasoning_effort ∙ h l steps ∙ default leaves Codex's own".into()
                 },
             ),
             TierField::Description => (
@@ -657,9 +652,9 @@ impl App {
                     )
                 };
                 if armed {
-                    (format!("{label} ∙ enter again"), what.into())
+                    (format!("{label} ∙ enter again confirms"), what.into())
                 } else {
-                    (label.into(), format!("enter twice ∙ {what}"))
+                    (label.into(), what.into())
                 }
             }
         }

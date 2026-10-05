@@ -15,7 +15,7 @@
                            │     cross-crate refactors                                      │
                            │   + new tier                                                   │
                            │                                                                │
-                           │     every board ∙ enter edits                                  │
+                           │     every board                                                │
                            ╰─── jk select ∙ JK move ∙ enter edit ∙ b this board ∙ esc back ─╯
 
 

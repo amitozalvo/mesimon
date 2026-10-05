@@ -6,11 +6,11 @@
                                            N   E   O
   ╭─ APPEARANCE ∙ THIS BOARD ────────────────────────────╮
   │   Theme: graphite                                    │
-  │     inherited ∙ dark: graphite ∙ light: chalk ∙ swi~ │
+  │     inherited ∙ dark: graphite ∙ light: chalk ∙ fol~ │
   │   Status line at the bottom                          │
-  │     (machine) ∙ tmux's bar over an agent's pane ∙ e~ │
+  │     (machine) ∙ tmux's bar over an agent's pane      │
   │   Crown's actions: lightning                         │
-  │     (machine) ∙ a bolt to each card the crown touch~ │
+  │     (machine) ∙ a bolt on each card the crown touch~ │
   ╰──── jk select ∙ enter choose ∙ b machine ∙ esc back ─╯
 
 

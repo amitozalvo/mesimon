@@ -10,7 +10,7 @@
                            │   Appearance                                                   │
                            │     themes, status line, the crown's actions                   │
                            │   Notifications: on                                            │
-                           │     a banner and a sound when an agent needs you ∙ Glass ∙ en~ │
+                           │     a banner and a sound when an agent needs you ∙ Glass       │
                            │   Behaviour                                                    │
                            │     auto merge, keep awake, snooze, week start, default column │
                            │   Agents                                                       │

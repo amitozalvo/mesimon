@@ -1113,12 +1113,12 @@ fn the_settings_subtitle_marquees() {
     let row = |lines: &[String]| -> String {
         lines
             .iter()
-            .find(|l| l.contains("merges and asks to rebase"))
+            .find(|l| l.contains("idle agents to"))
             .unwrap_or_else(|| panic!("the merge train's subtitle: {lines:#?}"))
             .clone()
     };
     let resting = row(&render(&app, 120, 30));
-    assert!(resting.contains("mesimon merges and asks"), "the pass starts at the start: {resting}");
+    assert!(resting.contains("merges quiet REVIEW"), "the pass starts at the start: {resting}");
     assert!(resting.contains('~'), "and it is cut, which is what the walk repairs: {resting}");
     // Past the opening hold: the draw armed the clock, so date it into the
     // past rather than sleeping through six steps of it.
@@ -1126,13 +1126,13 @@ fn the_settings_subtitle_marquees() {
     app.menu_marquee
         .set(Some((key, std::time::Instant::now() - std::time::Duration::from_millis(2000))));
     let walked = row(&render(&app, 120, 30));
-    assert!(!walked.contains("mesimon merges"), "the words have moved: {walked}");
+    assert!(!walked.contains("merges quiet"), "the words have moved: {walked}");
     assert!(!walked.contains('~'), "a walking marquee hard-clips: {walked}");
-    assert!(walked.contains("board is q"), "and it reveals what the cut hid: {walked}");
+    assert!(walked.contains("rebase, wh"), "and it reveals what the cut hid: {walked}");
     // An unselected row is still cut: one sentence moves, the list is quiet.
     app.mode = Mode::Settings { idx: 1 };
     let quiet = row(&render(&app, 120, 30));
-    assert!(quiet.contains("mesimon merges and asks"), "{quiet}");
+    assert!(quiet.contains("merges quiet REVIEW"), "{quiet}");
     assert!(quiet.contains('~'), "{quiet}");
 }
 

@@ -218,6 +218,10 @@ goldens are colourless.
 5. A `doctor` line via `load_home()`.
 **`App::prefs` is the resolved view** (machine under this board's overrides): a test seeds it
 with `seed_pref`, never by assignment, and `save_prefs` writes `machine_prefs`.
+**A row's `detail` says one fact the label lacks** (what the value means, what it costs, or why
+the row is inert), never what Enter does and never the label again; empty is fine. Three
+spellings name Enter: `∙ enter again confirms`, `{error} ∙ enter tries again`, `∙ enter copies
+it` (`keymap::HINT_ENTER_WORDS`; `a_hint_never_explains_enter` reads the source, T-677).
 
 **A card or ticket-page visual:** `tui/src/ui/card.rs` / `ticket.rs` / `tags.rs`, plus a golden
 in `tui/src/ui/tests.rs`. The L1 law tests (`test_no_banned_sgr`, `test_no_drawn_structure`) and

@@ -15,7 +15,7 @@
                            │   Display name: not set                                        │
                            │   Sign in                                                      │
                            │                                                                │
-                           │     where your phone reaches this board ∙ enter edits          │
+                           │     where your phone reaches this board                        │
                            ╰─────────────────────────── jk select ∙ enter edit ∙ esc close ─╯
 
 
