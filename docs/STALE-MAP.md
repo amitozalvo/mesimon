@@ -21033,3 +21033,100 @@ the hook set's `SessionStart`, the brief down the mod's `submit` once, `unsent` 
 in `modroad`'s unit tests; `hook_set` on a mod context in `claude.rs`'s tests; doctor's line.
 `mod_turns_e2e` unchanged and green: a refused submit still keeps `unsent`, and the `entered` of
 its resend now clears it before the ack does.
+
+## Can the mod carry a session alone on a Team or Enterprise account? The native events, measured (T-651, 2026-10-05, research; nothing ships)
+
+**Seen.** T-650 found Claude Code's `cc-plugin-sec-default` seated outermost on a Team or
+Enterprise account, handing every `classic.*` event past a person's plugins, and shipped the
+hook set beside the mod there. The author asked whether the mod could carry such a session
+alone, reporting the board's signals from the engine's own events, so the hook set is never
+needed. This ticket measured the native payloads on the author's Mac (2.1.289, Max account,
+Haiku) with the T-573 spike mod extended to observe `session.*`, `turn.*`, `tool.call`,
+`tool.check`, `session.measure`, `session.receive` and `$.agent.list()`, a parity hook set
+beside it, and six driver scenarios (`drive.py n_lifecycle n_compact n_fail n_idle n_dialogs
+n_tasks`). **Nothing was measured on a Team or Enterprise account**: which events the
+security default reroutes rests on the binary's register function (quoted whole in T-650's
+block and re-read here: `session.*`, `turn.*`, `tool.call`, `tool.check`, `prompt.submit`,
+`session.measure`, `session.receive`, `ui.render` are not on its list; `agent.spawn` passes
+for a built-in agent, provider tier `core`; `tool.check` is re-judged on the organization's
+plugins only where a user plugin lifted a `deny`). The two notes on the ticket hold the
+signal table and the verbatim payloads.
+
+**Measured.**
+1. *`session.start`* fires once per process, 60–1100 ms after `classic.SessionStart`, after
+   the trust dialog, with `{cwd, surface, isInteractive}`; `$.session.id()` is the transcript's
+   stem, `cwd()` = `root()` at start, `$.env.get` reads `HOME` and `CLAUDE_CONFIG_DIR`. A
+   `--resume` fires it too (`turns: 1`). A `/clear` fires **no** native start:
+   `session.end{reason:"clear", sessionId: old}` and the new id is read by the next event
+   (`turn.start`, 3.7 s later). The transcript path is `<config>/projects/<slug>/<id>.jsonl`,
+   slug = cwd with `[^a-zA-Z0-9]` → `-` (the underscore goes too; the memory-dir slug keeps
+   it), and past 200 characters the binary appends a hash (`mP`), so the daemon should find
+   the file by id under `projects/` as the census walks it, not derive. A resumed session is
+   re-homed under the resuming cwd's slug.
+2. *`session.end`* carries `{reason, sessionId, resume.id}` with the classic reason words
+   (`clear`, `prompt_input_exit` measured; the type is `ClassicHookInputs['SessionEnd']['reason']`),
+   on a shared 5 s budget.
+3. *`turn.start`* fires for every turn (a typed prompt, the mod's own submit, a task
+   notification, a teammate's message); *`turn.complete`* 60–150 ms after `classic.Stop` with
+   `{answer, durationMs, isAborted, turnId, reason, usage}` and `agentId` for a subagent's or a
+   teammate's turn, at the same ms as its `classic.SubagentStop`. **No task list on it.** The
+   engine's helper loops, which fire `classic.SubagentStop` with an empty `agent_type` (seven
+   across these runs), raise no native turn at all. An API error ends the turn with
+   `reason: "error"`, no `usage`, and **no class and no message** where `classic.StopFailure`
+   says `error: "model_not_found"` and the rendered text.
+4. *Background work.* A Bash `run_in_background` result carries `backgroundTaskId` on the
+   `tool.call` result exactly as `tool_response` does; its end arrives as `prompt.submit` and
+   `turn.start` with `origin.kind: "task-notification"` and `<task-id>` in the text, **not** as
+   `session.receive`. `agent.spawn` resolves `{model, agentId, teammateId?}` at the same ms as
+   `classic.SubagentStart`; a subagent's `tool.call` carries `agentId`. `$.agent.list()` lists
+   `{id, type, status, description, teammateId?, name?}` with `running | idle | completed`.
+   A named Agent on 2.1.289 is a teammate (`status: "teammate_spawned"`, `team_name`): the
+   classic `Stop` lists it `teammate: running` under a different id for life, the list reads it
+   `idle`, and its idle notice is `session.receive{origin:{kind:"peer", teammate:"scout"}}` with
+   the `idle_notification` JSON, 700 ms after `classic.TeammateIdle`.
+5. *Dialogs.* `tool.call` fires with the tool's arguments before `next` (the question's
+   `questions[]`, the plan's `plan` and `planFilePath`) and resolves with the tool's record
+   after: `{questions, answers, annotations}` / `{plan, isAgent, filePath, hasTaskTool}`,
+   identical to `tool_response`. **A refusal is a fact here**: Esc on the question or on a
+   permission dialog resolves `isError: true` with "The user doesn't want to proceed with this
+   tool use", where the hook set fires nothing (T-447). `tool.check` fires on **every** call
+   (`Read`, `ToolSearch`, the plan file's `Write` with `allow` + `rule`/`reason`), core's `ask`
+   10 ms before `classic.PermissionRequest`, with `tool_use_id` (the classic one has none) and
+   a `trace` of who decided; `permission_suggestions` are the classic one's alone. **The
+   dialog draws only after `tool.check` resolves**: held 7 s, the pane read `Waiting…` and the
+   dialog came at release, so a one-shot answer from the phone through a held `tool.check` is
+   phone-or-terminal, never both. No `classic.Notification{permission_prompt}` fired for five
+   dialogs (the parity hook set agrees); `idle_prompt` fired at 60 s with nothing native.
+6. *`session.compact`* before `next` `{trigger, messages}` and after `{messages,
+   tokensBefore, tokensAfter, usage}` around `classic.PreCompact`, `SessionStart(compact)` and
+   `PostCompact`, same session id. *`session.measure`* pushes `{context, rateLimits[], cost,
+   changed[]}` at start and after every main turn.
+
+**Decided.** *Go, as a ticket of its own, not here.* The table on the ticket gives every
+signal a verdict: whole for `SessionStart` (clear: late by one prompt), `SessionEnd`,
+`UserPromptSubmit`, `SubagentStop`, `BackgroundChanged`, `TeammateIdle`, `TeammateMessaged`,
+the pair's `PreToolUse`/`PostToolUse`, `ToolCompleted`, `ToolStarted`, `PreCompact`/`PostCompact`;
+partial for `Stop` (its `background_tasks` rebuilt in the mod from `$.agent.list()` and a
+ledger of task starts and notifications), `StopFailure` (`reason: "error"` alone; the class is
+the transcript tail's or nothing), `PermissionRequest` (whole as a signal; the one-shot allow
+exclusive) and `Notification` (permission covered by `tool.check → ask`; the quota-resume
+prompts none, `session.measure` a hint); none for `PermissionDenied` (auto mode, unmeasured,
+harmless) and `Elicitation` (declared on neither road in practice). The shape: a second relay
+set in `register.ts` behind `MESIMON_MOD_NATIVE=1`, set by the daemon only under a `ClassicOff`
+verdict with `--plugin-dir` alone, relaying in the hook set's names and shapes so `ingest` and
+`hooks.rs` take them unchanged, with two named adapters (the task list in the mod, the failure
+class in the daemon's tail reader) and one decision for the author (hold `tool.check` for the
+phone, or keep the terminal's dialog and show it read-only on the phone; the block's author
+recommends the second). Estimated at a third of the T-573…T-598 series: the relay set and its
+unit tests (T-577's size), the fake engine's native vocabulary and the daemon switch (T-598's),
+the adapters and the permission decision (T-632's). Nothing else ships from T-651: the spike's
+new hooks and scenarios are research under `mod-spike/`, loaded by `MESIMON_MOD_DIR` alone.
+
+**Not measured, said plainly:** any Team or Enterprise account; `fork` as a start source; auto
+mode's classifier after `ask`; the quota auto-resume notifications; MCP elicitation;
+`transcript_moved` under a worktree move (`$.session.root()` is documented to follow one).
+
+**Tests.** `cargo ut` green (no Rust changed). The spike validates (`claude plugin validate`:
+hooks `session.start/end/compact`, `turn.start/step/complete`, `tool.call`, `tool.check`,
+`session.measure`, `session.receive`, the classic set; calls `$.agent.list`, `$.session.*`,
+`$.env.get` on literal names, as the validator requires).

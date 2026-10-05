@@ -29,6 +29,7 @@ type Command =
   | { kind: 'tools' }
   | { kind: 'ask'; question: string; options: string[] }
   | { kind: 'hold_permits'; on: boolean }
+  | { kind: 'hold_check'; ms: number }
 
 const LONG = 4000
 
@@ -44,6 +45,7 @@ const holds = new Map<string, (a: Answer) => void>()
 const checks = new Map<string, Decision>()
 let planMode: 'native' | 'result' | 'allow' = 'native'
 let holdPermits = false
+let holdCheckMs = 0
 let cwd = ''
 
 async function log($: any, event: string, data: unknown) {
@@ -99,6 +101,9 @@ async function handle($: any, line: string) {
     case 'hold_permits':
       holdPermits = cmd.on
       break
+    case 'hold_check':
+      holdCheckMs = cmd.ms
+      break
     case 'check':
       if (cmd.decision) checks.set(cmd.tool, cmd.decision)
       else checks.delete(cmd.tool)
@@ -143,6 +148,35 @@ async function runBridge($: any, spool: string, root: string) {
   }
 }
 
+async function facts($: any) {
+  const out: Record<string, unknown> = {}
+  const take = async (k: string, f: () => Promise<unknown>) => {
+    try {
+      out[k] = await f()
+    } catch (err) {
+      out[k] = `ERR ${String(err)}`
+    }
+  }
+  await take('id', () => $.session.id())
+  await take('cwd', () => $.session.cwd())
+  await take('root', () => $.session.root())
+  await take('model', () => $.session.model())
+  await take('turns', () => $.session.turns())
+  await take('surfaces', () => $.session.surfaces())
+  await take('env.CLAUDE_CONFIG_DIR', () => $.env.get('CLAUDE_CONFIG_DIR'))
+  await take('env.HOME', () => $.env.get('HOME'))
+  await take('env.TMUX', () => $.env.get('TMUX'))
+  await take('env.TMUX_PANE', () => $.env.get('TMUX_PANE'))
+  return out
+}
+async function agents($: any) {
+  try {
+    return await $.agent.list()
+  } catch (err) {
+    return `ERR ${String(err)}`
+  }
+}
+
 export const register: Register = on => {
   // ---- Row 1: every classic event, in-process, relayed through the real
   // hook binary when asked (one `$.process.run` per event: `$.process.spawn`
@@ -184,7 +218,7 @@ export const register: Register = on => {
     } catch (err) {
       version = String(err)
     }
-    await log($, 'session.start', { e, version, root: $.plugin.root })
+    await log($, 'session.start', { e, version, root: $.plugin.root, facts: await facts($), origin: next.origin })
     // Row 7: a tool registered in-process, no MCP shim.
     try {
       const reg = await $.tool.register({
@@ -197,6 +231,7 @@ export const register: Register = on => {
       await log($, 'tool.register.failed', String(err))
     }
     const started = await next(e)
+    await log($, 't651.session.start.result', started)
     // Row 2: the launch brief, submitted as the person's words, no tty.
     const brief = await $.env.get('MESIMON_MOD_BRIEF_FILE')
     if (brief) {
@@ -208,28 +243,31 @@ export const register: Register = on => {
     return started
   })
   on('session.end', async ($, e, next) => {
-    await log($, 'session.end', e)
+    await log($, 'session.end', { e, facts: await facts($), budget: next.budget })
     return next(e)
   })
   on('session.compact', async ($, e, next) => {
-    await log($, 'session.compact', { trigger: e.trigger, agentId: e.agentId, messages: e.messages.length, instructions: e.instructions })
+    await log($, 'session.compact', { trigger: e.trigger, agentId: e.agentId, messages: e.messages.length, instructions: e.instructions, keys: Object.keys(e), facts: await facts($) })
     const r = await next(e)
-    await log($, 'session.compact.result', { skip: (r as any).skip, messages: (r as any).messages?.length, tokensBefore: (r as any).tokensBefore, tokensAfter: (r as any).tokensAfter })
+    await log($, 'session.compact.result', { keys: Object.keys(r as any), skip: (r as any).skip, messages: (r as any).messages?.length, tokensBefore: (r as any).tokensBefore, tokensAfter: (r as any).tokensAfter, facts: await facts($) })
     return r
   })
   on('agent.spawn', async ($, e, next) => {
     await log($, 'agent.spawn', e)
     const r = await next(e)
-    await log($, 'agent.spawn.result', r)
+    await log($, 'agent.spawn.result', { r, agents: await agents($) })
     return r
   })
   on('turn.start', async ($, e, next) => {
-    await log($, 'turn.start', e)
-    return next(e)
+    await log($, 'turn.start', { e: { ...e, text: e.text.slice(0, 200), chars: e.text.length }, facts: await facts($), agents: await agents($) })
+    const r = await next(e)
+    await log($, 'turn.start.result', r)
+    return r
   })
   on('turn.complete', async ($, e, next) => {
-    await log($, 'turn.complete', e)
-    return next(e)
+    const r = await next(e)
+    await log($, 'turn.complete', { ...e, answer: String(e.answer).slice(0, 200), result: { ...(r as any), text: String((r as any)?.text ?? '').slice(0, 100) }, agents: await agents($), facts: await facts($) })
+    return r
   })
   // Row 8: what each request cost, as the API reported it.
   on('turn.step', async function* ($, e, next) {
@@ -238,7 +276,7 @@ export const register: Register = on => {
     return r
   })
   on('prompt.submit', async ($, e, next) => {
-    await log($, 'prompt.submit', { origin: e.origin, turnId: e.turnId, wait: e.wait, chars: e.text.length, head: e.text.slice(0, 80), context: e.context, attachments: e.attachments })
+    await log($, 'prompt.submit', { origin: e.origin, turnId: e.turnId, wait: e.wait, chars: e.text.length, head: e.text.slice(0, 80), context: e.context, attachments: e.attachments, keys: Object.keys(e) })
     const r = await next(e)
     await log($, 'prompt.submit.result', { origin: r.origin, drop: r.drop, chars: r.text?.length, context: r.context })
     return r
@@ -254,9 +292,20 @@ export const register: Register = on => {
 
   // ---- Row 4: the permission verdict.
   on('tool.check', async ($, e, next) => {
+    const t0 = await $.clock.now()
+    if (holdCheckMs > 0 && e.tool !== 'AskUserQuestion' && e.tool !== 'ExitPlanMode') {
+      const ms = holdCheckMs
+      holdCheckMs = 0
+      await log($, 't651.tool.check.hold', { tool: e.tool, tool_use_id: e.tool_use_id, ms })
+      try {
+        await $.process.run(['sleep', String(ms / 1000)], { timeoutMs: ms + 5000 })
+      } catch (err) {
+        await log($, 't651.tool.check.hold_failed', String(err))
+      }
+    }
     const core = await next(e)
     const want = checks.get(e.tool) ?? (e.tool === 'ExitPlanMode' && planMode === 'allow' ? 'allow' : undefined)
-    await log($, 'tool.check', { tool: e.tool, input: e.input, tool_use_id: e.tool_use_id, core, override: want, origin: next.origin })
+    await log($, 'tool.check', { tool: e.tool, input: e.input, tool_use_id: e.tool_use_id, core, override: want, origin: next.origin, keys: Object.keys(e), ms: (await $.clock.now()) - t0, trace: (next as any).trace })
     return want ? { decision: want, reason: `mesimon spike said ${want}` } : core
   })
 
@@ -266,6 +315,7 @@ export const register: Register = on => {
   // the hook's own would), which waits for the daemon's decision (here: a
   // file under the spool) and prints it, as the approve binary answers.
   on('classic.PermissionRequest', async ($, e, next) => {
+    await log($, 't651.classic.PermissionRequest.agents', { agents: await agents($), facts: await facts($) })
     const spool = await $.env.get('MESIMON_MOD_SPOOL')
     if (!holdPermits || !spool || e.agent_id || e.tool_name === 'AskUserQuestion' || e.tool_name === 'ExitPlanMode') {
       return next(e)
@@ -348,6 +398,62 @@ export const register: Register = on => {
     const r = await next(e)
     await log($, 'plan.native', r)
     return r
+  })
+
+  // ---- T-651: the native events that pass the security default, measured
+  // for the hook set's facts. Observe only: every hook returns next(e) as it
+  // came. `facts` is what `$.session` answers at that moment.
+  on('session.measure', async ($, e, next) => {
+    await log($, 't651.session.measure', e)
+    return next(e)
+  })
+  on('session.receive', async ($, e, next) => {
+    await log($, 't651.session.receive', { ...e, text: String(e.text).slice(0, 300) })
+    const r = await next(e)
+    await log($, 't651.session.receive.result', { keys: Object.keys(r as any), consumed: (r as any).consumed })
+    return r
+  })
+  // Every tool call: the envelope, the tool's own keys, and the result's shape.
+  on('tool.call', async ($, e, next) => {
+    const { tool, tool_use_id, agentId, consent, ...input } = e as any
+    const t0 = await $.clock.now()
+    await log($, 't651.tool.call', { tool, tool_use_id, agentId, consent, input, origin: next.origin })
+    let r: any
+    try {
+      r = await next(e)
+    } catch (err) {
+      await log($, 't651.tool.call.threw', { tool, tool_use_id, agentId, ms: (await $.clock.now()) - t0, error: String(err), aborted: next.signal.aborted })
+      throw err
+    }
+    const shape: any = { tool, tool_use_id, agentId, ms: (await $.clock.now()) - t0, keys: Object.keys(r ?? {}), deny: r?.deny, isError: r?.isError, isReadOnly: r?.isReadOnly }
+    shape.result = r?.result
+    shape.text = typeof r?.text === 'string' ? r.text.slice(0, 400) : r?.text
+    await log($, 't651.tool.call.result', shape)
+    return r
+  })
+  on('classic.Stop', async ($, e, next) => {
+    await log($, 't651.classic.Stop.agents', { agent_id: (e as any).agent_id, agents: await agents($), facts: await facts($) })
+    return next(e)
+  })
+  on('classic.SubagentStop', async ($, e, next) => {
+    await log($, 't651.classic.SubagentStop.agents', { agent_id: (e as any).agent_id, agents: await agents($), facts: await facts($) })
+    return next(e)
+  })
+  on('classic.SubagentStart', async ($, e, next) => {
+    await log($, 't651.classic.SubagentStart.agents', { agent_id: (e as any).agent_id, agents: await agents($), facts: await facts($) })
+    return next(e)
+  })
+  on('classic.TeammateIdle', async ($, e, next) => {
+    await log($, 't651.classic.TeammateIdle.agents', { agent_id: (e as any).agent_id, agents: await agents($), facts: await facts($) })
+    return next(e)
+  })
+  on('classic.Notification', async ($, e, next) => {
+    await log($, 't651.classic.Notification.agents', { agent_id: (e as any).agent_id, agents: await agents($), facts: await facts($) })
+    return next(e)
+  })
+  on('classic.StopFailure', async ($, e, next) => {
+    await log($, 't651.classic.StopFailure.agents', { agent_id: (e as any).agent_id, agents: await agents($), facts: await facts($) })
+    return next(e)
   })
 
   // ---- Row 7: serving the registered tool.

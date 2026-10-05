@@ -29,7 +29,8 @@ HERE = Path(__file__).resolve().parent
 COMPOSER_RULE = "─" * 8
 PARITY_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
                  "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "SessionEnd",
-                 "Notification", "PermissionRequest", "PostToolUseFailure", "TaskCreated", "TaskCompleted"]
+                 "Notification", "PermissionRequest", "PostToolUseFailure", "TaskCreated", "TaskCompleted",
+                 "StopFailure", "TeammateIdle", "PermissionDenied", "Elicitation", "ElicitationResult"]
 
 
 def parity_hook(args):
@@ -40,8 +41,9 @@ def parity_hook(args):
 
 
 class Session:
-    def __init__(self, ctx, name, mode="default", argv=(), env=None, parity=False):
+    def __init__(self, ctx, name, mode="default", argv=(), env=None, parity=False, resume=None):
         self.ctx, self.name, self.mode = ctx, name, mode
+        self.resume = resume
         self.dir = ctx.out / ctx.scenario / name
         self.log = self.dir / "log"
         self.spool = self.dir / "spool"
@@ -73,7 +75,8 @@ class Session:
 
     def start(self):
         argv = ["claude", "--plugin-dir", str(self.ctx.mod), "--model", "haiku", "--setting-sources", "",
-                "--session-id", self.sid, "--permission-mode", self.mode]
+                "--permission-mode", self.mode]
+        argv += ["--resume", self.resume] if self.resume else ["--session-id", self.sid]
         if self.settings:
             argv += ["--settings", str(self.settings)]
         argv += self.extra_argv
@@ -693,9 +696,240 @@ def sc_relay(ctx):
              classic=[e["event"] for e in s.events() if e["event"].startswith("classic.")])
 
 
+
+# ---------------------------------------------------------------- T-651: the native events
+
+def n_facts(s, name):
+    return [e["data"] for e in s.events() if e["event"] == name]
+
+
+def n_lifecycle(ctx):
+    """session.start/end, turn.start/complete, /clear, Ctrl+D, --resume: ids and reasons."""
+    a = Session(ctx, "a", mode="default", parity=True).start()
+    a.prompt("Reply with exactly ONE and nothing else. Do not use any tool.")
+    a.wait_event("turn.complete", timeout=90)
+    a.command("/clear")
+    time.sleep(3.0)
+    a.screen("after-clear")
+    a.prompt("Reply with exactly TWO and nothing else. Do not use any tool.")
+    a.wait_event("turn.complete", timeout=90)
+    a.end()
+    time.sleep(1.0)
+    first_id = a.sid
+    b = Session(ctx, "b", mode="default", parity=True, resume=first_id).start()
+    try:
+        b.wait_composer()  # the trust dialog comes before session.start
+        b.wait_event("session.start", timeout=60)
+        b.prompt("Reply with exactly THREE and nothing else. Do not use any tool.")
+        b.wait_event("turn.complete", timeout=90)
+    except TimeoutError as e:
+        ctx.say(str(e))
+    b.screen("resumed")
+    b.end()
+    ctx.done(a_events=[e["event"] for e in a.events()], b_events=[e["event"] for e in b.events()],
+             a_session_end=n_facts(a, "session.end"), b_session_end=n_facts(b, "session.end"),
+             a_session_start=n_facts(a, "session.start"), b_session_start=n_facts(b, "session.start"),
+             a_turn_starts=n_facts(a, "turn.start"), b_turn_starts=n_facts(b, "turn.start"),
+             a_classic_session=[e["data"] for e in a.events() if e["event"] in ("classic.SessionStart", "classic.SessionEnd")],
+             b_classic_session=[e["data"] for e in b.events() if e["event"] in ("classic.SessionStart", "classic.SessionEnd")],
+             a_parity=[json.loads(l) for l in open(a.parity_log)] if a.parity_log.exists() else [],
+             b_parity=[json.loads(l) for l in open(b.parity_log)] if b.parity_log.exists() else [])
+
+
+def n_tasks(ctx):
+    """Background commands, subagents, a background agent, a teammate: what $.agent.list() and the tool results say beside classic.Stop's background_tasks."""
+    s = Session(ctx, "main", mode="default", argv=["--allowedTools", "Bash,Agent,Monitor,TaskStop,TaskOutput,SendMessage"], parity=True).start()
+    s.prompt("Using the Bash tool with run_in_background set to true, run this command: sleep 6; echo bg_done. Then reply BG_STARTED and nothing else.")
+    s.wait_event("turn.complete", timeout=90, where=lambda d: not d.get("agentId"))
+    s.screen("bg-running")
+    try:
+        s.wait_event("t651.session.receive", timeout=40)
+        s.wait_event("turn.complete", timeout=90, where=lambda d: not d.get("agentId"))
+    except TimeoutError as e:
+        ctx.say(str(e))
+    s.prompt('Use the Agent tool with subagent_type "Explore" and the prompt "Reply with the single word hello and nothing else." Then reply SUB_DONE and nothing else.')
+    s.wait_event("turn.complete", timeout=150, where=lambda d: not d.get("agentId"))
+    s.prompt('Use the Agent tool with subagent_type "Explore", run_in_background true, and the prompt "Use the Bash tool to run exactly: sleep 8. Then reply hello." Then reply BG_AGENT and nothing else; do not wait for it.')
+    s.wait_event("turn.complete", timeout=150, where=lambda d: not d.get("agentId"))
+    s.screen("bg-agent-running")
+    try:
+        s.wait_event("t651.session.receive", timeout=60)
+        s.wait_event("turn.complete", timeout=90, where=lambda d: not d.get("agentId"))
+    except TimeoutError as e:
+        ctx.say(str(e))
+    s.prompt('Use the Agent tool with name "scout", subagent_type "general-purpose", run_in_background true, and the prompt "Reply hello and nothing else." Then reply NAMED and nothing else; do not wait for it.')
+    try:
+        s.wait_event("turn.complete", timeout=150, where=lambda d: not d.get("agentId"))
+        time.sleep(8.0)
+        s.screen("named-agent")
+    except TimeoutError as e:
+        ctx.say(str(e))
+    s.prompt('Reply with exactly LAST and nothing else. Do not use any tool.')
+    try:
+        s.wait_event("turn.complete", timeout=90, where=lambda d: not d.get("agentId"))
+    except TimeoutError as e:
+        ctx.say(str(e))
+    s.end()
+    ctx.done(events=[e["event"] for e in s.events()],
+             tool_results=[d for d in n_facts(s, "t651.tool.call.result") if d["tool"] in ("Bash", "Agent", "Monitor", "TaskStop", "TaskOutput", "SendMessage")],
+             spawns=n_facts(s, "agent.spawn.result"),
+             turn_completes=[{k: d.get(k) for k in ("reason", "durationMs", "agentId", "turnId", "isAborted", "agents")} for d in n_facts(s, "turn.complete")],
+             stops=[{"agent_id": d.get("agent_id"), "stop_hook_active": d.get("stop_hook_active"), "background_tasks": d.get("background_tasks"), "keys": sorted(d.keys())} for d in n_facts(s, "classic.Stop")],
+             stop_agents=n_facts(s, "t651.classic.Stop.agents"),
+             subagent_stops=[{"agent_id": d.get("agent_id"), "agent_type": d.get("agent_type"), "keys": sorted(d.keys()), "background_tasks": d.get("background_tasks")} for d in n_facts(s, "classic.SubagentStop")],
+             subagent_starts=[{k: d.get(k) for k in ("agent_id", "agent_type")} for d in n_facts(s, "classic.SubagentStart")],
+             receives=n_facts(s, "t651.session.receive"),
+             submits=n_facts(s, "prompt.submit"),
+             turn_starts=[{"text": d["e"]["text"][:80], "agents": d["agents"]} for d in n_facts(s, "turn.start")],
+             teammate_idle=n_facts(s, "classic.TeammateIdle"))
+
+
+def n_dialogs(ctx):
+    """The question, the permission dialog (and a held tool.check), the plan: tool.call before/after and tool.check."""
+    s = Session(ctx, "main", mode="default", parity=True).start()
+    s.prompt(ASK_ONE)
+    s.wait_event("t651.tool.call", timeout=60, where=lambda d: d["tool"] == "AskUserQuestion")
+    time.sleep(1.5)
+    s.screen("ask-dialog")
+    s.keys("Down")
+    time.sleep(0.4)
+    s.keys("Enter")
+    s.wait_event("turn.complete", timeout=60)
+    # The question refused: Esc out of it.
+    s.prompt(ASK_ONE)
+    s.wait_event("t651.tool.call", timeout=60, where=lambda d: d["tool"] == "AskUserQuestion")
+    time.sleep(1.5)
+    s.keys("Escape")
+    try:
+        s.wait_event("turn.complete", timeout=60)
+    except TimeoutError as e:
+        ctx.say(str(e))
+    s.screen("ask-escaped")
+    # The permission dialog.
+    s.prompt("Use the Bash tool to run exactly: touch one.txt. Then reply TOUCHED and nothing else.")
+    c = s.wait_event("tool.check", timeout=60, where=lambda d: d["tool"] == "Bash")
+    time.sleep(1.5)
+    s.screen("perm-dialog")
+    s.keys("Enter")
+    s.wait_event("turn.complete", timeout=60)
+    # The permission dialog refused (Esc).
+    s.prompt("Use the Bash tool to run exactly: touch two.txt. Then reply with the exact error text the tool returned and nothing else.")
+    s.wait_event("tool.check", timeout=60, where=lambda d: d["tool"] == "Bash")
+    time.sleep(1.5)
+    s.keys("Escape")
+    try:
+        s.wait_event("turn.complete", timeout=60)
+    except TimeoutError as e:
+        ctx.say(str(e))
+    s.screen("perm-escaped")
+    # A held tool.check: is the dialog drawn meanwhile?
+    s.spool_cmd({"kind": "hold_check", "ms": 7000})
+    time.sleep(0.8)
+    s.prompt("Use the Bash tool to run exactly: touch three.txt. Then reply TOUCHED and nothing else.")
+    h = s.wait_event("t651.tool.check.hold", timeout=60)
+    time.sleep(2.5)
+    s.screen("held-2s")
+    time.sleep(2.5)
+    s.screen("held-5s")
+    s.wait_event("tool.check", timeout=30, where=lambda d: d["tool"] == "Bash")
+    time.sleep(1.5)
+    s.screen("held-released")
+    s.keys("Enter")
+    s.wait_event("turn.complete", timeout=60)
+    s.end()
+    # The plan, in plan mode, approved natively.
+    p = Session(ctx, "plan", mode="plan", parity=True).start()
+    p.prompt("Make a short plan to create a file named a.txt containing the word hi. Then call the ExitPlanMode tool.")
+    p.wait_event("t651.tool.call", timeout=120, where=lambda d: d["tool"] == "ExitPlanMode")
+    time.sleep(2.0)
+    p.screen("plan-dialog")
+    p.keys("Enter")
+    p.wait_event("turn.complete", timeout=90)
+    time.sleep(1.0)
+    p.screen("plan-approved")
+    # Refused: "No, keep planning".
+    p.prompt("Call the ExitPlanMode tool again with the same plan.")
+    p.wait_event("t651.tool.call", timeout=120, where=lambda d: d["tool"] == "ExitPlanMode")
+    time.sleep(2.0)
+    p.screen("plan-dialog-2")
+    p.keys("Escape")
+    try:
+        p.wait_event("turn.complete", timeout=90)
+    except TimeoutError as e:
+        ctx.say(str(e))
+    p.screen("plan-refused")
+    p.end()
+    ctx.done(main_events=[e["event"] for e in s.events()], plan_events=[e["event"] for e in p.events()],
+             calls=[d for d in n_facts(s, "t651.tool.call") if d["tool"] in ("AskUserQuestion", "Bash")],
+             results=[d for d in n_facts(s, "t651.tool.call.result") if d["tool"] in ("AskUserQuestion", "Bash")],
+             threw=n_facts(s, "t651.tool.call.threw"),
+             checks=n_facts(s, "tool.check"),
+             hold=n_facts(s, "t651.tool.check.hold"),
+             notifications=[{k: d.get(k) for k in ("notification_type", "message", "tool_use_id")} for d in n_facts(s, "classic.Notification")],
+             permission_requests=[{k: d.get(k) for k in ("tool_name", "tool_use_id", "permission_suggestions")} for d in n_facts(s, "classic.PermissionRequest")],
+             plan_calls=[d for d in n_facts(p, "t651.tool.call") if d["tool"] == "ExitPlanMode"],
+             plan_results=[d for d in n_facts(p, "t651.tool.call.result") if d["tool"] == "ExitPlanMode"],
+             plan_threw=n_facts(p, "t651.tool.call.threw"),
+             plan_checks=n_facts(p, "tool.check"),
+             plan_classic=[{"event": e["event"], "tool_name": e["data"].get("tool_name"), "tool_response": e["data"].get("tool_response"), "tool_input_keys": sorted((e["data"].get("tool_input") or {}).keys())} for e in p.events() if e["event"] in ("classic.PreToolUse", "classic.PostToolUse", "classic.PermissionRequest")],
+             parity=[json.loads(l)["event"] for l in open(s.parity_log)])
+
+
+def n_compact(ctx):
+    s = Session(ctx, "main", mode="default", parity=True).start()
+    s.prompt("Reply with exactly ONE and nothing else. Do not use any tool.")
+    s.wait_event("turn.complete", timeout=90)
+    s.command("/compact")
+    try:
+        s.wait_event("session.compact.result", timeout=120)
+    except TimeoutError as e:
+        ctx.say(str(e))
+    time.sleep(3.0)
+    s.screen("after-compact")
+    s.prompt("Reply with exactly TWO and nothing else. Do not use any tool.")
+    s.wait_event("turn.complete", timeout=90)
+    s.end()
+    ctx.done(events=[e["event"] for e in s.events()],
+             compact=n_facts(s, "session.compact"), compact_result=n_facts(s, "session.compact.result"),
+             classic=[{"event": e["event"], "data": e["data"]} for e in s.events() if e["event"] in ("classic.PreCompact", "classic.PostCompact", "classic.SessionStart", "classic.SessionEnd")],
+             turn_starts=n_facts(s, "turn.start"),
+             parity=[json.loads(l) for l in open(s.parity_log)])
+
+
+def n_fail(ctx):
+    """An API error ending the turn: turn.complete's reason and what classic.StopFailure carries."""
+    s = Session(ctx, "main", mode="default", argv=["--model", "claude-no-such-model-0"], parity=True).start()
+    s.prompt("Reply with exactly ONE and nothing else.")
+    try:
+        s.wait_event("turn.complete", timeout=90)
+    except TimeoutError as e:
+        ctx.say(str(e))
+    time.sleep(2.0)
+    s.screen("after-fail")
+    s.end()
+    ctx.done(events=[e["event"] for e in s.events()],
+             turn_completes=n_facts(s, "turn.complete"),
+             stop_failures=n_facts(s, "classic.StopFailure"),
+             parity=[json.loads(l) for l in open(s.parity_log)])
+
+
+def n_idle(ctx):
+    """Notification idle_prompt (60 s) and session.measure: what fires with nothing happening."""
+    s = Session(ctx, "main", mode="default", parity=True).start()
+    s.prompt("Reply with exactly ONE and nothing else. Do not use any tool.")
+    s.wait_event("turn.complete", timeout=90)
+    try:
+        s.wait_event("classic.Notification", timeout=90, where=lambda d: d.get("notification_type") == "idle_prompt")
+    except TimeoutError as e:
+        ctx.say(str(e))
+    s.end()
+    ctx.done(events=[e["event"] for e in s.events()], notifications=n_facts(s, "classic.Notification"), measures=n_facts(s, "t651.session.measure"))
+
+
 SCENARIOS = {"coverage": sc_coverage, "submit": sc_submit, "submit_midturn": sc_submit_midturn, "load": sc_load, "ask": sc_ask, "permission": sc_permission,
              "gate": sc_gate, "permit": sc_permit, "plan_result": sc_plan_result, "plan_allow": sc_plan_allow, "plan_native": sc_plan_native,
-             "tools": sc_tools, "relay": sc_relay}
+             "tools": sc_tools, "relay": sc_relay,
+             "n_lifecycle": n_lifecycle, "n_tasks": n_tasks, "n_dialogs": n_dialogs, "n_compact": n_compact, "n_fail": n_fail, "n_idle": n_idle}
 
 
 def main():
