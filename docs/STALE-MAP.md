@@ -21449,7 +21449,7 @@ development-build default and `MESIMON_MESOPHON=1`.
 **Tests.** `cargo ut` green with the keymap door test reworded; no e2e in this repository shares
 or joins. mesimon-relay's `board_e2e` spawns its daemons with `MESIMON_TEAMS=1` (its branch
 `msmn/T-653-security-audit`).
-=======
+
 ## Two permission-wait tests wait out a dropped peer's close (T-662, 2026-10-05)
 
 `a_permission_wait_outlives_a_minute_and_a_phone_s_reconnect` and
@@ -21457,4 +21457,3 @@ or joins. mesimon-relay's `board_e2e` spawns its daemons with `MESIMON_TEAMS=1` 
 peer's `drop`, and under load the kernel had not made the close visible (`recv` answered
 `EAGAIN`). Both now poll it first (`await_peer_closed`, 2 ms steps, 1 s bound). The probe and
 `PermissionWait` are unchanged: the daemon asks again every tick.
->>>>>>> 73ffec3d (daemon: two permission-wait tests wait out a dropped peer's close before asserting (T-662))
