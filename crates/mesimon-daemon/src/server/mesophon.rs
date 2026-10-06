@@ -2065,21 +2065,21 @@ impl Daemon {
 
     /// The opening every card edit from a phone shares: the ticket on the
     /// board and not archived, the action authorized, and no viewer's seat.
+    /// `Err` is the rejection's words.
     fn control_gate(
         &self,
         by: &Principal,
         ticket: &str,
         action: &Action,
-    ) -> std::result::Result<ulid::Ulid, Reply> {
-        let reject = |message: &str| Reply::Rejected { message: message.into() };
+    ) -> std::result::Result<ulid::Ulid, String> {
         let Some(id) = self.control_ticket(ticket) else {
-            return Err(reject("ticket unavailable"));
+            return Err("ticket unavailable".into());
         };
         if let Decision::Deny { reason } = authorize(by, action, &Resource::Ticket { id }) {
-            return Err(reject(&format!("denied: {reason}")));
+            return Err(format!("denied: {reason}"));
         }
         if let Some(message) = self.team_viewer_refusal() {
-            return Err(reject(&message));
+            return Err(message);
         }
         Ok(id)
     }
@@ -2113,7 +2113,7 @@ impl Daemon {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
         let id = match self.control_gate(by, ticket, &Action::RenameTicket) {
             Ok(id) => id,
-            Err(reply) => return reply,
+            Err(message) => return reject(&message),
         };
         let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
         match phone_title(t, title) {
@@ -2178,7 +2178,7 @@ impl Daemon {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
         let id = match self.control_gate(by, ticket, &Action::TagTicket) {
             Ok(id) => id,
-            Err(reply) => return reply,
+            Err(message) => return reject(&message),
         };
         let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
         match phone_tag(&self.board, t, group, name.as_deref()) {
@@ -2203,7 +2203,7 @@ impl Daemon {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
         let id = match self.control_gate(by, ticket, &Action::ChooseWorkspace) {
             Ok(id) => id,
-            Err(reply) => return reply,
+            Err(message) => return reject(&message),
         };
         if self.team_content_only() {
             return reject("this board has no repository on this machine");
@@ -2480,7 +2480,7 @@ impl Daemon {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
         let id = match self.control_gate(by, ticket, &Action::Annotate) {
             Ok(id) => id,
-            Err(reply) => return reply,
+            Err(message) => return reject(&message),
         };
         let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
         let note = match note_gate(t, note, text.trim().is_empty(), rev) {
@@ -2584,7 +2584,7 @@ impl Daemon {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
         let id = match self.control_gate(by, ticket, &Action::Annotate) {
             Ok(id) => id,
-            Err(reply) => return reply,
+            Err(message) => return reject(&message),
         };
         if text.trim().is_empty() {
             return reject("a note with pictures needs words");
