@@ -3,7 +3,7 @@
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use mesimon_core::board::{SessionKind, SessionRecord};
@@ -52,7 +52,7 @@ fn compatibility(args: &[String]) -> Result<Value> {
         let manifest: Value =
             serde_json::from_str(include_str!("../../../docs/codex-compatibility.json"))?;
         let matched = manifest["versions"].get(version);
-        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+        let now_ms = mesimon_core::clock::now_ms();
         return Ok(codex_compatibility(&manifest, version, matched, now_ms));
     }
     let manifest: Value =
@@ -254,8 +254,7 @@ fn explain(args: &[String]) -> Result<()> {
     anyhow::ensure!(prefix.is_none() || records.len() == 1, "ambiguous session prefix");
     let mut log = read_tail(&paths.activity_log().with_extension("jsonl.1"))?;
     log.extend(read_tail(&paths.activity_log())?);
-    let now_ms =
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    let now_ms = mesimon_core::clock::now_ms();
     let rows: Vec<_> = records.iter().map(|session| {
         let ticket = board.ticket(session.ticket);
         let history: Vec<_> = log.iter().filter(|entry| {

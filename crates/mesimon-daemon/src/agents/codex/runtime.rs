@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use mesimon_core::board::{SessionState, UnknownReason};
@@ -1001,9 +1001,7 @@ impl Observation {
         };
         if limits.is_object() && limits.to_string().len() <= 8192 {
             self.snapshot.rate_limits = Some(limits.clone());
-            self.snapshot.rate_limits_at_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+            self.snapshot.rate_limits_at_ms = mesimon_core::clock::now_ms();
         }
     }
 
@@ -1234,8 +1232,7 @@ impl Observation {
         }
         self.apply_transport_hold();
         self.advance_evidence();
-        self.snapshot.heartbeat_ms =
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis().try_into()?;
+        self.snapshot.heartbeat_ms = mesimon_core::clock::now_ms();
         write_json(&config.snapshot_path, &self.snapshot)?;
         if self.published_preview.as_ref() != Some(&self.preview) {
             // JSON escaping may expand text; bound the serialized artifact too.
@@ -1255,11 +1252,7 @@ impl Observation {
 }
 
 fn bound_text(mut text: String, bytes: usize) -> String {
-    let mut boundary = bytes.min(text.len());
-    while !text.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    text.truncate(boundary);
+    text.truncate(mesimon_core::text::cap_bytes(&text, bytes).len());
     text
 }
 

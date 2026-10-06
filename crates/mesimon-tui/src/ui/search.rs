@@ -274,7 +274,7 @@ fn painted(field: &Field, width: usize, rest: Style, lit: Style) -> Vec<Span<'st
     if !run.is_empty() {
         spans.push(Span::styled(run, if run_lit { lit } else { rest }));
     }
-    let used: usize = spans.iter().map(|s| s.content.width()).sum();
+    let used = super::spans_width(&spans);
     if used < width {
         spans.push(Span::styled(" ".repeat(width - used), rest));
     }

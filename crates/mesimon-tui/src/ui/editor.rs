@@ -456,9 +456,8 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 }
                 AskTarget::Column(name) => {
                     let seats = app.column_reach(name);
-                    let plural = if seats == 1 { "" } else { "s" };
                     ctx_spans.push(Span::styled(
-                        format!("{seats} {}{plural}", mesimon_core::keymap::AGENT_WORD),
+                        mesimon_core::text::plural(seats, mesimon_core::keymap::AGENT_WORD),
                         dim1,
                     ));
                     ctx_spans.push(Span::styled(" ∙ ".to_string(), dim2));

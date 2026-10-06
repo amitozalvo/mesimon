@@ -199,12 +199,7 @@ pub struct ProbeKey {
 pub fn probe_key(bin: &Path) -> Option<ProbeKey> {
     let path = std::fs::canonicalize(bin).ok()?;
     let meta = std::fs::metadata(&path).ok()?;
-    let mtime_ms = meta
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_millis() as u64)?;
+    let mtime_ms = mesimon_core::clock::epoch_ms(meta.modified().ok()?)?;
     Some(ProbeKey { path, mtime_ms, len: meta.len(), digest: digest() })
 }
 

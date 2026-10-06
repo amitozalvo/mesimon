@@ -904,6 +904,10 @@ impl Daemon {
             return;
         }
         let Some(tool) = frame.payload["tool_name"].as_str() else { return };
+        // Only the two dialogs are measured: a Write's input is the file.
+        if !matches!(tool, "AskUserQuestion" | "ExitPlanMode") {
+            return;
+        }
         let input = &frame.payload["tool_input"];
         if serde_json::to_vec(input).map_or(true, |b| b.len() > 16 * 1024) {
             return;
@@ -2059,22 +2063,58 @@ impl Daemon {
             .filter(|id| self.board.ticket(*id).is_some_and(|t| !t.is_archived()))
     }
 
+    /// The opening every card edit from a phone shares: the ticket on the
+    /// board and not archived, the action authorized, and no viewer's seat.
+    fn control_gate(
+        &self,
+        by: &Principal,
+        ticket: &str,
+        action: &Action,
+    ) -> std::result::Result<ulid::Ulid, Reply> {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_ticket(ticket) else {
+            return Err(reject("ticket unavailable"));
+        };
+        if let Decision::Deny { reason } = authorize(by, action, &Resource::Ticket { id }) {
+            return Err(reject(&format!("denied: {reason}")));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return Err(reject(&message));
+        }
+        Ok(id)
+    }
+
+    /// A phone's note write as answered: fed, and the note's new revision.
+    fn control_note_written(
+        &mut self,
+        by: &Principal,
+        id: ulid::Ulid,
+        ticket: &str,
+        written: Response,
+    ) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        match written {
+            Response::NoteWritten { note } => {
+                self.feed.board(by.actor(), "mesophon_write_note", Some(id));
+                let rev = note
+                    .and_then(|n| self.board.ticket(id).and_then(|t| t.note(n)))
+                    .map_or(0, |m| m.rev);
+                Reply::NoteWritten { ticket: ticket.into(), note: note.map(|n| n.to_string()), rev }
+            }
+            Response::Err { message } => reject(&message),
+            other => reject(&format!("unexpected note answer: {other:?}")),
+        }
+    }
+
     /// A new title from the owner's phone (T-530): the desk's rename,
     /// scrubbed and capped the same way, and refused blank. The same title
     /// again writes nothing.
     fn control_rename(&mut self, by: &Principal, ticket: &str, title: &str) -> Reply {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
-        let Some(id) = self.control_ticket(ticket) else {
-            return reject("ticket unavailable");
+        let id = match self.control_gate(by, ticket, &Action::RenameTicket) {
+            Ok(id) => id,
+            Err(reply) => return reply,
         };
-        if let Decision::Deny { reason } =
-            authorize(by, &Action::RenameTicket, &Resource::Ticket { id })
-        {
-            return reject(&format!("denied: {reason}"));
-        }
-        if let Some(message) = self.team_viewer_refusal() {
-            return reject(&message);
-        }
         let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
         match phone_title(t, title) {
             Err(message) => return reject(message),
@@ -2136,17 +2176,10 @@ impl Daemon {
         name: Option<String>,
     ) -> Reply {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
-        let Some(id) = self.control_ticket(ticket) else {
-            return reject("ticket unavailable");
+        let id = match self.control_gate(by, ticket, &Action::TagTicket) {
+            Ok(id) => id,
+            Err(reply) => return reply,
         };
-        if let Decision::Deny { reason } =
-            authorize(by, &Action::TagTicket, &Resource::Ticket { id })
-        {
-            return reject(&format!("denied: {reason}"));
-        }
-        if let Some(message) = self.team_viewer_refusal() {
-            return reject(&message);
-        }
         let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
         match phone_tag(&self.board, t, group, name.as_deref()) {
             Err(message) => return reject(&message),
@@ -2168,17 +2201,10 @@ impl Daemon {
     /// desk's words. Choosing what is chosen writes nothing.
     fn control_workspace(&mut self, by: &Principal, ticket: &str, worktree: bool) -> Reply {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
-        let Some(id) = self.control_ticket(ticket) else {
-            return reject("ticket unavailable");
+        let id = match self.control_gate(by, ticket, &Action::ChooseWorkspace) {
+            Ok(id) => id,
+            Err(reply) => return reply,
         };
-        if let Decision::Deny { reason } =
-            authorize(by, &Action::ChooseWorkspace, &Resource::Ticket { id })
-        {
-            return reject(&format!("denied: {reason}"));
-        }
-        if let Some(message) = self.team_viewer_refusal() {
-            return reject(&message);
-        }
         if self.team_content_only() {
             return reject("this board has no repository on this machine");
         }
@@ -2358,20 +2384,13 @@ impl Daemon {
         answer
     }
 
-    /// A ticket a phone reads or writes notes on: on the board, not archived.
-    fn control_note_ticket(&self, ticket: &str) -> Option<ulid::Ulid> {
-        ulid::Ulid::from_string(ticket)
-            .ok()
-            .filter(|id| self.board.ticket(*id).is_some_and(|t| !t.is_archived()))
-    }
-
     /// One note's metadata and body as they stand, or `None`.
     fn control_note_body(
         &self,
         ticket: &str,
         note: Option<&str>,
     ) -> Option<(ulid::Ulid, mesimon_core::board::NoteMeta, String)> {
-        let id = self.control_note_ticket(ticket)?;
+        let id = self.control_ticket(ticket)?;
         let note = ulid::Ulid::from_string(note?).ok()?;
         match self.read_note(id, note) {
             Response::Note { text, meta } => {
@@ -2403,7 +2422,7 @@ impl Daemon {
     }
 
     fn control_notes(&self, by: &Principal, ticket: &str) -> Reply {
-        let Some(id) = self.control_note_ticket(ticket) else {
+        let Some(id) = self.control_ticket(ticket) else {
             return Reply::Rejected { message: "ticket unavailable".into() };
         };
         if authorize(by, &Action::Read, &Resource::Ticket { id }).denied() {
@@ -2430,7 +2449,7 @@ impl Daemon {
     }
 
     fn control_note(&self, by: &Principal, ticket: &str, note: &str) -> Reply {
-        let Some(id) = self.control_note_ticket(ticket) else {
+        let Some(id) = self.control_ticket(ticket) else {
             return Reply::Rejected { message: "ticket unavailable".into() };
         };
         if authorize(by, &Action::Read, &Resource::Ticket { id }).denied() {
@@ -2459,33 +2478,17 @@ impl Daemon {
         rev: Option<u64>,
     ) -> Reply {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
-        let Some(id) = self.control_note_ticket(ticket) else {
-            return reject("ticket unavailable");
+        let id = match self.control_gate(by, ticket, &Action::Annotate) {
+            Ok(id) => id,
+            Err(reply) => return reply,
         };
-        if let Decision::Deny { reason } =
-            authorize(by, &Action::Annotate, &Resource::Ticket { id })
-        {
-            return reject(&format!("denied: {reason}"));
-        }
-        if let Some(message) = self.team_viewer_refusal() {
-            return reject(&message);
-        }
         let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
         let note = match note_gate(t, note, text.trim().is_empty(), rev) {
             Ok(note) => note,
             Err(gate) => return gate.reply(ticket, |meta| self.control_author(meta)),
         };
-        match self.write_note(id, note, text, by) {
-            Response::NoteWritten { note } => {
-                self.feed.board(by.actor(), "mesophon_write_note", Some(id));
-                let rev = note
-                    .and_then(|n| self.board.ticket(id).and_then(|t| t.note(n)))
-                    .map_or(0, |m| m.rev);
-                Reply::NoteWritten { ticket: ticket.into(), note: note.map(|n| n.to_string()), rev }
-            }
-            Response::Err { message } => reject(&message),
-            other => reject(&format!("unexpected note answer: {other:?}")),
-        }
+        let written = self.write_note(id, note, text, by);
+        self.control_note_written(by, id, ticket, written)
     }
 
     /// One piece of a picture from a phone (T-629), staged under its grant
@@ -2507,7 +2510,7 @@ impl Daemon {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
         let decision = match ticket {
             Some(ticket) => {
-                let Some(id) = self.control_note_ticket(ticket) else {
+                let Some(id) = self.control_ticket(ticket) else {
                     return reject("ticket unavailable");
                 };
                 authorize(by, &Action::Annotate, &Resource::Ticket { id })
@@ -2579,17 +2582,10 @@ impl Daemon {
         ids: &[ulid::Ulid],
     ) -> Reply {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
-        let Some(id) = self.control_note_ticket(ticket) else {
-            return reject("ticket unavailable");
+        let id = match self.control_gate(by, ticket, &Action::Annotate) {
+            Ok(id) => id,
+            Err(reply) => return reply,
         };
-        if let Decision::Deny { reason } =
-            authorize(by, &Action::Annotate, &Resource::Ticket { id })
-        {
-            return reject(&format!("denied: {reason}"));
-        }
-        if let Some(message) = self.team_viewer_refusal() {
-            return reject(&message);
-        }
         if text.trim().is_empty() {
             return reject("a note with pictures needs words");
         }
@@ -2602,17 +2598,8 @@ impl Daemon {
             Err(gate) => return gate.reply(ticket, |meta| self.control_author(meta)),
         };
         let text = mesimon_core::board::sanitize_note(&text);
-        match self.save_note_with_attachments(owner, id, note, text, ids.to_vec(), by) {
-            Response::NoteWritten { note } => {
-                self.feed.board(by.actor(), "mesophon_write_note", Some(id));
-                let rev = note
-                    .and_then(|n| self.board.ticket(id).and_then(|t| t.note(n)))
-                    .map_or(0, |m| m.rev);
-                Reply::NoteWritten { ticket: ticket.into(), note: note.map(|n| n.to_string()), rev }
-            }
-            Response::Err { message } => reject(&message),
-            other => reject(&format!("unexpected note answer: {other:?}")),
-        }
+        let written = self.save_note_with_attachments(owner, id, note, text, ids.to_vec(), by);
+        self.control_note_written(by, id, ticket, written)
     }
 
     /// The desk's second `^s` (T-532): mesimon's own sentence, naming the
@@ -2620,7 +2607,7 @@ impl Daemon {
     /// phone may already send, so it is authorized as one.
     fn control_tell_agent(&mut self, by: &Principal, ticket: &str, note: &str) -> Reply {
         let reject = |message: &str| Reply::Rejected { message: message.into() };
-        let Some(id) = self.control_note_ticket(ticket) else {
+        let Some(id) = self.control_ticket(ticket) else {
             return reject("ticket unavailable");
         };
         let Some(note) = ulid::Ulid::from_string(note)

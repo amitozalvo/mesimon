@@ -633,9 +633,8 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
     };
 
     if matches!(fd.render, Render::Text | Render::Symlink) {
-        let nh = fd.hunks.len();
-        let noun = if nh == 1 { "hunk" } else { "hunks" };
-        head.push(Span::styled(format!(" ∙ {nh} {noun}"), theme.dim2()));
+        let hunks = mesimon_core::text::plural(fd.hunks.len(), "hunk");
+        head.push(Span::styled(format!(" ∙ {hunks}"), theme.dim2()));
     }
     let body = cached_body(d, fd, w, theme);
 

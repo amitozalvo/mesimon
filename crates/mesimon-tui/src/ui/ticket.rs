@@ -348,10 +348,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // mark this one survives the arrival: it is lowered on the way OUT,
         // which is what gives the sentence time to be read.
         let when = created_at_epoch_ms(&r.at)
-            .map(|ms| match age_slot(now, ms, false).as_str() {
-                "now" => " just now".to_string(),
-                age => format!(" {age} ago"),
-            })
+            .map(|ms| format!(" {}", crate::text::age_ago(now, ms)))
             .unwrap_or_default();
         ident_spans.push(Span::styled(format!(" ∙ {} asked{when}", author_word(&r.by, app)), d1));
         ident_spans.push(Span::styled(format!(" ∙ {}", crate::text::one_line(&r.reason)), d1));

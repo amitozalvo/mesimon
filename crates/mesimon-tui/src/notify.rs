@@ -539,16 +539,19 @@ pub fn find() -> Channels {
     Channels {
         banner: find_banner(
             std::env::var("MESIMON_NOTIFY").ok().as_deref(),
-            which_on_path,
+            crate::opener::which_on_path,
             in_kitty(
                 std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
                 std::env::var("TERM_PROGRAM").ok().as_deref(),
             ),
         ),
-        player: find_player(std::env::var("MESIMON_SOUND").ok().as_deref(), which_on_path),
+        player: find_player(
+            std::env::var("MESIMON_SOUND").ok().as_deref(),
+            crate::opener::which_on_path,
+        ),
         group: None,
         icon_dir: None,
-        notifier_app: which_on_path("terminal-notifier")
+        notifier_app: crate::opener::which_on_path("terminal-notifier")
             .and_then(|path| crate::notification_app::discover(&path)),
         poster: crate::title::terminal().poster(),
         click: find_click(
@@ -832,13 +835,6 @@ fn find_player(env: Option<&str>, which: impl Fn(&str) -> Option<PathBuf>) -> Pl
         }
     }
     Player::Bell
-}
-
-fn which_on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|cand| std::fs::metadata(cand).is_ok_and(|m| m.is_file()))
 }
 
 /// The board's own terminal, shared with the notification thread (T-291).

@@ -97,8 +97,8 @@ fn fetched_at_ms(dir: &Path) -> u64 {
     std::fs::metadata(dir.join(".git/FETCH_HEAD"))
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_millis() as u64)
+        .and_then(mesimon_core::clock::epoch_ms)
+        .unwrap_or(0)
 }
 
 /// `refs/remotes/<remote>/<branch>` when exactly one remote carries the
