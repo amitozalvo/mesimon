@@ -381,6 +381,9 @@ enum Msg {
     /// started under: a synchronous refresh in the meantime (a merge, a
     /// teardown) makes it stale, and it is dropped.
     WorktreeFlags(u64, Vec<worktree::RepoSample>),
+    /// One ticket's own flags sample (T-678): a turn's end on a branch the
+    /// train may take, and the number it started under.
+    TicketFlags(ulid::Ulid, u64, Vec<worktree::RepoSample>),
     /// A worktree's teardown finished on a worker (T-561): `worktree remove
     /// --force` walks and unlinks the whole tree, `target/` included, and
     /// an `archive_all` queued a dozen of them for one tick, so the board
@@ -620,11 +623,16 @@ pub struct Daemon {
     /// A worker is out sampling the flags: the tick asks for no second one.
     wt_inflight: bool,
     /// Every flag sample is numbered as it starts (T-678): `wt_seq` the
-    /// last one started, `wt_landed` the newest absorbed, so a finished
-    /// turn can wait for a look that began after it (`trainhold`).
+    /// last one started, `wt_inflight_seq` the board's sample out now, and
+    /// `wt_fresh` the newest absorbed per ticket — so a sample older than
+    /// one already taken for a ticket leaves that ticket alone, and a
+    /// finished turn can wait for a look that began after it (`trainhold`).
     wt_seq: u64,
     wt_inflight_seq: u64,
-    wt_landed: u64,
+    wt_fresh: HashMap<ulid::Ulid, u64>,
+    /// A ticket's own look out now (T-678), and whether another is wanted
+    /// when it lands: one in flight per ticket.
+    ticket_looks: HashMap<ulid::Ulid, bool>,
     /// Finished turns on train tickets waiting for that look (T-678).
     awaiting_looks: HashMap<ulid::Ulid, trainhold::AwaitingLook>,
     /// Cached default-branch name (origin/HEAD → main/master/trunk → HEAD).
@@ -1180,7 +1188,8 @@ pub fn run(paths: Paths) -> Result<()> {
         wt_inflight: false,
         wt_seq: 0,
         wt_inflight_seq: 0,
-        wt_landed: 0,
+        wt_fresh: HashMap::new(),
+        ticket_looks: HashMap::new(),
         awaiting_looks: HashMap::new(),
         base_branch: None,
         upstreams: HashMap::new(),
@@ -1339,6 +1348,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(..) => "git sampled".into(),
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
+            Msg::TicketFlags(..) => "ticket flags".into(),
             Msg::TornDown { .. } => "torn down".into(),
             Msg::TurnProbed(..) => "turn probed".into(),
             Msg::Team(_) => "team".into(),
@@ -1381,6 +1391,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
+            Msg::TicketFlags(ticket, seq, flags) => d.on_ticket_flags(ticket, seq, flags),
             Msg::TornDown { ticket, archived, branch_kept, took } => {
                 d.on_torn_down(ticket, archived, branch_kept, took)
             }
@@ -2757,7 +2768,7 @@ impl Daemon {
             changed |= stage!("hear_merges", self.hear_merges());
             changed |= stage!("hear_deferred", self.hear_deferred());
             changed |= stage!("hear_stepped", self.hear_stepped());
-            changed |= stage!("settle_looks", self.settle_looks(false));
+            changed |= stage!("settle_looks", self.settle_looks());
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
             stage!("persist_crown", self.persist_crown());
             changed |= stage!("drive_usage", self.drive_usage(now));
@@ -11909,6 +11920,7 @@ impl Daemon {
             self.wt_repos.remove(&ticket);
             self.wt_base_tip.remove(&ticket);
             self.wt_progress.remove(&ticket);
+            self.wt_fresh.remove(&ticket);
         }
         self.persist_worktrees();
         if self.pending_spawns.iter().any(|s| s.ticket == ticket)
@@ -12549,6 +12561,7 @@ impl Daemon {
             self.wt_repos.clear();
             self.wt_base_tip.clear();
             self.wt_conflicts.clear();
+            self.wt_fresh.clear();
             return;
         }
         if self.base_branch.is_none() {
@@ -12560,9 +12573,8 @@ impl Daemon {
         let queries = self.wt_queries(true, None);
         let samples = worktree::compute_repo_flags(&queries);
         self.wt_seq = self.wt_seq.wrapping_add(1);
-        self.wt_landed = self.wt_seq;
         // The callers of this road broadcast on their own terms.
-        let _ = self.absorb_worktree_flags(samples);
+        let _ = self.absorb_worktree_flags(samples, self.wt_seq, None);
     }
 
     /// The tick's road: the same sample on a worker, landing as
@@ -12638,8 +12650,7 @@ impl Daemon {
                 worktree::upstream_base(&repo, &s.base)
             });
         }
-        self.wt_landed = self.wt_inflight_seq;
-        let changed = self.absorb_worktree_flags(samples);
+        let changed = self.absorb_worktree_flags(samples, self.wt_inflight_seq, None);
         // A merge that lands after the archive (a PR squashed later, a
         // `git merge` by hand) is one only the sample can see (T-481).
         self.reclaim_archived();
@@ -12647,12 +12658,12 @@ impl Daemon {
         if acted {
             self.persist_sessions();
         }
+        // Turns waiting on this look are judged on it (T-678), after the
+        // train's pass, so a merge or a rebase ask it just made holds them.
+        let settled = self.settle_looks();
         // A merge made somewhere else — a squash on a forge, a `git pull` in
         // another terminal — moves no session and fires no hook, so the
         // sample's own delta is the only thing that can tell the board.
-        // Turns waiting on this look are judged on it (T-678), after the
-        // train's pass, so a merge or a rebase ask it just made holds them.
-        let settled = self.settle_looks(true);
         if changed || acted || settled {
             self.broadcast();
         }
@@ -12662,16 +12673,41 @@ impl Daemon {
     /// folded into the ticket's one answer (`worktree::aggregate`, T-368) —
     /// and release the lock of any attached binding whose last session is
     /// gone (the one git fork left on this road, and a rare one).
-    fn absorb_worktree_flags(&mut self, samples: Vec<worktree::RepoSample>) -> bool {
+    ///
+    /// `seq` is the number the sample started under: a ticket already read
+    /// by a newer one is left as it is (T-678). `only` is a ticket's own
+    /// look, which queried that ticket's repositories alone, so of the
+    /// branches checked out twice it can speak for that ticket's branch
+    /// and no other.
+    fn absorb_worktree_flags(
+        &mut self,
+        samples: Vec<worktree::RepoSample>,
+        seq: u64,
+        only: Option<ulid::Ulid>,
+    ) -> bool {
         // Whether any of it is NEWS — what the board would draw differently.
         // The tick's road broadcasts on that and nothing else: a fetch that
         // lands a merge moves no session and fires no hook, so without this
         // the mark waited for the next thing to happen (T-267).
-        let mut conflicts: Vec<String> = Vec::new();
-        for s in &samples {
-            for c in &s.flags.conflicts {
-                if !conflicts.contains(c) {
-                    conflicts.push(c.clone());
+        let mut conflicts: Vec<String> = match only.and_then(|t| self.worktrees.get(&t)) {
+            Some(b) => {
+                let mine = b.branch.clone();
+                let mut kept: Vec<String> =
+                    self.wt_conflicts.iter().filter(|c| **c != mine).cloned().collect();
+                if samples.iter().any(|s| s.flags.conflicts.contains(&mine)) {
+                    kept.push(mine);
+                }
+                kept
+            }
+            None if only.is_some() => self.wt_conflicts.clone(),
+            None => Vec::new(),
+        };
+        if only.is_none() {
+            for s in &samples {
+                for c in &s.flags.conflicts {
+                    if !conflicts.contains(c) {
+                        conflicts.push(c.clone());
+                    }
                 }
             }
         }
@@ -12679,7 +12715,13 @@ impl Daemon {
         self.wt_conflicts = conflicts;
         // Per ticket, its legs in binding order.
         let base = self.base_branch.clone().unwrap_or_default();
-        let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
+        let tickets: Vec<ulid::Ulid> = self
+            .worktrees
+            .keys()
+            .copied()
+            .filter(|t| only.is_none_or(|o| o == *t))
+            .filter(|t| self.wt_fresh.get(t).is_none_or(|f| *f <= seq))
+            .collect();
         for t in tickets {
             let b = &self.worktrees[&t];
             if b.branch.is_empty() {
@@ -12739,6 +12781,7 @@ impl Daemon {
             });
             changed |= !same_legs;
             self.wt_repos.insert(t, legs);
+            self.wt_fresh.insert(t, seq);
         }
         let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
         for tid in tickets {

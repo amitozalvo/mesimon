@@ -18,8 +18,11 @@
 //! rebase the train asked for still reads behind the base tip it was asked
 //! at, which is exactly the reading on which the train lets a ticket go.
 //! A finished turn on a ticket the train could take is therefore held until
-//! a sample queued after it lands (`look_after_turn`, asked for at once),
-//! and judged on that one. A sample that never lands lets go after
+//! a sample started after it lands, and judged on that one. That sample is
+//! the ticket's own (`look_after_turn`): its repositories and its branch
+//! alone, `2 + legs` git forks, asked for at once, one in flight per ticket.
+//! The board's sample stays on its 10 s bucket; whichever reads a ticket
+//! later wins it (`wt_fresh`). A sample that never lands lets go after
 //! `LOOK_MS`, judged on what is on hand: a hold is a delay, never a
 //! silence.
 
@@ -40,15 +43,78 @@ pub(super) struct AwaitingLook {
 
 impl Daemon {
     /// A turn ended on `ticket`'s agent: on a branch the armed train could
-    /// take, the person's banner waits for a sample queued from here, and
-    /// one is asked for now rather than on the next slow bucket.
+    /// take, the person's banner waits for a sample started from here, and
+    /// the ticket's own is asked for now rather than on the next bucket.
     pub(super) fn look_after_turn(&mut self, ticket: ulid::Ulid) {
         if !self.train_could_take(ticket) {
             return;
         }
         let need = self.wt_seq.wrapping_add(1);
         self.awaiting_looks.insert(ticket, AwaitingLook { need, since_ms: now_ms() });
-        self.queue_worktree_flags();
+        self.queue_ticket_flags(ticket);
+    }
+
+    /// The ticket's own flags sample on a worker, landing as
+    /// `Msg::TicketFlags`. One in flight per ticket: asked again while one
+    /// is out, the next goes when it lands, so the look a later turn waits
+    /// for began after that turn.
+    fn queue_ticket_flags(&mut self, ticket: ulid::Ulid) {
+        if let Some(again) = self.ticket_looks.get_mut(&ticket) {
+            *again = true;
+            return;
+        }
+        let Some(base) = self.base_branch.clone() else { return };
+        let mut queries = self.wt_queries(false, Some(ticket));
+        if queries.is_empty() {
+            return;
+        }
+        self.ticket_looks.insert(ticket, false);
+        self.wt_seq = self.wt_seq.wrapping_add(1);
+        let seq = self.wt_seq;
+        let cached: HashMap<String, Option<String>> = self.upstreams.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            // The board's sample's terms (`queue_worktree_flags`): the base
+            // and the upstream filled in here where the writer had none.
+            for q in &mut queries {
+                if q.base.is_empty() {
+                    q.base = base.clone();
+                }
+                if !cached.contains_key(&q.name) {
+                    q.upstream = worktree::upstream_base(&q.repo, &q.base);
+                }
+            }
+            let samples = worktree::compute_repo_flags(&queries);
+            let _ = tx.send(Msg::TicketFlags(ticket, seq, samples));
+        });
+    }
+
+    /// A ticket's own sample landed: absorbed for that ticket alone, then
+    /// the train's pass on it and the turns it looked at — what the board's
+    /// sample does on landing, for one ticket.
+    pub(super) fn on_ticket_flags(
+        &mut self,
+        ticket: ulid::Ulid,
+        seq: u64,
+        samples: Vec<worktree::RepoSample>,
+    ) {
+        let again = self.ticket_looks.remove(&ticket).unwrap_or(false);
+        let mut changed = false;
+        let mut acted = false;
+        if !samples.is_empty() && !self.tearing_down.contains(&ticket) {
+            changed = self.absorb_worktree_flags(samples, seq, Some(ticket));
+            acted = self.train_pass();
+            if acted {
+                self.persist_sessions();
+            }
+        }
+        let settled = self.settle_looks();
+        if again {
+            self.queue_ticket_flags(ticket);
+        }
+        if changed || acted || settled {
+            self.broadcast();
+        }
     }
 
     /// The train's static half of `train::lane`, before any flag: armed,
@@ -71,23 +137,20 @@ impl Daemon {
                 .is_some_and(|b| b.status == BindingStatus::Attached && !b.branch.is_empty())
     }
 
-    /// A sample landed (`landed`), or the tick came round: the turns it has
-    /// looked at, and those past `LOOK_MS`, are judged now. True when one
-    /// was let go, which the board must hear even when the sample changed
-    /// nothing.
-    pub(super) fn settle_looks(&mut self, landed: bool) -> bool {
+    /// A sample landed, or the tick came round: the turns a sample started
+    /// after them has read, and those past `LOOK_MS`, are judged now. True
+    /// when one was let go, which the board must hear even when the sample
+    /// changed nothing.
+    pub(super) fn settle_looks(&mut self) -> bool {
         if self.awaiting_looks.is_empty() {
             return false;
         }
-        let (seq, now) = (self.wt_landed, now_ms());
+        let now = now_ms();
         let before = self.awaiting_looks.len();
-        self.awaiting_looks.retain(|_, a| a.need > seq && now.saturating_sub(a.since_ms) < LOOK_MS);
-        // A look the sample in flight when the turn ended did not reach:
-        // the next one goes now, not on the bucket. Only from a landing, so
-        // a sample that never comes back is not asked for every tick.
-        if landed && !self.awaiting_looks.is_empty() {
-            self.queue_worktree_flags();
-        }
+        let fresh = &self.wt_fresh;
+        self.awaiting_looks.retain(|t, a| {
+            fresh.get(t).is_none_or(|f| *f < a.need) && now.saturating_sub(a.since_ms) < LOOK_MS
+        });
         self.awaiting_looks.len() != before
     }
 

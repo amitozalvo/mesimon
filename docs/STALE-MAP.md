@@ -21969,10 +21969,18 @@ where only the crown acts on them.
 `Stop` they predate the turn's last commit: a first commit reads `ahead 0`, and a rebase the train
 asked for reads behind the tip it was asked at, which is exactly the reading on which the train
 lets go. So a turn's end on a ticket the train could take (armed, attached binding, a column it
-reaches, not `manual_merge`) holds the ticket until a sample STARTED after it lands
-(`look_after_turn`; samples are numbered, `wt_seq`/`wt_landed`), and asks for that sample at once.
-A sample that never lands lets go after 30 s: a hold is a delay, never a silence. A side effect,
-and a wanted one: the train acts within a look of a turn's end rather than up to a bucket later.
+reaches, not `manual_merge`) holds the ticket until a sample STARTED after it lands, and asks for
+that ticket's own sample at once (`look_after_turn` → `Msg::TicketFlags`): its repositories and
+branch alone, `2 + legs` git forks, one in flight per ticket. The board's sample keeps its 10 s
+bucket. Why the bucket existed: the board-wide sample was 53 forks, ~0.5 s, with 13 bindings, and it
+ran on the writer thread until T-216/T-430 moved it to a worker. A turn-end look of the whole board
+would have been cheap on the writer but not on the machine. Samples are numbered as they start
+(`wt_seq`), and each ticket remembers the newest it absorbed (`wt_fresh`), so a board sample that
+started before a ticket's own and lands after it leaves that ticket alone. A ticket's own look
+speaks only for its own branch among the "checked out twice" conflicts, because on a workspace it
+queried only its own repositories. A sample that never lands lets go after 30 s: a hold is a delay,
+never a silence. A side effect, and a wanted one: the train acts within a look of a turn's end
+rather than up to a bucket later.
 
 **What that changed for the crown.** The train's look and the crown's turn probe now race. When the
 train refuses a merge before the crown's probe lands, the delivery is never held: the crown is
