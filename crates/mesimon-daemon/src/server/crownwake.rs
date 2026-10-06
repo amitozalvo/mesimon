@@ -1118,11 +1118,11 @@ impl Daemon {
     pub(super) fn sampled(&self, worker: ulid::Ulid) -> Option<BranchLook> {
         let branch = &self.worktrees.get(&worker)?.branch;
         Some(BranchLook {
-            tip: self.wt_tip.get(&worker)?.clone(),
+            tip: self.wt_agg.get(&worker)?.tip.clone(),
             base_tip: self.base_tip_of(worker).to_string(),
-            ahead: self.wt_ahead.get(&worker).copied().unwrap_or(0),
-            merged: self.wt_merged.get(&worker).copied().unwrap_or(false),
-            needs_rebase: self.wt_needs_rebase.get(&worker).copied().unwrap_or(false),
+            ahead: self.wt_agg.get(&worker).map_or(0, |a| a.ahead),
+            merged: self.wt_agg.get(&worker).is_some_and(|a| a.merged),
+            needs_rebase: self.wt_agg.get(&worker).is_some_and(|a| a.needs_rebase),
             conflict: self.wt_conflicts.contains(branch),
         })
     }
@@ -1227,16 +1227,16 @@ impl Daemon {
                 self.crown_landed.push(worker);
                 continue;
             }
-            if self.wt_merged.get(&worker) != Some(&true) {
+            if !self.wt_agg.get(&worker).is_some_and(|a| a.merged) {
                 continue;
             }
             let Some(column) = self.board.ticket(worker).map(|t| t.column.clone()) else {
                 continue;
             };
             let now = Told {
-                tip: self.wt_tip.get(&worker).cloned().unwrap_or_default(),
+                tip: self.wt_agg.get(&worker).map(|a| a.tip.clone()).unwrap_or_default(),
                 merge: Some("merged"),
-                ahead: self.wt_ahead.get(&worker).copied().unwrap_or(0),
+                ahead: self.wt_agg.get(&worker).map_or(0, |a| a.ahead),
                 column,
             };
             let heard = self.crown_heard.get(&worker).cloned().unwrap_or_default();

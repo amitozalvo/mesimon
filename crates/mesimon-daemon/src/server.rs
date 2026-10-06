@@ -589,27 +589,18 @@ pub struct Daemon {
     pending_spawns: Vec<PendingSpawn>,
     /// Wakes parked behind provisioning (T-278), replayed beside the spawns.
     pending_resumes: Vec<PendingResume>,
-    /// merged/ahead/conflict flags, refreshed on the 10 s bucket while
-    /// bindings exist.
-    wt_merged: HashMap<ulid::Ulid, bool>,
-    wt_ahead: HashMap<ulid::Ulid, u32>,
-    wt_needs_rebase: HashMap<ulid::Ulid, bool>,
-    wt_tip: HashMap<ulid::Ulid, String>,
-    /// Where a branch's work landed and the commit carrying it, when a squash
-    /// or a rebase-merge is what put it there (T-267) — the words the ticket
-    /// page says beside the branch.
-    wt_merged_in: HashMap<ulid::Ulid, String>,
-    wt_merged_oid: HashMap<ulid::Ulid, String>,
+    /// Each ticket's flags folded over its legs, refreshed on the 10 s
+    /// bucket while bindings exist: merged/ahead/rebase, the tip, where a
+    /// squash or a rebase-merge landed the work (T-267), and the base tip a
+    /// rebase ask is recorded against — a workspace ticket's is its legs'
+    /// joined, so any leg's base moving is news.
+    wt_agg: HashMap<ulid::Ulid, worktree::Aggregate>,
     /// Each binding's flags PER LEG (T-368), in leg order — the snapshot's
     /// per-repo rows, `ticket_merged`'s content memo (handed back to the
     /// next sample so the patch scan runs only when a tip moved), and what
-    /// the maps above are the `aggregate` of. A single-repo binding is one
+    /// `wt_agg` is the `aggregate` of. A single-repo binding is one
     /// leg.
     wt_repos: HashMap<ulid::Ulid, Vec<worktree::RepoFlags>>,
-    /// Each ticket's base tip as of the last sample — a rebase ask is
-    /// recorded against it, and repeated only once it moves. A workspace
-    /// ticket's is its legs' joined, so any leg's base moving is news.
-    wt_base_tip: HashMap<ulid::Ulid, String>,
     /// A workspace provision's `(done, total)` while it runs (T-368).
     wt_progress: HashMap<ulid::Ulid, (u32, u32)>,
     /// The tickets whose provisioning is in the init script (T-614).
@@ -1173,14 +1164,8 @@ pub fn run(paths: Paths) -> Result<()> {
         worktrees,
         pending_spawns: Vec::new(),
         pending_resumes: Vec::new(),
-        wt_merged: HashMap::new(),
-        wt_ahead: HashMap::new(),
-        wt_needs_rebase: HashMap::new(),
-        wt_tip: HashMap::new(),
-        wt_merged_in: HashMap::new(),
-        wt_merged_oid: HashMap::new(),
+        wt_agg: HashMap::new(),
         wt_repos: HashMap::new(),
-        wt_base_tip: HashMap::new(),
         wt_progress: HashMap::new(),
         wt_init: std::collections::HashSet::new(),
         wt_conflicts: Vec::new(),
@@ -6836,9 +6821,9 @@ impl Daemon {
             return None;
         }
         Some(worktree::merge_word(
-            self.wt_merged.get(&id).copied().unwrap_or(false),
-            self.wt_needs_rebase.get(&id).copied().unwrap_or(false),
-            self.wt_ahead.get(&id).copied().unwrap_or(0),
+            self.wt_agg.get(&id).is_some_and(|a| a.merged),
+            self.wt_agg.get(&id).is_some_and(|a| a.needs_rebase),
+            self.wt_agg.get(&id).map_or(0, |a| a.ahead),
         ))
     }
 
@@ -7227,12 +7212,12 @@ impl Daemon {
                 BindingStatus::Error { .. } => "error",
             }
             .into(),
-            merged: self.wt_merged.get(tid).copied().unwrap_or(false),
-            merged_in: self.wt_merged_in.get(tid).cloned().unwrap_or_default(),
-            merged_oid: self.wt_merged_oid.get(tid).cloned().unwrap_or_default(),
+            merged: self.wt_agg.get(tid).is_some_and(|a| a.merged),
+            merged_in: self.wt_agg.get(tid).map(|a| a.merged_in.clone()).unwrap_or_default(),
+            merged_oid: self.wt_agg.get(tid).map(|a| a.merged_oid.clone()).unwrap_or_default(),
             conflict: !b.branch.is_empty() && self.wt_conflicts.contains(&b.branch),
-            ahead: self.wt_ahead.get(tid).copied().unwrap_or(0),
-            needs_rebase: self.wt_needs_rebase.get(tid).copied().unwrap_or(false),
+            ahead: self.wt_agg.get(tid).map_or(0, |a| a.ahead),
+            needs_rebase: self.wt_agg.get(tid).is_some_and(|a| a.needs_rebase),
             detail: match &b.status {
                 BindingStatus::Error { stage, message } => Some(format!("{stage}: {message}")),
                 BindingStatus::Provisioning if self.wt_init.contains(tid) => {
@@ -7552,7 +7537,7 @@ impl Daemon {
                 }
             }
             for t in plan.merge {
-                let tip = self.wt_tip.get(&t).cloned().unwrap_or_default();
+                let tip = self.wt_agg.get(&t).map(|a| a.tip.clone()).unwrap_or_default();
                 out.push(Pending {
                     ticket: t,
                     action: PendingAction::Merge,
@@ -8085,7 +8070,7 @@ impl Daemon {
             .into_iter()
             .filter_map(|id| {
                 let b = self.worktrees.get(&id)?;
-                let merged = self.wt_merged.get(&id).copied().unwrap_or(false);
+                let merged = self.wt_agg.get(&id).is_some_and(|a| a.merged);
                 (worktree::reclaim_on_archive(b, merged, 0, self.worktrees_barred)
                     && b.path.is_dir())
                 .then(|| b.path.clone())
@@ -8783,7 +8768,7 @@ impl Daemon {
 
     /// The ticket's base tip as of the last sample (`""` before one).
     fn base_tip_of(&self, id: ulid::Ulid) -> &str {
-        self.wt_base_tip.get(&id).map(String::as_str).unwrap_or("")
+        self.wt_agg.get(&id).map_or("", |a| a.base_tip.as_str())
     }
 
     /// The ref a merged PR lands on (`origin/main`) for one leg, asked once
@@ -9071,8 +9056,9 @@ impl Daemon {
         // (T-267), and the ff check below would answer "main moved" there.
         if self.ticket_merged(id) {
             let landed = self
-                .wt_merged_in
+                .wt_agg
                 .get(&id)
+                .map(|a| &a.merged_in)
                 .filter(|s| !s.is_empty())
                 .cloned()
                 .unwrap_or_else(|| base.clone());
@@ -9378,9 +9364,9 @@ impl Daemon {
                     *t,
                     mesimon_core::train::WtFlags {
                         attached: b.status == BindingStatus::Attached,
-                        ahead: self.wt_ahead.get(t).copied().unwrap_or(0),
-                        merged: self.wt_merged.get(t).copied().unwrap_or(false),
-                        needs_rebase: self.wt_needs_rebase.get(t).copied().unwrap_or(false),
+                        ahead: self.wt_agg.get(t).map_or(0, |a| a.ahead),
+                        merged: self.wt_agg.get(t).is_some_and(|a| a.merged),
+                        needs_rebase: self.wt_agg.get(t).is_some_and(|a| a.needs_rebase),
                         conflict: self.wt_conflicts.contains(&b.branch),
                     },
                 )
@@ -9391,13 +9377,15 @@ impl Daemon {
     /// What the train would do, over the cached flags — no git on this road.
     fn train_plan(&self) -> mesimon_core::train::Plan {
         let flags = self.train_flags();
+        let base_tip: HashMap<ulid::Ulid, String> =
+            self.wt_agg.iter().map(|(t, a)| (*t, a.base_tip.clone())).collect();
         let asked = self.train.asked_tips();
         let fused: std::collections::HashSet<ulid::Ulid> =
             self.train.fused_tickets().copied().collect();
         mesimon_core::train::plan(&mesimon_core::train::Input {
             board: &self.board,
             flags: &flags,
-            base_tip: &self.wt_base_tip,
+            base_tip: &base_tip,
             asked: &asked,
             fused: &fused,
         })
@@ -9434,7 +9422,7 @@ impl Daemon {
             // The tip the flags were sampled at, like `base_tip` beside it:
             // the refusal memory is keyed on the pair, and the snapshot road
             // (`pending_items`) reads the same map, so neither forks git.
-            let tip = self.wt_tip.get(&t).cloned().unwrap_or_default();
+            let tip = self.wt_agg.get(&t).map(|a| a.tip.clone()).unwrap_or_default();
             if self.train.refusal(t, &tip, self.base_tip_of(t)).is_some() {
                 continue;
             }
@@ -11161,7 +11149,7 @@ impl Daemon {
                     .and_then(|t| t.archived.as_ref())
                     .is_some_and(|a| a.until.is_none());
                 archived
-                    && self.wt_merged.get(*id).copied().unwrap_or(false)
+                    && self.wt_agg.get(*id).is_some_and(|a| a.merged)
                     && b.path.is_dir()
                     && !self.terminals.contains_key(&Some(**id))
             })
@@ -11888,14 +11876,8 @@ impl Daemon {
                 self.feed.board("automation", "worktree_torn_down", Some(ticket));
             }
             self.worktrees.remove(&ticket);
-            self.wt_merged.remove(&ticket);
-            self.wt_ahead.remove(&ticket);
-            self.wt_needs_rebase.remove(&ticket);
-            self.wt_tip.remove(&ticket);
-            self.wt_merged_in.remove(&ticket);
-            self.wt_merged_oid.remove(&ticket);
+            self.wt_agg.remove(&ticket);
             self.wt_repos.remove(&ticket);
-            self.wt_base_tip.remove(&ticket);
             self.wt_progress.remove(&ticket);
             self.wt_fresh.remove(&ticket);
         }
@@ -12529,14 +12511,8 @@ impl Daemon {
     fn refresh_worktree_flags(&mut self) {
         self.wt_gen = self.wt_gen.wrapping_add(1);
         if self.worktrees.is_empty() {
-            self.wt_merged.clear();
-            self.wt_ahead.clear();
-            self.wt_needs_rebase.clear();
-            self.wt_tip.clear();
-            self.wt_merged_in.clear();
-            self.wt_merged_oid.clear();
+            self.wt_agg.clear();
             self.wt_repos.clear();
-            self.wt_base_tip.clear();
             self.wt_conflicts.clear();
             self.wt_fresh.clear();
             return;
@@ -12728,8 +12704,7 @@ impl Daemon {
                 continue;
             }
             let a = worktree::aggregate(&legs);
-            let was = self.wt_merged.insert(t, a.merged);
-            changed |= was != Some(a.merged);
+            let was = self.wt_agg.get(&t).map(|w| w.merged);
             // Unmerged to merged is a landing, whoever made it (T-527). A
             // first reading is one only for a branch the crown was already
             // told of, or whose delivery is held for the train (T-554): the
@@ -12743,12 +12718,8 @@ impl Daemon {
             {
                 self.crown_landed.push(t);
             }
-            changed |= self.wt_ahead.insert(t, a.ahead) != Some(a.ahead);
-            changed |= self.wt_needs_rebase.insert(t, a.needs_rebase) != Some(a.needs_rebase);
-            changed |= self.wt_tip.insert(t, a.tip.clone()) != Some(a.tip);
-            changed |= self.wt_merged_in.insert(t, a.merged_in.clone()) != Some(a.merged_in);
-            changed |= self.wt_merged_oid.insert(t, a.merged_oid.clone()) != Some(a.merged_oid);
-            changed |= self.wt_base_tip.insert(t, a.base_tip.clone()) != Some(a.base_tip);
+            changed |= self.wt_agg.get(&t) != Some(&a);
+            self.wt_agg.insert(t, a);
             let same_legs = self.wt_repos.get(&t).is_some_and(|old| {
                 old.len() == legs.len()
                     && old.iter().zip(&legs).all(|(o, n)| {
@@ -13546,13 +13517,29 @@ impl Daemon {
         // there is genuinely no conversation to resume the wake mints a fresh
         // one under a new uuid rather than losing anything. The other sleep
         // road never said it, so one gesture answered two ways.
-        if let Some(t) = &transcript {
+        self.park_record(id, transcript.as_deref(), now);
+        let _ = self.backend.signal_session(&sid);
+        self.reaping.insert(sid, Instant::now() + REAP_GRACE);
+        // The user parked the claude an ask was waiting for: a queued ask
+        // needs an awake pane, and waking it later against their gesture is
+        // not what they asked for.
+        if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
+            self.forget_queued(t, "queued_ask_dropped", "local", "board");
+        }
+        Ok(())
+    }
+
+    /// The park both sleep roads share: the conversation snapshotted (B-A22:
+    /// it belongs to the agent's own store, and this is our copy), the
+    /// record parked with its Codex input forgotten, and the machine
+    /// re-minted `Sleeping` so the pane's death echo cannot undo it.
+    fn park_record(&mut self, id: uuid::Uuid, transcript: Option<&str>, now: u64) {
+        if let Some(t) = transcript {
             let dir = self.paths.transcripts_dir();
             if std::fs::create_dir_all(&dir).is_ok() {
                 let _ = std::fs::copy(t, dir.join(format!("{id}.jsonl")));
             }
         }
-
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.state = SessionState::Sleeping;
             if rec.kind == SessionKind::Codex {
@@ -13577,15 +13564,6 @@ impl Daemon {
         }
         self.machines.insert(id, Machine::new(SessionState::Sleeping, now));
         self.recovery.remove(&id);
-        let _ = self.backend.signal_session(&sid);
-        self.reaping.insert(sid, Instant::now() + REAP_GRACE);
-        // The user parked the claude an ask was waiting for: a queued ask
-        // needs an awake pane, and waking it later against their gesture is
-        // not what they asked for.
-        if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
-            self.forget_queued(t, "queued_ask_dropped", "local", "board");
-        }
-        Ok(())
     }
 
     /// A Claude session the user left on purpose is PARKED, not buried.
@@ -13634,36 +13612,8 @@ impl Daemon {
         }
         let (sid, transcript) = (rec.sid16(), rec.transcript_path.clone());
 
-        // Sleep's B-A22 copy, same reason and same place: the conversation
-        // belongs to Claude's own store, and this is our snapshot of it.
-        if let Some(t) = &transcript {
-            let dir = self.paths.transcripts_dir();
-            if std::fs::create_dir_all(&dir).is_ok() {
-                let _ = std::fs::copy(t, dir.join(format!("{id}.jsonl")));
-            }
-        }
-
         let now = now_ms();
-        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-            rec.state = SessionState::Sleeping;
-            if rec.kind == SessionKind::Codex {
-                rec.codex_stopping = true;
-                rec.observation_hold = true;
-                rec.pending_submit = false;
-                rec.pending_prefill = false;
-                rec.codex_submit_sent = false;
-                rec.codex_pending_seq = None;
-                self.owed.remove(&id);
-                self.codex_input_due.remove(&id);
-                self.codex_ready.remove(&id);
-            }
-            rec.confidence = Confidence::High;
-            rec.waiting_since = None;
-            rec.state_changed_at = Some(now);
-            rec.detail = None;
-        }
-        self.machines.insert(id, Machine::new(SessionState::Sleeping, now));
-        self.recovery.remove(&id);
+        self.park_record(id, transcript.as_deref(), now);
         // No SIGTERM: the process left on its own. The pane is only still
         // standing because remain-on-exit is holding the corpse, so hand it
         // to the same reaper sleep uses rather than killing it inline.
