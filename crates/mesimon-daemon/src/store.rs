@@ -858,11 +858,17 @@ fn read_columns_file(paths: &Paths) -> Option<ColumnsFile> {
 }
 
 pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
-    write_columns_text(paths, &columns_text(board)?)
+    write_atomic(&columns_file(paths), &columns_text(board)?, SHARED)
+}
+
+/// `columns.toml` written only when its text differs from `written`, the
+/// text this daemon last wrote there.
+pub fn save_columns_if_changed(paths: &Paths, board: &Board, written: &mut String) -> Result<()> {
+    write_if_changed(&columns_file(paths), columns_text(board)?, SHARED, written)
 }
 
 /// `columns.toml` as `save_columns` would write it.
-pub fn columns_text(board: &Board) -> Result<String> {
+fn columns_text(board: &Board) -> Result<String> {
     let cf = ColumnsFile {
         schema_version: COLUMNS_SCHEMA,
         next_key: board.next_key,
@@ -890,8 +896,8 @@ pub fn columns_text(board: &Board) -> Result<String> {
     Ok(toml::to_string_pretty(&cf)?)
 }
 
-pub fn write_columns_text(paths: &Paths, text: &str) -> Result<()> {
-    write_atomic(&paths.board_dir.join("board/columns.toml"), text, SHARED)
+fn columns_file(paths: &Paths) -> std::path::PathBuf {
+    paths.board_dir.join("board/columns.toml")
 }
 
 /// What reading `tiers.toml` found.
@@ -1025,12 +1031,27 @@ pub fn delete_ticket_dir(paths: &Paths, short_key: &str) -> Result<()> {
 }
 
 pub fn save_sessions(paths: &Paths, board: &Board) -> Result<()> {
-    write_sessions_text(paths, &sessions_text(board)?)
+    write_atomic(&paths.sessions_file(), &sessions_text(board)?, PRIVATE)
+}
+
+/// `save_columns_if_changed`'s rule for `sessions.json`.
+pub fn save_sessions_if_changed(paths: &Paths, board: &Board, written: &mut String) -> Result<()> {
+    write_if_changed(&paths.sessions_file(), sessions_text(board)?, PRIVATE, written)
+}
+
+/// `text` written atomically unless it is `written`, which then becomes it:
+/// a state file whose bytes did not change costs no write and no fsync.
+pub fn write_if_changed(path: &Path, text: String, mode: u32, written: &mut String) -> Result<()> {
+    if text != *written {
+        write_atomic(path, &text, mode)?;
+        *written = text;
+    }
+    Ok(())
 }
 
 /// `sessions.json` as `save_sessions` would write it: `SessionsFile`'s
 /// shape, borrowed rather than cloned.
-pub fn sessions_text(board: &Board) -> Result<String> {
+fn sessions_text(board: &Board) -> Result<String> {
     #[derive(Serialize)]
     struct Borrowed<'a> {
         schema_version: u32,
@@ -1038,10 +1059,6 @@ pub fn sessions_text(board: &Board) -> Result<String> {
     }
     let sf = Borrowed { schema_version: SESSIONS_SCHEMA, sessions: &board.sessions };
     Ok(serde_json::to_string_pretty(&sf)?)
-}
-
-pub fn write_sessions_text(paths: &Paths, text: &str) -> Result<()> {
-    write_atomic(&paths.sessions_file(), text, PRIVATE)
 }
 
 #[cfg(test)]

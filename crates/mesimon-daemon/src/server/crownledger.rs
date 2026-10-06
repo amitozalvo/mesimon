@@ -89,12 +89,12 @@ impl Daemon {
             return;
         }
         let Ok(text) = serde_json::to_string_pretty(&self.ledger()) else { return };
-        if text == self.crown_written {
-            return;
-        }
-        if store::write_atomic(&self.paths.crown_file(), &text, store::PRIVATE).is_ok() {
-            self.crown_written = text;
-        }
+        let _ = store::write_if_changed(
+            &self.paths.crown_file(),
+            text,
+            store::PRIVATE,
+            &mut self.crown_written,
+        );
     }
 
     /// Read the ledger back at start. What the last daemon was told of each

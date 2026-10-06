@@ -7763,12 +7763,7 @@ impl Daemon {
     /// `columns.toml` written when its text changed since the last write, so
     /// a session-only change costs the board file no fsync.
     fn write_columns(&mut self) -> anyhow::Result<()> {
-        let text = store::columns_text(&self.board)?;
-        if text != self.columns_written {
-            store::write_columns_text(&self.paths, &text)?;
-            self.columns_written = text;
-        }
-        Ok(())
+        store::save_columns_if_changed(&self.paths, &self.board, &mut self.columns_written)
     }
 
     /// Also the one place `started.json` learns a key (T-441): every change
@@ -7782,10 +7777,8 @@ impl Daemon {
             return;
         }
         // Many tick stages persist on a change that touched no record.
-        let Ok(text) = store::sessions_text(&self.board) else { return };
-        if text != self.sessions_written && store::write_sessions_text(&self.paths, &text).is_ok() {
-            self.sessions_written = text;
-        }
+        let _ =
+            store::save_sessions_if_changed(&self.paths, &self.board, &mut self.sessions_written);
     }
 
     /// The single write path for `costs.json` (T-327).
@@ -7846,12 +7839,12 @@ impl Daemon {
         }
         let file = crate::train::TrainFile::of(&self.train);
         let Ok(text) = serde_json::to_string_pretty(&file) else { return };
-        if text == self.train_written {
-            return;
-        }
-        if store::write_atomic(&self.paths.train_file(), &text, store::PRIVATE).is_ok() {
-            self.train_written = text;
-        }
+        let _ = store::write_if_changed(
+            &self.paths.train_file(),
+            text,
+            store::PRIVATE,
+            &mut self.train_written,
+        );
     }
 
     /// Read `train.json` back at start (T-635). An ask whose ticket is gone,
