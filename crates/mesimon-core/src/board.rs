@@ -54,6 +54,16 @@ impl SessionKind {
             Self::Bash => None,
         }
     }
+
+    /// The kind's word, its serde spelling: a session row's name when the
+    /// session set none.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Bash => "bash",
+        }
+    }
 }
 
 /// The full D15 state enum; the vocabulary is owned by 11 §11.7.1.
@@ -609,6 +619,18 @@ impl SessionRecord {
     /// acknowledges that its processes stopped, even if the badge is Exited.
     pub fn holds_agent_seat(&self) -> bool {
         self.kind.is_agent() && (self.state.is_live() || self.codex_stopping)
+    }
+
+    /// On the plan dialog (T-420): the card's `≡`.
+    pub fn on_plan_dialog(&self) -> bool {
+        self.state == (SessionState::RequiresAction { reason: Reason::Plan })
+    }
+
+    /// Launched with `--permission-mode plan` — the one fact the board holds
+    /// about a mode. A session that entered plan mode from inside its pane
+    /// is not known to be planning.
+    pub fn launched_in_plan(&self) -> bool {
+        self.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan")
     }
 
     /// Adopted to be watched, never launched: no argv, so mesimon may read
@@ -2688,12 +2710,8 @@ impl Board {
     /// never counts.
     pub fn unsent_tickets(&self) -> Vec<&Ticket> {
         // One pass over the sessions: the `!N` count asks this every frame.
-        let unsent: std::collections::HashSet<ulid::Ulid> = self
-            .sessions
-            .iter()
-            .filter(|s| s.unsent_words().is_some())
-            .map(|s| s.ticket)
-            .collect();
+        let unsent: std::collections::HashSet<ulid::Ulid> =
+            self.sessions.iter().filter(|s| s.unsent_words().is_some()).map(|s| s.ticket).collect();
         if unsent.is_empty() {
             return Vec::new();
         }
@@ -2736,17 +2754,19 @@ impl Board {
         self.sessions.iter().find(|s| s.ticket == ticket && s.kind.is_agent() && s.state.has_pane())
     }
 
+    /// The pane seat that can take an `accept plan` (T-420): on the plan
+    /// dialog, or launched planning. The daemon's column press and the
+    /// TUI's ask field read this one answer.
+    pub fn plan_seat(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
+        self.pane_target(ticket).filter(|s| s.on_plan_dialog() || s.launched_in_plan())
+    }
+
     /// The agent a ticket already holds, parked or not — `is_live`, so a
     /// Sleeping record counts. A ticket holds ONE agent across providers: the
     /// daemon refuses a second spawn by this, and `c` wakes rather than
     /// starts by the same fact. A second seat on a ticket is a shell.
     pub fn live_agent(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
         self.sessions.iter().find(|s| s.ticket == ticket && s.holds_agent_seat())
-    }
-
-    /// Compatibility name for callers migrating to the common agent seat.
-    pub fn live_claude(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
-        self.live_agent(ticket)
     }
 
     /// The seats the crown's agent started and still holds (T-412): the

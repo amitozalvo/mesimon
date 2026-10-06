@@ -716,10 +716,7 @@ impl App {
         let Some((mut t, _)) = self.edited_tier() else { return Ok(()) };
         match self.tier_fields().get(idx) {
             Some(TierField::Provider) => {
-                t.provider = match t.provider {
-                    AgentProvider::ClaudeCode => AgentProvider::Codex,
-                    AgentProvider::Codex => AgentProvider::ClaudeCode,
-                };
+                t.provider = t.provider.next();
                 t.model.clear();
                 if !Effort::ring(t.provider).contains(&t.effort) {
                     t.effort = Effort::Default;

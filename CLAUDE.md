@@ -480,7 +480,7 @@ patch-id against one target ref — and that comparison **writes nothing**, beca
 remove a live cwd.
 
 **One claude per ticket; the second seat is a shell.** `spawn_session` refuses a `Claude` spawn
-when `Board::live_claude(ticket)` finds one (a parked one holds the seat); resume and wake
+when `Board::live_agent(ticket)` finds one (a parked one holds the seat); resume and wake
 re-enter an existing record and are not gated. Everything that picks "the" agent of a ticket —
 `pane_target`, `board_enter`, `auto_move`, `card_glyph`, the worktree lock — assumes one.
 

@@ -3985,9 +3985,7 @@ impl App {
     /// not exist yet (`Pending::is_queued_ask`).
     /// The ticket's paned agent sits on its plan dialog (T-420): the `≡`.
     pub(crate) fn ticket_plan_ready(&self, ticket: ulid::Ulid) -> bool {
-        self.board.pane_target(ticket).is_some_and(|s| {
-            s.state == (SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan })
-        })
+        self.board.pane_target(ticket).is_some_and(|s| s.on_plan_dialog())
     }
 
     /// The ticket's paned agent was launched in plan mode (T-420) and is
@@ -3997,15 +3995,12 @@ impl App {
     /// pane is not known to be planning, and its field opens at the
     /// board's default.
     pub(crate) fn ticket_planning(&self, ticket: ulid::Ulid) -> bool {
-        self.board.pane_target(ticket).is_some_and(|s| {
-            !self.ticket_plan_ready(ticket)
-                && s.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan")
-        })
+        self.board.pane_target(ticket).is_some_and(|s| !s.on_plan_dialog() && s.launched_in_plan())
     }
 
     /// The ask field's ring has an `accept plan` stop for this ticket.
     pub(crate) fn ticket_plan_able(&self, ticket: ulid::Ulid) -> bool {
-        self.ticket_plan_ready(ticket) || self.ticket_planning(ticket)
+        self.board.plan_seat(ticket).is_some()
     }
 
     /// Any seat in the column that can take an `accept plan` (T-429): the
@@ -4663,7 +4658,7 @@ impl App {
             copy_step: subject.map_or(0, |id| self.copy_step(id)),
             multi_column: self.columns().len() > 1,
             ticket_has_sessions: !sessions.is_empty(),
-            // The daemon's spawn gate, the same fact: `live_claude` counts a
+            // The daemon's spawn gate, the same fact: `live_agent` counts a
             // parked one, which holds the seat.
             ticket_has_agent: subject.is_some_and(|t| self.board.live_agent(t).is_some()),
             // A pane, not merely a session: `is_live()` counts a parked one,

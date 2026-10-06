@@ -938,11 +938,7 @@ pub(super) fn render(
             let mark = glyphs::kind_mark(s.kind, tier);
             // The session's own name (OSC-0 title, same as the tmux status
             // bar's breadcrumb leaf) when it set one, else the kind word.
-            let word = s.title.as_deref().unwrap_or(match s.kind {
-                SessionKind::Claude => "claude",
-                SessionKind::Codex => "codex",
-                SessionKind::Bash => "bash",
-            });
+            let word = s.title.as_deref().unwrap_or(s.kind.word());
             // Row budget: "  {mark} {word}" + ≥1 fill + glyph + " {age:>3}".
             // An overflowing name reveals itself marquee-style on the same
             // clock as the card title (accordion rows exist on the cursor

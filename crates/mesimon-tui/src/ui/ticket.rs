@@ -1480,11 +1480,7 @@ fn draw_rail(
         // running a command is named by the command (T-366): `$ cargo` is
         // what the row is about while it runs, and a shell's title is its
         // prompt's, which says less.
-        let kind = s.foreground.as_deref().or(s.title.as_deref()).unwrap_or(match s.kind {
-            SessionKind::Claude => "claude",
-            SessionKind::Codex => "codex",
-            SessionKind::Bash => "bash",
-        });
+        let kind = s.foreground.as_deref().or(s.title.as_deref()).unwrap_or(s.kind.word());
         // Row budget: glyph + " {mark} {name}" + ≥1 fill + age. An
         // overflowing name on the selected row reveals itself marquee-style
         // (same clock behaviour as the board's card title: reset on landing,

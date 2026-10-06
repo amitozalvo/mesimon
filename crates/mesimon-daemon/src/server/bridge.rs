@@ -500,7 +500,7 @@ impl Daemon {
         let prior = rec.state.clone();
         let pending_submit = rec.pending_submit;
         let conversed = rec.transcript_path.is_some() || rec.claude_session_id.is_some();
-        let plan = rec.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan");
+        let plan = rec.launched_in_plan();
         let reason = silence.reason();
         self.modroad.relaunched.insert(id, silence);
         self.journal.line(&format!("session {id}: {reason}; relaunched {}", silence.road_words()));

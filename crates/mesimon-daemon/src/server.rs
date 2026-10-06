@@ -1917,6 +1917,9 @@ fn no_such_ticket() -> Response {
     Response::Err { message: "no such ticket".into() }
 }
 
+/// Why nothing may grow on an archived ticket until it is restored.
+const TICKET_ARCHIVED: &str = "ticket archived — restore it first";
+
 /// The crown's `archive_ticket` while the board's switch is off (T-590):
 /// result data, so it may instruct, and it names the row a person turns and
 /// the road the crown has instead.
@@ -6167,9 +6170,8 @@ impl Daemon {
     /// seat; the feed line is the generic dispatch's, with the person as
     /// actor.
     fn crown_ticket(&mut self, id: ulid::Ulid) -> Response {
-        let Some(t) = self.board.ticket(id) else { return no_such_ticket() };
-        if t.is_archived() {
-            return Response::Err { message: "ticket archived — restore it first".into() };
+        if let Err(message) = self.open_ticket(id) {
+            return Response::Err { message: message.into() };
         }
         // One level deep by construction (T-412): an agent the crown started
         // can never wear the crown, so no crown-started agent starts agents.
@@ -7055,10 +7057,7 @@ impl Daemon {
         turn_of: Option<uuid::Uuid>,
         rule: &str,
     ) -> std::result::Result<String, String> {
-        let Some(t) = self.board.ticket(id) else { return Err("no such ticket".into()) };
-        if t.is_archived() {
-            return Err("ticket archived — restore it first".into());
-        }
+        let t = self.open_ticket(id).map_err(str::to_string)?;
         let from = t.column.clone();
         if !self.board.columns.iter().any(|c| c.name == dest) {
             return Err(format!("no such column: {dest}"));
@@ -10106,15 +10105,20 @@ impl Daemon {
         out
     }
 
-    /// The pane seat of a ticket that can take an `accept plan` (T-420): its
-    /// agent is on the plan dialog, or known to be planning by the one
-    /// fact the board holds about a mode, the launch argv. The daemon's read
-    /// of the TUI's `ticket_plan_able`, for the column's press (T-429).
+    /// The pane seat of a ticket that can take an `accept plan`, for the
+    /// column's press (T-429).
+    /// A ticket on the board and not archived, or the refusal that says
+    /// which it is not.
+    fn open_ticket(&self, id: ulid::Ulid) -> std::result::Result<&Ticket, &'static str> {
+        match self.board.ticket(id) {
+            None => Err("no such ticket"),
+            Some(t) if t.is_archived() => Err(TICKET_ARCHIVED),
+            Some(t) => Ok(t),
+        }
+    }
+
     fn plan_able_seat(&self, ticket: ulid::Ulid) -> Option<uuid::Uuid> {
-        let s = self.board.pane_target(ticket)?;
-        let on_dialog = s.state == (SessionState::RequiresAction { reason: Reason::Plan });
-        let planning = s.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan");
-        (on_dialog || planning).then_some(s.id)
+        self.board.plan_seat(ticket).map(|s| s.id)
     }
 
     fn keys_of(&self, ids: &[ulid::Ulid]) -> Vec<String> {
@@ -10181,12 +10185,7 @@ impl Daemon {
         accept_plan: bool,
         plan: bool,
     ) -> Result<(), String> {
-        let Some(t) = self.board.ticket(ticket) else {
-            return Err("no such ticket".into());
-        };
-        if t.is_archived() {
-            return Err("ticket archived — restore it first".into());
-        }
+        let t = self.open_ticket(ticket).map_err(str::to_string)?;
         if by.is_some() && self.queued.iter().any(|q| q.ticket == ticket && q.by.is_none()) {
             return Err(format!(
                 "{} already has a person's ask queued; it goes first",
@@ -11943,12 +11942,9 @@ impl Daemon {
         started_by: Option<ulid::Ulid>,
         plan: bool,
     ) -> Response {
-        if self.board.ticket(ticket).is_none() {
-            return no_such_ticket();
-        }
         // An archived ticket must not grow a live pane no board surface shows.
-        if self.board.ticket(ticket).is_some_and(|t| t.is_archived()) {
-            return Response::Err { message: "ticket archived — restore it first".into() };
+        if let Err(message) = self.open_ticket(ticket) {
+            return Response::Err { message: message.into() };
         }
         // A joined board has no checkout here (T-215): nothing to run in.
         if self.team_content_only() {
@@ -13013,7 +13009,7 @@ impl Daemon {
             );
         }
         if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
-            return Some("ticket archived — restore it first".into());
+            return Some(TICKET_ARCHIVED.into());
         }
         if self.board.sessions.iter().any(|other| {
             other.id != rec.id
@@ -13658,7 +13654,7 @@ impl Daemon {
             return Response::Err { message: "not asleep".into() };
         }
         if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
-            return Response::Err { message: "ticket archived — restore it first".into() };
+            return Response::Err { message: TICKET_ARCHIVED.into() };
         }
         match rec.kind {
             SessionKind::Claude | SessionKind::Codex => self.resume_session(id, false),
@@ -13970,11 +13966,7 @@ impl Daemon {
         // Breadcrumb leaf: the session's own name when the agent set one
         // (OSC-0 pane title; tmux reports the hostname when it never did),
         // else the kind word.
-        let kind_word = match kind {
-            SessionKind::Claude => "claude",
-            SessionKind::Codex => "codex",
-            SessionKind::Bash => "bash",
-        };
+        let kind_word = kind.word();
         self.focus_label = match self.backend.pane_title(&sid16) {
             Ok(t) => {
                 let t = t.trim();
@@ -14117,9 +14109,8 @@ impl Daemon {
     /// (the pane WAS spawned by this daemon through `launch`; `Adopted` is
     /// the external drawer's word and badges `external`).
     fn adopt_terminal(&mut self, ticket: ulid::Ulid) -> Response {
-        let Some(t) = self.board.ticket(ticket) else { return no_such_ticket() };
-        if t.is_archived() {
-            return Response::Err { message: "ticket archived — restore it first".into() };
+        if let Err(message) = self.open_ticket(ticket) {
+            return Response::Err { message: message.into() };
         }
         if self.team_content_only() {
             return Response::Err {
