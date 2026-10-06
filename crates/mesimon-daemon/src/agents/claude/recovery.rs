@@ -5,9 +5,7 @@ use super::tail::{self, TailCursor};
 use crate::agents::{AgentRecovery, RecoveryChannel, RecoveryObservation, RecoverySample};
 use mesimon_core::adopt::{classify_tail_record, SessionsPidFile, TailEvent, TailTool};
 use mesimon_core::attention::{self, Signal, TailHint};
-use mesimon_core::board::{
-    FailReason, Provenance, Reason, SessionRecord, SessionState, UnknownReason,
-};
+use mesimon_core::board::{FailReason, Reason, SessionRecord, SessionState, UnknownReason};
 use std::path::PathBuf;
 
 const TAIL_QUIET_MS: u64 = 45_000;
@@ -49,12 +47,8 @@ fn pending_dialog(reason: Reason) -> Option<(TailTool, TailHint)> {
     }
 }
 
-fn observe_only(record: &SessionRecord) -> bool {
-    record.provenance == Provenance::Adopted && record.argv.is_empty()
-}
-
 fn abort_only(record: &SessionRecord) -> bool {
-    !observe_only(record)
+    !record.observe_only()
         && (record.state == SessionState::Running || attention::is_attention(&record.state))
 }
 
@@ -90,10 +84,10 @@ impl AgentRecovery for ClaudeRecovery {
                 }
             }
             RecoveryChannel::Activity => {
-                !observe_only(record) && record.state == SessionState::Running
+                !record.observe_only() && record.state == SessionState::Running
             }
             RecoveryChannel::Status => {
-                let eligible = !observe_only(record)
+                let eligible = !record.observe_only()
                     && (record.state == SessionState::Running
                         || record.state
                             == SessionState::RequiresAction { reason: Reason::Permission });
@@ -112,8 +106,8 @@ impl AgentRecovery for ClaudeRecovery {
                 }
                 self.failure_read_at = None;
                 let eligible = record.transcript_path.is_some()
-                    && ((observe_only(record) && record.state.is_live())
-                        || (!observe_only(record)
+                    && ((record.observe_only() && record.state.is_live())
+                        || (!record.observe_only()
                             && matches!(record.state, SessionState::Unknown { .. }))
                         || abort_only(record));
                 if !eligible {
@@ -554,7 +548,7 @@ mod status_probe_tests {
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
-    use mesimon_core::board::{SessionKind, UnknownReason};
+    use mesimon_core::board::{Provenance, SessionKind, UnknownReason};
     use std::io::Write;
 
     fn record(state: SessionState) -> SessionRecord {

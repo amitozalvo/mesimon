@@ -84,6 +84,21 @@ pub fn cap_bytes(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// At most `max` characters, cut at the last whole word and marked `…`.
+pub fn clip_words(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    // Back up to the last whole word, unless that would leave almost
+    // nothing — half a long word still reads better than three characters.
+    let cut = match head.rfind(char::is_whitespace) {
+        Some(i) if i * 2 >= max => i,
+        _ => head.len(),
+    };
+    format!("{}…", head[..cut].trim_end())
+}
+
 /// Trimmed, or `None` when nothing is left — there is no such thing as a
 /// blank tag or an empty prompt.
 pub fn nonblank(s: &str) -> Option<String> {

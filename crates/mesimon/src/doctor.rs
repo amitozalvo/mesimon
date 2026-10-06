@@ -1373,7 +1373,10 @@ mod tests {
         assert!(total >= 128 * 1024, "both files counted: {total}");
         let mut floor = 0;
         let now = Some(std::time::Instant::now());
-        assert!(!mesimon_daemon::resources::tree_bytes(&dir, now, &mut floor), "the budget ran out");
+        assert!(
+            !mesimon_daemon::resources::tree_bytes(&dir, now, &mut floor),
+            "the budget ran out"
+        );
         assert!(floor <= total);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(gib(3 * 1024 * 1024), "3 MiB");

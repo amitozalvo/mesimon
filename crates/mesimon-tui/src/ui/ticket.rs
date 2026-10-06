@@ -6,7 +6,7 @@
 //! from the body but a breathing row — no band, no rule (L1); the zone
 //! divider is a 2-cell gap.
 
-use mesimon_core::board::{NoteMeta, Provenance, SessionKind, SessionState, StopReason};
+use mesimon_core::board::{NoteMeta, SessionKind, SessionState, StopReason};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -1546,7 +1546,7 @@ fn draw_rail(
             );
         } else {
             let mut badges: Vec<&str> = Vec::new();
-            if s.provenance == Provenance::Adopted && s.argv.is_empty() {
+            if s.observe_only() {
                 badges.push("external");
             }
             if matches!(s.state, SessionState::Exited { .. }) {

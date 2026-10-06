@@ -26,6 +26,8 @@
 
 use ulid::Ulid;
 
+use crate::text::clip_words;
+
 /// The coalescing window: one notification per 5 s, carrying everything that
 /// arrived inside it (06 §, "coalesced to at most one per 5 s rolling window
 /// carrying an aggregate"). It is the whole rate-limiting policy — there are
@@ -421,7 +423,7 @@ fn body(held: &[Event]) -> String {
 /// this can always spell.
 fn names(e: &Event, d: Option<&Detail>) -> String {
     match d.map(|d| d.title.trim()).filter(|t| !t.is_empty()) {
-        Some(title) => format!("{} ∙ {}", e.key, clip(title, TITLE_CHARS)),
+        Some(title) => format!("{} ∙ {}", e.key, clip_words(title, TITLE_CHARS)),
         None => e.key.clone(),
     }
 }
@@ -439,11 +441,11 @@ fn said(e: &Event, d: Option<&Detail>, words: bool) -> String {
     let quoted_ok = words || !e.quoted;
     match e.kind {
         Kind::NeedsYou if !e.why.is_empty() && quoted_ok => {
-            format!("needs you ∙ {}", clip(&e.why, SAID_CHARS))
+            format!("needs you ∙ {}", clip_words(&e.why, SAID_CHARS))
         }
         Kind::NeedsYou => "needs you".to_string(),
         Kind::TurnDone => match d.map(|d| d.said.trim()).filter(|s| !s.is_empty() && words) {
-            Some(reply) => format!("finished ∙ {}", clip(reply, SAID_CHARS)),
+            Some(reply) => format!("finished ∙ {}", clip_words(reply, SAID_CHARS)),
             None => "finished a turn".to_string(),
         },
     }
@@ -455,20 +457,6 @@ fn said(e: &Event, d: Option<&Detail>, words: bool) -> String {
 /// platform half applies as a backstop, this one is read by a person.
 const TITLE_CHARS: usize = 72;
 const SAID_CHARS: usize = 120;
-
-fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let head: String = s.chars().take(max).collect();
-    // Back up to the last whole word, unless that would leave almost
-    // nothing — half a long word still reads better than three characters.
-    let cut = match head.rfind(char::is_whitespace) {
-        Some(i) if i * 2 >= max => i,
-        _ => head.len(),
-    };
-    format!("{}…", head[..cut].trim_end())
-}
 
 /// At most [`KEYS_NAMED`] keys, then a count of the rest. A notification body
 /// is one line on somebody's screen, not a list.
@@ -1027,10 +1015,10 @@ mod tests {
             assert!(!field.contains("  "), "cut on a word, not inside one: {field}");
         }
         // Short enough is left exactly alone.
-        assert_eq!(clip("Add auth", TITLE_CHARS), "Add auth");
+        assert_eq!(clip_words("Add auth", TITLE_CHARS), "Add auth");
         // A single word longer than the budget still gets cut, not dropped.
         let one_word = "x".repeat(SAID_CHARS + 20);
-        assert_eq!(clip(&one_word, SAID_CHARS).chars().count(), SAID_CHARS + 1);
+        assert_eq!(clip_words(&one_word, SAID_CHARS).chars().count(), SAID_CHARS + 1);
     }
 
     /// A ticket the board no longer holds still says which key it was: the

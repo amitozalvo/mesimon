@@ -911,7 +911,7 @@ pub fn run(paths: Paths) -> Result<()> {
         if let Some(r) = board.sessions.iter_mut().find(|s| s.id == *id) {
             // Observe-only records (imported, never spawned) have no pane by
             // design — Missing is their normal condition, not a crash.
-            let observe_only = r.provenance == Provenance::Adopted && r.argv.is_empty();
+            let observe_only = r.observe_only();
             if observe_only && matches!(link, mesimon_core::reconcile::Link::Missing) {
                 continue;
             }
@@ -1822,7 +1822,6 @@ struct QueuedAsk {
     /// Empty only for a `Start`, where the prompt is the ticket's own title
     /// and brief — the composed spawn, waiting its turn.
     text: String,
-    #[allow(dead_code)]
     queued_at: u64,
     /// The crown ticket whose agent queued these words (T-413). `Some` is a
     /// HELD ask unless `sends`: `drain_queue` never takes it, only a
@@ -3114,7 +3113,7 @@ impl Daemon {
     /// process lives in the user's own terminal, not our tmux).
     fn guard_server(&mut self) -> bool {
         fn ours_paned(r: &SessionRecord) -> bool {
-            r.state.has_pane() && !(r.provenance == Provenance::Adopted && r.argv.is_empty())
+            r.state.has_pane() && !r.observe_only()
         }
         if !self.board.sessions.iter().any(ours_paned) || self.backend.server_alive() {
             return false;
@@ -4898,7 +4897,7 @@ impl Daemon {
         // alone: a taken-over external session keeps `Adopted` for life, and
         // its takeover argv carries `--mcp-config` like any spawn's (T-240:
         // the tools were handed out and every call was refused).
-        if rec.provenance == Provenance::Adopted && rec.argv.is_empty() {
+        if rec.observe_only() {
             return Response::Err { message: "not a session mesimon spawned".into() };
         }
         if !rec.state.is_live() {
@@ -5241,11 +5240,7 @@ impl Daemon {
                         ),
                     };
                 }
-                if self
-                    .board
-                    .live_agent(target)
-                    .is_some_and(|rec| rec.provenance == Provenance::Adopted && rec.argv.is_empty())
-                {
+                if self.board.live_agent(target).is_some_and(|rec| rec.observe_only()) {
                     return Response::Err {
                         message: format!("{key}'s session is external; a person resumes it first"),
                     };
@@ -8824,16 +8819,7 @@ impl Daemon {
             .map(|l| AgentRepoView {
                 name: l.name.clone(),
                 base: l.base.clone(),
-                merge_state: if l.merged {
-                    "merged"
-                } else if l.needs_rebase {
-                    "needs_rebase"
-                } else if l.ahead > 0 {
-                    "ahead"
-                } else {
-                    "clean"
-                }
-                .into(),
+                merge_state: worktree::merge_word(l.merged, l.needs_rebase, l.ahead).into(),
             })
             .collect()
     }
@@ -9281,7 +9267,7 @@ impl Daemon {
         let Some(rec) = self.board.pane_target(ticket) else {
             return Err("no live agent session on this ticket — start or wake one first".into());
         };
-        if rec.provenance == Provenance::Adopted && rec.argv.is_empty() {
+        if rec.observe_only() {
             return Err("external session — resume it to take over before sending a prompt".into());
         }
         let sid = rec.sid16();
@@ -9663,11 +9649,7 @@ impl Daemon {
         plan: bool,
         tier: Option<String>,
     ) -> Response {
-        if self
-            .board
-            .live_agent(ticket)
-            .is_some_and(|rec| rec.provenance == Provenance::Adopted && rec.argv.is_empty())
-        {
+        if self.board.live_agent(ticket).is_some_and(|rec| rec.observe_only()) {
             return Response::Err {
                 message: "external session — resume it to take over before sending a prompt".into(),
             };
@@ -9835,10 +9817,7 @@ impl Daemon {
         let mut parked: Vec<(ulid::Ulid, &'static str)> = Vec::new();
         let mut accepting = 0;
         for ticket in ids {
-            let external = self
-                .board
-                .live_agent(ticket)
-                .is_some_and(|rec| rec.provenance == Provenance::Adopted && rec.argv.is_empty());
+            let external = self.board.live_agent(ticket).is_some_and(|rec| rec.observe_only());
             let seat = self.seat_of(ticket);
             let starts = matches!(seat, QueuedSeat::Start(_));
             let accept = accepts.contains(&ticket);
@@ -11750,9 +11729,7 @@ impl Daemon {
                 for s in &g.sessions {
                     // SIGTERM the group now; the reaper's grace-then-kill-pane
                     // finishes the ladder (docs/19 §1 — never SIGKILL).
-                    if (s.state.has_pane() || s.codex_stopping)
-                        && !(s.provenance == Provenance::Adopted && s.argv.is_empty())
-                    {
+                    if (s.state.has_pane() || s.codex_stopping) && !s.observe_only() {
                         if s.kind == SessionKind::Codex {
                             let by =
                                 Principal::Automation { rule: "deleted_session_cleanup".into() };
@@ -12815,7 +12792,7 @@ impl Daemon {
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return Response::Err { message: "no such session".into() };
         };
-        let owned = !(rec.provenance == Provenance::Adopted && rec.argv.is_empty());
+        let owned = !rec.observe_only();
         let reap = (owned && (rec.state.has_pane() || rec.codex_stopping)).then(|| rec.sid16());
         // Kill on a live session ends the process; the conversation survives
         // and its corpse stays on the ticket rail. Kill on an already-dead
@@ -14011,7 +13988,7 @@ impl Daemon {
         if matches!(rec.state, SessionState::Sleeping) {
             return Response::Err { message: "asleep — wake it first".into() };
         }
-        if rec.provenance == Provenance::Adopted && rec.argv.is_empty() {
+        if rec.observe_only() {
             // Observe-only: no pane, no hooks, no input (19 §4 tier 2).
             return Response::Err { message: "external session — resume it to take over".into() };
         }

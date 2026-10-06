@@ -2858,11 +2858,8 @@ impl Daemon {
         let ticket = ulid::Ulid::from_string(ticket).ok()?;
         let id = uuid::Uuid::parse_str(session).ok()?;
         let rec = self.board.pane_target(ticket)?;
-        (rec.id == id
-            && rec.kind.is_agent()
-            && rec.state.has_pane()
-            && !(rec.provenance == Provenance::Adopted && rec.argv.is_empty()))
-        .then_some(id)
+        (rec.id == id && rec.kind.is_agent() && rec.state.has_pane() && !rec.observe_only())
+            .then_some(id)
     }
     fn control_preview(&self, by: &Principal, ticket: &str, session: &str) -> Reply {
         let Some(id) = self.control_target(ticket, session) else {
@@ -3576,10 +3573,10 @@ fn crown_answers(
     let answers = match answer {
         CrownAnswer::Answers(answers) if answers.len() != n => {
             return Err(format!(
-                "answers carries {} answers and {key}'s dialog asks {n} question{}: one answer \
-                 per question, in order",
+                "answers carries {} answers and {key}'s dialog asks {}: one answer per \
+                 question, in order",
                 answers.len(),
-                if n == 1 { "" } else { "s" }
+                mesimon_core::text::plural(n, "question")
             ));
         }
         CrownAnswer::Answers(answers) => answers,
@@ -3651,43 +3648,26 @@ fn mod_answers(
     questions: &[api::Question],
     answers: &[api::QuestionAnswer],
 ) -> std::collections::BTreeMap<String, String> {
-    fn label(q: &api::Question, i: usize) -> &str {
-        q.options.get(i).map_or("", |o| o.label.as_str())
-    }
-    questions
-        .iter()
-        .zip(answers)
-        .map(|(q, a)| {
-            let said = match a {
-                api::QuestionAnswer::Choice { index } => label(q, *index).to_string(),
-                api::QuestionAnswer::Choices { indices } => {
-                    indices.iter().map(|i| label(q, *i)).collect::<Vec<_>>().join(", ")
-                }
-                api::QuestionAnswer::Text { text } => text.clone(),
-            };
-            (q.question.clone(), said)
-        })
-        .collect()
+    questions.iter().zip(answers).map(|(q, a)| (q.question.clone(), said(q, a))).collect()
 }
 
 /// An answer as the feed and the card say it: each question's label, its
 /// labels joined by `, `, or its words, and the questions joined by `; `.
 fn answer_words(questions: &[api::Question], answers: &[api::QuestionAnswer]) -> String {
-    fn label<'a>(q: &'a api::Question, i: &usize) -> &'a str {
-        q.options.get(*i).map_or("", |o| o.label.as_str())
+    questions.iter().zip(answers).map(|(q, a)| said(q, a)).collect::<Vec<_>>().join("; ")
+}
+
+/// One question's answer in words: its label, its labels joined by `, `, or
+/// the words typed.
+fn said(q: &api::Question, a: &api::QuestionAnswer) -> String {
+    let label = |i: usize| q.options.get(i).map_or("", |o| o.label.as_str());
+    match a {
+        api::QuestionAnswer::Choice { index } => label(*index).to_string(),
+        api::QuestionAnswer::Choices { indices } => {
+            indices.iter().map(|i| label(*i)).collect::<Vec<_>>().join(", ")
+        }
+        api::QuestionAnswer::Text { text } => text.clone(),
     }
-    questions
-        .iter()
-        .zip(answers)
-        .map(|(q, a)| match a {
-            api::QuestionAnswer::Choice { index } => label(q, index).to_string(),
-            api::QuestionAnswer::Choices { indices } => {
-                indices.iter().map(|i| label(q, i)).collect::<Vec<_>>().join(", ")
-            }
-            api::QuestionAnswer::Text { text } => text.clone(),
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
 }
 
 #[derive(Debug, PartialEq, Eq)]

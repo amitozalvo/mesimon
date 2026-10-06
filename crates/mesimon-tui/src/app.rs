@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use mesimon_core::board::{
-    Board, Column, ColumnSettings, ExitReason, NoteMeta, Provenance, SessionKind, SessionState,
-    SortBy, TagRef, Ticket, WorkspaceStrategy,
+    Board, Column, ColumnSettings, ExitReason, NoteMeta, SessionKind, SessionState, SortBy, TagRef,
+    Ticket, WorkspaceStrategy,
 };
 use mesimon_core::command::{
     Command, DiffTarget, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
@@ -11280,7 +11280,7 @@ impl App {
         // flow runs. An exited claude is a conversation, not a process — the
         // daemon replays its argv (`--resume`) into a fresh pane.
         if let Some(rec) = self.board.sessions.iter().find(|s| s.id == sid) {
-            let observe_only = rec.provenance == Provenance::Adopted && rec.argv.is_empty();
+            let observe_only = rec.observe_only();
             let sleeping = matches!(rec.state, SessionState::Sleeping);
             let exited_claude =
                 rec.kind.is_agent() && matches!(rec.state, SessionState::Exited { .. });
@@ -19901,9 +19901,7 @@ mod tests {
         let mut app = app_three_columns();
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(!keymap::column_items(&app.ctx())
-            .iter()
-            .any(|m| m.verb == Verb::ColumnName));
+        assert!(!keymap::column_items(&app.ctx()).iter().any(|m| m.verb == Verb::ColumnName));
     }
 
     #[test]

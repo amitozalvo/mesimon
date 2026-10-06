@@ -610,6 +610,12 @@ impl SessionRecord {
     pub fn holds_agent_seat(&self) -> bool {
         self.kind.is_agent() && (self.state.is_live() || self.codex_stopping)
     }
+
+    /// Adopted to be watched, never launched: no argv, so mesimon may read
+    /// its transcript but owns no process to resume, wake or kill.
+    pub fn observe_only(&self) -> bool {
+        self.provenance == Provenance::Adopted && self.argv.is_empty()
+    }
 }
 
 /// The shells a pane is idle at. `#{pane_current_command}` is the process's

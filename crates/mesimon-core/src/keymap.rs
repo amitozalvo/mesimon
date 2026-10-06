@@ -8692,9 +8692,7 @@ mod tests {
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
         assert_eq!(column_items(&other).len(), 8);
-        assert!(!column_items(&other)
-            .iter()
-            .any(|m| m.verb == Verb::ColumnName));
+        assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(
             column_items(&agents).iter().map(|m| m.verb).collect::<Vec<_>>(),
@@ -9408,10 +9406,8 @@ mod tests {
 
     #[test]
     fn menu_omits_fetch_and_actions_with_contextual_keys() {
-        let tracking = Ctx {
-            git_fetch_note: "2 to push ∙ never fetched".into(),
-            ..Default::default()
-        };
+        let tracking =
+            Ctx { git_fetch_note: "2 to push ∙ never fetched".into(), ..Default::default() };
         for ctx in [Ctx::default(), tracking] {
             for verb in [Verb::GitFetch, Verb::Help, Verb::AddColumn] {
                 assert!(!menu_items(&ctx).iter().any(|m| m.verb == verb));

@@ -228,22 +228,10 @@ pub(crate) fn board(name: &str, app_word: bool, needs_you: Option<usize>) -> Str
 /// api ∙ T-12 fix the parser`. The title is clipped shorter than a
 /// board's line, since the board's words take the front of the tab.
 pub(crate) fn focus(name: &str, app_word: bool, key: &str, ticket_title: &str) -> String {
-    let title = clip(&text::scrub_text(ticket_title), FOCUS_TITLE_CHARS);
+    let title = text::clip_words(&text::scrub_text(ticket_title), FOCUS_TITLE_CHARS);
     let key = text::scrub_text(key);
     let ticket = if title.is_empty() { key } else { format!("{key} {title}") };
     format!("{} ∙ {ticket}", board(name, app_word, None))
-}
-
-fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let head: String = s.chars().take(max).collect();
-    let cut = match head.rfind(char::is_whitespace) {
-        Some(i) if i * 2 >= max => i,
-        _ => head.len(),
-    };
-    format!("{}…", head[..cut].trim_end())
 }
 
 /// The subtitle's words: what needs you first, then what is working.
