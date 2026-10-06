@@ -105,6 +105,8 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         awake.push(Span::raw(" "));
         awake.push(Span::styled(label, style));
     }
+    // Where the awake chip ends and Remote Control's mark begins.
+    let awake_w = super::spans_width(&awake);
     awake.extend(remote_mark(app));
     // Other screens have no ticket counter; retain their breadcrumb marker.
     if word != "BOARD" {
@@ -134,6 +136,8 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         let n_tickets = app.board.tickets.iter().filter(|t| !t.is_archived()).count();
         let noun = if n_tickets == 1 { "ticket" } else { "tickets" };
         spans.push(Span::styled(format!("   {n_tickets} {noun}"), theme.dim2()));
+        let awake_at = super::spans_width(&spans);
+        let marks_w = super::spans_width(&awake);
         spans.append(&mut awake);
         // Asleep count cut from the header (author 2026-08-30): sleeping is
         // the quiet, correct condition — the card's own state word carries
@@ -175,7 +179,24 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         let room = (area.width as usize).saturating_sub(used + reserved);
         let git = git_clause(app, room, header_on(app, HeaderChip::Git));
         let git_w: usize = super::spans_width(&git);
+        let git_x = super::spans_width(&spans[..git_at]);
         spans.splice(git_at..git_at, git);
+        // Each chip's cells, for the top row's `h`/`l` to step down onto the
+        // column under the last one (T-681). The awake chip's leading space
+        // is the gap, not the chip; everything spliced at `git_at` moved the
+        // marks right by the clause.
+        let marks_at = awake_at + git_w;
+        let cells = [
+            (HeaderChip::Git, git_x, git_w),
+            (HeaderChip::Awake, marks_at + 1, awake_w.saturating_sub(1)),
+            (HeaderChip::Remote, marks_at + awake_w, marks_w - awake_w),
+        ];
+        app.spots.borrow_mut().chips.extend(
+            cells
+                .into_iter()
+                .filter(|c| c.2 > 0)
+                .map(|(chip, x, w)| (chip, area.x.saturating_add(x as u16), w as u16)),
+        );
         let used = used + git_w;
         if offer_w > 0 {
             let pad = (area.width as usize).saturating_sub(used + offer_w + 1);

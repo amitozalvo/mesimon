@@ -3605,6 +3605,23 @@ impl App {
         self.mode = Mode::Sharing { idx, editing: None, armed: false };
     }
 
+    /// The column the last frame drew under `chip`, or the nearest one beside
+    /// it, the left one on a tie. `None` before a frame placed the chip,
+    /// which leaves the cursor in the column it already has.
+    fn column_under(&self, chip: HeaderChip) -> Option<usize> {
+        let spots = self.spots.borrow();
+        let &(_, x, w) = spots.chips.iter().find(|c| c.0 == chip)?;
+        let mid = x + w / 2;
+        let off = |&&(_, cx, cw): &&(usize, u16, u16)| {
+            if mid < cx {
+                cx - mid
+            } else {
+                mid.saturating_sub(cx + cw - 1)
+            }
+        };
+        spots.columns.iter().min_by_key(off).map(|c| c.0)
+    }
+
     /// Keep the header's cursor on a chip that is drawn: one that went away
     /// (keep awake or Remote Control turned off, the git sample lost) hands
     /// it to its nearest neighbour, the left one first, and with none left
@@ -6986,7 +7003,19 @@ impl App {
                     } else {
                         self.header_chip.right(&ctx)
                     };
-                    self.header_chip = to.unwrap_or(self.header_chip);
+                    match to {
+                        Some(chip) => self.header_chip = chip,
+                        // Off the end of the row (T-681): down onto the
+                        // column under the chip, at its header, so a
+                        // sideways press never strands the cursor up here.
+                        None => {
+                            if let Some(ci) = self.column_under(self.header_chip) {
+                                self.cursor_col = ci;
+                                self.cursor_row = None;
+                            }
+                            self.header_focus = false;
+                        }
+                    }
                 }
                 Verb::CursorDown => self.header_focus = false,
                 _ => {}
@@ -19478,9 +19507,9 @@ mod tests {
     // ---- the board's own top row as a cursor position (T-305) --------------
 
     /// `k` off a column header leaves the column and lands on the top row,
-    /// `j` and Esc walk back into it, and sideways is unbound up there while
-    /// the git clause is the only section. With no sample there is nothing to
-    /// stand on and the press does nothing at all.
+    /// `j` and Esc walk back into it, and sideways off the only section steps
+    /// down too (T-681; undrawn, the column the cursor left). With no sample
+    /// there is nothing to stand on and the press does nothing at all.
     #[test]
     fn k_off_the_column_header_lands_on_the_top_row() {
         let mut app = app_three_columns();
@@ -19502,11 +19531,16 @@ mod tests {
         assert!(!app.on_column_header(), "the column's four verbs stand down");
         assert!(!app.ctx().col_header);
         assert_eq!(app.cursor_col, 0, "the column the cursor left is where `j` returns");
-        // One section, so nothing walks sideways and nothing is above.
-        for c in ['h', 'l', 'k'] {
+        // Nothing is above, and one section's either end is the way down.
+        press(&mut app, 'k');
+        assert!(app.header_focus, "k must be inert on the top row");
+        for c in ['h', 'l'] {
             press(&mut app, c);
-            assert!(app.header_focus, "{c} must be inert on the top row");
+            assert!(!app.header_focus, "{c} off the end steps down");
+            assert!(app.on_column_header());
             assert_eq!(app.cursor_col, 0);
+            press(&mut app, 'k');
+            assert!(app.header_focus);
         }
         press(&mut app, 'j');
         assert!(!app.header_focus);
@@ -19598,7 +19632,12 @@ mod tests {
             }
             assert_eq!(app.header_chip, HeaderChip::Remote);
             press(&mut app, 'l');
-            assert_eq!(app.header_chip, HeaderChip::Remote, "the right edge holds");
+            assert!(!app.header_focus, "the right edge steps down onto the board");
+            press(&mut app, 'k');
+            for _ in 0..if sampled { 2 } else { 1 } {
+                press(&mut app, 'l');
+            }
+            assert_eq!(app.header_chip, HeaderChip::Remote);
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
             assert!(matches!(app.mode, Mode::Sharing { .. }), "{:?}", app.mode);
             assert!(app.mesophon_dialog, "Remote Control's own dialog");

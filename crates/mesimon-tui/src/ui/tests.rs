@@ -9788,3 +9788,47 @@ fn golden_usage_settings() {
     assert!(rows.iter().any(|r| r.contains("Show: near a limit")), "{rows:?}");
     golden("settings_usage_120x30", &rows);
 }
+
+/// The top row's `h`/`l` off either end step down onto the column drawn
+/// under the chip they leave (T-681), so the chips' recorded cells must be
+/// the cells that spell them.
+#[test]
+fn header_chips_record_their_cells_and_the_ends_step_down_under_them() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("msmn/T-124-git-status-pull-push-indication", 2, 1, 3);
+    app.seed_pref(|p| p.keep_awake = true);
+    app.control.enabled = true;
+    let buf = cells(&app, 160, 30);
+    let spots = app.spots.borrow();
+    let spell = |x: u16, w: u16| (x..x + w).map(|x| buf[(x, 0)].symbol()).collect::<String>();
+    let chips: Vec<_> = spots.chips.iter().map(|&(c, x, w)| (c, spell(x, w))).collect();
+    drop(spots);
+    assert_eq!(chips.len(), 3, "{chips:?}");
+    assert!(chips[0].1.contains("⎇ msmn/T-124") && chips[0].1.ends_with("3 changed"), "{chips:?}");
+    assert_eq!(chips[1].1.trim(), "☾", "{chips:?}");
+    assert_eq!(chips[2].1, " ∙ remote offline", "{chips:?}");
+
+    // Four 40-cell columns. The git clause sits mostly over the second; the
+    // two marks over the third.
+    press(&mut app, 'k');
+    press(&mut app, 'k');
+    assert_eq!(
+        (app.scope(), app.header_chip),
+        (mesimon_core::keymap::Scope::Header, HeaderChip::Git)
+    );
+    press(&mut app, 'h');
+    assert!(!app.header_focus, "off the left end: down onto the board");
+    assert_eq!(
+        (app.cursor_col, app.cursor_row),
+        (1, None),
+        "the column under the clause, at its header"
+    );
+
+    press(&mut app, 'k');
+    press(&mut app, 'l');
+    press(&mut app, 'l');
+    assert_eq!((app.header_focus, app.header_chip), (true, HeaderChip::Remote));
+    press(&mut app, 'l');
+    assert!(!app.header_focus, "off the right end: down onto the board");
+    assert_eq!((app.cursor_col, app.cursor_row), (2, None));
+}

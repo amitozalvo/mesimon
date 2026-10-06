@@ -36,6 +36,7 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
         match geom.slots[ci] {
             Slot::Expanded { x, width } => {
                 let rect = Rect { x: area.x + x, y: area.y, width, height: area.height };
+                app.spots.borrow_mut().columns.push((ci, rect.x, width));
                 app.spots.borrow_mut().heads.push((
                     name.clone(),
                     rect.x + crate::tags::BAR_WIDTH as u16 + 1,
@@ -45,6 +46,7 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
             }
             Slot::Spine { x } => {
                 let rect = Rect { x: area.x + x, y: area.y, width: 1, height: area.height };
+                app.spots.borrow_mut().columns.push((ci, rect.x, 1));
                 app.spots.borrow_mut().heads.push((name.clone(), rect.x, rect.y));
                 draw_spine(f, rect, app, name);
             }

@@ -160,6 +160,11 @@ pub(crate) struct Spots {
     /// The ghosts moved cards left where they were, for the bolt to run
     /// through: the same ticket also has its card where it went.
     pub trails: Vec<CardSpot>,
+    /// Each drawn column's index and cells across (`x`, width), for the
+    /// header's `h`/`l` to step down onto the one under a chip (T-681).
+    pub columns: Vec<(usize, u16, u16)>,
+    /// Each drawn chip on the board's top row and its cells across.
+    pub chips: Vec<(mesimon_core::keymap::HeaderChip, u16, u16)>,
 }
 
 /// One card's title row on screen.

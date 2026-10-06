@@ -6001,7 +6001,10 @@ static LINKS: &[Binding] = &[
 /// cursor column keeps its painted band, and `j` walks straight back into it.
 ///
 /// Left/right step between the drawn chips (`HeaderChip`): the git clause,
-/// the wake indicator, Remote Control's mark. Enter opens the checkout diff,
+/// the wake indicator, Remote Control's mark. Past the last chip either way
+/// they step down onto the column under it (T-681): a sideways press never
+/// strands the cursor up here, where `j` is easy to miss; silent there,
+/// because `j`'s hint already names the way down. Enter opens the checkout diff,
 /// the keep-awake settings row or Remote Control's dialog; `k` stays inert
 /// above the top row.
 static HEADER: &[Binding] = &[
@@ -6010,7 +6013,7 @@ static HEADER: &[Binding] = &[
         verb: Verb::CursorLeft,
         show: "h",
         hint: |c| c.header_chip.left(c).map_or("", HeaderChip::word),
-        avail: |c| c.header_chip.left(c).is_some(),
+        avail: |c| c.header_chip.present(c),
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -6021,7 +6024,7 @@ static HEADER: &[Binding] = &[
         verb: Verb::CursorRight,
         show: "l",
         hint: |c| c.header_chip.right(c).map_or("", HeaderChip::word),
-        avail: |c| c.header_chip.right(c).is_some(),
+        avail: |c| c.header_chip.present(c),
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -8803,13 +8806,13 @@ mod tests {
     }
 
     /// The board's own top row (T-305) is a cursor position one step above a
-    /// column header, and it owns three keys and no more: `j` back into the
-    /// column, Enter on the one section that is focusable, Esc to pop. It
-    /// binds nothing sideways and nothing upward while the git clause is the
-    /// only section, and it is a board scope, so `?` and the app keys reach
-    /// it while the board's own selection keys do not.
+    /// column header, and it owns its walk and no more: `j` back into the
+    /// column, `h`/`l` off either end down onto the board (T-681), Enter on
+    /// the one section that is focusable, Esc to pop. Nothing is above it,
+    /// and it is a board scope, so `?` and the app keys reach it while the
+    /// board's own selection keys do not.
     #[test]
-    fn the_top_row_owns_three_keys() {
+    fn the_top_row_owns_its_walk() {
         let repo = Ctx { git_repo: true, ..Default::default() };
         assert_eq!(resolve(Scope::Header, Key::Char('j'), &repo), Some(Verb::CursorDown));
         assert_eq!(resolve(Scope::Header, Key::Down, &repo), Some(Verb::CursorDown));
@@ -8817,8 +8820,18 @@ mod tests {
         assert_eq!(hint_for(Scope::Header, Verb::Act, &repo), Some(("enter", "diff")));
         assert_eq!(resolve(Scope::Header, Key::Esc, &repo), Some(Verb::Back));
         assert_eq!(resolve(Scope::Header, Key::Char('?'), &repo), Some(Verb::Help));
-        // One section: nothing walks sideways, and nothing is above the top.
-        for k in [Key::Char('h'), Key::Char('l'), Key::Char('k'), Key::Up] {
+        // One section: sideways is the way down, and nothing is above the top.
+        for (k, verb) in [
+            (Key::Char('h'), Verb::CursorLeft),
+            (Key::Left, Verb::CursorLeft),
+            (Key::Char('l'), Verb::CursorRight),
+            (Key::Right, Verb::CursorRight),
+        ] {
+            assert_eq!(resolve(Scope::Header, k, &repo), Some(verb), "{k:?}");
+            // Silent: `j` already says the way down.
+            assert_eq!(hint_for(Scope::Header, verb, &repo), None);
+        }
+        for k in [Key::Char('k'), Key::Up] {
             assert_eq!(resolve(Scope::Header, k, &repo), None, "{k:?}");
         }
         // The board's own keys are the board's; none of them reaches up here.
@@ -8878,7 +8891,7 @@ mod tests {
         );
         let alone = Ctx { git_repo: false, ..awake.clone() };
         assert_eq!(resolve(Scope::Header, Key::Enter, &alone), Some(Verb::Act));
-        assert_eq!(resolve(Scope::Header, Key::Left, &alone), None);
+        assert_eq!(resolve(Scope::Header, Key::Left, &alone), Some(Verb::CursorLeft));
         let disabled = Ctx { keep_awake: false, ..alone };
         assert_eq!(resolve(Scope::Header, Key::Enter, &disabled), None);
         assert_eq!(SettingsSection::for_verb(Verb::KeepAwake), SettingsSection::Behaviour);
@@ -8895,7 +8908,12 @@ mod tests {
         );
         let remote = Ctx { header_chip: HeaderChip::Remote, ..all.clone() };
         assert_eq!(hint_for(Scope::Header, Verb::CursorLeft, &remote), Some(("h", "keep awake")));
-        assert_eq!(resolve(Scope::Header, Key::Char('l'), &remote), None, "the right edge");
+        assert_eq!(
+            resolve(Scope::Header, Key::Char('l'), &remote),
+            Some(Verb::CursorRight),
+            "the right edge steps down"
+        );
+        assert_eq!(hint_for(Scope::Header, Verb::CursorRight, &remote), None, "silently");
         assert_eq!(resolve(Scope::Header, Key::Enter, &remote), Some(Verb::Act));
         assert_eq!(hint_for(Scope::Header, Verb::Act, &remote), Some(("enter", "remote control")));
         // An absent chip between two drawn ones is stepped over.
@@ -8914,7 +8932,9 @@ mod tests {
         assert_eq!(resolve(Scope::Header, Key::Enter, &off), None);
         assert_eq!(resolve(Scope::Header, Key::Char('l'), &awake), Some(Verb::CursorRight));
         let awake_off = Ctx { remote_mark: false, ..awake };
-        assert_eq!(resolve(Scope::Header, Key::Char('l'), &awake_off), None);
+        // Awake is the right end now: `l` steps down, and says nothing.
+        assert_eq!(resolve(Scope::Header, Key::Char('l'), &awake_off), Some(Verb::CursorRight));
+        assert_eq!(hint_for(Scope::Header, Verb::CursorRight, &awake_off), None);
     }
 
     /// Archiving takes two presses; restoring takes one. The chord tail binds

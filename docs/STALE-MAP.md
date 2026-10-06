@@ -22035,3 +22035,21 @@ opened from the lists keep their own landing.
 
 **Tests.** `app::tests::a_clean_checkout_opens_on_push_and_pull` (the fake daemon's
 `clean_checkout` answers the checkout's list with no files).
+
+## The top row's ends step down onto the board (T-681, 2026-10-06, "when pressing left / right in board title section and there's nothing next to move to, move down to the closest column")
+
+**What shipped.** On the board's top row (T-305), `h`/`l` and the arrows past the last chip either
+way leave the row and land on the column drawn under the chip being left, at its header. Before,
+they were unbound at an edge, and a reader who pressed sideways stayed stuck up there until they
+found `j`. The edge press is silent in the footer: `j`'s hint already names the way down, and a
+third key saying "board" is noise.
+
+**Where "under" comes from.** The last frame. `chrome::draw_header` records each drawn chip's cells
+and `board::draw_columns` each drawn column's (`strike::Spots::chips`, `::columns`, cleared every
+frame); `App::column_under` takes the column holding the chip's middle cell, else the nearest, the
+left one on a tie. With no frame drawn (a unit test), the cursor keeps its column. The keymap gate
+is `header_chip.present`: the header has focus only on a drawn chip, so the keys are live there.
+
+**Tests.** `ui::tests::header_chips_record_their_cells_and_the_ends_step_down_under_them` (the
+cells spell the chips at 160 wide; the git clause's left end lands on column 1, Remote's right end
+on column 2); `keymap::tests::the_top_row_owns_its_walk`; the two app header tests now step down.
