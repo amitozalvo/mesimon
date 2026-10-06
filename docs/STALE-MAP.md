@@ -22053,3 +22053,72 @@ is `header_chip.present`: the header has focus only on a drawn chip, so the keys
 **Tests.** `ui::tests::header_chips_record_their_cells_and_the_ends_step_down_under_them` (the
 cells spell the chips at 160 wide; the git clause's left end lands on column 1, Remote's right end
 on column 2); `keymap::tests::the_top_row_owns_its_walk`; the two app header tests now step down.
+
+## The third simplify pass (T-682, 2026-10-06, "Simplify")
+
+The same four-angle pass as 2026-09-01 and T-234 (reuse, simplification, efficiency, altitude),
+over the 502 commits since T-234 (`d055ee47..`): about 60 findings, a dozen found by two or three
+reviewers. Nothing here changes what the board does or says; the notices, refusals and goldens
+are byte-for-byte the same, and the suite ran unchanged (2193 passed).
+
+**Applied.**
+- **Dead since a removal**: the column dialog's Delete row and menu entry left
+  `delete_column_from_dialog`, `Mode::ColumnSettings.{delete_armed, from_menu}`,
+  `App::menu_dispatch`, `Ctx::col_delete_armed` and `Verb::{DeleteColumn, ColumnSettings}`.
+  Seven `Ctx` fields nothing read (`git_upstream`, `git_remote`, `git_fetch_on`, `col_reclaim`,
+  three `team_*` strings) were filled on every keypress and frame. `Verb::EditWord{Left,Right}`
+  had no binding; three chord disarms re-cleared what a `take()` had cleared.
+- **Core owns the predicates both sides spelled**: `SessionRecord::{observe_only,
+  on_plan_dialog, launched_in_plan, holds_process, owns_codex_runtime}`, `Board::plan_seat`,
+  `SessionKind::word`, `text::clip_words`. `observe_only` alone replaced fourteen copies. The
+  unused `Board::live_claude` alias is gone.
+- **The daemon's flags are one map**: `wt_agg: HashMap<Ulid, worktree::Aggregate>` replaces seven
+  maps copied field by field from the same `Aggregate`. `park_record` is the park `sleep_one` and
+  `park_on_exit` pasted. `open_ticket` and `TICKET_ARCHIVED` are the no-such-or-archived refusal
+  five handlers spelled.
+- **One loader and one save rule for the state files**: `store::{parse_versioned,
+  load_versioned}` is the missing / unreadable / newer-build / quarantine contract that
+  `started`, `queue`, `costs`, `train` and `crown` each pasted. `store::write_if_changed` is the
+  "write only when the text moved" rule. `columns.toml` and `sessions.json` now take it too: many
+  tick stages, and every Codex sequence, persisted both with a full fsync for changes that
+  touched neither.
+- **Per-snapshot and per-frame work**: `control_observe_dialog` no longer serializes every tool's
+  whole input before learning it is not a dialog. `team_info` derives the device keys once.
+  `user_default_mode` keeps its parse until `settings.json`'s stamp moves.
+  `Board::unsent_tickets` is one pass. The archive bucket scans its candidates once.
+- **Remote Control**: `control_gate` is the opening five card-edit handlers pasted;
+  `control_note_written` is the two note writes' shared answer; `control_note_ticket` was
+  `control_ticket`; `said` is the answer wording `mod_answers` and `answer_words` each carried.
+- **Small reuse**: `codex::connect_probe` (one `unsafe` socket probe, was two),
+  `tail::window_text` (three JSONL tail readers), `agents::pane_title` (the adapters' default),
+  `pref_words!` (seven TUI pref enums' `key`/`from_key`/`next`), `clock::now_ms`/`epoch_ms` (six
+  new epoch idioms), `opener::which_on_path`, `text::{plural, cap_bytes}`, `ui::spans_width`,
+  `text::age_ago`, `worktree::merge_word`, `AgentProvider::next`.
+
+**Deferred (do not re-derive):**
+- The notifier and the keep-awake watcher each dial a full `Snapshot` on every push, so a board
+  that is on screen builds two or three a broadcast. Handing them the TUI's `Arc<Board>` keeps
+  the handover fallback and is a structure change. So is memoising the built `Response` per
+  `board_version`.
+- `tail_records` parses every line of its 64 KiB window when callers stop at the first that
+  decides (a lazy reverse iterator). The phone's board answer is serialized four or five times
+  to measure it. `queue_order` is rebuilt per queued ask per snapshot. `cost::Ledger::view`
+  re-runs `price` per bucket. `poll_codex` spawns a thread per tick and re-parses unchanged
+  snapshots.
+- The resume refusals the TUI arms on by substring (`resume_confirmation_offered`): the phrases
+  sit inside long `format!`s. A typed `Response` is the real fix, and it is a wire change.
+- Behaviour changes, not cleanups: the barred-worktrees spawn refusal belongs in
+  `resolve_spawn_cwd` (the queue's `Start` and the pending-spawn replay skip it today, and so
+  does `control_workspace`). The tag picker's name field should call `edit_buffer_key` (it types
+  a Ctrl+letter). `editor.rs`'s `" {} ago"` can read "now ago". The TUI's `immediate_able` reads
+  `pane_target` where the daemon's `immediate_refusal` reads `live_agent`.
+- Wider moves: a core `MergeStage` (the crown parses merge words back from strings),
+  `mod_takes(id, Speak, text)` over the bare `"submit"`/`"fill"`/`"answer"` strings,
+  `AgentProvider::{has_plan_flag, has_send_now}` and `tier::Book::seat_provider`, one
+  `forget_inputs(id)` over the per-session Codex maps (which sites clear which map is a
+  decision), the Hinnant date math in `clock`, one pick per chord (`Option<Chord>` over four
+  `*_armed`), and the prefs `load()` defaults read from one `Prefs::default()`.
+- Test and CI scaffolding: daemon unit tests that bypass `crate::testrepo`; `compose`, `column`,
+  `focus_quiet` and `attachments` e2es that boot by hand rather than through `Harness` (moving
+  them adds a tmux skip locally); `common::board_and_grace_of` with no callers; the `ci/codex-*`
+  live-run scaffold pasted five times; `web/mesophon`'s `clock`/`newId` pairs.
