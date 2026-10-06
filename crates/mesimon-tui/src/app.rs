@@ -491,9 +491,6 @@ pub enum Mode {
         describing: Option<EditBuffer>,
         /// The `Sort now` row's pending order: `h`/`l` step it, Enter runs it.
         sort: SortBy,
-        /// The Delete row was chosen once; the next Enter on it sends.
-        delete_armed: bool,
-        from_menu: bool,
     },
     /// The search picker (T-349): `/` on the board. A mode, not a screen —
     /// the board stays underneath and Esc puts the reader back on the card
@@ -1734,10 +1731,6 @@ pub struct App {
     delete_armed: Option<Doomed>,
     /// The board card captured by the first `y`.
     duplicate_armed: Option<ulid::Ulid>,
-    /// The verb being dispatched came from a menu row (T-117): a dialog it
-    /// opens comes back to the menu on Esc. Set around the one dispatch in
-    /// `act`'s menu arm, never stored past it.
-    menu_dispatch: bool,
     /// The `a` chord, same shape: the next `a` archives, anything else
     /// cancels. Only ever armed when `a` would archive — restoring is one
     /// press, because undoing a mistake must not be harder than making it.
@@ -1983,7 +1976,6 @@ impl App {
             pending_reexec: false,
             delete_armed: None,
             duplicate_armed: None,
-            menu_dispatch: false,
             tag_armed: None,
             archive_armed: None,
             snooze_armed: None,
@@ -4652,11 +4644,11 @@ impl App {
             Mode::Search(s) => Some(s),
             _ => None,
         };
-        let (col_new, col_delete_armed, col_sort_word) = match &self.mode {
-            Mode::ColumnSettings { subject, delete_armed, sort, .. } => {
-                (matches!(subject, ColumnSubject::New { .. }), *delete_armed, sort.word())
+        let (col_new, col_sort_word) = match &self.mode {
+            Mode::ColumnSettings { subject, sort, .. } => {
+                (matches!(subject, ColumnSubject::New { .. }), sort.word())
             }
-            _ => (false, false, ""),
+            _ => (false, ""),
         };
         let mut ctx = Ctx {
             settings_section: self.settings_section,
@@ -4720,9 +4712,7 @@ impl App {
             col_on_done: cs.on_done.clone().unwrap_or_default(),
             col_sleep_after: cs.sleep_after_minutes,
             col_requires_merge: cs.requires_merge,
-            col_reclaim: cs.reclaim,
             col_train_word: cs.train.word(),
-            col_delete_armed,
             col_live: col_tickets.len(),
             col_plan_able: col.is_some_and(|c| self.column_plan_able(&c.name)),
             can_repeat: self.repeat_target().is_some(),
@@ -4763,18 +4753,9 @@ impl App {
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
             shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
             git_repo: self.git.sampled,
-            git_upstream: self.git.upstream.is_some(),
-            git_remote: self
-                .git
-                .upstream
-                .as_deref()
-                .and_then(|u| u.split_once('/'))
-                .map(|(remote, _)| remote.to_string())
-                .unwrap_or_default(),
             git_fetchable: self.git.upstream.is_some()
                 || self.git.nested.iter().any(|s| s.upstream.is_some() && !s.detached),
             git_fetching: self.git.fetching || self.git.nested.iter().any(|s| s.fetching),
-            git_fetch_on: self.git.fetch_every_secs > 0,
             git_fetch_note: self.git_fetch_note(),
             sel_session: selected.is_some(),
             sel_note: matches!(row, Some(RailRow::Note(_))),
@@ -5019,14 +5000,6 @@ impl App {
             // An identity the relay has not admitted is not signed in: the
             // row stays `Sign in`, with the failure in its detail.
             team_signed_in: self.team.device.as_ref().is_some_and(|d| d.registered),
-            team_identity: self
-                .team
-                .device
-                .as_ref()
-                .map(|d| format!("{} on {}", d.display_name, d.relay))
-                .unwrap_or_default(),
-            team_busy: self.team.busy.clone().unwrap_or_default(),
-            team_error: self.team.error.clone().unwrap_or_default(),
             team_shared: self.team.board.is_some(),
             team_owner: self.team.board.as_ref().is_some_and(|b| b.role == "owner"),
             team_members: self
@@ -5289,15 +5262,6 @@ impl App {
         // A chord tail keeps its own arming (the scope carries it) until the
         // dispatch below either consumes it or cancels it.
         let was = (self.delete_armed.take(), self.archive_armed.take(), self.snooze_armed.take());
-        if scope != Scope::DeleteChord {
-            self.delete_armed = None;
-        }
-        if scope != Scope::ArchiveChord {
-            self.archive_armed = None;
-        }
-        if scope != Scope::SnoozeChord {
-            self.snooze_armed = None;
-        }
         // The fresh-ticket window lives exactly one Enter long — and so
         // does the terminal's adoption (T-366).
         if !matches!(key, Key::Enter) {
@@ -6611,7 +6575,6 @@ impl App {
             Verb::ThemePick => self.open_theme_picker(),
             Verb::ThemeSlot => self.cycle_theme_slot(),
             // ---- columns (T-117) -----------------------------------------
-            Verb::ColumnSettings => self.open_column_settings()?,
             Verb::AddColumn => {
                 self.column_agents = false;
                 let after = self.cursor_column().map(|c| c.name.clone());
@@ -6621,8 +6584,6 @@ impl App {
                     naming: Some(EditBuffer::new(mesimon_core::board::COLUMN_NAME_MAX_BYTES)),
                     describing: None,
                     sort: SortBy::NewestArrival,
-                    delete_armed: false,
-                    from_menu: self.menu_dispatch,
                 };
             }
             Verb::ColumnName => {
@@ -6688,7 +6649,6 @@ impl App {
             }
             Verb::ColumnReclaim => self.set_column(|s| s.offers = Some(s.offers().next()))?,
             Verb::ColumnTrain => self.set_column(|s| s.train = s.train.next())?,
-            Verb::DeleteColumn => self.delete_column_from_dialog()?,
             Verb::ReleaseNotes => self.open_releases(),
             Verb::AdoptObserve => self.adopt_external(false)?,
             // Shift+Tab on a ticket that has not started yet (T-309): the
@@ -6716,8 +6676,6 @@ impl App {
             | Verb::SaveStart
             | Verb::EditLeft
             | Verb::EditRight
-            | Verb::EditWordLeft
-            | Verb::EditWordRight
             | Verb::EditHome
             | Verb::EditEnd
             | Verb::EditBackspace
@@ -6984,14 +6942,11 @@ impl App {
             // binding's gate) and step the order it will use.
             Scope::ColumnSettings => {
                 let n = keymap::column_items(&self.ctx()).len();
-                if let Mode::ColumnSettings { idx, sort, delete_armed, .. } = &mut self.mode {
+                if let Mode::ColumnSettings { idx, sort, .. } = &mut self.mode {
                     match verb {
                         Verb::CursorLeft => *sort = sort.prev(),
                         Verb::CursorRight => *sort = sort.next(),
-                        _ => {
-                            *idx = step(*idx, n, down);
-                            *delete_armed = false;
-                        }
+                        _ => *idx = step(*idx, n, down),
                     }
                 }
             }
@@ -7091,11 +7046,7 @@ impl App {
                 let verb = item.verb;
                 self.mode = Mode::Normal;
                 let ctx = self.ctx();
-                // A dialog the menu opens comes back to the menu on Esc.
-                self.menu_dispatch = true;
-                let out = self.dispatch(verb, Key::Enter, Scope::Board, &ctx);
-                self.menu_dispatch = false;
-                out
+                self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
             }
             // A settings row is a toggle or a picker, so the list STAYS: the
             // row relabels itself and the change is on the screen. The
@@ -7320,12 +7271,7 @@ impl App {
                     }
                     return;
                 }
-                let from_menu = matches!(&self.mode, Mode::ColumnSettings { from_menu: true, .. });
-                self.mode = if from_menu {
-                    Mode::Menu { idx: self.menu_row(Verb::ColumnSettings) }
-                } else {
-                    Mode::Normal
-                };
+                self.mode = Mode::Normal;
             }
             // Esc pops one level like everywhere else: off the top row and
             // back onto the column, never into the board's menu.
@@ -7340,8 +7286,7 @@ impl App {
         }
     }
 
-    /// Enter on a column header, or the menu's row (T-117): the cursor's
-    /// column's settings.
+    /// Enter on a column header (T-117): the cursor's column's settings.
     fn open_column_settings(&mut self) -> Result<()> {
         self.column_agents = false;
         let Some(name) = self.cursor_column().map(|c| c.name.clone()) else {
@@ -7353,8 +7298,6 @@ impl App {
             naming: None,
             describing: None,
             sort: SortBy::NewestArrival,
-            delete_armed: false,
-            from_menu: self.menu_dispatch,
         };
         Ok(())
     }
@@ -7396,43 +7339,6 @@ impl App {
                 i.and_then(|i| others.get(i + 1).cloned())
             }
         }
-    }
-
-    /// The dialog's Delete row: says why not while tickets are in it, arms
-    /// on the first Enter, sends on the second, and closes on success.
-    fn delete_column_from_dialog(&mut self) -> Result<()> {
-        let Some(col) = self.dialog_column() else { return Ok(()) };
-        let name = col.name.clone();
-        let live = self.board.column_tickets(&name).len();
-        if live > 0 {
-            self.status = format!(
-                "move its {} first",
-                if live == 1 { "ticket".to_string() } else { format!("{live} tickets") }
-            );
-            return Ok(());
-        }
-        let Mode::ColumnSettings { delete_armed, .. } = &mut self.mode else { return Ok(()) };
-        if !*delete_armed {
-            *delete_armed = true;
-            self.status = format!("enter again deletes {name}");
-            return Ok(());
-        }
-        match self.req(Command::DeleteColumn { name: name.clone() }) {
-            Response::Ok => {
-                self.mode = Mode::Normal;
-                self.refresh()?;
-                self.clamp_cursor();
-                self.status = format!("deleted the column {name}");
-            }
-            Response::Err { message } => {
-                self.status = message;
-                if let Mode::ColumnSettings { delete_armed, .. } = &mut self.mode {
-                    *delete_armed = false;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     /// The Name row's field (T-117): the tag picker's field half — edit the
@@ -19792,7 +19698,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(
             &app.mode,
-            Mode::ColumnSettings { subject: ColumnSubject::Existing(n), idx: 0, naming: None, from_menu: false, .. }
+            Mode::ColumnSettings { subject: ColumnSubject::Existing(n), idx: 0, naming: None, .. }
                 if n == "todo"
         ));
         assert_eq!(app.scope(), Scope::ColumnSettings);
@@ -19805,7 +19711,6 @@ mod tests {
         // Column settings live on the header, not in the menu.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Menu { .. }));
-        assert!(!keymap::menu_items(&app.ctx()).iter().any(|m| m.verb == Verb::ColumnSettings));
     }
 
     /// T-276: the launch lands on the first EXPANDED column, a refresh that
@@ -19998,7 +19903,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!keymap::column_items(&app.ctx())
             .iter()
-            .any(|m| matches!(m.verb, Verb::ColumnName | Verb::DeleteColumn)));
+            .any(|m| m.verb == Verb::ColumnName));
     }
 
     #[test]

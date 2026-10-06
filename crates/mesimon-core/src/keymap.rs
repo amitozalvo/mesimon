@@ -480,15 +480,11 @@ pub enum Verb {
     /// switch on the Appearance list, on by default, per machine.
     CrownLightning,
     // ---- columns (T-117) ----
-    /// Open the column settings dialog on the cursor's column: Enter on a
-    /// column header, or the menu's row.
-    ColumnSettings,
     /// `O`: a new column after the cursor's, named first in the same dialog.
     AddColumn,
     /// The dialog's rows. Each is a toggle or a cycle that KEEPS the dialog
     /// open and relabels off the snapshot — the Settings list's rule — bar
-    /// `ColumnName` (the name edited in place), `SortColumn` (one-shot) and
-    /// `DeleteColumn` (armed by its first Enter).
+    /// `ColumnName` (the name edited in place) and `SortColumn` (one-shot).
     ColumnName,
     /// The Description row (T-467): a text field in place, the Name row's
     /// shape, saved whole through `SetColumnSettings`.
@@ -507,7 +503,6 @@ pub enum Verb {
     ColumnRequiresMerge,
     ColumnReclaim,
     ColumnTrain,
-    DeleteColumn,
     /// Open the release notes from the menu. Same argument, read even less
     /// often: what changed is a question for after an update, not a key.
     ReleaseNotes,
@@ -818,8 +813,6 @@ pub enum Verb {
     PlanMode,
     EditLeft,
     EditRight,
-    EditWordLeft,
-    EditWordRight,
     EditHome,
     EditEnd,
     EditBackspace,
@@ -1174,20 +1167,12 @@ pub struct Ctx {
     pub git_commits: bool,
     /// The push / pull list has a commit under its cursor to open.
     pub commit_row: bool,
-    /// The checkout's branch tracks a remote branch, so a fetch has
-    /// somewhere to go. Gates the menu row: without an upstream there are no
-    /// arrows on the header either.
-    pub git_upstream: bool,
-    /// That remote's name (`origin`), for the row's label.
-    pub git_remote: String,
     /// Somewhere to fetch from: the checkout's upstream, or on a workspace
     /// any repo compared with a remote (T-455). Gates `f` on the push /
     /// pull lists.
     pub git_fetchable: bool,
     /// A fetch is running now — the row stands down until it lands.
     pub git_fetching: bool,
-    /// `MESIMON_GIT_FETCH` armed the periodic fetch; the row says so.
-    pub git_fetch_on: bool,
     /// The row's detail, spelled by the app: `2 to push ∙ 1 to pull ∙ fetched
     /// 4m ago`. Words live here; the header carries the glyph form.
     pub git_fetch_note: String,
@@ -1550,10 +1535,7 @@ pub struct Ctx {
     /// The column's own idle park in minutes; zero is off (T-543).
     pub col_sleep_after: u32,
     pub col_requires_merge: bool,
-    pub col_reclaim: bool,
     pub col_train_word: &'static str,
-    /// The dialog's Delete row was chosen once: the next Enter on it sends.
-    pub col_delete_armed: bool,
     /// Live tickets in the dialog's column: a delete is refused while any.
     pub col_live: usize,
     /// A seat in the cursor's column can take an `accept plan` (T-429): its
@@ -1569,14 +1551,6 @@ pub struct Ctx {
     // ---- board sharing (T-334) ----
     /// This machine has a relay identity (`Snapshot.team.device`).
     pub team_signed_in: bool,
-    /// `<name> on <relay>`, as signed in — the device's own words, not the
-    /// drafts.
-    pub team_identity: String,
-    /// What the daemon's relay thread is doing for a person: `signing in`,
-    /// `sharing`, `inviting`, `removing`, … Empty when idle.
-    pub team_busy: String,
-    /// The last thing that failed, in mesimon's words. Empty when nothing.
-    pub team_error: String,
     /// This board is shared or joined; `team_owner` when this daemon owns it.
     pub team_shared: bool,
     pub team_owner: bool,
@@ -5923,8 +5897,6 @@ static COLUMN: &[Binding] = &[
         hint: |c| {
             if c.col_on_sort {
                 "sort now"
-            } else if c.col_delete_armed {
-                "delete it"
             } else {
                 "choose"
             }
@@ -8715,11 +8687,6 @@ mod tests {
         assert_eq!(hint_for(Scope::ColumnSettings, Verb::CursorLeft, &other), None);
         assert_eq!(hint_for(Scope::ColumnSettings, Verb::Act, &sort), Some(("enter", "sort now")));
         assert_eq!(hint_for(Scope::ColumnSettings, Verb::Act, &other), Some(("enter", "choose")));
-        let armed = Ctx { col_delete_armed: true, ..Default::default() };
-        assert_eq!(
-            hint_for(Scope::ColumnSettings, Verb::Act, &armed),
-            Some(("enter", "delete it"))
-        );
         // A new column has its Name row and nothing else until it exists.
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
@@ -8727,7 +8694,7 @@ mod tests {
         assert_eq!(column_items(&other).len(), 8);
         assert!(!column_items(&other)
             .iter()
-            .any(|m| matches!(m.verb, Verb::ColumnName | Verb::DeleteColumn)));
+            .any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(
             column_items(&agents).iter().map(|m| m.verb).collect::<Vec<_>>(),
@@ -9442,13 +9409,11 @@ mod tests {
     #[test]
     fn menu_omits_fetch_and_actions_with_contextual_keys() {
         let tracking = Ctx {
-            git_upstream: true,
-            git_remote: "origin".into(),
             git_fetch_note: "2 to push ∙ never fetched".into(),
             ..Default::default()
         };
         for ctx in [Ctx::default(), tracking] {
-            for verb in [Verb::GitFetch, Verb::Help, Verb::AddColumn, Verb::ColumnSettings] {
+            for verb in [Verb::GitFetch, Verb::Help, Verb::AddColumn] {
                 assert!(!menu_items(&ctx).iter().any(|m| m.verb == verb));
                 assert!(!settings_items(&ctx).iter().any(|m| m.verb == verb));
             }
