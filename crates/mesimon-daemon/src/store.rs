@@ -777,6 +777,11 @@ fn read_columns_file(paths: &Paths) -> Option<ColumnsFile> {
 }
 
 pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
+    write_columns_text(paths, &columns_text(board)?)
+}
+
+/// `columns.toml` as `save_columns` would write it.
+pub fn columns_text(board: &Board) -> Result<String> {
     let cf = ColumnsFile {
         schema_version: COLUMNS_SCHEMA,
         next_key: board.next_key,
@@ -801,7 +806,11 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         tags: board.tags.clone(),
         tiers: board.tiers.clone(),
     };
-    write_atomic(&paths.board_dir.join("board/columns.toml"), &toml::to_string_pretty(&cf)?, SHARED)
+    Ok(toml::to_string_pretty(&cf)?)
+}
+
+pub fn write_columns_text(paths: &Paths, text: &str) -> Result<()> {
+    write_atomic(&paths.board_dir.join("board/columns.toml"), text, SHARED)
 }
 
 /// What reading `tiers.toml` found.
@@ -935,8 +944,23 @@ pub fn delete_ticket_dir(paths: &Paths, short_key: &str) -> Result<()> {
 }
 
 pub fn save_sessions(paths: &Paths, board: &Board) -> Result<()> {
-    let sf = SessionsFile { schema_version: SESSIONS_SCHEMA, sessions: board.sessions.clone() };
-    write_atomic(&paths.sessions_file(), &serde_json::to_string_pretty(&sf)?, PRIVATE)
+    write_sessions_text(paths, &sessions_text(board)?)
+}
+
+/// `sessions.json` as `save_sessions` would write it: `SessionsFile`'s
+/// shape, borrowed rather than cloned.
+pub fn sessions_text(board: &Board) -> Result<String> {
+    #[derive(Serialize)]
+    struct Borrowed<'a> {
+        schema_version: u32,
+        sessions: &'a [SessionRecord],
+    }
+    let sf = Borrowed { schema_version: SESSIONS_SCHEMA, sessions: &board.sessions };
+    Ok(serde_json::to_string_pretty(&sf)?)
+}
+
+pub fn write_sessions_text(paths: &Paths, text: &str) -> Result<()> {
+    write_atomic(&paths.sessions_file(), text, PRIVATE)
 }
 
 #[cfg(test)]

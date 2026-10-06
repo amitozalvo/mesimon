@@ -2687,13 +2687,17 @@ impl Board {
     /// a pane and `unsent` words. `woke_tickets`' rule: an archived one
     /// never counts.
     pub fn unsent_tickets(&self) -> Vec<&Ticket> {
-        self.tickets
+        // One pass over the sessions: the `!N` count asks this every frame.
+        let unsent: std::collections::HashSet<ulid::Ulid> = self
+            .sessions
             .iter()
-            .filter(|t| {
-                !t.is_archived()
-                    && self.sessions.iter().any(|s| s.ticket == t.id && s.unsent_words().is_some())
-            })
-            .collect()
+            .filter(|s| s.unsent_words().is_some())
+            .map(|s| s.ticket)
+            .collect();
+        if unsent.is_empty() {
+            return Vec::new();
+        }
+        self.tickets.iter().filter(|t| !t.is_archived() && unsent.contains(&t.id)).collect()
     }
 
     /// Every ticket that needs the user, by any of the four roads: an

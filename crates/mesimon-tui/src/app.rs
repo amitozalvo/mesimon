@@ -4924,7 +4924,7 @@ impl App {
             usage_summary: crate::ui::usage::summary(self),
             usage_reading: !self.usage.reading.is_empty(),
             card_cost: self.prefs.card_corner == crate::prefs::CardCorner::Cost,
-            usage_tickets: !self.costly_tickets().is_empty(),
+            usage_tickets: self.costs.iter().any(|c| self.board.ticket(c.ticket).is_some()),
             iterm2: matches!(self.terminal, crate::title::Terminal::ITerm2 { .. }),
             iterm2_status: self.terminal == crate::title::Terminal::ITerm2 { status: true },
             notify_dock_bounce: self.prefs.notify_dock_bounce,

@@ -17,9 +17,26 @@ use crate::hook_settings::{self, mesimon_bin, HookSet};
 pub struct Claude;
 
 /// Read only; preserve the same config-home precedence as the census.
+/// Every snapshot asks, so the parse is kept until the file's stamp moves.
 pub fn user_default_mode() -> Option<String> {
-    let home = crate::census::claude_home();
-    let text = std::fs::read_to_string(home.join("settings.json")).ok()?;
+    type Stamp = (std::path::PathBuf, Option<std::time::SystemTime>, u64);
+    static SEEN: std::sync::Mutex<Option<(Stamp, Option<String>)>> = std::sync::Mutex::new(None);
+    let path = crate::census::claude_home().join("settings.json");
+    let meta = std::fs::metadata(&path).ok();
+    let stamp = (path, meta.as_ref().and_then(|m| m.modified().ok()), meta.map_or(0, |m| m.len()));
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((was, mode)) = seen.as_ref() {
+        if *was == stamp {
+            return mode.clone();
+        }
+    }
+    let mode = read_default_mode(&stamp.0);
+    *seen = Some((stamp, mode.clone()));
+    mode
+}
+
+fn read_default_mode(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     value
         .get("permissions")

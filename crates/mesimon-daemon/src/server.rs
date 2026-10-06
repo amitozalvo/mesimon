@@ -508,6 +508,10 @@ pub struct Daemon {
     train_barred: bool,
     /// `train.json` as last written, so an unchanged one is not written again.
     train_written: String,
+    /// `columns.toml`'s and `sessions.json`'s text as last written; a save
+    /// whose text is the same writes nothing.
+    columns_written: String,
+    sessions_written: String,
     ticks: u64,
     feed: FeedWriter,
     /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
@@ -1132,6 +1136,8 @@ pub fn run(paths: Paths) -> Result<()> {
         train: Default::default(),
         train_barred,
         train_written: String::new(),
+        columns_written: String::new(),
+        sessions_written: String::new(),
         ticks: 0,
         feed,
         external: Vec::new(),
@@ -7748,11 +7754,22 @@ impl Daemon {
     /// The single write path for `columns.toml`. Barred means a file we
     /// could not read — or one a newer mesimon wrote — is still sitting
     /// there, and writing would destroy the only copy.
-    fn persist_columns(&self) {
+    fn persist_columns(&mut self) {
         if self.columns_barred {
             return;
         }
-        let _ = store::save_columns(&self.paths, &self.board);
+        let _ = self.write_columns();
+    }
+
+    /// `columns.toml` written when its text changed since the last write, so
+    /// a session-only change costs the board file no fsync.
+    fn write_columns(&mut self) -> anyhow::Result<()> {
+        let text = store::columns_text(&self.board)?;
+        if text != self.columns_written {
+            store::write_columns_text(&self.paths, &text)?;
+            self.columns_written = text;
+        }
+        Ok(())
     }
 
     /// Also the one place `started.json` learns a key (T-441): every change
@@ -7765,7 +7782,11 @@ impl Daemon {
         if self.sessions_barred {
             return;
         }
-        let _ = store::save_sessions(&self.paths, &self.board);
+        // Many tick stages persist on a change that touched no record.
+        let Ok(text) = store::sessions_text(&self.board) else { return };
+        if text != self.sessions_written && store::write_sessions_text(&self.paths, &text).is_ok() {
+            self.sessions_written = text;
+        }
     }
 
     /// The single write path for `costs.json` (T-327).
@@ -8367,7 +8388,7 @@ impl Daemon {
             // never lets another ticket reuse a partially accepted display key.
             self.board.next_key =
                 self.board.next_key.checked_add(1).context("ticket keys exhausted")?;
-            store::save_columns(&self.paths, &self.board)?;
+            self.write_columns()?;
             let last = self
                 .board
                 .column_tickets(&column)
@@ -8453,7 +8474,7 @@ impl Daemon {
         // Reserve the key durably before any ticket files. A failed copy may
         // leave a gap, but a restart must never reuse a partially written key.
         self.board.next_key += 1;
-        if let Err(e) = store::save_columns(&self.paths, &self.board) {
+        if let Err(e) = self.write_columns() {
             return Response::Err { message: format!("could not reserve a ticket key: {e}") };
         }
         let mut ticket = Ticket {
@@ -8582,7 +8603,7 @@ impl Daemon {
         // Reserve the key on disk before the ticket exists, so a crash between
         // the two cannot hand the same key to the next mint.
         self.board.next_key += 1;
-        if let Err(e) = store::save_columns(&self.paths, &self.board) {
+        if let Err(e) = self.write_columns() {
             return Err(format!("could not reserve a ticket key: {e:#}"));
         }
         let workspace =

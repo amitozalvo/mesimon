@@ -353,13 +353,14 @@ impl Daemon {
     // ---- what the snapshot says -------------------------------------------
 
     pub(super) fn team_info(&self) -> TeamInfo {
+        // The keys are a derivation (HKDF, Ed25519, X25519): once a snapshot.
+        let me = self.team.device.as_ref().and_then(|d| d.keys()).map(|k| k.id());
         let device = self.team.device.as_ref().map(|d| TeamDevice {
             display_name: d.display_name.clone(),
             relay: d.relay.display(),
-            device: d.keys().map(|k| k.id().to_hex()).unwrap_or_default(),
+            device: me.map(|id| id.to_hex()).unwrap_or_default(),
             registered: d.credential.is_some(),
         });
-        let me = self.team.device.as_ref().and_then(|d| d.keys()).map(|k| k.id());
         let board = self.team.state.as_ref().map(|s| TeamBoard {
             board: s.board.clone(),
             role: s.role.clone(),
