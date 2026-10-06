@@ -2696,6 +2696,11 @@ pub struct Resources {
     /// and untouched past the hour threshold. Zero tickets = no suggestion.
     #[serde(default)]
     pub archive_tickets: usize,
+    /// The disk the archive offer gives back (T-679): the worktrees of
+    /// those tickets whose work has landed, which the archive tears down.
+    /// A tree still being measured is not in it yet; zero = say no figure.
+    #[serde(default)]
+    pub archive_bytes: u64,
 }
 
 /// The state of the environment mesimon hands to new panes.

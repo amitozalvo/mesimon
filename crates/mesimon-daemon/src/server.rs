@@ -366,6 +366,9 @@ enum Msg {
     /// the board's roots, not yet filtered against the sessions the board
     /// learned while the walk ran.
     ExternalScanned(Vec<ExternalItem>),
+    /// The archive offer's worktrees, measured off the writer thread
+    /// (T-679): each tree's path and the bytes it holds.
+    TreesSized(Vec<(std::path::PathBuf, u64)>),
     /// A git sample of the board's own checkout landed (T-124), with the
     /// verdict of the fetch that preceded it when one was asked for.
     GitSampled(mesimon_core::command::RepoGit, crate::gitstatus::Fetched),
@@ -555,6 +558,14 @@ pub struct Daemon {
     /// (NOT the RSS bucket: refresh_rss early-returns when no pane exists,
     /// which is exactly the all-asleep scenario archive looks for).
     archive_cache: usize,
+    /// The disk the archive offer frees (T-679): the sum of `tree_sizes`
+    /// over the trees it would tear down, on the same 1 s bucket.
+    archive_bytes: u64,
+    /// Each priced tree's measured size, kept while it stays priced: a
+    /// tree on the offer has sat untouched for an hour, so one walk holds.
+    tree_sizes: HashMap<std::path::PathBuf, u64>,
+    /// A walk is out; the next one waits for it.
+    trees_sizing: bool,
     /// Recounted at startup and immediately before each spawn (14 §5.1).
     pty_cache: crate::resources::PtyFigures,
     /// Last breadcrumb pushed into the tmux status line — dedupes the
@@ -1140,6 +1151,9 @@ pub fn run(paths: Paths) -> Result<()> {
         terminals: terminals_in(&snap),
         reclaim_cache: (0, 0),
         archive_cache: 0,
+        archive_bytes: 0,
+        tree_sizes: HashMap::new(),
+        trees_sizing: false,
         pty_cache: crate::resources::pty_figures(),
         last_status_left: None,
         focus_label: String::new(),
@@ -1319,6 +1333,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ProvisionProgress(..) => "provision progress".into(),
             Msg::ShellEnvCaptured(_) => "shell env captured".into(),
             Msg::ExternalScanned(_) => "external scanned".into(),
+            Msg::TreesSized(_) => "trees sized".into(),
             Msg::UsageRead(p, _) => format!("usage read {}", p.word()).into(),
             Msg::CostScanned(_) => "costs scanned".into(),
             Msg::GitSampled(..) => "git sampled".into(),
@@ -1360,6 +1375,7 @@ pub fn run(paths: Paths) -> Result<()> {
             }
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
             Msg::ExternalScanned(items) => d.on_external_scanned(items),
+            Msg::TreesSized(sized) => d.on_trees_sized(sized),
             Msg::UsageRead(p, outcome) => d.on_usage_read(p, outcome),
             Msg::CostScanned(done) => d.on_cost_scanned(done),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
@@ -2753,6 +2769,7 @@ impl Daemon {
                 self.archive_cache = a;
                 changed = true;
             }
+            changed |= stage!("price_archive", self.price_archive());
         }
         if self.ticks.is_multiple_of(TAIL_POLL_TICKS) {
             changed |= stage!("poll_tails", self.poll_tails());
@@ -7926,6 +7943,7 @@ impl Daemon {
             reclaim_bytes: self.reclaim_cache.0,
             reclaim_sessions: self.reclaim_cache.1,
             archive_tickets: self.archive_cache,
+            archive_bytes: self.archive_bytes,
         }
     }
 
@@ -8050,6 +8068,58 @@ impl Daemon {
             })
             .map(|t| t.id)
             .collect()
+    }
+
+    /// The worktrees the archive offer would tear down: a candidate's tree
+    /// passing the archive's own reclaim gate, with the bucket's merge
+    /// sample standing in for the fresh check a keypress makes (pricing
+    /// forks nothing). Unmerged work keeps its tree and frees nothing.
+    fn archive_trees(&self) -> Vec<std::path::PathBuf> {
+        self.archive_candidates()
+            .into_iter()
+            .filter_map(|id| {
+                let b = self.worktrees.get(&id)?;
+                let merged = self.wt_merged.get(&id).copied().unwrap_or(false);
+                (worktree::reclaim_on_archive(b, merged, 0, self.worktrees_barred)
+                    && b.path.is_dir())
+                .then(|| b.path.clone())
+            })
+            .collect()
+    }
+
+    /// The archive offer's disk figure (T-679): what is measured of the
+    /// trees it would free, and a walk for any not measured yet. A tree off
+    /// the offer drops its size, so one back on it is walked again.
+    fn price_archive(&mut self) -> bool {
+        let trees = self.archive_trees();
+        self.tree_sizes.retain(|p, _| trees.contains(p));
+        let unsized_: Vec<std::path::PathBuf> =
+            trees.iter().filter(|p| !self.tree_sizes.contains_key(*p)).cloned().collect();
+        if !unsized_.is_empty() && !self.trees_sizing {
+            self.trees_sizing = true;
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let sized = unsized_
+                    .into_iter()
+                    .map(|p| {
+                        let mut bytes = 0;
+                        crate::resources::tree_bytes(&p, None, &mut bytes);
+                        (p, bytes)
+                    })
+                    .collect();
+                let _ = tx.send(Msg::TreesSized(sized));
+            });
+        }
+        let bytes = trees.iter().filter_map(|p| self.tree_sizes.get(p)).sum();
+        std::mem::replace(&mut self.archive_bytes, bytes) != bytes
+    }
+
+    fn on_trees_sized(&mut self, sized: Vec<(std::path::PathBuf, u64)>) {
+        self.trees_sizing = false;
+        self.tree_sizes.extend(sized);
+        if self.price_archive() {
+            self.broadcast();
+        }
     }
 
     /// X: archive every ticket the offer prices. Per-ticket gate re-checked

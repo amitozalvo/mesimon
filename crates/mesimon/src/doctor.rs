@@ -1007,7 +1007,7 @@ fn archived_trees(paths: &mesimon_daemon::Paths) -> Record {
     let mut bytes = 0;
     let mut whole = true;
     for b in &standing {
-        whole &= tree_bytes(&b.path, deadline, &mut bytes);
+        whole &= mesimon_daemon::resources::tree_bytes(&b.path, Some(deadline), &mut bytes);
     }
     let value = format!(
         "{} on disk, {}{}, {merged} merged",
@@ -1026,30 +1026,6 @@ fn archived_trees(paths: &mesimon_daemon::Paths) -> Record {
          close. If the rest stay, `pkill -f \"mesimon daemon\"` stops the daemon (sessions \
          survive it) and the next board starts a fresh one.",
     )
-}
-
-/// Bytes allocated under `root` (what `du` counts; symlinks are not
-/// followed), added to `total`. False when `deadline` came first, and the
-/// total is then a floor: a tree with a `target/` holds hundreds of
-/// thousands of files, and doctor is not the place to wait on them.
-fn tree_bytes(root: &Path, deadline: std::time::Instant, total: &mut u64) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    let mut dirs = vec![root.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-        for e in rd.flatten() {
-            // `DirEntry::metadata` does not traverse a symlink.
-            let Ok(m) = e.metadata() else { continue };
-            *total += m.blocks() * 512;
-            if m.is_dir() {
-                dirs.push(e.path());
-            }
-        }
-    }
-    true
 }
 
 fn gib(bytes: u64) -> String {
@@ -1393,10 +1369,11 @@ mod tests {
         std::fs::write(dir.join("target/debug/b.o"), vec![b'b'; 64 * 1024]).unwrap();
         let later = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut total = 0;
-        assert!(tree_bytes(&dir, later, &mut total));
+        assert!(mesimon_daemon::resources::tree_bytes(&dir, Some(later), &mut total));
         assert!(total >= 128 * 1024, "both files counted: {total}");
         let mut floor = 0;
-        assert!(!tree_bytes(&dir, std::time::Instant::now(), &mut floor), "the budget ran out");
+        let now = Some(std::time::Instant::now());
+        assert!(!mesimon_daemon::resources::tree_bytes(&dir, now, &mut floor), "the budget ran out");
         assert!(floor <= total);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(gib(3 * 1024 * 1024), "3 MiB");

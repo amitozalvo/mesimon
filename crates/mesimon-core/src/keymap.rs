@@ -1093,6 +1093,9 @@ pub struct Ctx {
     /// gate on it — the menu row's detail spends it as the payoff word.
     pub bulk_sleep_bytes: u64,
     pub bulk_archive: usize,
+    /// The disk archiving those tickets frees: their landed worktrees
+    /// (T-679). Spent like `bulk_sleep_bytes`, as the row's payoff word.
+    pub bulk_archive_bytes: u64,
     pub has_archived: bool,
     pub peek_on: bool,
     /// `P` is showing every card's reply, not only the cursor card's.
@@ -4159,7 +4162,10 @@ static MENU_ITEMS: &[MenuItem] = &[
             let noun = if c.bulk_archive == 1 { "ticket" } else { "tickets" };
             format!("Archive {} finished {noun}", c.bulk_archive)
         },
-        detail: |_| "the columns that offer it ∙ restore any of them later".into(),
+        detail: |c| match gib(c.bulk_archive_bytes) {
+            Some(g) => format!("frees ~{g:.1}GiB on disk ∙ restore any of them later"),
+            None => "the columns that offer it ∙ restore any of them later".into(),
+        },
         avail: |c| c.bulk_archive > 0,
         key: "",
     },
@@ -9392,6 +9398,13 @@ mod tests {
         let sleep = MENU_ITEMS.iter().find(|m| m.verb == Verb::SleepAllDone).expect("row");
         assert!(!(sleep.detail)(&thin).contains("GiB"), "a ~0.0GiB payoff must not be claimed");
         assert!((sleep.detail)(&fat).contains("~3.0GiB"));
+        // The archive's payoff is the disk its landed worktrees hold (T-679),
+        // under the same rounding rule.
+        let thin = Ctx { bulk_archive: 1, bulk_archive_bytes: 40 << 20, ..Default::default() };
+        let fat = Ctx { bulk_archive: 1, bulk_archive_bytes: 12 << 30, ..Default::default() };
+        let archive = MENU_ITEMS.iter().find(|m| m.verb == Verb::ArchiveAllDone).expect("row");
+        assert!(!(archive.detail)(&thin).contains("GiB"), "a ~0.0GiB payoff must not be claimed");
+        assert!((archive.detail)(&fat).contains("~12.0GiB on disk"));
         // A binary brew installed is offered the same version, and the row
         // says brew does the installing (T-463).
         let brew = Ctx {

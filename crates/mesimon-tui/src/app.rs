@@ -4716,6 +4716,7 @@ impl App {
             bulk_sleep: self.resources.reclaim_sessions,
             bulk_sleep_bytes: self.resources.reclaim_bytes,
             bulk_archive: self.resources.archive_tickets,
+            bulk_archive_bytes: self.resources.archive_bytes,
             has_archived: self.board.tickets.iter().any(|t| t.is_archived()),
             peek_on: self.peek,
             peek_all: self.peek_all,

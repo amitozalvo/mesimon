@@ -132,6 +132,35 @@ pub fn parse_vm_stat(text: &str) -> Option<u64> {
     Some((pages("Pages free") + pages("Pages inactive")) * page_size)
 }
 
+/// Bytes allocated under `root` (what `du` counts; symlinks are not
+/// followed), added to `total`. False when `deadline` came first, and the
+/// total is then a floor: a tree with a `target/` holds hundreds of
+/// thousands of files. Doctor walks under a budget; the archive offer's
+/// pricing (T-679) walks off the writer thread with none.
+pub fn tree_bytes(
+    root: &std::path::Path,
+    deadline: Option<std::time::Instant>,
+    total: &mut u64,
+) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            // `DirEntry::metadata` does not traverse a symlink.
+            let Ok(m) = e.metadata() else { continue };
+            *total += m.blocks() * 512;
+            if m.is_dir() {
+                dirs.push(e.path());
+            }
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

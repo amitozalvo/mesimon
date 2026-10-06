@@ -21990,3 +21990,29 @@ marked while it was worn is not said afterwards.
 (slow bucket off, so only the turn's own look samples: with `look_after_turn` disabled it fails at
 "held from the turn's end", verified); `prefs::tests::the_notification_preferences_round_trip`;
 the two Notifications goldens gained the row.
+
+## The archive offer says the disk it frees (T-679, 2026-10-06, "can we show how much storage will be reclaimed after archiving tickets?")
+
+**What shipped.** The Esc menu's `Archive N finished tickets` row says `frees ~X.XGiB on disk ∙
+restore any of them later`, as `Sleep N agents` says the memory it frees. Under 0.1 GiB it keeps
+its old words (`keymap::gib`, the sleep row's rule): a tree without a build directory is too small
+to be worth a figure.
+
+**What is counted.** Only what the archive tears down: a candidate's worktree that passes
+`worktree::reclaim_on_archive` (merged, a branch, the bindings file not barred) and still stands.
+Unmerged work keeps its tree on archive, so it frees nothing and is not priced. The merged answer is
+the bucket's sample (`wt_merged`), not `ticket_merged`'s fresh check, so pricing forks no git; the
+keypress still re-checks. `Daemon::archive_trees` → `price_archive` on the 1 s bucket, beside
+`archive_figures`; the figure is `Resources.archive_bytes` (`#[serde(default)]`).
+
+**How it is measured.** Doctor's `tree_bytes` (blocks × 512, symlinks not followed) moved to
+`resources::tree_bytes`, with the deadline optional. The daemon walks each new tree once on a worker
+thread (`Msg::TreesSized`) and keeps the size while the tree stays priced (`tree_sizes`): a tree on
+the offer has sat untouched for an hour, so one walk holds. A tree that leaves the offer drops its
+size and is walked again if it comes back. A tree still being walked is not in the sum yet, so the
+figure grows to its full value within one walk.
+
+**Tests.** `keymap::tests` (the GiB rounding rule for the archive row);
+`archive_reclaim_e2e::the_offer_reclaims_like_a_single_archive` (the landed tree is priced, the
+unmerged one is not); doctor's `tree_bytes_sums_a_tree_and_owns_up_to_a_spent_budget` calls the moved
+walker.

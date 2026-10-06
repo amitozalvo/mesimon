@@ -242,6 +242,15 @@ fn the_offer_reclaims_like_a_single_archive() {
     wait_until(Duration::from_secs(6), "the offer to price both tickets", || {
         snapshot_of(c.request(Command::Snapshot)).1.archive_tickets == 2
     });
+    // It also prices the disk (T-679): the landed tree's, measured off the
+    // writer thread, and never the unmerged one, which the archive keeps.
+    let mut landed_bytes = 0;
+    mesimon_daemon::resources::tree_bytes(&landed_path, None, &mut landed_bytes);
+    wait_until(Duration::from_secs(6), "the offer to price the landed tree", || {
+        // Within half a tree, so both trees together cannot pass.
+        let bytes = snapshot_of(c.request(Command::Snapshot)).1.archive_bytes;
+        bytes > 0 && bytes.abs_diff(landed_bytes) < landed_bytes / 2
+    });
     match c.request(Command::ArchiveAll) {
         Response::Archived { archived, skipped } => assert_eq!((archived, skipped), (2, 0)),
         other => panic!("archive all: {other:?}"),
