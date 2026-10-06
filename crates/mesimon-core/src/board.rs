@@ -633,6 +633,18 @@ impl SessionRecord {
         self.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan")
     }
 
+    /// A process mesimon must still account for: a pane, or a Codex runtime
+    /// whose cleanup has not confirmed it stopped.
+    pub fn holds_process(&self) -> bool {
+        self.state.has_pane() || self.codex_stopping
+    }
+
+    /// A Codex session mesimon launched whose runtime may still be running:
+    /// its snapshot is polled and its checkout held until cleanup says so.
+    pub fn owns_codex_runtime(&self) -> bool {
+        self.kind == SessionKind::Codex && !self.argv.is_empty() && self.holds_process()
+    }
+
     /// Adopted to be watched, never launched: no argv, so mesimon may read
     /// its transcript but owns no process to resume, wake or kill.
     pub fn observe_only(&self) -> bool {

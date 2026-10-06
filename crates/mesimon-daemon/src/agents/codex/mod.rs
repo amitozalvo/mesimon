@@ -257,10 +257,6 @@ impl AgentAdapter for Codex {
         }
     }
 
-    fn normalize_title(&self, title: &str) -> String {
-        mesimon_core::text::scrub_cells(title, false).chars().take(80).collect()
-    }
-
     fn start(&self, context: &LaunchContext<'_>, _identity: &str) -> Result<LaunchSpec, String> {
         prepare(context, None)
     }

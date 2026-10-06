@@ -203,6 +203,11 @@ impl std::fmt::Display for ExternalOwner {
     }
 }
 
+/// A pane title scrubbed for a cell and cut to 80 characters.
+pub(crate) fn pane_title(title: &str) -> String {
+    mesimon_core::text::scrub_cells(title, false).chars().take(80).collect()
+}
+
 pub trait AgentAdapter {
     fn capabilities(&self) -> AgentCapabilities;
     /// Structured transports need no heuristic inference from quiet panes or
@@ -241,7 +246,11 @@ pub trait AgentAdapter {
     /// previous pane, still going down after a sleep's SIGTERM, from a
     /// process somewhere else (T-381).
     fn external_owner(&self, record: &SessionRecord) -> Option<ExternalOwner>;
-    fn normalize_title(&self, title: &str) -> String;
+    /// A pane title as a session row shows it; adapters trim their own
+    /// decorations off `pane_title`'s.
+    fn normalize_title(&self, title: &str) -> String {
+        pane_title(title)
+    }
     fn start(&self, context: &LaunchContext<'_>, identity: &str) -> Result<LaunchSpec, String>;
     fn resume(
         &self,

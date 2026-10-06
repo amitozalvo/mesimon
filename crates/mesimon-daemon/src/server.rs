@@ -3044,9 +3044,7 @@ impl Daemon {
             }
             let clean = crate::agents::adapter(rec.kind)
                 .map(|adapter| adapter.normalize_title(t))
-                .unwrap_or_else(|| {
-                    mesimon_core::text::scrub_cells(t, false).chars().take(80).collect()
-                });
+                .unwrap_or_else(|| crate::agents::pane_title(t));
             if clean.is_empty() {
                 continue;
             }
@@ -3144,11 +3142,7 @@ impl Daemon {
             .board
             .sessions
             .iter()
-            .filter(|s| {
-                s.kind == SessionKind::Codex
-                    && !s.argv.is_empty()
-                    && (s.state.has_pane() || s.codex_stopping)
-            })
+            .filter(|s| s.owns_codex_runtime())
             .map(|s| (s.id, crate::agents::codex::snapshot_path(&self.paths, s.id)))
             .collect();
         if paths.is_empty() {
@@ -3194,11 +3188,12 @@ impl Daemon {
             ) {
                 continue;
             }
-            let Some(rec) = self.board.sessions.iter_mut().find(|s| {
-                s.id == id
-                    && s.kind == SessionKind::Codex
-                    && (s.state.has_pane() || s.codex_stopping)
-            }) else {
+            let Some(rec) = self
+                .board
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == id && s.kind == SessionKind::Codex && s.holds_process())
+            else {
                 continue;
             };
             let valid = snapshot.filter(|s| {
@@ -8700,12 +8695,7 @@ impl Daemon {
             self.board.sessions.iter().filter(|s| s.ticket == id).cloned().collect();
         // Keep owned Codex cleanup evidence durable until its separate server
         // is stopped, including through a crash during the undo window.
-        self.board.sessions.retain(|s| {
-            s.ticket != id
-                || (s.kind == SessionKind::Codex
-                    && !s.argv.is_empty()
-                    && (s.state.has_pane() || s.codex_stopping))
-        });
+        self.board.sessions.retain(|s| s.ticket != id || s.owns_codex_runtime());
         // Bodies first, then the directory: what undo will need is in memory
         // before the only copy is removed (dogfood 2026-09-03, T-71: a note
         // written, the ticket deleted and restored, and the editor could only
@@ -11732,7 +11722,7 @@ impl Daemon {
                 for s in &g.sessions {
                     // SIGTERM the group now; the reaper's grace-then-kill-pane
                     // finishes the ladder (docs/19 §1 — never SIGKILL).
-                    if (s.state.has_pane() || s.codex_stopping) && !s.observe_only() {
+                    if s.holds_process() && !s.observe_only() {
                         if s.kind == SessionKind::Codex {
                             let by =
                                 Principal::Automation { rule: "deleted_session_cleanup".into() };
@@ -12776,7 +12766,7 @@ impl Daemon {
             return Response::Err { message: "no such session".into() };
         };
         let owned = !rec.observe_only();
-        let reap = (owned && (rec.state.has_pane() || rec.codex_stopping)).then(|| rec.sid16());
+        let reap = (owned && rec.holds_process()).then(|| rec.sid16());
         // Kill on a live session ends the process; the conversation survives
         // and its corpse stays on the ticket rail. Kill on an already-dead
         // record is the rail's dismissal gesture — the one exit the rail hides.
@@ -13007,10 +12997,7 @@ impl Daemon {
             return Some(TICKET_ARCHIVED.into());
         }
         if self.board.sessions.iter().any(|other| {
-            other.id != rec.id
-                && other.ticket == rec.ticket
-                && other.kind.is_agent()
-                && (other.state.is_live() || other.codex_stopping)
+            other.id != rec.id && other.ticket == rec.ticket && other.holds_agent_seat()
         }) {
             return Some("ticket already has a live agent session — focus it instead".into());
         }
@@ -13025,7 +13012,7 @@ impl Daemon {
         if self.board.sessions.iter().any(|other| {
             other.id != rec.id
                 && other.kind == rec.kind
-                && (other.state.has_pane() || other.codex_stopping)
+                && other.holds_process()
                 && identity.is_some()
                 && adapter.conversation_key(other) == identity
         }) {

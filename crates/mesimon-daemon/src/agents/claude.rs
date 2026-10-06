@@ -256,9 +256,7 @@ impl AgentAdapter for Claude {
     }
 
     fn normalize_title(&self, title: &str) -> String {
-        let clean: String =
-            mesimon_core::text::scrub_cells(title, false).chars().take(80).collect();
-        clean
+        crate::agents::pane_title(title)
             .trim_start_matches(|c: char| {
                 matches!(c, '✳' | '✻' | '✽' | '✶' | '✢' | '*' | '·') || c.is_whitespace()
             })
