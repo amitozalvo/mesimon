@@ -21940,3 +21940,53 @@ scanner over `sharing_words`, `member_words`, `tier_row_words` and `tier_field_w
 to its closing brace (the brief's "to the next `pub fn`" would have swept in the key handlers'
 status lines, which are not hints). Thirty-one goldens reminted; every removed phrase is an Enter
 clause, a restated label or a stage direction.
+
+## A finished turn is said when the train is done with it, and the crown's news is the crown's (T-678, 2026-10-06, "notification only when agent truely finished (after merge train finished)")
+
+**What was wrong.** The person's "turn finished" banner fired on every `Idle{EndTurn}`. On a ticket
+the armed train takes, that is the first of up to three turns: the delivery, the rebase the train
+asks for, and the reply to the merged notice. The person was called to look at work nobody needed
+them for, and called again. The crown has been spared this since T-554 and T-596; the person was
+not. And a crown-started worker's finish, question and hand reached both the crown and the person,
+where only the crown acts on them.
+
+**Shipped: two holds on the person's differ** (`core::notify::Differ::scan`, a `Hush`).
+- **The train's** is `AutomationStatus::holding`, computed daemon-side per snapshot
+  (`server/trainhold.rs`): an agent sitting on a finished turn whose `pending_on` (the crown's own
+  list, T-596) says the train will take it or a merge step is in flight, judged on the train's
+  sample. A held finish is left UNMARKED by the differ, so the turn that truly ends it (merged,
+  told, its notice turn over) speaks, and so does the train letting go of it (a refusal, a rebase
+  left behind its asked tip, the fuse, a disarm).
+- **The crown's** is client-side, off the snapshot: `Board::started_by_crown` (now the one claim
+  the daemon's wakes make too) and `CrownMode::takes_stop` (now what `asks_the_crown` reads). A
+  crown worker's finished turn, its question or plan where the crown answers, and its raised hand
+  are MARKED and not said, the way `notify_done` off is, so turning the row on later announces no
+  backlog. A permission, a secret, a form, a woken snooze and unsent words stay the person's.
+  `notify_crown` (Settings › Notifications › `Agents the crown started`, board-overridable) is the
+  "unless set differently": off by default.
+
+**"Will it" needs a look newer than the turn.** The flags are sampled on the 10 s bucket, so at a
+`Stop` they predate the turn's last commit: a first commit reads `ahead 0`, and a rebase the train
+asked for reads behind the tip it was asked at, which is exactly the reading on which the train
+lets go. So a turn's end on a ticket the train could take (armed, attached binding, a column it
+reaches, not `manual_merge`) holds the ticket until a sample STARTED after it lands
+(`look_after_turn`; samples are numbered, `wt_seq`/`wt_landed`), and asks for that sample at once.
+A sample that never lands lets go after 30 s: a hold is a delay, never a silence. A side effect,
+and a wanted one: the train acts within a look of a turn's end rather than up to a bucket later.
+
+**What that changed for the crown.** The train's look and the crown's turn probe now race. When the
+train refuses a merge before the crown's probe lands, the delivery is never held: the crown is
+woken at once with the same line it got after a hold and a give-up (`crown_e2e`'s case 3 now
+accepts either order). When the train asks a rebase first, the crown still holds (an owed paste
+counts as working in `train_takes`).
+
+**Known limits.** A person's own `m` is not held: its rebase turn's end is news they asked for.
+`holding` lists only agents idle on a finished turn; the differ needs nothing else. The crown hold
+reads the crown worn now: a worker whose crown was taken off is the person's again, but what was
+marked while it was worn is not said afterwards.
+
+**Tests.** `notify::tests::a_finished_turn_the_train_holds_waits_for_the_train`,
+`what_wakes_the_crown_is_the_crowns_news`; `merge_train_e2e::a_finished_turn_is_held_until_the_train_is_done_with_it`
+(slow bucket off, so only the turn's own look samples: with `look_after_turn` disabled it fails at
+"held from the turn's end", verified); `prefs::tests::the_notification_preferences_round_trip`;
+the two Notifications goldens gained the row.

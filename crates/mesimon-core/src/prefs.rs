@@ -44,6 +44,9 @@ pub enum PrefKey {
     NotifyDone,
     NotifyFocused,
     NotifyInPane,
+    /// Say what the crown is woken for, on the agents it started, to the
+    /// person as well (T-678). Off by default: the crown is told instead.
+    NotifyCrown,
     NotifyWords,
     NotifySoundNeedsYou,
     NotifySoundDone,
@@ -79,7 +82,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 35] = [
+    pub const ALL: [PrefKey; 36] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::SnoozeNeedsYou,
@@ -100,6 +103,7 @@ impl PrefKey {
         PrefKey::NotifyDone,
         PrefKey::NotifyFocused,
         PrefKey::NotifyInPane,
+        PrefKey::NotifyCrown,
         PrefKey::NotifyWords,
         PrefKey::NotifySoundNeedsYou,
         PrefKey::NotifySoundDone,
@@ -140,6 +144,7 @@ impl PrefKey {
             PrefKey::NotifyDone => "notify_done",
             PrefKey::NotifyFocused => "notify_focused",
             PrefKey::NotifyInPane => "notify_in_pane",
+            PrefKey::NotifyCrown => "notify_crown",
             PrefKey::NotifyWords => "notify_words",
             PrefKey::NotifySoundNeedsYou => "notify_sound_needs_you",
             PrefKey::NotifySoundDone => "notify_sound_done",
@@ -220,6 +225,7 @@ impl PrefKey {
             PrefKey::NotifyDone => "notify when a turn lands",
             PrefKey::NotifyFocused => "notify while focused",
             PrefKey::NotifyInPane => "notify in the pane",
+            PrefKey::NotifyCrown => "notify for the crown's agents",
             PrefKey::NotifyWords => "notify with the agent's words",
             PrefKey::NotifySoundNeedsYou => "needs-you sound",
             PrefKey::NotifySoundDone => "done sound",

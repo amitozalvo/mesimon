@@ -648,6 +648,10 @@ pub enum Verb {
     /// attached to (T-292). The one notification row that governs the SOUND
     /// as well: the pane already showed you, and there is nowhere to go look.
     NotifyInPane,
+    /// Whether what the crown is woken for on an agent it started — a
+    /// finished turn, a question or plan it answers, a raised hand — is
+    /// said to the person as well (T-678).
+    NotifyCrown,
     /// Whether a banner may quote the AGENT (T-292) — its last line, and a
     /// raised hand's own sentence — or name only the ticket. mesimon's own
     /// reason word is not the agent's words and is never withheld.
@@ -1453,6 +1457,7 @@ pub struct Ctx {
     pub notify_done: bool,
     pub notify_focused: bool,
     pub notify_in_pane: bool,
+    pub notify_crown: bool,
     pub notify_words: bool,
     /// The two sound names — `notify::Sound::name()`, so the row, `doctor`
     /// and the ring agree on the spelling. Empty in a bare `Ctx`;
@@ -5145,6 +5150,27 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
         avail: |c| c.notify,
         key: "",
     },
+    // Whose news a crown worker's is (T-678): what wakes the crown is the
+    // crown's to act on, so the person hears it only on this row's word.
+    MenuItem {
+        verb: Verb::NotifyCrown,
+        label: |c| {
+            if c.notify_crown {
+                "Agents the crown started: you hear it too".into()
+            } else {
+                "Agents the crown started: the crown hears it".into()
+            }
+        },
+        detail: |c| {
+            if c.notify_crown {
+                "the crown is woken as well".into()
+            } else {
+                "its turns, questions and hands ∙ never a permission".into()
+            }
+        },
+        avail: |c| c.notify,
+        key: "",
+    },
     // iTerm2's dock bounce (T-492): a rung that needs no program, and the
     // one every other terminal ignores. Under the switch like the rest.
     MenuItem {
@@ -5377,6 +5403,7 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::NotifyDone => PrefKey::NotifyDone,
         Verb::NotifyFocused => PrefKey::NotifyFocused,
         Verb::NotifyInPane => PrefKey::NotifyInPane,
+        Verb::NotifyCrown => PrefKey::NotifyCrown,
         Verb::NotifyWords => PrefKey::NotifyWords,
         Verb::NotifySoundNeedsYou => PrefKey::NotifySoundNeedsYou,
         Verb::NotifySoundDone => PrefKey::NotifySoundDone,

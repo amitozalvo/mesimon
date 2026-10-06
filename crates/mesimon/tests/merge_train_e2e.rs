@@ -361,6 +361,97 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     let _ = c2.request(Command::Shutdown);
 }
 
+/// T-678: the person's "turn finished" waits for the train. A finished turn
+/// on a ticket the armed train will take is on `holding` from the moment it
+/// ends — before any sample has seen its commit — through the merge and the
+/// merged notice, and off it once the notice's own turn is over: that end
+/// is the one a person hears. A ticket kept for a person's merge is never
+/// held.
+#[test]
+fn a_finished_turn_is_held_until_the_train_is_done_with_it() {
+    let Some(h) = Harness::boot_with_env(
+        "train-hold",
+        Some(LOGGING_STUB),
+        // No slow bucket: every sample here is one a turn's end asked for,
+        // so the branch's commit is unseen until the look lands.
+        &[("MESIMON_WT_REFRESH_TICKS", "40000"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let got = h.dir.join("got.txt");
+    let text = || std::fs::read_to_string(&got).unwrap_or_default();
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    let tmux_sock = h.paths.tmux_sock();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("train-hold");
+    let (a, sa, branch_a, wt_a) = ready(&mut c, "alpha");
+    // Nothing on A's branch yet: its work is the turn's below.
+    git(&wt_a, &["reset", "-q", "--hard", "main"]);
+    let (m, sm, _, _) = ready(&mut c, "manual");
+    wait_until(Duration::from_secs(15), "two panes", || {
+        tmux(&tmux_sock)
+            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= 2)
+            .unwrap_or(false)
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(matches!(c.request(Command::SetManualMerge { id: m, on: true }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: true }),
+        Response::Ok
+    ));
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let holding = |c: &mut TestClient| automation_of(c).holding;
+
+    // The manual ticket's turn ends first: the train will not take it.
+    start(&mut c, sm);
+    stop(&mut c, sm);
+    assert!(!holding(&mut c).contains(&m), "a person's merge is the person's news");
+
+    // A turn that left nothing to merge is held only until it is looked
+    // at, and that look reads the branch `ahead 0`.
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    wait_until(Duration::from_secs(10), "A let go: nothing for the train", || {
+        !holding(&mut c).contains(&a)
+    });
+    // A's next turn commits and ends: held at once, while the last look
+    // still reads `ahead 0`, and merged by the train within a look, not a
+    // bucket.
+    start(&mut c, sa);
+    std::fs::write(wt_a.join("alpha-2.txt"), "more\n").unwrap();
+    git(&wt_a, &["add", "."]);
+    git(&wt_a, &["commit", "-qm", "alpha 2"]);
+    stop(&mut c, sa);
+    assert!(holding(&mut c).contains(&a), "held from the turn's end");
+    wait_until(Duration::from_secs(15), "A to be merged", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+    });
+    wait_until(Duration::from_secs(10), "A's agent to hear it", || {
+        text().contains(&format!("Your branch {branch_a} has been merged into main"))
+    });
+    assert!(holding(&mut c).contains(&a), "merged, its notice not yet taken");
+    // The notice's turn ends: done with, and let go.
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    wait_until(Duration::from_secs(10), "A to be let go once its notice turn ended", || {
+        !holding(&mut c).contains(&a)
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    let now = holding(&mut c);
+    assert!(!now.contains(&a) && !now.contains(&m), "nothing held afterwards: {now:?}");
+    let _ = c.request(Command::Shutdown);
+}
+
 /// One rebase ask outstanding per base tip (T-435). Three REVIEW tickets
 /// behind one hand merge were asked 31 s apart: the hold for a mid-rebase
 /// ticket read `needs_rebase`, which the git step clears twenty seconds into

@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 
 use mesimon_core::board::Board;
 use mesimon_core::command::{Command, Response};
-use mesimon_core::notify::{Coalescer, Detail, Differ, Post, Presence, Sound, Voice};
+use mesimon_core::notify::{Coalescer, Detail, Differ, Hush, Post, Presence, Sound, Voice};
 
 use crate::client::{Client, Transport};
 use crate::notify::{Channels, Console, Delivery};
@@ -82,6 +82,9 @@ pub struct NotifyPrefs {
     /// The terminal posts the banner, by its own escape, and no helper of
     /// ours is launched (T-676).
     pub by_terminal: bool,
+    /// Say what the crown is woken for, on the agents it started, to the
+    /// person as well (T-678).
+    pub crown: bool,
 }
 
 impl NotifyPrefs {
@@ -103,6 +106,7 @@ impl From<&crate::prefs::Prefs> for NotifyPrefs {
             sound_done: p.notify_sound_done,
             dock_bounce: p.notify_dock_bounce && crate::title::iterm2_direct(),
             by_terminal: p.notify_via == crate::prefs::NotifyVia::Terminal,
+            crown: p.notify_crown,
         }
     }
 }
@@ -392,8 +396,9 @@ impl Worker {
         }
         self.armed = true;
         let now = self.shared.now_ms();
-        if let Some(board) = self.look() {
-            for e in self.differ.scan(&board, prefs.done) {
+        if let Some((board, holding)) = self.look() {
+            let hush = Hush { train: &holding, crown_too: prefs.crown };
+            for e in self.differ.scan(&board, prefs.done, hush) {
                 self.batch.offer(e, now);
             }
             self.board = Some(board);
@@ -483,9 +488,10 @@ impl Worker {
     }
 
     /// The board as the daemon has it, when the daemon says it moved — or
-    /// when this connection still owes the differ its seed. `None` means
+    /// when this connection still owes the differ its seed — with the
+    /// tickets the merge train has yet to finish (T-678). `None` means
     /// nothing to scan this beat, which is almost every beat.
-    fn look(&mut self) -> Option<Board> {
+    fn look(&mut self) -> Option<(Board, Vec<ulid::Ulid>)> {
         if !self.dial() {
             return None;
         }
@@ -499,11 +505,12 @@ impl Worker {
         }
         // A dead connection reopens (and re-subscribes) inside `request`; a
         // failure just means the next dial tries again.
-        let Ok(Response::Board { board, .. }) = client.request(Command::Snapshot) else {
+        let Ok(Response::Board { board, automation, .. }) = client.request(Command::Snapshot)
+        else {
             return None;
         };
         self.owes_look = false;
-        Some(board)
+        Some((board, automation.holding))
     }
 
     /// Open or reopen the connection on its own cadence. False means there is
@@ -725,6 +732,7 @@ mod tests {
             sound_done: Sound::Tink,
             dock_bounce: false,
             by_terminal: false,
+            crown: false,
         }
     }
 

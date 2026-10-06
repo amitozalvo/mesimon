@@ -2,10 +2,9 @@
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
-    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-                           ╭─ NOTIFICATIONS ∙ THIS BOARD ───────────────────────────────────╮
-    Keymap validator      >│   Notifications: on                                            │
-                           │     set here ∙ machine: on ∙ an OS banner and a sound ∙ only ~ │
+    Decay treatments      >╭─ NOTIFICATIONS ∙ THIS BOARD ───────────────────────────────────╮
+                           │   Notifications: on                                            │
+    Keymap validator      >│     set here ∙ machine: on ∙ an OS banner and a sound ∙ only ~ │
                            │   Delivered by: mesimon                                        │
                            │     (machine) ∙ mesimon posts it with the mascot; a managed M~ │
                            │   Also when a turn finishes                                    │
@@ -20,10 +19,11 @@
                            │     inherited ∙ the sound still plays                          │
                            │   Inside the agent's own pane: silent                          │
                            │     inherited ∙ the pane already showed you ∙ no sound either  │
+                           │   Agents the crown started: the crown hears it                 │
+                           │     inherited ∙ its turns, questions and hands ∙ never a perm~ │
                            │   Dock bounce when an agent needs you: off                     │
                            │     inherited ∙ iTerm2 only ∙ this terminal is not iTerm2, so~ │
                            ╰────────────── jk select ∙ enter choose ∙ b machine ∙ esc back ─╯
-
 
 
 

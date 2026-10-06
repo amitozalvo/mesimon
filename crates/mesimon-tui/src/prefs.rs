@@ -419,6 +419,11 @@ pub(crate) struct Prefs {
     /// governs the SOUND too — on the board a chime still says "go look",
     /// and inside the pane there is nowhere to go.
     pub notify_in_pane: bool,
+    /// Say what the crown is woken for on the agents it started — their
+    /// finished turn, their question or plan where the crown answers, a
+    /// raised hand — to the person as well (T-678). Off by default: the
+    /// crown is told, and it acts on it or raises its own hand.
+    pub notify_crown: bool,
     /// May a banner QUOTE the agent — its last line, and a raised hand's own
     /// sentence (T-292)? On by default: the words are why the banner was
     /// worth sending, and the ticket alone is what T-292 was filed against.
@@ -491,6 +496,7 @@ impl Default for Prefs {
             notify_done: true,
             notify_focused: false,
             notify_in_pane: false,
+            notify_crown: false,
             notify_words: true,
             notify_sound_needs_you: Sound::Glass,
             notify_sound_done: Sound::Tink,
@@ -532,6 +538,7 @@ const NOTIFY_KEY: &str = PrefKey::Notify.name();
 const NOTIFY_DONE_KEY: &str = PrefKey::NotifyDone.name();
 const NOTIFY_FOCUSED_KEY: &str = PrefKey::NotifyFocused.name();
 const NOTIFY_IN_PANE_KEY: &str = PrefKey::NotifyInPane.name();
+const NOTIFY_CROWN_KEY: &str = PrefKey::NotifyCrown.name();
 const NOTIFY_WORDS_KEY: &str = PrefKey::NotifyWords.name();
 const NOTIFY_SOUND_NEEDS_YOU_KEY: &str = PrefKey::NotifySoundNeedsYou.name();
 const NOTIFY_SOUND_DONE_KEY: &str = PrefKey::NotifySoundDone.name();
@@ -631,6 +638,7 @@ impl Prefs {
             (PrefKey::NotifyDone, &mut p.notify_done),
             (PrefKey::NotifyFocused, &mut p.notify_focused),
             (PrefKey::NotifyInPane, &mut p.notify_in_pane),
+            (PrefKey::NotifyCrown, &mut p.notify_crown),
             (PrefKey::NotifyWords, &mut p.notify_words),
             (PrefKey::NotifyDockBounce, &mut p.notify_dock_bounce),
         ] {
@@ -679,6 +687,7 @@ impl Prefs {
             PrefKey::NotifyDone => onoff(self.notify_done),
             PrefKey::NotifyFocused => onoff(self.notify_focused),
             PrefKey::NotifyInPane => onoff(self.notify_in_pane),
+            PrefKey::NotifyCrown => onoff(self.notify_crown),
             PrefKey::NotifyWords => onoff(self.notify_words),
             PrefKey::NotifySoundNeedsYou => self.notify_sound_needs_you.name(),
             PrefKey::NotifySoundDone => self.notify_sound_done.name(),
@@ -743,6 +752,7 @@ impl Prefs {
         doc.insert(NOTIFY_DONE_KEY.into(), Value::from(self.notify_done));
         doc.insert(NOTIFY_FOCUSED_KEY.into(), Value::from(self.notify_focused));
         doc.insert(NOTIFY_IN_PANE_KEY.into(), Value::from(self.notify_in_pane));
+        doc.insert(NOTIFY_CROWN_KEY.into(), Value::from(self.notify_crown));
         doc.insert(NOTIFY_WORDS_KEY.into(), Value::from(self.notify_words));
         doc.insert(CROWN_LIGHTNING_KEY.into(), Value::from(self.crown_lightning));
         for (key, v) in [
@@ -1058,6 +1068,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_focused = doc.get(NOTIFY_FOCUSED_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify_in_pane = doc.get(NOTIFY_IN_PANE_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let notify_crown = doc.get(NOTIFY_CROWN_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify_words = doc.get(NOTIFY_WORDS_KEY).and_then(Value::as_bool).unwrap_or(true);
     let sound = |key: &str, fallback: Sound| {
         doc.get(key).and_then(Value::as_str).and_then(Sound::from_key).unwrap_or(fallback)
@@ -1117,6 +1128,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         notify_done,
         notify_focused,
         notify_in_pane,
+        notify_crown,
         notify_words,
         notify_sound_needs_you,
         notify_sound_done,
@@ -1382,11 +1394,13 @@ mod tests {
         assert!(prefs.notify_done);
         assert!(!prefs.notify_focused);
         assert!(!prefs.notify_in_pane, "quiet inside the agent's own pane by default");
+        assert!(!prefs.notify_crown, "the crown is told of its own agents by default");
         assert!(prefs.notify_words, "the agent's words are quoted by default");
         prefs.notify = false;
         prefs.notify_done = false;
         prefs.notify_focused = true;
         prefs.notify_in_pane = true;
+        prefs.notify_crown = true;
         prefs.notify_words = false;
         prefs.set_sound_needs_you(Sound::Hero);
         prefs.set_sound_done(Sound::Off);
@@ -1396,6 +1410,7 @@ mod tests {
         assert!(!l.prefs.notify_done);
         assert!(l.prefs.notify_focused);
         assert!(l.prefs.notify_in_pane);
+        assert!(l.prefs.notify_crown);
         assert!(!l.prefs.notify_words);
         assert_eq!(l.prefs.notify_sound_needs_you, Sound::Hero);
         assert_eq!(l.prefs.notify_sound_done, Sound::Off);

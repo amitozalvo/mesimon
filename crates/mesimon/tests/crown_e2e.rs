@@ -2927,7 +2927,11 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
         !lines_with(&ask).is_empty()
     });
     assert_eq!(lines_with(&worker).len(), 1, "a delivery the train takes is silent");
-    assert_eq!(feed_count("\"crown_wake_deferred\""), 2);
+    // The turn's end asks the train for a look at once (T-678), so its ask
+    // can land a tick before the crown's hold reaches the feed.
+    wait_until(std::time::Duration::from_secs(5), "the hold in the feed", || {
+        feed_count("\"crown_wake_deferred\"") == 2
+    });
     // The agent takes the ask and ends its turn still behind.
     start(&mut c, ws);
     stop(&mut c, ws);
@@ -2955,7 +2959,10 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     wait_until(std::time::Duration::from_secs(10), "the refusal's wake", || {
         lines_with(&worker).len() == 3
     });
-    assert_eq!(feed_count("\"crown_wake_deferred\""), 3);
+    // Held and then given up, or — when the train's own look, asked at the
+    // turn's end (T-678), refused the merge before the crown's look landed
+    // — never held: the crown hears the same line either way.
+    assert!((2..=3).contains(&feed_count("\"crown_wake_deferred\"")));
     let lines = lines_with(&worker);
     assert!(
         lines[2].starts_with(&format!("{worker} delivered (merge_state needs_rebase → ahead")),

@@ -393,11 +393,11 @@ pub(super) fn verdict(
 /// no dialog the board answers for the crown. Whose agent it is — one THIS
 /// crown started — is `note_crown_wake`'s to judge.
 pub(super) fn asks_the_crown(
-    answers: bool,
+    mode: CrownMode,
     kind: SessionKind,
     change: &Change,
 ) -> Option<WakeCause> {
-    if !answers || kind != SessionKind::Claude || change.from == change.to {
+    if change.from == change.to || !mode.takes_stop(kind, &change.to) {
         return None;
     }
     match change.to {
@@ -764,13 +764,12 @@ impl Look {
 }
 
 impl Daemon {
-    /// The worker's claude was started by THIS crown: a worker left over
-    /// from an earlier crown wakes nobody.
+    /// The worker's claude was started by THIS crown, `crown` still wearing
+    /// it: a worker left over from an earlier crown wakes nobody. The
+    /// board's own predicate, which the person's banners read too (T-678).
     fn started_by_crown(&self, worker: ulid::Ulid, crown: ulid::Ulid) -> bool {
-        self.board
-            .sessions
-            .iter()
-            .any(|s| s.ticket == worker && s.holds_agent_seat() && s.started_by == Some(crown))
+        self.board.crown_holder().is_some_and(|t| t.id == crown)
+            && self.board.started_by_crown(worker)
     }
 
     /// The words just pasted or parked on `ticket`'s claude were asked for
@@ -1116,7 +1115,7 @@ impl Daemon {
     }
 
     /// The branch as the train's last sample saw it, folded like a look.
-    fn sampled(&self, worker: ulid::Ulid) -> Option<BranchLook> {
+    pub(super) fn sampled(&self, worker: ulid::Ulid) -> Option<BranchLook> {
         let branch = &self.worktrees.get(&worker)?.branch;
         Some(BranchLook {
             tip: self.wt_tip.get(&worker)?.clone(),
@@ -1691,25 +1690,54 @@ mod tests {
             confidence: Confidence::High,
         };
         let asked = change(SessionState::Running, question.clone());
-        assert_eq!(asks_the_crown(true, SessionKind::Claude, &asked), Some(WakeCause::Asked));
-        assert_eq!(asks_the_crown(false, SessionKind::Claude, &asked), None, "off: the person's");
-        assert_eq!(asks_the_crown(true, SessionKind::Codex, &asked), None, "no dialog to answer");
         assert_eq!(
-            asks_the_crown(true, SessionKind::Claude, &change(question.clone(), question)),
+            asks_the_crown(CrownMode::Autonomous, SessionKind::Claude, &asked),
+            Some(WakeCause::Asked)
+        );
+        assert_eq!(
+            asks_the_crown(CrownMode::Supervised, SessionKind::Claude, &asked),
+            None,
+            "off: the person's"
+        );
+        assert_eq!(
+            asks_the_crown(CrownMode::Autonomous, SessionKind::Codex, &asked),
+            None,
+            "no dialog to answer"
+        );
+        assert_eq!(
+            asks_the_crown(
+                CrownMode::Autonomous,
+                SessionKind::Claude,
+                &change(question.clone(), question)
+            ),
             None
         );
         let plan = SessionState::RequiresAction { reason: Reason::Plan };
         let planned = change(SessionState::Running, plan.clone());
-        assert_eq!(asks_the_crown(true, SessionKind::Claude, &planned), Some(WakeCause::Planned));
-        assert_eq!(asks_the_crown(false, SessionKind::Claude, &planned), None, "off: the person's");
-        assert_eq!(asks_the_crown(true, SessionKind::Codex, &planned), None, "a codex plan");
-        assert_eq!(asks_the_crown(true, SessionKind::Claude, &change(plan.clone(), plan)), None);
+        assert_eq!(
+            asks_the_crown(CrownMode::Autonomous, SessionKind::Claude, &planned),
+            Some(WakeCause::Planned)
+        );
+        assert_eq!(
+            asks_the_crown(CrownMode::Supervised, SessionKind::Claude, &planned),
+            None,
+            "off: the person's"
+        );
+        assert_eq!(
+            asks_the_crown(CrownMode::Autonomous, SessionKind::Codex, &planned),
+            None,
+            "a codex plan"
+        );
+        assert_eq!(
+            asks_the_crown(CrownMode::Autonomous, SessionKind::Claude, &change(plan.clone(), plan)),
+            None
+        );
         for reason in
             [Reason::Secret, Reason::Elicitation, Reason::Permission, Reason::Auth, Reason::Trust]
         {
             let stop = change(SessionState::Running, SessionState::RequiresAction { reason });
             assert_eq!(
-                asks_the_crown(true, SessionKind::Claude, &stop),
+                asks_the_crown(CrownMode::Autonomous, SessionKind::Claude, &stop),
                 None,
                 "{reason:?} is a person's"
             );
@@ -1718,7 +1746,7 @@ mod tests {
             SessionState::RequiresAction { reason: Reason::Question },
             SessionState::Running,
         );
-        assert_eq!(asks_the_crown(true, SessionKind::Claude, &answered), None);
+        assert_eq!(asks_the_crown(CrownMode::Autonomous, SessionKind::Claude, &answered), None);
         // The wake carries the cause, never the plan's words.
         assert_eq!(WakeCause::Planned.clause(), "stops on a plan");
     }

@@ -104,6 +104,7 @@ mod crownwake;
 mod mesophon;
 mod teamglue;
 mod tiers;
+mod trainhold;
 
 const GRACE_SECS: u64 = 9;
 /// How long a crown touch (T-411) rides the snapshot: long enough for the
@@ -607,6 +608,14 @@ pub struct Daemon {
     wt_gen: u64,
     /// A worker is out sampling the flags: the tick asks for no second one.
     wt_inflight: bool,
+    /// Every flag sample is numbered as it starts (T-678): `wt_seq` the
+    /// last one started, `wt_landed` the newest absorbed, so a finished
+    /// turn can wait for a look that began after it (`trainhold`).
+    wt_seq: u64,
+    wt_inflight_seq: u64,
+    wt_landed: u64,
+    /// Finished turns on train tickets waiting for that look (T-678).
+    awaiting_looks: HashMap<ulid::Ulid, trainhold::AwaitingLook>,
     /// Cached default-branch name (origin/HEAD → main/master/trunk → HEAD).
     base_branch: Option<String>,
     /// Cached remote-tracking ref per leg name (`""` the root): `origin/main`
@@ -1155,6 +1164,10 @@ pub fn run(paths: Paths) -> Result<()> {
         wt_conflicts: Vec::new(),
         wt_gen: 0,
         wt_inflight: false,
+        wt_seq: 0,
+        wt_inflight_seq: 0,
+        wt_landed: 0,
+        awaiting_looks: HashMap::new(),
         base_branch: None,
         upstreams: HashMap::new(),
         pending_teardown: Vec::new(),
@@ -2728,6 +2741,7 @@ impl Daemon {
             changed |= stage!("hear_merges", self.hear_merges());
             changed |= stage!("hear_deferred", self.hear_deferred());
             changed |= stage!("hear_stepped", self.hear_stepped());
+            changed |= stage!("settle_looks", self.settle_looks(false));
             changed |= stage!("drain_crown_wakes", self.drain_crown_wakes());
             stage!("persist_crown", self.persist_crown());
             changed |= stage!("drive_usage", self.drive_usage(now));
@@ -4720,6 +4734,11 @@ impl Daemon {
                     matches!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn })
                         && matches!(change.confidence, Confidence::High | Confidence::Medium);
                 self.turn_ended(snapshot.ticket, end_turn);
+                // The person's banner waits for a look at what the turn
+                // left, where the train may take it (T-678).
+                if end_turn {
+                    self.look_after_turn(snapshot.ticket);
+                }
             }
         }
         // The agent stopped on a question (T-420): the answer may change
@@ -4734,8 +4753,7 @@ impl Daemon {
         // crown (T-569, T-582) where the board lets it answer; off, the
         // person is the one to wake, and the card's needs-you already does.
         // A secret, a form or a permission is never the crown's.
-        if let Some(cause) =
-            crownwake::asks_the_crown(self.board.crown_mode.answers(), snapshot.kind, change)
+        if let Some(cause) = crownwake::asks_the_crown(self.board.crown_mode, snapshot.kind, change)
         {
             self.note_crown_wake(snapshot.ticket, cause, None, None);
         }
@@ -7567,6 +7585,7 @@ impl Daemon {
             merge_notice: self.train.notice(),
             train_asked,
             train_suspended,
+            holding: self.train_holding(),
         }
     }
 
@@ -12470,6 +12489,8 @@ impl Daemon {
         }
         let queries = self.wt_queries(true, None);
         let samples = worktree::compute_repo_flags(&queries);
+        self.wt_seq = self.wt_seq.wrapping_add(1);
+        self.wt_landed = self.wt_seq;
         // The callers of this road broadcast on their own terms.
         let _ = self.absorb_worktree_flags(samples);
     }
@@ -12484,6 +12505,8 @@ impl Daemon {
             return;
         }
         self.wt_inflight = true;
+        self.wt_seq = self.wt_seq.wrapping_add(1);
+        self.wt_inflight_seq = self.wt_seq;
         let gen = self.wt_gen;
         let repo = self.paths.repo_root.clone();
         let base = self.base_branch.clone();
@@ -12545,6 +12568,7 @@ impl Daemon {
                 worktree::upstream_base(&repo, &s.base)
             });
         }
+        self.wt_landed = self.wt_inflight_seq;
         let changed = self.absorb_worktree_flags(samples);
         // A merge that lands after the archive (a PR squashed later, a
         // `git merge` by hand) is one only the sample can see (T-481).
@@ -12556,7 +12580,10 @@ impl Daemon {
         // A merge made somewhere else — a squash on a forge, a `git pull` in
         // another terminal — moves no session and fires no hook, so the
         // sample's own delta is the only thing that can tell the board.
-        if changed || acted {
+        // Turns waiting on this look are judged on it (T-678), after the
+        // train's pass, so a merge or a rebase ask it just made holds them.
+        let settled = self.settle_looks(true);
+        if changed || acted || settled {
             self.broadcast();
         }
     }

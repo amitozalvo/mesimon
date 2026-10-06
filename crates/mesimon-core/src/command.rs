@@ -2506,6 +2506,13 @@ pub struct AutomationStatus {
     /// Tickets the train's fuse suspended it for.
     #[serde(default)]
     pub train_suspended: Vec<ulid::Ulid>,
+    /// Tickets whose finished turn the train has yet to finish (T-678): it
+    /// will ask the rebase or make the merge, its words to the agent are on
+    /// their way or running, or the turn just ended and the branch has not
+    /// been looked at since. The person's banner waits until it is over.
+    /// Absent from an older daemon parses as none.
+    #[serde(default)]
+    pub holding: Vec<ulid::Ulid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

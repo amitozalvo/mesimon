@@ -4942,6 +4942,7 @@ impl App {
             notify_done: self.prefs.notify_done,
             notify_focused: self.prefs.notify_focused,
             notify_in_pane: self.prefs.notify_in_pane,
+            notify_crown: self.prefs.notify_crown,
             notify_words: self.prefs.notify_words,
             notify_sound_needs_you: self.prefs.notify_sound_needs_you.name(),
             notify_sound_done: self.prefs.notify_sound_done.name(),
@@ -6092,6 +6093,15 @@ impl App {
                     "silent inside the agent's own pane"
                 };
                 self.set_pref(word, |p| p.notify_in_pane = on);
+            }
+            Verb::NotifyCrown => {
+                let on = !self.prefs.notify_crown;
+                let word = if on {
+                    "the crown's agents are said to you as well"
+                } else {
+                    "the crown hears its agents, you do not"
+                };
+                self.set_pref(word, |p| p.notify_crown = on);
             }
             Verb::SnoozeQuiet => {
                 let on = !self.prefs.snooze_needs_you;
@@ -21113,7 +21123,7 @@ mod tests {
         assert_eq!(keymap::notify_items(&app.ctx()).len(), 1, "off, the list is its switch");
         enter(&mut app);
         assert!(app.prefs.notify, "the first row is the switch");
-        assert_eq!(keymap::notify_items(&app.ctx()).len(), 9);
+        assert_eq!(keymap::notify_items(&app.ctx()).len(), 10);
         app.on_key(KeyCode::Esc, KeyModifiers::NONE).expect("esc");
         assert_eq!(
             app.mode,

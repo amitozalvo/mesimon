@@ -458,6 +458,13 @@ blocked agent, whether the agent's words are quoted, the two sounds, whether a f
 the agent's own pane still speaks, and iTerm2's dock bounce. The master switch is on by default;
 the rows under it keep their own defaults.
 
+A finished turn on a ticket the merge train will take is announced once, when the train is done
+with it: after the merge and the agent's reply to the merged notice, or when the train cannot take
+it (a refused merge, a rebase that did not catch up). On an agent the crown started, a finished
+turn, a question or plan the crown answers, and a raised hand go to the crown and not to you;
+**Agents the crown started** in the same list turns them back on. A permission prompt always
+reaches you.
+
 **Settings › Terminal** names and marks the terminal's own tab: the title is `mesimon ∙ <project>`
 by default, without the needs-you count; iTerm2 also takes the theme colour, the whole-tab colour
 while a ticket needs you, a subtitle and the shin icon. The progress ring is off by default,

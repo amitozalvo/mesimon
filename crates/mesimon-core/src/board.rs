@@ -1726,6 +1726,20 @@ impl CrownMode {
         self == Self::Autonomous
     }
 
+    /// Is a session stopped in `state` the crown's to answer, under this
+    /// mode, when the crown started it (T-569, T-582)? A claude's question
+    /// or plan. A secret, a form or a permission is never the crown's, and
+    /// a codex has no dialog the board answers for it. The crown's wake
+    /// and the person's banner (T-678) read this one rule.
+    pub fn takes_stop(self, kind: SessionKind, state: &SessionState) -> bool {
+        self.answers()
+            && kind == SessionKind::Claude
+            && matches!(
+                state,
+                SessionState::RequiresAction { reason: Reason::Question | Reason::Plan }
+            )
+    }
+
     /// The crown merges a worker's branch where the train will not
     /// (`merge_ticket`, T-613); supervised keeps the merge a person's.
     pub fn merges(self) -> bool {
@@ -2399,6 +2413,18 @@ impl Board {
     /// Does `ticket` hold the crown right now?
     pub fn is_crowned(&self, ticket: ulid::Ulid) -> bool {
         self.crown_holder().is_some_and(|t| t.id == ticket)
+    }
+
+    /// Was `ticket`'s agent started by the crown worn now? The claim every
+    /// crown wake makes on a worker (T-414): a worker left over from an
+    /// earlier crown wakes nobody, and the crown's own ticket is never one.
+    /// The daemon's wakes and the person's banners (T-678) ask this one
+    /// predicate, so a worker's news goes to exactly one of the two.
+    pub fn started_by_crown(&self, ticket: ulid::Ulid) -> bool {
+        let Some(crown) = self.crown_holder().map(|t| t.id) else { return false };
+        self.sessions
+            .iter()
+            .any(|s| s.ticket == ticket && s.holds_agent_seat() && s.started_by == Some(crown))
     }
 
     /// The vocabulary of axis `group`, in registry order — which is creation

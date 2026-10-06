@@ -1177,6 +1177,11 @@ pub fn doctor_line() -> String {
     } else {
         "silent inside the agent's own pane".into()
     });
+    parts.push(if p.notify_crown {
+        "the crown's agents said to you too".into()
+    } else {
+        "the crown's agents told to the crown".into()
+    });
     // The one thing a user cannot read off the rung's name: this rung writes
     // to the board's own terminal, so it alone goes quiet while that terminal
     // belongs to an attached pane or an editor (T-291). Every other rung

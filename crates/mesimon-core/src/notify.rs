@@ -484,6 +484,17 @@ fn keys(items: &[&Event]) -> String {
     }
 }
 
+/// Whose news a finished turn, a question or a hand is, when it is not the
+/// person's (T-678): what [`Differ::scan`] leaves unsaid.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Hush<'a> {
+    /// Tickets the merge train has yet to finish
+    /// (`AutomationStatus::holding`): their finished turn waits.
+    pub train: &'a [Ulid],
+    /// Say what the crown is woken for to the person as well.
+    pub crown_too: bool,
+}
+
 /// What the board has already said, so that only a RISING edge speaks.
 ///
 /// TUI-local and derived, the way the spoke marks are: nothing on the wire
@@ -535,14 +546,28 @@ impl Differ {
     /// `done_too` is the preference: with it off a finished turn is still
     /// MARKED and simply not announced, so turning the row back on does not
     /// then say what it missed.
-    pub fn scan(&mut self, next: &crate::board::Board, done_too: bool) -> Vec<Event> {
+    ///
+    /// **Somebody else's news is not the person's** (T-678), and `hush`
+    /// says whose. A finished turn the merge train has yet to finish is
+    /// NOT YET news: it is left unmarked, so the turn that truly ends it —
+    /// merged, told, done — or the train letting go of it speaks. What the
+    /// crown is woken for on an agent it started (a finished turn, its
+    /// question or plan where the crown answers, a raised hand) is the
+    /// crown's: marked and not announced, the way the row's off half is,
+    /// unless `hush.crown_too` says the person hears those as well.
+    pub fn scan(&mut self, next: &crate::board::Board, done_too: bool, hush: Hush) -> Vec<Event> {
         use crate::board::{Confidence, SessionState, StopReason};
+
+        let crowns = |ticket: Ulid| !hush.crown_too && next.started_by_crown(ticket);
 
         let mut marks: std::collections::HashMap<uuid::Uuid, Mark> = Default::default();
         let mut events: Vec<Event> = Vec::new();
         for rec in crate::attention::attention_queue(next) {
             marks.insert(rec.id, Mark::NeedsYou);
             if self.seen.get(&rec.id) == Some(&Mark::NeedsYou) {
+                continue;
+            }
+            if crowns(rec.ticket) && next.crown_mode.takes_stop(rec.kind, &rec.state) {
                 continue;
             }
             // The reason the card prints, so the banner says the same word.
@@ -559,9 +584,10 @@ impl Differ {
                 continue;
             }
             let done = matches!(rec.state, SessionState::Idle { stop_reason: StopReason::EndTurn })
-                && matches!(rec.confidence, Confidence::High | Confidence::Medium);
+                && matches!(rec.confidence, Confidence::High | Confidence::Medium)
+                && !hush.train.contains(&rec.ticket);
             marks.insert(rec.id, if done { Mark::Done } else { Mark::Other });
-            if !done || !done_too {
+            if !done || !done_too || crowns(rec.ticket) {
                 continue;
             }
             if self.seen.get(&rec.id) == Some(&Mark::Done) {
@@ -586,7 +612,7 @@ impl Differ {
         let mut raised: std::collections::HashSet<Ulid> = Default::default();
         for t in next.raised_tickets() {
             raised.insert(t.id);
-            if !self.raised.contains(&t.id) {
+            if !self.raised.contains(&t.id) && !crowns(t.id) {
                 let why = t.raised.as_ref().map(|r| r.reason.clone()).unwrap_or_default();
                 events.push(Event::raised(t.id, t.short_key.clone(), why));
             }
@@ -1315,7 +1341,10 @@ mod tests {
         }
         b.sessions.push(claude(1, state, Confidence::High));
         let mut d = Differ::default();
-        assert!(d.scan(&b, true).is_empty(), "an opening board announces no backlog");
+        assert!(
+            d.scan(&b, true, Hush::default()).is_empty(),
+            "an opening board announces no backlog"
+        );
         (d, b)
     }
 
@@ -1343,38 +1372,45 @@ mod tests {
     #[test]
     fn an_opening_board_announces_no_backlog() {
         let (mut d, b) = seeded(blocked());
-        assert!(d.scan(&b, true).is_empty(), "and it stays seeded");
+        assert!(d.scan(&b, true, Hush::default()).is_empty(), "and it stays seeded");
     }
 
     #[test]
     fn an_agent_that_starts_needing_you_is_announced_once() {
         let (mut d, b) = seeded(SessionState::Running);
         let b = moved(&b, blocked(), Confidence::High);
-        let events = d.scan(&b, true);
+        let events = d.scan(&b, true, Hush::default());
         assert_eq!(events.len(), 1);
         assert_eq!(events[0], Event::needs_you(Ulid(1), "T-1", "PERMISSION"));
         // Still blocked is not news again — the ticket already needs you.
         let b =
             moved(&b, SessionState::RequiresAction { reason: Reason::Question }, Confidence::High);
-        assert!(d.scan(&b, true).is_empty());
+        assert!(d.scan(&b, true, Hush::default()).is_empty());
     }
 
     #[test]
     fn a_finished_turn_is_announced_and_the_row_turns_it_off() {
         let (mut d, b) = seeded(SessionState::Running);
         let done = moved(&b, finished(), Confidence::High);
-        assert_eq!(d.scan(&done, true), vec![Event::turn_done(Ulid(1), "T-1")]);
+        assert_eq!(d.scan(&done, true, Hush::default()), vec![Event::turn_done(Ulid(1), "T-1")]);
 
         // With the row off the turn is MARKED and not announced, so turning
         // it back on does not then say what it missed.
         let (mut d, b) = seeded(SessionState::Running);
         let done = moved(&b, finished(), Confidence::High);
-        assert!(d.scan(&done, false).is_empty(), "the row took that half away");
-        assert!(d.scan(&done, true).is_empty(), "and the same finished turn is not news later");
+        assert!(d.scan(&done, false, Hush::default()).is_empty(), "the row took that half away");
+        assert!(
+            d.scan(&done, true, Hush::default()).is_empty(),
+            "and the same finished turn is not news later"
+        );
         // …and the other half still speaks.
         let plan =
             moved(&b, SessionState::RequiresAction { reason: Reason::Plan }, Confidence::High);
-        assert_eq!(d.scan(&plan, false).len(), 1, "only the finished half was turned off");
+        assert_eq!(
+            d.scan(&plan, false, Hush::default()).len(),
+            1,
+            "only the finished half was turned off"
+        );
     }
 
     /// After a daemon restart every session is `Unknown` and the transcript
@@ -1384,12 +1420,12 @@ mod tests {
     fn a_low_confidence_finish_is_not_news() {
         let (mut d, b) = seeded(SessionState::Unknown { reason: Default::default() });
         let low = moved(&b, finished(), Confidence::Low);
-        assert!(d.scan(&low, true).is_empty());
+        assert!(d.scan(&low, true, Hush::default()).is_empty());
         // The next real turn still lands.
         let running = moved(&b, SessionState::Running, Confidence::High);
-        assert!(d.scan(&running, true).is_empty());
+        assert!(d.scan(&running, true, Hush::default()).is_empty());
         let high = moved(&b, finished(), Confidence::High);
-        assert_eq!(d.scan(&high, true), vec![Event::turn_done(Ulid(1), "T-1")]);
+        assert_eq!(d.scan(&high, true, Hush::default()), vec![Event::turn_done(Ulid(1), "T-1")]);
     }
 
     /// T-74's session-less half: a snooze that woke a ticket lit, which has
@@ -1398,8 +1434,8 @@ mod tests {
     fn a_woken_ticket_is_announced_once() {
         let (mut d, mut b) = seeded(SessionState::Running);
         b.tickets[0].woke_at = Some("@1000".into());
-        assert_eq!(d.scan(&b, true), vec![Event::needs_you(Ulid(1), "T-1", "")]);
-        assert!(d.scan(&b, true).is_empty(), "still woken is not woken again");
+        assert_eq!(d.scan(&b, true, Hush::default()), vec![Event::needs_you(Ulid(1), "T-1", "")]);
+        assert!(d.scan(&b, true, Hush::default()).is_empty(), "still woken is not woken again");
     }
 
     /// T-107's producer: an agent that asked for a person at the end of a
@@ -1417,7 +1453,7 @@ mod tests {
         let (mut d, mut b) = seeded(SessionState::Running);
         b.tickets[0].raised = raise("cannot proceed until somebody picks an auth provider");
         assert_eq!(
-            d.scan(&b, true),
+            d.scan(&b, true, Hush::default()),
             vec![Event::raised(
                 Ulid(1),
                 "T-1",
@@ -1425,15 +1461,89 @@ mod tests {
             )],
             "the agent's own sentence, marked as quoted"
         );
-        assert!(d.scan(&b, true).is_empty(), "still up is not up again");
+        assert!(d.scan(&b, true, Hush::default()).is_empty(), "still up is not up again");
         // Lowered and raised again IS news: the words may be different.
         b.tickets[0].raised = None;
-        assert!(d.scan(&b, true).is_empty(), "lowering says nothing");
+        assert!(d.scan(&b, true, Hush::default()).is_empty(), "lowering says nothing");
         b.tickets[0].raised = raise("the migration needs a decision");
         assert_eq!(
-            d.scan(&b, true),
+            d.scan(&b, true, Hush::default()),
             vec![Event::raised(Ulid(1), "T-1", "the migration needs a decision")]
         );
+    }
+
+    /// T-678: a finished turn the merge train has yet to finish is not yet
+    /// news. It is left unmarked, so the train letting go of it — or the
+    /// turn that truly ends it — speaks once, and a held turn never fires
+    /// twice.
+    #[test]
+    fn a_finished_turn_the_train_holds_waits_for_the_train() {
+        let held = [Ulid(1)];
+        let train = Hush { train: &held, crown_too: false };
+        let (mut d, b) = seeded(SessionState::Running);
+        let done = moved(&b, finished(), Confidence::High);
+        assert!(d.scan(&done, true, train).is_empty(), "the train will rebase or merge it");
+        assert!(d.scan(&done, true, train).is_empty(), "still the train's");
+        // Merged, told and its notice turn over: off the list, and said.
+        assert_eq!(d.scan(&done, true, Hush::default()), vec![Event::turn_done(Ulid(1), "T-1")]);
+        assert!(d.scan(&done, true, Hush::default()).is_empty(), "said once");
+        // Another ticket held says nothing about this one.
+        let other = [Ulid(2)];
+        let running = moved(&b, SessionState::Running, Confidence::High);
+        assert!(d.scan(&running, true, Hush::default()).is_empty());
+        assert_eq!(
+            d.scan(&done, true, Hush { train: &other, crown_too: false }),
+            vec![Event::turn_done(Ulid(1), "T-1")]
+        );
+        // The train holds a finished turn only: a permission is the person's.
+        let (mut d, b) = seeded(SessionState::Running);
+        let asks = moved(&b, blocked(), Confidence::High);
+        assert_eq!(d.scan(&asks, true, train).len(), 1);
+    }
+
+    /// T-678: what wakes the crown on an agent it started is the crown's —
+    /// its finished turn, its question or plan where the crown answers, its
+    /// hand — and marked, so the row turned on later says none of it. A
+    /// permission is never the crown's, a supervised crown's questions are
+    /// the person's, and a worker of no crown worn now is the person's.
+    #[test]
+    fn what_wakes_the_crown_is_the_crowns_news() {
+        let crowned = |state: SessionState| {
+            let (d, mut b) = seeded(SessionState::Running);
+            b.crown = Some(Ulid(3));
+            b.sessions[0].started_by = Some(Ulid(3));
+            (d, moved(&b, state, Confidence::High))
+        };
+        let (mut d, b) = crowned(finished());
+        assert!(d.scan(&b, true, Hush::default()).is_empty(), "the crown hears it");
+        let (mut d, b) = crowned(finished());
+        let too = Hush { train: &[], crown_too: true };
+        assert_eq!(d.scan(&b, true, too), vec![Event::turn_done(Ulid(1), "T-1")], "the row");
+        let question = SessionState::RequiresAction { reason: Reason::Question };
+        let (mut d, b) = crowned(question.clone());
+        assert!(d.scan(&b, true, Hush::default()).is_empty(), "the crown answers it");
+        assert!(d.scan(&b, true, too).is_empty(), "marked: the row says no backlog");
+        let (mut d, mut b) = crowned(question);
+        b.crown_mode = crate::board::CrownMode::Supervised;
+        assert_eq!(d.scan(&b, true, Hush::default()).len(), 1, "supervised: the person's");
+        let (mut d, b) = crowned(blocked());
+        assert_eq!(
+            d.scan(&b, true, Hush::default()),
+            vec![Event::needs_you(Ulid(1), "T-1", "PERMISSION")],
+            "a permission is never the crown's"
+        );
+        let (mut d, mut b) = crowned(SessionState::Running);
+        b.tickets[0].raised = Some(crate::board::Raised {
+            at: "@1000".into(),
+            by: "agent:x".into(),
+            reason: "stuck".into(),
+        });
+        assert!(d.scan(&b, true, Hush::default()).is_empty(), "the crown hears the hand");
+        // The crown taken off: the worker is the person's again.
+        let (mut d, mut b) = crowned(SessionState::Running);
+        b.crown = None;
+        let done = moved(&b, finished(), Confidence::High);
+        assert_eq!(d.scan(&done, true, Hush::default()), vec![Event::turn_done(Ulid(1), "T-1")]);
     }
 
     /// T-570's producer: a launch whose words never reached the agent. The
@@ -1443,14 +1553,20 @@ mod tests {
     fn an_unsent_brief_is_announced_once() {
         let (mut d, mut b) = seeded(SessionState::Idle { stop_reason: StopReason::Unknown });
         b.sessions[0].unsent = Some(crate::board::Unsent { text: String::new(), brief: true });
-        assert_eq!(d.scan(&b, true), vec![Event::needs_you(Ulid(1), "T-1", "brief not sent")]);
-        assert!(d.scan(&b, true).is_empty(), "still unsent is not unsent again");
+        assert_eq!(
+            d.scan(&b, true, Hush::default()),
+            vec![Event::needs_you(Ulid(1), "T-1", "brief not sent")]
+        );
+        assert!(d.scan(&b, true, Hush::default()).is_empty(), "still unsent is not unsent again");
         assert_eq!(b.needs_you_count(), 1, "the header counts it");
         b.sessions[0].unsent = None;
-        assert!(d.scan(&b, true).is_empty(), "taken says nothing");
+        assert!(d.scan(&b, true, Hush::default()).is_empty(), "taken says nothing");
         b.sessions[0].state = SessionState::Sleeping;
         b.sessions[0].unsent = Some(crate::board::Unsent { text: "go".into(), brief: false });
-        assert!(d.scan(&b, true).is_empty(), "a parked seat has no box to resend into");
+        assert!(
+            d.scan(&b, true, Hush::default()).is_empty(),
+            "a parked seat has no box to resend into"
+        );
         assert_eq!(b.needs_you_count(), 0);
     }
 
@@ -1468,7 +1584,7 @@ mod tests {
         });
         assert_eq!(b.needs_you_count(), 3, "the header's own number");
         let mut c = Coalescer::default();
-        for e in d.scan(&b, true) {
+        for e in d.scan(&b, true, Hush::default()) {
             c.offer(e, 0);
         }
         assert_eq!(post(&mut c, 0).expect("one line").body, "3 agents need you ∙ T-1 T-2 T-3");
@@ -1481,7 +1597,7 @@ mod tests {
         let (mut d, b) = seeded(SessionState::Running);
         let b = moved(&b, blocked(), Confidence::High);
         d.reset();
-        assert!(d.scan(&b, true).is_empty(), "the first look after arming seeds");
-        assert!(d.scan(&b, true).is_empty());
+        assert!(d.scan(&b, true, Hush::default()).is_empty(), "the first look after arming seeds");
+        assert!(d.scan(&b, true, Hush::default()).is_empty());
     }
 }
