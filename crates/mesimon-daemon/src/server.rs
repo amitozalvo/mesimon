@@ -2768,12 +2768,13 @@ impl Daemon {
             if !self.cost_scanning && (self.cost_due || self.ticks.is_multiple_of(COST_TICKS)) {
                 stage!("queue_cost_scan", self.queue_cost_scan());
             }
-            let a = stage!("archive_figures", self.archive_figures());
-            if a != self.archive_cache {
-                self.archive_cache = a;
+            // One candidate scan serves the count and the disk figure.
+            let candidates = stage!("archive_figures", self.archive_candidates());
+            if candidates.len() != self.archive_cache {
+                self.archive_cache = candidates.len();
                 changed = true;
             }
-            changed |= stage!("price_archive", self.price_archive());
+            changed |= stage!("price_archive", self.price_archive(&candidates));
         }
         if self.ticks.is_multiple_of(TAIL_POLL_TICKS) {
             changed |= stage!("poll_tails", self.poll_tails());
@@ -8078,12 +8079,12 @@ impl Daemon {
     /// passing the archive's own reclaim gate, with the bucket's merge
     /// sample standing in for the fresh check a keypress makes (pricing
     /// forks nothing). Unmerged work keeps its tree and frees nothing.
-    fn archive_trees(&self) -> Vec<std::path::PathBuf> {
-        self.archive_candidates()
-            .into_iter()
+    fn archive_trees(&self, candidates: &[ulid::Ulid]) -> Vec<std::path::PathBuf> {
+        candidates
+            .iter()
             .filter_map(|id| {
-                let b = self.worktrees.get(&id)?;
-                let merged = self.wt_agg.get(&id).is_some_and(|a| a.merged);
+                let b = self.worktrees.get(id)?;
+                let merged = self.wt_agg.get(id).is_some_and(|a| a.merged);
                 (worktree::reclaim_on_archive(b, merged, 0, self.worktrees_barred)
                     && b.path.is_dir())
                 .then(|| b.path.clone())
@@ -8094,8 +8095,8 @@ impl Daemon {
     /// The archive offer's disk figure (T-679): what is measured of the
     /// trees it would free, and a walk for any not measured yet. A tree off
     /// the offer drops its size, so one back on it is walked again.
-    fn price_archive(&mut self) -> bool {
-        let trees = self.archive_trees();
+    fn price_archive(&mut self, candidates: &[ulid::Ulid]) -> bool {
+        let trees = self.archive_trees(candidates);
         self.tree_sizes.retain(|p, _| trees.contains(p));
         let unsized_: Vec<std::path::PathBuf> =
             trees.iter().filter(|p| !self.tree_sizes.contains_key(*p)).cloned().collect();
@@ -8121,7 +8122,8 @@ impl Daemon {
     fn on_trees_sized(&mut self, sized: Vec<(std::path::PathBuf, u64)>) {
         self.trees_sizing = false;
         self.tree_sizes.extend(sized);
-        if self.price_archive() {
+        let candidates = self.archive_candidates();
+        if self.price_archive(&candidates) {
             self.broadcast();
         }
     }

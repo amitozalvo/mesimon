@@ -32,6 +32,38 @@ use crate::theme::{Flavor, Ground};
 
 pub(crate) const SCHEMA: u64 = 1;
 
+/// A pref's words in one table, in declaration order: `key` (the word in
+/// the file, and the word `doctor` says) and `from_key` back, and with
+/// `ring` the `next` stop Enter cycles to, which is that same order.
+macro_rules! pref_words {
+    ($ty:ident { $($v:ident => $w:literal),+ $(,)? }) => {
+        impl $ty {
+            pub const fn key(self) -> &'static str {
+                match self {
+                    $($ty::$v => $w),+
+                }
+            }
+
+            pub fn from_key(s: &str) -> Option<Self> {
+                match s {
+                    $($w => Some($ty::$v),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+    (ring $ty:ident { $($v:ident => $w:literal),+ $(,)? }) => {
+        pref_words!($ty { $($v => $w),+ });
+        impl $ty {
+            pub fn next(self) -> Self {
+                const ALL: &[$ty] = &[$($ty::$v),+];
+                let i = ALL.iter().position(|v| *v == self).unwrap_or(0);
+                ALL[(i + 1) % ALL.len()]
+            }
+        }
+    };
+}
+
 /// Where the board's reply row shows — the `p`/`P` ladder (T-237), one
 /// value rather than two flags because the ladder has an invariant (`All`
 /// implies the cursor card's) that two flags could spell wrong. Remembered
@@ -47,25 +79,11 @@ pub enum PeekLevel {
     All,
 }
 
-impl PeekLevel {
-    /// The word in the file, and the word `doctor` says.
-    pub const fn key(self) -> &'static str {
-        match self {
-            PeekLevel::Off => "off",
-            PeekLevel::Cursor => "cursor",
-            PeekLevel::All => "all",
-        }
-    }
-
-    pub fn from_key(s: &str) -> Option<Self> {
-        match s {
-            "off" => Some(PeekLevel::Off),
-            "cursor" => Some(PeekLevel::Cursor),
-            "all" => Some(PeekLevel::All),
-            _ => None,
-        }
-    }
-}
+pref_words!(PeekLevel {
+    Off => "off",
+    Cursor => "cursor",
+    All => "all",
+});
 
 /// What the terminal's tab reads (T-492): nothing of ours, the board's
 /// name alone, or `mesimon ∙ <board>`.
@@ -79,40 +97,19 @@ pub enum TabTitle {
     Mesimon,
 }
 
+pref_words!(ring TabTitle {
+    Off => "off",
+    Project => "project",
+    Mesimon => "mesimon",
+});
+
 impl TabTitle {
-    /// The word in the file, and the word `doctor` says.
-    pub const fn key(self) -> &'static str {
-        match self {
-            TabTitle::Off => "off",
-            TabTitle::Project => "project",
-            TabTitle::Mesimon => "mesimon",
-        }
-    }
-
-    pub fn from_key(s: &str) -> Option<Self> {
-        match s {
-            "off" => Some(TabTitle::Off),
-            "project" => Some(TabTitle::Project),
-            "mesimon" => Some(TabTitle::Mesimon),
-            _ => None,
-        }
-    }
-
     /// The row's word for it.
     pub const fn name(self) -> &'static str {
         match self {
             TabTitle::Off => "off",
             TabTitle::Project => "project name",
             TabTitle::Mesimon => "mesimon ∙ project name",
-        }
-    }
-
-    /// The ring Enter cycles: off → project → mesimon → off.
-    pub const fn next(self) -> Self {
-        match self {
-            TabTitle::Off => TabTitle::Project,
-            TabTitle::Project => TabTitle::Mesimon,
-            TabTitle::Mesimon => TabTitle::Off,
         }
     }
 
@@ -131,37 +128,18 @@ pub enum TabColor {
     Tab,
 }
 
+pref_words!(ring TabColor {
+    Off => "off",
+    Dot => "dot",
+    Tab => "tab",
+});
+
 impl TabColor {
-    pub const fn key(self) -> &'static str {
-        match self {
-            TabColor::Off => "off",
-            TabColor::Dot => "dot",
-            TabColor::Tab => "tab",
-        }
-    }
-
-    pub fn from_key(s: &str) -> Option<Self> {
-        match s {
-            "off" => Some(TabColor::Off),
-            "dot" => Some(TabColor::Dot),
-            "tab" => Some(TabColor::Tab),
-            _ => None,
-        }
-    }
-
     pub const fn name(self) -> &'static str {
         match self {
             TabColor::Off => "off",
             TabColor::Dot => "the tab's dot",
             TabColor::Tab => "the whole tab",
-        }
-    }
-
-    pub const fn next(self) -> Self {
-        match self {
-            TabColor::Off => TabColor::Dot,
-            TabColor::Dot => TabColor::Tab,
-            TabColor::Tab => TabColor::Off,
         }
     }
 }
@@ -178,26 +156,14 @@ pub enum UsageLine {
     Off,
 }
 
+pref_words!(ring UsageLine {
+    Near => "near",
+    Every => "every",
+    Headline => "headline",
+    Off => "off",
+});
+
 impl UsageLine {
-    pub const fn key(self) -> &'static str {
-        match self {
-            UsageLine::Near => "near",
-            UsageLine::Every => "every",
-            UsageLine::Headline => "headline",
-            UsageLine::Off => "off",
-        }
-    }
-
-    pub fn from_key(s: &str) -> Option<Self> {
-        match s {
-            "near" => Some(UsageLine::Near),
-            "every" => Some(UsageLine::Every),
-            "headline" => Some(UsageLine::Headline),
-            "off" => Some(UsageLine::Off),
-            _ => None,
-        }
-    }
-
     /// The row's word for it.
     pub const fn name(self) -> &'static str {
         match self {
@@ -205,16 +171,6 @@ impl UsageLine {
             UsageLine::Every => "every window",
             UsageLine::Headline => "the headline",
             UsageLine::Off => "off",
-        }
-    }
-
-    /// The ring Enter cycles.
-    pub const fn next(self) -> Self {
-        match self {
-            UsageLine::Near => UsageLine::Every,
-            UsageLine::Every => UsageLine::Headline,
-            UsageLine::Headline => UsageLine::Off,
-            UsageLine::Off => UsageLine::Near,
         }
     }
 }
@@ -228,29 +184,10 @@ pub enum CardCorner {
     Cost,
 }
 
-impl CardCorner {
-    pub const fn key(self) -> &'static str {
-        match self {
-            CardCorner::Age => "age",
-            CardCorner::Cost => "cost",
-        }
-    }
-
-    pub fn from_key(s: &str) -> Option<Self> {
-        match s {
-            "age" => Some(CardCorner::Age),
-            "cost" => Some(CardCorner::Cost),
-            _ => None,
-        }
-    }
-
-    pub const fn next(self) -> Self {
-        match self {
-            CardCorner::Age => CardCorner::Cost,
-            CardCorner::Cost => CardCorner::Age,
-        }
-    }
-}
+pref_words!(ring CardCorner {
+    Age => "age",
+    Cost => "cost",
+});
 
 /// Who posts a banner (T-676): mesimon's own helper, with the mascot, or
 /// the terminal the board runs in, by an escape and signed as itself — so
@@ -262,29 +199,10 @@ pub enum NotifyVia {
     Terminal,
 }
 
-impl NotifyVia {
-    pub const fn key(self) -> &'static str {
-        match self {
-            NotifyVia::Mesimon => "mesimon",
-            NotifyVia::Terminal => "terminal",
-        }
-    }
-
-    pub fn from_key(s: &str) -> Option<Self> {
-        match s {
-            "mesimon" => Some(NotifyVia::Mesimon),
-            "terminal" => Some(NotifyVia::Terminal),
-            _ => None,
-        }
-    }
-
-    pub const fn next(self) -> Self {
-        match self {
-            NotifyVia::Mesimon => NotifyVia::Terminal,
-            NotifyVia::Terminal => NotifyVia::Mesimon,
-        }
-    }
-}
+pref_words!(ring NotifyVia {
+    Mesimon => "mesimon",
+    Terminal => "terminal",
+});
 
 /// When the quota line names a window's reset time (T-327).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -296,37 +214,18 @@ pub enum UsageResets {
     Never,
 }
 
+pref_words!(ring UsageResets {
+    Near => "near",
+    Always => "always",
+    Never => "never",
+});
+
 impl UsageResets {
-    pub const fn key(self) -> &'static str {
-        match self {
-            UsageResets::Near => "near",
-            UsageResets::Always => "always",
-            UsageResets::Never => "never",
-        }
-    }
-
-    pub fn from_key(s: &str) -> Option<Self> {
-        match s {
-            "near" => Some(UsageResets::Near),
-            "always" => Some(UsageResets::Always),
-            "never" => Some(UsageResets::Never),
-            _ => None,
-        }
-    }
-
     pub const fn name(self) -> &'static str {
         match self {
             UsageResets::Near => "near a limit",
             UsageResets::Always => "always",
             UsageResets::Never => "never",
-        }
-    }
-
-    pub const fn next(self) -> Self {
-        match self {
-            UsageResets::Near => UsageResets::Always,
-            UsageResets::Always => UsageResets::Never,
-            UsageResets::Never => UsageResets::Near,
         }
     }
 }
