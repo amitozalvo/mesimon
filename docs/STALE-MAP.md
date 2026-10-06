@@ -22024,3 +22024,14 @@ figure grows to its full value within one walk.
 `archive_reclaim_e2e::the_offer_reclaims_like_a_single_archive` (the landed tree is priced, the
 unmerged one is not); doctor's `tree_bytes_sums_a_tree_and_owns_up_to_a_spent_budget` calls the moved
 walker.
+
+## A clean checkout opens on push / pull (T-680, 2026-10-06, "if no changes, land in push/pull when entering git screen from board")
+
+**What shipped.** The board's `v` (and Enter on the header's git chip) opens the checkout's diff
+on the push / pull lists when the checkout has no uncommitted file, instead of a files view that
+only says "no changes". Tab still goes to the files view. A dirty checkout opens on its files as
+before. The rule is in `App::open_checkout_diff`, not `enter_diff`: a ticket's diff and a commit
+opened from the lists keep their own landing.
+
+**Tests.** `app::tests::a_clean_checkout_opens_on_push_and_pull` (the fake daemon's
+`clean_checkout` answers the checkout's list with no files).

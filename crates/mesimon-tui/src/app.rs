@@ -10136,8 +10136,14 @@ impl App {
     /// Board `v` (T-221): the checkout's own uncommitted work. No gate — a
     /// checkout always exists where there is a repository, and the binding is
     /// what asks whether there is one (`Ctx::git_repo`).
+    /// A clean checkout has nothing to read on the files view, so the screen
+    /// opens on the push / pull lists instead (T-680); Tab still goes back.
     fn open_checkout_diff(&mut self) -> Result<()> {
-        self.enter_diff(DiffTarget::Checkout, 0)
+        self.enter_diff(DiffTarget::Checkout, 0)?;
+        if let Some(d) = self.diff.as_mut().filter(|d| d.files.is_empty()) {
+            d.commits = true;
+        }
+        Ok(())
     }
 
     /// The one road onto `Screen::Diff`, whichever key opened it.
@@ -11944,6 +11950,8 @@ pub(crate) mod test_support {
         pub machine_tiers: mesimon_core::tier::MachineTiers,
         /// The fake daemon's quota account (T-327), wants included.
         pub usage: mesimon_core::usage::Usage,
+        /// Answer the checkout's diff with no files: nothing uncommitted.
+        pub clean_checkout: bool,
     }
 
     /// The fake daemon's fresh ticket: always `T-999` at the bottom of the
@@ -12085,14 +12093,16 @@ pub(crate) mod test_support {
                             worktree_present: false,
                         });
                     }
+                    let files = if self.clean_checkout {
+                        Vec::new()
+                    } else {
+                        vec![row("src/app.rs", "M", 4, false), row("AGENTS.md", "A", 8, true)]
+                    };
                     return Ok(Response::DiffList {
                         branch: "main".into(),
                         base_oid: "c".repeat(40),
                         branch_oid: String::new(),
-                        files: vec![
-                            row("src/app.rs", "M", 4, false),
-                            row("AGENTS.md", "A", 8, true),
-                        ],
+                        files,
                         worktree_present: true,
                     });
                 }
@@ -12712,6 +12722,7 @@ pub(crate) mod test_support {
                 terminals: Vec::new(),
                 machine_tiers: Default::default(),
                 usage: Default::default(),
+                clean_checkout: false,
             };
             let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
                 .expect("fake transport snapshot");
@@ -12927,6 +12938,7 @@ mod tests {
             terminals: Vec::new(),
             machine_tiers: Default::default(),
             usage: Default::default(),
+            clean_checkout: false,
         };
         App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot")
@@ -13224,6 +13236,7 @@ mod tests {
             terminals: Vec::new(),
             machine_tiers: Default::default(),
             usage: Default::default(),
+            clean_checkout: false,
         };
         let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot");
@@ -13287,6 +13300,7 @@ mod tests {
             terminals: Vec::new(),
             machine_tiers: Default::default(),
             usage: Default::default(),
+            clean_checkout: false,
         };
         let app = App::new(Box::new(fake), dir.clone(), theme()).expect("fake transport snapshot");
         (app, sent, dir)
@@ -18279,6 +18293,7 @@ mod tests {
             terminals: Vec::new(),
             machine_tiers: Default::default(),
             usage: Default::default(),
+            clean_checkout: false,
         };
         let mut app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot");
@@ -20427,6 +20442,52 @@ mod tests {
         );
     }
 
+    /// A clean checkout opens on the push / pull lists (T-680): the files
+    /// view would only say "no changes". A dirty one still opens on its files.
+    #[test]
+    fn a_clean_checkout_opens_on_push_and_pull() {
+        let open = |clean: bool| {
+            let fake = super::test_support::FakeTransport {
+                board: board_three_columns(),
+                grace: vec![],
+                external: vec![],
+                resources: Resources::default(),
+                shell_env: Default::default(),
+                git: Default::default(),
+                pending: Vec::new(),
+                automation: Default::default(),
+                status_top: false,
+                claude_md: Default::default(),
+                sent: Default::default(),
+                refuse_focus: false,
+                refuse_mint: false,
+                notes: std::collections::HashMap::new(),
+                terminals: Vec::new(),
+                machine_tiers: Default::default(),
+                usage: Default::default(),
+                clean_checkout: clean,
+            };
+            let mut app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
+                .expect("fake transport snapshot");
+            app.git = mesimon_core::command::RepoGit {
+                sampled: true,
+                branch: "main".into(),
+                upstream: Some("origin/main".into()),
+                ..Default::default()
+            };
+            press(&mut app, 'v');
+            assert_eq!(app.screen, Screen::Diff);
+            app
+        };
+
+        let mut app = open(true);
+        assert!(app.diff.as_ref().unwrap().commits, "nothing uncommitted: the lists");
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(!app.diff.as_ref().unwrap().commits, "Tab still reaches the files view");
+
+        assert!(!open(false).diff.as_ref().unwrap().commits, "uncommitted work: its files");
+    }
+
     #[test]
     fn double_move_never_wraps_at_either_board_edge() {
         for (col, key, id) in [(0, '<', ulid::Ulid(1)), (2, '>', ulid::Ulid(3))] {
@@ -21403,6 +21464,7 @@ mod tests {
             terminals: Vec::new(),
             machine_tiers: Default::default(),
             usage: Default::default(),
+            clean_checkout: false,
         };
         let mut app = App::new(Box::new(fake), dir.clone(), theme()).unwrap();
         let mut team = super::joined_team_fixture();
