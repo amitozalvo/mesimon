@@ -164,25 +164,32 @@ pub fn api_error(path: &Path) -> Option<ApiError> {
 /// mid-record, so the first line of a truncated read is dropped; a line that
 /// is not JSON is skipped (09 §4.3: never resync).
 fn tail_records(path: &Path) -> Option<Vec<serde_json::Value>> {
-    let mut f = std::fs::File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
-    let start = len.saturating_sub(64 * 1024);
-    f.seek(SeekFrom::Start(start)).ok()?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf);
-    let mut lines: Vec<&str> = text.lines().collect();
-    if start > 0 && !lines.is_empty() {
-        lines.remove(0);
-    }
+    let len = std::fs::metadata(path).ok()?.len();
+    let text = window_text(path, len, 64 * 1024)?;
     Some(
-        lines
-            .iter()
+        text.lines()
             .rev()
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
             .collect(),
     )
+}
+
+/// The whole lines in the final `window` bytes of a `len`-byte JSONL file:
+/// the read can open mid-record and mid-UTF-8, so it is lossy and its first
+/// line is dropped when it did not start at the top. `None` only when the
+/// file cannot be read.
+pub(crate) fn window_text(path: &Path, len: u64, window: u64) -> Option<String> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let start = len.saturating_sub(window);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    if start == 0 {
+        return Some(text);
+    }
+    Some(text.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or_default())
 }
 
 /// Per-session cursor, daemon-held, never persisted.

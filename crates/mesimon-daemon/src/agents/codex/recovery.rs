@@ -3,8 +3,7 @@
 //! caller owns authorization, pane absence, and acknowledgment of that risk.
 
 use std::io::{Read, Seek, SeekFrom};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -161,50 +160,26 @@ fn launch_target(
 
 /// Excludes listeners without waiting on a full Unix socket accept backlog.
 pub fn recovery_endpoint_absent(path: &Path) -> Result<(), String> {
-    let bytes = path.as_os_str().as_bytes();
-    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
-        return Err("Codex recovery endpoint cannot be inspected".into());
-    }
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    #[cfg(target_os = "macos")]
-    {
-        address.sun_len = std::mem::size_of_val(&address) as u8;
-    }
-    for (target, source) in address.sun_path.iter_mut().zip(bytes) {
-        *target = *source as libc::c_char;
-    }
-    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-    if fd < 0 {
-        return Err("Codex recovery cannot inspect endpoint listeners".into());
-    }
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
-        return Err("Codex recovery cannot bound endpoint inspection".into());
-    }
-    let result = unsafe {
-        libc::connect(
-            fd.as_raw_fd(),
-            (&address as *const libc::sockaddr_un).cast(),
-            std::mem::size_of_val(&address) as libc::socklen_t,
-        )
+    use super::ProbeFail;
+    let connected = match super::connect_probe(path) {
+        Err(ProbeFail::Path) => return Err("Codex recovery endpoint cannot be inspected".into()),
+        Err(ProbeFail::Socket(_)) => {
+            return Err("Codex recovery cannot inspect endpoint listeners".into())
+        }
+        Err(ProbeFail::NonBlock(_)) => {
+            return Err("Codex recovery cannot bound endpoint inspection".into())
+        }
+        Ok(connected) => connected,
     };
-    if result < 0
-        && matches!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ENOENT | libc::ECONNREFUSED)
-        )
-    {
-        Ok(())
-    } else {
-        Err(format!(
+    match connected {
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ECONNREFUSED)) => Ok(()),
+        other => Err(format!(
             "An old Codex endpoint is still live or its absence cannot be verified: {}",
-            if result == 0 {
-                "connected".into()
-            } else {
-                std::io::Error::last_os_error().to_string()
+            match other {
+                Ok(()) => "connected".to_string(),
+                Err(e) => e.to_string(),
             }
-        ))
+        )),
     }
 }
 

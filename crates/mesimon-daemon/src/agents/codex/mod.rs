@@ -348,6 +348,51 @@ pub struct Snapshot {
     pub rate_limits_at_ms: u64,
 }
 
+/// Why a socket probe could not be made: a path no `sockaddr_un` holds,
+/// or the socket or its nonblocking flag refused.
+pub(crate) enum ProbeFail {
+    Path,
+    Socket(std::io::Error),
+    NonBlock(std::io::Error),
+}
+
+/// A nonblocking connect to the Unix socket at `path`, sending nothing: the
+/// inner result is the connect's, so a full accept backlog is never waited
+/// on. Both of Codex's liveness checks ask through this one `unsafe` block.
+pub(crate) fn connect_probe(path: &Path) -> Result<std::io::Result<()>, ProbeFail> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
+        return Err(ProbeFail::Path);
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    #[cfg(target_os = "macos")]
+    {
+        address.sun_len = std::mem::size_of_val(&address) as u8;
+    }
+    for (target, source) in address.sun_path.iter_mut().zip(bytes) {
+        *target = *source as libc::c_char;
+    }
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(ProbeFail::Socket(std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
+        return Err(ProbeFail::NonBlock(std::io::Error::last_os_error()));
+    }
+    let result = unsafe {
+        libc::connect(
+            fd.as_raw_fd(),
+            (&address as *const libc::sockaddr_un).cast(),
+            std::mem::size_of_val(&address) as libc::socklen_t,
+        )
+    };
+    Ok(if result == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) })
+}
+
 #[cfg(test)]
 mod input_tests {
     use super::*;

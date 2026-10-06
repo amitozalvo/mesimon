@@ -248,25 +248,12 @@ fn read_tail_info(path: &Path, len: u64) -> TailInfo {
 }
 
 fn scan_tail_window(path: &Path, len: u64, window: u64) -> TailInfo {
-    use std::io::{Read, Seek, SeekFrom};
     let mut info = TailInfo::default();
-    let Ok(mut f) = std::fs::File::open(path) else { return info };
-    let start = len.saturating_sub(window);
-    if f.seek(SeekFrom::Start(start)).is_err() {
+    let Some(text) = crate::agents::claude::tail::window_text(path, len, window) else {
         return info;
-    }
-    let mut buf = Vec::new();
-    if f.read_to_end(&mut buf).is_err() {
-        return info;
-    }
-    // The seek can land mid-record and mid-UTF-8 — lossy, never fatal.
-    let text = String::from_utf8_lossy(&buf);
-    let mut lines: Vec<&str> = text.lines().collect();
-    if start > 0 && !lines.is_empty() {
-        lines.remove(0); // the seek landed mid-line
-    }
+    };
     // Reversed: the first hit of each kind is the latest write.
-    for line in lines.iter().rev() {
+    for line in text.lines().rev() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         if v.get("uuid").is_none() {
             let s = |key: &str| v.get(key).and_then(serde_json::Value::as_str).map(str::to_string);

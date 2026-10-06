@@ -6,8 +6,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
@@ -518,39 +516,14 @@ fn supervise(config: &RuntimeConfig, observation: &mut Observation) -> Result<()
 /// CLI wrapper is still alive. Require a live private listener before accepting
 /// that as an intentional quit. This nonblocking connect sends no RPC or data.
 fn verify_upstream_listener(path: &Path) -> Result<()> {
-    let bytes = path.as_os_str().as_bytes();
-    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
-        bail!("Codex upstream endpoint cannot be verified on native quit");
+    use super::ProbeFail;
+    match super::connect_probe(path) {
+        Err(ProbeFail::Path) => bail!("Codex upstream endpoint cannot be verified on native quit"),
+        Err(ProbeFail::Socket(e)) => Err(e).context("create Codex quit liveness probe"),
+        Err(ProbeFail::NonBlock(e)) => Err(e).context("bound Codex quit liveness probe"),
+        Ok(connected) => connected
+            .context("Codex app-server listener is unavailable or unverified on native quit"),
     }
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    #[cfg(target_os = "macos")]
-    {
-        address.sun_len = std::mem::size_of_val(&address) as u8;
-    }
-    for (target, source) in address.sun_path.iter_mut().zip(bytes) {
-        *target = *source as libc::c_char;
-    }
-    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error()).context("create Codex quit liveness probe");
-    }
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
-        return Err(std::io::Error::last_os_error()).context("bound Codex quit liveness probe");
-    }
-    if unsafe {
-        libc::connect(
-            fd.as_raw_fd(),
-            (&address as *const libc::sockaddr_un).cast(),
-            std::mem::size_of_val(&address) as libc::socklen_t,
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error())
-            .context("Codex app-server listener is unavailable or unverified on native quit");
-    }
-    Ok(())
 }
 
 fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owned) -> Result<()> {

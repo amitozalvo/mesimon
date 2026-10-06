@@ -9,7 +9,6 @@ use mesimon_core::adopt::{
 };
 use mesimon_core::mesophon::{RowKind, TranscriptRow};
 use serde_json::Value;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -105,18 +104,9 @@ struct Tail {
 /// latest write, so an assistant reply ends the walk immediately. `None` only
 /// when the file cannot be read.
 fn scan_window(path: &Path, len: u64, window: u64) -> Option<Tail> {
-    let mut f = std::fs::File::open(path).ok()?;
-    let start = len.saturating_sub(window);
-    f.seek(SeekFrom::Start(start)).ok()?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf);
-    let mut lines: Vec<&str> = text.lines().collect();
-    if start > 0 && !lines.is_empty() {
-        lines.remove(0); // the window may open mid-record
-    }
+    let text = super::tail::window_text(path, len, window)?;
     let mut tail = Tail::default();
-    for line in lines.iter().rev() {
+    for line in text.lines().rev() {
         if line.trim().is_empty() {
             continue;
         }
