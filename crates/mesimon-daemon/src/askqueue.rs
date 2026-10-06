@@ -15,7 +15,7 @@
 //! `schema_version`, a newer build's bytes left untouched with writes
 //! barred, an unparseable file quarantined rather than clobbered.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use mesimon_core::board::AgentProvider;
@@ -66,71 +66,18 @@ pub fn queue_file(paths: &Paths) -> PathBuf {
     paths.queue_file()
 }
 
-/// `Err(Some(v))` is a file from a NEWER mesimon: valid bytes this build
-/// must refuse rather than guess at. `Err(None)` is genuinely unparseable.
-fn parse(text: &str) -> std::result::Result<Vec<QueuedEntry>, (Option<u32>, String)> {
-    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| (None, e.to_string()))?;
-    let found = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
-    if found > QUEUE_SCHEMA {
-        return Err((Some(found), format!("schema {found}")));
-    }
-    serde_json::from_value::<QueueFile>(v).map(|f| f.entries).map_err(|e| (None, e.to_string()))
-}
-
 /// Startup loader: the entries, any notices, and whether writes are barred.
 /// A missing file is an empty queue. Barred means bytes we could not read
 /// (or a newer build's) are still on disk, so a save would destroy the only
 /// copy — the daemon then keeps its queue in memory for the run, as before.
 pub fn load_or_recover(paths: &Paths) -> (Vec<QueuedEntry>, Vec<Notice>, bool) {
-    let f = queue_file(paths);
-    let mut notices = Vec::new();
-    if !f.is_file() {
-        return (Vec::new(), notices, false);
-    }
-    let text = match std::fs::read_to_string(&f) {
-        Ok(t) => t,
-        Err(e) => {
-            notices.push(
-                Notice::new("quarantined", "queued asks could not be opened — not written to")
-                    .with_path(f.display())
-                    .with_detail(e.to_string()),
-            );
-            return (Vec::new(), notices, true);
-        }
-    };
-    let detail = match parse(&text) {
-        Ok(entries) => return (entries, notices, false),
-        Err((Some(found), _)) => {
-            notices.push(
-                Notice::new(
-                    "future_version",
-                    format!(
-                        "queue.json was written by a newer mesimon (schema {found}, this build \
-                         reads {QUEUE_SCHEMA}) — left untouched and not written to"
-                    ),
-                )
-                .with_path(f.display()),
-            );
-            return (Vec::new(), notices, true);
-        }
-        Err((None, detail)) => detail,
-    };
-    let moved = crate::store::quarantine(&f);
-    notices.push(
-        Notice::new(
-            "quarantined",
-            match &moved {
-                Some(dest) => format!(
-                    "queued asks could not be read — the file was set aside as {}",
-                    short_name(dest)
-                ),
-                None => "queued asks could not be read — not written to".to_string(),
-            },
-        )
-        .with_path(f.display())
-        .with_detail(detail),
+    let (file, notices, barred) = crate::store::load_versioned::<QueueFile>(
+        &queue_file(paths),
+        QUEUE_SCHEMA,
+        "queued asks",
+        "",
     );
-    (Vec::new(), notices, moved.is_none())
+    (file.map(|f| f.entries).unwrap_or_default(), notices, barred)
 }
 
 pub fn save(paths: &Paths, entries: &[QueuedEntry]) -> Result<()> {
@@ -144,10 +91,6 @@ pub fn save(paths: &Paths, entries: &[QueuedEntry]) -> Result<()> {
     }
     let qf = QueueFile { schema_version: QUEUE_SCHEMA, entries: entries.to_vec() };
     crate::store::write_atomic(&f, &serde_json::to_string_pretty(&qf)?, crate::store::PRIVATE)
-}
-
-fn short_name(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -229,81 +229,26 @@ impl TrainFile {
     }
 }
 
-/// `Err(Some(v))` is a file from a NEWER mesimon: valid bytes this build
-/// must refuse rather than guess at. `Err(None)` is genuinely unparseable.
-fn parse(text: &str) -> std::result::Result<TrainFile, (Option<u32>, String)> {
-    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| (None, e.to_string()))?;
-    let found = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
-    if found > TRAIN_SCHEMA {
-        return Err((Some(found), format!("schema {found}")));
-    }
-    serde_json::from_value::<TrainFile>(v).map_err(|e| (None, e.to_string()))
-}
-
 /// Startup loader: the file, any notices, and whether writes are barred.
-/// It follows the other state files' contract: a newer build's bytes left
-/// untouched with writes barred, an unparseable file quarantined rather
-/// than clobbered. A barred train still holds for the run.
+/// It follows the other state files' contract (`store::load_versioned`). A
+/// barred train still holds for the run.
 pub fn load_or_recover(paths: &Paths) -> (TrainFile, Vec<Notice>, bool) {
-    let f = paths.train_file();
-    let mut notices = Vec::new();
-    if !f.is_file() {
-        return (TrainFile::default(), notices, false);
-    }
-    let text = match std::fs::read_to_string(&f) {
-        Ok(t) => t,
-        Err(e) => {
-            notices.push(
-                Notice::new(
-                    "quarantined",
-                    "the merge train's open asks could not be opened — not written to",
-                )
-                .with_path(f.display())
-                .with_detail(e.to_string()),
-            );
-            return (TrainFile::default(), notices, true);
-        }
-    };
-    let detail = match parse(&text) {
-        Ok(file) => return (file, notices, false),
-        Err((Some(found), _)) => {
-            notices.push(
-                Notice::new(
-                    "future_version",
-                    format!(
-                        "train.json was written by a newer mesimon (schema {found}, this build \
-                         reads {TRAIN_SCHEMA}) — left untouched and not written to"
-                    ),
-                )
-                .with_path(f.display()),
-            );
-            return (TrainFile::default(), notices, true);
-        }
-        Err((None, detail)) => detail,
-    };
-    let moved = crate::store::quarantine(&f);
-    notices.push(
-        Notice::new(
-            "quarantined",
-            match &moved {
-                Some(dest) => format!(
-                    "the merge train's open asks could not be read — the file was set aside as {}",
-                    dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-                ),
-                None => {
-                    "the merge train's open asks could not be read — not written to".to_string()
-                }
-            },
-        )
-        .with_path(f.display())
-        .with_detail(detail),
+    let (file, notices, barred) = crate::store::load_versioned(
+        &paths.train_file(),
+        TRAIN_SCHEMA,
+        "the merge train's open asks",
+        "",
     );
-    (TrainFile::default(), notices, moved.is_none())
+    (file.unwrap_or_default(), notices, barred)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(text: &str) -> std::result::Result<TrainFile, (Option<u32>, String)> {
+        crate::store::parse_versioned(text, TRAIN_SCHEMA)
+    }
 
     fn pair() -> Arc<Mutex<UnixStream>> {
         let (a, _b) = UnixStream::pair().expect("a socket pair");

@@ -416,77 +416,22 @@ fn stamp(at_ms: u64, now_ms: u64) -> u64 {
     }
 }
 
-/// `Err(Some(v))` is a file from a NEWER mesimon; `Err(None)` is unparseable.
-fn parse(text: &str) -> std::result::Result<Ledger, (Option<u32>, String)> {
-    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| (None, e.to_string()))?;
-    let found = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
-    if found > COSTS_SCHEMA {
-        return Err((Some(found), format!("schema {found}")));
-    }
-    serde_json::from_value::<Ledger>(v).map_err(|e| (None, e.to_string()))
-}
-
 /// Startup loader: the ledger, any notices, and whether writes are barred.
 pub fn load_or_recover(paths: &Paths) -> (Ledger, Vec<Notice>, bool) {
-    let f = paths.costs_file();
-    let mut notices = Vec::new();
-    if !f.is_file() {
-        return (Ledger::default(), notices, false);
-    }
-    let text = match std::fs::read_to_string(&f) {
-        Ok(t) => t,
-        Err(e) => {
-            notices.push(
-                Notice::new(
-                    "quarantined",
-                    "the tickets' costs could not be opened — not written to",
-                )
-                .with_path(f.display())
-                .with_detail(e.to_string()),
-            );
-            return (Ledger::default(), notices, true);
-        }
-    };
-    let detail = match parse(&text) {
-        Ok(ledger) => return (ledger, notices, false),
-        Err((Some(found), _)) => {
-            notices.push(
-                Notice::new(
-                    "future_version",
-                    format!(
-                        "costs.json was written by a newer mesimon (schema {found}, this build \
-                         reads {COSTS_SCHEMA}) — left untouched and not written to"
-                    ),
-                )
-                .with_path(f.display()),
-            );
-            return (Ledger::default(), notices, true);
-        }
-        Err((None, detail)) => detail,
-    };
-    let moved = crate::store::quarantine(&f);
-    notices.push(
-        Notice::new(
-            "quarantined",
-            match &moved {
-                Some(dest) => format!(
-                    "the tickets' costs could not be read — the file was set aside as {}, and \
-                     counting starts again",
-                    dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-                ),
-                None => "the tickets' costs could not be read — not written to".to_string(),
-            },
-        )
-        .with_path(f.display())
-        .with_detail(detail),
+    let (ledger, notices, barred) = crate::store::load_versioned(
+        &paths.costs_file(),
+        COSTS_SCHEMA,
+        "the tickets' costs",
+        ", and counting starts again",
     );
-    (Ledger::default(), notices, moved.is_none())
+    (ledger.unwrap_or_default(), notices, barred)
 }
 
 /// The ledger as it stands on disk, for a reader that writes nothing
 /// (doctor): `None` when it is missing, unreadable or a newer build's.
 pub fn read_only(paths: &Paths) -> Option<Ledger> {
-    parse(&std::fs::read_to_string(paths.costs_file()).ok()?).ok()
+    crate::store::parse_versioned(&std::fs::read_to_string(paths.costs_file()).ok()?, COSTS_SCHEMA)
+        .ok()
 }
 
 pub fn save(paths: &Paths, ledger: &Ledger) -> Result<()> {

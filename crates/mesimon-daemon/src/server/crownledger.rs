@@ -57,71 +57,11 @@ pub(super) struct Ledger {
     lingered: BTreeSet<uuid::Uuid>,
 }
 
-/// `Err(Some(v))` is a file from a NEWER mesimon: valid bytes this build
-/// must refuse rather than guess at. `Err(None)` is genuinely unparseable.
-fn parse(text: &str) -> std::result::Result<Ledger, (Option<u32>, String)> {
-    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| (None, e.to_string()))?;
-    let found = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
-    if found > CROWN_SCHEMA {
-        return Err((Some(found), format!("schema {found}")));
-    }
-    serde_json::from_value::<Ledger>(v).map_err(|e| (None, e.to_string()))
-}
-
 /// Startup loader: the ledger, any notices, and whether writes are barred.
 pub(super) fn load_or_recover(paths: &Paths) -> (Ledger, Vec<Notice>, bool) {
-    let f = paths.crown_file();
-    let mut notices = Vec::new();
-    if !f.is_file() {
-        return (Ledger::default(), notices, false);
-    }
-    let text = match std::fs::read_to_string(&f) {
-        Ok(t) => t,
-        Err(e) => {
-            notices.push(
-                Notice::new(
-                    "quarantined",
-                    "the crown's ledger could not be opened — not written to",
-                )
-                .with_path(f.display())
-                .with_detail(e.to_string()),
-            );
-            return (Ledger::default(), notices, true);
-        }
-    };
-    let detail = match parse(&text) {
-        Ok(ledger) => return (ledger, notices, false),
-        Err((Some(found), _)) => {
-            notices.push(
-                Notice::new(
-                    "future_version",
-                    format!(
-                        "crown.json was written by a newer mesimon (schema {found}, this build \
-                         reads {CROWN_SCHEMA}) — left untouched and not written to"
-                    ),
-                )
-                .with_path(f.display()),
-            );
-            return (Ledger::default(), notices, true);
-        }
-        Err((None, detail)) => detail,
-    };
-    let moved = store::quarantine(&f);
-    notices.push(
-        Notice::new(
-            "quarantined",
-            match &moved {
-                Some(dest) => format!(
-                    "the crown's ledger could not be read — the file was set aside as {}",
-                    dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-                ),
-                None => "the crown's ledger could not be read — not written to".to_string(),
-            },
-        )
-        .with_path(f.display())
-        .with_detail(detail),
-    );
-    (Ledger::default(), notices, moved.is_none())
+    let (ledger, notices, barred) =
+        store::load_versioned(&paths.crown_file(), CROWN_SCHEMA, "the crown's ledger", "");
+    (ledger.unwrap_or_default(), notices, barred)
 }
 
 impl Daemon {
@@ -208,6 +148,10 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(text: &str) -> std::result::Result<Ledger, (Option<u32>, String)> {
+        store::parse_versioned(text, CROWN_SCHEMA)
+    }
 
     /// The ledger round-trips through its own bytes, and a newer build's
     /// file is refused rather than guessed at.

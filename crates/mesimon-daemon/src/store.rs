@@ -309,6 +309,87 @@ pub struct Loaded {
     pub sessions_write_barred: bool,
 }
 
+/// A versioned state file's text read as `T`. `Err((Some(v), _))` is a file
+/// from a NEWER mesimon: valid bytes this build must refuse rather than
+/// guess at. `Err((None, why))` is genuinely unparseable.
+pub fn parse_versioned<T: serde::de::DeserializeOwned>(
+    text: &str,
+    schema: u32,
+) -> std::result::Result<T, (Option<u32>, String)> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| (None, e.to_string()))?;
+    let found = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
+    if found > schema {
+        return Err((Some(found), format!("schema {found}")));
+    }
+    serde_json::from_value::<T>(v).map_err(|e| (None, e.to_string()))
+}
+
+/// The startup contract every versioned state file in the state dir keeps:
+/// the file (`None` when missing or refused), any notices, and whether
+/// writes are barred. A newer build's bytes are left untouched with writes
+/// barred; an unparseable file is quarantined rather than clobbered, and
+/// barred only when it could not be moved. `what` names the contents in the
+/// notices (`queued asks`); `set_aside_tail` follows the quarantine's
+/// sentence.
+pub fn load_versioned<T: serde::de::DeserializeOwned>(
+    f: &Path,
+    schema: u32,
+    what: &str,
+    set_aside_tail: &str,
+) -> (Option<T>, Vec<Notice>, bool) {
+    let mut notices = Vec::new();
+    if !f.is_file() {
+        return (None, notices, false);
+    }
+    let text = match std::fs::read_to_string(f) {
+        Ok(t) => t,
+        Err(e) => {
+            notices.push(
+                Notice::new("quarantined", format!("{what} could not be opened — not written to"))
+                    .with_path(f.display())
+                    .with_detail(e.to_string()),
+            );
+            return (None, notices, true);
+        }
+    };
+    let name =
+        |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let detail = match parse_versioned(&text, schema) {
+        Ok(file) => return (Some(file), notices, false),
+        Err((Some(found), _)) => {
+            notices.push(
+                Notice::new(
+                    "future_version",
+                    format!(
+                        "{} was written by a newer mesimon (schema {found}, this build reads \
+                         {schema}) — left untouched and not written to",
+                        name(f)
+                    ),
+                )
+                .with_path(f.display()),
+            );
+            return (None, notices, true);
+        }
+        Err((None, detail)) => detail,
+    };
+    let moved = quarantine(f);
+    notices.push(
+        Notice::new(
+            "quarantined",
+            match &moved {
+                Some(dest) => format!(
+                    "{what} could not be read — the file was set aside as {}{set_aside_tail}",
+                    name(dest)
+                ),
+                None => format!("{what} could not be read — not written to"),
+            },
+        )
+        .with_path(f.display())
+        .with_detail(detail),
+    );
+    (None, notices, moved.is_none())
+}
+
 /// Move a file mesimon cannot read out of the way, preserving every byte.
 ///
 /// Rename, not copy: a copy leaves the bad bytes at the canonical path, so the

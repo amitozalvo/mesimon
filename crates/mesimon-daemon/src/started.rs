@@ -64,17 +64,6 @@ fn minted(hooks_dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// `Err(Some(v))` is a file from a NEWER mesimon: valid bytes this build
-/// must refuse rather than guess at. `Err(None)` is genuinely unparseable.
-fn parse(text: &str) -> std::result::Result<Vec<String>, (Option<u32>, String)> {
-    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| (None, e.to_string()))?;
-    let found = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
-    if found > STARTED_SCHEMA {
-        return Err((Some(found), format!("schema {found}")));
-    }
-    serde_json::from_value::<StartedFile>(v).map(|f| f.keys).map_err(|e| (None, e.to_string()))
-}
-
 /// Startup loader: the file's keys, the minted ids under `hooks/` and the
 /// keys `sessions` holds now; any notices; whether writes are barred. Writes
 /// the union back when it grew.
@@ -93,60 +82,13 @@ pub fn load_or_recover(
 }
 
 fn read(paths: &Paths) -> (HashSet<String>, Vec<Notice>, bool) {
-    let f = paths.started_file();
-    let mut notices = Vec::new();
-    if !f.is_file() {
-        return (HashSet::new(), notices, false);
-    }
-    let text = match std::fs::read_to_string(&f) {
-        Ok(t) => t,
-        Err(e) => {
-            notices.push(
-                Notice::new(
-                    "quarantined",
-                    "the sessions mesimon started could not be opened — not written to",
-                )
-                .with_path(f.display())
-                .with_detail(e.to_string()),
-            );
-            return (HashSet::new(), notices, true);
-        }
-    };
-    let detail = match parse(&text) {
-        Ok(keys) => return (keys.into_iter().collect(), notices, false),
-        Err((Some(found), _)) => {
-            notices.push(
-                Notice::new(
-                    "future_version",
-                    format!(
-                        "started.json was written by a newer mesimon (schema {found}, this build \
-                         reads {STARTED_SCHEMA}) — left untouched and not written to"
-                    ),
-                )
-                .with_path(f.display()),
-            );
-            return (HashSet::new(), notices, true);
-        }
-        Err((None, detail)) => detail,
-    };
-    let moved = crate::store::quarantine(&f);
-    notices.push(
-        Notice::new(
-            "quarantined",
-            match &moved {
-                Some(dest) => format!(
-                    "the sessions mesimon started could not be read — the file was set aside as {}",
-                    dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-                ),
-                None => {
-                    "the sessions mesimon started could not be read — not written to".to_string()
-                }
-            },
-        )
-        .with_path(f.display())
-        .with_detail(detail),
+    let (file, notices, barred) = crate::store::load_versioned::<StartedFile>(
+        &paths.started_file(),
+        STARTED_SCHEMA,
+        "the sessions mesimon started",
+        "",
     );
-    (HashSet::new(), notices, moved.is_none())
+    (file.map(|f| f.keys.into_iter().collect()).unwrap_or_default(), notices, barred)
 }
 
 /// Sorted, so the file diffs as the set it is.
