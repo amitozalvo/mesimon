@@ -402,6 +402,15 @@ fn private_server(
         Access::Readable => {
             rec(Level::Ok, "private server", format!("{running}, reads the checkout"))
         }
+        Access::Denied(why) if !mesimon_backend_tmux::is_cut_off(why) => {
+            rec(Level::Warn, "private server", format!("{running}, but ls under it failed: {why}"))
+                .advice(
+                    "The probe lists the checkout through the server's run-shell, under its \
+                     default-shell. A shell that is not POSIX fails it in its own words while a \
+                     pane may still read the folder; macOS's cut-off reads `Operation not \
+                     permitted`.",
+                )
+        }
         Access::Denied(why) => {
             let name = bin
                 .file_name()
@@ -1267,6 +1276,9 @@ mod tests {
         let r = private_server(&Access::Readable, Some(42), &bin, sock);
         assert!(r.level == Level::Ok, "{}", r.value);
         assert_eq!(r.value, "running (pid 42), reads the checkout");
+        let r = private_server(&Access::Denied("parse error".into()), Some(42), &bin, sock);
+        assert!(r.level == Level::Warn, "another refusal is not the cut-off");
+        assert!(!r.advice.unwrap().contains("Restart the private tmux server"));
         let r =
             private_server(&Access::Denied("Operation not permitted".into()), Some(42), &bin, sock);
         assert!(r.level == Level::Fail);

@@ -3162,7 +3162,19 @@ impl Daemon {
     /// responsible for itself, `TmuxBackend::ensure_server`).
     fn probe_server_access(&mut self) -> bool {
         let cut = match self.backend.folder_access(&self.paths.repo_root) {
-            mesimon_backend_tmux::Access::Denied(why) => Some(why),
+            mesimon_backend_tmux::Access::Denied(why) if mesimon_backend_tmux::is_cut_off(&why) => {
+                Some(why)
+            }
+            // Another refusal — a shell that is not POSIX, a checkout that
+            // moved — is not macOS's cut-off and raises no notice that says
+            // it is; the journal keeps the words.
+            mesimon_backend_tmux::Access::Denied(why) => {
+                self.journal.line(&format!(
+                    "server probe: ls under the private tmux server failed on {}: {why}",
+                    self.paths.repo_root.display()
+                ));
+                None
+            }
             mesimon_backend_tmux::Access::NoServer | mesimon_backend_tmux::Access::Readable => None,
         };
         let standing = self.notices.iter().any(|n| n.kind == SERVER_CUT_OFF);

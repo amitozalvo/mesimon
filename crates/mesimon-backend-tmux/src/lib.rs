@@ -974,9 +974,17 @@ pub fn folder_access(sock: &Path, dir: &Path) -> Access {
     if !client().arg("list-sessions").output().is_ok_and(|o| o.status.success()) {
         return Access::NoServer;
     }
-    // stderr onto stdout, stdout away: the output is the error or nothing.
-    let probe = format!("ls {} 2>&1 >/dev/null", sh_quote(&dir.display().to_string()));
-    match client().args(["run-shell", &probe]).output() {
+    // The path rides the server's environment, never the command: argv in,
+    // `"$MESIMON_PROBE_DIR"` out, and the command is a constant. `run-shell`
+    // runs under the server's `default-shell` — the person's own shell, by
+    // tmux's default — so no quoting written for `sh` is a promise here.
+    let set = client().args(["set-environment", "-g", PROBE_DIR_VAR]).arg(dir).output();
+    if !set.is_ok_and(|o| o.status.success()) {
+        return Access::Denied("tmux set-environment failed".into());
+    }
+    let out = client().args(["run-shell", PROBE_CMD]).output();
+    let _ = client().args(["set-environment", "-gu", PROBE_DIR_VAR]).output();
+    match out {
         Ok(out) => {
             match parse_access(out.status.success(), &String::from_utf8_lossy(&out.stdout)) {
                 Ok(()) => Access::Readable,
@@ -1011,10 +1019,22 @@ fn parse_access(ok: bool, out: &str) -> Result<(), String> {
     Err(if why.is_empty() { "ls failed".to_string() } else { why.to_string() })
 }
 
-/// A path as one `sh` word: single quotes, an embedded quote spelled
-/// `'\''`. The path is the repo's, which a person may have named anything.
-fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// The server's environment variable the probe's directory rides in: set
+/// with `set-environment -g` (a tmux argv, no shell), read by the shell as
+/// `"$MESIMON_PROBE_DIR"`, unset after. The checkout's path — which a
+/// person may have named anything — is never parsed as shell.
+const PROBE_DIR_VAR: &str = "MESIMON_PROBE_DIR";
+/// stderr onto stdout, stdout away: the output is the error or nothing.
+const PROBE_CMD: &str = "ls \"$MESIMON_PROBE_DIR\" 2>&1 >/dev/null";
+
+/// macOS's word for the cut-off: `ls` under the server got EPERM
+/// (`Operation not permitted`) on the directory — TCC's refusal, where a
+/// plain permissions problem is EACCES (`Permission denied`) and a shell
+/// that is not POSIX fails the probe in its own words. Only this raises the
+/// board's notice and doctor's macOS advice; any other refusal is said as
+/// what it is.
+pub fn is_cut_off(why: &str) -> bool {
+    why == "Operation not permitted"
 }
 
 #[cfg(test)]
@@ -1094,7 +1114,12 @@ mod tests {
             Err("No such file or directory".to_string())
         );
         assert_eq!(parse_access(false, "\n"), Err("ls failed".to_string()));
-        assert_eq!(sh_quote("/Users/me/it's here"), "'/Users/me/it'\\''s here'");
+        assert!(is_cut_off("Operation not permitted"));
+        assert!(!is_cut_off("Permission denied"));
+        assert!(!is_cut_off("No such file or directory"));
+        // No byte of the directory reaches the command: it is a constant,
+        // and the path rides the server's environment.
+        assert!(!PROBE_CMD.contains('\''), "nothing to quote in a constant");
     }
 
     /// The mechanism T-690 rests on, asserted where it can be: the server a
@@ -1118,8 +1143,21 @@ mod tests {
             "the server must be responsible for itself, not for the terminal this test runs in"
         );
         // And the probe reads through it: the fixture dir is nobody's
-        // protected folder.
+        // protected folder — and a directory named to break a shell is
+        // read all the same, since its path never meets one. The variable
+        // is gone afterwards.
         assert_eq!(be.folder_access(&f.dir), Access::Readable);
+        let odd = f.dir.join("it's $(odd) `here`; \"x\"");
+        std::fs::create_dir_all(&odd).unwrap();
+        assert_eq!(be.folder_access(&odd), Access::Readable);
+        assert_eq!(
+            be.folder_access(&f.dir.join("absent")),
+            Access::Denied("No such file or directory".into())
+        );
+        assert!(
+            be.run(&["show-environment", "-g", PROBE_DIR_VAR]).is_err(),
+            "unset after the probe"
+        );
         // `-D` keeps the server up with no session, where the forked one
         // exited with its last; a wake into an empty server is then a plain
         // `new-session`, with no `%0` reuse.

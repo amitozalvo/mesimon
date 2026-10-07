@@ -22191,6 +22191,16 @@ difference (`None` when no server answers, `Some(vec![])` when one answers with 
 `list-panes -a`'s `no current target` on an empty server into an empty answer. The sweep now
 proves absence in 4 s where it waited out 60.
 
+**The probe's path never meets a shell.** `run-shell` runs under the server's `default-shell`,
+which tmux takes from the person's `SHELL` — zsh, fish, nushell — so quoting written for `sh`
+is a promise about one shell; the first cut carried the checkout's path single-quoted, and the
+commit's security review flagged it. Now the path goes in by `set-environment -g
+MESIMON_PROBE_DIR <path>` (a tmux argv), the command is the constant `ls "$MESIMON_PROBE_DIR"
+2>&1 >/dev/null`, and the variable is unset after. A refusal counts as the cut-off only in
+macOS's own word, `Operation not permitted` (EPERM, `is_cut_off`); any other failure — a shell
+that is not POSIX, a checkout that moved — is a doctor WARN in its words and a journal line,
+never the notice that says macOS did it.
+
 **Not built, and why.** Automatic restart: the measured safe moment is "no pane mid-turn",
 which is the gate, but whether a turn is about to start (a queued ask, a crown wake) is the
 person's knowledge. The daemon's own disclaim (`spawn_detached`): its identity would be the

@@ -308,8 +308,10 @@ for itself (T-690); everywhere else the first `new-session` forks it as before. 
 lives on between its sessions (`exit-empty` off), so `server_alive` is `list-sessions`, never
 `has-session`, which fails on an empty server, and `TmuxBackend::panes` is `None` only when no
 server answers — the Codex cleanup probes the tmux socket on that alone, never on an empty
-list. `folder_access` (`ls` through `run-shell`) is the one probe of what a pane may read;
-`doctor`'s `private server` line and the daemon's `server_cut_off` notice both ask it.
+list. `folder_access` (`ls` through `run-shell`, the path in the server's environment and never
+in the command, since `run-shell` runs under the person's own shell) is the one probe of what a
+pane may read; `doctor`'s `private server` line and the daemon's `server_cut_off` notice both
+ask it, and only `Operation not permitted` is the cut-off.
 
 **A pane gets the user's own shell environment, delivered by a launcher, never by argv.** The
 daemon captures it by running the user's login shell from a clean base env
