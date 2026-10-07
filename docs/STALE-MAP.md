@@ -22098,8 +22098,8 @@ are byte-for-byte the same, and the suite ran unchanged (2193 passed).
 **Deferred (do not re-derive):**
 - The notifier and the keep-awake watcher each dial a full `Snapshot` on every push, so a board
   that is on screen builds two or three a broadcast. Handing them the TUI's `Arc<Board>` keeps
-  the handover fallback and is a structure change (shipped as T-686). So is memoising the built `Response` per
-  `board_version`.
+  the handover fallback and is a structure change (shipped as T-686). So is memoising the built
+  `Response` per `board_version`.
 - The five daemon hot-path leftovers (the tail parse, the phone board's measure, the queue
   order, the prices, the Codex poll) shipped as T-688, below.
 - The resume refusals the TUI arms on by substring (`resume_confirmation_offered`): the phrases
