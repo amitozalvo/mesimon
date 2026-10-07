@@ -31,6 +31,28 @@ impl AgentProvider {
             Self::Codex => Self::ClaudeCode,
         }
     }
+
+    /// The CLI has a send-now key (T-601, T-685): Claude Code's Ctrl+X
+    /// Ctrl+S, which puts the composer's words in front of a WORKING agent
+    /// mid-turn. Codex has none, so `immediately` there is a plain paste at
+    /// best and is refused instead.
+    pub fn has_send_now(self) -> bool {
+        match self {
+            Self::ClaudeCode => true,
+            Self::Codex => false,
+        }
+    }
+
+    /// The CLI has a launch flag for plan mode (T-434, T-685): Claude Code's
+    /// `--permission-mode plan`. Codex's plan mode has no flag, so a plan
+    /// ask at a Codex seat — live, parked or the one a Codex tier would
+    /// start — is refused.
+    pub fn has_plan_flag(self) -> bool {
+        match self {
+            Self::ClaudeCode => true,
+            Self::Codex => false,
+        }
+    }
 }
 
 /// Persisted session type and original provider. Notes are files, not sessions.
@@ -2773,6 +2795,18 @@ impl Board {
         self.pane_target(ticket).filter(|s| s.on_plan_dialog() || s.launched_in_plan())
     }
 
+    /// The pane seat Claude Code's send-now can reach (T-601, T-685): the
+    /// prompt target where its provider has the key. A parked agent and an
+    /// empty seat have no turn to cut into — a wake and a start take the
+    /// words as the launch's first prompt — and a Codex pane has no key, so
+    /// none of them is one. The TUI's `immediately` stop is offered by this
+    /// and the daemon's `PromptSession`/`ask_agent` refusal reads it: one
+    /// predicate, so the field never offers a stop the daemon refuses nor
+    /// hides one it would take.
+    pub fn send_now_seat(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
+        self.pane_target(ticket).filter(|s| s.kind.provider().is_some_and(|p| p.has_send_now()))
+    }
+
     /// The agent a ticket already holds, parked or not — `is_live`, so a
     /// Sleeping record counts. A ticket holds ONE agent across providers: the
     /// daemon refuses a second spawn by this, and `c` wakes rather than
@@ -3124,6 +3158,49 @@ mod tests {
             board.sessions[1].state = SessionState::Running;
             assert_eq!(board.pane_target(ticket).unwrap().id, id);
         }
+    }
+
+    /// T-685: the one seat a send-now reaches. The TUI offers the
+    /// `immediately` stop by this and the daemon refuses by it, so the
+    /// four seats answer once: a paned Claude yes; a parked Claude, an
+    /// empty seat and a Codex pane no.
+    #[test]
+    fn send_now_seat_is_a_claude_pane_alone() {
+        let ticket = ulid::Ulid::new();
+        let rec = |kind: SessionKind, state: SessionState| {
+            SessionRecord::new(
+                uuid::Uuid::new_v4(),
+                kind,
+                ticket,
+                Vec::new(),
+                "/repo".into(),
+                state,
+            )
+        };
+        let with = |sessions: Vec<SessionRecord>| Board { sessions, ..Board::default() };
+        let paned = with(vec![rec(SessionKind::Claude, SessionState::Running)]);
+        assert_eq!(
+            paned.send_now_seat(ticket).map(|s| s.id),
+            paned.pane_target(ticket).map(|s| s.id)
+        );
+        assert!(paned.send_now_seat(ticket).is_some(), "a paned claude");
+        let parked = with(vec![rec(SessionKind::Claude, SessionState::Sleeping)]);
+        assert!(parked.live_agent(ticket).is_some(), "the seat is held");
+        assert!(parked.send_now_seat(ticket).is_none(), "a parked claude: a wake takes the words");
+        assert!(with(vec![]).send_now_seat(ticket).is_none(), "an empty seat: a start takes them");
+        let codex = with(vec![rec(SessionKind::Codex, SessionState::Running)]);
+        assert!(codex.pane_target(ticket).is_some());
+        assert!(codex.send_now_seat(ticket).is_none(), "a codex pane has no key");
+        // A shell beside a parked claude is a pane and not a seat.
+        let shell = with(vec![
+            rec(SessionKind::Bash, SessionState::Running),
+            rec(SessionKind::Claude, SessionState::Sleeping),
+        ]);
+        assert!(shell.send_now_seat(ticket).is_none());
+        assert!(
+            AgentProvider::ClaudeCode.has_send_now() && AgentProvider::ClaudeCode.has_plan_flag()
+        );
+        assert!(!AgentProvider::Codex.has_send_now() && !AgentProvider::Codex.has_plan_flag());
     }
 
     /// T-541: a crown-started agent holds a budget seat only while it is

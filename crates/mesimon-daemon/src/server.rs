@@ -5694,7 +5694,7 @@ impl Daemon {
                     Some(Err(message)) => return Response::Err { message },
                 };
                 let plan_refused = match &pick {
-                    Some(t) => (plan && t.provider == AgentProvider::Codex).then(|| {
+                    Some(t) => (plan && !t.provider.has_plan_flag()).then(|| {
                         format!("plan mode is a claude launch flag ∙ {} runs codex", t.name)
                     }),
                     None => self.plan_refusal(target, plan),
@@ -9887,24 +9887,34 @@ impl Daemon {
     }
 
     /// Why Claude Code's send-now (T-601) cannot reach this ticket's agent,
-    /// or `None`: it is Claude Code's key, and a Codex pane has none.
+    /// or `None`: the seat is `Board::send_now_seat`, the predicate the
+    /// TUI offers the `immediately` stop by (T-685), so a refusal here is
+    /// one the field never offered. Two ways to fall short: the seat's
+    /// provider has no such key (Codex), or there is no pane for the key to
+    /// cut into — a parked agent or an empty seat, whose words a wake or a
+    /// start takes whole, as `now` would send them.
     fn immediate_refusal(&self, ticket: ulid::Ulid) -> Option<&'static str> {
-        let rec = self.board.live_agent(ticket)?;
-        (rec.kind != SessionKind::Claude).then_some("has no send-now (Claude Code's alone)")
+        if self.board.send_now_seat(ticket).is_some() {
+            return None;
+        }
+        Some(if self.tier_book().seat_provider(ticket).has_send_now() {
+            "has no turn for a send-now to cut into ∙ now delivers the words"
+        } else {
+            "has no send-now (Claude Code's alone)"
+        })
     }
 
     /// Why a plan-mode ask cannot reach this ticket (T-434), or `None`. The
     /// flag is `--permission-mode plan`, Claude Code's; a Codex session, or
     /// an empty seat on a Codex board, has no launch flag for its plan mode.
+    /// The seat's provider is `Book::seat_provider`, the one the TUI's
+    /// `plan_able` reads (T-685).
     fn plan_refusal(&self, ticket: ulid::Ulid, plan: bool) -> Option<String> {
         if !plan {
             return None;
         }
-        let codex = match self.board.live_agent(ticket) {
-            Some(rec) => rec.kind == SessionKind::Codex,
-            None => self.tier_book().start_provider(ticket) == AgentProvider::Codex,
-        };
-        codex.then(|| "plan mode is a claude launch flag ∙ this seat runs codex".to_string())
+        (!self.tier_book().seat_provider(ticket).has_plan_flag())
+            .then(|| "plan mode is a claude launch flag ∙ this seat runs codex".to_string())
     }
 
     /// Ask every seat in a column — paned, parked or EMPTY (T-405). The one

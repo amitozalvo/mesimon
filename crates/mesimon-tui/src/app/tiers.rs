@@ -67,10 +67,7 @@ impl App {
     /// Which agent `c` (and every spawn road) means on this ticket: the
     /// seat's own where it holds one, else the one the ticket's tier starts.
     pub(crate) fn agent_kind_for(&self, ticket: ulid::Ulid) -> SessionKind {
-        match self.board.live_agent(ticket) {
-            Some(rec) => rec.kind,
-            None => self.tiers().start_provider(ticket).session_kind(),
-        }
+        self.tiers().seat_provider(ticket).session_kind()
     }
 
     /// The provider the open composer's launch would run: its `^n` pick's,

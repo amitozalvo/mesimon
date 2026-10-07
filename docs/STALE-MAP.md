@@ -22108,10 +22108,10 @@ are byte-for-byte the same, and the suite ran unchanged (2193 passed).
   `resolve_spawn_cwd` (the queue's `Start` and the pending-spawn replay skip it today, and so
   does `control_workspace`). The tag picker's name field should call `edit_buffer_key` (it types
   a Ctrl+letter). `editor.rs`'s `" {} ago"` can read "now ago". The TUI's `immediate_able` reads
-  `pane_target` where the daemon's `immediate_refusal` reads `live_agent`.
+  `pane_target` where the daemon's `immediate_refusal` reads `live_agent` (shipped, T-685).
 - Wider moves: a core `MergeStage` (the crown parses merge words back from strings),
   `mod_takes(id, Speak, text)` over the bare `"submit"`/`"fill"`/`"answer"` strings,
-  `AgentProvider::{has_plan_flag, has_send_now}` and `tier::Book::seat_provider`, one
+  `AgentProvider::{has_plan_flag, has_send_now}` and `tier::Book::seat_provider` (shipped, T-685), one
   `forget_inputs(id)` over the per-session Codex maps (which sites clear which map is a
   decision), the Hinnant date math in `clock`, one pick per chord (`Option<Chord>` over four
   `*_armed`), and the prefs `load()` defaults read from one `Prefs::default()`.
@@ -22348,3 +22348,44 @@ and `arming_seeds_from_the_last_handed_board`; the rig's `change` hands the boar
 pushes an event handed away, so every notifier test runs the road the board's state picks.
 `caffeine_watch::tests::on_screen_observe_drives_the_hold_and_the_daemon_builds_nothing`; the
 dial-road tests there say `saw_board(false)` first. `cargo ut`, `focus_quiet_e2e`.
+
+## Send-now is offered and refused by one seat (T-685, 2026-10-07, "Send-now: the TUI offers it by pane_target while the daemon judges it by live_agent")
+
+**The disagreement** (found by T-682's pass). The ask field offered the `immediately` stop
+where `pane_target(ticket)` was a Claude session; the daemon's `immediate_refusal` refused
+where `live_agent(ticket)` was not Claude and let an empty seat through. So a parked Claude
+and an empty seat got the stop from nobody and the send from the daemon — a crown's
+`ask_agent` with `deliver: immediately` at either was accepted, and `Daemon::deliver` then
+dropped the flag on the floor (a `Wake` and a `Start` take the words as the launch's first
+prompt), reporting `sent_immediately` for a plain wake. A sleeping Codex seat was refused
+where the field had hidden nothing it could have offered.
+
+**The rule.** A send-now is Claude Code's key over a RUNNING turn. A parked seat and an empty
+one have no turn for it to cut into, and a Codex pane has no key, so none of them takes it:
+`immediately` is refused at all three, and the refusal names `now`, which does the same thing
+there (the wake or the start carries the words). An idle Claude pane keeps T-601's silent
+degrade to the plain send — the pane exists, the key is harmless, and idle is a race the
+person could not see. The crown's refusal text already says `deliver now sends the words at
+once without it`; the person's field never offers the stop where it would be refused.
+
+**Shipped.**
+- `Board::send_now_seat(ticket)`: `pane_target` filtered to a provider with the key. The TUI's
+  `immediate_able` is `send_now_seat(t).is_some()`; the daemon's `immediate_refusal` is `None`
+  exactly where it is `Some`, with two reasons for `None`: `has no send-now (Claude Code's
+  alone)` for a Codex seat and `has no turn for a send-now to cut into ∙ now delivers the
+  words` for a parked or empty one.
+- `AgentProvider::has_send_now()` and `has_plan_flag()`, the two facts about a CLI the field
+  and the refusals were spelling as `== Codex` / `!= Claude` in four places.
+- `tier::Book::seat_provider(ticket)`: the seat's own provider where one is held (live, parked
+  or stopping), else `start_provider`. `plan_able` (TUI), `plan_refusal` (daemon), the crown's
+  tier pick and `App::agent_kind_for` all read it; the plan flag's two readers now agree by
+  construction as the send-now's do.
+- Tests: `send_now_seat_is_a_claude_pane_alone` (core: paned Claude yes; parked Claude, empty
+  seat, Codex pane, shell beside a parked Claude no), `seat_provider` in the tier book's
+  ring test, and `ask_queue_e2e` refuses a `PromptSession { immediately }` at the parked seat
+  and parks nothing. The TUI ring test (`the_ask_field_sends_immediately_on_a_claude_pane`)
+  and the crown e2e's `immediately` cases pass unchanged.
+
+**Not done.** `prompt_column`'s plan-accept count in the TUI (`app.rs`, `PromptColumn`'s
+receipt) still reads `pane_target` + `RequiresAction{Plan}` by hand where `plan_seat` is the
+daemon's word; it counts, it decides nothing, and the two differ only by `launched_in_plan`.

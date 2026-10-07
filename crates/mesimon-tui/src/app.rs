@@ -4068,15 +4068,13 @@ impl App {
     }
 
     /// Can the ask field send `immediately` here (T-601)? Claude Code's
-    /// send-now is a key in a Claude pane, so a ticket whose agent has one;
+    /// send-now is a key in a Claude pane, so a ticket whose agent has one
+    /// (`Board::send_now_seat`, the predicate the daemon refuses by, T-685);
     /// a parked agent's wake, an empty seat's start and a column's many
     /// seats have no turn to cut into.
     pub(crate) fn immediate_able(&self, target: &AskTarget) -> bool {
         match target {
-            AskTarget::Ticket(t) => self
-                .board
-                .pane_target(*t)
-                .is_some_and(|s| s.kind == mesimon_core::board::SessionKind::Claude),
+            AskTarget::Ticket(t) => self.board.send_now_seat(*t).is_some(),
             AskTarget::Column(_) => false,
         }
     }
@@ -4102,21 +4100,21 @@ impl App {
     /// the seat is not already planning, where the field is about the
     /// accept. A column's field never: one flag over N seats is not a
     /// sentence the row can say. Codex has no launch flag for its plan
-    /// mode, so a codex seat offers nothing.
+    /// mode, so a codex seat offers nothing — the seat's provider is
+    /// `Book::seat_provider`, the one the daemon's `plan_refusal` reads
+    /// (T-685).
     pub(crate) fn plan_able(&self, target: Option<&AskTarget>) -> bool {
-        use mesimon_core::board::{AgentProvider, SessionKind};
         let Some(target) = target else {
-            return self.composer_provider() == AgentProvider::ClaudeCode;
+            return self.composer_provider().has_plan_flag();
         };
         let AskTarget::Ticket(t) = target else {
             return false;
         };
-        if self.ticket_plan_able(*t) {
+        if self.ticket_plan_able(*t) || !self.tiers().seat_provider(*t).has_plan_flag() {
             return false;
         }
         match self.board.live_agent(*t) {
-            None => self.tiers().start_provider(*t) == AgentProvider::ClaudeCode,
-            Some(rec) if rec.kind != SessionKind::Claude => false,
+            None => true,
             Some(rec) => match rec.state {
                 SessionState::Sleeping => true,
                 SessionState::Idle { stop_reason } => {

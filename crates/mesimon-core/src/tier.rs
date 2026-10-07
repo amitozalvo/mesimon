@@ -349,6 +349,18 @@ impl<'a> Book<'a> {
         self.of_ticket(ticket).provider
     }
 
+    /// Which agent the ticket's NEXT turn runs on (T-685): the seat's own
+    /// provider where it holds one — live, parked or still stopping, since a
+    /// conversation cannot move between CLIs — else the one a start would
+    /// be, [`Self::start_provider`]. The plan flag's two readers (the TUI's
+    /// field and the daemon's refusal) and `c`'s kind ask this one question.
+    pub fn seat_provider(&self, ticket: ulid::Ulid) -> AgentProvider {
+        match self.board.live_agent(ticket).and_then(|s| s.kind.provider()) {
+            Some(p) => p,
+            None => self.start_provider(ticket),
+        }
+    }
+
     /// The tiers the ticket may cycle to. A ticket holding a seat (live,
     /// parked or still stopping) keeps its provider — a conversation cannot
     /// move between CLIs — so only that provider's tiers are offered; an
@@ -834,6 +846,11 @@ mod tests {
         assert_eq!(book.launch(t, SessionKind::Claude).id, CLAUDE);
         assert_eq!(book.launch(t, SessionKind::Codex).id, "C");
         assert_eq!(book.start_provider(t), AgentProvider::Codex);
+        // The seat's provider (T-685): the parked claude's while it holds the
+        // seat, the tier's once the seat is empty.
+        assert_eq!(book.seat_provider(t), AgentProvider::ClaudeCode);
+        let empty = Board { sessions: vec![], ..board.clone() };
+        assert_eq!(Book::new(&machine, &empty).seat_provider(t), AgentProvider::Codex);
     }
 
     #[test]

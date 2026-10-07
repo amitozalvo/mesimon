@@ -255,6 +255,26 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     assert!(matches!(c.request(Command::SleepSession { id: sb }), Response::Ok));
     c.await_state(sb, "sleeping", |s| *s == SessionState::Sleeping);
     assert!(pending_of(&mut c, None).is_empty());
+    // A send-now at the parked seat is refused (T-685): the TUI offers the
+    // `immediately` stop by `Board::send_now_seat` and the daemon refuses by
+    // it, so a wake — which has no turn for the key to cut into — gets the
+    // same answer from both. The refusal names `now`, which the field does
+    // offer there.
+    err_containing(
+        c.request(Command::PromptSession {
+            ticket: b,
+            text: "mesimon-probe-57b at once".into(),
+            queued: false,
+            immediately: true,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+        }),
+        "no turn for a send-now",
+    );
+    assert!(pending_of(&mut c, None).is_empty(), "a refusal parks nothing");
+    assert_eq!(c.board().live_agent(b).map(|s| s.state.clone()), Some(SessionState::Sleeping));
     // And a queued ask AT a sleeping claude parks as a wake (T-294): the
     // delivery is what wakes it, so the words wait with everything else
     // rather than starting a turn in a checkout somebody else is holding.
