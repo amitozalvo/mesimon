@@ -4,6 +4,7 @@
 
 pub mod conf;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -288,30 +289,119 @@ impl TmuxBackend {
         Ok(())
     }
 
-    fn tmux(&self) -> Command {
-        let mut c = Command::new(tmux_bin());
-        c.arg("-S").arg(&self.sock).arg("-f").arg(&self.conf);
-        // The server inherits this env on first launch — scrub it (D29, spike T-2).
-        // The allowlist is now a floor rather than the whole story: the daemon
-        // passes the user's captured shell environment per session through
-        // `-e`, and only PATH has to be here, because only PATH is read off the
-        // client (see `set_path`).
-        c.env_clear();
+    /// The environment every tmux invocation runs with. The server inherits
+    /// it on first launch — scrubbed (D29, spike T-2): the allowlist is a
+    /// floor rather than the whole story, because the daemon hands the
+    /// user's captured shell environment to each pane through `mesimon exec`,
+    /// and only PATH has to be here, since only PATH is read off the client
+    /// (see `set_path`). One list, because on macOS the server is started by
+    /// `posix_spawn` (`start_server`) and everywhere else by `Command`, and
+    /// the two must not disagree.
+    fn env_pairs(&self) -> Vec<(OsString, OsString)> {
+        let mut env: Vec<(OsString, OsString)> = Vec::new();
+        let mut set = |k: &str, v: OsString| {
+            env.retain(|(name, _)| name != k);
+            env.push((OsString::from(k), v));
+        };
         for k in ENV_ALLOWLIST {
-            if let Ok(v) = std::env::var(k) {
-                c.env(k, v);
+            if let Some(v) = std::env::var_os(k) {
+                set(k, v);
             }
         }
         // Unit tests own this socket directory. Do not read personal shell
         // startup files; integration tests get the same isolation from their
         // daemon subprocess environment. Production behavior is unchanged.
         #[cfg(test)]
-        c.env("HOME", self.sock.parent().expect("test socket directory")).env("SHELL", "/bin/sh");
-        if let Some(path) = &self.path {
-            c.env("PATH", path);
+        {
+            set("HOME", self.sock.parent().expect("test socket directory").into());
+            set("SHELL", "/bin/sh".into());
         }
-        c.env("TERM", "xterm-256color");
+        if let Some(path) = &self.path {
+            set("PATH", path.into());
+        }
+        set("TERM", "xterm-256color".into());
+        env
+    }
+
+    fn tmux(&self) -> Command {
+        let mut c = Command::new(tmux_bin());
+        c.arg("-S").arg(&self.sock).arg("-f").arg(&self.conf);
+        c.env_clear();
+        c.envs(self.env_pairs());
         c
+    }
+
+    /// Start the private server before the first pane, on macOS, as a
+    /// process responsible for itself (T-690). Everywhere else the first
+    /// `new-session` forks one, as it always did.
+    ///
+    /// macOS attributes a process's access to Documents, Desktop and
+    /// Downloads to its *responsible process* — the app that launched the
+    /// tree, inherited at fork. A server tmux forks for itself inherits the
+    /// daemon's, which is the terminal app that opened the board, and once
+    /// that app quits every pane under the server points at a dead pid. The
+    /// kernel keeps a cached allow for a while (measured: a week), then every
+    /// `git` and `claude` in a pane reads `Operation not permitted` on the
+    /// checkout, agents die at launch, and nothing in the panes says why.
+    ///
+    /// `posix_spawn` with `responsibility_spawnattrs_setdisclaim` makes the
+    /// spawned process responsible for itself, and `tmux -D` runs the server
+    /// in that very process instead of forking one and exiting. Every pane
+    /// and `run-shell` under it is then attributed to the server, alive as
+    /// long as the panes are, and TCC's identity for the prompt and the
+    /// stored grant is the tmux binary: macOS asks once, "`mesimon-tmux`
+    /// would like to access files in your Documents folder", and keeps the
+    /// answer by path and code hash (an ad-hoc signed binary asks again when
+    /// its bytes change; a platform binary such as `/bin/ls` is refused with
+    /// no prompt at all — measured 2026-10-07, STALE-MAP T-690).
+    ///
+    /// `-D` also turns `exit-empty` off, so this server stays up with no
+    /// session where the forked one exited with its last; `kill_server`
+    /// ends it, and a daemon that stops leaves it running as before.
+    ///
+    /// Best effort: a tmux without `-D` (before 3.2) or a spawn failure is
+    /// said on stderr (the daemon's journal) and the pane's `new-session`
+    /// starts the server the old way.
+    fn ensure_server(&self) {
+        #[cfg(target_os = "macos")]
+        if !self.server_alive() {
+            if let Err(e) = self.start_server() {
+                eprintln!(
+                    "mesimon: the private tmux server did not start detached ({e:#}); \
+                     starting it with the first pane"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn start_server(&self) -> Result<()> {
+        let argv: Vec<OsString> = vec![
+            tmux_bin().into_os_string(),
+            "-S".into(),
+            self.sock.clone().into_os_string(),
+            "-f".into(),
+            self.conf.clone().into_os_string(),
+            "-D".into(),
+        ];
+        let pid = disclaim::spawn(&argv, &self.env_pairs()).context("posix_spawn of tmux")?;
+        // Reap: the server is a child now, where the forked one was launchd's.
+        std::thread::spawn(move || unsafe {
+            let mut status = 0;
+            libc::waitpid(pid, &mut status, 0);
+        });
+        let deadline = std::time::Instant::now() + SERVER_START_WAIT;
+        while std::time::Instant::now() < deadline {
+            if self.server_alive() {
+                return Ok(());
+            }
+            // Reaped already: a tmux that refused `-D` or the socket.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                bail!("tmux (pid {pid}) exited before answering on the socket");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        bail!("no server on {} after {:?}", self.sock.display(), SERVER_START_WAIT)
     }
 
     fn run(&self, args: &[&str]) -> Result<String> {
@@ -326,8 +416,12 @@ impl TmuxBackend {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// Whether a server answers on the socket. `list-sessions`, not
+    /// `has-session`: the latter wants a current session and fails on a
+    /// server with none, which a `-D` server is between its sessions
+    /// (`exit-empty` off) — and read as dead, it was started twice (T-690).
     pub fn server_alive(&self) -> bool {
-        self.tmux().args(["has-session"]).output().map(|o| o.status.success()).unwrap_or(false)
+        self.tmux().args(["list-sessions"]).output().map(|o| o.status.success()).unwrap_or(false)
     }
 
     /// Spawn a session: tmux session name = sid16, running `argv` in `cwd`.
@@ -341,6 +435,7 @@ impl TmuxBackend {
     /// identity a death frame is matched against, because a wake reuses the
     /// session NAME (T-245).
     pub fn spawn(&self, sid16: &str, cwd: &Path, argv: &[String]) -> Result<String> {
+        self.ensure_server();
         let mut args: Vec<String> = vec![
             "new-session".into(),
             "-d".into(),
@@ -453,16 +548,37 @@ impl TmuxBackend {
 
     /// Discovery snapshot for `reconcile()` after a daemon restart.
     pub fn snapshot(&self) -> Result<Vec<PaneSnapshot>> {
+        Ok(self.panes()?.unwrap_or_default())
+    }
+
+    /// `snapshot`, keeping the difference between a server that answered
+    /// with no pane and no server at all: `None` is the latter. A caller
+    /// that reads an empty list as "the pane is gone" needs the first and
+    /// must not take the second for it — and a `-D` server lives on between
+    /// its sessions (T-690), so an empty answer is now an everyday one.
+    pub fn panes(&self) -> Result<Option<Vec<PaneSnapshot>>> {
         if !self.server_alive() {
-            return Ok(Vec::new());
+            return Ok(None);
         }
-        let out = self.run(&[
-            "list-panes",
-            "-a",
-            "-F",
-            &fields(&["session_name", "pane_pid", "pane_dead", "pane_dead_status"]),
-        ])?;
-        Ok(parse_snapshot(&out))
+        let out =
+            self.list_panes(&["session_name", "pane_pid", "pane_dead", "pane_dead_status"])?;
+        Ok(Some(parse_snapshot(&out)))
+    }
+
+    /// `list-panes -a -F <names>` over every session, and nothing — not an
+    /// error — on a server with none. A `-D` server lives on between its
+    /// sessions (T-690) and answers `list-panes -a` there with `no current
+    /// target`, which read as a failure told the Codex cleanup it could not
+    /// verify a pane was gone. `list-sessions` tells that server from a dead
+    /// one: it answers with nothing on the first and not at all on the second.
+    fn list_panes(&self, names: &[&str]) -> Result<String> {
+        match self.run(&["list-panes", "-a", "-F", &fields(names)]) {
+            Ok(out) => Ok(out),
+            Err(e) => match self.tmux().args(["list-sessions"]).output() {
+                Ok(o) if o.status.success() && o.stdout.is_empty() => Ok(String::new()),
+                _ => Err(e),
+            },
+        }
     }
 
     /// Per-pane last-output time, epoch seconds (`#{window_activity}`; tmux
@@ -474,8 +590,7 @@ impl TmuxBackend {
         if !self.server_alive() {
             return Ok(Vec::new());
         }
-        let out =
-            self.run(&["list-panes", "-a", "-F", &fields(&["session_name", "window_activity"])])?;
+        let out = self.list_panes(&["session_name", "window_activity"])?;
         Ok(pairs(&out).filter_map(|(name, t)| Some((name.to_string(), t.parse().ok()?))).collect())
     }
 
@@ -487,12 +602,8 @@ impl TmuxBackend {
         if !self.server_alive() {
             return Ok(Vec::new());
         }
-        let out = self.run(&[
-            "list-panes",
-            "-a",
-            "-F",
-            &fields(&["session_name", "pane_dead", "pane_current_command", "pane_title"]),
-        ])?;
+        let out =
+            self.list_panes(&["session_name", "pane_dead", "pane_current_command", "pane_title"])?;
         Ok(parse_facts(&out))
     }
 
@@ -682,6 +793,228 @@ impl TmuxBackend {
         }
         Ok(())
     }
+
+    /// Whether a pane under this server may read `dir` — see [`folder_access`].
+    pub fn folder_access(&self, dir: &Path) -> Access {
+        folder_access(&self.sock, dir)
+    }
+}
+
+/// How long `start_server` waits for the server it spawned to answer.
+#[cfg(target_os = "macos")]
+const SERVER_START_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// `posix_spawn` with the responsibility disclaimed (macOS, T-690): the
+/// child is its own responsible process, so macOS keys its folder access
+/// to the child's binary and its own lifetime, not to whatever terminal app
+/// the daemon descends from.
+#[cfg(target_os = "macos")]
+mod disclaim {
+    use std::ffi::{CString, OsString};
+    use std::os::unix::ffi::OsStrExt;
+
+    use anyhow::{bail, Result};
+    use libc::{c_char, c_int, c_short, pid_t, posix_spawn_file_actions_t, posix_spawnattr_t};
+
+    extern "C" {
+        /// libSystem, private but stable since 10.14: Chromium, Emacs and
+        /// Alacritty each spawn with it, for the same reason.
+        fn responsibility_spawnattrs_setdisclaim(
+            attr: *mut posix_spawnattr_t,
+            disclaim: c_int,
+        ) -> c_int;
+        /// `<spawn.h>`: the one descriptor `POSIX_SPAWN_CLOEXEC_DEFAULT`
+        /// leaves open. Not in the libc crate.
+        fn posix_spawn_file_actions_addinherit_np(
+            actions: *mut posix_spawn_file_actions_t,
+            fd: c_int,
+        ) -> c_int;
+        /// `<spawn.h>` since 10.15. Not in the libc crate.
+        fn posix_spawn_file_actions_addchdir_np(
+            actions: *mut posix_spawn_file_actions_t,
+            path: *const c_char,
+        ) -> c_int;
+    }
+
+    /// `<spawn.h>`, not in the libc crate: the child is a session leader,
+    /// as `daemon()` would have made the forked server.
+    const POSIX_SPAWN_SETSID: c_short = 0x0400;
+
+    /// Spawn `argv` with `env` as its whole environment, in `/`: stdin and
+    /// stdout on `/dev/null`, stderr the caller's own (the daemon's journal,
+    /// so a server that refuses its conf is heard), every other descriptor
+    /// closed. `/` because the child is now what macOS asks about: a server
+    /// started in the checkout reads its own cwd at startup, and a checkout
+    /// under Documents would raise the prompt before any pane needed the
+    /// folder. Every pane names its directory (`new-session -c`), so the
+    /// server's own is read by nothing.
+    pub fn spawn(argv: &[OsString], env: &[(OsString, OsString)]) -> Result<pid_t> {
+        let c_argv: Vec<CString> = argv
+            .iter()
+            .map(|a| CString::new(a.as_bytes()))
+            .collect::<std::result::Result<_, _>>()?;
+        let c_env: Vec<CString> = env
+            .iter()
+            .map(|(k, v)| {
+                let mut kv = k.as_bytes().to_vec();
+                kv.push(b'=');
+                kv.extend_from_slice(v.as_bytes());
+                CString::new(kv)
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        let mut argv_p: Vec<*mut c_char> = c_argv.iter().map(|s| s.as_ptr().cast_mut()).collect();
+        argv_p.push(std::ptr::null_mut());
+        let mut env_p: Vec<*mut c_char> = c_env.iter().map(|s| s.as_ptr().cast_mut()).collect();
+        env_p.push(std::ptr::null_mut());
+        let devnull = CString::new("/dev/null")?;
+        let root = CString::new("/")?;
+        // SAFETY: every pointer handed to libc outlives the calls (the
+        // CStrings and the null-terminated arrays live to the end of this
+        // function), the attr and the file actions are initialised before
+        // use and destroyed after, and nothing is read back from the child.
+        unsafe {
+            let mut attr: posix_spawnattr_t = std::mem::zeroed();
+            check(libc::posix_spawnattr_init(&mut attr), "posix_spawnattr_init")?;
+            let mut actions: posix_spawn_file_actions_t = std::mem::zeroed();
+            if let Err(e) = check(
+                libc::posix_spawn_file_actions_init(&mut actions),
+                "posix_spawn_file_actions_init",
+            ) {
+                libc::posix_spawnattr_destroy(&mut attr);
+                return Err(e);
+            }
+            let spawned = (|| {
+                check(
+                    responsibility_spawnattrs_setdisclaim(&mut attr, 1),
+                    "responsibility_spawnattrs_setdisclaim",
+                )?;
+                let flags = POSIX_SPAWN_SETSID | libc::POSIX_SPAWN_CLOEXEC_DEFAULT as c_short;
+                check(
+                    libc::posix_spawnattr_setflags(&mut attr, flags),
+                    "posix_spawnattr_setflags",
+                )?;
+                check(
+                    libc::posix_spawn_file_actions_addopen(
+                        &mut actions,
+                        0,
+                        devnull.as_ptr(),
+                        libc::O_RDONLY,
+                        0,
+                    ),
+                    "stdin on /dev/null",
+                )?;
+                check(
+                    libc::posix_spawn_file_actions_addopen(
+                        &mut actions,
+                        1,
+                        devnull.as_ptr(),
+                        libc::O_WRONLY,
+                        0,
+                    ),
+                    "stdout on /dev/null",
+                )?;
+                check(posix_spawn_file_actions_addinherit_np(&mut actions, 2), "stderr inherited")?;
+                check(
+                    posix_spawn_file_actions_addchdir_np(&mut actions, root.as_ptr()),
+                    "chdir /",
+                )?;
+                let mut pid: pid_t = 0;
+                check(
+                    libc::posix_spawn(
+                        &mut pid,
+                        argv_p[0],
+                        &actions,
+                        &attr,
+                        argv_p.as_ptr(),
+                        env_p.as_ptr(),
+                    ),
+                    "posix_spawn",
+                )?;
+                Ok(pid)
+            })();
+            libc::posix_spawn_file_actions_destroy(&mut actions);
+            libc::posix_spawnattr_destroy(&mut attr);
+            spawned
+        }
+    }
+
+    fn check(rc: c_int, what: &str) -> Result<()> {
+        if rc == 0 {
+            Ok(())
+        } else {
+            bail!("{what}: {}", std::io::Error::from_raw_os_error(rc))
+        }
+    }
+}
+
+/// What a process under the private server may read (T-690).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Access {
+    /// No server on the socket: nothing is cut off, the next spawn starts one.
+    NoServer,
+    Readable,
+    /// `ls` under the server refused the directory, in the system's words
+    /// (`Operation not permitted`).
+    Denied(String),
+}
+
+/// Whether a process under the private server on `sock` may list `dir`.
+///
+/// `ls` through `run-shell`, which runs under the server and so under the
+/// server's responsible process, exactly as a pane does: the one way to see
+/// macOS's cut-off from outside a pane. `doctor` prints it and the daemon
+/// asks it when a spawn dies at launch (T-690).
+pub fn folder_access(sock: &Path, dir: &Path) -> Access {
+    let client = || {
+        let mut c = Command::new(tmux_bin());
+        c.arg("-S").arg(sock);
+        c
+    };
+    // `list-sessions`, as `server_alive` — an empty server answers it.
+    if !client().arg("list-sessions").output().is_ok_and(|o| o.status.success()) {
+        return Access::NoServer;
+    }
+    // stderr onto stdout, stdout away: the output is the error or nothing.
+    let probe = format!("ls {} 2>&1 >/dev/null", sh_quote(&dir.display().to_string()));
+    match client().args(["run-shell", &probe]).output() {
+        Ok(out) => {
+            match parse_access(out.status.success(), &String::from_utf8_lossy(&out.stdout)) {
+                Ok(()) => Access::Readable,
+                Err(why) => Access::Denied(why),
+            }
+        }
+        Err(e) => Access::Denied(format!("tmux run-shell: {e}")),
+    }
+}
+
+/// The pid of the server on `sock`, if one answers.
+pub fn server_pid(sock: &Path) -> Option<u32> {
+    let out = Command::new(tmux_bin())
+        .arg("-S")
+        .arg(sock)
+        .args(["display-message", "-p", "#{pid}"])
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().parse().ok())?
+}
+
+/// `run-shell`'s exit status and output into the probe's answer: the
+/// system's words after `ls: <dir>: `, without tmux's own `'…' returned 1`
+/// line, which `run-shell` appends to a failing command.
+fn parse_access(ok: bool, out: &str) -> Result<(), String> {
+    if ok {
+        return Ok(());
+    }
+    let first = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let why =
+        first.strip_prefix("ls: ").and_then(|r| r.rsplit_once(": ")).map_or(first, |(_, w)| w);
+    Err(if why.is_empty() { "ls failed".to_string() } else { why.to_string() })
+}
+
+/// A path as one `sh` word: single quotes, an embedded quote spelled
+/// `'\''`. The path is the repo's, which a person may have named anything.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]
@@ -743,6 +1076,64 @@ mod tests {
             ],
             "three splits: the title, last, keeps its own bar"
         );
+    }
+
+    #[test]
+    fn the_access_probe_reads_the_system_words_off_run_shell() {
+        assert_eq!(parse_access(true, ""), Ok(()));
+        assert_eq!(
+            parse_access(
+                false,
+                "ls: /Users/me/Documents/code/app: Operation not permitted\n'ls …' returned 1\n"
+            ),
+            Err("Operation not permitted".to_string())
+        );
+        // A path with a colon in it: the LAST `: ` is the one before the words.
+        assert_eq!(
+            parse_access(false, "ls: /Users/me/Documents/a: b: No such file or directory\n"),
+            Err("No such file or directory".to_string())
+        );
+        assert_eq!(parse_access(false, "\n"), Err("ls failed".to_string()));
+        assert_eq!(sh_quote("/Users/me/it's here"), "'/Users/me/it'\\''s here'");
+    }
+
+    /// The mechanism T-690 rests on, asserted where it can be: the server a
+    /// spawn starts on macOS is its own responsible process, so the folder
+    /// access macOS grants it outlives the terminal that opened the board.
+    /// TCC itself cannot be simulated; the manual check is in STALE-MAP.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_private_server_answers_to_macos_for_itself() {
+        extern "C" {
+            fn responsibility_get_pid_responsible_for_pid(pid: libc::pid_t) -> libc::pid_t;
+        }
+        let f = fixture("backend-responsible", "t.sock");
+        let be = TmuxBackend::new(f.dir.join("t.sock"), &f.dir, None).unwrap();
+        be.spawn("resp", &PathBuf::from("/tmp"), &["sleep".into(), "60".into()]).unwrap();
+        let pid = server_pid(&f.dir.join("t.sock")).expect("a server answers on the socket");
+        // SAFETY: a pid in, a pid out; libSystem reads nothing of ours.
+        let responsible = unsafe { responsibility_get_pid_responsible_for_pid(pid as libc::pid_t) };
+        assert_eq!(
+            responsible, pid as libc::pid_t,
+            "the server must be responsible for itself, not for the terminal this test runs in"
+        );
+        // And the probe reads through it: the fixture dir is nobody's
+        // protected folder.
+        assert_eq!(be.folder_access(&f.dir), Access::Readable);
+        // `-D` keeps the server up with no session, where the forked one
+        // exited with its last; a wake into an empty server is then a plain
+        // `new-session`, with no `%0` reuse.
+        be.kill_session("resp").unwrap();
+        assert!(be.server_alive(), "a -D server outlives its last session");
+        // And an empty server reads as empty, never as a failure: the
+        // Codex cleanup's "cannot verify private pane absence" was this.
+        assert_eq!(be.snapshot().unwrap(), Vec::new());
+        assert_eq!(be.panes().unwrap(), Some(Vec::new()), "answered, with no pane");
+        assert_eq!(be.pane_facts().unwrap(), Vec::new());
+        assert_eq!(be.activity().unwrap(), Vec::new());
+        be.kill_server().unwrap();
+        assert_eq!(folder_access(&f.dir.join("t.sock"), &f.dir), Access::NoServer);
+        assert_eq!(be.panes().unwrap(), None, "no server answered");
     }
 
     #[test]

@@ -179,6 +179,10 @@ const TICK_MS: u64 = 250;
 /// Every this-many ticks, check the private tmux server wholesale — pane-died
 /// cannot fire for a dead server, so this guard is load-bearing.
 const SERVER_GUARD_TICKS: u64 = 60;
+/// A pane that dies this soon after its spawn, with a status, died at launch
+/// (T-690: 40 ms, exit 1, on every agent of a board macOS had cut off) —
+/// the one edge the folder-access probe is asked on.
+const LAUNCH_DEATH_MS: u64 = 1_000;
 /// Observe-tier transcript polling cadence (2 s) — stat-then-read, adopted
 /// hook-less sessions only.
 const TAIL_POLL_TICKS: u64 = 8;
@@ -436,6 +440,9 @@ pub struct Daemon {
     /// carried on every snapshot. Not transient: each one describes a
     /// condition still true on disk.
     notices: Vec<mesimon_core::command::Notice>,
+    /// A server restart a person asked for (T-690): the panes were parked,
+    /// and the server is killed once they are reaped or at this deadline.
+    server_restart: Option<Instant>,
     /// (mtime_ms, len) of our own executable, captured at startup so it
     /// describes the binary actually running — not whatever landed at that
     /// path since. A newer client compares it to decide we are stale.
@@ -1150,6 +1157,7 @@ pub fn run(paths: Paths) -> Result<()> {
         recovery: HashMap::new(),
         cleanup_resume_offers: HashMap::new(),
         reaping: HashMap::new(),
+        server_restart: None,
         rss_cache: (0, 0),
         rss_by: HashMap::new(),
         foregrounds: HashMap::new(),
@@ -1951,6 +1959,8 @@ fn pref_flag(path: &std::path::Path, key: &str) -> Option<bool> {
 /// The notice kind a failed shell-env capture stands under. One kind, replaced
 /// rather than appended, so a shell that fails on every reload leaves one row.
 const SHELL_ENV_NOTICE: &str = "shell_env";
+/// The folder cut-off's notice kind (T-690), the wire's own word.
+const SERVER_CUT_OFF: &str = mesimon_core::command::SERVER_CUT_OFF;
 
 /// How many git-backed diff requests run at once, across all connections.
 const DIFF_PERMITS: usize = 2;
@@ -2515,6 +2525,7 @@ impl Daemon {
                 self.persist_and_notify();
                 Response::Ok
             }
+            Command::RestartServer => self.restart_server(),
             Command::GitFetch => {
                 // The board's own upstream, or any workspace repo compared
                 // with a remote (T-455): a press fetches all of them.
@@ -2740,6 +2751,7 @@ impl Daemon {
             changed |= stage!("probe_spawning", self.probe_spawning());
             changed |= stage!("probe_activity", self.probe_activity());
             changed |= stage!("wake_snoozed", self.wake_snoozed(now / 1000));
+            changed |= stage!("finish_server_restart", self.finish_server_restart());
             // A blown move fuse that went a window with nothing trying lapses
             // (T-468); its advisory goes with it.
             changed |= self.moves.expire(Instant::now());
@@ -2820,6 +2832,7 @@ impl Daemon {
         }
         if self.ticks.is_multiple_of(server_guard_ticks()) {
             changed |= stage!("guard_server", self.guard_server());
+            changed |= stage!("recheck_server_access", self.recheck_server_access());
         }
         if changed {
             stage!("persist_sessions", self.persist_sessions());
@@ -3132,6 +3145,129 @@ impl Daemon {
             }
         }
         changed
+    }
+
+    /// Whether a process under the private server may read the checkout
+    /// (T-690), said as a standing `server_cut_off` notice while it may not.
+    ///
+    /// macOS keys a process's access to Documents, Desktop and Downloads to
+    /// its responsible process; a server forked on the first `new-session`
+    /// inherited the terminal app that opened the board, and once that app
+    /// quit every pane under it read `Operation not permitted` on the
+    /// checkout — agents dead at launch, workers unable to commit, nothing
+    /// in mesimon changed. The probe is `ls` through `run-shell`, which runs
+    /// where a pane would. Asked when a spawn dies at launch and on the
+    /// server guard's cadence while the notice stands; a server that is
+    /// gone clears it, since the next spawn starts a fresh one (on macOS
+    /// responsible for itself, `TmuxBackend::ensure_server`).
+    fn probe_server_access(&mut self) -> bool {
+        let cut = match self.backend.folder_access(&self.paths.repo_root) {
+            mesimon_backend_tmux::Access::Denied(why) => Some(why),
+            mesimon_backend_tmux::Access::NoServer | mesimon_backend_tmux::Access::Readable => None,
+        };
+        let standing = self.notices.iter().any(|n| n.kind == SERVER_CUT_OFF);
+        if cut.is_some() == standing {
+            return false;
+        }
+        self.notices.retain(|n| n.kind != SERVER_CUT_OFF);
+        match cut {
+            Some(why) => {
+                self.journal.line(&format!(
+                    "server cut off: a process under the private tmux server cannot read {}: {why}",
+                    self.paths.repo_root.display()
+                ));
+                self.notices.push(
+                    Notice::new(
+                        SERVER_CUT_OFF,
+                        "macOS cut the private tmux server off from this folder ∙ the Esc menu restarts it",
+                    )
+                    .with_path(self.paths.repo_root.display())
+                    .with_detail(why),
+                );
+            }
+            None => self.journal.line(
+                "server cut off: cleared, a process under the server reads the checkout again",
+            ),
+        }
+        true
+    }
+
+    /// The probe again, only while its notice stands: a server restarted by
+    /// any road (the menu, a `kill-server` by hand) takes the notice down.
+    fn recheck_server_access(&mut self) -> bool {
+        if !self.notices.iter().any(|n| n.kind == SERVER_CUT_OFF) {
+            return false;
+        }
+        self.probe_server_access()
+    }
+
+    /// The Esc menu's `Restart the private tmux server` (T-690).
+    ///
+    /// Every paned session parks by the road `x` takes — the conversation
+    /// snapshotted, the record `Sleeping`, SIGTERM then the reaper — a shell
+    /// closes as `x` closes it, and the server itself goes in
+    /// `finish_server_restart` once the panes are reaped, so no agent is
+    /// SIGHUP'd mid-exit. Refused whole, before anything parks, when any
+    /// session is not parkable: an agent mid-turn, a shell with live
+    /// children. Automatic restart was not built: the measured safe moment
+    /// is "no pane mid-turn", which is this gate, and the person is the one
+    /// who knows whether a turn is about to start.
+    fn restart_server(&mut self) -> Response {
+        let now = now_ms();
+        let paned: Vec<uuid::Uuid> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| r.state.has_pane() && !r.observe_only())
+            .map(|r| r.id)
+            .collect();
+        for id in &paned {
+            let Some(rec) = self.board.sessions.iter().find(|s| s.id == *id) else { continue };
+            if let Err(why) = self.sleep_eligible(rec, now, false) {
+                let key = self
+                    .board
+                    .ticket(rec.ticket)
+                    .map_or_else(|| "a ticket".to_string(), |t| t.short_key.clone());
+                let who = if rec.kind.is_agent() { "agent" } else { "shell" };
+                return Response::Err {
+                    message: format!("{key}'s {who} cannot park yet — {why}; nothing restarted"),
+                };
+            }
+        }
+        for id in &paned {
+            if let Err(why) = self.sleep_one(*id, false) {
+                self.journal.line(&format!("server restart: session {id} did not park: {why}"));
+            }
+        }
+        self.server_restart = Some(Instant::now() + REAP_GRACE + Duration::from_secs(2));
+        self.journal.line(&format!(
+            "server restart asked: {} session(s) parked; the server goes once they are reaped",
+            paned.len()
+        ));
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    /// The second half of `restart_server`: once the reaper has taken every
+    /// pane (or the deadline passes on one that would not go), kill the
+    /// server. The `!` terminals go with it — a shell holds nothing to
+    /// park. The cut-off notice comes down here; the next spawn or wake
+    /// starts a fresh server.
+    fn finish_server_restart(&mut self) -> bool {
+        let Some(due) = self.server_restart else { return false };
+        if !self.reaping.is_empty() && Instant::now() < due {
+            return false;
+        }
+        self.server_restart = None;
+        match self.backend.kill_server() {
+            Ok(()) => self.journal.line(
+                "server restart: the private tmux server was killed; the next spawn or wake starts a fresh one",
+            ),
+            Err(e) => self.journal.line(&format!("server restart: kill-server failed: {e}")),
+        }
+        self.foregrounds.clear();
+        self.notices.retain(|n| n.kind != SERVER_CUT_OFF);
+        true
     }
 
     fn poll_codex(&mut self) {
@@ -3710,6 +3846,17 @@ impl Daemon {
                     dirty |= self.lower_hand_on(t);
                 }
             }
+            // A pane that dies within a second of its spawn, with a status,
+            // is the one symptom macOS's cut-off has from the board (T-690):
+            // ask the server whether a process under it may read the
+            // checkout, and say so. Judged before the machine moves the
+            // record off `Spawning`.
+            let died_at_launch = matches!(sig, Signal::PaneDied { status: Some(s) } if s != 0)
+                && self.board.sessions.iter().any(|s| {
+                    s.id == id
+                        && matches!(s.state, SessionState::Spawning)
+                        && now.saturating_sub(s.state_changed_at.unwrap_or(0)) <= LAUNCH_DEATH_MS
+                });
             let machine = self
                 .machines
                 .entry(id)
@@ -3739,6 +3886,9 @@ impl Daemon {
                 if let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) {
                     let _ = self.backend.kill_session(&rec.sid16());
                 }
+            }
+            if died_at_launch {
+                dirty |= self.probe_server_access();
             }
             // The composer's Shift+Enter, second half: the pane is provably
             // alive and reading, so press the Enter its prefilled title has
@@ -13053,15 +13203,20 @@ impl Daemon {
         }
         let panes = self
             .backend
-            .snapshot()
+            .panes()
             .map_err(|e| format!("Codex cleanup: cannot verify private pane absence: {e}"))?;
-        if panes.iter().any(|pane| pane.session_name == rec.sid16() && !pane.pane_dead) {
+        if panes.as_deref().is_some_and(|p| {
+            p.iter().any(|pane| pane.session_name == rec.sid16() && !pane.pane_dead)
+        }) {
             return Err("Codex is still stopping; its native pane remains live".into());
         }
-        // snapshot() also returns an empty list when tmux cannot be reached.
-        // The stale socket left by a dead server is safe only after a bounded
-        // endpoint probe positively excludes its listener.
-        if panes.is_empty() {
+        // `None` is a server that did not answer. The stale socket left by a
+        // dead server is safe only after a bounded endpoint probe positively
+        // excludes its listener. A server that answered with no pane has
+        // said the pane is gone — and a `-D` server lives on between its
+        // sessions (T-690), so that answer is an everyday one, not a dead
+        // server's silence.
+        if panes.is_none() {
             crate::agents::codex::recovery_endpoint_absent(&self.paths.tmux_sock())?;
         }
         let target = crate::agents::codex::recovery_launch_target(&self.paths, rec)?;
@@ -13792,11 +13947,18 @@ impl Daemon {
             let said = self.codex_orphan_due.remove(&rec.id).and_then(|(_, why)| why);
             self.codex_orphan_due.insert(rec.id, (now + CODEX_ORPHAN_RETRY, said));
         }
-        // Pane absence is read here: the backend belongs to the writer.
-        let Ok(panes) = self.backend.snapshot() else { return };
-        let live: std::collections::HashSet<String> =
-            panes.iter().filter(|p| !p.pane_dead).map(|p| p.session_name.clone()).collect();
-        let tmux_answered_nothing = panes.is_empty();
+        // Pane absence is read here: the backend belongs to the writer. A
+        // server that answered with no pane is an answer (T-690: a `-D`
+        // server lives between its sessions); only no server at all sends
+        // the thread to the endpoint probe.
+        let Ok(panes) = self.backend.panes() else { return };
+        let tmux_answered_nothing = panes.is_none();
+        let live: std::collections::HashSet<String> = panes
+            .unwrap_or_default()
+            .iter()
+            .filter(|p| !p.pane_dead)
+            .map(|p| p.session_name.clone())
+            .collect();
         let tmux_sock = self.paths.tmux_sock();
         let paths = self.paths.clone();
         let tx = self.tx.clone();

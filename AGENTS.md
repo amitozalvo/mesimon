@@ -52,6 +52,10 @@ Preserve these boundaries:
   raw `Command::new("git")` calls there.
 - Server and client tmux commands must resolve the same Mesimon tmux binary. Mesimon's private
   config deliberately has no prefix and detaches with `Ctrl+]` or `Ctrl+5`.
+- On macOS the private server is started by `TmuxBackend::ensure_server` (`posix_spawn` with
+  the responsibility disclaimed, `tmux -D`) so macOS keys its folder access to the server
+  itself, not to the terminal that opened the board (T-690). A `-D` server lives between its
+  sessions, so liveness is `list-sessions`, never `has-session`.
 - Keep `mesimon-core` free of I/O policy and keep authorization/persistence decisions out of
   the MCP shim, which is an untrusted transport process.
 - Rendering changes must preserve the tested color and geometry laws. Regenerate goldens only

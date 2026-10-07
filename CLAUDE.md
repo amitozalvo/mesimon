@@ -302,6 +302,14 @@ under `<repo>/.mesimon/` (uncommitted, excluded via `$GIT_DIR/info/exclude` — 
 name = `sid16`, the first 16 hex of the mesimon-minted session UUID; identity is never
 discovered (D24). **A running server never re-reads the conf**, so a conf change affects only
 fresh servers and must also be issued as a live command (see `install_pane_died_hook`).
+**On macOS the server is started by `TmuxBackend::ensure_server` before the first pane** —
+`posix_spawn` with the responsibility disclaimed, running `tmux -D` — so it answers to macOS
+for itself (T-690); everywhere else the first `new-session` forks it as before. A `-D` server
+lives on between its sessions (`exit-empty` off), so `server_alive` is `list-sessions`, never
+`has-session`, which fails on an empty server, and `TmuxBackend::panes` is `None` only when no
+server answers — the Codex cleanup probes the tmux socket on that alone, never on an empty
+list. `folder_access` (`ls` through `run-shell`) is the one probe of what a pane may read;
+`doctor`'s `private server` line and the daemon's `server_cut_off` notice both ask it.
 
 **A pane gets the user's own shell environment, delivered by a launcher, never by argv.** The
 daemon captures it by running the user's login shell from a clean base env
@@ -655,6 +663,17 @@ will not show up in our tests until they break something.
 - **Plan mode admits an MCP tool only on `annotations.readOnlyHint: true` and ignores allow
   rules; default and auto mode admit only on an allow rule and ignore the hint** (2.1.270). A
   read tool needs both, and `read_rung_is_hinted_read_only` keeps them one list.
+- **macOS keys a process's access to Documents, Desktop and Downloads to its *responsible
+  process*, inherited at fork** (T-690): a tmux server forked by the first `new-session`
+  answered to the terminal app that opened the board, and once that app quit — and the
+  kernel's cached allow lapsed, a week later — every pane read `Operation not permitted` on
+  the checkout, agents died at launch in 40 ms and worktree workers could not commit, with
+  nothing in mesimon changed. `responsibility_spawnattrs_setdisclaim` + `tmux -D` makes the
+  server its own responsible process; macOS then prompts once per tmux binary and keeps the
+  answer by path **and code hash**, so a rebuilt `vendor/tmux/tmux` asks again, a platform
+  binary (`/bin/ls`) is refused with no prompt, and a binary that sits under `~/Documents`
+  (the dev tree's vendored tmux, under `MESIMON_TMUX_BIN`) asks on its first start because it
+  page-faults its own text. `tmux -S <sock> run-shell 'ls <repo>'` is the diagnosis.
 
 ## Test infrastructure
 

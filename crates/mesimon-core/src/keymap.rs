@@ -720,6 +720,10 @@ pub enum Verb {
     /// Re-read the user's shell startup files, so the environment new panes
     /// get is the one their terminal would give them.
     ReloadShellEnv,
+    /// Restart the private tmux server (T-690): the Esc menu's row while
+    /// macOS has cut it off from the checkout's folder. Every session parks
+    /// and wakes back; the `!` terminals close.
+    RestartServer,
     /// Fetch the checkout's upstream remote now (T-124) — the Esc menu's
     /// `Fetch origin` row. The header's `↓` only moves after a fetch, and
     /// the periodic one is opt-in, so this is the road most boards take.
@@ -1139,6 +1143,10 @@ pub struct Ctx {
     /// Reading the shell environment failed, so panes are getting the fallback.
     /// Offered on the same row, because "ask again" is the same act.
     pub shell_env_failed: bool,
+    /// macOS has cut the private tmux server off from the checkout's folder
+    /// (T-690): the daemon's `server_cut_off` notice stands, every agent
+    /// dies at launch, and the one repair is a server restart.
+    pub server_cut_off: bool,
     // ---- the agent tier (T-217) ----
     /// This board hands its sessions the MCP tool surface. Board state, per
     /// repo — the Settings row's label and detail are the only readers.
@@ -1703,6 +1711,7 @@ impl MenuItem {
                     | Verb::SleepAllDone
                     | Verb::BriefOffer
                     | Verb::ReloadShellEnv
+                    | Verb::RestartServer
                     | Verb::ManualMerge
                     | Verb::MergeConfirm
                     | Verb::Crown
@@ -4098,6 +4107,16 @@ static MENU_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::RestartServer,
+        label: |_| "Restart the private tmux server".into(),
+        // The why, and the cost: every session parks (and wakes back by
+        // the road a sleep does), and a `!` terminal is gone with the
+        // server. The advisory row already said the folder.
+        detail: |_| "macOS cut it off from your files ∙ sessions park, ! terminals close".into(),
+        avail: |c| c.server_cut_off,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::ReloadShellEnv,
         label: |c| {
             if c.shell_env_failed {
@@ -5209,6 +5228,9 @@ pub struct Suggestion {
 }
 
 static SUGGESTIONS: &[Suggestion] = &[
+    // First: nothing on the board starts until it is taken (T-690), where
+    // an update is news about the next run and a tidy-up can wait.
+    Suggestion { verb: Verb::RestartServer, headline: |_| "sessions cut off".into(), key: "" },
     Suggestion { verb: Verb::Reload, headline: |_| "update ready".into(), key: "U" },
     Suggestion {
         // Below `Reload` because they are two stages of one story and the
@@ -9232,6 +9254,7 @@ mod tests {
         assert!(!quiet_verbs.contains(&Verb::Reload));
         assert!(!quiet_verbs.contains(&Verb::InstallUpdate));
         assert!(!quiet_verbs.contains(&Verb::ReloadShellEnv));
+        assert!(!quiet_verbs.contains(&Verb::RestartServer));
         // And a flag with no tag behind it is not an offer either: the row
         // names the version, so half of it missing means there is no row.
         let stem: Vec<Verb> = menu_items(&Ctx { release_available: true, ..Default::default() })
@@ -9294,6 +9317,14 @@ mod tests {
                 "archive 2 tickets"
             ]
         );
+        // A server macOS cut off outranks all of it: nothing starts until
+        // it is restarted (T-690), so its chip leads and its row is the
+        // menu's first.
+        let cut = Ctx { server_cut_off: true, ..all.clone() };
+        let heads: Vec<String> = suggestions(&cut).iter().map(|s| (s.headline)(&cut)).collect();
+        assert_eq!(heads[0], "sessions cut off");
+        assert_eq!(menu_items(&cut)[0].verb, Verb::RestartServer);
+        assert!(!is_suggested(Verb::RestartServer, &all), "offered only while the notice stands");
         let one = Ctx { bulk_sleep: 1, bulk_archive: 1, ..Default::default() };
         let heads: Vec<String> = suggestions(&one).iter().map(|s| (s.headline)(&one)).collect();
         assert_eq!(heads, ["sleep 1 agent", "archive 1 ticket"], "counts of one read as one");

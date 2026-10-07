@@ -323,7 +323,7 @@ fn install(verbose: bool) -> Section {
     Section { name: "install", records }
 }
 
-fn multiplexer(verbose: bool) -> Section {
+fn multiplexer(repo: &Path, verbose: bool) -> Section {
     let mut records = Vec::new();
     // The same ladder the daemon uses, so this reports the tmux that will
     // actually run — not whatever `tmux` means to your shell.
@@ -352,6 +352,17 @@ fn multiplexer(verbose: bool) -> Section {
         ))),
         Some(v) => records.push(tmux_verdict(&v)),
     }
+    // The private server, asked through the live one (T-690): whether a
+    // process under it may read the checkout — which on macOS it may not,
+    // once the terminal app that opened the board has quit. The one way to
+    // see the cut-off from outside a pane, and the acceptance test of the
+    // fix: a server mesimon starts now answers to macOS for itself.
+    if let Ok(paths) = mesimon_daemon::Paths::for_repo(repo) {
+        let sock = paths.tmux_sock();
+        let access = mesimon_backend_tmux::folder_access(&sock, repo);
+        let pid = mesimon_backend_tmux::server_pid(&sock);
+        records.push(private_server(&access, pid, &bin, &sock));
+    }
     // The detach key, and the one layout where pressing it is worse than
     // doing nothing. `conf.rs` binds both C-] and C-5 to detach-client; on
     // Hebrew the bracket keys are mirrored, so ctrl+physical-] emits 0x1B,
@@ -367,6 +378,48 @@ fn multiplexer(verbose: bool) -> Section {
          iTerm2: Keys > Key Bindings > Ctrl+] > Send Hex Code 0x1d",
     ));
     Section { name: "multiplexer", records }
+}
+
+/// The private server's record (T-690): `ok` while a process under it reads
+/// the checkout, a note while there is none, and a FAIL with the two
+/// repairs — the board's menu row, or the same kill by hand — when macOS
+/// has cut it off. The kill line is the tmux the server runs on, never a
+/// bare `tmux`: a client from another build refuses the server. It is
+/// spelled over three lines with continuations because `wrap` reflows any
+/// line past the measure, and a socket path alone is most of it.
+fn private_server(
+    access: &mesimon_backend_tmux::Access,
+    pid: Option<u32>,
+    bin: &Path,
+    sock: &Path,
+) -> Record {
+    use mesimon_backend_tmux::Access;
+    let running = pid.map_or_else(|| "running".to_string(), |p| format!("running (pid {p})"));
+    match access {
+        Access::NoServer => {
+            rec(Level::Note, "private server", "not running (starts with the first session)")
+        }
+        Access::Readable => {
+            rec(Level::Ok, "private server", format!("{running}, reads the checkout"))
+        }
+        Access::Denied(why) => {
+            let name = bin
+                .file_name()
+                .map_or_else(|| "tmux".to_string(), |n| n.to_string_lossy().into_owned());
+            rec(Level::Fail, "private server", format!("{running}, cannot read the checkout: {why}"))
+                .advice(format!(
+                    "macOS keys a folder permission (Documents, Desktop, Downloads) to the app that \
+                     started this server, and that terminal has quit; every agent under it dies at \
+                     launch. Restart the server: open the board and take `Restart the private tmux \
+                     server` from the Esc menu, or run\n{} \\\n  -S {} \\\n  kill-server\nSessions \
+                     park and wake back; `!` terminals close. If macOS then asks whether {name} may \
+                     access the folder, allow it: the new server answers for itself and outlives \
+                     any terminal.",
+                    redact_cmd(&bin.display().to_string()),
+                    redact_cmd(&sock.display().to_string()),
+                ))
+        }
+    }
 }
 
 /// The line that installs or upgrades tmux here. Advice only — doctor prints
@@ -1173,7 +1226,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let all = vec![
         environment(&repo, verbose),
         install(verbose),
-        multiplexer(verbose),
+        multiplexer(&repo, verbose),
         agents(&repo, verbose),
         git_section(&repo, verbose),
         daemon(&repo, verbose),
@@ -1199,6 +1252,40 @@ pub fn run(args: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The private server line (T-690): the three states, and a kill line
+    /// every piece of which sits inside doctor's measure, so `wrap` passes
+    /// it through and it pastes as one command.
+    #[test]
+    fn the_private_server_line_names_the_cut_off_and_its_repairs() {
+        use super::*;
+        use mesimon_backend_tmux::Access;
+        let home = std::env::var("HOME").unwrap();
+        let bin = std::path::PathBuf::from(format!("{home}/.local/bin/mesimon-tmux"));
+        let sock = Path::new("/tmp/mesimon-501/0123456789abcdef/tmux.sock");
+        let r = private_server(&Access::NoServer, None, &bin, sock);
+        assert!(r.level == Level::Note && r.value.contains("not running"), "{}", r.value);
+        let r = private_server(&Access::Readable, Some(42), &bin, sock);
+        assert!(r.level == Level::Ok, "{}", r.value);
+        assert_eq!(r.value, "running (pid 42), reads the checkout");
+        let r =
+            private_server(&Access::Denied("Operation not permitted".into()), Some(42), &bin, sock);
+        assert!(r.level == Level::Fail);
+        assert_eq!(r.value, "running (pid 42), cannot read the checkout: Operation not permitted");
+        let advice = r.advice.unwrap();
+        assert!(advice.contains("`Restart the private tmux server` from the Esc menu"), "{advice}");
+        assert!(advice.contains("whether mesimon-tmux may access"), "{advice}");
+        let cmd = "$HOME/.local/bin/mesimon-tmux \\\n  -S /tmp/mesimon-501/0123456789abcdef/tmux.sock \\\n  kill-server";
+        assert!(advice.contains(cmd), "{advice}");
+        let lines = wrap(&advice, 58);
+        for piece in cmd.split('\n') {
+            assert!(
+                lines.iter().any(|l| l == piece),
+                "{piece:?} was reflowed:\n{}",
+                lines.join("\n")
+            );
+        }
+    }
+
     use super::wrap;
 
     /// T-588: the road line says which road the last Claude launch got and

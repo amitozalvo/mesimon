@@ -1423,6 +1423,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // every session. An agent asking to re-read the user's rc files would
         // be running the user's shell on its own say-so.
         | Command::ReloadShellEnv
+        // The private tmux server's restart parks every session on the
+        // board, the agent's own included (T-690): a person's gesture,
+        // never a tool's.
+        | Command::RestartServer
         // The network and the repo's remote-tracking refs, on an agent's
         // say-so: never. The board shows an agent nothing of the fetch either.
         | Command::GitFetch

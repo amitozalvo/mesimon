@@ -22122,3 +22122,88 @@ are byte-for-byte the same, and the suite ran unchanged (2193 passed).
   `focus_quiet` and `attachments` e2es that boot by hand rather than through `Harness` (moving
   them adds a tmux skip locally); `common::board_and_grace_of` with no callers; the `ci/codex-*`
   live-run scaffold pasted five times; `web/mesophon`'s `clock`/`newId` pairs.
+
+## macOS cuts agents off ~/Documents once the terminal that started the private tmux server has quit (T-690, 2026-10-07, "macOS cuts agents off ~/Documents once the terminal that started the private tmux server has quit")
+
+**Measured, 2026-10-07, macOS 26 (Darwin 25.6.0).** macOS keys a process's access to Documents,
+Desktop and Downloads to its *responsible process*, inherited at fork. The private tmux server
+was forked by the first `new-session` under the daemon, whose responsible process was the
+terminal app that opened the board. When that app quit, every process under the server pointed
+at a dead pid; the kernel's cached allow held for a week (2026-09-29 to 2026-10-06 22:50) and then
+tccd kept *granting* (`auth_value 2`) while the kernel applied the grant to the dead pid and
+logged `deny(1) file-read-data ~/Documents` for every read. Five boards' servers died this way
+at once: every agent exited 1 within 40 ms, the TUI said `focus failed`, and the worktree workers
+T-683 to T-688 could not commit.
+
+The spike, from a live pane (a 20-line `posix_spawn` + `responsibility_spawnattrs_setdisclaim`,
+`responsibility_get_pid_responsible_for_pid` read back):
+- The disclaim works: the child's responsible pid is its own, also under `POSIX_SPAWN_SETEXEC`
+  (same pid, so `mesimon exec` could have done it in place).
+- A self-responsible **platform binary** (`/bin/ls`) is **refused with no prompt**: tccd logs
+  `Platform binary prompting is 'Deny' because: is Platform Binary`.
+- A self-responsible **ad-hoc signed binary prompts** ("myls would like to access files in your
+  Documents folder"), the answer is kept as `client_type 1` (a path) with the binary's **cdhash**
+  as its requirement: a rebuild at the same path prompts again.
+- `tmux -D` runs the server in the spawned process (no fork, no `daemon()`), so the disclaim
+  lands on the server; a pane and a `run-shell` under it are attributed to it. `-D` cannot take a
+  command (`tmux -D start-server` is a usage error) and turns `exit-empty` off. `has-session`
+  fails on the resulting empty server (`no current target`); `list-sessions`, `show-options -g`
+  and `display-message -p '#{pid}'` answer.
+- A tmux binary under `~/Documents` (the dev tree's `vendor/tmux/tmux`) raises the Documents
+  request on its own start even with cwd `/`: it page-faults its own text. A release's
+  `mesimon-tmux` lives under `~/.local/bin` or brew's Cellar and asks only when a pane reads the
+  folder.
+
+**What shipped.** Option 1 at the server, not at `mesimon exec`: one identity for every pane,
+the `!` terminal and Codex alike, where a per-agent disclaim is a prompt per agent binary — and
+Claude Code's TCC row is keyed by its versioned path (`versions/2.1.177`), so a prompt per
+update. `TmuxBackend::ensure_server` (macOS only) starts `tmux -S sock -f conf -D` through
+`posix_spawn` with the disclaim, `POSIX_SPAWN_SETSID`, `POSIX_SPAWN_CLOEXEC_DEFAULT`, stdin and
+stdout on `/dev/null`, stderr the daemon's own, cwd `/`, and waits up to 3 s for
+`list-sessions`; a tmux without `-D` or a spawn failure is said in the journal and the pane's
+`new-session` starts the server the old way. `server_alive` is `list-sessions`.
+`folder_access(sock, dir)` is `ls <dir> 2>&1 >/dev/null` through `run-shell`; `doctor`'s
+`private server` line prints `ok … reads the checkout`, a note when no server runs, or a FAIL
+with the repair (the Esc menu's row, or the kill line on the server's own tmux, spelled over
+three continuation lines so `wrap` cannot reflow it, and the name macOS will ask about).
+The daemon asks the probe when a pane dies within 1 s of its spawn with a non-zero status
+(`LAUNCH_DEATH_MS`, judged while the record is still `Spawning`) and on the server guard's
+cadence while the `server_cut_off` notice stands; the notice names the folder and `Operation
+not permitted`. The Esc menu's `Restart the private tmux server` (`Command::RestartServer`,
+`Verb::RestartServer`, `Ctx::server_cut_off` from the notice's presence, the first suggestion
+when it stands) parks every paned session by `sleep_one`'s road after `sleep_eligible` passed
+for all of them — an agent mid-turn or a shell with children refuses the whole restart, nothing
+parked — and `finish_server_restart` kills the server once the reaper has every pane or
+`REAP_GRACE + 2 s` later. The `!` terminals go with it. The next spawn or wake starts a fresh
+server, on macOS responsible for itself.
+
+**What the lingering server broke, and the repair.** Two pieces of the daemon read "the server
+exited with its last session" as a fact. `has-session` was `server_alive`, and it fails on an
+empty server (`no current target`), so the `-D` server started by `ensure_server` was read as
+dead and a second one was started by `new-session`; `list-sessions` is the probe now. And the
+Codex cleanup (`unverified_cleanup_resume_eligible`, `sweep_codex_orphans`) read an empty
+`snapshot()` as "tmux answered nothing" and then required the tmux socket itself to refuse a
+connect — the stale socket of a dead server — before it would call a pane gone; a live, empty
+server connects, so every `codex_startup_recovery_e2e` refused with `An old Codex endpoint is
+still live or its absence cannot be verified: connected`. `TmuxBackend::panes` keeps the
+difference (`None` when no server answers, `Some(vec![])` when one answers with no pane;
+`snapshot` flattens it), the two sites probe the socket on `None` alone, and `list_panes` turns
+`list-panes -a`'s `no current target` on an empty server into an empty answer. The sweep now
+proves absence in 4 s where it waited out 60.
+
+**Not built, and why.** Automatic restart: the measured safe moment is "no pane mid-turn",
+which is the gate, but whether a turn is about to start (a queued ask, a crown wake) is the
+person's knowledge. The daemon's own disclaim (`spawn_detached`): its identity would be the
+`mesimon` binary's cdhash, a prompt per build for a dogfooding author, and the daemon reads
+`<repo>/.mesimon` through the same dead pid today — a `U` handover execs in place and keeps the
+pid, only a respawn from a live terminal re-homes it. Left open; the board's own restart from a
+live terminal is the workaround. The daemon's probe runs on the writer thread, as every other
+tmux command does; `run-shell` returned in milliseconds on every server measured.
+
+**Tests.** `cargo ut`: `backend::tests::the_private_server_answers_to_macos_for_itself`
+(macOS: the server a spawn starts is its own responsible process, `folder_access` reads, a `-D`
+server outlives its last session), `the_access_probe_reads_the_system_words_off_run_shell`,
+`doctor::tests::the_private_server_line_names_the_cut_off_and_its_repairs`, the keymap's
+suggestion-order test with `server_cut_off`, the wire-name test. `hook_e2e` drives the spawn
+path. TCC cannot be simulated: the acceptance test is `mesimon doctor multiplexer` on a board
+whose server predates the live terminal app, and `tmux -S <sock> run-shell 'ls <repo>'` by hand.

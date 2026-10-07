@@ -25,6 +25,10 @@ in the Esc menu under `Release notes` and on GitHub.
   Ghostty post it instead, so a managed Mac has no app of mesimon's to ask
   about. In other terminals `your terminal` shows no banner; sounds play
   either way.
+- **The Esc menu offers `Restart the private tmux server`** when macOS has
+  cut the board's sessions off from the folder the repository is in. The
+  advisory row says so, `mesimon doctor` prints a `private server` line with
+  the same repair, and the restart parks every session and wakes it back.
 
 ### Changed
 
@@ -38,6 +42,15 @@ in the Esc menu under `Release notes` and on GitHub.
   paired devices are its rows, with `Signed in as …` above them. The footer
   reads `REMOTE CONTROL` there, and `mesimon mesophon setup` names the same
   path.
+- **On macOS the private tmux server now answers to macOS for itself.** The
+  first agent you start after this update may ask once whether `mesimon-tmux`
+  may access your Documents, Desktop or Downloads folder; allow it.
+
+### Fixed
+
+- **Agents no longer die at launch with `Operation not permitted`** days
+  after the terminal that first opened the board has quit, and agents in
+  worktrees can commit again.
 
 ## v0.1.0-alpha.40 — 2026-10-05
 

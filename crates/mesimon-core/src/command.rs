@@ -39,7 +39,7 @@ pub struct Notice {
     /// on an older client. One of:
     /// `quarantined` | `future_version` | `worktrees_barred` | `build_skew` |
     /// `shell_env` | `merge_train_suspended` | `merge_train_blocked` |
-    /// `automation_suspended`.
+    /// `automation_suspended` | `server_cut_off`.
     pub kind: String,
     /// The headline, in mesimon's voice, ready to render. Never raw serde text.
     pub text: String,
@@ -67,6 +67,13 @@ impl Notice {
         self
     }
 }
+
+/// The notice kind that says macOS has cut the private tmux server off from
+/// the checkout's folder (T-690): a process under the server may not read
+/// it, so every agent dies at launch. The daemon raises it when a spawn
+/// dies at launch and the probe fails; the TUI's `Ctx::server_cut_off` is
+/// its presence, and the Esc menu then offers [`Command::RestartServer`].
+pub const SERVER_CUT_OFF: &str = "server_cut_off";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
@@ -497,6 +504,15 @@ pub enum Command {
     /// editor writes `~/.zshrc` would fork a shell on every keystroke-save.
     /// The daemon notices the change and OFFERS; the person decides.
     ReloadShellEnv,
+    /// Restart the private tmux server (the Esc menu's row, T-690): every
+    /// session parks the way `x` parks it, the `!` terminals close, the
+    /// server is killed once the panes are reaped, and the next spawn or
+    /// wake starts a fresh one — on macOS, one responsible for itself, so
+    /// the folder access macOS grants it outlives the terminal that opened
+    /// the board. Refused while any session is mid-turn. A person's gesture:
+    /// the daemon says when it is needed (`server_cut_off`) and never does
+    /// it unasked, because every pane ends.
+    RestartServer,
     /// Fetch the checkout's upstream remote now (the Esc menu's `Fetch origin`
     /// row), whether or not the periodic opt-in is armed. A person's gesture:
     /// it reaches the network and writes remote-tracking refs, which is why
@@ -1372,6 +1388,7 @@ impl Command {
             | SetTagColor { .. }
             | MoveTag { .. }
             | ReloadShellEnv
+            | RestartServer
             | GitFetch
             | SetAutomation { .. }
             // Board-wide settings a person took a gesture to change — the
@@ -1446,6 +1463,7 @@ mod meta_tests {
         };
         assert_eq!(c.wire_name(), "create_ticket");
         assert_eq!(Command::ReloadShellEnv.wire_name(), "reload_shell_env");
+        assert_eq!(Command::RestartServer.wire_name(), "restart_server");
     }
 
     /// T-601: the three levels' words are the tool's, the feed's and the

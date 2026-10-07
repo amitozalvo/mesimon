@@ -4747,6 +4747,13 @@ impl App {
             // a slow rc file does not leave the chip standing as if it missed.
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
             shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
+            // The notice IS the fact (T-690): the daemon raises it when a
+            // spawn dies at launch and a process under the server cannot
+            // read the checkout, and drops it the moment one can.
+            server_cut_off: self
+                .notices
+                .iter()
+                .any(|n| n.kind == mesimon_core::command::SERVER_CUT_OFF),
             git_repo: self.git.sampled,
             git_fetchable: self.git.upstream.is_some()
                 || self.git.nested.iter().any(|s| s.upstream.is_some() && !s.detached),
@@ -6224,6 +6231,13 @@ impl App {
                 let day = self.prefs.week_start.next();
                 let word = format!("the week starts on {}", day.name());
                 self.set_pref(&word, |p| p.set_week_start(day));
+            }
+            Verb::RestartServer => {
+                self.send(Command::RestartServer)?;
+                // The cost in the same breath: every pane ends, by the road
+                // a sleep takes, and comes back by the road a wake takes.
+                self.status =
+                    "restarting the private tmux server ∙ sessions park and wake back".into();
             }
             Verb::ReloadShellEnv => {
                 self.send(Command::ReloadShellEnv)?;

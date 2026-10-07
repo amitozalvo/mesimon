@@ -25,6 +25,11 @@ The [README](../README.md) gets you to a first agent. This page is the rest.
 - **git**. On macOS tmux is *not* required — mesimon ships its own, installed as `mesimon-tmux`
   so it never shadows yours. On Linux, install the distro's (`sudo apt install tmux`, 3.3 or
   newer; `mesimon doctor` names the floor).
+- **On macOS, one permission prompt.** The first agent you start asks whether `mesimon-tmux`
+  may access the folder your repository is in, when that is Documents, Desktop or Downloads.
+  Allow it: the private tmux server then keeps that access after the terminal that opened the
+  board has quit. If it is ever refused, `mesimon doctor` says so on its `private server`
+  line, and the board's Esc menu offers to restart the server.
 - **Claude Code or Codex** on your `PATH`, authenticated through its native CLI.
   Codex runtime integration is tested against `codex-cli 0.153.4`; `mesimon doctor`
   reports installed versions and the measured compatibility boundary.
