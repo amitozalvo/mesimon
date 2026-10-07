@@ -243,6 +243,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
         &app.board,
         &app.pending,
     ));
+    // The board as it stands seeds both threads (T-686): what it already
+    // holds is not news, and the next push is a real edge.
+    app.hand_board();
     let result = event_loop(&mut terminal, &mut app);
     // The board is done with its terminal, so the notification thread's two
     // escape rungs stop writing to it NOW — taken under the same lock a

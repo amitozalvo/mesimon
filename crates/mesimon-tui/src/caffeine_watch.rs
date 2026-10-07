@@ -4,6 +4,12 @@
 //! leaves the last activity level in place until a fresh snapshot arrives.
 //! The holder's lock is never held across daemon I/O: disabling the preference
 //! or dropping the board releases it immediately, even if a request is stuck.
+//!
+//! While the board is on screen the main loop absorbs every push the daemon
+//! makes, so `App::absorb` tells this monitor what it read off the board
+//! (T-686) and the observer asks the daemon for nothing: it drains its own
+//! connection's pushes unanswered. The observer dials a snapshot of its own
+//! only while the board is handed away, which is the case it exists for.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -29,6 +35,9 @@ struct State {
     enabled: bool,
     mid_turn: bool,
     generation: u64,
+    /// Whether the board is what the terminal shows (T-686). On screen the
+    /// main loop is the observer's source; handed away, the daemon is.
+    on_screen: bool,
 }
 
 impl State {
@@ -71,7 +80,13 @@ impl Monitor {
 
     fn channel(hold: Hold, enabled: bool, mid_turn: bool) -> (Self, Receiver<()>) {
         let (wake, rx) = channel();
-        let mut state = State { keeper: Caffeine::new(hold), enabled, mid_turn, generation: 0 };
+        let mut state = State {
+            keeper: Caffeine::new(hold),
+            enabled,
+            mid_turn,
+            generation: 0,
+            on_screen: true,
+        };
         state.drive();
         (Self { shared: Arc::new(Mutex::new(state)), wake }, rx)
     }
@@ -80,10 +95,13 @@ impl Monitor {
         self.shared.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn set_enabled(&self, enabled: bool) {
+    /// True when the switch moved. A caller that turned it on owes the
+    /// monitor what the board says now (`observe`): on screen nothing else
+    /// will say it before the next push.
+    pub fn set_enabled(&self, enabled: bool) -> bool {
         let mut state = self.state();
         if state.enabled == enabled {
-            return;
+            return false;
         }
         state.enabled = enabled;
         state.generation += 1;
@@ -91,6 +109,32 @@ impl Monitor {
         // from before the observer was disabled.
         state.mid_turn = false;
         state.drive();
+        let _ = self.wake.send(());
+        true
+    }
+
+    /// What the main loop read off the board it just absorbed (T-686): the
+    /// one fact the hold turns on, taken from the snapshot the board
+    /// already paid for.
+    pub fn observe(&self, board: &Board, pending: &[Pending]) {
+        let mut state = self.state();
+        if !state.enabled {
+            return;
+        }
+        state.mid_turn = mid_turn(board, pending);
+        state.drive();
+    }
+
+    /// The board gave its terminal away, or took it back (T-686). Away, the
+    /// observer dials its own snapshots, starting with one now: the pushes
+    /// it drained while the board was on screen were the main loop's.
+    pub fn saw_board(&self, on_screen: bool) {
+        let mut state = self.state();
+        if state.on_screen == on_screen {
+            return;
+        }
+        state.on_screen = on_screen;
+        state.generation += 1;
         let _ = self.wake.send(());
     }
 
@@ -151,11 +195,11 @@ impl Worker {
     }
 
     fn pass(&mut self) {
-        let (enabled, generation) = {
+        let (enabled, generation, on_screen) = {
             let mut state = self.shared.lock().unwrap_or_else(|e| e.into_inner());
             // Poll child liveness even when no new snapshot is available.
             state.drive();
-            (state.enabled, state.generation)
+            (state.enabled, state.generation, state.on_screen)
         };
         if !enabled {
             self.client = None;
@@ -181,7 +225,9 @@ impl Worker {
         while client.poll_event() {
             self.owes_look = true;
         }
-        if !self.owes_look {
+        // On screen the push is the main loop's to absorb, and `observe` is
+        // how it reaches here: drained, and the daemon builds nothing.
+        if on_screen || !self.owes_look {
             return;
         }
         if let Ok(Response::Board { board, pending, .. }) = client.request(Command::Snapshot) {
@@ -286,6 +332,31 @@ mod tests {
         tx
     }
 
+    /// A snapshot's two slices, as `App::absorb` hands them to `observe`.
+    fn slices(snapshot: &Response) -> (&Board, &[Pending]) {
+        match snapshot {
+            Response::Board { board, pending, .. } => (board, pending),
+            _ => unreachable!("a board"),
+        }
+    }
+
+    /// A counting daemon: a request is a snapshot the daemon built (T-686).
+    struct Counting {
+        asked: Arc<Mutex<usize>>,
+        events: Receiver<()>,
+        current: Response,
+    }
+
+    impl Transport for Counting {
+        fn request(&mut self, _: Command) -> anyhow::Result<Response> {
+            *self.asked.lock().unwrap() += 1;
+            Ok(self.current.clone())
+        }
+        fn poll_event(&mut self) -> bool {
+            self.events.try_recv().is_ok()
+        }
+    }
+
     fn wait_for(monitor: &Monitor, held: bool) {
         let deadline = Instant::now() + Duration::from_secs(3);
         while monitor.status().0 != held {
@@ -302,6 +373,7 @@ mod tests {
         let thread = std::thread::spawn(move || worker.run(&wake));
         // The main thread does no App work: it can be blocked in a handover
         // for the entire sequence, with notifications disabled.
+        monitor.saw_board(false);
         for kind in [SessionKind::Claude, SessionKind::Codex] {
             tx.send(snapshot(kind, SessionState::Running, false)).unwrap();
             wait_for(&monitor, true);
@@ -347,15 +419,17 @@ mod tests {
     #[test]
     fn disabling_releases_and_reenabling_requires_a_fresh_snapshot() {
         let (monitor, _wake) = Monitor::channel(Hold::program("cat"), true, true);
+        monitor.saw_board(false);
         let mut worker = Worker::new("/repo".into(), monitor.shared.clone());
         daemon(&mut worker, snapshot(SessionKind::Claude, SessionState::Running, false));
         worker.pass();
         assert!(monitor.status().0);
-        monitor.set_enabled(false);
+        assert!(monitor.set_enabled(false), "the switch moved");
         assert!(!monitor.status().0, "release does not wait for the observer");
         worker.pass();
         assert!(worker.client.is_none(), "off drops the subscription");
-        monitor.set_enabled(true);
+        assert!(monitor.set_enabled(true));
+        assert!(!monitor.set_enabled(true), "and a switch already there says so");
         assert!(!monitor.status().0, "old activity cannot acquire a hold");
         daemon(&mut worker, snapshot(SessionKind::Claude, idle(), false));
         worker.pass();
@@ -365,12 +439,74 @@ mod tests {
     #[test]
     fn disconnect_holds_last_activity_and_reconnect_refreshes_it() {
         let (monitor, _wake) = Monitor::channel(Hold::program("cat"), true, true);
+        monitor.saw_board(false);
         let mut worker = Worker::new("/repo".into(), monitor.shared.clone());
         worker.last_dial = Some(Instant::now());
         worker.pass();
         assert!(monitor.status().0, "a reconnect blip must not interrupt a turn");
         daemon(&mut worker, snapshot(SessionKind::Claude, idle(), false));
         worker.pass();
+        assert!(!monitor.status().0);
+    }
+
+    /// T-686: on screen the main loop's `observe` is the whole source, and
+    /// the daemon builds no snapshot for the observer however many pushes
+    /// it drains; handed away the observer asks once on the edge and once
+    /// per push, as it always did.
+    #[test]
+    fn on_screen_observe_drives_the_hold_and_the_daemon_builds_nothing() {
+        let (monitor, _wake) = Monitor::channel(Hold::program("cat"), true, false);
+        let mut worker = Worker::new("/repo".into(), monitor.shared.clone());
+        let asked: Arc<Mutex<usize>> = Default::default();
+        let (pushed, events) = channel();
+        worker.client = Some(Box::new(Counting {
+            asked: asked.clone(),
+            events,
+            current: snapshot(SessionKind::Claude, SessionState::Running, false),
+        }));
+        assert!(!monitor.status().0);
+        let running = snapshot(SessionKind::Claude, SessionState::Running, false);
+        let (board, pending) = slices(&running);
+        monitor.observe(board, pending);
+        assert!(monitor.status().0, "what the main loop read is the hold");
+        pushed.send(()).unwrap();
+        worker.pass();
+        worker.pass();
+        assert_eq!(*asked.lock().unwrap(), 0, "the push was drained, not answered");
+        let idle = snapshot(SessionKind::Claude, idle(), false);
+        let (board, pending) = slices(&idle);
+        monitor.observe(board, pending);
+        assert!(!monitor.status().0);
+
+        // Re-enabling on screen: the caller is told the switch moved and
+        // observes at once, so the hold does not wait for the next push.
+        assert!(monitor.set_enabled(false));
+        assert!(monitor.set_enabled(true));
+        let (board, pending) = slices(&running);
+        monitor.observe(board, pending);
+        assert!(monitor.status().0);
+        worker.pass();
+        assert_eq!(*asked.lock().unwrap(), 0);
+
+        // Handed away: the edge is one look, a push one more, and the
+        // daemon's answer drives the hold.
+        monitor.saw_board(false);
+        worker.pass();
+        assert_eq!(*asked.lock().unwrap(), 1);
+        pushed.send(()).unwrap();
+        worker.pass();
+        assert_eq!(*asked.lock().unwrap(), 2);
+        worker.pass();
+        assert_eq!(*asked.lock().unwrap(), 2, "a quiet daemon is not asked");
+        // Back on screen: `observe` is the source again, and a daemon's
+        // answer that is still in flight cannot overrule it.
+        monitor.saw_board(true);
+        let (board, pending) = slices(&idle);
+        monitor.observe(board, pending);
+        assert!(!monitor.status().0);
+        pushed.send(()).unwrap();
+        worker.pass();
+        assert_eq!(*asked.lock().unwrap(), 2);
         assert!(!monitor.status().0);
     }
 
@@ -391,6 +527,7 @@ mod tests {
             }
         }
         let (monitor, _wake) = Monitor::channel(Hold::program("cat"), true, true);
+        monitor.saw_board(false);
         let shared = monitor.shared.clone();
         let mut worker = Worker::new("/repo".into(), shared.clone());
         let (entered, waiting) = channel();

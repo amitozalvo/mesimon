@@ -47,7 +47,9 @@ Preserve these boundaries:
   as messages; do not mutate state from listener or worker threads.
 - Every mutation crosses the core authorization chokepoint with a real principal and action.
 - The wire protocol is newline-delimited JSON over the per-repository Unix socket. The TUI
-  responds to a change notification by fetching a complete snapshot.
+  responds to a change notification by fetching a complete snapshot, and that fetch is the
+  board's only one: the notifier and the keep-awake monitor read the board the TUI hands them
+  and dial their own snapshot only while the board is handed away.
 - Git subprocesses in the daemon go through its scrubbed Git command helper; do not introduce
   raw `Command::new("git")` calls there.
 - Server and client tmux commands must resolve the same Mesimon tmux binary. Mesimon's private

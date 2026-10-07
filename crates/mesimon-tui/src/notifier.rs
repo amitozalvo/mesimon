@@ -31,6 +31,16 @@
 //! screen around every handover), the five preference fields, and the
 //! terminal itself ([`Console`], for the two rungs that write an escape
 //! rather than spawning a program).
+//!
+//! **And the board itself, while it is on screen (T-686).** The main loop
+//! already holds every snapshot the daemon pushes, so `App::absorb` hands
+//! this thread its `Arc<Board>` and the one slice it reads beside it, and
+//! the thread asks the daemon for nothing: `Daemon::snapshot` ran twice or
+//! three times a broadcast on the writer thread before this, once per
+//! observer, each a clone of the whole board serialized again. The
+//! connection stays for the handover, the case the thread exists for: while
+//! the board is handed away (`Presence::on_screen` false) nobody absorbs,
+//! so the thread dials its own snapshot on every push, as it always did.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -165,6 +175,11 @@ enum Ctrl {
     /// theme picker's rule), so it may not wait for a beat — and this is why
     /// the loop blocks on a channel rather than sleeping.
     Preview(Sound),
+    /// The board the main loop just absorbed (T-686), with the tickets the
+    /// merge train has yet to finish: what a dialed snapshot would have
+    /// said, without the daemon building one. Kept while the preference is
+    /// off, so arming it seeds from the board as it stands.
+    Board(Arc<Board>, Vec<ulid::Ulid>),
 }
 
 /// The handle the board keeps. Parked on `App` by `lib.rs` and nowhere else
@@ -237,6 +252,12 @@ impl Notifier {
     /// never reads a stale switch.
     pub fn set_prefs(&self, p: NotifyPrefs) {
         *self.shared.prefs.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    }
+
+    /// The board the main loop just absorbed (T-686): the thread scans it
+    /// at once, and asks the daemon for nothing while the board is on screen.
+    pub fn observe(&self, board: Arc<Board>, holding: Vec<ulid::Ulid>) {
+        let _ = self.ctrl.send(Ctrl::Board(board, holding));
     }
 
     /// A Settings row's sound preview, said at once.
@@ -340,7 +361,18 @@ struct Worker {
     /// The board as of the last look, kept rather than dropped (T-292): the
     /// words a post carries are resolved when the post is BUILT, which is a
     /// beat or twenty after the edge that put the event in the batch.
-    board: Option<Board>,
+    board: Option<Arc<Board>>,
+    /// The board the main loop last handed over (T-686), and whether this
+    /// thread has scanned it yet. Kept after the scan and across the
+    /// preference going off: arming seeds from the board as it stands, as
+    /// the dial it replaced did, and never waits for the next push.
+    handed: Option<(Arc<Board>, Vec<ulid::Ulid>)>,
+    handed_fresh: bool,
+    /// Whether the last pass found the board on screen, so that the terminal
+    /// going away is an edge: the first look after it asks the daemon, since
+    /// the pushes drained while the board was on screen were the main
+    /// loop's to absorb and nobody absorbs during a handover.
+    on_screen: bool,
     /// Whether the last pass ran armed, so that the preference going off is
     /// an edge and not a state re-applied four times a second.
     armed: bool,
@@ -362,6 +394,9 @@ impl Worker {
             differ: Differ::default(),
             batch: Coalescer::default(),
             board: None,
+            handed: None,
+            handed_fresh: false,
+            on_screen: true,
             armed: false,
             owes_look: false,
             last_dial: None,
@@ -372,6 +407,7 @@ impl Worker {
         loop {
             match ctrl.recv_timeout(BEAT) {
                 Ok(Ctrl::Preview(s)) => (self.say)(&Post::sound_only(s), Delivery::default()),
+                Ok(Ctrl::Board(board, holding)) => self.hand(board, holding),
                 Err(RecvTimeoutError::Timeout) => {}
                 // The board is gone, and so is the thread. This is the off
                 // switch D15 asked for: the process dying is what stops it.
@@ -379,6 +415,12 @@ impl Worker {
             }
             self.pass();
         }
+    }
+
+    /// The main loop's board, to scan on the next pass (T-686).
+    fn hand(&mut self, board: Arc<Board>, holding: Vec<ulid::Ulid>) {
+        self.handed = Some((board, holding));
+        self.handed_fresh = true;
     }
 
     /// One beat: look if there is anything to look at, then say whatever the
@@ -431,7 +473,7 @@ impl Worker {
             done: prefs.sound_done,
             words: prefs.words,
         };
-        let board = self.board.as_ref();
+        let board = self.board.as_deref();
         let Some(mut post) =
             self.batch.due(now, &voice, &|t| board.and_then(|b| detail_for(b, t, prefs.words)))
         else {
@@ -483,15 +525,27 @@ impl Worker {
         self.board = None;
         self.armed = false;
         self.owes_look = false;
+        self.handed_fresh = self.handed.is_some();
         // A board with nothing to say owes the daemon no subscription.
         self.client = None;
     }
 
-    /// The board as the daemon has it, when the daemon says it moved — or
-    /// when this connection still owes the differ its seed — with the
-    /// tickets the merge train has yet to finish (T-678). `None` means
-    /// nothing to scan this beat, which is almost every beat.
-    fn look(&mut self) -> Option<(Board, Vec<ulid::Ulid>)> {
+    /// The board as the main loop absorbed it, when it handed one over
+    /// (T-686) — or, while the board is handed away, as the daemon has it,
+    /// when the daemon says it moved or this connection still owes the
+    /// differ its seed — with the tickets the merge train has yet to finish
+    /// (T-678). `None` means nothing to scan this beat, which is almost
+    /// every beat.
+    fn look(&mut self) -> Option<(Arc<Board>, Vec<ulid::Ulid>)> {
+        if std::mem::take(&mut self.handed_fresh) {
+            return self.handed.clone();
+        }
+        let on_screen = self.shared.presence().on_screen();
+        if std::mem::replace(&mut self.on_screen, on_screen) && !on_screen {
+            // The terminal just went away: the main loop hands nothing from
+            // here on, and the daemon may have moved since its last hand.
+            self.owes_look = true;
+        }
         if !self.dial() {
             return None;
         }
@@ -500,7 +554,9 @@ impl Worker {
         while client.poll_event() {
             dirty = true;
         }
-        if !dirty && !self.owes_look {
+        // On screen every push is the main loop's to absorb and hand over:
+        // the event is drained and the daemon builds nothing for us.
+        if on_screen || (!dirty && !self.owes_look) {
             return None;
         }
         // A dead connection reopens (and re-subscribes) inside `request`; a
@@ -510,7 +566,7 @@ impl Worker {
             return None;
         };
         self.owes_look = false;
-        Some((board, automation.holding))
+        Some((Arc::new(board), automation.holding))
     }
 
     /// Open or reopen the connection on its own cadence. False means there is
@@ -549,6 +605,9 @@ mod tests {
         board: Arc<Mutex<Board>>,
         events: Receiver<()>,
         healthy: bool,
+        /// How many snapshots it built (T-686): the whole cost this ticket
+        /// took off the writer thread, counted.
+        asked: Arc<Mutex<usize>>,
         /// What tmux would say about the client inside the attached pane
         /// (T-299). `None` is nobody there, which is also the default: a
         /// test that says nothing about the pane is a test with nobody in
@@ -564,6 +623,7 @@ mod tests {
                 });
             }
             assert!(matches!(command, Command::Snapshot), "the thread asks for two things");
+            *self.asked.lock().expect("asked") += 1;
             Ok(Response::Board {
                 board: self.board.lock().expect("the board").clone(),
                 grace: Vec::new(),
@@ -609,6 +669,7 @@ mod tests {
         /// How each post was handed over, beside it.
         how: Arc<Mutex<Vec<Delivery>>>,
         quiet: Arc<Mutex<Option<u64>>>,
+        asked: Arc<Mutex<usize>>,
     }
 
     fn ticket(n: u128) -> Ticket {
@@ -652,19 +713,24 @@ mod tests {
             }),
         );
         let quiet: Arc<Mutex<Option<u64>>> = Default::default();
+        let asked: Arc<Mutex<usize>> = Default::default();
         worker.client = Some(Box::new(FakeDaemon {
             board: board.clone(),
             events,
             healthy: true,
             quiet: quiet.clone(),
+            asked: asked.clone(),
         }));
-        // The seed: what the board already holds is not news. The fake daemon
-        // never dials, so the worker is handed its connection above and owes
-        // exactly this one look.
-        worker.owes_look = true;
-        let mut rig = Rig { worker, shared, board, moved, said, how, quiet };
+        // The seed: what the board already holds is not news. The board is
+        // on screen (a presence that has never handed its terminal away),
+        // so the main loop hands it over, as `lib.rs` does right after the
+        // thread starts (T-686); the fake daemon stands ready for the
+        // handover road and the pane question.
+        let mut rig = Rig { worker, shared, board, moved, said, how, quiet, asked };
+        rig.hand();
         rig.beat();
         assert!(rig.said().is_empty(), "an opening board announces no backlog");
+        assert_eq!(rig.asked(), 0, "and the daemon built nothing for it");
         rig
     }
 
@@ -693,15 +759,35 @@ mod tests {
                 events,
                 healthy: true,
                 quiet: self.quiet.clone(),
+                asked: self.asked.clone(),
             }));
             self.worker.owes_look = true;
         }
 
-        /// Change the board and tell the worker the daemon said so.
+        /// What `App::absorb` does with every snapshot it takes (T-686): the
+        /// board as it stands, handed to the thread.
+        fn hand(&mut self) {
+            let board = Arc::new(self.board.lock().expect("the board").clone());
+            self.worker.hand(board, Vec::new());
+        }
+
+        /// Change the board and tell the worker the way the board's state
+        /// decides (T-686): on screen the main loop absorbs the push and
+        /// hands the board over; handed away nobody absorbs, so the daemon's
+        /// push reaches the thread's own connection and it asks.
         fn change(&mut self, f: impl FnOnce(&mut Board)) {
             f(&mut self.board.lock().expect("the board"));
-            self.moved.send(()).expect("the worker's event channel");
+            if self.shared.presence().on_screen() {
+                self.hand();
+            } else {
+                self.moved.send(()).expect("the worker's event channel");
+            }
             self.beat();
+        }
+
+        /// How many snapshots the fake daemon has built for the thread.
+        fn asked(&self) -> usize {
+            *self.asked.lock().expect("asked")
         }
 
         fn said(&self) -> Vec<Post> {
@@ -900,6 +986,68 @@ mod tests {
         r.worker.client = Some(Box::new(Refuser));
         r.beat();
         r.beat();
+    }
+
+    /// T-686, the count: a board on screen costs the daemon no snapshot
+    /// however many pushes it absorbs — the main loop hands each one over
+    /// and the thread's own connection drains the push unanswered — and a
+    /// board handed away costs one per push, plus one on the edge, to catch
+    /// whatever moved since the last hand. The same edges are said on both
+    /// roads.
+    #[test]
+    fn on_screen_the_daemon_builds_nothing_and_handed_away_one_per_push() {
+        let mut r = rig(on());
+        r.change(block);
+        assert_eq!(r.took().expect("a banner").body, "needs you ∙ PERMISSION");
+        // The daemon's push reaches the thread's own connection too, on
+        // screen: drained, never answered.
+        r.moved.send(()).expect("the worker's event channel");
+        r.beat();
+        r.beat();
+        assert_eq!(r.asked(), 0, "on screen the thread asks for nothing");
+
+        r.shared.presence().saw_board(false, None);
+        r.beat();
+        assert_eq!(r.asked(), 1, "the edge: one look, in case the daemon moved since the hand");
+        assert!(r.said().is_empty(), "and it found nothing new");
+        r.beat();
+        assert_eq!(r.asked(), 1, "a quiet daemon is not asked again");
+        r.past_the_window();
+        r.change(|b| b.tickets[0].woke_at = Some("@1000".into()));
+        assert_eq!(r.asked(), 2, "handed away, a push is a snapshot");
+        assert_eq!(r.took().expect("a banner").body, "needs you");
+
+        // Back on screen: the next hand is the road again, and the snapshot
+        // the daemon built last is the last it builds.
+        r.shared.presence().saw_board(true, None);
+        r.past_the_window();
+        r.change(|b| b.tickets[0].title = "renamed".into());
+        r.change(|b| {
+            b.tickets[0].raised = Some(mesimon_core::board::Raised {
+                at: "@2000".into(),
+                by: "agent:x".into(),
+                reason: "which one".into(),
+            })
+        });
+        assert_eq!(r.asked(), 2);
+        assert_eq!(r.took().expect("a banner").subtitle, "T-1 ∙ renamed");
+    }
+
+    /// The seed is the board as it stands, not the next push (T-686): a
+    /// board handed while the preference was off is what arming scans
+    /// first, so an agent that blocks between the row and the next push is
+    /// a real edge and not the backlog.
+    #[test]
+    fn arming_seeds_from_the_last_handed_board() {
+        let mut r = rig(NotifyPrefs { on: false, ..on() });
+        r.change(|b| b.tickets[0].title = "handed while off".into());
+        assert!(r.said().is_empty());
+        r.set_prefs(on());
+        r.beat();
+        assert!(r.said().is_empty(), "the seed says nothing");
+        r.change(block);
+        assert_eq!(r.took().expect("a banner").subtitle, "T-1 ∙ handed while off");
+        assert_eq!(r.asked(), 0);
     }
 
     struct Refuser;

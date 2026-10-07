@@ -45,6 +45,10 @@ in the Esc menu under `Release notes` and on GitHub.
 - **On macOS the private tmux server now answers to macOS for itself.** The
   first agent you start after this update may ask once whether `mesimon-tmux`
   may access your Documents, Desktop or Downloads folder; allow it.
+- **An open board asks the daemon for one snapshot per change, not three.**
+  Notifications and keep-awake read the board the screen already has; they
+  fetch their own only while you are inside an agent pane, a terminal or an
+  editor.
 
 ### Fixed
 

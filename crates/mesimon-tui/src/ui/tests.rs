@@ -1770,7 +1770,7 @@ fn golden_ticket_terminal_120() {
 fn golden_ticket_shell_busy_120() {
     let mut app = app_graphite(fixture(true));
     let t3 = ulid_n(3);
-    app.board.sessions.iter_mut().find(|s| s.id == uuid_n(32)).unwrap().foreground =
+    app.board_mut().sessions.iter_mut().find(|s| s.id == uuid_n(32)).unwrap().foreground =
         Some("cargo".into());
     app.screen = Screen::Ticket { ticket: t3, rail_idx: 1 };
     let lines = render(&app, 120, 30);
@@ -1782,7 +1782,7 @@ fn golden_ticket_shell_busy_120() {
 fn golden_ticket_previous_column() {
     let mut app = app_graphite(fixture(true));
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
-    let t = app.board.ticket_mut(ulid_n(3)).unwrap();
+    let t = app.board_mut().ticket_mut(ulid_n(3)).unwrap();
     t.column = "REVIEW".into();
     t.previous_column =
         Some(mesimon_core::board::ColumnStay { column: "IN PROGRESS".into(), seconds: 3661 });
@@ -1791,7 +1791,7 @@ fn golden_ticket_previous_column() {
     golden("ticket_previous_column_120x30", &lines);
     golden("ticket_previous_column_100x24", &render(&app, 100, 24));
     for seconds in [0, 60, 61, 99, 3600, 86400, 90000] {
-        app.board.ticket_mut(ulid_n(3)).unwrap().previous_column.as_mut().unwrap().seconds =
+        app.board_mut().ticket_mut(ulid_n(3)).unwrap().previous_column.as_mut().unwrap().seconds =
             seconds;
         let line = render(&app, 120, 30)[3].clone();
         if seconds <= 60 {
@@ -1818,7 +1818,7 @@ fn ticket_page_names_an_agent_creator() {
     assert!(before.contains("created >1y ago"), "{before}");
     assert!(!before.contains(" by claude"), "{before}");
 
-    let t = app.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
+    let t = app.board_mut().tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
     t.created_by = "agent:00000000-0000-0000-0000-000000000003".into();
     let after = render(&app, 120, 30).join("\n");
     assert!(after.contains("created >1y ago by agent"), "{after}");
@@ -1826,21 +1826,21 @@ fn ticket_page_names_an_agent_creator() {
 
     // The parent ticket stands for the author while it is on the board (T-475)…
     let parent_key = app.board.ticket(ulid_n(4)).unwrap().short_key.clone();
-    let t = app.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
+    let t = app.board_mut().tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
     t.created_from = Some(ulid_n(4));
     let with_parent = render(&app, 120, 30).join("\n");
     assert!(with_parent.contains(&format!("created >1y ago by {parent_key}")), "{with_parent}");
     assert!(!with_parent.contains("by agent"), "{with_parent}");
 
     // …and a deleted parent takes its key with it, leaving the author.
-    app.board.tickets.retain(|t| t.id != ulid_n(4));
+    app.board_mut().tickets.retain(|t| t.id != ulid_n(4));
     let orphaned = render(&app, 120, 30).join("\n");
     assert!(orphaned.contains("created >1y ago by agent"), "{orphaned}");
     assert!(!orphaned.contains(" on T-"), "{orphaned}");
 
-    let session = app.board.sessions.iter_mut().find(|s| s.id == uuid_n(31)).unwrap();
+    let session = app.board_mut().sessions.iter_mut().find(|s| s.id == uuid_n(31)).unwrap();
     session.kind = SessionKind::Codex;
-    let t = app.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
+    let t = app.board_mut().tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
     t.created_by = format!("agent:{}", uuid_n(31));
     let codex = render(&app, 120, 30).join("\n");
     assert!(codex.contains("created >1y ago by agent"), "{codex}");
@@ -3074,7 +3074,7 @@ fn a_worktree_asked_for_but_not_cut_wears_a_dormant_mark() {
         render(app, 120, 30).iter().filter(|l| l.contains(mark)).cloned().collect::<Vec<_>>()
     };
     assert!(marked(&app).is_empty(), "the shared checkout says nothing");
-    for t in app.board.tickets.iter_mut().filter(|t| t.id == ulid_n(1)) {
+    for t in app.board_mut().tickets.iter_mut().filter(|t| t.id == ulid_n(1)) {
         t.workspace = Some(mesimon_core::board::WorkspaceStrategy::Worktree);
     }
     app.cursor_row = Some(0);
@@ -3408,7 +3408,7 @@ fn test_the_second_tag_costs_no_width() {
         one.cursor_col = 1;
         one.cursor_row = Some(0);
         one.peek = peek;
-        one.board.ticket_mut(ulid_n(3)).expect("ticket").set_tag(2, None);
+        one.board_mut().ticket_mut(ulid_n(3)).expect("ticket").set_tag(2, None);
         // The peek row names the tags, so it legitimately differs; every
         // other row must be identical.
         let (a, b) = (plain(render(&two, 120, 30)), plain(render(&one, 120, 30)));
@@ -3619,7 +3619,7 @@ fn test_the_hover_row_names_the_cursor_card() {
     assert_eq!(hover(&app, 120), " T-1 Decay treatments ∙ created >1y ago");
     // A title the card cuts reads whole here, and one too long for the row
     // is cut before the clause is.
-    app.board.tickets[0].title = "Decay treatments for every ramp of every flavor".into();
+    app.board_mut().tickets[0].title = "Decay treatments for every ramp of every flavor".into();
     assert_eq!(
         hover(&app, 120),
         " T-1 Decay treatments for every ramp of every flavor ∙ created >1y ago"
@@ -4080,7 +4080,7 @@ fn the_prompt_field_offers_the_brief_to_a_seat_that_never_took_a_prompt() {
         lines.join("\n")
     );
     // Once it has conversed, a blank Enter has nothing to send.
-    app.board.sessions.last_mut().expect("pushed").unprompted = false;
+    app.board_mut().sessions.last_mut().expect("pushed").unprompted = false;
     let lines = render(&app, 120, 30);
     assert!(!lines.iter().any(|l| l.contains("send the brief")), "{}", lines.join("\n"));
     assert!(lines.iter().any(|l| l.contains("ask agent")), "{}", lines.join("\n"));
@@ -4629,7 +4629,7 @@ fn golden_train_manual_120() {
     // Off the train: the daemon lists nothing for it and the ticket says so.
     app.screen = crate::app::Screen::Board;
     app.pending.clear();
-    app.board.ticket_mut(ulid_n(5)).unwrap().manual_merge = true;
+    app.board_mut().ticket_mut(ulid_n(5)).unwrap().manual_merge = true;
     let lines = render(&app, 120, 30);
     let mark = crate::glyphs::queued(crate::glyphs::Tier::Unicode, 0);
     assert!(
@@ -6473,13 +6473,13 @@ fn the_shin_acts_out_every_agent_state() {
         SessionState::Unknown { reason: mesimon_core::board::UnknownReason::NoSignal },
     ];
     for state in states {
-        app.board.sessions.retain(|s| s.ticket != ulid_n(1));
-        app.board.sessions.push(session(11, ulid_n(1), SessionKind::Claude, state.clone()));
+        app.board_mut().sessions.retain(|s| s.ticket != ulid_n(1));
+        app.board_mut().sessions.push(session(11, ulid_n(1), SessionKind::Claude, state.clone()));
         let _ = cells(&app, 120, 30);
         assert!(app.mascot.borrow().is_some(), "{state:?}");
     }
-    app.board.sessions.retain(|s| s.ticket != ulid_n(1));
-    app.board.sessions.push(session(11, ulid_n(1), SessionKind::Bash, SessionState::Running));
+    app.board_mut().sessions.retain(|s| s.ticket != ulid_n(1));
+    app.board_mut().sessions.push(session(11, ulid_n(1), SessionKind::Bash, SessionState::Running));
     let _ = cells(&app, 120, 30);
     assert!(app.mascot.borrow().is_none(), "a shell has no agent to be");
 
@@ -6629,7 +6629,7 @@ fn test_description_unread_follows_the_record() {
     // The record says it read the ticket.
     let mut read = app_noted();
     read.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
-    for s in read.board.sessions.iter_mut().filter(|s| s.ticket == ulid_n(3)) {
+    for s in read.board_mut().sessions.iter_mut().filter(|s| s.ticket == ulid_n(3)) {
         s.ticket_read = true;
     }
     assert!(!row(&read).contains("unread"), "{}", row(&read));
@@ -6637,7 +6637,7 @@ fn test_description_unread_follows_the_record() {
     // Not yet prompted: nothing has been skipped.
     let mut launching = app_noted();
     launching.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
-    for s in launching.board.sessions.iter_mut().filter(|s| s.ticket == ulid_n(3)) {
+    for s in launching.board_mut().sessions.iter_mut().filter(|s| s.ticket == ulid_n(3)) {
         s.state = SessionState::Spawning;
     }
     assert!(!row(&launching).contains("unread"), "{}", row(&launching));
@@ -6950,7 +6950,7 @@ fn test_no_banned_sgr() {
         let mut app = App::for_test(fixture(true), Theme::new(flavor, profile));
         // Rich transcript text is the one surface that renders arbitrary
         // markdown, so it is where a banned attribute would sneak in.
-        attach_transcript(&mut app.board, &path);
+        attach_transcript(app.board_mut(), &path);
         app.cursor_col = 1;
         // A card with an unread reply: the heavy done mark, calm.
         seed_spoke(&mut app, ulid_n(5));
@@ -6974,7 +6974,7 @@ fn test_no_banned_sgr() {
         // while the zone reads something that is not a note, and the note
         // itself in the zone, which is where the band's rows went.
         let mut n = App::for_test(fixture(false), Theme::new(flavor, profile));
-        if let Some(t) = n.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        if let Some(t) = n.board_mut().tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
             t.notes.push(note_meta(90, "What changed", "local"));
             t.notes.push(note_meta(91, "tree", "local"));
         }
@@ -7175,7 +7175,7 @@ fn test_no_drawn_structure() {
     let path = write_transcript("drawn-law", &reply_record(RICH_REPLY));
     let mut app = app_graphite(fixture(true));
     // Markdown is full of rules and boxes; none of them may reach a cell.
-    attach_transcript(&mut app.board, &path);
+    attach_transcript(app.board_mut(), &path);
     app.cursor_col = 1;
     // A card with an unread reply: the heavy done mark, calm.
     seed_spoke(&mut app, ulid_n(5));
@@ -7186,7 +7186,7 @@ fn test_no_drawn_structure() {
     // The cursor on a column header (T-117): its bar is a painted cell, and
     // the automation mark is outside the banned range.
     let mut header = app_graphite(fixture(false));
-    header.board.columns[1].settings.on_done = Some("review".into());
+    header.board_mut().columns[1].settings.on_done = Some("review".into());
     header.cursor_col = 1;
     header.cursor_row = None;
     let mut coldlg = app_graphite(fixture(false));
@@ -7450,7 +7450,7 @@ fn test_no_drawn_structure() {
             // zone reads a session, and a note in the zone, which is where
             // the band's rows went.
             let mut n = app_noted();
-            if let Some(t) = n.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+            if let Some(t) = n.board_mut().tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
                 t.notes.push(note_meta(92, "tree", "local"));
             }
             n.remember_note(ulid_n(92), 1, Some(crate::peek::sanitize(&dirty_tail().join("\n"))));
@@ -8524,7 +8524,7 @@ fn test_overflow_keeps_hidden_attention_in_the_header() {
     app.peek = false;
     app.cursor_col = 1;
     for id in [8, 12] {
-        app.board.sessions.push(session(
+        app.board_mut().sessions.push(session(
             id,
             ulid_n(id),
             SessionKind::Claude,

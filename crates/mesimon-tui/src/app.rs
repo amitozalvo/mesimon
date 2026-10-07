@@ -10,6 +10,7 @@ pub use tiers::{TierField, TierRow};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -1363,7 +1364,10 @@ pub struct App {
     pending_paste: Option<crate::image_paste::Pending>,
     pub client: Box<dyn Transport>,
     pub repo_root: PathBuf,
-    pub board: Board,
+    /// Shared, not owned (T-686): every snapshot replaces it whole, nothing
+    /// in `App` edits it after, and the notification thread scans the very
+    /// same allocation the board draws from — no second snapshot built.
+    pub board: Arc<Board>,
     pub grace: Vec<GraceItem>,
     pub external: Vec<ExternalItem>,
     /// The daemon is walking `~/.claude` for the drawer (T-437): `external`
@@ -1843,7 +1847,7 @@ impl App {
         let mut app = Self {
             client,
             repo_root,
-            board: snap.board,
+            board: Arc::new(snap.board),
             grace: snap.grace,
             external: snap.external,
             external_scanning: snap.external_scanning,
@@ -2344,7 +2348,7 @@ impl App {
                 Some((t.ticket, (old.column.clone(), old.order.clone())))
             })
             .collect();
-        self.board = board;
+        self.board = Arc::new(board);
         self.reindex_columns();
         self.grace = grace;
         self.external = external;
@@ -2388,6 +2392,23 @@ impl App {
         // not leave a row that sends Enter somewhere that is no longer there.
         // The cursor holds its TICKET across the pass, never its index.
         self.research(true);
+        self.hand_board();
+    }
+
+    /// The two observer threads read this board, not one of their own
+    /// (T-686): the notification thread scans the `Arc` and the merge
+    /// train's holds beside it, and the keep-awake monitor is told whether
+    /// a turn is open. Each dials a snapshot of its own only while the board
+    /// is handed away, when no `absorb` runs. Called from `lib.rs` once the
+    /// threads exist, so the first board seeds them, and here for every
+    /// snapshot after.
+    pub fn hand_board(&self) {
+        if let Some(n) = self.notifier.as_ref() {
+            n.observe(self.board.clone(), self.automation.holding.clone());
+        }
+        if let Some(k) = self.caffeine.as_ref() {
+            k.observe(&self.board, &self.pending);
+        }
     }
 
     /// A Settings row's sound preview: the ring's cursor IS the preview, the
@@ -2405,8 +2426,17 @@ impl App {
         if let Some(n) = self.notifier.as_ref() {
             n.set_prefs((&self.prefs).into());
         }
+        self.sync_caffeine();
+    }
+
+    /// The keep-awake switch, and on its way ON what the board says now
+    /// (T-686): on screen nothing else tells the monitor before the next
+    /// push, and a turn already open is what the row was pressed for.
+    fn sync_caffeine(&self) {
         if let Some(k) = self.caffeine.as_ref() {
-            k.set_enabled(self.prefs.keep_awake);
+            if k.set_enabled(self.prefs.keep_awake) && self.prefs.keep_awake {
+                k.observe(&self.board, &self.pending);
+            }
         }
     }
 
@@ -2426,6 +2456,9 @@ impl App {
     pub fn saw_board(&self, on_screen: bool) {
         if let Some(n) = self.notifier.as_ref() {
             n.saw_board(on_screen, (!on_screen).then(|| self.watched_ticket()).flatten());
+        }
+        if let Some(k) = self.caffeine.as_ref() {
+            k.saw_board(on_screen);
         }
     }
 
@@ -3959,8 +3992,8 @@ impl App {
     /// Activity is observed on its own thread, including during handover.
     fn drive_caffeine(&mut self) -> bool {
         let mut dirty = false;
+        self.sync_caffeine();
         if let Some(k) = self.caffeine.as_ref() {
-            k.set_enabled(self.prefs.keep_awake);
             let (held, trouble) = k.status();
             if let Some(trouble) = trouble {
                 self.status = trouble;
@@ -12647,6 +12680,12 @@ pub(crate) mod test_support {
             Self::for_test_logged(board, theme, false).0
         }
 
+        /// The board, to edit in place: what a test does to stand in for a
+        /// snapshot. Nothing outside a test writes the board (T-686).
+        pub(crate) fn board_mut(&mut self) -> &mut Board {
+            Arc::make_mut(&mut self.board)
+        }
+
         /// Like `for_test`, but hands back the request log (and optionally a
         /// focus-refusing daemon) for behavior assertions.
         pub(crate) fn for_test_logged(
@@ -13111,7 +13150,7 @@ mod tests {
             SessionState::Unknown { reason: mesimon_core::board::UnknownReason::ObservationLost },
             false,
         );
-        app.board.sessions.iter_mut().find(|s| s.id == sid).unwrap().codex_stopping = true;
+        app.board_mut().sessions.iter_mut().find(|s| s.id == sid).unwrap().codex_stopping = true;
         let confirmations = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let inner = std::mem::replace(&mut app.client, Box::new(Dead));
         // The offer is the daemon's typed reply, never its wording (T-687):
@@ -13136,10 +13175,10 @@ mod tests {
         assert_eq!(app.status, warning);
         // Refresh returns the fake's unmodified board; restore only the
         // observed stopping projection for the next deliberate gesture.
-        app.board.sessions.iter_mut().find(|s| s.id == sid).unwrap().codex_stopping = true;
+        app.board_mut().sessions.iter_mut().find(|s| s.id == sid).unwrap().codex_stopping = true;
         app.focus_session(sid).unwrap();
         assert_eq!(app.resume_refused, None, "a live-owner refusal revokes acknowledgement");
-        app.board.sessions.iter_mut().find(|s| s.id == sid).unwrap().codex_stopping = true;
+        app.board_mut().sessions.iter_mut().find(|s| s.id == sid).unwrap().codex_stopping = true;
         app.focus_session(sid).unwrap();
         assert_eq!(&*confirmations.borrow(), &[false, true, false]);
     }
@@ -13455,7 +13494,7 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.status, "");
         // A note with no link in it is a status line, not an empty dialog.
-        app.board.tickets[1].notes.push(note_meta(92, 1, "local"));
+        app.board_mut().tickets[1].notes.push(note_meta(92, 1, "local"));
         app.remember_note(ulid::Ulid(92), 1, Some("nothing to follow here".into()));
         ctrl(&mut app, 'k');
         assert!(matches!(app.mode, Mode::Normal));
@@ -13476,7 +13515,7 @@ mod tests {
             state,
         );
         s.transcript_path = Some(path.to_string_lossy().into_owned());
-        app.board.sessions.push(s);
+        app.board_mut().sessions.push(s);
     }
 
     #[test]
@@ -14037,7 +14076,7 @@ mod tests {
         // A Sleeping claude holds the seat and has no pane: inert.
         let (mut app, sent) = app_with_note_and(true);
         app.rich_keys = true;
-        app.board.sessions[0].state = SessionState::Sleeping;
+        app.board_mut().sessions[0].state = SessionState::Sleeping;
         press(&mut app, 'n');
         press(&mut app, 'x');
         let before = sent.borrow().len();
@@ -14197,7 +14236,7 @@ mod tests {
         assert!(!app.poll_notes(), "steady state asks nothing");
         assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 1);
         // A new revision on the snapshot is the edge.
-        app.board.tickets[0].notes[0].rev = 2;
+        app.board_mut().tickets[0].notes[0].rev = 2;
         assert!(app.poll_notes());
         assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 2);
     }
@@ -14217,12 +14256,12 @@ mod tests {
         assert_eq!(opened(&sent), 0, "a person's own ticket is nobody's news");
         app.screen = Screen::Board;
         app.poll_pickup();
-        app.board.tickets[0].created_by = "device:ab12".into();
+        app.board_mut().tickets[0].created_by = "device:ab12".into();
         app.screen = page.clone();
         app.poll_pickup();
         app.poll_pickup();
         assert_eq!(opened(&sent), 1, "once per arrival: {:?}", sent.borrow());
-        app.board.tickets[0].picked = Some(mesimon_core::board::PickedUp {
+        app.board_mut().tickets[0].picked = Some(mesimon_core::board::PickedUp {
             at: "@1".into(),
             by: mesimon_core::board::PICKED_AT_DESK.into(),
         });
@@ -14350,14 +14389,14 @@ mod tests {
         let t3 = ulid::Ulid(3);
         app.poll_spoke();
         assert!(app.spoke_unseen(t3));
-        app.board.sessions[0].state = SessionState::Sleeping;
+        app.board_mut().sessions[0].state = SessionState::Sleeping;
         assert!(app.scan_spoke(), "the mark going is a redraw");
         assert!(!app.spoke_unseen(t3));
         assert!(!app.spoke.contains_key(&t3), "a parked card holds no entry at all");
         // Waking finds the same file with the reply the user never read:
         // still unread. (A woken agent wears no done mark until its next
         // turn ends, so nothing shows for it until then.)
-        app.board.sessions[0].state = SessionState::Running;
+        app.board_mut().sessions[0].state = SessionState::Running;
         assert!(app.scan_spoke());
         assert!(app.spoke_unseen(t3));
         let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
@@ -14391,7 +14430,7 @@ mod tests {
         assert!(!app.spoke_unseen(t3));
         // A new spawn on the ticket: its reply is unread under its own
         // record, and the entry names the new session.
-        app.board.sessions[0].id = uuid::Uuid::from_u128(8);
+        app.board_mut().sessions[0].id = uuid::Uuid::from_u128(8);
         append(&path, &reply_line("a2", "hello again"));
         assert!(app.scan_spoke());
         assert!(app.spoke_unseen(t3));
@@ -14428,7 +14467,7 @@ mod tests {
     #[test]
     fn a_note_row_is_not_a_session() {
         let (mut app, _) = app_with_note();
-        app.board.sessions.push(mesimon_core::board::SessionRecord::new(
+        app.board_mut().sessions.push(mesimon_core::board::SessionRecord::new(
             uuid::Uuid::from_u128(7),
             SessionKind::Claude,
             ulid::Ulid(1),
@@ -14708,7 +14747,7 @@ mod tests {
         press(&mut app, '/');
         app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
         assert_eq!(search(&app).selected().expect("a hit").key.text, "T-2");
-        let mut board = app.board.clone();
+        let mut board = (*app.board).clone();
         board.tickets.insert(0, ticket(9, "todo", "aa"));
         app.absorb(Snapshot { board, ..Default::default() });
         assert_eq!(search(&app).hits.len(), 4, "the new card is in the list");
@@ -14778,7 +14817,7 @@ mod tests {
         assert!(!app.new_agent_row(ulid::Ulid(1)));
         // Nor does an archived ticket, which may not grow a pane at all.
         let (mut app, _sent) = app_with_note_and(false);
-        app.board.tickets[0].archived = Some(mesimon_core::board::Archived {
+        app.board_mut().tickets[0].archived = Some(mesimon_core::board::Archived {
             at: "@1000".into(),
             by: "local".into(),
             until: None,
@@ -14896,7 +14935,7 @@ mod tests {
     fn emptying_a_prompt_row_restores_mesimons_words() {
         use mesimon_core::prompts::AgentPrompt;
         let mut app = app_three_columns();
-        app.board.prompts.set(AgentPrompt::Merged, Some("all done".into()));
+        app.board_mut().prompts.set(AgentPrompt::Merged, Some("all done".into()));
         app.mode = Mode::Prompts { idx: 1, editing: None };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
@@ -14904,7 +14943,7 @@ mod tests {
         assert!(app.board.prompts.is_default(), "empty is 'put mesimon's words back'");
         // And mesimon's own sentence typed back is the same answer, not a
         // template that happens to match today's default.
-        app.board.prompts.set(AgentPrompt::Merged, Some("all done".into()));
+        app.board_mut().prompts.set(AgentPrompt::Merged, Some("all done".into()));
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
         for c in AgentPrompt::Merged.default_text().chars() {
@@ -15638,7 +15677,7 @@ mod tests {
         let (mut app, _, _) = app_with_claude(SessionState::Running, false);
         let ids: Vec<ulid::Ulid> = app.board.tickets.iter().map(|t| t.id).collect();
         let (crown, target, old) = (ids[0], ids[1], ids[2]);
-        app.board.crown = Some(crown);
+        app.board_mut().crown = Some(crown);
         let now = mesimon_core::clock::now_ms();
         let touch = |ticket, action: &str, at_ms| CrownTouch {
             ticket,
@@ -15711,7 +15750,7 @@ mod tests {
         for kind in [SessionKind::Claude, SessionKind::Codex] {
             for state in [SessionState::Running, SessionState::Sleeping] {
                 let (mut app, sent, sid) = app_with_session(kind, state.clone(), false);
-                app.board.agent_provider = match kind {
+                app.board_mut().agent_provider = match kind {
                     SessionKind::Claude => AgentProvider::Codex,
                     SessionKind::Codex => AgentProvider::ClaudeCode,
                     SessionKind::Bash => unreachable!(),
@@ -16051,7 +16090,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!((row(&app).unwrap().label)(&app.ctx()), "Sleep idle agents after 1 min");
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetColumnSettings")).count(), 6);
-        app.board.agent_provider = mesimon_core::board::AgentProvider::Codex;
+        app.board_mut().agent_provider = mesimon_core::board::AgentProvider::Codex;
         assert!(row(&app).is_none(), "nothing parks a Codex agent here");
     }
 
@@ -17005,7 +17044,7 @@ mod tests {
 
         let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
-        app.board.tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
+        app.board_mut().tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(app.ctx().ask_queueable, "a worktree column can wait for idle");
@@ -17045,7 +17084,7 @@ mod tests {
     fn a_blank_column_ask_over_a_full_column_sends_nothing() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
-        app.board.sessions.push(mesimon_core::board::SessionRecord::new(
+        app.board_mut().sessions.push(mesimon_core::board::SessionRecord::new(
             uuid::Uuid::from_u128(8),
             SessionKind::Claude,
             ulid::Ulid(2),
@@ -17075,7 +17114,7 @@ mod tests {
     fn the_ask_toggle_can_steer_a_worktree_ticket() {
         let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
-        app.board.tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
+        app.board_mut().tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(app.ctx().ask_queueable);
         assert!(app.ctx().ask_queued);
@@ -17297,7 +17336,7 @@ mod tests {
         assert!(!app.ctx().plan_armed);
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
 
-        app.board.sessions[0].state =
+        app.board_mut().sessions[0].state =
             SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(app.ctx().plan_able);
@@ -17333,7 +17372,7 @@ mod tests {
         // refresh after the send re-read the fake board's own record, so
         // the idle is set again.)
         app.pending.clear();
-        app.board.sessions[0].state =
+        app.board_mut().sessions[0].state =
             SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         if app.ctx().ask_queued {
@@ -17380,7 +17419,7 @@ mod tests {
         assert_eq!(app.status, "agent started on the title in plan mode");
 
         let mut codex = app_three_columns();
-        codex.board.agent_provider = mesimon_core::board::AgentProvider::Codex;
+        codex.board_mut().agent_provider = mesimon_core::board::AgentProvider::Codex;
         codex.handle_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
         assert!(codex.ctx().composing && !codex.ctx().plan_able);
         codex.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
@@ -17398,7 +17437,7 @@ mod tests {
         );
         app.rich_keys = true;
         assert!(!app.ctx().ticket_unsent);
-        app.board.sessions[0].unsent =
+        app.board_mut().sessions[0].unsent =
             Some(mesimon_core::board::Unsent { text: String::new(), brief: true });
         assert!(app.ctx().ticket_unsent);
         assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("brief not sent"));
@@ -17427,7 +17466,7 @@ mod tests {
         assert!(!app.ctx().ask_accepts_plan && !app.ctx().ask_plan_able);
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
 
-        app.board.sessions[0].argv =
+        app.board_mut().sessions[0].argv =
             vec!["claude".into(), "--permission-mode".into(), "plan".into()];
         assert!(app.ctx().ticket_planning);
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
@@ -18016,7 +18055,7 @@ mod tests {
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
 
         // Somebody else takes the checkout.
-        app.board.sessions.push(mesimon_core::board::SessionRecord::new(
+        app.board_mut().sessions.push(mesimon_core::board::SessionRecord::new(
             uuid::Uuid::from_u128(8),
             SessionKind::Claude,
             ulid::Ulid(2),
@@ -18102,7 +18141,8 @@ mod tests {
     fn a_worktree_ticket_never_stops_to_ask() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
-        app.board.tickets[1].workspace = Some(mesimon_core::board::WorkspaceStrategy::Worktree);
+        app.board_mut().tickets[1].workspace =
+            Some(mesimon_core::board::WorkspaceStrategy::Worktree);
         press(&mut app, 'j');
         assert!(!app.ctx().checkout_busy, "another checkout entirely");
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
@@ -18396,7 +18436,7 @@ mod tests {
         assert!(sent_contains(&sent, "Some(\"BUG\")"), "{:?}", sent.borrow());
 
         // Wearing it, Enter clears the axis.
-        app.board.ticket_mut(id).expect("ticket").set_tag(1, Some("BUG".into()));
+        app.board_mut().ticket_mut(id).expect("ticket").set_tag(1, Some("BUG".into()));
         sent.borrow_mut().clear();
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent.borrow().join(" ").contains("name: None"), "{:?}", sent.borrow());
@@ -18996,7 +19036,7 @@ mod tests {
         press(&mut app, 'm');
         assert!(!sent_contains(&sent, "MergeTicket"));
         // An idle agent lifts the gate: the first m opens the dialog as usual.
-        app.board.sessions[0].state =
+        app.board_mut().sessions[0].state =
             SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
         press(&mut app, 'm');
         assert!(app.merge_dialog.is_some());
@@ -19200,7 +19240,7 @@ mod tests {
         assert_eq!(app.merge_outstanding(ulid::Ulid(1)), None);
         assert!(app.ctx().merge_actionable);
         // A minute later, still working on it: held.
-        app.board.sessions[0].state = SessionState::Running;
+        app.board_mut().sessions[0].state = SessionState::Running;
         assert_eq!(app.merge_outstanding(ulid::Ulid(1)), Some("waiting for rebase"));
         // The rebase landed: the stage moved on, so the record stops matching
         // at once, however fresh it is.
@@ -20149,7 +20189,7 @@ mod tests {
         // A column that went away takes the offer down with it.
         app.cursor_col = 0;
         assert!(app.ctx().can_repeat);
-        app.board.columns.retain(|c| c.name != "done");
+        app.board_mut().columns.retain(|c| c.name != "done");
         app.reindex_columns();
         assert!(!app.ctx().can_repeat);
     }
@@ -20805,7 +20845,7 @@ mod tests {
     #[test]
     fn archive_refused_while_sessions_awake() {
         let mut app = app_three_columns();
-        app.board.sessions.push(mesimon_core::board::SessionRecord::new(
+        app.board_mut().sessions.push(mesimon_core::board::SessionRecord::new(
             uuid::Uuid::from_u128(1),
             SessionKind::Claude,
             ulid::Ulid(1),
@@ -21708,7 +21748,7 @@ mod tests {
         app.theme = Theme::new(Flavor::Blue, Profile::TrueColor);
         assert_eq!(app.tab_frame(false).tint, Some(band(&app)), "follows the theme");
         app.seed_pref(|p| p.tab_color = crate::prefs::TabColor::Tab);
-        app.board.tickets[0].woke_at = Some("@100".into());
+        app.board_mut().tickets[0].woke_at = Some("@100".into());
         let f = app.tab_frame(false);
         let attn = Flavor::Blue.palette().truecolor.attn;
         assert_eq!((f.mark, f.tint), (Some(Mark::Tab(attn)), Some(band(&app))));

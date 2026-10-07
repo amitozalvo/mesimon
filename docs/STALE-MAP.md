@@ -22098,7 +22098,7 @@ are byte-for-byte the same, and the suite ran unchanged (2193 passed).
 **Deferred (do not re-derive):**
 - The notifier and the keep-awake watcher each dial a full `Snapshot` on every push, so a board
   that is on screen builds two or three a broadcast. Handing them the TUI's `Arc<Board>` keeps
-  the handover fallback and is a structure change. So is memoising the built `Response` per
+  the handover fallback and is a structure change (shipped as T-686). So is memoising the built `Response` per
   `board_version`.
 - The five daemon hot-path leftovers (the tail parse, the phone board's measure, the queue
   order, the prices, the Codex poll) shipped as T-688, below.
@@ -22316,3 +22316,35 @@ and `Hello.build` already offers the reload on skew.
 **Refuted.** A `confirmable` field on `Response::Err`: 593 constructions, and no default on a
 struct variant's literal. Core `pub const` phrases shared by both sides: a contract still made of
 words, tested or not.
+
+## An open board builds one snapshot per push (T-686, 2026-10-07, "An open board builds two or three full snapshots per push: the notifier and keep-awake watcher dial their own")
+
+**What shipped.** `App.board` is an `Arc<Board>` (nothing in `App` writes the board after a
+snapshot lands; a test edits it through `App::board_mut`), and `App::absorb` ends in
+`App::hand_board`: the notification thread is handed the `Arc` and `automation.holding` over its
+control channel (`Notifier::observe`, a `Ctrl::Board`), and the keep-awake monitor is told
+`mid_turn(board, pending)` (`Monitor::observe`). Each thread keeps its own observer connection and
+drains its pushes, and asks the daemon for a `Snapshot` only while the board is handed away
+(`Presence::on_screen` false for the notifier, `State::on_screen` for the monitor, both set by
+`App::saw_board`), the case the threads exist for. The edge onto a handover is one look
+(`owes_look`), because the pushes drained on screen were the main loop's to absorb and the daemon
+may have moved since the last hand. `lib.rs` hands the first board right after both threads start,
+so the differ seeds from the board as it stands; the notifier keeps the last handed board across
+the preference going off, so arming it seeds from that board and never waits for the next push.
+`Monitor::set_enabled` says whether the switch moved, and `App::sync_caffeine` observes at once on
+its way on. The daemon is untouched.
+
+**Measured.** This tree's daemon with a temporary stderr line per `Command::Snapshot` it
+answered, a scratch repo and HOME, notifications and keep-awake on, ten `create_ticket` pushes 0.7 s
+apart through the wire: the T-683 build of the TUI (before) cost the daemon 30 snapshots, this
+build 10. One per push is the TUI's own `App::refresh`.
+
+**Not taken.** Memoising the built `Response` per `board_version` in the daemon: not
+bit-identical (grace seconds and cost windows lag a broadcast), and it still serializes once per
+connection.
+
+**Tests.** `notifier::tests::on_screen_the_daemon_builds_nothing_and_handed_away_one_per_push`
+and `arming_seeds_from_the_last_handed_board`; the rig's `change` hands the board on screen and
+pushes an event handed away, so every notifier test runs the road the board's state picks.
+`caffeine_watch::tests::on_screen_observe_drives_the_hold_and_the_daemon_builds_nothing`; the
+dial-road tests there say `saw_board(false)` first. `cargo ut`, `focus_quiet_e2e`.

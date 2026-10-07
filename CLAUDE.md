@@ -291,6 +291,9 @@ purpose — a debounce, not a security control. A person's prompt reaching the a
 `Response`, plus one push `Event::BoardChanged` to subscribers. The TUI is
 push-then-full-refresh: any event triggers a complete `Snapshot` round-trip. There is no finer
 event granularity, and every snapshot field rides one `Snapshot` struct through `App::absorb`.
+**That round-trip is the board's only one** (T-686): the notifier and the keep-awake monitor read
+`App.board` (an `Arc<Board>`, handed by `App::hand_board` after every absorb) and dial a snapshot
+of their own only while the board is handed away. A new observer thread takes the hand-off too.
 
 **Paths (D33b).** Per repo, keyed by `proj16` = sha256(canonical repo path)[..16]: sockets under
 `/tmp/mesimon-<uid>/<proj16>/` (sun_path budget — a new socket must be added to the length test
