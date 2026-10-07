@@ -9716,31 +9716,12 @@ impl App {
             self.tag_armed = Some(arm);
             return Ok(());
         };
-        let word = crate::keys::word_wise(mods);
-
         // Editing keys inside the name field. Resolved against the TAG scope,
         // NOT `Scope::Input`: borrowing that scope is what used to put the
         // composer's own hints ("shift+enter save + ask agent", "shift+tab
         // workspace") under a field that does none of those things.
         if let Some((_, buf)) = arm.naming.as_mut() {
-            match crate::keys::text_code(code, mods) {
-                KeyCode::Backspace if word => buf.delete_word_back(),
-                KeyCode::Backspace => buf.backspace(),
-                KeyCode::Delete => buf.delete(),
-                KeyCode::Left if word => buf.word_left(),
-                KeyCode::Left => buf.left(),
-                KeyCode::Right if word => buf.word_right(),
-                KeyCode::Right => buf.right(),
-                KeyCode::Home => buf.home(),
-                KeyCode::End => buf.end(),
-                KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
-                    buf.delete_word_back()
-                }
-                KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => buf.kill_to_start(),
-                KeyCode::Char(_) if word => {}
-                KeyCode::Char(c) => buf.insert(c),
-                _ => {}
-            }
+            edit_buffer_key(buf, code, mods);
         }
 
         // Any key but `d` cancels a half-pressed delete — the grace band is
@@ -18413,6 +18394,31 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "RegisterTag"), "the name is registered");
         assert!(sent_contains(&sent, "b1u2g"));
+    }
+
+    /// The name field is `edit_buffer_key`'s, like every other one-line
+    /// field: a Ctrl+letter is an editing key or nothing, never the letter.
+    /// The picker's own copy of that match had no `!CONTROL` guard, so
+    /// `ctrl+x` typed an `x` into the tag's name (T-684).
+    #[test]
+    fn ctrl_letter_in_the_tag_name_field_inserts_nothing() {
+        let (mut app, _sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        ctrl(&mut app, 't');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let name = |app: &App| {
+            app.tag_armed
+                .as_ref()
+                .and_then(|a| a.naming.as_ref())
+                .map(|(_, b)| b.as_str().to_string())
+        };
+        assert_eq!(name(&app), Some(String::new()), "the field is open and empty");
+        for c in "xbcp".chars() {
+            ctrl(&mut app, c);
+        }
+        assert_eq!(name(&app), Some(String::new()), "ctrl+letter types nothing");
+        press(&mut app, 'a');
+        ctrl(&mut app, 'u');
+        assert_eq!(name(&app), Some(String::new()), "ctrl+u still kills to the start");
     }
 
     /// Enter on a tag wears it; Enter again takes it off. Creating and

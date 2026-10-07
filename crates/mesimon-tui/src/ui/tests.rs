@@ -6067,6 +6067,30 @@ fn golden_editor_wrapped_description_and_visual_navigation() {
     assert_eq!(ed.body.as_str(), body);
 }
 
+/// A note edited this moment reads `edited by you just now`: the context
+/// row goes through `age_ago`, never the slot's `now` with "ago" after it
+/// (`edited by you now ago`, T-684; T-327 fixed the same reading on the
+/// ticket page).
+#[test]
+fn editor_note_just_edited_reads_just_now() {
+    let mut b = fixture(false);
+    let mut meta = note_meta(90, "What changed", "local");
+    meta.edited_at = format!("@{}", mesimon_core::clock::now_ms() / 1000);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.notes.push(meta);
+    }
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    app.mode = Mode::Editor(editor_on(
+        crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: Some(ulid_n(90)) },
+        "Fix OSC-11 detection",
+        COMPOSE_BODY,
+    ));
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("edited by you just now")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("now ago")), "{lines:?}");
+}
+
 /// `Tab` on a card: the description in the composer's dialog over the
 /// board, the stripe wearing the ticket's own tags, the context row naming
 /// the note and the ticket's workspace.

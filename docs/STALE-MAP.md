@@ -22389,3 +22389,22 @@ once without it`; the person's field never offers the stop where it would be ref
 **Not done.** `prompt_column`'s plan-accept count in the TUI (`app.rs`, `PromptColumn`'s
 receipt) still reads `pane_target` + `RequiresAction{Plan}` by hand where `plan_seat` is the
 daemon's word; it counts, it decides nothing, and the two differ only by `launched_in_plan`.
+
+## The tag name field is `edit_buffer_key`'s, and a fresh edit is `just now` (T-684, 2026-10-07, "Tag name field types a Ctrl+letter, and the note editor can read \"now ago\"")
+
+Two of T-682's deferred behaviour changes, shipped as the bugs they were.
+
+- **The tag picker's name field calls `edit_buffer_key`.** `key_tag` carried its own copy of
+  the one-line field's 13-arm key match, and the copy's last arm was `KeyCode::Char(c) =>
+  insert` with no `!CONTROL` guard, so `ctrl+x` (and any Ctrl+letter that is not `w` or `u`)
+  typed the letter into the tag's name. The copy is gone; the field is the sixth caller of
+  `edit_buffer_key`, whose last arm already refuses a Ctrl'd char. The `word` local the copy
+  read went with it.
+- **The note editor's context row reads `edited by you just now`.** `editor.rs` formatted
+  `" {} ago"` straight from `age_slot`, which says `now` under ten seconds, so a note saved a
+  moment ago read `edited by you now ago`. It goes through `text::age_ago`, the same helper
+  T-327 gave the ticket page's `created` and `read` clauses. No golden moved: every seeded
+  note is dated `@100`, which `age_ago` still spells `>1y ago`.
+
+Tests: `ctrl_letter_in_the_tag_name_field_inserts_nothing` (app) and
+`editor_note_just_edited_reads_just_now` (ui), both in `cargo ut`. TUI-only; no nextest.

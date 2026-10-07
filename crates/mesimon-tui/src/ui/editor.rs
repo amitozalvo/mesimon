@@ -28,7 +28,7 @@ use ratatui::Frame;
 use crate::app::{App, AskTarget, Editor, EditorPurpose, Field};
 use crate::layout::{self, Slot};
 use crate::tags;
-use crate::text::{age_slot, area_window, created_at_epoch_ms, edit_window, truncate};
+use crate::text::{age_ago, area_window, created_at_epoch_ms, edit_window, truncate};
 use crate::theme::{BarWeight, Ramp, TagLevel, Theme};
 
 use mesimon_core::keymap::Scope;
@@ -423,7 +423,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             if let Some(m) = meta {
                 let who = super::ticket::author_word(&m.edited_by, app);
                 let when = created_at_epoch_ms(&m.edited_at)
-                    .map(|ms| format!(" {} ago", age_slot(now, ms, false).trim()))
+                    .map(|ms| format!(" {}", age_ago(now, ms)))
                     .unwrap_or_default();
                 parts.push(Span::styled(format!("edited by {who}{when}"), dim2));
             }
