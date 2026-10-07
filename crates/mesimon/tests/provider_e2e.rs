@@ -944,7 +944,7 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
         Response::Err { .. }
     ));
     let warning = |response| match response {
-        Response::Err { message } => {
+        Response::NeedsConfirm { message } => {
             assert!(message.contains("cleanup is unverified"), "{message}");
             assert!(message.contains("unknown child processes may remain"), "{message}");
             assert!(message.contains("resume again to acknowledge"), "{message}");

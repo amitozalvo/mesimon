@@ -1754,6 +1754,16 @@ pub enum Response {
     Err {
         message: String,
     },
+    /// A refusal the same command sent again with `confirm: true` overrides
+    /// (T-687): a resume onto a conversation another process holds, or onto
+    /// a Codex record whose cleanup is unverified. Only `ResumeSession` and
+    /// `ResumeExternal` answer it, and the TUI arms its second press on this
+    /// variant alone, never on the message's words. A wake or a prompt that
+    /// resumes on the way carries no `confirm`, so those roads turn it into
+    /// a plain `Err` before it leaves the daemon.
+    NeedsConfirm {
+        message: String,
+    },
     /// DiffList's answer: the stable file list plus display-only in-flight
     /// flags. `branch_oid` is the live tip at serve time; on a checkout
     /// target it is empty and `base_oid` is the HEAD the diff was taken
@@ -3049,6 +3059,25 @@ mod tests {
         assert_eq!(g.ahead, 2);
         assert!(g.to_push.is_none());
         assert!(g.to_pull.is_none());
+    }
+
+    /// The force-resume offer is a reply of its own (T-687): a client arms a
+    /// second press on `needs_confirm` alone, so the daemon may reword the
+    /// message freely and an `err` with the same words arms nothing.
+    #[test]
+    fn needs_confirm_is_its_own_reply_not_a_wording_of_err() {
+        let offer = Response::NeedsConfirm { message: "running elsewhere".into() };
+        let line = serde_json::to_string(&offer).unwrap();
+        assert_eq!(line, r#"{"resp":"needs_confirm","message":"running elsewhere"}"#);
+        assert!(matches!(
+            serde_json::from_str::<Response>(&line).unwrap(),
+            Response::NeedsConfirm { message } if message == "running elsewhere"
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Response>(r#"{"resp":"err","message":"running elsewhere"}"#)
+                .unwrap(),
+            Response::Err { .. }
+        ));
     }
 
     /// An older daemon's Hello — no `build`, no `exe_stamp`, no `detached` —

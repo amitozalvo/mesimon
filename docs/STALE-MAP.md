@@ -22288,3 +22288,31 @@ schema-99 `worktrees.json` into a restart's window, then drives a column ask on 
 worktree seat (both toggles — a worktree seat starts now either way), the desk's `c` and a
 `SetWorkspace`: each refused in the barred words, the feed holds two `prompt_column_failed`
 rows, `worktrees/` is empty, no `msmn/*` branch exists and the file's bytes are untouched.
+
+## The force-resume offer is a typed reply (T-687, 2026-10-07, "The force-resume offer is armed by matching the daemon's refusal text")
+
+**What was wrong.** The TUI decided whether a second press force-resumes by reading the
+daemon's refusal: `resume_confirmation_offered` looked for `running elsewhere`, or `cleanup is
+unverified` beside `resume again to acknowledge`, inside sentences the daemon built in long
+`format!`s. Rewording either silently disarmed the second press, and no test tied the two.
+
+**Shipped.** `Response::NeedsConfirm { message }` (wire `needs_confirm`): a refusal the same
+command sent again with `confirm: true` overrides. The daemon answers it from the two sites
+that offered it by words — `resume_guard`'s running-elsewhere refusal (now `Option<Response>`)
+and the Codex unverified-cleanup offer — and only on `ResumeSession` and `ResumeExternal`, the
+two commands a person repeats. Every other road that resumes on the way (`WakeSession`, a
+prompt onto a sleeping session, the crown's wake, a tier switch, the mod relaunch, the parked
+replay, the phone's start) goes through `resume_session_in`, which turns the offer back into a
+plain `Err`: none of them carries a `confirm`. The TUI arms `resume_refused` on the variant
+alone and clears it on any `Err`; the substring check is gone. A core test pins the wire name
+and that an `err` carrying the same words is not an offer; the TUI's two resume sites each have
+a test whose refusals are typed, with messages a substring check would not have matched; the
+two e2es that asserted the offer now match the variant.
+
+**Not a protocol bump.** `PROTOCOL_VERSION` stays 2, as `Provisioning` did: a client from an
+older build drops the one line it cannot parse, on a refusal it would have shown and not armed,
+and `Hello.build` already offers the reload on skew.
+
+**Refuted.** A `confirmable` field on `Response::Err`: 593 constructions, and no default on a
+struct variant's literal. Core `pub const` phrases shared by both sides: a contract still made of
+words, tested or not.

@@ -13170,7 +13170,7 @@ impl Daemon {
 
     /// A provider supplies conversation identity and external ownership;
     /// the board enforces its one-writer policy across records.
-    fn resume_guard(&self, rec: &SessionRecord, confirm: bool) -> Option<String> {
+    fn resume_guard(&self, rec: &SessionRecord, confirm: bool) -> Option<Response> {
         let adapter = crate::agents::adapter(rec.kind)?;
         let identity = adapter.conversation_key(rec);
         if self.board.sessions.iter().any(|other| {
@@ -13180,7 +13180,9 @@ impl Daemon {
                 && identity.is_some()
                 && adapter.conversation_key(other) == identity
         }) {
-            return Some("conversation already running under Mesimon".into());
+            return Some(Response::Err {
+                message: "conversation already running under Mesimon".into(),
+            });
         }
         if !confirm {
             if let Some(owner) = adapter.external_owner(rec) {
@@ -13194,7 +13196,9 @@ impl Daemon {
                 // their own session on every visit to the ticket.
                 let own = owner.pid.is_some() && owner.pid == self.own_pane_pid(rec);
                 if !own {
-                    return Some(format!("running elsewhere ({owner}) — resuming would interleave transcripts; resume again to override"));
+                    return Some(Response::NeedsConfirm {
+                        message: format!("running elsewhere ({owner}) — resuming would interleave transcripts; resume again to override"),
+                    });
                 }
             }
         }
@@ -13256,8 +13260,13 @@ impl Daemon {
 
     /// A wake in plan mode (T-434): `--permission-mode plan` on this launch,
     /// the column's word again on the next.
+    /// A resume on a road no person's second press can follow — a wake, a
+    /// prompt, the crown, a replay — where a typed offer is a plain refusal.
     fn resume_session_in(&mut self, id: uuid::Uuid, confirm: bool, plan: bool) -> Response {
-        self.resume_session_with_cleanup_ack(id, confirm, false, plan)
+        match self.resume_session_with_cleanup_ack(id, confirm, false, plan) {
+            Response::NeedsConfirm { message } => Response::Err { message },
+            resp => resp,
+        }
     }
 
     fn resume_session_with_cleanup_ack(
@@ -13290,7 +13299,7 @@ impl Daemon {
             };
             if !confirm || self.cleanup_resume_offers.get(&id) != Some(&generation) {
                 self.cleanup_resume_offers.insert(id, generation);
-                return Response::Err {
+                return Response::NeedsConfirm {
                     message: format!("Codex cleanup is unverified: the known pane and runtime are absent, but unknown child processes may remain. Check the checkout and resume again to acknowledge this risk and {}", match target {
                         crate::agents::codex::RecoveryLaunchTarget::Exact(_) => "resume the exact conversation",
                         crate::agents::codex::RecoveryLaunchTarget::RetryStartup => "retry startup; recorded evidence proves no conversation selection was forwarded",
@@ -13322,8 +13331,8 @@ impl Daemon {
                 return Response::Err { message: "session is live — focus it instead".into() };
             }
         }
-        if let Some(message) = self.resume_guard(&rec, confirm) {
-            return Response::Err { message };
+        if let Some(refusal) = self.resume_guard(&rec, confirm) {
+            return refusal;
         }
         let adapter = crate::agents::adapter(rec.kind).expect("agent kind checked above");
         // Nothing to come back to? Then "resume" and "start fresh" have the
@@ -13808,7 +13817,7 @@ impl Daemon {
             return Response::Err { message: TICKET_ARCHIVED.into() };
         }
         match rec.kind {
-            SessionKind::Claude | SessionKind::Codex => self.resume_session(id, false),
+            SessionKind::Claude | SessionKind::Codex => self.resume_session_in(id, false, false),
             SessionKind::Bash => {
                 let (sid, argv, cwd, ticket) = (
                     rec.sid16(),

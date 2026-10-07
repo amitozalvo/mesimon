@@ -1291,12 +1291,6 @@ pub enum Naming {
 /// the release notes mark `this build`.
 const BUILD_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
-fn resume_confirmation_offered(message: &str) -> bool {
-    message.contains("running elsewhere")
-        || (message.contains("cleanup is unverified")
-            && message.contains("resume again to acknowledge"))
-}
-
 /// How often the ticket page re-captures the selected shell's pane. Slow on
 /// purpose: it is a fork per beat, and a terminal a person is reading rather
 /// than driving does not need to be a live mirror.
@@ -8668,9 +8662,15 @@ impl App {
                 self.status = "resumed here".into();
                 self.mode = Mode::Normal;
             }
+            // Only a typed offer arms the next press (T-687); any other
+            // refusal revokes a stale one.
+            Response::NeedsConfirm { message } => {
+                self.resume_refused = Some(claude_session_id);
+                self.status = message;
+                self.mode = Mode::Normal;
+            }
             Response::Err { message } => {
-                self.resume_refused =
-                    resume_confirmation_offered(&message).then_some(claude_session_id);
+                self.resume_refused = None;
                 self.status = message;
                 self.mode = Mode::Normal;
             }
@@ -11314,11 +11314,18 @@ impl App {
                         self.refresh()?;
                         // fall through to the focus flow below
                     }
+                    // Only the daemon's typed offer arms the next Enter
+                    // (T-687). Live processes, inspection errors and other
+                    // refusals revoke any stale acknowledgement from an
+                    // earlier try.
+                    Response::NeedsConfirm { message } => {
+                        self.resume_refused = Some(sid);
+                        self.refuse(ticket, message);
+                        self.refresh()?;
+                        return Ok(());
+                    }
                     Response::Err { message } => {
-                        // Only an explicit offer arms the next Enter. Live
-                        // processes, inspection errors and other refusals
-                        // revoke any stale acknowledgement from an earlier try.
-                        self.resume_refused = resume_confirmation_offered(&message).then_some(sid);
+                        self.resume_refused = None;
                         self.refuse(ticket, message);
                         self.refresh()?;
                         return Ok(());
@@ -13018,18 +13025,80 @@ mod tests {
         assert!(app.pending_reexec);
     }
 
+    /// The External drawer's resume arms on the same typed reply (T-687):
+    /// `needs_confirm` arms the next press, a plain `err` with the very
+    /// words the old substring check looked for revokes it.
+    #[test]
+    fn external_resume_arms_on_the_typed_offer_never_on_the_words() {
+        struct Refusals {
+            inner: Box<dyn Transport>,
+            responses: std::collections::VecDeque<Response>,
+            confirmations: std::rc::Rc<std::cell::RefCell<Vec<bool>>>,
+        }
+        impl Transport for Refusals {
+            fn request(&mut self, command: Command) -> Result<Response> {
+                if let Command::ResumeExternal { confirm, .. } = command {
+                    self.confirmations.borrow_mut().push(confirm);
+                    return Ok(self.responses.pop_front().unwrap());
+                }
+                self.inner.request(command)
+            }
+            fn poll_event(&mut self) -> bool {
+                false
+            }
+        }
+        let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
+        let foreign = uuid::Uuid::from_u128(99);
+        let drawer = || {
+            vec![mesimon_core::command::ExternalItem {
+                id: foreign,
+                provider: Default::default(),
+                conversation_id: foreign.to_string(),
+                cwd: "/repo".into(),
+                transcript_path: "/repo/t.jsonl".into(),
+                mtime_ms: 0,
+                preview: None,
+                name: None,
+                running_elsewhere: true,
+            }]
+        };
+        let confirmations = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let inner = std::mem::replace(&mut app.client, Box::new(Dead));
+        let words = "running elsewhere (pid 1) — resume again to override";
+        app.client = Box::new(Refusals {
+            inner,
+            responses: [
+                Response::NeedsConfirm { message: words.into() },
+                Response::Err { message: words.into() },
+                Response::NeedsConfirm { message: words.into() },
+            ]
+            .into_iter()
+            .collect(),
+            confirmations: confirmations.clone(),
+        });
+        for _ in 0..3 {
+            // Each refresh takes the fake's empty drawer back; reseed it.
+            app.external = drawer();
+            app.mode = Mode::External { idx: 0 };
+            app.adopt_external(true).unwrap();
+            assert_eq!(app.status, words);
+        }
+        assert_eq!(&*confirmations.borrow(), &[false, true, false]);
+        assert_eq!(app.resume_refused, Some(foreign), "the third reply offered again");
+    }
+
     #[test]
     fn unknown_cleanup_resume_requires_a_second_gesture_and_revokes_stale_confirmation() {
         struct Refusals {
             inner: Box<dyn Transport>,
-            responses: std::collections::VecDeque<String>,
+            responses: std::collections::VecDeque<Response>,
             confirmations: std::rc::Rc<std::cell::RefCell<Vec<bool>>>,
         }
         impl Transport for Refusals {
             fn request(&mut self, command: Command) -> Result<Response> {
                 if let Command::ResumeSession { confirm, .. } = command {
                     self.confirmations.borrow_mut().push(confirm);
-                    return Ok(Response::Err { message: self.responses.pop_front().unwrap() });
+                    return Ok(self.responses.pop_front().unwrap());
                 }
                 self.inner.request(command)
             }
@@ -13045,13 +13114,21 @@ mod tests {
         app.board.sessions.iter_mut().find(|s| s.id == sid).unwrap().codex_stopping = true;
         let confirmations = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let inner = std::mem::replace(&mut app.client, Box::new(Dead));
-        let warning = "Codex cleanup is unverified; unknown child processes may remain; resume again to acknowledge";
+        // The offer is the daemon's typed reply, never its wording (T-687):
+        // the message here says nothing a substring check would find.
+        let warning = "Codex cleanup is unverified; unknown child processes may remain";
+        let offer = || Response::NeedsConfirm { message: warning.into() };
         app.client = Box::new(Refusals {
             inner,
-            responses: [warning, "Codex is still stopping; known runtime remains live", warning]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
+            responses: [
+                offer(),
+                Response::Err {
+                    message: "Codex is still stopping; known runtime remains live".into(),
+                },
+                offer(),
+            ]
+            .into_iter()
+            .collect(),
             confirmations: confirmations.clone(),
         });
         app.focus_session(sid).unwrap();

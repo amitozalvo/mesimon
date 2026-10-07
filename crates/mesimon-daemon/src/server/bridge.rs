@@ -518,7 +518,7 @@ impl Daemon {
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.state = SessionState::Sleeping;
         }
-        match self.resume_session_with_cleanup_ack(id, true, false, plan) {
+        match self.resume_session_in(id, true, plan) {
             Response::Spawned { fresh, .. } => {
                 match owed {
                     Some(mut owed) => {

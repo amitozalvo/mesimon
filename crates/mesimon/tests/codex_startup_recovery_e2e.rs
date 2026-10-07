@@ -108,7 +108,7 @@ fn exercise(phase: &str, expected_resume: Option<Option<&str>>) {
         return;
     };
     match first {
-        Response::Err { message } => {
+        Response::NeedsConfirm { message } => {
             assert!(message.contains("resume again to acknowledge"), "{message}");
             assert!(
                 message.contains(if expected_resume.is_none() {
