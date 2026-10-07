@@ -160,19 +160,42 @@ pub fn api_error(path: &Path) -> Option<ApiError> {
     None
 }
 
-/// The parsed records of the last 64 KiB, NEWEST first. The window may open
-/// mid-record, so the first line of a truncated read is dropped; a line that
-/// is not JSON is skipped (09 §4.3: never resync).
-fn tail_records(path: &Path) -> Option<Vec<serde_json::Value>> {
+/// The records of the last 64 KiB, NEWEST first, each parsed as it is
+/// asked for (T-688): every reader above walks back from the end and stops
+/// at the first record that decides, and this runs once a second per
+/// Running pane past the quiet threshold, on the writer thread. The window
+/// may open mid-record, so the first line of a truncated read is dropped; a
+/// line that is not JSON is skipped (09 §4.3: never resync).
+fn tail_records(path: &Path) -> Option<TailRecords> {
     let len = std::fs::metadata(path).ok()?.len();
     let text = window_text(path, len, 64 * 1024)?;
-    Some(
-        text.lines()
-            .rev()
-            .filter(|l| !l.trim().is_empty())
-            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-            .collect(),
-    )
+    let end = text.len();
+    Some(TailRecords { text, end })
+}
+
+/// `tail_records`' walk: `end` is where the next line to try ends.
+struct TailRecords {
+    text: String,
+    end: usize,
+}
+
+impl Iterator for TailRecords {
+    type Item = serde_json::Value;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.end > 0 {
+            let head = &self.text[..self.end];
+            let start = head.rfind('\n').map_or(0, |i| i + 1);
+            let line = &head[start..];
+            self.end = start.saturating_sub(1);
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str(line) {
+                return Some(v);
+            }
+        }
+        None
+    }
 }
 
 /// The whole lines in the final `window` bytes of a `len`-byte JSONL file:
@@ -210,6 +233,7 @@ impl TailCursor {
         let byte_offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let mut tools = ToolLedger::default();
         if let Some(records) = tail_records(&path) {
+            let records: Vec<_> = records.collect();
             for record in records.iter().rev() {
                 tools.observe(record);
             }
@@ -344,6 +368,23 @@ mod tests {
     fn missing_file_is_quietly_nothing() {
         let mut c = TailCursor::at_end(PathBuf::from("/nonexistent/x.jsonl"), 0);
         assert!(c.poll(1).is_empty());
+    }
+
+    /// T-688: the walk is newest first, skips blank and non-JSON lines, and
+    /// drops the torn first line of a window that opened mid-record.
+    #[test]
+    fn tail_records_walk_newest_first_and_drop_the_torn_head() {
+        let p = tmp("walk");
+        std::fs::write(&p, "{\"n\":1}\n\n{\"n\":2}\r\nnot json\n{\"n\":3}\n").unwrap();
+        let seen: Vec<u64> = tail_records(&p).unwrap().map(|v| v["n"].as_u64().unwrap()).collect();
+        assert_eq!(seen, vec![3, 2, 1]);
+        // A window shorter than the file opens mid-record: that line goes.
+        let text = window_text(&p, std::fs::metadata(&p).unwrap().len(), 14).unwrap();
+        assert_eq!(text, "{\"n\":3}\n", "the torn `not json` head is gone");
+        let mut torn = TailRecords { end: text.len(), text };
+        assert_eq!(torn.next().unwrap()["n"], 3);
+        assert!(torn.next().is_none());
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 
     #[test]

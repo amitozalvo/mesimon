@@ -659,7 +659,10 @@ pub struct Daemon {
     /// relay executor's handle.
     team: teamglue::TeamCtx,
     control: mesophon::Control,
+    /// A Codex observation in flight: one ask to the observer per answer.
     codex_polling: bool,
+    /// The Codex observer, spawned at the first live runtime (T-688).
+    codex_observer: Option<Sender<Vec<(uuid::Uuid, std::path::PathBuf)>>>,
     codex_ready: std::collections::HashSet<uuid::Uuid>,
     /// Native startup UI is checked until its composer is seen once per
     /// generation. Idle sessions then need no repeated terminal subprocess.
@@ -1198,6 +1201,7 @@ pub fn run(paths: Paths) -> Result<()> {
         team: teamglue::TeamCtx::new(tx.clone()),
         control: mesophon::Control::new(tx.clone()),
         codex_polling: false,
+        codex_observer: None,
         codex_ready: std::collections::HashSet::new(),
         codex_native_ready: HashMap::new(),
         codex_input_due: HashMap::new(),
@@ -3296,26 +3300,20 @@ impl Daemon {
         if paths.is_empty() {
             return;
         }
-        self.codex_polling = true;
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let snapshots = paths
-                .into_iter()
-                .map(|(id, path)| {
-                    let snapshot = (|| {
-                        let mut data = Vec::new();
-                        std::fs::File::open(path).ok()?.take(65537).read_to_end(&mut data).ok()?;
-                        if data.len() > 65536 {
-                            return None;
-                        }
-                        serde_json::from_slice(&data).ok()
-                    })();
-                    (id, snapshot)
-                })
-                .collect();
-            let _ = tx.send(Msg::CodexSnapshots(snapshots));
+        // One observer for the daemon's life (T-688), where a thread per
+        // tick re-read every file whether or not it changed. An observer
+        // that ended (its last report found no daemon) is replaced.
+        let observer = self.codex_observer.get_or_insert_with(|| {
+            let tx = self.tx.clone();
+            crate::agents::codex::spawn_observer(move |snapshots| {
+                tx.send(Msg::CodexSnapshots(snapshots)).is_ok()
+            })
         });
+        if observer.send(paths).is_ok() {
+            self.codex_polling = true;
+        } else {
+            self.codex_observer = None;
+        }
     }
 
     fn on_codex_snapshots(
@@ -7622,17 +7620,17 @@ impl Daemon {
     /// ask and the merge train land; kept in one place so the snapshot road
     /// forks no git.
     fn pending_items(&self) -> Vec<Pending> {
-        let mut out: Vec<Pending> = self
-            .queue_order()
-            .into_iter()
-            .map(|i| &self.queued[i])
+        let order = self.queue_order();
+        let mut out: Vec<Pending> = order
+            .iter()
+            .map(|&i| &self.queued[i])
             .map(|q| Pending {
                 ticket: q.ticket,
                 // The seat's own word, so the card can say a session will
                 // START rather than that words are queued (T-294).
                 action: q.seat.action(),
-                waits_on: self.ask_waits_on(q.ticket),
-                asking: self.ask_asking(q.ticket),
+                waits_on: self.ask_waits_on(q.ticket, &order),
+                asking: self.ask_asking(q.ticket, &order),
                 text: (!q.text.is_empty()).then(|| q.text.clone()),
                 in_flight: false,
                 by: q.by.and_then(|c| self.board.ticket(c)).map(|c| c.short_key.clone()),
@@ -10291,9 +10289,10 @@ impl Daemon {
         self.broadcast();
         if let Some(q) = self.queued.iter().find(|q| q.ticket == ticket) {
             let held = q.held.map(str::to_string);
+            let order = self.queue_order();
             Response::Queued {
-                behind: self.ask_waits_on(ticket),
-                asking: self.ask_asking(ticket),
+                behind: self.ask_waits_on(ticket, &order),
+                asking: self.ask_asking(ticket, &order),
                 held,
             }
         } else if self.ask_in_flight(ticket) {
@@ -10463,7 +10462,8 @@ impl Daemon {
     /// are queued"). Read at every drain and every snapshot, never stored:
     /// FIFO was the first shape, and it made the order invisible and
     /// unchangeable. A ticket the board no longer lists sorts last; the
-    /// sweep drops it.
+    /// sweep drops it. Built once per pass and handed to `ask_waits_on` and
+    /// `ask_asking` (T-688): a snapshot asks those per queued ask.
     fn queue_order(&self) -> Vec<usize> {
         let mut rank: HashMap<ulid::Ulid, (usize, usize)> = HashMap::new();
         for (ci, col) in self.board.sorted_columns().iter().enumerate() {
@@ -10480,12 +10480,13 @@ impl Daemon {
     /// checkout, then the asks queued AHEAD of it there in board order —
     /// so the card reads `queued ∙ after T-3 +1` and a card moved up its
     /// column watches the count fall. Empty for a ticket with no ask.
-    fn ask_waits_on(&self, ticket: ulid::Ulid) -> Vec<String> {
-        self.keys_of(&self.ask_waits_on_ids(ticket))
+    /// `order` is this pass's `queue_order`.
+    fn ask_waits_on(&self, ticket: ulid::Ulid, order: &[usize]) -> Vec<String> {
+        self.keys_of(&self.ask_waits_on_ids(ticket, order))
     }
 
     /// `ask_waits_on`, as the tickets themselves.
-    fn ask_waits_on_ids(&self, ticket: ulid::Ulid) -> Vec<ulid::Ulid> {
+    fn ask_waits_on_ids(&self, ticket: ulid::Ulid, order: &[usize]) -> Vec<ulid::Ulid> {
         let Some(q) = self.queued.iter().find(|q| q.ticket == ticket) else {
             return Vec::new();
         };
@@ -10501,7 +10502,7 @@ impl Daemon {
         // reads as `accepting plan`.
         if q.accept_plan || q.send_on_accept {
             let mut ids = self.accept_holders(&q.cwd);
-            for i in self.queue_order() {
+            for &i in order {
                 let ahead = &self.queued[i];
                 if ahead.ticket == ticket {
                     break;
@@ -10523,7 +10524,7 @@ impl Daemon {
         if !self.queued_target_ready(q) && !ids.contains(&ticket) {
             ids.push(ticket);
         }
-        for i in self.queue_order() {
+        for &i in order {
             let ahead = &self.queued[i];
             if ahead.ticket == ticket {
                 break;
@@ -10540,7 +10541,7 @@ impl Daemon {
     /// says `after T-3's answer` rather than `after T-3`. A held ask waits
     /// on nobody's turn; its own key is listed while its own agent asks,
     /// so the card can say the answer comes before the send.
-    fn ask_asking(&self, ticket: ulid::Ulid) -> Vec<String> {
+    fn ask_asking(&self, ticket: ulid::Ulid, order: &[usize]) -> Vec<String> {
         let Some(q) = self.queued.iter().find(|q| q.ticket == ticket) else {
             return Vec::new();
         };
@@ -10550,7 +10551,10 @@ impl Daemon {
                 _ => Vec::new(),
             }
         } else {
-            self.ask_waits_on_ids(ticket).into_iter().filter(|t| self.ticket_asking(*t)).collect()
+            self.ask_waits_on_ids(ticket, order)
+                .into_iter()
+                .filter(|t| self.ticket_asking(*t))
+                .collect()
         };
         self.keys_of(&ids)
     }

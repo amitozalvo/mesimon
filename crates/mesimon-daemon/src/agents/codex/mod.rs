@@ -344,6 +344,70 @@ pub struct Snapshot {
     pub rate_limits_at_ms: u64,
 }
 
+/// What a snapshot file looked like when it was last parsed: length, mtime
+/// and inode. `write_json` renames a fresh file in, so a rewrite always
+/// moves the inode, whatever the filesystem's mtime grain.
+type Stamp = (u64, Option<std::time::SystemTime>, u64);
+
+fn stamp_of(path: &Path) -> Option<Stamp> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok(), meta.ino()))
+}
+
+/// The snapshot file at `path`, or `None` where it is missing, oversized or
+/// not a snapshot. Lost evidence is the daemon's to judge.
+fn read_snapshot(path: &Path) -> Option<Snapshot> {
+    use std::io::Read;
+    let mut data = Vec::new();
+    std::fs::File::open(path).ok()?.take(65537).read_to_end(&mut data).ok()?;
+    if data.len() > 65536 {
+        return None;
+    }
+    serde_json::from_slice(&data).ok()
+}
+
+/// The observer: one worker for the daemon's life (T-688), asked each tick
+/// for the live runtimes' snapshot files and answering each ask through
+/// `report`. A file is parsed again only when its `Stamp` moved; until then
+/// the last parse is reported again, and the daemon judges it by the
+/// heartbeat it carries, as it judged every re-parse before. The worker ends
+/// with its asker or with the first report nobody takes.
+pub fn spawn_observer(
+    report: impl Fn(Vec<(uuid::Uuid, Option<Snapshot>)>) -> bool + Send + 'static,
+) -> std::sync::mpsc::Sender<Vec<(uuid::Uuid, PathBuf)>> {
+    let (ask, asks) = std::sync::mpsc::channel::<Vec<(uuid::Uuid, PathBuf)>>();
+    std::thread::spawn(move || {
+        let mut seen: std::collections::HashMap<PathBuf, (Stamp, Option<Snapshot>)> =
+            std::collections::HashMap::new();
+        while let Ok(paths) = asks.recv() {
+            seen.retain(|p, _| paths.iter().any(|(_, q)| q == p));
+            let snapshots = paths
+                .into_iter()
+                .map(|(id, path)| {
+                    let snapshot = match (stamp_of(&path), seen.get(&path)) {
+                        (Some(stamp), Some((was, kept))) if *was == stamp => kept.clone(),
+                        (Some(stamp), _) => {
+                            let fresh = read_snapshot(&path);
+                            seen.insert(path, (stamp, fresh.clone()));
+                            fresh
+                        }
+                        (None, _) => {
+                            seen.remove(&path);
+                            None
+                        }
+                    };
+                    (id, snapshot)
+                })
+                .collect();
+            if !report(snapshots) {
+                break;
+            }
+        }
+    });
+    ask
+}
+
 /// Why a socket probe could not be made: a path no `sockaddr_un` holds,
 /// or the socket or its nonblocking flag refused.
 pub(crate) enum ProbeFail {
@@ -502,5 +566,60 @@ mod policy_tests {
         assert!(tier_flags(&Tier::builtin(AgentProvider::Codex)).is_empty());
         let claude = Tier { provider: AgentProvider::ClaudeCode, ..reviewer };
         assert!(tier_flags(&claude).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(sequence: u64) -> Snapshot {
+        Snapshot {
+            session: uuid::Uuid::nil(),
+            generation: 1,
+            sequence,
+            heartbeat_ms: 1_000 * sequence,
+            thread_id: None,
+            launch_phase: LaunchPhase::default(),
+            turn_id: None,
+            state: SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Unknown },
+            observation_hold: false,
+            history_path: None,
+            title: None,
+            plan: None,
+            plan_key: None,
+            stopped: false,
+            rate_limits: None,
+            rate_limits_at_ms: 0,
+        }
+    }
+
+    /// T-688: an unchanged file is reported from the last parse, a rewrite
+    /// is read again, and a file that went is `None`.
+    #[test]
+    fn observer_reparses_only_a_moved_snapshot() {
+        let dir = std::env::temp_dir().join(format!("msmn-cdx-observer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cdx.json");
+        let id = uuid::Uuid::new_v4();
+        write_json(&path, &snapshot(1)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ask = spawn_observer(move |s| tx.send(s).is_ok());
+        let round = || {
+            ask.send(vec![(id, path.clone())]).unwrap();
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap().remove(0).1
+        };
+        assert_eq!(round().map(|s| s.sequence), Some(1));
+        // Same bytes, same stamp: the parse is kept.
+        assert_eq!(round().map(|s| s.sequence), Some(1));
+        // A rewrite of the same length moves the inode: read again.
+        write_json(&path, &snapshot(2)).unwrap();
+        assert_eq!(round().map(|s| s.sequence), Some(2));
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(round(), None);
+        write_json(&path, &snapshot(3)).unwrap();
+        assert_eq!(round().map(|s| s.sequence), Some(3));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

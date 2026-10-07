@@ -22100,11 +22100,8 @@ are byte-for-byte the same, and the suite ran unchanged (2193 passed).
   that is on screen builds two or three a broadcast. Handing them the TUI's `Arc<Board>` keeps
   the handover fallback and is a structure change. So is memoising the built `Response` per
   `board_version`.
-- `tail_records` parses every line of its 64 KiB window when callers stop at the first that
-  decides (a lazy reverse iterator). The phone's board answer is serialized four or five times
-  to measure it. `queue_order` is rebuilt per queued ask per snapshot. `cost::Ledger::view`
-  re-runs `price` per bucket. `poll_codex` spawns a thread per tick and re-parses unchanged
-  snapshots.
+- The five daemon hot-path leftovers (the tail parse, the phone board's measure, the queue
+  order, the prices, the Codex poll) shipped as T-688, below.
 - The resume refusals the TUI arms on by substring (`resume_confirmation_offered`): the phrases
   sit inside long `format!`s. A typed `Response` is the real fix, and it is a wire change.
 - Behaviour changes, not cleanups: the barred-worktrees spawn refusal belongs in
@@ -22225,3 +22222,44 @@ server outlives its last session), `the_access_probe_reads_the_system_words_off_
 suggestion-order test with `server_cut_off`, the wire-name test. `hook_e2e` drives the spawn
 path. TCC cannot be simulated: the acceptance test is `mesimon doctor multiplexer` on a board
 whose server predates the live terminal app, and `tmux -S <sock> run-shell 'ls <repo>'` by hand.
+
+## Daemon hot-path leftovers from the third simplify pass (T-688, 2026-10-07, "Daemon hot-path leftovers from the T-682 pass: tail parse, phone board, queue order, prices, Codex poll")
+
+The five efficiency findings T-682 deferred, each behaviour-preserving, in the order they run:
+
+- **The transcript tail parses on demand.** `tail::tail_records` was a `Vec` of every JSONL
+  line in the 64 KiB window parsed to `serde_json::Value`, and every reader (`last_event`,
+  `turn_in_flight`, `turn_done_since`, `aborted_since`, `api_error`) walks from the end and
+  stops at the first record that decides — once a second per Running pane past the quiet
+  threshold, on the writer thread. It is now `TailRecords`, a reverse iterator over the window
+  text that parses a line when asked for it. Same skips (blank, non-JSON, the torn head);
+  `TailCursor::at_end` collects it, since the ledger wants oldest first.
+- **The phone's board answer is measured, not serialized, and once.** `control_board` ran
+  `to_vec` up to twice to trim, `Control::answer` once more for its 48 KiB cap, then `to_value`
+  and `seal` — per phone snapshot, up to once a second per peer. `mesophon::measure` is a
+  byte-counting `Write`; the board is measured once, again only after each trim, and the size
+  rides into `Control::answer_measured`. Every other reply is measured once on its way out
+  (`answer`), and the notes answer's budget check counts the same way.
+- **The queue order is built once per pass.** `queue_order` (the board-order rank map over
+  `sorted_columns × column_tickets`) was rebuilt by `ask_waits_on_ids` for every queued ask,
+  twice (`ask_waits_on` and `ask_asking`), per snapshot and per phone board. The pass builds it
+  once and hands `&[usize]` down; `pending_items`, `control_board` and the `Response::Queued`
+  road are the three builders.
+- **A model's price is looked up once per view.** `cost::Ledger::view` folded every (ticket,
+  hour, model) bucket through `core::cost::usd`, a scan of the price table with string ops.
+  `usd_at(&Price, &Tokens)` is the arithmetic alone, `TicketCost::fold_at` takes the looked-up
+  price, and `view` memoises `price(model)` per distinct model. The sums are the same
+  operations in the same order, so the figures are bit-identical.
+- **One Codex observer, gated on the file's stamp.** `poll_codex` spawned an OS thread every
+  250 ms while a Codex pane lived and re-parsed every snapshot file whether or not it changed.
+  `codex::spawn_observer` is one worker for the daemon's life (`Daemon::codex_observer`, spawned
+  at the first live runtime), asked each tick and answering through `Msg::CodexSnapshots` as
+  before. A file is parsed again only when its (len, mtime, inode) moved — `write_json` renames
+  a fresh file in, so a rewrite always moves the inode whatever the filesystem's mtime grain —
+  and the last parse is reported until then, which `on_codex_snapshots` judges by the heartbeat
+  it carries exactly as it judged every re-parse. A missing file is `None` and forgets its
+  stamp. An observer whose report found no daemon ends, and the next poll spawns another.
+
+Verified by `cargo ut` (a tail walk test and an observer re-parse test are new),
+`codex_startup_recovery_e2e`, `provider_e2e`, and one `cargo nextest run --workspace`. No
+CHANGELOG line: nothing a person sees changed.

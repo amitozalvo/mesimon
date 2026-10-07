@@ -58,6 +58,24 @@ const FILED_KEEP: usize = 256;
 /// Past this many bytes a board goes to the browser without its agents'
 /// words, well inside the 48 KiB an answer may carry.
 const BOARD_WORDS_BUDGET: usize = 40 * 1024;
+
+/// A reply's serialized size, counted and never kept (T-688): the board
+/// answer was serialized four or five times to be measured, per phone, up
+/// to once a second. `None` is a reply that does not serialize.
+fn measure(reply: &Reply) -> Option<usize> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, reply).ok().map(|()| count.0)
+}
 /// How many archived tickets a phone filed ride the board (T-665): as many
 /// as Sent keeps (`KEEP` in `web/mesophon/sent.js`).
 const ARCHIVED_SENT: usize = 50;
@@ -284,8 +302,14 @@ impl Control {
         }
     }
     fn answer(&mut self, peer: &str, id: u64, reply: Reply) {
+        let bytes = measure(&reply);
+        self.answer_measured(peer, id, reply, bytes);
+    }
+    /// `answer` for a reply its builder measured (T-688): the board answer
+    /// is measured as it is trimmed to fit, and not again here.
+    fn answer_measured(&mut self, peer: &str, id: u64, reply: Reply, bytes: Option<usize>) {
         if let (Some(p), Some(keys)) = (self.peers.get_mut(peer), self.keys.as_ref()) {
-            let reply = if serde_json::to_vec(&reply).map_or(true, |v| v.len() > 48 * 1024) {
+            let reply = if bytes.is_none_or(|n| n > 48 * 1024) {
                 Reply::Rejected { message: "response exceeds the browser preview limit".into() }
             } else {
                 reply
@@ -771,6 +795,9 @@ impl Daemon {
             p.high = command.id;
         }
         let by = Principal::Paired { device: device.to_hex(), grant: grant.to_hex() };
+        // The board answer comes measured (T-688); every other is measured
+        // once on its way out.
+        let mut measured: Option<Option<usize>> = None;
         let reply = match command.request {
             api::Request::Foreground { ticket } => {
                 if authorize(&by, &Action::Read, &Resource::Board).denied() {
@@ -801,7 +828,9 @@ impl Daemon {
                 if authorize(&by, &Action::Read, &Resource::Board).denied() {
                     Reply::Revoked
                 } else {
-                    self.control_board()
+                    let (reply, bytes) = self.control_board();
+                    measured = Some(bytes);
+                    reply
                 }
             }
             api::Request::Preview { ticket, session } => {
@@ -880,7 +909,8 @@ impl Daemon {
             }
         };
         self.control.remember(grant, command.id, reply.clone());
-        self.control.answer(peer, command.id, reply);
+        let bytes = measured.unwrap_or_else(|| measure(&reply));
+        self.control.answer_measured(peer, command.id, reply, bytes);
     }
     pub(super) fn control_observe_dialog(&mut self, id: uuid::Uuid, frame: &HookFrame) {
         if frame.payload.get("agent_id").is_some() {
@@ -2440,7 +2470,7 @@ impl Daemon {
         let reply = Reply::Notes { ticket: ticket.into(), notes, description };
         // A ticket with very many notes goes without the description's
         // body, which the page then asks for alone, as any other note.
-        if serde_json::to_vec(&reply).is_ok_and(|v| v.len() > BOARD_WORDS_BUDGET) {
+        if measure(&reply).is_some_and(|n| n > BOARD_WORDS_BUDGET) {
             if let Reply::Notes { ticket, notes, .. } = reply {
                 return Reply::Notes { ticket, notes, description: None };
             }
@@ -2632,7 +2662,7 @@ impl Daemon {
         }
     }
 
-    fn control_board(&self) -> Reply {
+    fn control_board(&self) -> (Reply, Option<usize>) {
         let columns = self.board.sorted_columns();
         let mut allowed_tags: Vec<_> = self
             .board
@@ -2643,6 +2673,7 @@ impl Daemon {
         allowed_tags.sort_by_key(|t| t.group);
         let book = self.tier_book();
         let tiers = projected_tiers(&book);
+        let order = self.queue_order();
         let mut reply = Reply::Board {
             tiers,
             title: self
@@ -2667,7 +2698,7 @@ impl Daemon {
                     let mut row = self.control_card(t, &book);
                     let q = self.queued.iter().find(|q| q.ticket == t.id);
                     row.queued = q.map(|q| q.text.clone());
-                    row.queue = q.map(|q| self.control_queue(q));
+                    row.queue = q.map(|q| self.control_queue(q, &order));
                     row.agent = self.board.live_agent(t.id).map(|s| {
                         let (doing, said) = self.control_words(s);
                         self.control_agent(t, s, doing, said)
@@ -2684,22 +2715,25 @@ impl Daemon {
         self.control.words.borrow_mut().retain(|path, _| live.contains(path.as_str()));
         // The board must fit one answer (`Control::answer`'s cap): the
         // agents' words are what a crowded board goes without first, then
-        // the archived tickets Sent reads.
-        let over =
-            |reply: &Reply| serde_json::to_vec(reply).is_ok_and(|v| v.len() > BOARD_WORDS_BUDGET);
-        if over(&reply) {
+        // the archived tickets Sent reads. Measured once, and again only
+        // after a trim (T-688): this answers every phone up to once a second.
+        let mut bytes = measure(&reply);
+        let over = |bytes: Option<usize>| bytes.is_some_and(|n| n > BOARD_WORDS_BUDGET);
+        if over(bytes) {
             if let Reply::Board { tickets, .. } = &mut reply {
                 for agent in tickets.iter_mut().filter_map(|t| t.agent.as_mut()) {
                     (agent.doing, agent.said) = (None, None);
                 }
             }
+            bytes = measure(&reply);
         }
-        if over(&reply) {
+        if over(bytes) {
             if let Reply::Board { archived, .. } = &mut reply {
                 archived.clear();
             }
+            bytes = measure(&reply);
         }
-        reply
+        (reply, bytes)
     }
 
     /// A ticket as a phone's card reads it, without its agent or its queued
@@ -2807,13 +2841,13 @@ impl Daemon {
 
     /// A queued ask as a phone reads it (T-568): the board's own row
     /// (`pending_items`) in the phone's fields.
-    fn control_queue(&self, q: &QueuedAsk) -> api::Queue {
+    fn control_queue(&self, q: &QueuedAsk, order: &[usize]) -> api::Queue {
         api::Queue {
             by: q.by.and_then(|c| self.board.ticket(c)).map(|c| c.short_key.clone()),
             sends: q.sends,
             held: q.held.map(str::to_string),
-            waits: self.ask_waits_on(q.ticket),
-            asking: self.ask_asking(q.ticket),
+            waits: self.ask_waits_on(q.ticket, order),
+            asking: self.ask_asking(q.ticket, order),
         }
     }
 

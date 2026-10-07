@@ -25,7 +25,7 @@
 //! files' contract: its own `schema_version`, a newer build's bytes left
 //! untouched with writes barred, an unparseable file quarantined.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -294,15 +294,21 @@ impl Ledger {
         self.tickets.len() != before
     }
 
-    /// Each ticket's account as of `now_ms`, for the snapshot.
+    /// Each ticket's account as of `now_ms`, for the snapshot. A model's
+    /// price is looked up once per view (T-688): every snapshot folds every
+    /// (ticket, hour, model) bucket, and the lookup is a scan.
     pub fn view(&self, now_ms: u64) -> Vec<TicketCost> {
+        let mut prices: HashMap<&str, Option<mesimon_core::cost::Price>> = HashMap::new();
         self.tickets
             .iter()
             .filter_map(|(ticket, t)| {
                 let mut c = TicketCost { ticket: *ticket, ..TicketCost::default() };
                 for (hour, models) in &t.hours {
                     for (model, tokens) in models {
-                        c.fold(model, tokens, *hour, now_ms);
+                        let price = prices
+                            .entry(model.as_str())
+                            .or_insert_with(|| mesimon_core::cost::price(model));
+                        c.fold_at(price.as_ref(), tokens, *hour, now_ms);
                     }
                 }
                 (c.tokens > 0).then_some(c)

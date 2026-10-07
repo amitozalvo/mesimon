@@ -125,15 +125,18 @@ fn matches_id(model: &str, id: &str) -> bool {
 
 /// USD for `tokens` of `model`, or `None` where it is unpriced.
 pub fn usd(model: &str, t: &Tokens) -> Option<f64> {
-    let p = price(model)?;
+    Some(usd_at(&price(model)?, t))
+}
+
+/// USD for `tokens` at price `p`: `usd` with the lookup done, for a reader
+/// that prices many buckets of one model (T-688).
+pub fn usd_at(p: &Price, t: &Tokens) -> f64 {
     let m = |n: u64, per: f64| n as f64 * per / 1_000_000.0;
-    Some(
-        m(t.input, p.input)
-            + m(t.output, p.output)
-            + m(t.write_5m, p.write_5m)
-            + m(t.write_1h, p.write_1h)
-            + m(t.read, p.read),
-    )
+    m(t.input, p.input)
+        + m(t.output, p.output)
+        + m(t.write_5m, p.write_5m)
+        + m(t.write_1h, p.write_1h)
+        + m(t.read, p.read)
 }
 
 /// One assistant message out of a Claude Code transcript.
@@ -296,8 +299,14 @@ impl TicketCost {
     /// Fold one bucket of `model`'s tokens, from the hour `hour` (unix
     /// hours), into the account as of `now_ms`.
     pub fn fold(&mut self, model: &str, t: &Tokens, hour: u64, now_ms: u64) {
+        self.fold_at(price(model).as_ref(), t, hour, now_ms);
+    }
+
+    /// `fold` with the model's price looked up once by the caller (T-688),
+    /// `None` for an unpriced model.
+    pub fn fold_at(&mut self, price: Option<&Price>, t: &Tokens, hour: u64, now_ms: u64) {
         self.tokens += t.total();
-        let Some(usd) = usd(model, t) else {
+        let Some(usd) = price.map(|p| usd_at(p, t)) else {
             self.unpriced += t.total();
             return;
         };
