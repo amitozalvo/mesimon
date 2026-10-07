@@ -361,7 +361,8 @@ fn multiplexer(repo: &Path, verbose: bool) -> Section {
         let sock = paths.tmux_sock();
         let access = mesimon_backend_tmux::folder_access(&sock, repo);
         let pid = mesimon_backend_tmux::server_pid(&sock);
-        records.push(private_server(&access, pid, &bin, &sock));
+        let answers = pid.map_or(Answers::Unknown, server_answers_to);
+        records.push(private_server(&access, pid, &answers, &bin, &sock));
     }
     // The detach key, and the one layout where pressing it is worse than
     // doing nothing. `conf.rs` binds both C-] and C-5 to detach-client; on
@@ -380,28 +381,109 @@ fn multiplexer(repo: &Path, verbose: bool) -> Section {
     Section { name: "multiplexer", records }
 }
 
+/// Who a server answers to for its folder access, on macOS (T-690): the
+/// fact that says a week ahead whether a board will be cut off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Answers {
+    /// Started by this build's `ensure_server`: its own responsible process.
+    Itself,
+    /// Forked by an older build's first `new-session`: the terminal app that
+    /// opened the board, by name, still running.
+    To(u32, String),
+    /// The same, and that app has quit: the cut-off is coming.
+    Gone(u32),
+    /// Not macOS, or no answer.
+    Unknown,
+}
+
+fn server_answers_to(pid: u32) -> Answers {
+    match mesimon_backend_tmux::responsible_pid(pid) {
+        None => Answers::Unknown,
+        Some(r) if r == pid => Answers::Itself,
+        Some(r) => process_name(r).map_or(Answers::Gone(r), |n| Answers::To(r, n)),
+    }
+}
+
+/// The short name of a live process (`iTerm2`), or `None` for one that is gone.
+fn process_name(pid: u32) -> Option<String> {
+    let out = Command::new("ps").args(["-o", "comm=", "-p", &pid.to_string()]).output().ok()?;
+    let comm = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !comm.is_empty()).then(|| {
+        Path::new(&comm).file_name().map_or(comm.clone(), |n| n.to_string_lossy().into_owned())
+    })
+}
+
+/// The kill line on the server's own tmux, never a bare `tmux` (a client
+/// from another build refuses the server), spelled over three lines with
+/// continuations because `wrap` reflows any line past the measure, and a
+/// socket path alone is most of it.
+fn kill_line(bin: &Path, sock: &Path) -> String {
+    format!(
+        "{} \\\n  -S {} \\\n  kill-server",
+        redact_cmd(&bin.display().to_string()),
+        redact_cmd(&sock.display().to_string())
+    )
+}
+
 /// The private server's record (T-690): `ok` while a process under it reads
-/// the checkout, a note while there is none, and a FAIL with the two
-/// repairs — the board's menu row, or the same kill by hand — when macOS
-/// has cut it off. The kill line is the tmux the server runs on, never a
-/// bare `tmux`: a client from another build refuses the server. It is
-/// spelled over three lines with continuations because `wrap` reflows any
-/// line past the measure, and a socket path alone is most of it.
+/// the checkout — saying who the server answers to, and the way to a server
+/// that answers for itself where it still answers to a terminal app — a
+/// note while there is none, a WARN while it answers to an app that has
+/// quit, and a FAIL with the two repairs (the board's menu row, or the same
+/// kill by hand) once macOS has cut it off.
 fn private_server(
     access: &mesimon_backend_tmux::Access,
     pid: Option<u32>,
+    answers: &Answers,
     bin: &Path,
     sock: &Path,
 ) -> Record {
     use mesimon_backend_tmux::Access;
     let running = pid.map_or_else(|| "running".to_string(), |p| format!("running (pid {p})"));
+    let name =
+        bin.file_name().map_or_else(|| "tmux".to_string(), |n| n.to_string_lossy().into_owned());
     match access {
         Access::NoServer => {
             rec(Level::Note, "private server", "not running (starts with the first session)")
         }
-        Access::Readable => {
-            rec(Level::Ok, "private server", format!("{running}, reads the checkout"))
-        }
+        Access::Readable => match answers {
+            Answers::Itself => rec(
+                Level::Ok,
+                "private server",
+                format!("{running}, answers for itself, reads the checkout"),
+            ),
+            Answers::Unknown => {
+                rec(Level::Ok, "private server", format!("{running}, reads the checkout"))
+            }
+            Answers::To(r, app) => rec(
+                Level::Ok,
+                "private server",
+                format!("{running}, reads the checkout ∙ answers to {app}"),
+            )
+            .advice(format!(
+                "Started before this build, so macOS keys its folder access to {app} (pid {r}) \
+                 and cuts it off a while after that app quits. It exits by itself once every \
+                 session on this board is asleep, and the next start answers for itself. To get \
+                 there now, with every session asleep:\n{}",
+                kill_line(bin, sock)
+            )),
+            Answers::Gone(r) => rec(
+                Level::Warn,
+                "private server",
+                format!(
+                    "{running}, reads the checkout for now ∙ answers to a process that has quit \
+                     (pid {r})"
+                ),
+            )
+            .advice(format!(
+                "macOS keys its folder access to that process and cuts the server off once its \
+                 cached permission lapses; every agent under it then dies at launch. Restart it \
+                 first: with every session asleep,\n{}\nor take `Restart the private tmux \
+                 server` from the board's Esc menu once it is cut off. If macOS then asks \
+                 whether {name} may access the folder, allow it.",
+                kill_line(bin, sock)
+            )),
+        },
         Access::Denied(why) if !mesimon_backend_tmux::is_cut_off(why) => {
             rec(Level::Warn, "private server", format!("{running}, but ls under it failed: {why}"))
                 .advice(
@@ -411,23 +493,20 @@ fn private_server(
                      permitted`.",
                 )
         }
-        Access::Denied(why) => {
-            let name = bin
-                .file_name()
-                .map_or_else(|| "tmux".to_string(), |n| n.to_string_lossy().into_owned());
-            rec(Level::Fail, "private server", format!("{running}, cannot read the checkout: {why}"))
-                .advice(format!(
-                    "macOS keys a folder permission (Documents, Desktop, Downloads) to the app that \
+        Access::Denied(why) => rec(
+            Level::Fail,
+            "private server",
+            format!("{running}, cannot read the checkout: {why}"),
+        )
+        .advice(format!(
+            "macOS keys a folder permission (Documents, Desktop, Downloads) to the app that \
                      started this server, and that terminal has quit; every agent under it dies at \
                      launch. Restart the server: open the board and take `Restart the private tmux \
-                     server` from the Esc menu, or run\n{} \\\n  -S {} \\\n  kill-server\nSessions \
-                     park and wake back; `!` terminals close. If macOS then asks whether {name} may \
-                     access the folder, allow it: the new server answers for itself and outlives \
-                     any terminal.",
-                    redact_cmd(&bin.display().to_string()),
-                    redact_cmd(&sock.display().to_string()),
-                ))
-        }
+                     server` from the Esc menu, or run\n{}\nSessions park and wake back; `!` \
+                     terminals close. If macOS then asks whether {name} may access the folder, \
+                     allow it: the new server answers for itself and outlives any terminal.",
+            kill_line(bin, sock),
+        )),
     }
 }
 
@@ -1271,22 +1350,44 @@ mod tests {
         let home = std::env::var("HOME").unwrap();
         let bin = std::path::PathBuf::from(format!("{home}/.local/bin/mesimon-tmux"));
         let sock = Path::new("/tmp/mesimon-501/0123456789abcdef/tmux.sock");
-        let r = private_server(&Access::NoServer, None, &bin, sock);
+        let cmd = "$HOME/.local/bin/mesimon-tmux \\\n  -S /tmp/mesimon-501/0123456789abcdef/tmux.sock \\\n  kill-server";
+        let unknown = Answers::Unknown;
+        let r = private_server(&Access::NoServer, None, &unknown, &bin, sock);
         assert!(r.level == Level::Note && r.value.contains("not running"), "{}", r.value);
-        let r = private_server(&Access::Readable, Some(42), &bin, sock);
+        let r = private_server(&Access::Readable, Some(42), &unknown, &bin, sock);
         assert!(r.level == Level::Ok, "{}", r.value);
         assert_eq!(r.value, "running (pid 42), reads the checkout");
-        let r = private_server(&Access::Denied("parse error".into()), Some(42), &bin, sock);
+        // Who it answers to, a week ahead of the cut-off: itself is the
+        // fixed state; a live app gets the way there; a quit app is a WARN.
+        let r = private_server(&Access::Readable, Some(42), &Answers::Itself, &bin, sock);
+        assert_eq!(r.value, "running (pid 42), answers for itself, reads the checkout");
+        assert!(r.level == Level::Ok && r.advice.is_none());
+        let to = Answers::To(50177, "iTerm2".into());
+        let r = private_server(&Access::Readable, Some(42), &to, &bin, sock);
+        assert_eq!(r.value, "running (pid 42), reads the checkout ∙ answers to iTerm2");
+        assert!(r.level == Level::Ok);
+        let advice = r.advice.unwrap();
+        assert!(advice.contains("iTerm2 (pid 50177)") && advice.contains(cmd), "{advice}");
+        let r = private_server(&Access::Readable, Some(42), &Answers::Gone(50177), &bin, sock);
+        assert!(r.level == Level::Warn, "{}", r.value);
+        assert!(r.value.contains("answers to a process that has quit (pid 50177)"), "{}", r.value);
+        assert!(r.advice.unwrap().contains(cmd));
+        let r =
+            private_server(&Access::Denied("parse error".into()), Some(42), &unknown, &bin, sock);
         assert!(r.level == Level::Warn, "another refusal is not the cut-off");
         assert!(!r.advice.unwrap().contains("Restart the private tmux server"));
-        let r =
-            private_server(&Access::Denied("Operation not permitted".into()), Some(42), &bin, sock);
+        let r = private_server(
+            &Access::Denied("Operation not permitted".into()),
+            Some(42),
+            &unknown,
+            &bin,
+            sock,
+        );
         assert!(r.level == Level::Fail);
         assert_eq!(r.value, "running (pid 42), cannot read the checkout: Operation not permitted");
         let advice = r.advice.unwrap();
         assert!(advice.contains("`Restart the private tmux server` from the Esc menu"), "{advice}");
         assert!(advice.contains("whether mesimon-tmux may access"), "{advice}");
-        let cmd = "$HOME/.local/bin/mesimon-tmux \\\n  -S /tmp/mesimon-501/0123456789abcdef/tmux.sock \\\n  kill-server";
         assert!(advice.contains(cmd), "{advice}");
         let lines = wrap(&advice, 58);
         for piece in cmd.split('\n') {

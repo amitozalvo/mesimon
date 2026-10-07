@@ -1027,6 +1027,25 @@ const PROBE_DIR_VAR: &str = "MESIMON_PROBE_DIR";
 /// stderr onto stdout, stdout away: the output is the error or nothing.
 const PROBE_CMD: &str = "ls \"$MESIMON_PROBE_DIR\" 2>&1 >/dev/null";
 
+/// The process macOS holds responsible for `pid`'s folder access (T-690):
+/// `pid` itself for a server `ensure_server` started, the terminal app that
+/// opened the board for one an older build's `new-session` forked. `None`
+/// off macOS, or when libSystem has no answer.
+#[cfg(target_os = "macos")]
+pub fn responsible_pid(pid: u32) -> Option<u32> {
+    extern "C" {
+        fn responsibility_get_pid_responsible_for_pid(pid: libc::pid_t) -> libc::pid_t;
+    }
+    // SAFETY: a pid in, a pid out; libSystem reads nothing of ours.
+    let r = unsafe { responsibility_get_pid_responsible_for_pid(pid as libc::pid_t) };
+    (r > 0).then_some(r as u32)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn responsible_pid(_pid: u32) -> Option<u32> {
+    None
+}
+
 /// macOS's word for the cut-off: `ls` under the server got EPERM
 /// (`Operation not permitted`) on the directory — TCC's refusal, where a
 /// plain permissions problem is EACCES (`Permission denied`) and a shell
@@ -1129,17 +1148,13 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn the_private_server_answers_to_macos_for_itself() {
-        extern "C" {
-            fn responsibility_get_pid_responsible_for_pid(pid: libc::pid_t) -> libc::pid_t;
-        }
         let f = fixture("backend-responsible", "t.sock");
         let be = TmuxBackend::new(f.dir.join("t.sock"), &f.dir, None).unwrap();
         be.spawn("resp", &PathBuf::from("/tmp"), &["sleep".into(), "60".into()]).unwrap();
         let pid = server_pid(&f.dir.join("t.sock")).expect("a server answers on the socket");
-        // SAFETY: a pid in, a pid out; libSystem reads nothing of ours.
-        let responsible = unsafe { responsibility_get_pid_responsible_for_pid(pid as libc::pid_t) };
         assert_eq!(
-            responsible, pid as libc::pid_t,
+            responsible_pid(pid),
+            Some(pid),
             "the server must be responsible for itself, not for the terminal this test runs in"
         );
         // And the probe reads through it: the fixture dir is nobody's

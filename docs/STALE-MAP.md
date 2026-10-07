@@ -22201,6 +22201,14 @@ macOS's own word, `Operation not permitted` (EPERM, `is_cut_off`); any other fai
 that is not POSIX, a checkout that moved — is a doctor WARN in its words and a journal line,
 never the notice that says macOS did it.
 
+**Doctor says who the server answers to**, since "reads the checkout" is true of a doomed server
+for a week: `responsible_pid` (libSystem's `responsibility_get_pid_responsible_for_pid`) against
+the server's own pid gives `answers for itself` (this build's server), `answers to iTerm2` with
+the kill line as advice (an older build's, its app still running), or a WARN `answers to a
+process that has quit` (the cut-off is coming). The author's own board read `running (pid
+5279), answers for itself, reads the checkout` after its restart, which is the acceptance test
+on a real board.
+
 **Not built, and why.** Automatic restart: the measured safe moment is "no pane mid-turn",
 which is the gate, but whether a turn is about to start (a queued ask, a crown wake) is the
 person's knowledge. The daemon's own disclaim (`spawn_detached`): its identity would be the
