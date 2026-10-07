@@ -6,6 +6,47 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.2 — 2026-10-07
+
+### Added
+
+- **The Esc menu offers `Restart the private tmux server`** when macOS has
+  cut the board's sessions off from the folder the repository is in. The
+  advisory row says so, `mesimon doctor` prints a `private server` line with
+  the same repair, and the restart parks every session and wakes it back.
+- **Settings › Notifications has an `Agents the crown started` row.** By
+  default a finished turn, a question, a plan or a raised hand from an agent
+  the crown started goes to the crown and is marked on the card without a
+  banner; switch the row to hear them too. A permission prompt always
+  reaches you.
+- **The Esc menu's `Archive N finished tickets` row says how much disk it
+  frees.** Only the worktrees the archive removes are counted.
+
+### Changed
+
+- **On macOS the private tmux server now answers to macOS for itself.** The
+  first agent you start after this update may ask once whether `mesimon-tmux`
+  may access your Documents, Desktop or Downloads folder; allow it.
+- **A finished turn the merge train will take is announced once, when the
+  train is done with it.** You no longer get a `turn finished` banner and then
+  a merged one for the same turn.
+- **The git screen opens on push / pull when the checkout has no changes.**
+  Tab still goes to the files view.
+- **On the board's top row, `h` and `l` past the last mark step down onto the
+  column under it** instead of stopping.
+- **An open board asks the daemon for one snapshot per change, not three.**
+  Notifications and keep-awake read the board the screen already has.
+
+### Fixed
+
+- **Agents no longer die at launch with `Operation not permitted`** days
+  after the terminal that first opened the board has quit, and agents in
+  worktrees can commit again.
+- **On Team and Enterprise accounts, a card no longer keeps spinning** after
+  a background command or watch ended in the middle of a turn.
+- **`Ctrl+X` in the tag picker's name field no longer types an `x`.**
+- **A note you just edited reads `edited by you just now`,** not `now ago`.
+
 ## v0.1.0-beta.1 — 2026-10-06
 
 ### Added
@@ -25,10 +66,6 @@ in the Esc menu under `Release notes` and on GitHub.
   Ghostty post it instead, so a managed Mac has no app of mesimon's to ask
   about. In other terminals `your terminal` shows no banner; sounds play
   either way.
-- **The Esc menu offers `Restart the private tmux server`** when macOS has
-  cut the board's sessions off from the folder the repository is in. The
-  advisory row says so, `mesimon doctor` prints a `private server` line with
-  the same repair, and the restart parks every session and wakes it back.
 
 ### Changed
 
@@ -42,19 +79,6 @@ in the Esc menu under `Release notes` and on GitHub.
   paired devices are its rows, with `Signed in as …` above them. The footer
   reads `REMOTE CONTROL` there, and `mesimon mesophon setup` names the same
   path.
-- **On macOS the private tmux server now answers to macOS for itself.** The
-  first agent you start after this update may ask once whether `mesimon-tmux`
-  may access your Documents, Desktop or Downloads folder; allow it.
-- **An open board asks the daemon for one snapshot per change, not three.**
-  Notifications and keep-awake read the board the screen already has; they
-  fetch their own only while you are inside an agent pane, a terminal or an
-  editor.
-
-### Fixed
-
-- **Agents no longer die at launch with `Operation not permitted`** days
-  after the terminal that first opened the board has quit, and agents in
-  worktrees can commit again.
 
 ## v0.1.0-alpha.40 — 2026-10-05
 
