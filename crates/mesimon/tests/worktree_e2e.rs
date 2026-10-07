@@ -389,3 +389,87 @@ fn m4_worktree_lifecycle() {
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
 }
+
+/// T-683: barred bindings (`worktrees.json` a newer build wrote) refuse a
+/// worktree ticket's spawn on EVERY road, and cut no tree. The three guarded
+/// callers (the desk's `c`, the phone's start, the crown's) refused already;
+/// the queue's `Start` — a column ask on an empty seat — and the pending-spawn
+/// replay reached `queue_provision` and orphaned a tree `persist_worktrees`
+/// would never record. The refusal now sits in `resolve_spawn_cwd`, under all
+/// of them, and the workspace choice in `set_workspace`, under the desk, the
+/// crown and the phone alike.
+#[test]
+fn barred_bindings_refuse_a_queued_start_and_cut_no_tree() {
+    const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n";
+    let Some(h) = Harness::boot("wtbar", Some(STUB)) else { return };
+    if Proc::new("git").arg("--version").output().is_err() {
+        eprintln!("git not installed; skipping");
+        return;
+    }
+    git(&h.repo, &["init", "-q", "-b", "main"]);
+    git(&h.repo, &["config", "user.email", "e2e@t"]);
+    git(&h.repo, &["config", "user.name", "e2e"]);
+    std::fs::write(h.repo.join("a.txt"), "hello\n").unwrap();
+    git(&h.repo, &["add", "."]);
+    git(&h.repo, &["commit", "-qm", "init"]);
+
+    // A bindings file from a newer mesimon: valid bytes this build must not
+    // downgrade, so the loader bars every write to it.
+    let bindings = h.paths.state_dir.join("worktrees.json");
+    let future = r#"{"schema_version":99,"bindings":{}}"#;
+    h.restart_after(|| std::fs::write(&bindings, future).unwrap());
+    let mut c = h.client("wtbar");
+
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "barred start".into(),
+        workspace: Some(WorkspaceStrategy::Worktree),
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create failed: {other:?}"),
+    };
+    let barred = |resp: Response| match resp {
+        Response::Err { message } => {
+            assert!(message.contains("could not be read"), "{message}");
+            assert!(message.contains("worktrees.json"), "{message}");
+        }
+        other => panic!("expected the barred refusal, got {other:?}"),
+    };
+
+    // The queue's `Start`: a column ask on the empty seat. A worktree ticket's
+    // seat starts now whatever the toggle says, so both roads reach `deliver`.
+    for queued in [false, true] {
+        match c.request(Command::PromptColumn {
+            column: "TODO".into(),
+            text: "go".into(),
+            queued,
+            accept_plan: false,
+        }) {
+            Response::Asked { started, failed, queued, .. } => {
+                assert_eq!((started, failed, queued), (0, 1, 0));
+            }
+            other => panic!("column ask: {other:?}"),
+        }
+    }
+    wait_until(Duration::from_secs(5), "the two refusals in the feed", || {
+        feed_count(&h, "prompt_column_failed", ticket) == 2
+    });
+    // The desk's own `c`, and the desk's workspace choice.
+    barred(c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }));
+    barred(c.request(Command::SetWorkspace { id: ticket, workspace: None }));
+
+    // Nothing was cut, nothing was recorded, nothing was overwritten.
+    let trees = std::fs::read_dir(h.paths.worktrees_root())
+        .map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    assert!(trees.is_empty(), "a tree was cut under barred bindings: {trees:?}");
+    assert_eq!(std::fs::read_to_string(&bindings).unwrap(), future);
+    assert!(git(&h.repo, &["branch", "--list", "msmn/*"]).trim().is_empty());
+    assert!(c.board().sessions.is_empty());
+}

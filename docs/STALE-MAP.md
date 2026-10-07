@@ -22263,3 +22263,28 @@ The five efficiency findings T-682 deferred, each behaviour-preserving, in the o
 Verified by `cargo ut` (a tail walk test and an observer re-parse test are new),
 `codex_startup_recovery_e2e`, `provider_e2e`, and one `cargo nextest run --workspace`. No
 CHANGELOG line: nothing a person sees changed.
+
+## The barred-worktrees spawn refusal moved under every road (T-683, 2026-10-07)
+
+Deferred by T-682 because it changes behaviour. When `worktrees.json` is barred (unreadable, or
+written by a newer build), `persist_worktrees` refuses every write, so a worktree cut now is a
+tree nothing records — the D26 orphan. Three callers refused a worktree ticket's spawn before
+`spawn_session` (`handle`'s `SpawnSession`, Remote Control's start, the crown's `start_agent`);
+the queue's `Start` — `prompt_session`, `drain_queue` and a column ask on an empty seat — and the
+pending-spawn replay reached `queue_provision` unguarded and cut the tree.
+
+**What changed.**
+- `resolve_spawn_cwd`'s `Worktree` arm refuses with `barred_message("worktrees")` before it
+  reads the binding. Every spawn resolves its cwd there, so the five roads answer alike, and the
+  three caller guards and `ticket_wants_worktree` are gone. A resume whose directory is gone
+  re-resolves through the same arm and is refused the same way.
+- `set_workspace` refuses while barred, in the same words. `handle`'s arm kept the guard for
+  `MergeTicket`/`MergeToAgent` only; the crown's `set_workspace` dropped its copy; its
+  `start_agent`'s `apply` and the phone's `control_workspace` (T-642) are covered by it. The
+  phone's handler also refuses before its no-op read, as the desk's `SetWorkspace` does.
+
+**Test.** `worktree_e2e::barred_bindings_refuse_a_queued_start_and_cut_no_tree` writes a
+schema-99 `worktrees.json` into a restart's window, then drives a column ask on an empty
+worktree seat (both toggles — a worktree seat starts now either way), the desk's `c` and a
+`SetWorkspace`: each refused in the barred words, the feed holds two `prompt_column_failed`
+rows, `worktrees/` is empty, no `msmn/*` branch exists and the file's bytes are untouched.

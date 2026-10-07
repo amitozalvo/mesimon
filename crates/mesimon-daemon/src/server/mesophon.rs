@@ -2007,9 +2007,6 @@ impl Daemon {
         if self.queued.iter().any(|q| q.ticket == id) {
             return reject("a prompt is queued for this ticket at your terminal");
         }
-        if self.worktrees_barred && self.ticket_wants_worktree(id) {
-            return reject(&self.barred_message("worktrees"));
-        }
         // The pick lands on the ticket before the seat is read, as the desk's
         // `^n` before its Shift+Enter (T-643): an empty seat starts on it and
         // a parked one wakes on it. A sleeping Codex seat refuses a Claude
@@ -2237,6 +2234,11 @@ impl Daemon {
         };
         if self.team_content_only() {
             return reject("this board has no repository on this machine");
+        }
+        // Barred bindings refuse before the no-op reads, as the desk's
+        // `SetWorkspace` does (T-683): `set_workspace` says so itself.
+        if self.worktrees_barred {
+            return reject(&self.barred_message("worktrees"));
         }
         let Some(t) = self.board.ticket(id) else { return reject("ticket unavailable") };
         if (t.workspace_strategy() == WorkspaceStrategy::Worktree) == worktree {

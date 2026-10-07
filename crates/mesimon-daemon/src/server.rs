@@ -2366,9 +2366,10 @@ impl Daemon {
             // Worktree work is refused wholesale while the bindings file is
             // barred: acting would either strand a new worktree we cannot
             // record, or tear down a real one on a guess (D26, fail closed).
-            Command::SetWorkspace { .. }
-            | Command::MergeTicket { .. }
-            | Command::MergeToAgent { .. }
+            // A spawn and a workspace choice refuse on their own roads
+            // (`resolve_spawn_cwd`, `set_workspace`, T-683), so every caller
+            // of either is covered without a guard of its own.
+            Command::MergeTicket { .. } | Command::MergeToAgent { .. }
                 if self.worktrees_barred =>
             {
                 Response::Err { message: self.barred_message("worktrees") }
@@ -2546,11 +2547,6 @@ impl Daemon {
                 Response::Ok
             }
             Command::MoveTicket { id, column, before } => self.move_ticket(id, column, before),
-            Command::SpawnSession { ticket, .. }
-                if self.worktrees_barred && self.ticket_wants_worktree(ticket) =>
-            {
-                Response::Err { message: self.barred_message("worktrees") }
-            }
             Command::SpawnSession { ticket, kind, submit_prompt, plan } => self.spawn_session(
                 ticket,
                 if kind.is_agent() {
@@ -5305,9 +5301,6 @@ impl Daemon {
                     Ok(ws) => ws,
                     Err(message) => return Response::Err { message },
                 };
-                if self.worktrees_barred {
-                    return Response::Err { message: self.barred_message("worktrees") };
-                }
                 if let err @ Response::Err { .. } = self.set_workspace(target, Some(ws)) {
                     return err;
                 }
@@ -5708,9 +5701,6 @@ impl Daemon {
                 };
                 if let Some(message) = plan_refused {
                     return Response::Err { message };
-                }
-                if wanted == WorkspaceStrategy::Worktree && self.worktrees_barred {
-                    return Response::Err { message: self.barred_message("worktrees") };
                 }
                 if let Some(t) = pick {
                     if let Err(message) = self.apply_ticket_tier(target, Some(t.id)) {
@@ -7897,15 +7887,6 @@ impl Daemon {
         )
     }
 
-    /// Does this ticket resolve to a worktree workspace? A shared-checkout
-    /// spawn touches no bindings and stays allowed while worktrees are barred.
-    fn ticket_wants_worktree(&self, id: ulid::Ulid) -> bool {
-        self.board
-            .ticket(id)
-            .map(|t| t.workspace_strategy() == mesimon_core::board::WorkspaceStrategy::Worktree)
-            .unwrap_or(false)
-    }
-
     /// The single write path for `columns.toml`. Barred means a file we
     /// could not read — or one a newer mesimon wrote — is still sitting
     /// there, and writing would destroy the only copy.
@@ -8977,6 +8958,13 @@ impl Daemon {
     fn set_workspace(&mut self, id: ulid::Ulid, workspace: Option<WorkspaceStrategy>) -> Response {
         if self.board.ticket(id).is_none() {
             return no_such_ticket();
+        }
+        // Refused here while the bindings file is barred (T-683), so the
+        // desk, the crown's `set_workspace`, its `start_agent` and the phone
+        // all answer alike — a choice made now would steer the next spawn
+        // at a tree nothing could record.
+        if self.worktrees_barred {
+            return Response::Err { message: self.barred_message("worktrees") };
         }
         // Locked once anything exists that the choice would RELOCATE — a
         // worktree, and an agent standing in a directory this field names.
@@ -12297,6 +12285,16 @@ impl Daemon {
                 _ => Err("no worktree bound to this ticket — adopt one first".into()),
             },
             WorkspaceStrategy::Worktree => {
+                // Barred bindings refuse the spawn here, on the one road every
+                // spawn takes (T-683) — the desk's `c`, the phone's start, the
+                // crown's, the queue's `Start` and the pending-spawn replay —
+                // because `persist_worktrees` would never record the tree
+                // `queue_provision` cuts, and an unrecorded tree is an orphan
+                // nothing can reclaim (D26). Three callers checked and two
+                // did not; now none has to.
+                if self.worktrees_barred {
+                    return Err(self.barred_message("worktrees"));
+                }
                 // On a workspace root (repositories nested one level under
                 // it) the provision cuts one worktree per nested repo
                 // (T-368, `queue_provision` asks the census).
