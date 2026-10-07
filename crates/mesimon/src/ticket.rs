@@ -33,7 +33,9 @@ struct Create {
 }
 
 pub fn run(args: &[String]) -> Result<()> {
-    if matches!(args.first().map(String::as_str), None | Some("--help" | "-h")) {
+    // `--help` anywhere is a question, never a flag to refuse: `mesimon
+    // ticket create --help` is how a person asks what create takes.
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{USAGE}");
         return Ok(());
     }
