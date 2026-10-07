@@ -640,13 +640,12 @@ function taskStopped(e: any) {
 
 /**
  * The notification that ends a background task is a prompt (T-651:
- * `<task-notification>` with `<task-id>` in `turn.start`'s text, never a
- * `session.receive`).
+ * `<task-notification>` with `<task-id>` in the prompt's text, never a
+ * `session.receive`), and one prompt may carry several. Every id it names.
  */
-export function taskNotified(text: unknown): string | undefined {
-  if (typeof text !== 'string' || !text.includes('<task-notification>')) return undefined
-  const m = /<task-id>([^<]+)<\/task-id>/.exec(text)
-  return m ? m[1].trim() : undefined
+export function taskNotified(text: unknown): string[] {
+  if (typeof text !== 'string' || !text.includes('<task-notification>')) return []
+  return [...text.matchAll(/<task-id>([^<]+)<\/task-id>/g)].map(m => m[1].trim())
 }
 
 /**
@@ -688,6 +687,18 @@ export function backgroundTasks(listed: unknown): Record<string, unknown>[] {
     out.push(listed)
   }
   return out
+}
+
+/**
+ * The tasks a kept row says are over (T-691): a notification's, whether it
+ * opened a turn or was folded into a running one. A tool's result or the
+ * model's reply that quotes one is not one.
+ */
+export function rowNotified(e: any): string[] {
+  const kind = e?.origin?.kind
+  const blocks = e?.message?.content
+  if (kind === 'tool' || kind === 'model' || !Array.isArray(blocks)) return []
+  return blocks.flatMap((b: any) => taskNotified(b?.type === 'text' ? b.text : undefined))
 }
 
 /** The team a teammate's row names, `<name>@<team>`, if a row does. */
@@ -963,8 +974,7 @@ export const register: Register = on => {
         seenId = id
       }
       const text = (e as any)?.text
-      const ended = taskNotified(text)
-      if (ended !== undefined) ledger.delete(ended)
+      for (const ended of taskNotified(text)) ledger.delete(ended)
       const body: Record<string, unknown> = { hook_event_name: 'UserPromptSubmit', prompt: typeof text === 'string' ? text : '' }
       if (typeof id === 'string') body.session_id = id
       void relay($, 'UserPromptSubmit', undefined, body, false)
@@ -1014,6 +1024,16 @@ export const register: Register = on => {
       void relay($, 'SubagentStart', undefined, { hook_event_name: 'SubagentStart', agent_id: r.agentId, agent_type: kind }, false)
     }
     return r
+  })
+  // A task's end (T-691). A notification the engine delivers INTO a running
+  // turn starts no turn, so a ledger read off `turn.start` alone kept the
+  // row, and every later `Stop` listed a task long over: the card spun on an
+  // idle seat. Every notification is a row the conversation keeps, whether
+  // it opened a turn or joined one. Read, never rewritten (promise 3); off
+  // the native road the ledger is empty and this removes nothing.
+  on('session.append', async ($, e, next) => {
+    for (const id of rowNotified(e)) ledger.delete(id)
+    return next(e)
   })
   on('session.receive', async ($, e, next) => {
     if (await nativeRoad($, 'session.receive')) {

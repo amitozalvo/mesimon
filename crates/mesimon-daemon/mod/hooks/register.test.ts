@@ -3,6 +3,7 @@
 // `process.spawn`). What the live Claude Code does is measured in STALE-MAP
 // (T-573, T-574); these hold the hooks' shapes.
 import { expect, mock, test } from 'claude-code/testing'
+import { rowNotified } from './register'
 
 const ENV = {
   MESIMON_MOD_BIN: '/bin/mesimon',
@@ -1072,7 +1073,8 @@ test('native: the task ledger lists a backgrounded command on the Stop as a shel
   await $.turn.complete(TURN as any)
   await settle()
   expect(stops()).toEqual([[{ id: 'bsh1', type: 'shell', status: 'running', description: 'sleep 6; echo bg_done', command: 'sleep 6; echo bg_done' }]])
-  await $.turn.start({ text: '<task-notification>\n<task-id>bsh1</task-id>\n<tool-use-id>tb</tool-use-id>\n<status>completed</status>\n</task-notification>', turnId: 't2' } as any)
+  const done = '<task-notification>\n<task-id>bsh1</task-id>\n<tool-use-id>tb</tool-use-id>\n<status>completed</status>\n</task-notification>'
+  await $.turn.start({ text: done, turnId: 't2' } as any)
   await $.turn.complete({ ...TURN, turnId: 't2' } as any)
   await settle()
   expect(stops()[1]).toEqual([])
@@ -1100,6 +1102,23 @@ test('native: the task ledger lists a backgrounded command on the Stop as a shel
   await $.turn.complete({ ...TURN, turnId: 't7' } as any)
   await settle()
   expect(stops()[6]).toEqual([])
+})
+
+test('native: a notification folded into a running turn ends its tasks, every one it names; a quote of one ends nothing (T-691)', async () => {
+  const note = (id: string) => `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>\n</task-notification>`
+  // The engine's row for a delivery into a running turn, as `session.append` hands it.
+  const row = (kind: string, ...text: string[]) => ({
+    message: { type: 'attachment', name: 'queued_command', role: 'user', isMeta: true, content: text.map(t => ({ type: 'text', text: t })) },
+    door: 'delivery',
+    origin: { kind },
+    uuid: 'u1',
+  })
+  expect(rowNotified(row('engine', [note('bsh1'), note('bsh2')].join('\n'), note('mon1')))).toEqual(['bsh1', 'bsh2', 'mon1'])
+  expect(rowNotified(row('task-notification', note('bsh3')))).toEqual(['bsh3'])
+  expect(rowNotified(row('tool', note('bsh1')))).toEqual([])
+  expect(rowNotified(row('model', note('bsh1')))).toEqual([])
+  expect(rowNotified(row('composer', 'build it'))).toEqual([])
+  expect(rowNotified({ message: { type: 'user', content: [{ type: 'image' }] }, origin: { kind: 'engine' } })).toEqual([])
 })
 
 test('native: a teammate is a SubagentStart by its name, a teammate row on the Stop with the list\'s status, a TeammateIdle with its team from its idle notice, and a SubagentStop at its turn\'s end', async ($, on) => {

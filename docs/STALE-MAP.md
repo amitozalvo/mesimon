@@ -22408,3 +22408,33 @@ Two of T-682's deferred behaviour changes, shipped as the bugs they were.
 
 Tests: `ctrl_letter_in_the_tag_name_field_inserts_nothing` (app) and
 `editor_note_just_edited_reads_just_now` (ui), both in `cargo ut`. TUI-only; no nextest.
+
+## A task notification folded into a running turn ends its row (T-691, 2026-10-07, "bug on my work computer")
+
+On a Team or Enterprise account (the native road, T-658) a card kept the working spinner, or
+`idle ∙ 3 tasks`, on a seat whose pane said `done`; another kept the background glyph. The
+mod's task ledger (T-657) ended a background shell or Monitor watch only on a `turn.start`
+whose text carried its `<task-notification>`. That holds when the notification wakes an
+idle session. When the task ends while a turn runs, the engine folds the notification into
+that turn: it is a `prompt.submit` with the running `turnId` and a kept row, and no
+`turn.start` fires. The row stayed, every later `Stop` listed it, and the daemon parked the
+seat at `Idle{Background}` (or `Monitoring` for a `shell` row) for good. The hook set's road
+never had it: there Claude Code's own registry fills the `Stop`.
+
+- **The ledger also reads `session.append`**, the one event every kept row passes through,
+  whether the notification opened a turn or joined one (the types' reference says so: "a
+  prompt or notification folded into a running turn"; the security default lets it continue
+  past the person's plugins like the prompt events). Observe only: `next(e)` unchanged, no `$`
+  call. A row whose origin is a tool's result or the model's reply is not read, so a quote of a
+  notification ends nothing. `turn.start` keeps its own read.
+- **`taskNotified` returns every `<task-id>`**: one delivery can carry several notifications.
+- **Refuted: hooking `prompt.submit`.** It carries the same text with `origin.kind:
+  "task-notification"`, but `the_mod_spells_nothing_on_the_never_list` bans the event
+  outright, as it should: it is where a prompt is rewritten.
+- **Not measured live.** The diagnosis is from the screenshots and the types; `claude plugin
+  test` cannot raise `session.append` (a test's bottom hook that answers without `next` is
+  skipped and nothing lies beneath), so `rowNotified` is a pure function tested by itself and
+  the hook is two lines around it.
+
+Tests: `native: a notification folded into a running turn ends its tasks…` (mod), the
+ledger test now ends its shell through `turn.start` alone; `mod_plugin` on Claude Code 2.1.292.
