@@ -22438,3 +22438,34 @@ never had it: there Claude Code's own registry fills the `Stop`.
 
 Tests: `native: a notification folded into a running turn ends its tasks…` (mod), the
 ledger test now ends its shell through `turn.start` alone; `mod_plugin` on Claude Code 2.1.292.
+
+## `mesimon ticket create`: mesimon enables a chat command and provides none of it (T-693, 2026-10-07, "slack integration (not real integration)")
+
+The ask was `/mesimon <board> <name>` in Slack filing a ticket with the message's link in its
+description, into a column the integration picks, and the author's own answer to it: run a CLI on
+the same computer rather than integrate mesimon with Slack. The ruling, after one round: **mesimon
+ships only its half**, one subcommand any local script can call; the Slack app, its tokens, the
+bridge that hears the command, the slug-to-repository map and the allowlist of who may file are the
+person's own and live outside this repository (no `contrib/`, no manifest).
+
+- **`mesimon ticket create --column <name> --title <text> [--repo <path>] [--note <md> | --note -]
+  [--tag <name>]...`** (`crates/mesimon/src/ticket.rs`) speaks `CreateTicketWithNote` as
+  `Principal::Local` through the TUI's own `Client::connect`, so a missing daemon is started as
+  opening the board starts it, and prints the card's `short_key` for the caller to answer with.
+  The column is matched case aside and sent in the board's own spelling; a tag comes from the
+  board's registry with its group, and a stranger is refused with the names there are, so a
+  script's typo never joins the vocabulary. A refusal files nothing; usage errors exit 2.
+- **Not `ImportTicket`.** That road stages content under `.mesimon/board/imports/`, carries an
+  origin, forces OwnerOnly and takes the ticket off the train (T-215): right for a foreign feed
+  materialised by an adapter, heavy for a title the person typed themselves in another window.
+- **Two cautions in `docs/USING.md`, not code**: a column the crown works from may get the filed
+  ticket an agent (no column starts one on arrival since T-499, so the crown is the only such
+  road), and the note should carry the message's link, never its text, since the description is
+  an agent's brief and a channel's writers would be writing it.
+- **Refuted: a slash command alone.** A Slack slash command's payload names a channel and no
+  message, so "the last message" is a history read; a message shortcut hands the exact message.
+  Both are the bridge's business and change nothing here.
+
+Tests: `ticket_create_e2e` (the real binary against the harness daemon through the new
+`Harness::command`: the whole shape, stdin, `--repo` from elsewhere, three refusals), four unit
+tests on the parser and the two lookups.

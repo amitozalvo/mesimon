@@ -664,6 +664,16 @@ impl Harness {
         });
     }
 
+    /// The real binary, as a person's shell would run it against this
+    /// board (T-693): the fixture's environment, the repo as the cwd, the
+    /// output captured. For a subcommand that speaks the wire itself,
+    /// `mesimon ticket create`; the daemon stays the harness's.
+    pub fn command(&self, args: &[&str]) -> std::process::Command {
+        let mut cmd = std::process::Command::new(mesimon_binary());
+        cmd.args(args).current_dir(&self.repo).env_clear().envs(self.fixture.env.borrow().iter());
+        cmd
+    }
+
     pub fn client(&self, name: &str) -> TestClient {
         let mut c = TestClient::connect(&self.paths.orch_sock());
         assert!(matches!(

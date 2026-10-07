@@ -10,6 +10,7 @@ mod mcp;
 mod mesophon;
 mod mod_bridge;
 mod state;
+mod ticket;
 
 use std::path::PathBuf;
 
@@ -81,6 +82,8 @@ fn main() -> Result<()> {
         // directory's daemon joins, and the joined board's root is printed.
         Some("join") if mesimon_core::team::enabled() => join::run(&args[1..]),
         Some("state") => state::run(&args[1..]),
+        // File a ticket from the shell (T-693): a script's road onto a board.
+        Some("ticket") => ticket::run(&args[1..]),
         Some("--version" | "-V") => {
             println!("mesimon {}", version_line());
             Ok(())
@@ -138,6 +141,7 @@ fn help_text() -> &'static str {
          mesimon daemon --repo <path>   run the daemon in the foreground\n  \
          mesimon open <dir>             open the board at a directory (a joined team board)\n  \
          mesimon update [--check]       install the newest release; --check only asks\n  \
+         mesimon ticket create ...      file a ticket on a board from a script; prints its key\n  \
          mesimon join <code>            redeem a team invite code; prints the board's directory\n  \
          mesimon mesophon setup         check the relay and open its browser app\n  \
          mesimon state explain [session]   explain observed state and movement\n  \

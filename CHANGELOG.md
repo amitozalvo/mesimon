@@ -21,6 +21,11 @@ in the Esc menu under `Release notes` and on GitHub.
   reaches you.
 - **The Esc menu's `Archive N finished tickets` row says how much disk it
   frees.** Only the worktrees the archive removes are counted.
+- **`mesimon ticket create` files a ticket from the shell.** It takes the
+  column, the title, a description (or `-` for stdin) and tags the board
+  already has, starts the board's daemon when none is running, and prints
+  the new key, so a Slack command, a launcher or a git hook of your own can
+  put a card on a board. `docs/USING.md` has the command and two cautions.
 
 ### Changed
 

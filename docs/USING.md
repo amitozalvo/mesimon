@@ -201,6 +201,27 @@ number when one is written), other tickets, and pasted pictures. `enter` opens o
 address in your browser, a text file in your editor, another ticket by moving to it. `c` copies
 it instead.
 
+## Filing a ticket from a script
+
+`mesimon ticket create` puts a card on a board from the shell, the way the composer does, and
+prints its key:
+
+```sh
+mesimon ticket create --repo ~/code/app --column TODO --title "Flaky login test" \
+  --note "https://example.slack.com/archives/C024BE91L/p1700000000000100"
+```
+
+`--repo` is the repository the board belongs to (default: the current directory), `--column`
+one of its columns, `--note` the description (`-` reads it from stdin) and `--tag` a tag the
+board already has, repeated for more than one. The board's daemon is started when none is
+running, so the ticket lands with the board closed, and a refusal (a column or tag the board
+lacks) files nothing. mesimon ends there: a Slack command, a launcher or a git hook that calls
+it is yours. Two things are worth knowing when you wire one up. If the crown runs your board, a
+ticket it finds waiting may get an agent, so land the ticket in a column the crown leaves alone
+when you want it to wait for you. And put a link in the note rather than a message's text: an
+agent reads the description as its brief, and anyone who can write in that channel would be
+writing it.
+
 ## Keyboard layouts and terminals
 
 On Hebrew and other layouts that mirror the bracket keys, `ctrl-]` arrives as Esc — which
