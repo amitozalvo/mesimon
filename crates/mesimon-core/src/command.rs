@@ -2061,6 +2061,15 @@ pub struct AgentTicketView {
     /// Every note, in order, so `read_note`/`write_note` have an id to name.
     #[serde(default)]
     pub notes: Vec<AgentNoteView>,
+    /// The ticket's summary as the board shows it (T-710): the rows under
+    /// every note's `Summary` heading, derived by `core::summary::extract`
+    /// over the bodies on every read, and the one line saying what the
+    /// heading does. On every read, as `worktree_init` is: an agent asked
+    /// for "a checklist on the ticket" finds the convention in its own
+    /// first tool result and not by guessing, and sees a box the person
+    /// ticked. Absent from an older daemon's answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<AgentSummaryView>,
     /// Whether THIS ticket wears the crown (T-411) — whether its agent may
     /// pass a `key` to the tools. False on every other ticket, and said
     /// explicitly: an absent key would leave the model guessing.
@@ -2253,6 +2262,29 @@ pub struct AgentWorktreeInitView {
     pub about: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<String>,
+}
+
+/// The ticket's summary as an agent reads it (T-710): what the heading does
+/// (`mcp::SUMMARY_ABOUT`) and the rows the card shows, in document order
+/// across the notes. `rows` is empty — and off the wire — on a ticket with
+/// no `Summary` section, and `about` is there all the same: that is where
+/// the convention is learned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSummaryView {
+    pub about: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<AgentSummaryRow>,
+}
+
+/// One row of the summary: the note it is in (what `read_note` and
+/// `write_note` take to change it), its words, and for a box whether it is
+/// ticked; a plain row carries no `done`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSummaryRow {
+    pub note: ulid::Ulid,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done: Option<bool>,
 }
 
 /// One note as an agent lists it. No body: that is `read_note`'s answer.
@@ -3203,6 +3235,7 @@ mod tests {
             board_version: 1,
             description: None,
             notes: vec![],
+            summary: None,
             crowned: false,
             crown: None,
             under_crown: None,

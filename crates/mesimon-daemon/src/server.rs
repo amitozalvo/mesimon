@@ -7094,6 +7094,29 @@ impl Daemon {
                     edited_at: n.edited_at.clone(),
                 })
                 .collect(),
+            // The summary (T-710), on every read: the rows under every
+            // note's `Summary` heading as the card counts them, and the one
+            // line that says what the heading does. The bodies are read
+            // again here, as the description's is; the parse is the TUI's.
+            summary: Some(mesimon_core::command::AgentSummaryView {
+                about: mesimon_core::mcp::SUMMARY_ABOUT.into(),
+                rows: t
+                    .notes
+                    .iter()
+                    .flat_map(|n| {
+                        let body =
+                            store::read_note(&self.paths, &t.short_key, n.id).unwrap_or_default();
+                        mesimon_core::summary::extract(&body)
+                            .into_iter()
+                            .map(|r| mesimon_core::command::AgentSummaryRow {
+                                note: n.id,
+                                text: r.text,
+                                done: r.done,
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect(),
+            }),
             crowned: self.board.is_crowned(id),
             crown: self.board.is_crowned(id).then(|| mesimon_core::mcp::CROWN_WAKES.to_string()),
             under_crown: None,

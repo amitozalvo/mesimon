@@ -133,6 +133,11 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     assert_eq!(t["notes"][0]["id"], desc.to_string());
     assert_eq!(t["notes"][0]["name"], "Why this");
     assert_eq!(t["notes"][0]["by"], "local");
+    // …and the summary's line on a ticket that has none yet (T-710): the
+    // convention is in the first tool result, and no rows are.
+    assert!(t["summary"]["about"].as_str().unwrap().contains("`Summary`"), "{t}");
+    assert!(t["summary"]["about"].as_str().unwrap().contains("`- [ ] …`"), "{t}");
+    assert!(t["summary"].get("rows").is_none(), "{t}");
 
     // read_note is the body itself, not JSON around it.
     assert_eq!(shim.call_ok_text("read_note", json!({"note": desc.to_string()})), body);
@@ -166,6 +171,20 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     assert_eq!(d.edited_by, format!("agent:{sid}"));
     assert_eq!(d.created_by, "local", "creation is not rewritten");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "# Why this, really\n\nnew");
+
+    // A `Summary` section in a note is the ticket's summary on the next
+    // read (T-710): the rows as the card counts them, each with its note.
+    shim.call_ok_text(
+        "write_note",
+        json!({"note": second.to_string(),
+               "text": "## Plan\n\n- [ ] not this\n\n## Summary\nhalf done\n- [x] looked\n- [ ] fixed\n"}),
+    );
+    let t: Value = serde_json::from_str(&shim.call_ok_text("get_ticket", json!({}))).unwrap();
+    let rows = t["summary"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 3, "{t}");
+    assert_eq!(rows[0], json!({"note": second.to_string(), "text": "half done"}));
+    assert_eq!(rows[1], json!({"note": second.to_string(), "text": "looked", "done": true}));
+    assert_eq!(rows[2], json!({"note": second.to_string(), "text": "fixed", "done": false}));
 
     // Empty text deletes; the file goes with the meta; the second note is
     // now the description.

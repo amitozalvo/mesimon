@@ -214,7 +214,8 @@ redirect fixed; e2e next
 ```
 
 Only what sits under that heading counts, so an agent's working list under any other heading
-stays in the note. On the board the card wears the boxes as an underline, as far along as they
+stays in the note. The agent reads the same rows, ticked or not, in `get_ticket`'s answer, with a
+line that says what the heading does, so "put a checklist on the ticket" needs no explaining. On the board the card wears the boxes as an underline, as far along as they
 are ticked; with the replies shown (`p`) the cursor card lists the open boxes under the
 reply, and a line with no box is read first, as the one-line summary. `ctrl-j`, on the board or on
 a ticket page, lists every row: `space` ticks or unticks a box, `enter` opens a link in the line (a web address first) or, without one, the note at that

@@ -219,6 +219,17 @@ pub const WORKTREE_INIT_ABOUT: &str = "A script at the repository's root, run on
      is seeded or dependencies installed so the worktree starts warm; absent, nothing runs, and \
      a failure is reported while the agent starts anyway.";
 
+/// What a note's `Summary` heading does (T-696), on every `get_ticket`
+/// (`summary.about`, T-710): the one place an agent asked for "a checklist
+/// on the ticket" learns the heading and the box spelling from its own tool
+/// result. `write_note`'s description says it in fewer bytes; an agent that
+/// went looking for the convention in the plugin's files found neither.
+pub const SUMMARY_ABOUT: &str = "A note section headed `Summary` is what the ticket's card \
+     shows: a plain line is read first, as the one-line summary, and a `- [ ] …` item is a box \
+     the person ticks on the board, counted as progress. What the person needs at a glance: a \
+     task that is theirs, progress worth seeing from the board; a working list stays under \
+     another heading.";
+
 pub const WORKER_UNDER_CROWN: &str = "The board's crown, the agent coordinating this board \
      from another ticket, started this session. Under a crown the merge is the board's: the \
      merge train lands a finished branch, else the crown does, and the board asks for its \
@@ -326,10 +337,10 @@ pub fn tools() -> Vec<Value> {
                             (merge), the init script (worktree_init), the columns \
                             move_ticket accepts and what each is for, tags, the board's \
                             tags (allowed_tags), the description (first note), each note's \
-                            id, name and author, the agent's state and a seen stamp keyed \
-                            edits require. A session's prompt is often the ticket's title \
-                            alone; the description and notes are the rest of the brief, so \
-                            this is a session's first call.",
+                            id, name, author, the summary, the agent's state and a seen \
+                            stamp keyed edits require. The prompt is often the ticket's \
+                            title alone; the description and notes are the rest of the \
+                            brief, so this is a session's first call.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -435,9 +446,9 @@ pub fn tools() -> Vec<Value> {
                             crown only) or replaces one. The first note is the description; \
                             empty deletes; over 32 KiB is refused. A plan from plan mode is \
                             already a note. Lines under a `Summary` heading show on the \
-                            card, boxes as progress: what the person needs at a glance, a \
-                            task that is theirs (merge the MR, run a pipeline) or progress \
-                            worth seeing on the board; working lists stay under other \
+                            card, `- [ ]` boxes as progress: what the person needs at a \
+                            glance, a task that is theirs (merge the MR, run a pipeline) \
+                            or progress worth seeing; working lists stay under other \
                             headings.",
             "inputSchema": {
                 "type": "object",
@@ -2414,6 +2425,24 @@ mod tests {
         assert_eq!(lint_tool_text(PERSONS_QUESTIONS), Ok(()));
         assert_eq!(lint_tool_text(PERSONS_PLANS), Ok(()));
         assert_eq!(lint_tool_text(WORKTREE_INIT_ABOUT), Ok(()));
+        assert_eq!(lint_tool_text(SUMMARY_ABOUT), Ok(()));
+    }
+
+    /// T-710: an agent asked for a checklist on the ticket guessed the
+    /// convention and got it wrong. The heading and the box's spelling are
+    /// in the tool that writes the note and in the line every `get_ticket`
+    /// carries, and the read names the field so the model knows to look.
+    #[test]
+    fn the_summary_convention_is_in_the_tools() {
+        let registry = tools();
+        let write = registry.iter().find(|t| t["name"] == "write_note").unwrap();
+        let description = write["description"].as_str().unwrap();
+        assert!(description.contains("`Summary` heading"), "{description}");
+        assert!(description.contains("`- [ ]`"), "the box is spelled: {description}");
+        let read = registry.iter().find(|t| t["name"] == "get_ticket").unwrap();
+        assert!(read["description"].as_str().unwrap().contains("the summary"));
+        assert!(SUMMARY_ABOUT.contains("`Summary`"));
+        assert!(SUMMARY_ABOUT.contains("`- [ ] …`"));
     }
 
     /// T-582: a plan the crown would change stays a person's, said in the

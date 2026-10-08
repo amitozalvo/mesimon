@@ -23004,3 +23004,31 @@ Tests: `ux.test.js`'s conversation flow asserts nothing in the transcript's pane
 its edges, and (Chromium, through CDP touch events, since the mouse never meets
 `touch-action`) that a sideways touch drag on the conversation reaches the page with no
 `pointercancel`. Each fails on the code before this change.
+
+## The summary is advertised where the agent looks (T-710, 2026-10-09)
+
+**The report.** On another board a person asked their agent for "a checklist on the ticket" that
+the card would show. The agent searched the plugin's files for how summaries are output, found
+nothing, called the convention undocumented and guessed `## Summary` with `- [x]` items from the
+person's own hint. T-696 had put the convention in `write_note`'s description the day before;
+that session's tool text predated it (the daemons on that machine were still beta.2 builds, and a
+hook-set session reads `tools/list` once), and the description said "boxes" without spelling one.
+Two things were wrong at once: the agent was looking in the wrong place for a convention that can
+only live in the tool text, and the tool text did not say enough where it was looked for.
+
+**Built.** `get_ticket` carries `summary: { about, rows }` on every read, as `worktree_init`
+does (T-614's argument: a convention in the agent's own first tool result is the agent's call
+and not a token the board adds). `about` is `mcp::SUMMARY_ABOUT`: the heading, the plain line
+read first, `- [ ] …` as the box the person ticks on the board, and what belongs there in T-696's
+words. `rows` are `summary::extract` over every note's body, document order, each with its note
+id and `done` (absent on a plain row), off the wire when there are none, so an agent sees the box
+the person ticked — "agents reading the summary as structure" from T-696's not-built list. The
+daemon reads the bodies again on each `get_ticket` as it reads the description's; the parse is
+the TUI's. `write_note`'s description now spells `` `- [ ]` boxes `` ("on the board" paid for
+it) and `get_ticket`'s names "the summary" (its "A session's prompt" clause paid). The brief is
+untouched, as in T-696. Not built: the rows on `list_board` (the crown reads a worker's through
+`get_ticket` with `key`); the rows on the phone.
+
+Tests: `the_summary_convention_is_in_the_tools` (the two descriptions and the constant spell the
+heading and the box), the lint over `SUMMARY_ABOUT`, and `notes_e2e`: no rows and the line on a
+fresh ticket, three rows with their note and `done` after a `Summary` section is written.
