@@ -159,7 +159,8 @@ export class Store {
     if (this.kept) return this.online ? "relay" : "nonet";
     if (this.live) return "live";
     if (!this.online) return "nonet";
-    if (this.down) return this.connection?.relayReached ? "asleep" : "relay";
+    // A retry is still connecting until it fails too (T-706).
+    if (this.down && this.connection?.sure) return this.connection.relayReached ? "asleep" : "relay";
     return "connecting";
   }
   save() {

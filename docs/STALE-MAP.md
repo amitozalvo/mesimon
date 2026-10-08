@@ -22861,3 +22861,19 @@ before this ships learns `filedPictures` at its next live connection.
 Tests: the UX suite's `notesFlow` takes the terminal away, picks a picture into a new ticket,
 sends, sees `#ticket-waiting` and no deposit, brings the terminal back and asserts one live
 `create` with one upload and the linked words (Chromium and WebKit, desktop, tablet, phone).
+
+## Remote Control names what is out of reach only after an attempt failed twice (T-706, 2026-10-08, "Remote controls says relay unreachable while connecting")
+
+The pill (and the hero card, the Settings hops and the composer's destination, which read the
+same `Store.link`) said "Relay unreachable" through a retry that was still in flight: the
+first attempt after a loss often fails because the phone's network is still waking, and since
+T-639 the diagnosis was held through every retry from the first loss. `Connection.misses` now
+counts attempts in a row that ended without a welcome; a live socket that closes is not one,
+and a welcome or a fresh connect zeroes it. `Store.link` names a hop (`relay`, `asleep`) only
+once `Connection.sure` (two misses, or the 10 s silent host, which sets it outright) and reads
+`connecting` before that, so a one-attempt blip never says unreachable and a real outage still
+holds one word through its retries. The diagnosis now comes a retry later (about 3 s more).
+`store.down` is unchanged, so the shelf peek and the mailbox road start at the first loss as
+before. The kept copy (T-497) still reads `relay` from its first frame: the page load itself
+went unanswered for 6 s. UX test: `ticketFlow` fails one socket (`fixture.relayMisses`) after a
+live close and asserts the shell's `data-link` was only `connecting` and `live`.

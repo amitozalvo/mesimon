@@ -99,6 +99,8 @@ function fixture() {
     deposits: [],
     mailRefusal: "",
     relayDown: localStorage.getItem("fixture-relay-down") === "1",
+    // How many of the next sockets the relay fails to open (T-706).
+    relayMisses: 0,
     saveMail() {
       localStorage.setItem("fixture-mail", JSON.stringify(this.mail));
     },
@@ -280,7 +282,8 @@ function fixture() {
       this.readyState = 0;
       state.sockets.push(this);
       setTimeout(() => {
-        if (state.relayDown) {
+        if (state.relayDown || state.relayMisses > 0) {
+          if (!state.relayDown) state.relayMisses--;
           this.readyState = 3;
           this.onclose?.();
           return;
@@ -811,6 +814,19 @@ async function ticketFlow(browser, engineName, size, viewport) {
     await context.setOffline(false);
     await count("landed", 5);
     await connected();
+
+    // One attempt that fails is a network still waking (T-706): the pill
+    // says connecting through it, and never that the relay is unreachable.
+    await page.evaluate(() => {
+      window.seenLinks = new Set();
+      const shell = document.querySelector("#shell");
+      new MutationObserver(() => window.seenLinks.add(shell.dataset.link)).observe(shell, { attributeFilter: ["data-link"] });
+      fixture.relayMisses = 1;
+      fixture.channel().close();
+    });
+    await until(page, () => fixture.relayMisses === 0);
+    await connected();
+    assert.deepEqual(await page.evaluate(() => [...window.seenLinks].sort()), ["connecting", "live"]);
 
     // The relay unreachable, across a reload: the sealed ticket waits in
     // this browser and goes out when the relay answers.

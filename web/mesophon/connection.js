@@ -4,6 +4,11 @@
 // The one line a retry loop shows, from the first loss to the next welcome:
 // a closed socket and the next attempt say the same thing (T-639).
 const RECONNECTING = "Reconnecting… Last received view is stale.";
+// Attempts in a row that ended without a welcome before the page names what
+// is out of reach (T-706): a live socket that closed is no failed attempt,
+// one that failed is often a network still waking, and the retry after it
+// is connecting, not unreachable.
+const SURE = 2;
 
 export class Connection {
   constructor({ Browser, identity, save, onState, onReady, onReply, onLost }) {
@@ -20,6 +25,12 @@ export class Connection {
     this.pending = new Map();
     this.processing = Promise.resolve();
     this.online = false;
+    this.misses = 0;
+  }
+  // Whether the loss is a reading yet: a retry failed too, or the host was
+  // silent past the deadline (T-706).
+  get sure() {
+    return this.misses >= SURE;
   }
   stop() {
     ++this.generation;
@@ -56,6 +67,8 @@ export class Connection {
     if ([...this.pending.values()].some((p) => Date.now() - p.at > 10000)) {
       this.online = false;
       this.relayReached = true;
+      // Ten seconds of silence on an open socket is already a reading.
+      this.misses = SURE;
       this.onLost();
       this.onState("reconnecting", RECONNECTING);
       this.socket?.close();
@@ -66,6 +79,7 @@ export class Connection {
     // Whether this attempt got past the relay's authentication: a closed
     // attempt that did is the host (or its grant) out of reach, not the relay.
     this.reached = false;
+    if (!attempt) this.misses = 0;
     const gen = this.generation;
     this.entry = entry;
     // A retry (attempt past 0) keeps the loss's word rather than flipping
@@ -78,6 +92,7 @@ export class Connection {
       `${location.origin.replace(/^http/, "ws")}/control`,
     ));
     let terminal = false;
+    let welcomed = false;
     this.deadline = setTimeout(() => ws.close(), 12000);
     ws.onopen = () => {
       if (gen === this.generation)
@@ -128,6 +143,8 @@ export class Connection {
               code = undefined;
             }
             clearTimeout(this.deadline);
+            welcomed = true;
+            this.misses = 0;
             this.features = Array.isArray(ready.features) ? ready.features : [];
             this.incarnation = ready.incarnation;
             this.next = ready.next;
@@ -168,6 +185,7 @@ export class Connection {
       clearTimeout(this.deadline);
       this.online = false;
       this.relayReached = this.reached;
+      if (!welcomed) this.misses++;
       this.pending.clear();
       this.onLost();
       if (entry) {
