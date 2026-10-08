@@ -425,26 +425,30 @@ pub fn tools() -> Vec<Value> {
             // The plan clause (T-459): agents saved their approved plan here
             // by hand, a second copy of the note `record_plan` had already
             // written off the same approval.
-            // The summary clause (T-696): the one place an agent learns that
-            // a `Summary` heading is what puts a checklist on the card.
-            "description": "Creates a markdown note on this session's ticket, or with key \
-                            another ticket's (crown only), or replaces the whole text of an \
-                            existing one. The first note is the ticket's description. Empty \
-                            text deletes an existing note. Text past 32 KiB is refused, not \
-                            cut. A plan from plan mode is already a note, revised on each \
-                            re-plan. Task boxes under a `Summary` heading show on the card \
-                            as progress.",
+            // The summary clause (T-696): the one place every agent learns
+            // that a `Summary` heading is what puts a checklist on the card,
+            // and what belongs there — the author: "only if it is going to
+            // benefit the user": a task that is theirs, progress worth
+            // seeing from the board, something important at a glance. The
+            // sentences before it were tightened to make the room.
+            "description": "Creates a markdown note on the ticket (with key, another's: \
+                            crown only) or replaces one. The first note is the description; \
+                            empty deletes; over 32 KiB is refused. A plan from plan mode is \
+                            already a note. Lines under a `Summary` heading show on the \
+                            card, boxes as progress: what the person needs at a glance, a \
+                            task that is theirs (merge the MR, run a pipeline) or progress \
+                            worth seeing on the board; working lists stay under other \
+                            headings.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "note": {
                         "type": "string",
-                        "description": "Optional. The id of the note to replace; omitted \
-                                        creates a new note.",
+                        "description": "Optional. A note id to replace; omitted creates one.",
                     },
                     "text": {
                         "type": "string",
-                        "description": "The note's whole markdown text, at most 32 KiB.",
+                        "description": "The whole markdown text.",
                     },
                     "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
                 },
@@ -2650,7 +2654,6 @@ mod tests {
         let tool = registry.iter().find(|t| t["name"] == "write_note").unwrap();
         let description = tool["description"].as_str().unwrap();
         assert!(description.contains("A plan from plan mode is already a note"), "{description}");
-        assert!(description.contains("revised on each re-plan"), "{description}");
     }
 
     /// Descriptions describe; they do not instruct. This walks the tool

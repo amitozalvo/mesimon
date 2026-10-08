@@ -22505,8 +22505,12 @@ are a checklist and every other line a plain row. The parser is `core/src/summar
 (pure, document order, the row's source line kept) and `toggle` flips one box in a body. The
 heading is the gate the brief asked for ("a conscious decision if this line should be presented
 to the user"): an agent's working list under any other heading stays the note's own. Agents learn
-it from one clause in `write_note`'s description (the cap bit: the plan clause lost "saved by the
-board" to fit 820 bytes).
+it from `write_note`'s description — the mechanism and what belongs there (the author, same day:
+"only if it is going to benefit the user": a task that is the person's, progress worth seeing
+from the board, something important at a glance; working lists under other headings). The cap
+bit: the description's other sentences were tightened to make the room, and the brief
+(`brief.rs`, opt-in) was left alone — the tool reaches every agent, the brief only the boards
+that turned it on.
 
 **Derived in the TUI, never on the snapshot** — T-256's road for links, scaled to every card.
 `App::poll_summaries` reads the bodies the cache lacks through `Command::ReadNote`, eight per
