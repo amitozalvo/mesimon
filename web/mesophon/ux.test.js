@@ -2691,12 +2691,16 @@ async function keyboardFlow(browser, engineName) {
     await page.evaluate(() => window.visualViewport.keyboard(true));
     // The page is exactly the visible area: as tall, and as far down.
     assert.deepEqual(await body(), { top: 336, height: 508 });
+    // The home indicator's inset is under the keyboard, so the composer has none below it.
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.keyboard), "up");
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--safe-bottom").trim()), "0px");
     const prompt = await page.locator("#prompt").boundingBox();
     assert(prompt.y >= 336 && prompt.y + prompt.height <= 844, `the composer is in view: ${JSON.stringify(prompt)}`);
     const back = await page.locator("#back").boundingBox();
     assert(back && back.y >= 336, `the page's top is in view: ${JSON.stringify(back)}`);
     await page.evaluate(() => window.visualViewport.keyboard(false));
     assert.deepEqual(await body(), { top: 0, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.keyboard), undefined);
     assert.deepEqual(errors, []);
     console.log(`${engineName}: the page follows the keyboard's viewport passed`);
   } catch (error) {

@@ -213,6 +213,11 @@
 }
 html {
   -webkit-text-size-adjust: 100%;
+  /* the home indicator's inset, dropped while a keyboard covers it (T-700; viewport.js) */
+  --safe-bottom: env(safe-area-inset-bottom);
+}
+html[data-keyboard="up"] {
+  --safe-bottom: 0px;
 }
 body {
   margin: 0;
@@ -224,7 +229,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) var(--safe-bottom) env(safe-area-inset-left);
   background: var(--bg);
   color: var(--ink);
   font-family: var(--sans);
@@ -3036,7 +3041,7 @@ dialog.compose::backdrop {
 .compose-foot {
   display: grid;
   gap: 8px;
-  padding: 12px 20px calc(16px + env(safe-area-inset-bottom));
+  padding: 12px 20px calc(16px + var(--safe-bottom));
   border-top: 1px solid var(--line);
 }
 .compose-send {
@@ -3310,7 +3315,7 @@ button.sent-bubble:hover {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: calc(28px + env(safe-area-inset-bottom));
+  bottom: calc(28px + var(--safe-bottom));
   z-index: 40;
   width: max-content;
   max-width: calc(100% - 32px);
@@ -3536,7 +3541,7 @@ button.sent-bubble:hover {
     z-index: 31;
     max-height: 88dvh;
     display: flex;
-    padding: 18px 16px calc(24px + env(safe-area-inset-bottom));
+    padding: 18px 16px calc(24px + var(--safe-bottom));
     border: 0;
     border-radius: 26px 26px 0 0;
     background: var(--s1);
@@ -3606,7 +3611,7 @@ button.sent-bubble:hover {
     display: none;
   }
   .toast {
-    bottom: calc(84px + env(safe-area-inset-bottom));
+    bottom: calc(84px + var(--safe-bottom));
   }
 }
 
@@ -3707,7 +3712,7 @@ button.sent-bubble:hover {
     padding: 8px 16px 16px;
   }
   .compose-foot {
-    padding: 10px 16px calc(12px + env(safe-area-inset-bottom));
+    padding: 10px 16px calc(12px + var(--safe-bottom));
   }
   .compose-note {
     display: none;

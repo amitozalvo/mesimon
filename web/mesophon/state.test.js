@@ -9,7 +9,7 @@ import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
 import { foldWords, groupRows, mergePage, stepParts, tailAsk } from "./transcript.js";
 import { animOf } from "./shin.js";
 import { Peeks, shelfItem } from "./shelf.js";
-import { viewportVars } from "./viewport.js";
+import { keyboardUp, viewportVars } from "./viewport.js";
 const ticket = (id, session) => ({
   id,
   key: id,
@@ -1075,4 +1075,13 @@ test("the shin's animation follows the agent's state, a tool in flight apart fro
   assert.equal(animOf({ state: "rate limited" }), "throttled");
   assert.equal(animOf({ state: "idle" }), "idle");
   assert.equal(animOf({ state: "unknown" }), "idle");
+});
+test("the bottom inset goes while the visible area is shorter than the window: a keyboard", () => {
+  assert.equal(keyboardUp({ height: 508 }, 844), true);
+  assert.equal(keyboardUp({ height: 844 }, 844), false);
+  // A collapsed address bar moves both; Android resizes the window itself.
+  assert.equal(keyboardUp({ height: 760 }, 760), false);
+  assert.equal(keyboardUp({ height: 820 }, 844), false, "less than a keyboard is not one");
+  assert.equal(keyboardUp(undefined, 844), false);
+  assert.equal(keyboardUp({ height: 0 }, 844), false);
 });

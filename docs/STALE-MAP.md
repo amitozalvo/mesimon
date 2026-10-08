@@ -22752,6 +22752,19 @@ serves this page, so the fix reaches phones with the relay's `ship.sh`. **Owed**
 bump — **Fixed:** on an iPhone, opening the keyboard on Remote Control no longer pushes the page
 out of view. Physical-phone acceptance (`web/mesophon/README.md`) is still what proves it.
 
+**The second build, from the iPhone ("almost. there's a small gap above keyboard").** With the
+page in view, a band the home indicator's height stood between the composer and the keyboard:
+iOS reports `env(safe-area-inset-bottom)` (34 pt on the home screen) for the whole time the
+keyboard sits on top of it, and `body` kept that padding under the composer. The inset is now
+`--safe-bottom` on `html`, `0px` while `html[data-keyboard="up"]`, which `followViewport` sets
+when the visual viewport is more than `KEYBOARD_MIN_PX` (100) shorter than the window
+(`keyboardUp`): a collapsed address bar moves both heights, Android resizes the window itself,
+and a pinch-zoom is the one other thing that parts them, where a dropped inset costs nothing.
+Every bottom inset in `style.css` reads the variable (body, the
+composer sheet, the toast, the sidebar sheet and the FAB), so the `<dialog>` sheets drop it
+too. Tests: `keyboardUp` in `state.test.js`; `keyboardFlow` reads the attribute and the
+variable with the keyboard up and the attribute gone after.
+
 ## The phone's drawer lists the boards (T-699, 2026-10-08, "Remote Control phone browser show connected boards in the main drawer")
 
 On a phone or a tablet the header's board name opened the drawer, and the board list (T-510) sat

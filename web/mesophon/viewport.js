@@ -14,6 +14,19 @@ export function viewportVars(visual, fallbackHeight) {
   return { "--viewport-height": `${height}px`, "--viewport-top": `${top}px` };
 }
 
+// A keyboard is at least this much shorter than the window; a collapsed
+// address bar changes both heights together and a pinch-zoom is the one
+// other thing that parts them, where a dropped inset costs nothing.
+export const KEYBOARD_MIN_PX = 100;
+
+// Whether something covers the bottom of the window: the visual viewport is
+// shorter than the layout viewport, a keyboard in practice. iOS reports
+// `safe-area-inset-bottom` for the home indicator all the while, though the
+// keyboard sits on it, so the page kept a band of padding under the composer.
+export function keyboardUp(visual, windowHeight) {
+  return !!visual?.height && windowHeight - visual.height > KEYBOARD_MIN_PX;
+}
+
 // Keeps the two variables on the root element as the viewport moves. iOS
 // reports the keyboard's shrink on `resize` and its scroll on `scroll`, so
 // both are followed. Set through the CSSOM, outside the page's CSP.
@@ -22,6 +35,9 @@ export function followViewport(win = window, root = win.document.documentElement
     for (const [name, value] of Object.entries(viewportVars(win.visualViewport, win.innerHeight))) {
       root.style.setProperty(name, value);
     }
+    // `--safe-bottom` (style.css) is the bottom inset, 0 while the keyboard is up.
+    if (keyboardUp(win.visualViewport, win.innerHeight)) root.dataset.keyboard = "up";
+    else delete root.dataset.keyboard;
   };
   win.visualViewport?.addEventListener("resize", apply);
   win.visualViewport?.addEventListener("scroll", apply);
