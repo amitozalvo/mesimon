@@ -1472,6 +1472,29 @@ async function startFlow(browser, engineName, size, viewport) {
       await shot(`start-ticket-${theme}`);
     }
 
+    // The field at the bottom is the desk's Shift+Enter on an empty seat
+    // (T-709): it says so before any words, the row under the words says
+    // what the press does, and the words ride the start as the first prompt.
+    const prompt = page.locator("#prompt");
+    assert(await prompt.isEnabled(), "an empty seat takes a first prompt");
+    assert.equal(await prompt.getAttribute("placeholder"), "Start an agent with these words…");
+    assert.equal(await page.locator("#send").getAttribute("aria-label"), "Start agent with these words");
+    assert(await page.locator("#send").isDisabled(), "no words, no start: the button is the start on the title");
+    assert.equal(await page.locator("#prompt-mode").count(), 0, "no Queue / Steer over an empty seat");
+    await prompt.fill("Rebase first.");
+    assert.equal(await page.locator("#start-what").textContent(), "Starts an agent on these words.");
+    assert(await page.locator("#send").isEnabled());
+    await shot("start-composer");
+    await page.evaluate(() => {
+      fixture.startDisposition = "rejected";
+    });
+    await page.locator("#send").click();
+    await receiptIs("rejected");
+    await toast("Not started: this ticket already has an agent");
+    assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), { op: "start", ticket: "ticket-3", prompt: "Rebase first." });
+    assert.equal(await prompt.inputValue(), "", "the words left with the start");
+    assert(await pageStart.isEnabled(), "a refusal leaves the button to try again");
+
     // The sheet asks for the first prompt. Blank, the request names the
     // ticket and nothing else: the words and the provider are the host's.
     await page.evaluate(() => {
@@ -1487,7 +1510,7 @@ async function startFlow(browser, engineName, size, viewport) {
     await receiptIs("sending");
     await toast("Starting an agent on T-3");
     assert.equal(await page.locator("#toast .tick circle").count(), 1, "a clock");
-    assert.deepEqual(await page.evaluate(() => fixture.starts), [{ op: "start", ticket: "ticket-3" }]);
+    assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), { op: "start", ticket: "ticket-3" });
     assert(await pageStart.isDisabled(), "one start at a time");
     const command = await page.evaluate(() => fixture.startCommands.at(-1));
     await page.evaluate((id) => {
@@ -1517,25 +1540,30 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.equal(await pageStart.count(), 0, "a ticket with an agent offers no start");
     await shot("start-started");
 
-    // A parked agent (T-510): the page offers a wake, the composer nothing,
-    // and the words go with the request.
+    // A parked agent (T-510): the page offers a wake, and the field is the
+    // wake with words (T-709), which go with the request.
     await open("ticket-9");
     await pageStart.waitFor();
     assert.equal(await pageStart.getAttribute("aria-label"), "Wake agent on T-9");
     assert.equal(await page.locator("#agent-state").textContent(), "codex is asleep on this ticket.");
-    assert(await page.locator("#send").isDisabled(), "a parked agent has no pane to message");
+    assert.equal(await prompt.getAttribute("placeholder"), "Wake codex with these words…");
+    assert(await page.locator("#send").isDisabled(), "no words, no wake");
     await page.evaluate(() => {
       fixture.startDisposition = "starting";
     });
     await pageStart.click();
     await sheet.waitFor({ state: "visible" });
     assert.match(await page.locator("#start-heading").textContent(), /^Wake agent · T-9$/);
-    await page.locator("#start-prompt").fill("Rebase first, then run the tests.");
-    assert.equal(await page.locator("#start-send").textContent(), "Wake with these words");
     await shot("wake-sheet");
-    await page.locator("#start-send").click();
+    await page.locator("#start-sheet .btn-quiet").click();
     await sheet.waitFor({ state: "hidden" });
+    await prompt.fill("Rebase first, then run the tests.");
+    assert.equal(await page.locator("#start-what").textContent(), "Wakes codex, then says this.");
+    assert.equal(await page.locator("#send").getAttribute("aria-label"), "Wake agent with these words");
+    await shot("wake-composer");
+    await page.locator("#send").click();
     await toast("Waking the agent on T-9");
+    assert.equal(await prompt.inputValue(), "", "the words left with the wake");
     assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), {
       op: "start",
       ticket: "ticket-9",
@@ -1592,6 +1620,8 @@ async function startFlow(browser, engineName, size, viewport) {
     await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
     assert(await pageStart.isDisabled());
     assert.match(await page.locator("#agent-state").textContent(), /needs your terminal back/);
+    assert(await prompt.isDisabled(), "the field is off while the terminal is away");
+    assert.equal(await prompt.getAttribute("placeholder"), "Starting an agent needs your terminal back.");
     await shot("start-away");
 
     // An older host, live again, offers no start anywhere.
@@ -1603,6 +1633,8 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator("[data-start]").count(), 0, "an older host offers no start");
     await open("ticket-7");
     assert.match(await page.locator("#agent-state").textContent(), /Start one at your terminal/);
+    assert(await prompt.isDisabled(), "an older host's field is off over an empty seat");
+    assert.equal(await prompt.getAttribute("placeholder"), "No agent to message");
 
     // The board picker (T-510): the board's name under the brand lists every
     // paired board and the way to pair one more; Escape closes it. The

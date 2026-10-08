@@ -2783,6 +2783,21 @@ select {
   color: var(--ink3);
   font-size: 0.75rem;
 }
+/* What the press does on an empty or a parked seat (T-709): the play glyph
+   and one sentence, where a live agent's Queue / Steer row sits. Its own
+   class, not `.mode-help`: a phone hides that help and this is the one
+   line that says the press starts an agent. */
+.start-what {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 4px 0;
+  color: var(--ink2);
+  font-size: 0.8125rem;
+}
 .send {
   width: 44px;
   height: 44px;

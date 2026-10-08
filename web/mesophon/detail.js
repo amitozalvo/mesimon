@@ -9,6 +9,7 @@ import { Attention } from "./dialogs.js";
 import { CrownMark, StartButton, StartReceipt, Tags, WorktreeMark, ageWords, crownTouch, stateAge } from "./lists.js";
 import { NotePane } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
+import { startWaiting } from "./starts.js";
 import { queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Chat } from "./transcript.js";
 import { swipePanes } from "./swipe.js";
@@ -92,21 +93,39 @@ function Output({ store, ticket, entry, live }) {
   </section>`;
 }
 
+// What the field says over an empty or a parked seat (T-709), before any
+// words: the press starts or wakes, and why it cannot when it cannot.
+function startPlaceholder(store, ticket, asleep) {
+  const who = asleep ? ticket.agent.provider : "an agent";
+  if (!store.live) return `${asleep ? "Waking" : "Starting"} ${who} needs your terminal back.`;
+  if (startWaiting(store.startOf(ticket))) return `${asleep ? "Waking" : "Starting"} ${who}…`;
+  return asleep ? `Wake ${who} with these words…` : "Start an agent with these words…";
+}
+
 function Composer({ store, ticket, entry, live }) {
-  // A parked agent has no pane to type at: the sheet's wake is its road.
-  const agent = ticket?.agent?.state === "sleeping" ? undefined : ticket?.agent;
+  // A parked agent has no pane to type at: the field is its wake (T-709).
+  const asleep = ticket?.agent?.state === "sleeping";
+  const agent = asleep ? undefined : ticket?.agent;
+  // The desk's Shift+Enter on an empty or a parked seat (T-709): the same
+  // field, and the press starts or wakes the agent on the words. A host
+  // that starts no agents from here keeps the field off, as before.
+  const starts = store.composerStarts(ticket);
+  const startOff = !store.canComposeStart;
   const acting = entry?.receipt?.waiting && entry.receipt.status !== "queued";
   const queueOff = !live || !agent?.promptable || ticket?.queued == null || !!acting;
   // At a dialog a steer would be its answer (T-568): Steer is off, and the
   // words queue, until the agent no longer waits on you. A tier switch
   // (T-643) restarts the agent at its turn's end, so its words queue too.
-  const tiers = agent ? store.tierChoices(ticket) : [];
+  const tiers = agent || starts ? store.tierChoices(ticket) : [];
   const pick = store.promptTier(ticket);
   const switching = !!agent && store.switchesTier(ticket);
   const steerOff = waitsOnYou(agent) || switching;
   const mode = steerOff ? "queue" : entry?.mode || "queue";
-  const sendOff = !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting ||
-    !!entry?.answer?.waiting || !entry?.draft.trim();
+  const sendOff = starts
+    ? startOff || !entry?.draft.trim()
+    : !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting ||
+      !!entry?.answer?.waiting || !entry?.draft.trim();
+  const fieldOff = starts ? startOff : !agent;
   const tick = receiptTick(entry?.latest?.status);
   // In the conversation a sent prompt is its ghost, then its own row
   // (T-626): no line says it was submitted.
@@ -147,10 +166,13 @@ function Composer({ store, ticket, entry, live }) {
       </p>
       <p id="target" class="sr-only">${agent
         ? `Message ${agent.provider} on ${ticket.key} · session ${agent.session.slice(0, 8)}`
-        : "No agent selected"}</p>
-      <div class="composer" data-open=${String(open)}>
-        <textarea id="prompt" ref=${field} aria-label="Prompt" aria-describedby="target" rows="1" dir="auto"
-          placeholder=${agent ? `Message ${agent.provider}…` : "No agent to message"} required disabled=${!agent}
+        : starts
+          ? `${asleep ? `Wake ${ticket.agent.provider}` : "Start an agent"} on ${ticket.key} with the first prompt`
+          : "No agent selected"}</p>
+      <div class="composer" data-open=${String(open)} data-starts=${String(starts)}>
+        <textarea id="prompt" ref=${field} aria-label=${starts ? "First prompt" : "Prompt"} aria-describedby="target" rows="1" dir="auto"
+          placeholder=${agent ? `Message ${agent.provider}…` : starts ? startPlaceholder(store, ticket, asleep) : "No agent to message"}
+          required disabled=${fieldOff}
           value=${entry?.draft || ""} onInput=${(e) => store.setDraft(e.currentTarget.value)}
           onKeyDown=${(e) => {
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
@@ -159,21 +181,27 @@ function Composer({ store, ticket, entry, live }) {
             }
           }}></textarea>
         <div class="composer-row" hidden=${!open}>
-          <fieldset id="prompt-mode" class="segmented" disabled=${!agent}>
+          ${starts
+            ? html`<p id="start-what" class="start-what"><${Icon} name="play" size=${13} /><span>${asleep
+                ? `Wakes ${ticket.agent.provider}, then says this.`
+                : "Starts an agent on these words."}</span></p>`
+            : html`<fieldset id="prompt-mode" class="segmented" disabled=${!agent}>
             <legend class="sr-only">Delivery</legend>
             <label class=${mode === "queue" ? "on" : ""}><input type="radio" name="prompt-mode" value="queue"
               checked=${mode === "queue"} onChange=${() => store.setDelivery("queue")} /><${Icon} name="hourglass" size=${14} /><span>Queue</span></label>
             <label class=${`${mode === "steer" ? "on" : ""}${steerOff ? " off" : ""}`}><input type="radio" name="prompt-mode" value="steer"
               checked=${mode === "steer"} disabled=${steerOff} onChange=${() => store.setDelivery("steer")} /><${Icon} name="zap" size=${14} /><span>Steer</span></label>
-          </fieldset>
+          </fieldset>`}
           ${tiers.length > 0 && html`<label class="tier-pick"><span class="sr-only">Agent tier</span>
             <select id="prompt-tier" value=${pick} onChange=${(e) => store.setPromptTier(e.currentTarget.value)}>
               ${tiers.map((t) => html`<option key=${t.id} value=${t.id}>${t.name}</option>`)}
             </select></label>`}
-          <p class="mode-help">${mode === "steer" ? "Goes in now, mid-turn." : "Waits for the turn to end."}</p>
+          ${!starts && html`<p class="mode-help">${mode === "steer" ? "Goes in now, mid-turn." : "Waits for the turn to end."}</p>`}
         </div>
         <button id="send" type="submit" class="send" disabled=${sendOff}
-          aria-label=${mode === "steer" ? "Send prompt" : "Queue prompt"}><${Icon} name="up" size=${20} width=${2.2} /></button>
+          aria-label=${starts ? (asleep ? "Wake agent with these words" : "Start agent with these words") : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
+            ? html`<${Icon} name="play" size=${18} />`
+            : html`<${Icon} name="up" size=${20} width=${2.2} />`}</button>
         <p id="steer-why" class="steer-why" hidden=${!steerOff || !open}>${switching
           ? `Restarts on ${store.board?.tierNamed(pick)?.name || pick} when the turn ends, then sends.`
           : "Steer is off while the agent waits on you · answer it first. Queue still works."}</p>

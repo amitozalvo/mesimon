@@ -23032,3 +23032,33 @@ untouched, as in T-696. Not built: the rows on `list_board` (the crown reads a w
 Tests: `the_summary_convention_is_in_the_tools` (the two descriptions and the constant spell the
 heading and the box), the lint over `SUMMARY_ABOUT`, and `notes_e2e`: no rows and the line on a
 fresh ticket, three rows with their note and `done` after a `Summary` section is written.
+
+## T-709: the Remote Control composer starts or wakes the agent (2026-10-09)
+
+**Before:** on a ticket with no agent, or a parked one, the ticket page's bottom field was
+disabled ("No agent to message") and the only road to a first prompt was the Start / Wake
+button above the transcript and its sheet (T-510). The desk's Shift+Enter field has served
+every seat stage since T-379: empty (the words are the first prompt), parked (wake, then
+ask), paned (ask). The phone had the paned stage only.
+
+**Built:** the same field at every stage. `Store::composerStarts(ticket)` is the host's
+`starts` and `startable` (no agent, or asleep); `submitPrompt` then takes the start road,
+`startAgent(ticket, draft, tier)`, which now answers whether the request left so the draft
+clears only then. The field says it before any words (placeholder `Start an agent with these
+words…` / `Wake codex with these words…`, `Starting an agent needs your terminal back.` while
+the terminal is away, `Starting an agent…` while one is on its way), the arrow is a play glyph
+with the start's label, and the row the words open is one line, `Starts an agent on these
+words.` / `Wakes codex, then says this.` (`#start-what`, its own class because a phone hides
+`.mode-help`), with the tier picker where the host offers tiers (T-643). Queue / Steer never
+show over an empty or a parked seat: there is no turn to queue behind. The 4096-byte cap is
+checked before the start as before a prompt.
+
+**Kept:** the Start / Wake button and the sheet, for the blank start on the title. A blank
+field stays off, so a stray tap on the phone starts nothing; the desk's blank Enter on the
+title is the button here. An older host (no `start` feature) keeps the field off with the
+old words, since `active.starts` is what it said when live. No daemon, wire or relay change:
+`start` has carried `prompt` and `tier` since T-510 and T-643.
+
+Tests: `ux.test.js` `startFlow` (the field on an empty seat, its words, a refused start that
+leaves the draft gone and the button to try again; a parked agent's wake with words from the
+field; the field off while the terminal is away and on an older host), six engine × size runs.

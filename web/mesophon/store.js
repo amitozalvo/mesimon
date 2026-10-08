@@ -606,10 +606,12 @@ export class Store {
   // The host picks the provider from the ticket's tier; the words ride only
   // when there are any, so an older host, which knows no `prompt`, still
   // takes a blank start, and a tier only when it changes the ticket's.
+  // Answers whether the request left (T-709): the composer clears its draft
+  // only then.
   startAgent(id, text = "", tier = "") {
     const board = this.active?.pin.board;
     const ticket = this.board?.tickets.find((t) => t.id === id);
-    if (!board || !this.startable(ticket) || !this.canStart || startWaiting(this.startOf(ticket))) return;
+    if (!board || !this.startable(ticket) || !this.canStart || startWaiting(this.startOf(ticket))) return false;
     const c = this.connection;
     const prompt = text.trim();
     const pick = tierPick(this, ticket, tier);
@@ -620,11 +622,23 @@ export class Store {
     if (command === undefined) {
       this.say("Not started: the connection dropped. Try again when your terminal is back.");
       this.emit();
-      return;
+      return false;
     }
     this.starts.sent(board, id, command, c.incarnation, ticket.key);
     this.say(ticket.agent ? `Waking the agent on ${ticket.key}…` : `Starting an agent on ${ticket.key}…`, "clock");
     this.emit();
+    return true;
+  }
+  // Whether the composer's press starts or wakes the agent (T-709): the
+  // desk's Shift+Enter on an empty or a parked seat, from the same field a
+  // live agent is messaged at. The words are the first turn; a blank field
+  // stays off, the page's button is the start on the title.
+  composerStarts(ticket) {
+    return this.startsAgents && this.startable(ticket);
+  }
+  get canComposeStart() {
+    const ticket = this.board?.current;
+    return this.composerStarts(ticket) && this.canStart && !startWaiting(this.startOf(ticket));
   }
   onStartReply(id, reply) {
     const item = this.starts.get(this.active?.pin.board, id);
@@ -2116,7 +2130,22 @@ export class Store {
   submitPrompt() {
     const entry = this.entry;
     const agent = this.board?.current?.agent;
-    if (!this.live || !agent?.promptable || !entry?.draft.trim() ||
+    if (!entry?.draft.trim()) return;
+    if (this.composerStarts(this.board?.current)) {
+      if (new TextEncoder().encode(entry.draft).length > 4096) {
+        entry.delivery = "Prompt must fit in 4096 UTF-8 bytes.";
+        this.sync();
+        return;
+      }
+      if (this.startAgent(entry.ticket, entry.draft, entry.tier)) {
+        entry.draft = "";
+        entry.tier = undefined;
+        entry.delivery = "";
+      }
+      this.sync();
+      return;
+    }
+    if (!this.live || !agent?.promptable ||
       entry.review || entry.receipt?.waiting || entry.answer?.waiting)
       return;
     if (new TextEncoder().encode(entry.draft).length > 4096) {

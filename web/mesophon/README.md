@@ -138,7 +138,11 @@ remembered on the board's entry like `mailbox`, so the button stays in place,
 disabled, while the terminal is away, and an older host offers none. The
 button is on the ticket page alone, over an empty seat or a parked agent, and
 it opens a sheet for the first prompt, as the board's Shift+Enter opens its
-field (T-510). The request names the ticket and, when there were words, a
+field (T-510). The composer at the page's bottom is that field too (T-709):
+over an empty or a parked seat its press is a start or a wake with the words
+typed, said by its placeholder, a play glyph and the row the words open, and
+a blank field stays off, so the blank start on the title is the button's
+alone. The request names the ticket and, when there were words, a
 `prompt`; the host picks the provider from the board's tiers and, with no
 words, submits the ticket's title and description on an empty seat or wakes
 the parked agent with nothing to say, through `Action::StartAgent`. The
