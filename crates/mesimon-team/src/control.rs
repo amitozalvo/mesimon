@@ -140,11 +140,48 @@ pub enum Wire {
         device: DeviceId,
         id: ObjectId,
     },
+    // ---- the shelf (T-698): what a browser reads while its host is away --
+    /// Host → relay: the slots one paired browser's shelf keeps, every one
+    /// of them, and at most one sealed item to put in its slot. A slot not
+    /// in `keep` is emptied, so `keep` alone empties a shelf. Sent only to a
+    /// relay whose `ControlShelf` answered.
+    Shelve {
+        device: DeviceId,
+        keep: Vec<ObjectId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item: Option<Box<Envelope>>,
+    },
+    /// Browser → relay: what this browser's host left it on the board.
+    Peek {
+        board: BoardId,
+    },
+    /// Relay → browser: the shelf, a few items a frame; `last` on the last.
+    Shelf {
+        board: BoardId,
+        items: Vec<Envelope>,
+        last: bool,
+    },
 }
 
 /// The longest envelope the relay keeps, serialized. A ticket's title and a
 /// 32 KiB description fit with room; a larger one waits for a live host.
 pub const MAIL_BYTES: usize = 128 * 1024;
+
+/// The longest shelf item the relay keeps, serialized (T-698): a board
+/// answer or a transcript page (each under 48 KiB) or a ticket's notes
+/// (under `SHELF_PLAIN_BYTES`), sealed and in hex.
+pub const SHELF_BYTES: usize = 160 * 1024;
+/// The most plain bytes the host seals into one shelf item: hex doubles
+/// it, and the letter's own fields fit in what is left of `SHELF_BYTES`.
+pub const SHELF_PLAIN_BYTES: usize = 72 * 1024;
+/// The most slots one browser's shelf keeps, and their bytes together,
+/// serialized: what the relay holds per paired browser and sends back in
+/// a dozen frames.
+pub const SHELF_SLOTS: usize = 64;
+pub const SHELF_TOTAL_BYTES: usize = 2 * 1024 * 1024;
+/// How long the relay keeps a shelf its host stopped refreshing, in days:
+/// the board as it was a week ago is history.
+pub const SHELF_KEEP_DAYS: u32 = 7;
 
 /// A letter the relay keeps while its reader is away (T-497): a fresh key
 /// wrapped to the recipient, and one record sealed under it, both signed by
@@ -194,23 +231,26 @@ struct Letter {
     body: Value,
 }
 /// Each way has its own record revision, so a ticket never opens as a
-/// receipt, nor a receipt as a ticket.
+/// receipt, nor a receipt as a ticket, and a shelf item (T-698) as neither.
 #[derive(Clone, Copy)]
 enum Way {
     ToHost,
     ToBrowser,
+    Shelf,
 }
 impl Way {
     fn word(self) -> &'static str {
         match self {
             Way::ToHost => "browser",
             Way::ToBrowser => "host",
+            Way::Shelf => "shelf",
         }
     }
     fn revision(self) -> u64 {
         match self {
             Way::ToHost => 1,
             Way::ToBrowser => 2,
+            Way::Shelf => 3,
         }
     }
 }
@@ -303,6 +343,43 @@ pub fn open_receipt(
     host: &DevicePublic,
 ) -> Result<Value, crypto::CryptoError> {
     open_letter(Way::ToBrowser, (board, grant), receipt, browser, host)
+}
+/// The slot a shelf item of one grant's takes (T-698), by what it holds:
+/// `board`, or a ticket's `notes:<ulid>` or `transcript:<ulid>`. The same
+/// name lands in the same slot across restarts, so the host replaces in
+/// place what it left before; the relay reads no name back from it.
+pub fn shelf_slot(grant: BoardId, name: &str) -> ObjectId {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"mesimon-shelf v1\0");
+    h.update(grant.0);
+    h.update(name.as_bytes());
+    let digest = h.finalize();
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    ObjectId(id)
+}
+/// The host seals one shelf item for one paired browser (T-698).
+pub fn seal_shelf(
+    board: BoardId,
+    grant: BoardId,
+    slot: ObjectId,
+    host: &DeviceKeys,
+    browser: &DevicePublic,
+    body: Value,
+) -> Result<Envelope, crypto::CryptoError> {
+    seal_letter(Way::Shelf, (board, grant, slot), host, browser, body)
+}
+/// A browser opens a shelf item; `host` is the key it pinned at pairing, so
+/// the relay can serve an item late or not at all, never one of its own.
+pub fn open_shelf(
+    board: BoardId,
+    grant: BoardId,
+    item: &Envelope,
+    browser: &DeviceKeys,
+    host: &DevicePublic,
+) -> Result<Value, crypto::CryptoError> {
+    open_letter(Way::Shelf, (board, grant), item, browser, host)
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Welcome {
@@ -560,5 +637,46 @@ mod tests {
         .unwrap();
         assert!(open_receipt(board, grant, &back, &browser, &host.public()).is_err());
         assert!(serde_json::to_vec(&mail).unwrap().len() < MAIL_BYTES);
+    }
+
+    /// The shelf (T-698): only the paired browser opens an item, only as
+    /// its host sealed it, and a shelf item opens as neither a ticket nor a
+    /// receipt, nor they as it. A full item fits its cap, and a frame.
+    #[test]
+    fn a_shelf_item_opens_only_for_its_browser_and_only_as_one() {
+        let host = DeviceKeys::generate();
+        let browser = DeviceKeys::generate();
+        let stranger = DeviceKeys::generate();
+        let (board, grant) = (BoardId::random(), BoardId::random());
+        let slot = shelf_slot(grant, "board");
+        assert_eq!(slot, shelf_slot(grant, "board"));
+        assert_ne!(slot, shelf_slot(BoardId::random(), "board"));
+        assert_ne!(slot, shelf_slot(grant, "notes:x"));
+        let body = serde_json::json!({"title": "shelf-canary"});
+        let item = seal_shelf(board, grant, slot, &host, &browser.public(), body.clone()).unwrap();
+        assert_eq!(item.id, slot);
+        assert!(!serde_json::to_string(&item).unwrap().contains("shelf-canary"));
+        assert_eq!(open_shelf(board, grant, &item, &browser, &host.public()).unwrap(), body);
+        assert!(open_shelf(board, grant, &item, &stranger, &host.public()).is_err());
+        assert!(open_shelf(board, grant, &item, &browser, &stranger.public()).is_err());
+        assert!(open_shelf(board, BoardId::random(), &item, &browser, &host.public()).is_err());
+        assert!(open_receipt(board, grant, &item, &browser, &host.public()).is_err());
+        let receipt =
+            seal_receipt(board, grant, slot, &host, &browser.public(), body.clone()).unwrap();
+        assert!(open_shelf(board, grant, &receipt, &browser, &host.public()).is_err());
+        let mut moved = item.clone();
+        moved.id = shelf_slot(grant, "notes:x");
+        assert!(open_shelf(board, grant, &moved, &browser, &host.public()).is_err());
+
+        let full = serde_json::json!({ "text": "x".repeat(SHELF_PLAIN_BYTES - 64) });
+        let item = seal_shelf(board, grant, slot, &host, &browser.public(), full).unwrap();
+        let bytes = serde_json::to_vec(&item).unwrap().len();
+        assert!(bytes <= SHELF_BYTES, "{bytes}");
+        let frame = Wire::Shelve {
+            device: browser.id(),
+            keep: vec![slot; SHELF_SLOTS],
+            item: Some(Box::new(item)),
+        };
+        assert!(serde_json::to_vec(&frame).unwrap().len() < MAX_BYTES - 16 * 1024);
     }
 }

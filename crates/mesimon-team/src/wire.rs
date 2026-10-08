@@ -218,6 +218,11 @@ pub enum Request {
     /// relay from before answers `InvalidRequest` and the host collects
     /// nothing; `ControlInfo` stays as it was, so older hosts are untouched.
     ControlMail,
+    /// Whether the relay keeps what a host leaves for its paired browsers
+    /// to read while it is away (T-698): its board, notes and the latest of
+    /// its conversations, sealed to each browser. A relay from before
+    /// answers `InvalidRequest` and the host shelves nothing.
+    ControlShelf,
     Whoami,
     Boards,
     CreateBoard,
@@ -290,6 +295,7 @@ impl Request {
             Request::Register { .. }
             | Request::ControlInfo
             | Request::ControlMail
+            | Request::ControlShelf
             | Request::Whoami
             | Request::Boards
             | Request::CreateBoard
@@ -313,6 +319,7 @@ impl Request {
             Request::Register { .. } => "register",
             Request::ControlInfo => "control_info",
             Request::ControlMail => "control_mail",
+            Request::ControlShelf => "control_shelf",
             Request::Whoami => "whoami",
             Request::Boards => "boards",
             Request::CreateBoard => "create_board",
@@ -347,6 +354,7 @@ impl fmt::Debug for Request {
 pub enum Response {
     ControlInfo { version: u32, origin: Option<String> },
     ControlMail { version: u32 },
+    ControlShelf { version: u32 },
     Grant { until: Option<u64> },
     Registered { device: DeviceId, credential: Credential },
     Device { device: DeviceId, display_name: String },

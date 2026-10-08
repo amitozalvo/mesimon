@@ -102,6 +102,7 @@ mod crownledger;
 mod crownplan;
 mod crownwake;
 mod mesophon;
+mod shelf;
 mod teamglue;
 mod tiers;
 mod trainhold;
@@ -410,6 +411,8 @@ enum Msg {
     /// A phone's transcript page was read off this thread (T-626): the
     /// peer that asked, its grant, the command and the answer.
     TranscriptRead(String, mesimon_team::crypto::BoardId, u64, mesimon_core::mesophon::Reply),
+    /// The conversations a shelf build read off the writer thread (T-698).
+    ShelfRead(Box<shelf::Build>, Vec<shelf::PageRead>),
     /// A quota probe came back (T-327): whose, and what it said.
     UsageRead(Provider, crate::usage::Outcome),
     /// A pass over the tickets' transcripts landed (T-327): what each read
@@ -1357,6 +1360,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Team(_) => "team".into(),
             Msg::Control(..) => "mesophon".into(),
             Msg::TranscriptRead(..) => "transcript read".into(),
+            Msg::ShelfRead(..) => "shelf read".into(),
         };
         d.tick_slowest = ("", Duration::ZERO);
         match msg {
@@ -1403,6 +1407,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::TranscriptRead(peer, grant, command, reply) => {
                 d.control_transcript_read(&peer, grant, command, reply)
             }
+            Msg::ShelfRead(build, pages) => d.shelf_read(*build, pages),
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 // `answer_agent` (T-569) answers when its delivery settles:
@@ -1442,6 +1447,8 @@ pub fn run(paths: Paths) -> Result<()> {
     // The crown's ledger on the way down (T-602): whatever the shutdown's
     // own settles owed or held is there for the next daemon.
     d.persist_crown();
+    // The relay's copy, as the board stands now (T-698).
+    d.shelf_flush();
     let _ = d.feed.flush();
     let _ = std::fs::remove_file(d.paths.orch_sock());
     let _ = std::fs::remove_file(d.paths.hook_sock());

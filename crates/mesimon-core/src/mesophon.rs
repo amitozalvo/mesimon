@@ -46,6 +46,11 @@ pub struct Info {
     pub code: Option<String>,
     pub error: Option<String>,
     pub devices: Vec<Device>,
+    /// Whether the board keeps a sealed copy at the relay for its paired
+    /// browsers to read while it is away (T-698). `None` from a daemon from
+    /// before, which keeps none and offers no row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shelf: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,7 +66,13 @@ pub enum LocalAction {
     Enable,
     Disable,
     Pair,
-    Revoke { grant: String },
+    Revoke {
+        grant: String,
+    },
+    /// Keep the sealed copy at the relay (T-698), or empty it and stop.
+    Shelf {
+        on: bool,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -831,6 +842,41 @@ pub fn answer_first(here: bool) -> &'static str {
         "the agent is waiting on you ∙ answer it here first"
     } else {
         crate::command::ANSWER_IN_PANE_FIRST
+    }
+}
+
+/// One thing a host leaves a paired browser to read while the host is away
+/// (T-698), sealed to that browser alone: the board as its snapshot reads,
+/// a ticket's notes, or the newest page of an agent's conversation. Each is
+/// the answer the live channel gives, so the page draws it as it draws
+/// those, marked as of `at`; nothing on it can be answered.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ShelfItem {
+    /// When the host wrote it, epoch ms.
+    pub at: u64,
+    #[serde(flatten)]
+    pub held: Shelved,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Shelved {
+    /// A `Board` answer, every agent unpromptable and with no dialog or
+    /// permission to answer.
+    Board { board: Reply },
+    /// A ticket's `Notes` answer and a `Note` answer per body it holds.
+    Notes { ticket: String, notes: Reply, bodies: Vec<Reply> },
+    /// The newest `Transcript` page of the ticket's agent.
+    Transcript { ticket: String, session: String, page: Reply },
+}
+impl Shelved {
+    /// The slot's name (`control::shelf_slot`): one board, and one of each
+    /// kind per ticket.
+    pub fn name(&self) -> String {
+        match self {
+            Shelved::Board { .. } => "board".into(),
+            Shelved::Notes { ticket, .. } => format!("notes:{ticket}"),
+            Shelved::Transcript { ticket, .. } => format!("transcript:{ticket}"),
+        }
     }
 }
 

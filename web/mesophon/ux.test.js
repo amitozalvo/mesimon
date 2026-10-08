@@ -59,6 +59,11 @@ export class Browser {
     if (!r.sealed) throw new Error('not the host');
     return JSON.stringify(r.answer);
   }
+  shelf(pin, item) {
+    const r = JSON.parse(item);
+    if (!r.sealed) throw new Error('not the host');
+    return JSON.stringify(r.body);
+  }
 }`;
 function fixture() {
   const state = (window.fixture = {
@@ -82,8 +87,13 @@ function fixture() {
     edits: [],
     editDisposition: "edited",
     editRefusal: "worktree unmerged — merge before DONE",
-    refuse: false,
+    // The host away; kept across a reload (T-698), as an away host stays away.
+    refuse: localStorage.getItem("fixture-refuse") === "1",
     sockets: [],
+    // What the host left at the relay for this browser (T-698), and how
+    // often the page asked for it.
+    shelf: JSON.parse(localStorage.getItem("fixture-shelf") || "[]"),
+    peeks: 0,
     // The relay's mailbox, kept across reloads the way a relay would be.
     mail: JSON.parse(localStorage.getItem("fixture-mail") || "{}"),
     deposits: [],
@@ -294,6 +304,10 @@ function fixture() {
         else if (["pair", "connect"].includes(wire.kind)) {
           this.channel = true;
           this.message({ kind: "welcome", welcome: { board: "board-a" } });
+        } else if (wire.kind === "peek") {
+          this.mailbox = true;
+          state.peeks++;
+          this.message({ kind: "shelf", board: wire.board, items: state.shelf, last: true });
         } else if (["deposit", "withdraw", "sync"].includes(wire.kind)) {
           this.mailbox = true;
           if (wire.kind === "deposit") {
@@ -2146,6 +2160,79 @@ async function chatFlow(browser, engineName, size, viewport) {
   }
 }
 
+// The shelf (T-698): a terminal out of reach left its board, a ticket's
+// notes and the newest page of its agent's conversation at the relay. A
+// reload while it is away reads them, marked as of when they were written;
+// one the terminal did not seal is not read; nothing can be answered.
+async function shelfFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => window.fixture.features.push("notes", "transcript"));
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    assert.equal(await page.evaluate(() => fixture.peeks), 0, "a live terminal is not peeked at");
+    // The terminal goes away after it shelved a board with a ticket filed
+    // at the desk since, that ticket's description and its agent's words.
+    await page.evaluate(() => {
+      const at = Date.now() + 60000;
+      const board = fixture.snapshot();
+      board.title = "Shelved board";
+      board.tickets.push({
+        id: "shelf-1", key: "T-300", title: "Written while away", column: board.columns[0], tags: [],
+        notes: 1, noted: "n1.1",
+        agent: { session: "shelf-session", provider: "claude", state: "working", since: at - 60000, said: "Shelf said this", promptable: false },
+      });
+      const sealed = (body) => ({ id: crypto.randomUUID(), sealed: true, body });
+      const items = [
+        sealed({ at, kind: "transcript", ticket: "shelf-1", session: "shelf-session", page: {
+          result: "transcript", conversation: "c", from: 0, end: 20, next_before: 0,
+          rows: [{ at: 0, kind: "prompt", text: "Shelf prompt" }, { at: 10, kind: "reply", text: "Shelf reply canary" }] } }),
+        sealed({ at, kind: "notes", ticket: "shelf-1", bodies: [], notes: {
+          result: "notes", ticket: "shelf-1", description: "Shelf description canary",
+          notes: [{ id: "n1", name: "Description", by: "you", at, rev: 1 }] } }),
+        sealed({ at, kind: "board", board }),
+        // The relay's own: it does not open under the pinned key.
+        { id: "forged", sealed: false, body: { at: at + 1, kind: "board", board: { ...board, title: "Forged board", tickets: [] } } },
+      ];
+      localStorage.setItem("fixture-shelf", JSON.stringify(items));
+      localStorage.setItem("fixture-refuse", "1");
+    });
+    await page.reload();
+    await until(page, () => document.querySelector('.ticket[data-id="shelf-1"]'));
+    assert.equal(await page.evaluate(() => fixture.peeks), 1);
+    assert.match(await page.locator("#work-list").textContent(), /As of/);
+    assert.match(await page.locator('.ticket[data-id="shelf-1"]').textContent(), /Shelf said this/);
+    assert(!(await page.locator("body").textContent()).includes("Forged board"), "the relay's own copy is not read");
+    if (await page.locator("#back").isVisible()) await page.locator("#back").click();
+    await page.locator('.ticket[data-id="shelf-1"]').locator("visible=true").click();
+    await until(page, () => document.querySelector("#notes")?.textContent.includes("Shelf description canary"));
+    assert.match(await page.locator("#notes").textContent(), /as of/);
+    await until(page, () => document.querySelector("#chat")?.textContent.includes("Shelf reply canary"));
+    assert.match(await page.locator("#chat-as-of").textContent(), /As of/);
+    assert.match(await page.locator("#chat").textContent(), /Earlier parts need your terminal/);
+    assert(await page.locator("#send").isDisabled(), "nothing on the shelf is answered");
+    assert.equal(await page.locator("#output-view").count(), 0, "no screen to switch to while away");
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-shelf.png`) });
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: the shelf's board, notes and conversation read while the terminal is away`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-shelf-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 async function batchFlow(browser, engineName, size, viewport) {
   const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
   await context.addInitScript(fixture);
@@ -3374,6 +3461,7 @@ try {
         await batchFlow(browser, engineName, size, viewport);
         await notesFlow(browser, engineName, size, viewport);
         await chatFlow(browser, engineName, size, viewport);
+        await shelfFlow(browser, engineName, size, viewport);
       }
       await pairLinkFlow(browser, engineName);
       await backFlow(browser, engineName);

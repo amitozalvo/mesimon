@@ -30,6 +30,9 @@ reload shows an edit) beside a host board built from this checkout.
   unknown or refused), its key once landed, and what survives a reload.
 - `mailbox.js`: the browser's own relay socket for the mailbox, apart from the
   host channel, open whether or not the host is reachable.
+- `shelf.js`: the shelf (T-698): what the terminal left at the relay for this
+  browser, read on the mailbox socket while the terminal is away, and the one
+  peek each away spell makes.
 - `store.js`: application state and every action on it; the view renders from it.
 - `shell.js`, `lists.js`, `detail.js`, `dialogs.js`, `compose.js`: the view
   (pairing, sidebar, Now, Board and Sent, the ticket, permission/question/plan

@@ -4,13 +4,13 @@
 
     Decay treatments            >1y     ⠋ Fix OSC-11 detection     >1y   R   D
                                                                          E   O
-    Keymap validator            >1y     ⠋ Adopt drawer import      >1y   V   N
-       ╭─ REMOTE CONTROL ∙ CONNECTED ───────────────────────────────────╮I   E
-       │ THIS BOARD                                                     │E
-       │   Browser: https://relay.example:8444                          │W
-       │   Pair a browser                                               │
+    Key╭─ REMOTE CONTROL ∙ CONNECTED ───────────────────────────────────╮V   N
+       │ THIS BOARD                                                     │I   E
+       │   Browser: https://relay.example:8444                          │E
+       │   Pair a browser                                               │W
        │   Pairing code: 7K2M-QX4P-0B9D-RT6W-HN3C-5VJE-8FGA-1YSZ        │
        │   Revoke My phone                                              │
+       │   Keep a copy at the relay: on                                 │
        │   Disable Remote Control                                       │
        │                                                                │
        │     paired to this board ∙ enter again confirms                │

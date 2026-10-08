@@ -16,18 +16,18 @@ use std::{
 };
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Grant {
-    id: BoardId,
-    device: DeviceId,
-    public: DevicePublic,
+pub(super) struct Grant {
+    pub(super) id: BoardId,
+    pub(super) device: DeviceId,
+    pub(super) public: DevicePublic,
     name: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
-struct Stored {
-    schema: u32,
-    board: BoardId,
+pub(super) struct Stored {
+    pub(super) schema: u32,
+    pub(super) board: BoardId,
     host: DeviceId,
-    grants: Vec<Grant>,
+    pub(super) grants: Vec<Grant>,
     /// The envelopes filed most recently, newest last (T-497). The ticket's
     /// own `envelope` makes a second delivery file nothing; this answers one
     /// whose ticket has since been deleted, so a replayed envelope cannot
@@ -38,6 +38,11 @@ struct Stored {
     /// their answers: a replayed letter is answered again and writes nothing.
     #[serde(default)]
     noted: Vec<NoteFiled>,
+    /// The person turned the relay's copy off (T-698). Written only with
+    /// `schema: 2`, which an older build bars rather than drop this and
+    /// leave a copy on a later upgrade.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) shelf_off: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct NoteFiled {
@@ -214,12 +219,14 @@ struct Pending {
 }
 
 pub(super) struct Control {
-    tx: Sender<Msg>,
-    jobs: Option<SyncSender<Wire>>,
+    pub(super) tx: Sender<Msg>,
+    pub(super) jobs: Option<SyncSender<Wire>>,
+    /// The worker behind `jobs`, joined on a clean stop (T-698).
+    pub(super) worker: Option<std::thread::JoinHandle<()>>,
     generation: u64,
-    stored: Option<Stored>,
+    pub(super) stored: Option<Stored>,
     barred: bool,
-    keys: Option<mesimon_team::crypto::DeviceKeys>,
+    pub(super) keys: Option<mesimon_team::crypto::DeviceKeys>,
     identity: Option<String>,
     invite: Option<Invite>,
     peers: HashMap<String, Peer>,
@@ -237,9 +244,13 @@ pub(super) struct Control {
     dialog_edges: HashMap<uuid::Uuid, (String, DialogEdge)>,
     incarnation: ObjectId,
     origin: String,
-    online: bool,
+    pub(super) online: bool,
     /// This relay keeps mail for the host while it is away (T-497).
     mail: bool,
+    /// This relay keeps a shelf for each paired browser (T-698).
+    pub(super) shelf_relay: bool,
+    /// What this host left there, and what goes next.
+    pub(super) shelf: super::shelf::Shelf,
     error: Option<String>,
     retry: Instant,
     dirty: bool,
@@ -265,6 +276,7 @@ impl Control {
         Self {
             tx,
             jobs: None,
+            worker: None,
             generation: 0,
             stored: None,
             barred: false,
@@ -286,6 +298,8 @@ impl Control {
             origin: String::new(),
             online: false,
             mail: false,
+            shelf_relay: false,
+            shelf: Default::default(),
             error: None,
             retry: Instant::now(),
             dirty: false,
@@ -293,7 +307,7 @@ impl Control {
             reading: 0,
         }
     }
-    fn send(&mut self, wire: Wire) {
+    pub(super) fn send(&mut self, wire: Wire) {
         if self.jobs.as_ref().is_some_and(|tx| tx.try_send(wire).is_err()) {
             self.jobs = None;
             self.online = false;
@@ -338,7 +352,7 @@ impl Daemon {
         match std::fs::read(self.paths.state_dir.join("mesophon.json")) {
             Ok(bytes) => match serde_json::from_slice::<Stored>(&bytes) {
                 Ok(s)
-                    if s.schema == 1
+                    if (s.schema == 1 || (s.schema == 2 && s.shelf_off))
                         && s.grants.len() <= 32
                         && s.grants.iter().all(|g| g.device == g.public.id()) =>
                 {
@@ -357,7 +371,7 @@ impl Daemon {
             }
         }
     }
-    fn control_save(&self, s: &Stored) -> anyhow::Result<()> {
+    pub(super) fn control_save(&self, s: &Stored) -> anyhow::Result<()> {
         store::write_atomic(
             &self.paths.state_dir.join("mesophon.json"),
             &serde_json::to_string(s)?,
@@ -387,6 +401,7 @@ impl Daemon {
                         .collect()
                 })
                 .unwrap_or_default(),
+            shelf: self.control.stored.as_ref().map(|s| !s.shelf_off),
         }
     }
     pub(super) fn control_local(&mut self, action: LocalAction) -> Response {
@@ -412,6 +427,7 @@ impl Daemon {
                         grants: Vec::new(),
                         filed: Vec::new(),
                         noted: Vec::new(),
+                        shelf_off: false,
                     };
                     if self.control_save(&s).is_err() {
                         return fail("could not save Mesophon state");
@@ -428,6 +444,16 @@ impl Daemon {
                     Err(_) => return fail("could not disable Mesophon"),
                 }
                 self.control_revoke_all();
+                // A board with no devices is one the relay keeps nothing
+                // for: its browsers' shelves go with the list (T-698).
+                if let Some(board) = self.control.stored.as_ref().map(|s| s.board) {
+                    self.control.send(Wire::Host {
+                        board,
+                        devices: Vec::new(),
+                        invites: Vec::new(),
+                    });
+                }
+                self.control.shelf.forget();
                 self.control.stored = None;
                 self.control.barred = false;
                 self.control.high.clear();
@@ -439,7 +465,13 @@ impl Daemon {
                 self.control.jobs = None;
                 self.control.online = false;
                 self.control.mail = false;
+                self.control.shelf_relay = false;
                 self.control.generation += 1;
+            }
+            LocalAction::Shelf { on } => {
+                if let Err(message) = self.shelf_set(on) {
+                    return fail(message);
+                }
             }
             LocalAction::Pair => {
                 if !self.control.online {
@@ -495,6 +527,7 @@ impl Daemon {
     }
     pub(super) fn control_changed(&mut self) {
         self.control.dirty = true;
+        self.control.shelf.dirty = true;
         self.control_awareness();
     }
     pub(super) fn control_tick(&mut self) {
@@ -546,11 +579,12 @@ impl Daemon {
             self.control.generation += 1;
             let generation = self.control.generation;
             let tx = self.control.tx.clone();
-            self.control.jobs = Some(control_io::spawn(device, move |e| {
+            let (jobs, worker) = control_io::spawn(device, move |e| {
                 let (ack, done) = std::sync::mpsc::channel();
                 tx.send(Msg::Control(generation, e, ack)).is_ok()
                     && done.recv_timeout(Duration::from_secs(5)).is_ok()
-            }));
+            });
+            (self.control.jobs, self.control.worker) = (Some(jobs), Some(worker));
             self.control.retry = Instant::now() + Duration::from_secs(5);
         }
         if self.control.dirty && self.ticks.is_multiple_of(4) {
@@ -566,6 +600,7 @@ impl Daemon {
                 self.control.answer(&peer, 0, Reply::Changed);
             }
         }
+        self.shelf_tick();
     }
     pub(super) fn on_control(&mut self, generation: u64, event: NetEvent) {
         if generation != self.control.generation || self.control.stored.is_none() {
@@ -578,10 +613,12 @@ impl Daemon {
                 | NetEvent::Frame(Wire::Peer { .. } | Wire::Gone { .. } | Wire::Error { .. })
         );
         match event {
-            NetEvent::Online(origin, mail) => {
+            NetEvent::Online(origin, mail, shelf) => {
                 self.control.origin = origin;
                 self.control.online = true;
                 self.control.mail = mail;
+                self.control.shelf_relay = shelf;
+                self.control.shelf.forget();
                 self.control.error = None;
                 self.control_publish();
                 // After the publish, which is what makes this the host.
@@ -594,6 +631,8 @@ impl Daemon {
             NetEvent::Offline => {
                 self.control.online = false;
                 self.control.mail = false;
+                self.control.shelf_relay = false;
+                self.control.shelf.forget();
                 self.control.jobs = None;
                 self.control.peers.clear();
                 self.control.error = Some("relay unavailable or does not support Mesophon".into());
@@ -2434,7 +2473,7 @@ impl Daemon {
 
     /// Who wrote a note last, in the page's words: `you` at the desk, `agent`,
     /// a paired browser by the name it paired with, a teammate by theirs.
-    fn control_author(&self, meta: &mesimon_core::board::NoteMeta) -> String {
+    pub(super) fn control_author(&self, meta: &mesimon_core::board::NoteMeta) -> String {
         let by = if meta.edited_by.is_empty() { &meta.created_by } else { &meta.edited_by };
         if by.starts_with("agent:") {
             mesimon_core::keymap::AGENT_WORD.into()
@@ -2453,7 +2492,7 @@ impl Daemon {
         }
     }
 
-    fn control_notes(&self, by: &Principal, ticket: &str) -> Reply {
+    pub(super) fn control_notes(&self, by: &Principal, ticket: &str) -> Reply {
         let Some(id) = self.control_ticket(ticket) else {
             return Reply::Rejected { message: "ticket unavailable".into() };
         };
@@ -2480,7 +2519,7 @@ impl Daemon {
         reply
     }
 
-    fn control_note(&self, by: &Principal, ticket: &str, note: &str) -> Reply {
+    pub(super) fn control_note(&self, by: &Principal, ticket: &str, note: &str) -> Reply {
         let Some(id) = self.control_ticket(ticket) else {
             return Reply::Rejected { message: "ticket unavailable".into() };
         };
@@ -2664,7 +2703,7 @@ impl Daemon {
         }
     }
 
-    fn control_board(&self) -> (Reply, Option<usize>) {
+    pub(super) fn control_board(&self) -> (Reply, Option<usize>) {
         let columns = self.board.sorted_columns();
         let mut allowed_tags: Vec<_> = self
             .board

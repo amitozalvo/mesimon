@@ -303,6 +303,9 @@ pub enum SharingRow {
     ControlDisable,
     ControlPair,
     ControlOrigin,
+    /// `Keep a copy at the relay` (T-698): the board's sealed copy for its
+    /// paired browsers to read while this Mac is away.
+    ControlShelf,
     ControlDevice(String),
     Publish,
     InviteContributor,
@@ -7848,6 +7851,9 @@ impl App {
                 rows.extend(
                     self.control.devices.iter().map(|d| SharingRow::ControlDevice(d.grant.clone())),
                 );
+                if self.control.shelf.is_some() {
+                    rows.push(SharingRow::ControlShelf);
+                }
                 rows.push(SharingRow::ControlDisable);
             } else {
                 rows.push(SharingRow::ControlEnable);
@@ -7959,6 +7965,19 @@ impl App {
                 },
                 if self.control.connected { "pair" } else { "" },
             ),
+            SharingRow::ControlShelf => {
+                let on = self.control.shelf == Some(true);
+                (
+                    format!("Keep a copy at the relay: {}", if on { "on" } else { "off" }),
+                    if on {
+                        "board, notes, conversations ∙ sealed ∙ kept 7 days"
+                    } else {
+                        "while away, browsers show only what they saw live"
+                    }
+                    .into(),
+                    "switch",
+                )
+            }
             SharingRow::ControlDisable => (
                 if armed { "Disable Remote Control?" } else { "Disable Remote Control" }.into(),
                 "all devices lose access to this board ∙ enter again confirms".into(),
@@ -8283,6 +8302,10 @@ impl App {
             }
             SharingRow::ControlPair => {
                 self.control_action(mesimon_core::mesophon::LocalAction::Pair)
+            }
+            SharingRow::ControlShelf => {
+                let on = self.control.shelf != Some(true);
+                self.control_action(mesimon_core::mesophon::LocalAction::Shelf { on })
             }
             SharingRow::ControlDisable if armed => {
                 self.control_action(mesimon_core::mesophon::LocalAction::Disable)
@@ -15611,6 +15634,21 @@ mod tests {
         assert!(!sent.borrow().iter().any(|s| s.contains("Revoke")));
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent.borrow().iter().any(|s| s.contains("Revoke") && s.contains("phone")));
+        // The relay's copy (T-698): one press turns it off, one on again.
+        app.control.shelf = Some(true);
+        let idx = app.sharing_rows().iter().position(|r| *r == SharingRow::ControlShelf).unwrap();
+        app.mode = Mode::Sharing { idx, editing: None, armed: false };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            sent.borrow().iter().any(|s| s.contains("Shelf { on: false }")),
+            "{:?}",
+            sent.borrow()
+        );
+        app.control.shelf = Some(false);
+        app.mode = Mode::Sharing { idx, editing: None, armed: false };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent.borrow().iter().any(|s| s.contains("Shelf { on: true }")));
+        app.control.shelf = None;
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(!app.mesophon_dialog);
         assert_eq!(app.mode, Mode::Sharing { idx: opener, editing: None, armed: false });

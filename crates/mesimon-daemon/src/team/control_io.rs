@@ -12,9 +12,10 @@ use std::{
 use tungstenite::Message;
 
 pub enum Event {
-    /// The browser origin, and whether this relay keeps mail for the host
-    /// while it is away (T-497).
-    Online(String, bool),
+    /// The browser origin, whether this relay keeps mail for the host while
+    /// it is away (T-497), and whether it keeps a shelf for each paired
+    /// browser (T-698).
+    Online(String, bool, bool),
     Offline,
     Frame(Wire),
 }
@@ -46,16 +47,16 @@ fn beat(now: Instant, heard: Instant, pinged: Instant) -> Beat {
 pub fn spawn(
     device: DeviceFile,
     report: impl Fn(Event) -> bool + Send + 'static,
-) -> SyncSender<Wire> {
+) -> (SyncSender<Wire>, std::thread::JoinHandle<()>) {
     let (tx, rx) = sync_channel(QUEUE);
-    std::thread::spawn(move || {
+    let worker = std::thread::spawn(move || {
         // A worker owns one generation of the connection. The writer retries
         // by making another worker, so queued commands never cross reconnects.
         if run(device, rx, &report).is_err() {
             let _ = report(Event::Offline);
         }
     });
-    tx
+    (tx, worker)
 }
 fn run(device: DeviceFile, rx: Receiver<Wire>, report: &impl Fn(Event) -> bool) -> Result<(), ()> {
     let client = RelayClient::new(device.relay).map_err(|_| ())?;
@@ -70,6 +71,12 @@ fn run(device: DeviceFile, rx: Receiver<Wire>, report: &impl Fn(Event) -> bool) 
         client.call(device.credential.as_ref(), Request::ControlMail),
         Ok(Response::ControlMail { version: 1 })
     );
+    // The same for the shelf (T-698): an older relay keeps none, and is
+    // never sent a `Shelve` it would drop the host for.
+    let shelf = matches!(
+        client.call(device.credential.as_ref(), Request::ControlShelf),
+        Ok(Response::ControlShelf { version: 1 })
+    );
     let mut ws = client.control_socket(&origin).map_err(|_| ())?;
     let auth = Auth { credential: device.credential, register: None };
     ws.send(Message::Text(serde_json::to_string(&auth).map_err(|_| ())?.into())).map_err(|_| ())?;
@@ -78,7 +85,7 @@ fn run(device: DeviceFile, rx: Receiver<Wire>, report: &impl Fn(Event) -> bool) 
         return Err(());
     }
     ws.get_mut().set_read_timeout(Some(Duration::from_millis(100))).map_err(|_| ())?;
-    if !report(Event::Online(origin, mail)) {
+    if !report(Event::Online(origin, mail, shelf)) {
         return Err(());
     }
     let (mut heard, mut pinged) = (Instant::now(), Instant::now());

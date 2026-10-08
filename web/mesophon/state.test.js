@@ -7,6 +7,7 @@ import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
 import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
 import { mergePage, tailAsk } from "./transcript.js";
+import { Peeks, shelfItem } from "./shelf.js";
 const ticket = (id, session) => ({
   id,
   key: id,
@@ -971,4 +972,51 @@ test("a sent prompt is a ghost until a row the person wrote lands past where the
   sessions.sent(entry, 8, "inc", "prompt", "again");
   sessions.reply(entry, { result: "rejected", message: "no" });
   assert.equal(ghostOf(entry), undefined, "a refusal is the delivery line's");
+});
+test("a shelf item is read only in a shape the live channel gives, and a peek goes once a spell", () => {
+  const at = 1_000;
+  const board = { result: "board", title: "B", columns: ["TODO"], tickets: [] };
+  assert.deepEqual(shelfItem({ at, kind: "board", board }), { kind: "board", at, board });
+  assert.equal(shelfItem({ kind: "board", board }), undefined, "no time, no item");
+  assert.equal(shelfItem({ at, kind: "board", board: { result: "preview" } }), undefined);
+  const notes = { result: "notes", ticket: "t", notes: [] };
+  assert.deepEqual(shelfItem({ at, kind: "notes", ticket: "t", notes, bodies: [{ result: "note" }, { result: "rejected" }] }).bodies, [
+    { result: "note" },
+  ]);
+  const page = { result: "transcript", conversation: "c", rows: [], from: 0, end: 0 };
+  assert.equal(shelfItem({ at, kind: "transcript", ticket: "t", session: "s", page }).page, page);
+  assert.equal(shelfItem({ at, kind: "transcript", ticket: "t", page }), undefined, "no session");
+  assert.equal(shelfItem({ at, kind: "dialog" }), undefined);
+  const peeks = new Peeks();
+  assert.equal(peeks.want("a"), true);
+  assert.equal(peeks.want("a"), false);
+  assert.equal(peeks.want("b"), true);
+  peeks.again("a");
+  assert.equal(peeks.want("a"), true);
+  peeks.again();
+  assert.equal(peeks.want("b"), true);
+});
+test("notes from the shelf read like notes read here and are never kept past the page", async () => {
+  const { NoteBook } = await import("./notes.js");
+  const book = new NoteBook();
+  const row = (id, rev) => ({ id, name: id, by: "you", at: 1, rev });
+  book.listed("kept", { notes: [row("d", 1)], description: "read here" }, "s1", 10);
+  book.listed("shelf", { notes: [row("e", 1), row("f", 2)], description: "from the shelf" }, "s2", 20, true);
+  book.read("shelf", { note: row("f", 2), text: "a body from the shelf" }, 20, true);
+  assert.equal(book.body("shelf", "e"), "from the shelf");
+  assert.equal(book.body("shelf", "f"), "a body from the shelf");
+  assert.deepEqual(book.stored().map((s) => s.ticket), ["kept"]);
+  // Read live afterwards, the entry is this browser's own.
+  book.read("shelf", { note: row("f", 2), text: "read live" }, 30);
+  assert.deepEqual(book.stored().map((s) => s.ticket).sort(), ["kept", "shelf"]);
+});
+test("a board from the shelf is remembered as the terminal's, as of when it was written", () => {
+  const board = new BoardState();
+  board.update({ title: "B", columns: ["TODO"], tickets: [ticket("one", "s")] }, { cached: true, at: 5, shelved: true });
+  assert.equal(board.shelved, true);
+  assert.equal(board.receivedAt, 5);
+  const kept = board.snapshot().tickets[0].agent;
+  assert.equal(kept.promptable, false);
+  board.update({ title: "B", columns: ["TODO"], tickets: [] });
+  assert.equal(board.shelved, false, "a live board is the host's own");
 });

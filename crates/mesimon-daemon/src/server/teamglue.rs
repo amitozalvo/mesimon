@@ -1679,6 +1679,7 @@ fn other_word(r: &Wire) -> &'static str {
         Wire::Error { .. } => "error",
         Wire::ControlInfo { .. } => "control_info",
         Wire::ControlMail { .. } => "control_mail",
+        Wire::ControlShelf { .. } => "control_shelf",
         Wire::Grant { .. } => "grant",
     }
 }

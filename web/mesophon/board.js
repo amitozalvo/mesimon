@@ -31,8 +31,10 @@ export class BoardState {
     this.column = "";
     this.scroll = { agents: 0, board: 0, sent: 0 };
     this.receivedAt = undefined;
-    // True while the view comes from this browser's memory, not the host.
+    // True while the view comes from this browser's memory, not the host;
+    // `shelved` when that memory is the relay's copy (T-698).
     this.cached = false;
+    this.shelved = false;
     // What the New ticket sheet offers; absent from an older host's reply.
     this.defaultColumn = "";
     this.columnDescriptions = {};
@@ -44,7 +46,7 @@ export class BoardState {
     // Sent's own, never on the board. Absent from an older host.
     this.archived = [];
   }
-  update(reply, { cached = false, at = Date.now() } = {}) {
+  update(reply, { cached = false, at = Date.now(), shelved = false } = {}) {
     Object.assign(this, {
       title: reply.title,
       tickets: reply.tickets,
@@ -55,6 +57,7 @@ export class BoardState {
       tiers: Array.isArray(reply.tiers) ? reply.tiers : [],
       archived: Array.isArray(reply.archived) ? reply.archived : [],
       cached,
+      shelved,
       receivedAt: at,
     });
     if (!this.columns.includes(this.column))

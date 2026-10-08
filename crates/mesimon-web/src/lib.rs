@@ -118,6 +118,16 @@ impl Browser {
             .map_err(|_| error())?;
         serde_json::to_string(&body).map_err(|_| error())
     }
+    /// Open one item of this browser's shelf (T-698): what its host left
+    /// at the relay to read while away. The pin makes it the host's copy;
+    /// the relay can only serve it late or not at all.
+    pub fn shelf(&self, pin: String, item: String) -> Result<String, JsValue> {
+        let w: Welcome = serde_json::from_str(&pin).map_err(|_| error())?;
+        let item: Envelope = serde_json::from_str(&item).map_err(|_| error())?;
+        let body = control::open_shelf(w.board, w.grant, &item, &self.keys, &w.host)
+            .map_err(|_| error())?;
+        serde_json::to_string(&body).map_err(|_| error())
+    }
     pub fn open(&mut self, packet: String) -> Result<String, JsValue> {
         let Wire::Packet { record, .. } = serde_json::from_str(&packet).map_err(|_| error())?
         else {

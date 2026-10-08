@@ -32,10 +32,11 @@ const screenRows = (text) => {
 
 // The conversation or the pane's screen (T-626): one small switch in the
 // panel's corner, naming the view it turns to. A parked agent's
-// conversation is still its file; its screen is gone, so it has no switch.
+// conversation is still its file; its screen is gone, so it has no switch,
+// nor while the terminal is away (T-698).
 function OutputView({ store, ticket }) {
   const chat = store.chatShown;
-  if (!store.chatCapable || ticket?.agent?.state === "sleeping") return null;
+  if (!store.chatCapable || !store.live || ticket?.agent?.state === "sleeping") return null;
   return html`<button id="output-view" type="button" class="view-toggle" aria-pressed=${String(!chat)}
     aria-label=${chat ? "Show the terminal screen" : "Show the conversation"}
     onClick=${() => store.setOutputView(chat ? "raw" : "chat")}>

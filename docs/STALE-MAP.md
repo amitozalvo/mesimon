@@ -22575,3 +22575,68 @@ front (no worktree, no commits, a working agent).
 
 Tests: `the_board_merges_the_selected_card_in_the_same_dialog` (ui), the keymap's
 `m`-on-both-screens assertions.
+
+## Remote Control reads the board while the terminal is away: the shelf (T-698, 2026-10-08, "Can terminal update relay even if no remote control connected ∙ So that browsers will get latest tickets, notes, transcripts even if terminal out of reach?")
+
+Asked as a question, answered with a proposal in the ticket's note, then built on the author's
+four words: **all three tiers, the row on by default, 7 days.** Until now a paired browser
+showed, with its terminal out of reach, only what *it* had seen live (T-497's remembered board,
+T-532's notes read): no conversation, and a board as old as that browser's last visit rather
+than the terminal's.
+
+- **The terminal keeps a copy per paired browser at the relay, written whether or not any
+  browser is connected** (the host's control socket is up whenever Remote Control is). Three
+  kinds of item, each the answer the live channel already gives (`api::Shelved`): the `Board`
+  snapshot with every agent `promptable: false` and no dialog or permission; per ticket the
+  `Notes` answer and a `Note` per body (the description first, then the latest written, while
+  one item holds them); per ticket on Now the newest `Transcript` page. Notes skip a column that
+  takes finished work (`requires_merge` or `reclaim`, the template's DONE); conversations follow
+  the page's `nowGroup` (busy, or stopped under an hour), ten at most. A plain budget of 960 KiB
+  per browser (`PLAIN_TOTAL`) keeps the sealed shelf under the relay's cap.
+- **Sealing:** `control::seal_shelf`/`open_shelf`, a third letter direction (`Way::Shelf`,
+  revision 3) beside T-497's mail and receipt, so no item opens as either. A slot is
+  `shelf_slot(grant, name)`, a hash of the grant and `board`, `notes:<ulid>` or
+  `transcript:<ulid>`: the same item replaces itself across restarts and the relay reads no
+  name back.
+- **Wire** (control socket, all on the mailbox road): host → relay `Shelve { device, keep,
+  item? }`, where `keep` names every slot the browser's shelf keeps (a slot left out is emptied,
+  so `keep: []` empties it); browser → relay `Peek { board }`; relay → browser `Shelf { board,
+  items, last }`. **The probe is a new native `Request::ControlShelf` → `ControlShelf { version:
+  1 }`**, as T-497's `ControlMail` is: every side of the control socket drops a peer on a frame
+  it cannot parse, so a host sends `Shelve` only to a relay that answered.
+- **Cadence (`server/shelf.rs`):** a build when the board moved, an agent works, or a browser's
+  board copy is five minutes old (`SHELF_REFRESH`, which is what makes "As of" mean "when the
+  terminal was last there"), at most every 30 s (`SHELF_EVERY`), at once for a browser that
+  holds no board yet. A slot is sealed again only when its key moved (the board's bytes, the
+  notes' `notes_stamp` and authors, the transcript's path, length and mtime); conversations are
+  read off the writer thread (`Msg::ShelfRead`). Frames leave two per tick: the worker's queue
+  is 32 and a full queue drops the connection. A new connection forgets what the relay holds and
+  writes everything again. On a clean stop the daemon writes what changed and gives the worker
+  two seconds (`shelf_flush`, which is why `control_io::spawn` now returns its `JoinHandle`).
+- **The setting is `Keep a copy at the relay` in the Remote Control dialog** (`LocalAction::Shelf
+  { on }`, `Info::shelf`, `None` from an older daemon, which shows no row). Off empties every
+  browser's shelf (`Shelve { keep: [] }` per grant). **Stored as `shelf_off` in `mesophon.json`
+  with `schema: 2`** only while off: an older build bars a schema-2 file instead of dropping the
+  opt-out and leaving a copy on the next upgrade; on, the file stays schema 1 and an older build
+  reads it as before. **Disable now publishes the board with no devices** before the connection
+  drops, so the relay forgets every browser's shelf (and refuses their mail) at once.
+- **The page** (`shelf.js`, `Store::peekShelf`/`onShelf`/`takeShelved`): one `Peek` per away
+  spell on the mailbox socket, once the host channel has failed (`down`). Each item opens only
+  under the pinned host key; a newer board replaces the remembered one and is remembered as it
+  (`BoardState.shelved`; `snapshot()` strips the same fields); notes go into the `NoteBook` marked
+  `shelved`, which `stored()` never keeps until a live read; the conversation's page becomes the
+  session entry's `chat`, and a live tail then asks only what was written since. While away the
+  chat says **As of**, its top edge says earlier parts need the terminal, the Raw switch is gone,
+  and the step line is hidden.
+- **Refuted: one record per board wrapped to every browser.** Sealing per grant costs a copy per
+  paired browser (one to three in practice) and keeps T-497's rule that a letter opens for its
+  grant alone.
+
+Relay half: see mesimon-relay (T-698).
+
+Tests: `a_shelf_item_opens_only_for_its_browser_and_only_as_one` (team), `a_grant_gets_what_changed_and_the_board_every_few_minutes`
+and `the_shelf_keeps_the_conversations_now_lists` (daemon), the TUI row in
+`mesophon_enable_and_revoke_use_the_local_control_surface` and `golden_mesophon_pair_and_revoke`
+(three goldens gain the row), three page state tests, the UX suite's `shelfFlow` (a reload while
+away reads the board, the notes and the chat; a forged item is not read; nothing answers), and the
+relay's `the_shelf_holds_what_a_browser_reads_while_the_host_is_away`.

@@ -7394,6 +7394,7 @@ fn test_no_drawn_structure() {
         code: Some("7K2M-QX4P-0B9D-RT6W-HN3C-5VJE-8FGA-1YSZ".into()),
         error: None,
         devices: Vec::new(),
+        shelf: Some(true),
     };
     pairing.mode = Mode::Sharing { idx: 0, editing: None, armed: false };
     let screens: Vec<Vec<String>> = vec![
@@ -9051,6 +9052,7 @@ fn golden_mesophon_pair_and_revoke() {
             grant: "phone".into(),
             name: "My phone".into(),
         }],
+        shelf: Some(true),
     };
     let rows = app.sharing_rows();
     assert!(!rows.contains(&SharingRow::Publish));
@@ -9067,6 +9069,19 @@ fn golden_mesophon_pair_and_revoke() {
     app.mode = Mode::Sharing { idx, editing: None, armed: true };
     golden("mesophon_revoke_80x24", &render(&app, 80, 24));
     assert!(app.qr.borrow().is_none(), "no room: the code row alone");
+    // The relay's copy (T-698): its row says what it holds, or what a
+    // browser goes without.
+    let idx = rows.iter().position(|r| *r == SharingRow::ControlShelf).unwrap();
+    app.mode = Mode::Sharing { idx, editing: None, armed: false };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("Keep a copy at the relay: on")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("sealed ∙ kept 7 days")), "{lines:?}");
+    app.control.shelf = Some(false);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("Keep a copy at the relay: off")), "{lines:?}");
+    app.control.shelf = None;
+    assert!(!app.sharing_rows().contains(&SharingRow::ControlShelf), "a daemon from before");
+    app.control.shelf = Some(true);
     // The state is the title's (T-513); the pair row says why it is inert.
     app.control.connected = false;
     app.control.code = None;

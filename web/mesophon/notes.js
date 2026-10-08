@@ -34,11 +34,14 @@ export class NoteBook {
   }
   // The host's list of a ticket's notes, `stamp` the board's digest of them
   // when asked. Bodies of notes no longer listed, or since rewritten, go.
-  listed(ticket, reply, stamp, at = Date.now()) {
+  // `shelved` when the list is the relay's copy (T-698): read, never kept
+  // past the page, which asks the relay again.
+  listed(ticket, reply, stamp, at = Date.now(), shelved = false) {
     const entry = this.#ensure(ticket);
     entry.rows = (reply.notes || []).filter(isRow);
     entry.stamp = stamp;
     entry.at = at;
+    entry.shelved = shelved;
     const kept = {};
     for (const row of entry.rows) {
       const body = entry.bodies[row.id];
@@ -48,11 +51,13 @@ export class NoteBook {
     const first = entry.rows[0];
     if (first && typeof reply.description === "string") entry.bodies[first.id] = { rev: first.rev, text: reply.description };
   }
-  // One note's body, and its row as it stands now.
-  read(ticket, reply, at = Date.now()) {
+  // One note's body, and its row as it stands now. Read live, the entry is
+  // this browser's to keep, whatever the shelf gave before.
+  read(ticket, reply, at = Date.now(), shelved = false) {
     if (!isRow(reply.note) || typeof reply.text !== "string") return;
     const entry = this.#ensure(ticket);
     entry.at = at;
+    if (!shelved) entry.shelved = false;
     const index = entry.rows.findIndex((r) => r.id === reply.note.id);
     if (index >= 0) entry.rows[index] = reply.note;
     entry.bodies[reply.note.id] = { rev: reply.note.rev, text: reply.text };
@@ -87,6 +92,7 @@ export class NoteBook {
   // bodies read of them.
   stored() {
     return [...this.tickets.entries()]
+      .filter(([, e]) => !e.shelved)
       .sort((a, b) => b[1].at - a[1].at)
       .slice(0, KEEP_TICKETS)
       .map(([ticket, e]) => ({ ticket, stamp: e.stamp, rows: e.rows, bodies: e.bodies, at: e.at }));

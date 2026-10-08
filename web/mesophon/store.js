@@ -13,6 +13,7 @@ import { NoteBook, NoteMail, NOTE_MAX_BYTES, nameOf } from "./notes.js";
 import { showAlert, clearAlerts } from "./awareness.js";
 import { insertToken, linked, nextNumber, picture, pieceOf, unlinked, withoutPicture } from "./pictures.js";
 import { mergePage, tailAsk } from "./transcript.js";
+import { Peeks, shelfItem } from "./shelf.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
 const receiptOps = ["prompt", "send_now", "take_back", "permission", "dialog", "status"];
@@ -116,6 +117,8 @@ export class Store {
     this.notesSheet = undefined;
     this.toast = undefined;
     this.depositing = new Set(); // ids handed to the mailbox socket, unanswered
+    // The shelf (T-698): the boards this away spell asked the relay about.
+    this.peeks = new Peeks();
     // True when this page came from the service worker's kept copy (T-497):
     // no socket opens, and the relay's own page replaces it when it can.
     this.kept = false;
@@ -165,7 +168,9 @@ export class Store {
   // ---- remembered board ------------------------------------------------
   rememberBoard() {
     const id = this.active?.pin.board;
-    if (!id || !this.board || this.board.cached) return;
+    // A board from the shelf (T-698) is the terminal's, as of when it wrote
+    // it: kept as a live one is, stripped of what is never kept.
+    if (!id || !this.board || (this.board.cached && !this.board.shelved)) return;
     const snapshot = this.board.snapshot();
     const signature = JSON.stringify(snapshot);
     if (this.remembered.get(id) === signature) return;
@@ -192,6 +197,7 @@ export class Store {
   }
   forgetRemembered(board) {
     this.remembered.delete(board);
+    this.peeks.again(board);
     this.sent.purge(board);
     this.sentLoaded.delete(board);
     this.noteBooks.delete(board);
@@ -422,11 +428,14 @@ export class Store {
       );
   }
   // Does this host read the conversation (T-626)?
+  // Away, a conversation this page holds still reads (T-698): one read
+  // live before, or the shelf's newest page.
   get chatCapable() {
-    return !!this.connection?.features?.includes("transcript");
+    return !!this.connection?.features?.includes("transcript") || (!this.live && !!this.entry?.chat);
   }
+  // Away, the screen is the terminal's to show: the conversation held reads.
   get chatShown() {
-    return this.chatCapable && this.outputView !== "raw";
+    return this.chatCapable && (this.outputView !== "raw" || (!this.live && !!this.entry?.chat));
   }
   // The page before the held part of the conversation, one ask at a time;
   // asked again once the ask in flight lands.
@@ -965,7 +974,61 @@ export class Store {
     this.mailbox.send({ kind: "sync", board, ids: asked });
     for (const item of this.sent.waiting(board)) this.deposit(item);
     for (const item of this.noteMail.waiting(board)) this.deposit(item);
+    this.peeks.again(board);
+    this.peekShelf();
     this.emit();
+  }
+  // The terminal is out of reach: ask the relay for what it left this
+  // browser (T-698), once a spell.
+  peekShelf() {
+    const board = this.active?.pin.board;
+    if (!board || this.live || !this.down || this.kept || !this.mailbox?.ready) return;
+    if (this.peeks.want(board)) this.mailbox.send({ kind: "peek", board });
+  }
+  // The shelf's items, opened with the host key this browser pinned: the
+  // board first, since a conversation is laid on its agent.
+  onShelf(items) {
+    if (this.live || !this.active) return;
+    const pin = JSON.stringify(this.active.pin);
+    const opened = [];
+    for (const item of Array.isArray(items) ? items : []) {
+      try {
+        const body = shelfItem(JSON.parse(this.crypto.shelf(pin, JSON.stringify(item))));
+        if (body) opened.push(body);
+      } catch {
+        // Not the terminal's seal: not the terminal's words.
+      }
+    }
+    opened.sort((a, b) => Number(b.kind === "board") - Number(a.kind === "board"));
+    for (const item of opened) this.takeShelved(item);
+    this.sync();
+  }
+  // Each lands where a live answer would, unless this page holds newer.
+  takeShelved(item) {
+    const board = this.active.pin.board;
+    if (item.kind === "board") {
+      if (this.board && item.at <= (this.board.receivedAt || 0)) return;
+      if (!this.board) {
+        this.board = new BoardState(this.active.selected);
+        this.boards.set(board, this.board);
+      }
+      this.board.update(item.board, { cached: true, at: item.at, shelved: true });
+      this.rememberBoard();
+    } else if (item.kind === "notes") {
+      const book = this.noteBook();
+      if ((book.entry(item.ticket)?.at || 0) >= item.at) return;
+      const stamp = this.board?.tickets.find((t) => t.id === item.ticket)?.noted;
+      book.listed(item.ticket, item.notes, stamp, item.at, true);
+      for (const body of item.bodies) book.read(item.ticket, body, item.at, true);
+    } else if (item.kind === "transcript") {
+      const ticket = this.board?.tickets.find((t) => t.id === item.ticket);
+      if (ticket?.agent?.session !== item.session) return;
+      const entry = this.sessions.get(board, ticket);
+      if (entry.chat && (entry.chatAt || 0) >= item.at) return;
+      entry.chat = mergePage(undefined, {}, item.page);
+      entry.chatAt = item.at;
+      entry.chatError = "";
+    }
   }
   onMail(wire) {
     const note = wire.id && this.noteMail.get(wire.id);
@@ -1014,6 +1077,8 @@ export class Store {
           this.persistSent(mine.board);
         }
       }
+    } else if (wire.kind === "shelf" && wire.board === this.active?.pin.board) {
+      this.onShelf(wire.items);
     } else if (wire.kind === "receipt" && wire.board === this.active?.pin.board) {
       const mine = wire.receipt?.id && (this.sent.get(wire.receipt.id) || this.noteMail.get(wire.receipt.id));
       if (mine) this.onReceipt(mine, wire.receipt);
@@ -1721,7 +1786,10 @@ export class Store {
   // ---- connection callbacks ---------------------------------------------
   async onState(state, message) {
     this.phase = state;
-    if (state === "reconnecting") this.down = true;
+    if (state === "reconnecting") {
+      this.down = true;
+      this.peekShelf();
+    }
     this.status = state === "revoked" ? "Removing access…" : message;
     let revocationSaved;
     if (state === "revoked" || state === "unverified") {
@@ -1833,6 +1901,7 @@ export class Store {
       }
       this.live = true;
       this.down = false;
+      this.peeks.again(this.active.pin.board);
       this.phase = "live";
       this.status = "Connected";
       this.rememberBoard();
@@ -1845,6 +1914,7 @@ export class Store {
       if (entry) {
         const before = entry.chat;
         entry.chat = mergePage(before, original.body, reply);
+        entry.chatAt = Date.now();
         entry.chatError = "";
         if (landed(entry)) entry.receipt.landed = true;
         if (original.body.before != null) entry.chatOlder = false;

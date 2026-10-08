@@ -7,6 +7,8 @@ import { Icon, Tick } from "./icons.js";
 import { ghostOf, receiptTick } from "./sessions.js";
 import { Markdown } from "./markdown.js";
 
+const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
 // What the page holds of one conversation: its rows oldest first, where the
 // held part ends (`end`) and where the page before it does (`floor`, null at
 // the file's start).
@@ -70,6 +72,9 @@ export function Chat({ store, entry, doing }) {
     if (chat?.floor != null && node.scrollHeight <= node.clientHeight) store.olderSoon();
   });
   const rows = chat?.rows || [];
+  // Away (T-698), the conversation is what this page last held or the
+  // shelf's newest page: earlier pages wait for the terminal.
+  const away = !store.live;
   const empty = !chat
     ? entry?.chatError || "Reading the conversation…"
     : rows.length || chat.floor != null
@@ -77,12 +82,13 @@ export function Chat({ store, entry, doing }) {
       : "Nothing said yet.";
   return html`<div id="chat" ref=${ref} class="chat" aria-label="Conversation" tabindex="0"
       onScroll=${(e) => store.chatScrolled(e.currentTarget)}>
-    ${chat?.floor != null && html`<p class="chat-edge" aria-live="polite">${entry.chatOlder ? "Reading earlier…" : "Scroll up for earlier"}</p>`}
+    ${chat?.floor != null && html`<p class="chat-edge" aria-live="polite">${away ? "Earlier parts need your terminal" : entry.chatOlder ? "Reading earlier…" : "Scroll up for earlier"}</p>`}
     ${chat && chat.floor == null && rows.length > 0 && html`<p class="chat-edge">Start of the conversation</p>`}
     ${empty && html`<p class="chat-empty">${empty}</p>`}
     ${rows.map((row, i) => html`<${Row} key=${rowKey(rows, i)} row=${row} />`)}
     ${ghost && html`<div class="chat-row chat-prompt chat-ghost" aria-label="Sent, not yet in the conversation">
       <p dir="auto">${ghost.text}</p><${Tick} state=${receiptTick(ghost.status) || "clock"} /></div>`}
-    ${doing && html`<p class="chat-row chat-doing" dir="auto"><span class="dot" aria-hidden="true"></span><span>${doing}</span></p>`}
+    ${doing && !away && html`<p class="chat-row chat-doing" dir="auto"><span class="dot" aria-hidden="true"></span><span>${doing}</span></p>`}
+    ${away && chat && entry.chatAt && html`<p id="chat-as-of" class="chat-edge">As of ${clock(entry.chatAt)}</p>`}
   </div>`;
 }

@@ -63,8 +63,33 @@ line of its latest reply. In Now the card also names the ticket’s column. **Bo
 shows every ticket by column: one column at a time on a phone, all of them side by
 side on a wide screen. The status pill says whether the board is live. When it is not, the
 page says which hop is out of reach (this browser, the relay, or your terminal),
-keeps showing the board as it last saw it, marked as not live, and disables
-answers and prompts until the terminal is back.
+keeps showing the board as it last saw it, or as your terminal last left it at the
+relay when that is newer, marked as not live, and disables answers and prompts until
+the terminal is back.
+
+## While your terminal is away
+
+While it is live, your terminal keeps a copy at the relay for each paired browser:
+the board with each agent's state and latest line, the description and notes of every
+ticket outside a column that takes finished work (one that needs the work merged or
+reclaims its worktree, as DONE does), and the newest page of each conversation Now
+lists (an agent that needs you or works, or stopped within the hour). Each copy is
+sealed to that one browser: the relay keeps it and cannot read it, and the page reads
+only a copy your terminal sealed.
+
+When the page finds your terminal out of reach, it reads that copy: the board, a
+ticket's notes and the conversation's newest page, each marked **As of** the time your
+terminal wrote it. Earlier parts of the conversation, the agent's screen, answers and
+prompts wait for your terminal. The copy is read again each time the page opens while
+your terminal is away; the notes and the conversation in it are not kept in this
+browser.
+
+Your terminal writes what changed at most every 30 seconds, and the board every five
+minutes even when nothing changed, so **As of** says when it was last there. A copy
+your terminal has not refreshed for 7 days is deleted. **Keep a copy at the relay** in
+the Remote Control dialog turns it off, and the relay deletes every browser's copy;
+turning it on writes them again. Revoking a browser deletes its copy, and disabling
+Remote Control deletes all of them. A relay older than this version keeps no copy.
 
 ## Filing a ticket
 
@@ -291,7 +316,8 @@ revoke it there.
 ## What is stored where
 
 The daemon stores `mesophon.json` (mode 0600) in its existing per-board state
-directory, containing the opaque board identity, the device grants and the ids of the
+directory, containing the opaque board identity, the device grants, whether the board
+keeps a copy at the relay, and the ids of the
 tickets it filed most recently from the relay, with their keys, and of the note edits it
 answered most recently, with their answers. A ticket filed from the
 relay also records that id in its own `ticket.toml`, and, once it is picked up, when and
@@ -304,11 +330,15 @@ entered its state; never output, an agent’s step or reply line, prompt or queu
 tool input or dialog content. The Sent list keeps every ticket still on its way (sealed,
 while it is only in this browser) and up to 50 settled ones: title, column, tags, key,
 status and when it was picked up, and the details only of a ticket that has not landed.
+The remembered board may come from your terminal's copy at the relay, with the same
+fields and nothing more.
 The notes kept are those of the 40 tickets whose notes were read most recently: each note's
 name, author and time, and the bodies read; a note edit is kept, with its words, until the
 terminal answers it. Revocation and **Forget this browser** delete all three, and forgetting one board deletes its own. The page’s service worker keeps a
 copy of the page’s own files (HTML, scripts, styles, fonts, icons and the Wasm module)
 in the browser’s Cache Storage, and nothing of the board. The conversation, the screen and unsent prompts remain in memory. The relay routes encrypted content and stores routing metadata for
 Mesophon, plus the tickets and note edits that wait for an away terminal and the terminal’s answers:
-sealed, with the board, device and ticket ids, deleted after 30 days. Browser assets are served by the relay, so the relay’s web
+sealed, with the board, device and ticket ids, deleted after 30 days; and each paired
+browser's copy of the board, its notes and the newest pages of its conversations, sealed
+to that browser and kept by slot, deleted after 7 days without a refresh. Browser assets are served by the relay, so the relay’s web
 deployment is part of the browser client’s trust boundary.

@@ -32,6 +32,7 @@ const PAGE = [
   "./queue.js",
   "./sent.js",
   "./sessions.js",
+  "./shelf.js",
   "./shell.js",
   "./shin.js",
   "./starts.js",
