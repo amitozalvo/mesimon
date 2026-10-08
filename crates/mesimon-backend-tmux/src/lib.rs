@@ -125,24 +125,27 @@ fn pairs(out: &str) -> impl Iterator<Item = (&str, &str)> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneFacts {
     pub session_name: String,
+    /// The pane's process — the agent's own, since `mesimon exec` execs.
+    pub pane_pid: i32,
     pub pane_dead: bool,
     pub current_command: String,
     pub title: String,
 }
 
-/// `session|dead|command|title` rows. Three splits, so the title — the one
-/// free-text field, last — keeps any separator of its own.
+/// `session|pid|dead|command|title` rows. Four splits, so the title — the
+/// one free-text field, last — keeps any separator of its own.
 fn parse_facts(out: &str) -> Vec<PaneFacts> {
     out.lines()
         .filter_map(|l| {
-            let mut f = l.splitn(4, SEP);
-            let (Some(name), Some(dead), Some(cmd), Some(title)) =
-                (f.next(), f.next(), f.next(), f.next())
+            let mut f = l.splitn(5, SEP);
+            let (Some(name), Some(pid), Some(dead), Some(cmd), Some(title)) =
+                (f.next(), f.next(), f.next(), f.next(), f.next())
             else {
                 return None;
             };
             Some(PaneFacts {
                 session_name: name.to_string(),
+                pane_pid: pid.parse().unwrap_or(0),
                 pane_dead: dead == "1",
                 current_command: cmd.trim().to_string(),
                 title: title.trim().to_string(),
@@ -602,8 +605,13 @@ impl TmuxBackend {
         if !self.server_alive() {
             return Ok(Vec::new());
         }
-        let out =
-            self.list_panes(&["session_name", "pane_dead", "pane_current_command", "pane_title"])?;
+        let out = self.list_panes(&[
+            "session_name",
+            "pane_pid",
+            "pane_dead",
+            "pane_current_command",
+            "pane_title",
+        ])?;
         Ok(parse_facts(&out))
     }
 
@@ -1096,24 +1104,27 @@ mod tests {
             "split once: the title keeps its own bar"
         );
 
-        let facts = parse_facts("abc123|0|cargo|claude | T-12 fix\nmsmn-term-x|1|zsh|host\nbare\n");
+        let facts =
+            parse_facts("abc123|41|0|cargo|claude | T-12 fix\nmsmn-term-x|42|1|zsh|host\nbare\n");
         assert_eq!(
             facts,
             [
                 PaneFacts {
                     session_name: "abc123".into(),
+                    pane_pid: 41,
                     pane_dead: false,
                     current_command: "cargo".into(),
                     title: "claude | T-12 fix".into(),
                 },
                 PaneFacts {
                     session_name: "msmn-term-x".into(),
+                    pane_pid: 42,
                     pane_dead: true,
                     current_command: "zsh".into(),
                     title: "host".into(),
                 },
             ],
-            "three splits: the title, last, keeps its own bar"
+            "four splits: the title, last, keeps its own bar"
         );
     }
 

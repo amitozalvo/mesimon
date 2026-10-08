@@ -22916,3 +22916,67 @@ path short of a drag-select inside a block that scrolls sideways.
 
 Tests: `state.test.js` (the link runs, the autolink edges, `linked`); `chatFlow` (a reply's
 and a prompt's link, the code block's Copy, copied or selected).
+
+## A `!` command in Claude's composer spins the card (T-707, 2026-10-08, "shell commands inside claude code not recognized by mesimon")
+
+**Asked.** "`!` inside claude code for executing shell commands, ticket state is idle even
+though bash command (can be long) is running."
+
+**Measured first, in a scratch Claude Code 2.1.295 under a private tmux with every hook logged.**
+A bash-mode command fires no hook while it runs (no `UserPromptSubmit`, no `PreToolUse`), the
+transcript gets nothing until it ends (then `<bash-input>` and `<bash-stdout>` land together,
+the input stamped with its submit time), the pane title stays `✳ Claude Code`, and
+`#{pane_current_command}` keeps naming the pane's process: Claude runs the command as
+`/bin/zsh -c source ~/.claude/shell-snapshots/… && eval …`, a direct child in its own session
+with no controlling tty, so tmux's foreground process group never changes. The screen shows
+`Running… (Ns)` under the `!` line, which is the one thing a person sees. **And then the
+output goes to the model**: a short turn follows the command's end with no `UserPromptSubmit`
+and a `Stop` at its end (the one time it was not stopped by a classifier it said "Next: tell
+me what you want done"). That turn is Claude Code's, not this ticket's: today it ends in the
+same `Stop` edge a prompt's does.
+
+**Built: the process tree is the signal, and it rides the shell's foreground.** The one live
+fact is a shell among the pane process's children, so `refresh_panes` — the 2 s pane-facts
+sample that already reads a shell's `#{pane_current_command}` (T-366) — now also, for every
+Claude record with a pane in `Idle{EndTurn|Interrupted|Unknown|Monitoring}`, takes one
+`ps -axo pid=,ppid=,etime=,comm=` (`process_rows`, BSD and procps alike) and asks
+`board::bash_mode_foreground(pane_pid, spell_secs, rows)`: a direct child whose name is in
+`SHELL_NAMES` **and younger than the idle spell** (`state_changed_at`), the youngest when
+several, named by its own first child (`cargo` for `! cargo test`) or by the shell while it
+has none. The age rule is what tells a `!` command from Claude's other shell children — an
+MCP server launched through `sh -c`, a Monitor watch, a background Bash task the last `Stop`
+reported — every one of which is older than the spell a `!` is typed into. The result goes
+into the same `foregrounds` map a shell's command does, so it rides the snapshot's record
+(`SessionRecord.foreground`), is never persisted, and clears on the sample after the command
+ends. `PaneFacts` gained `pane_pid` so the probe forks no second `list-panes`.
+
+**The state does not move.** A `!` is the person at the shell, not the agent's turn: the
+record stays `Idle`, so no `on_working`/`on_done` automove sees an edge, no confidence
+changes, the ask queue and the crown's words land as they did, and the attention machine is
+untouched. What reads the foreground: `glyphs::is_working` (an agent with a pane and a
+foreground is working — the card spins, the rail row spins and names the command, a finished
+agent's `✓` yields to its own `!`), `SessionRecord::state_word` (`working` to the crown's
+`get_ticket`, built from the map since the board's record carries none), and `park_inactive`
+(never park the pane under a running command).
+
+**Refuted: feeding the machine.** A `TurnStarted`/`TurnEnded` pair would move a ticket to
+REVIEW when `! ls` finished; a `ShellCommand` signal restoring the prior state needed a saved
+`(state, confidence)` like the manual-compact one and still changed the automove edges' reading
+of confidence. The foreground is T-366's answer to the same question for a shell, and it costs
+nothing the state owns. **Refuted: the screen.** `Running… (Ns)` is a Claude Code string, and
+the composer reader is the one screen-scrape this daemon keeps. **Refuted: the follow-on
+turn.** Marking the model turn after the command (2.1.295's new behaviour) needs a signal that
+does not exist (`MessageDisplay` fires at its end); it is seconds long and ends in a `Stop` the
+hook set already hears.
+
+**Not built:** Codex has no bash mode; a `!` typed while the record is `Running` or
+`Idle{Background}` is already working; `Unknown` after a restart is left to recovery (its
+spell is the restart's). A process table the daemon cannot read is an empty one, never an
+error: a machine with no `ps` sees no `!` commands.
+
+Tests: `board::bash_mode_tests` (etime in four shapes, the `ps` rows with a path holding a
+space, the age rule, the youngest shell, a non-shell child), `glyphs::an_idle_agent_with_a_bash_mode_command_spins`,
+the facts parser's new column, and `bash_mode_e2e` (a stub that spawns a shell child at
+launch and a second on a `go` file: the launch-time one is never a foreground, the young one
+is `sleep` on the snapshot with the state still `Idle` and `state_word` `working`, nothing on
+disk, and it clears on `stop`), on both roads.

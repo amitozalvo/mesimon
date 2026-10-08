@@ -14,10 +14,10 @@ use anyhow::{Context, Result};
 use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::attention::{self, Change, EndKind, Machine, Signal, StartSource};
 use mesimon_core::board::{
-    agent_reason_word, agent_state_word, foreground_of, sanitize_tag, AgentProvider, AgentTools,
-    Archived, Board, Confidence, CrownMode, ExitReason, PickedUp, Provenance, Reason, SessionKind,
-    SessionRecord, SessionState, StopReason, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
-    PICKED_AT_DESK, PICKED_BY_AGENT,
+    agent_reason_word, agent_state_word, bash_mode_foreground, foreground_of, sanitize_tag,
+    AgentProvider, AgentTools, Archived, Board, Confidence, CrownMode, ExitReason, PickedUp,
+    Provenance, Reason, SessionKind, SessionRecord, SessionState, StopReason, Tag, TagRef, Ticket,
+    UnknownReason, WorkspaceStrategy, PICKED_AT_DESK, PICKED_BY_AGENT,
 };
 use mesimon_core::command::{
     AgentAutomoveView, AgentBackgroundView, AgentBoardView, AgentMergeView, AgentNeedsYouView,
@@ -3089,6 +3089,45 @@ impl Daemon {
             let shell = rec.argv.first().map(String::as_str).unwrap_or_default();
             if let Some(cmd) = foreground_of(&f.current_command, shell) {
                 foregrounds.insert(rec.id, cmd);
+            }
+        }
+        // A `!` command in an idle Claude's composer (T-707): bash mode fires
+        // no hook, keeps `#{pane_current_command}` at `claude` (the shell is a
+        // detached child) and writes the transcript only when the command
+        // ends, so the pane's children are the one live fact. Sampled only
+        // while an idle Claude pane exists, one `ps` for all of them, and
+        // only a shell younger than the idle spell counts — the MCP servers
+        // and a background task's shell are older (`bash_mode_foreground`).
+        let now = now_ms();
+        let idle_claudes: Vec<(uuid::Uuid, i32, u64)> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| r.kind == SessionKind::Claude && r.state.has_pane())
+            .filter(|r| {
+                matches!(
+                    r.state,
+                    SessionState::Idle {
+                        stop_reason: StopReason::EndTurn
+                            | StopReason::Interrupted
+                            | StopReason::Unknown
+                            | StopReason::Monitoring
+                    }
+                )
+            })
+            .filter_map(|r| {
+                let sid = r.sid16();
+                let f = facts.iter().find(|f| f.session_name == sid && !f.pane_dead)?;
+                let spell = now.saturating_sub(r.state_changed_at.unwrap_or(now)) / 1000;
+                (f.pane_pid > 0 && spell > 0).then_some((r.id, f.pane_pid, spell))
+            })
+            .collect();
+        if !idle_claudes.is_empty() {
+            let rows = process_rows();
+            for (id, pane_pid, spell) in idle_claudes {
+                if let Some(cmd) = bash_mode_foreground(pane_pid, spell, &rows) {
+                    foregrounds.insert(id, cmd);
+                }
             }
         }
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
@@ -6254,8 +6293,13 @@ impl Daemon {
         let t = self.board.ticket(id)?;
         let s = self.board.live_agent(id)?;
         let now = mesimon_core::clock::now_ms();
+        // The foreground lives in the daemon's map, never on the board's
+        // record (T-366): a `!` command running under an idle seat reads
+        // `working` here as it does on the card (T-707).
+        let mut seat = s.clone();
+        seat.foreground = self.foregrounds.get(&s.id).cloned();
         Some(AgentStateView {
-            state: s.state_word().to_string(),
+            state: seat.state_word().to_string(),
             since_secs: s.state_changed_at.map(|at| now.saturating_sub(at) / 1000),
             raised: t.raised.as_ref().map(|r| r.reason.clone()),
         })
@@ -13584,6 +13628,9 @@ impl Daemon {
             })
             .filter(|&(rec, _, _)| {
                 self.board.ticket(rec.ticket).is_some_and(|t| t.raised.is_none())
+                    // A `!` command running in the composer (T-707) is the
+                    // person at work; never park the pane under it.
+                    && !self.foregrounds.contains_key(&rec.id)
                     && !self.pending_resumes.iter().any(|pending| pending.session == rec.id)
                     && !self.owed_on(rec.ticket)
                     && !self.queued.iter().any(|q| q.ticket == rec.ticket)
@@ -14509,6 +14556,18 @@ fn archive_suggest_ms() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(ARCHIVE_SUGGEST_MS)
+}
+
+/// The process table — pid, parent, age and name — for `bash_mode_foreground`
+/// (T-707). `ps axo` is BSD and procps alike; an unreadable table is empty,
+/// never an error: a missing `ps` only means no `!` command is ever seen.
+fn process_rows() -> Vec<mesimon_core::board::ProcRow> {
+    let Ok(out) =
+        std::process::Command::new("ps").args(["axo", "pid=,ppid=,etime=,comm="]).output()
+    else {
+        return Vec::new();
+    };
+    mesimon_core::board::parse_ps_rows(&String::from_utf8_lossy(&out.stdout))
 }
 
 /// Direct live children of a pid, by name — the tmux-recast bash-sleep guard.

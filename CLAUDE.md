@@ -628,6 +628,14 @@ will not show up in our tests until they break something.
   `std::env::current_exe`. Under Homebrew on Linux it names the versioned keg
   (`Cellar/mesimon/<v>/bin`), which `brew upgrade` deletes; `current_exe` takes it through
   `opt/mesimon`. macOS names brew's `bin/` link, which survives.
+- **A `!` command in Claude's composer fires no hook while it runs** (2.1.295, T-707): no
+  `UserPromptSubmit`, nothing to the mod, nothing in the transcript until it ends (then
+  `<bash-input>` and `<bash-stdout>` land together), and the pane's `#{pane_current_command}`
+  keeps naming `claude` because the shell is a detached child with no tty. The pane process's
+  children are the one live fact (`bash_mode_foreground`); only a shell younger than the idle
+  spell is the command, since the MCP servers and a background task's shell are older. **And
+  the output is then sent to the model**: a short turn follows with no `UserPromptSubmit` and a
+  `Stop` at its end.
 - **A human refusing a dialog fires no hook.** "No, keep planning", an Esc out of a question or a
   denied permission emits no `PostToolUse`, no `PostToolUseFailure` and no `PermissionDenied`
   (that one is auto mode's classifier). The agent's next `PreToolUse` is the first frame that

@@ -383,16 +383,21 @@ pub(crate) fn crown(tier: Tier) -> &'static str {
 /// HAS is a foreground (T-366): the daemon reads `#{pane_current_command}`
 /// off its pane, and a `cargo build` in it is something actually moving —
 /// the one thing D19's motion ban bends for.
+///
+/// An agent's foreground is the `!` command a person runs in Claude's own
+/// composer (T-707): bash mode fires no hook, so the record stays `Idle`
+/// while a long `cargo test` runs under it — the foreground is what says it
+/// is busy, and it spins exactly as a shell's does.
 pub(crate) fn is_working(rec: &SessionRecord) -> bool {
     match rec.kind {
         SessionKind::Bash => rec.state == SessionState::Running && rec.foreground.is_some(),
         _ => {
             rec.kind.is_agent()
-                && matches!(
+                && (matches!(
                     rec.state,
                     SessionState::Running
                         | SessionState::Idle { stop_reason: StopReason::Background }
-                )
+                ) || (rec.state.has_pane() && rec.foreground.is_some()))
         }
     }
 }
@@ -489,10 +494,11 @@ pub(crate) fn card_glyph(
     }) {
         return Some(('x', Register::Err));
     }
-    if sessions
-        .iter()
-        .any(|s| matches!(s.state, SessionState::Idle { stop_reason: StopReason::EndTurn }))
-    {
+    // A finished agent outranks a shell's work — but not its own: an idle
+    // Claude running a `!` command (T-707) is busy, and the card spins.
+    if sessions.iter().any(|s| {
+        matches!(s.state, SessionState::Idle { stop_reason: StopReason::EndTurn }) && !is_working(s)
+    }) {
         return Some((if tier == Tier::Ascii { '+' } else { '✓' }, Register::Calm));
     }
     if terminal_busy || sessions.iter().any(|s| is_working(s)) {
@@ -561,6 +567,11 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
     // typed but not yet accepted, so this `Idle` is not a settled state.
     if is_launching(rec) {
         return (launching(tier, spin), Register::Grey);
+    }
+    // An idle agent with a foreground is running a `!` command (T-707): the
+    // state says the turn ended, the pane's children say it is busy.
+    if matches!(rec.state, SessionState::Idle { .. }) && is_working(rec) {
+        return (spinner(tier, spin), Register::Grey);
     }
     match &rec.state {
         SessionState::Spawning => (launching(tier, spin), Register::Grey),
@@ -921,6 +932,27 @@ mod tests {
         // A parked shell keeps no foreground: its pane is gone.
         sh.state = SessionState::Sleeping;
         assert!(!is_working(&sh));
+    }
+
+    /// An idle Claude running a `!` command is working (T-707): the daemon
+    /// read the command off the pane's children into the record's
+    /// foreground, and the card spins as a busy shell's does. Without a pane
+    /// (parked) a foreground cannot exist, and a bare idle is still idle.
+    #[test]
+    fn an_idle_agent_with_a_bash_mode_command_spins() {
+        let mut agent = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert!(!is_working(&agent));
+        agent.foreground = Some("cargo".into());
+        assert!(is_working(&agent));
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            assert_eq!(session_glyph(&agent, tier, 3), (spinner(tier, 3), Register::Grey));
+            assert_eq!(
+                card_glyph(&[&agent], false, tier, 0),
+                Some((spinner(tier, 0), Register::Grey))
+            );
+        }
+        agent.state = SessionState::Sleeping;
+        assert!(!is_working(&agent));
     }
 
     #[test]

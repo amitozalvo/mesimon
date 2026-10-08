@@ -302,6 +302,13 @@ pub struct SessionRecord {
     /// daemon fills it into the SNAPSHOT from a map it keeps in memory and
     /// never writes it to `sessions.json`: a foreground is a fact about a
     /// live pane, and a restart re-learns it on the first poll.
+    ///
+    /// On an idle Claude record it is the `!` command the person is running
+    /// in Claude's own composer (T-707): bash mode fires no hook and writes
+    /// the transcript only when the command ends, so the daemon reads it off
+    /// the pane's child processes (`bash_mode_foreground`). The card spins
+    /// and the rail row names the command; the state stays `idle`, so no
+    /// automove sees a turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground: Option<String>,
     #[serde(default)]
@@ -535,6 +542,10 @@ impl SessionRecord {
     pub fn state_word(&self) -> &'static str {
         if self.unsent_words().is_some() {
             "unsent"
+        } else if self.kind.is_agent() && self.foreground.is_some() {
+            // A `!` command running in the composer (T-707): the seat is
+            // busy with the person's own command, whatever the hooks last said.
+            "working"
         } else {
             agent_state_word(&self.state)
         }
@@ -701,6 +712,165 @@ pub fn foreground_of(current_command: &str, shell: &str) -> Option<String> {
         return None;
     }
     Some(cmd.to_string())
+}
+
+/// One row of the process table, as `ps -axo pid=,ppid=,etime=,comm=`
+/// prints it: the pid, its parent, how long it has run and its command name
+/// (a path on macOS, a bare name on Linux; `bash_mode_foreground` takes the
+/// basename of either).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcRow {
+    pub pid: i32,
+    pub ppid: i32,
+    pub age_secs: u64,
+    pub comm: String,
+}
+
+/// `ps`'s `etime` — `[[dd-]hh:]mm:ss` on BSD and procps alike — as seconds.
+/// `None` for anything else (a header, a `-` for a process with no start).
+pub fn parse_etime(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (days, rest) = match s.split_once('-') {
+        Some((d, r)) => (d.parse::<u64>().ok()?, r),
+        None => (0, s),
+    };
+    let mut secs = 0u64;
+    let mut parts = 0;
+    for p in rest.split(':') {
+        secs = secs.checked_mul(60)?.checked_add(p.parse::<u64>().ok()?)?;
+        parts += 1;
+    }
+    if !(2..=3).contains(&parts) {
+        return None;
+    }
+    Some(days * 86_400 + secs)
+}
+
+/// `ps -axo pid=,ppid=,etime=,comm=` output into rows; a line that does not
+/// parse is skipped. `comm` is the last field, taken whole: a macOS path may
+/// hold a space.
+pub fn parse_ps_rows(out: &str) -> Vec<ProcRow> {
+    out.lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let pid = f.next()?.parse().ok()?;
+            let ppid = f.next()?.parse().ok()?;
+            let age_secs = parse_etime(f.next()?)?;
+            let comm = f.collect::<Vec<_>>().join(" ");
+            (!comm.is_empty()).then_some(ProcRow { pid, ppid, age_secs, comm })
+        })
+        .collect()
+}
+
+/// The `!` command a Claude pane is running (T-707), read off the process
+/// table: Claude Code runs a bash-mode command as a shell it spawns
+/// directly, with no controlling tty — so `#{pane_current_command}` keeps
+/// naming `claude`, no hook fires, and the transcript gets both the command
+/// and its output only when it ends. The one live fact is a shell among the
+/// pane process's children.
+///
+/// Claude's other children are shells too — an MCP server launched through
+/// `sh -c`, a Monitor watch, a background Bash task the last `Stop` reported —
+/// and every one of them is older than the idle spell the record is in,
+/// while a `!` command is typed into it. So only a shell younger than
+/// `spell_secs` counts, the youngest when several, and the foreground is
+/// named by that shell's own first child (`cargo` for `! cargo test`), or by
+/// the shell while it has none.
+pub fn bash_mode_foreground(pane_pid: i32, spell_secs: u64, rows: &[ProcRow]) -> Option<String> {
+    fn name(comm: &str) -> &str {
+        let s = comm.trim();
+        let s = s.rsplit('/').next().unwrap_or(s);
+        s.strip_prefix('-').unwrap_or(s)
+    }
+    let shell = rows
+        .iter()
+        .filter(|r| r.ppid == pane_pid && SHELL_NAMES.contains(&name(&r.comm)))
+        .filter(|r| r.age_secs < spell_secs)
+        .min_by_key(|r| (r.age_secs, r.pid))?;
+    let child = rows.iter().filter(|r| r.ppid == shell.pid).min_by_key(|r| r.pid);
+    Some(name(&child.unwrap_or(shell).comm).to_string())
+}
+
+#[cfg(test)]
+mod bash_mode_tests {
+    use super::{bash_mode_foreground, parse_etime, parse_ps_rows, ProcRow};
+
+    fn row(pid: i32, ppid: i32, age_secs: u64, comm: &str) -> ProcRow {
+        ProcRow { pid, ppid, age_secs, comm: comm.into() }
+    }
+
+    #[test]
+    fn etime_is_seconds_minutes_hours_and_days() {
+        assert_eq!(parse_etime("00:09"), Some(9));
+        assert_eq!(parse_etime("   06:08"), Some(368));
+        assert_eq!(parse_etime("01:02:03"), Some(3723));
+        assert_eq!(parse_etime("01-08:46:18"), Some(86_400 + 8 * 3600 + 46 * 60 + 18));
+        assert_eq!(parse_etime("20-01:29:44"), Some(20 * 86_400 + 3600 + 29 * 60 + 44));
+        assert_eq!(parse_etime("-"), None);
+        assert_eq!(parse_etime("ELAPSED"), None);
+        assert_eq!(parse_etime("9"), None);
+        assert_eq!(parse_etime("1:2:3:4"), None);
+    }
+
+    #[test]
+    fn ps_rows_parse_and_keep_a_path_with_a_space() {
+        let rows = parse_ps_rows(
+            " 5279     1 01-08:46:18 /opt/homebrew/bin/tmux
+             37473 33759       00:04 /bin/zsh
+             37474 37473       00:04 sleep
+             99 1 00:01 /Applications/My App/bin/thing
+             garbage line
+",
+        );
+        assert_eq!(
+            rows,
+            [
+                row(5279, 1, 86_400 + 8 * 3600 + 46 * 60 + 18, "/opt/homebrew/bin/tmux"),
+                row(37473, 33759, 4, "/bin/zsh"),
+                row(37474, 37473, 4, "sleep"),
+                row(99, 1, 1, "/Applications/My App/bin/thing"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_young_shell_child_names_the_command_by_its_own_child() {
+        // The pane process is claude (33759), idle for 60 s. Its MCP servers
+        // are as old as the session; the `!` shell is 4 s old.
+        let rows = [
+            row(33759, 100, 600, "claude"),
+            row(35716, 33759, 598, "/bin/sh"),
+            row(35720, 33759, 598, "node"),
+            row(37473, 33759, 4, "/bin/zsh"),
+            row(37474, 37473, 4, "/usr/bin/sleep"),
+        ];
+        assert_eq!(bash_mode_foreground(33759, 60, &rows), Some("sleep".into()));
+        // A shell still evaluating builtins, no child yet: the shell's name.
+        assert_eq!(bash_mode_foreground(33759, 60, &rows[..4]), Some("zsh".into()));
+        // Nothing younger than the spell: the MCP server's `sh -c` is not a
+        // command the person typed.
+        assert_eq!(bash_mode_foreground(33759, 3, &rows), None);
+        assert_eq!(bash_mode_foreground(33759, 0, &rows), None);
+        // Another pane's children are not this pane's.
+        assert_eq!(bash_mode_foreground(1, 60, &rows), None);
+        // A young child that is not a shell (a hook exec'd straight) is not
+        // a command either.
+        let hook = [row(33759, 100, 600, "claude"), row(40000, 33759, 1, "mesimon")];
+        assert_eq!(bash_mode_foreground(33759, 60, &hook), None);
+    }
+
+    #[test]
+    fn the_youngest_shell_wins_when_two_are_young() {
+        // A Monitor watch born 30 s into a 60 s spell, and a `!` typed 2 s ago.
+        let rows = [
+            row(1, 0, 600, "claude"),
+            row(2, 1, 30, "bash"),
+            row(3, 2, 30, "tail"),
+            row(4, 1, 2, "zsh"),
+            row(5, 4, 2, "cargo"),
+        ];
+        assert_eq!(bash_mode_foreground(1, 60, &rows), Some("cargo".into()));
+    }
 }
 
 #[cfg(test)]
