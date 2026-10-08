@@ -10392,19 +10392,19 @@ impl App {
         // never talks about the merge (author 2026-08-30). A question opens
         // the dialog.
         let Some(w) = self.wt_item(ticket) else {
-            self.merge_note = "no worktree on this ticket".into();
+            self.merge_says("no worktree on this ticket");
             return Ok(());
         };
         let (branch, ahead) = (w.branch.clone(), w.ahead);
         let Some(stage) = Self::merge_stage(w) else {
-            self.merge_note = "no commits on the branch yet — nothing to merge".into();
+            self.merge_says("no commits on the branch yet — nothing to merge");
             return Ok(());
         };
         // Quiet-tickets rule, surfaced up front: the daemon refuses a merge
         // under a working agent, so the first press says so instead of
         // opening a question the second press can only lose.
         if stage == MergeStage::Merge && self.ticket_busy(ticket) {
-            self.merge_note = "agent still working — wait for it to finish".into();
+            self.merge_says("agent still working — wait for it to finish");
             return Ok(());
         }
         // The key stays live while the ask is outstanding (muscle memory
@@ -10421,6 +10421,18 @@ impl App {
             outcome: String::new(),
         });
         Ok(())
+    }
+
+    /// Where the m flow's words land: the ticket page's identity line, right
+    /// where the branch state announces `m`, and the status line on the board
+    /// (T-697), which has no identity line and whose footer is where the key
+    /// was offered.
+    fn merge_says(&mut self, words: impl Into<String>) {
+        if matches!(self.screen, Screen::Ticket { .. }) {
+            self.merge_note = words.into();
+        } else {
+            self.status = words.into();
+        }
     }
 
     /// The dialog's `m`: perform the stage it names. A merge is sent on a
@@ -10449,9 +10461,9 @@ impl App {
                 }) {
                     Response::Ok => {
                         self.merge_sent = Some((ticket, MergeStage::Rebase, Instant::now()));
-                        self.merge_note = "waiting for rebase".into()
+                        self.merge_says("waiting for rebase")
                     }
-                    Response::Err { message } => self.merge_note = message,
+                    Response::Err { message } => self.merge_says(message),
                     _ => {}
                 }
             }
@@ -10463,9 +10475,9 @@ impl App {
                 }) {
                     Response::Ok => {
                         self.merge_sent = Some((ticket, MergeStage::Notify, Instant::now()));
-                        self.merge_note = "agent notified".into()
+                        self.merge_says("agent notified")
                     }
-                    Response::Err { message } => self.merge_note = message,
+                    Response::Err { message } => self.merge_says(message),
                     _ => {}
                 }
             }
@@ -10578,7 +10590,7 @@ impl App {
                 let ticket = d.ticket;
                 self.merge_dialog = None;
                 self.merge_sent = Some((ticket, MergeStage::Notify, Instant::now()));
-                self.merge_note = "merged ∙ its agent was told".into();
+                self.merge_says("merged ∙ its agent was told");
             }
             Ok(Response::Merge { outcome, detail, .. }) => match outcome {
                 MergeOutcome::Merged => {
@@ -10593,18 +10605,18 @@ impl App {
                 }
                 MergeOutcome::AlreadyMerged | MergeOutcome::Refused => {
                     self.merge_dialog = None;
-                    self.merge_note = detail;
+                    self.merge_says(detail);
                 }
             },
             Ok(Response::Err { message }) => {
                 self.merge_dialog = None;
-                self.merge_note = message;
+                self.merge_says(message);
             }
             Ok(_) => self.merge_dialog = None,
             Err(_) => {
                 self.merge_dialog = None;
                 self.note_daemon_down();
-                self.merge_note = "daemon unreachable ∙ reconnecting".into();
+                self.merge_says("daemon unreachable ∙ reconnecting");
             }
         }
         self.refresh()?;

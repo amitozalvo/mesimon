@@ -4575,6 +4575,56 @@ fn a_confirmed_merge_says_it_is_merging() {
     );
 }
 
+/// The board's `m` (T-697) is the ticket page's: the selected card's
+/// footer offers it, the first press opens the same dialog over the board,
+/// and a refusal speaks in the status line, which is where the board talks.
+#[test]
+fn the_board_merges_the_selected_card_in_the_same_dialog() {
+    let mut app = app_graphite(fixture(false));
+    app.worktrees = vec![mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(5),
+        branch: "msmn/T-5-grapheme-truncation".into(),
+        status: "attached".into(),
+        merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
+        conflict: false,
+        ahead: 2,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/T-5-grapheme-truncation".into()),
+        repos: vec![],
+    }];
+    let cols = app.board.columns.len();
+    'find: for col in 0..cols {
+        for row in 0..16 {
+            app.cursor_col = col;
+            app.cursor_row = Some(row);
+            if app.selected_ticket().is_some_and(|t| t.id == ulid_n(5)) {
+                break 'find;
+            }
+        }
+    }
+    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(5)));
+    let footer = crate::ui::footer_text(&app, 200);
+    assert!(footer.contains("m merge"), "the card's footer offers it:\n{footer}");
+    press(&mut app, 'm');
+    let lines = render(&app, 120, 30);
+    let text = lines.join("\n");
+    assert!(text.contains("MERGE ∙ T-5"), "the first press opens the dialog:\n{text}");
+    assert!(text.contains("merge 2 commits of msmn/T-5-grapheme-truncation?"), "{text}");
+    assert!(text.contains("esc cancel"), "{text}");
+    press(&mut app, 'q');
+    assert!(app.merge_dialog.is_none());
+    assert_eq!(app.status, "merge cancelled");
+    // A card with no branch answers in the status line, never a dialog.
+    app.worktrees.clear();
+    press(&mut app, 'm');
+    assert!(app.merge_dialog.is_none());
+    assert_eq!(app.status, "no worktree on this ticket");
+    assert!(app.merge_note.is_empty(), "the identity line is the ticket page's");
+}
+
 /// A worktree ticket the train can reach offers `t merge by hand` in the
 /// footer (T-227); taken off the train it wears no owed mark, its row reads
 /// `auto-merge ∙ off`, the hint flips to `t auto-merge`, and the ticket page

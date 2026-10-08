@@ -2268,6 +2268,21 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // The ticket page's `m`, on the board's card (T-697): same verb, same
+        // dialog, same refusals. Live while unhinted for the same reason it
+        // is there — a press says why it cannot merge — and hinted in the
+        // footer beside `t`, since the board has no identity line to carry it.
+        keys: &[Key::Char('m')],
+        verb: Verb::Merge,
+        show: "m",
+        hint: |c| if c.merge_actionable { or(c.merge_word, "merge") } else { "" },
+        avail: |c| c.has_ticket,
+        class: Class::Arm,
+        group: Group::Worktree,
+        mutates: true,
+        prio: 61,
+    },
+    Binding {
         // The train's per-ticket door (T-227, user: "let the user cancel it
         // per ticket easily"). One press takes the card off the train, the
         // next puts it back; the card's `auto-merge ∙ next` row becomes
@@ -8766,15 +8781,23 @@ mod tests {
             assert_eq!(resolve(Scope::Board, key, &ctx), Some(verb), "board {key:?}");
             assert_eq!(resolve(Scope::Ticket, key, &ctx), Some(verb), "ticket {key:?}");
         }
-        // `m` is merge and nothing else — the board grab is `>` / `<`.
+        // `m` is merge and nothing else, on both screens (T-697) — the board
+        // grab is `>` / `<`.
         assert_eq!(resolve(Scope::Ticket, Key::Char('m'), &ctx), Some(Verb::Merge));
-        assert_eq!(resolve(Scope::Board, Key::Char('m'), &ctx), None);
+        assert_eq!(resolve(Scope::Board, Key::Char('m'), &ctx), Some(Verb::Merge));
         // Merge stays pressable when it cannot merge, so it can say why — but
         // it is not hinted then, which is the invariant that matters.
         let quiet = Ctx { has_worktree: true, ..Default::default() };
         assert_eq!(resolve(Scope::Ticket, Key::Char('m'), &quiet), Some(Verb::Merge));
         assert_eq!(hint_for(Scope::Ticket, Verb::Merge, &quiet), None);
         assert!(hint_for(Scope::Ticket, Verb::Merge, &ctx).is_some());
+        // The board's `m` keeps the ticket page's bargain on its card, and is
+        // inert on an empty column, where it has no subject to answer for.
+        let card = Ctx { has_ticket: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('m'), &card), Some(Verb::Merge));
+        assert_eq!(hint_for(Scope::Board, Verb::Merge, &card), None);
+        assert_eq!(hint_for(Scope::Board, Verb::Merge, &ctx), Some(("m", "merge")));
+        assert_eq!(resolve(Scope::Board, Key::Char('m'), &Ctx::default()), None);
         // Kill is gone entirely: `x` is the only way to stop a session, and it
         // is reversible.
         assert!(!bindings(Scope::Ticket)

@@ -22555,3 +22555,23 @@ Tests: `summary.rs` (the gate, levels, fences, the empty box, `toggle` round tri
 (app); `test_summary_underline_runs_the_done_share_of_the_title`,
 `test_summary_enter_scrolls_the_note_to_the_line`, goldens `board_summary_120x30` and
 `summary_dialog_120x30` (ui); the stale-revision refusal in `notes_e2e`.
+
+## The board merges the selected card (T-697, 2026-10-08, "Merge ticket from board")
+
+The brief: "Same dialog, same behavior". `m` on a board card is now `Verb::Merge` with the
+selected ticket as its subject (`App::subject` already answered for the board), opening the
+T-431 dialog over the board: same stages, same words, same `MergeChord` keys, same refusals up
+front (no worktree, no commits, a working agent).
+
+- **The only difference is where the words land.** The ticket page's refusals and replies go to
+  `merge_note`, its identity line; the board has none, so `App::merge_says` routes them to the
+  status line there. The dialog's own rows are untouched, "stay on this page" included: the
+  dialog holds every key, so the board under it cannot move either.
+- **Hinted in the footer at prio 61, beside `t`**, only while `merge_actionable`; live while
+  unhinted on a card (`has_ticket`), the ticket page's one exception extended to the same verb.
+  Inert on an empty column. This retires 2026-08-31's "the board grab is `>`/`<`, board `m`
+  unbound": `m` is still merge and nothing else, now on both screens.
+- `train_manual_120x30` reminted: the footer gains `m merge` and drops `r rename` at 120 cells.
+
+Tests: `the_board_merges_the_selected_card_in_the_same_dialog` (ui), the keymap's
+`m`-on-both-screens assertions.

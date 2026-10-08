@@ -240,6 +240,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Mode::Theme { idx, slot } = &app.mode {
         themes::draw(f, app, *idx, *slot);
     }
+    // The merge dialog, over the card whose branch it is about (T-697): the
+    // ticket page's, the same frame and words.
+    if let Some(d) = &app.merge_dialog {
+        dialog::draw_merge(f, app, d);
+    }
     // The search picker, over the board it is a view of (T-349). Last of the
     // dialogs and before the overlay: it is the biggest surface here, and
     // nothing else may be open at the same time.

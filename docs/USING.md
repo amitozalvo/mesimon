@@ -129,7 +129,8 @@ were. `v` shows the diff once there is a worktree, and `m` on the branch line me
 fast-forward only, so mesimon never mints a merge commit. A second `m` tells the agent its branch
 was merged; for an agent the crown started, the board tells it in the same step (where **Auto
 merge tells the agent after a merge** is on), the line reads `merged ∙ its agent was told`, and
-there is no second press.
+there is no second press. `m` on a card on the board opens the same dialog for that ticket, and
+its answers appear in the status line.
 
 A worktree starts cold: a fresh checkout with no build cache and no installed dependencies, so
 the first thing its agent does is wait for a build. To start it warm, put a script named
