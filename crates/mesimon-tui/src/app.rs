@@ -12764,6 +12764,38 @@ pub(crate) mod test_support {
             Self::for_test_logged(board, theme, false).0
         }
 
+        /// `for_test` with note bodies the fake daemon serves and takes
+        /// (T-696): a tick in the summary dialog reads and writes through it.
+        pub(crate) fn for_test_noted(
+            board: Board,
+            theme: Theme,
+            notes: &[(ulid::Ulid, &str)],
+        ) -> App {
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let fake = FakeTransport {
+                board,
+                grace: vec![],
+                external: vec![],
+                resources: Resources::default(),
+                shell_env: Default::default(),
+                git: Default::default(),
+                pending: Vec::new(),
+                automation: Default::default(),
+                status_top: false,
+                claude_md: Default::default(),
+                sent,
+                refuse_focus: false,
+                refuse_mint: false,
+                notes: notes.iter().map(|(id, t)| (*id, t.to_string())).collect(),
+                terminals: Vec::new(),
+                machine_tiers: Default::default(),
+                usage: Default::default(),
+                clean_checkout: false,
+            };
+            App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
+                .expect("fake transport snapshot")
+        }
+
         /// The board, to edit in place: what a test does to stand in for a
         /// snapshot. Nothing outside a test writes the board (T-686).
         pub(crate) fn board_mut(&mut self) -> &mut Board {

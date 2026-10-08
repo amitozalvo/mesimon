@@ -10155,3 +10155,36 @@ fn header_chips_record_their_cells_and_the_ends_step_down_under_them() {
     assert!(!app.header_focus, "off the right end: down onto the board");
     assert_eq!((app.cursor_col, app.cursor_row), (2, None));
 }
+
+/// The person's flow (T-696): a tick through the dialog starts the card's
+/// pulse from the count before it, the board keeps its frames coming, and
+/// the row wears the underline the moment the dialog closes. Through the
+/// fake daemon, so the tick reads and writes the note as the real one does.
+#[test]
+fn test_a_dialog_tick_starts_the_cards_pulse() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.title = "Fix OSC-11".into();
+        t.notes.push(note_meta(90, "Fix OSC-11", "local"));
+    }
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let mut app = App::for_test_noted(b, theme, &[(ulid_n(90), SUMMARY_NOTE)]);
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    app.poll_summaries();
+    app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL).unwrap();
+    for _ in 0..3 {
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
+    }
+    app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+    assert_eq!(app.status, "ticked");
+    let pulse = app.summary_pulses.get(&ulid_n(3)).expect("the pulse");
+    assert_eq!((pulse.from.done, pulse.from.total), (2, 5));
+    assert!(app.animating());
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    let buf = cells(&app, 120, 30);
+    let lines = lines_of(&buf);
+    let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
+    assert!((0..120u16).any(|x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED)));
+}
