@@ -6,7 +6,7 @@
                                                         T-3
     Keymap validator      >1y       ✻ claude          ⠋ >1y     x Flaky e2e on runner >1y
                                     $ bash            ◦ >1y
-                                  - query fixed; e2e next
+                                   -  query fixed; e2e next
                                   [ ] add the e2e for the ~
                                   [ ] write the STALE-MAP ~
                                   [ ] release note

@@ -1032,14 +1032,15 @@ pub(super) fn render(
         // all, through the keymap so a key drawn here is a key that works.
         // The rows start on the glyph column, two cells before the reply's
         // words (author: "to indicate it's not the transcript"): a box
-        // heads a task, a dash a plain row.
+        // heads a task, a dash a plain row — centred in the box's three
+        // cells, so every row's words start in one column.
         if let Some(s) = summary.filter(|_| rows_shown) {
             let inner = t_cells;
             let (shown, fold) = s.card_rows(SUMMARY_ROWS);
             for r in shown {
                 let words = mesimon_core::text::scrub_cells(&r.text, false);
                 let (row, style) = match r.done {
-                    None => (format!("- {words}"), dim),
+                    None => (format!(" -  {words}"), dim),
                     Some(done) => (
                         format!("{} {words}", box_mark(tier, Some(done))),
                         if done { faint } else { dim },

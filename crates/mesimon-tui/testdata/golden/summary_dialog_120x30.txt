@@ -10,7 +10,7 @@
 
 
                            ╭─ SUMMARY ∙ T-3 ∙ 6 ────────────────────────────────────────────╮
-                           │ - query fixed; e2e next                                        │
+                           │  -  query fixed; e2e next                                      │
                            │ [✓] run the query once                                         │
                            │ [✓] unit test for the parser                                   │
                            │ [ ] add the e2e for the attach                                 │
