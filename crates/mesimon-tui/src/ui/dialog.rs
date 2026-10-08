@@ -429,7 +429,7 @@ pub(super) fn draw_summary(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: us
             let words = crate::text::one_line(&mesimon_core::text::scrub_cells(&r.text, false));
             let head = match r.done {
                 Some(done) => format!("{} {words}", super::card::box_mark(tier, Some(done))),
-                None => words,
+                None => format!("- {words}"),
             };
             ListRow { lead: " ".into(), head, right: String::new(), detail: None, heading: false }
         })
