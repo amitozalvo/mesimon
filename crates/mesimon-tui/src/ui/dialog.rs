@@ -269,7 +269,15 @@ pub(super) fn list(
         let lead_style = if selected { style } else { theme.dim3() };
         // The right edge keeps one cell of margin after it.
         let edge = if row.right.is_empty() { 0 } else { row.right.width() + 1 };
-        let head = truncate(&row.head, inner_w.saturating_sub(row.lead.width() + edge));
+        // The cursor's head reveals what a cut hides, the board card
+        // title's way (T-702); a two-line list reveals its detail instead,
+        // since the two would share one clock.
+        let budget = inner_w.saturating_sub(row.lead.width() + edge);
+        let head = if selected && !tall {
+            reveal(app, &row.head, budget)
+        } else {
+            truncate(&row.head, budget)
+        };
         let pad = inner_w.saturating_sub(row.lead.width() + head.width() + edge);
         let mut spans = vec![
             Span::styled(row.lead.clone(), lead_style),
@@ -297,8 +305,8 @@ pub(super) fn list(
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// The selected row's detail, marquee-revealed when it overflows `budget`
-/// — the board card title's clock, its reveal and its one pass. A menu
+/// The selected row's detail (or, in a one-line list, its head),
+/// marquee-revealed when it overflows `budget` — the board card title's clock, its reveal and its one pass. A menu
 /// row's detail is where a preference says what it will do, so `~` was
 /// cutting the half that matters. The clock is keyed on the words
 /// themselves: a toggle that rewrites its own detail restarts the reveal,
@@ -364,7 +372,8 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
 /// The links dialog (T-256): what the ticket's notes point at, one row per
 /// target — the kind word, then the markdown label if the note gave one,
 /// then the target as written (a ticket row names the ticket). Enter opens,
-/// `c` copies, and a row that will not fit is cut with `…`, never wrapped.
+/// `c` copies, and a row that will not fit is cut with `~`, never wrapped;
+/// the cursor's row scrolls the rest into view, as a card title does.
 pub(super) fn draw_links(
     f: &mut Frame,
     app: &App,

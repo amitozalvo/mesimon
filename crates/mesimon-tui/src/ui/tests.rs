@@ -6042,6 +6042,23 @@ fn golden_links_120() {
     golden("links_120x30", &render(&app_links(), 120, 30));
 }
 
+/// The cursor's links row reveals what its cut hides, the way the cursor
+/// card's title does (T-702): held at the start, then walked to the end.
+#[test]
+fn the_cursors_links_row_scrolls_its_cut_into_view() {
+    let mut app = app_links();
+    let Mode::Links { idx, .. } = &mut app.mode else { unreachable!() };
+    *idx = 0;
+    let row = |app: &App| {
+        render(app, 120, 30).into_iter().find(|l| l.contains("jira.example.com")).unwrap()
+    };
+    assert!(row(&app).contains("ABC-1~"), "held at the start: {}", row(&app));
+    let head = "url    the Jira ticket ∙ https://jira.example.com/browse/ABC-123";
+    let landed = std::time::Instant::now() - std::time::Duration::from_millis(1900);
+    app.menu_marquee.set(Some((crate::text::hash64(head), landed)));
+    assert!(row(&app).contains("browse/ABC-123│"), "walked to the end: {}", row(&app));
+}
+
 /// The ticket page does NOT name `^k` on its state row (T-312) — not with a
 /// link fetched, not without one. `?` is the key's one home, the way `!`'s
 /// is (T-277); the state row says what the ticket is.

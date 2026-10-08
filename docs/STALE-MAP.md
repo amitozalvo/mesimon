@@ -22683,3 +22683,17 @@ and `the_shelf_keeps_the_conversations_now_lists` (daemon), the TUI row in
 (three goldens gain the row), three page state tests, the UX suite's `shelfFlow` (a reload while
 away reads the board, the notes and the chat; a forged item is not read; nothing answers), and the
 relay's `the_shelf_holds_what_a_browser_reads_while_the_host_is_away`.
+
+## The cursor's row in a list dialog scrolls its cut into view (T-702, 2026-10-08, "show the full link above hints when hovering link inside links menu (ctrl+K)")
+
+A links row cut with `~` was unreadable, and the author asked for it **exactly like the card
+title under the board's cursor**: the selected row's head now runs through `dialog::reveal`, the
+menu detail's marquee on the card's own clock (`marquee_offset`: hold, walk one cell a step, hold,
+then rest at the start for good; the clock is keyed on the words, so landing again replays it).
+It lives in `dialog::list`, so every one-line list dialog does it (archived, links, summary).
+A two-line list (a menu with details) keeps revealing the detail alone, since the two
+share `App::menu_marquee`. **Refuted: the target spelled whole under the rows, wrapped, above the
+keys edge** (this ticket's first build): the author wanted the card's gesture, not a second place
+to read.
+
+Tests: `the_cursors_links_row_scrolls_its_cut_into_view`.
