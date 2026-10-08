@@ -2109,12 +2109,12 @@ async function chatFlow(browser, engineName, size, viewport) {
     // Tall enough that one page overflows the panel at every size: a page
     // that does not is followed by the one before it by itself.
     const words = (i) => i === 37
-      ? `Reply ${i}: the table.\n\n| Check | Result |\n|:--|--:|\n| \`cargo ut\` | **green** |\n| clippy | ~~red~~ green |\n\n> [!NOTE]\n> quoted\n\n- [x] built\n  - nested\n\n${"Long enough to wrap across the panel. ".repeat(16)}`
+      ? `Reply ${i}: the table.\n\n| Check | Result |\n|:--|--:|\n| \`cargo ut\` | **green** |\n| clippy | ~~red~~ green |\n\n> [!NOTE]\n> quoted\n\n- [x] built\n  - nested\n\nLog at https://example.com/run.\n\n\`\`\`\ncargo ut --run\n\`\`\`\n\n${"Long enough to wrap across the panel. ".repeat(16)}`
       : `Reply ${i}: **done** with part ${i}.\n\n${"Long enough to wrap across the panel. ".repeat(16)}`;
     window.fixture.transcript = Array.from({ length: 40 }, (_, i) => ({
       at: i * 10,
       kind: i % 4 === 0 ? "prompt" : i % 4 === 3 ? "tool" : "reply",
-      text: i % 4 === 0 ? `Prompt ${i}` : i % 4 === 3 ? `Bash cargo test ${i}` : words(i),
+      text: i % 4 === 0 ? `Prompt ${i}${i === 36 ? " see https://example.com/ask" : ""}` : i % 4 === 3 ? `Bash cargo test ${i}` : words(i),
     }));
   });
   await context.route("**/pkg/mesimon_web.js", (route) =>
@@ -2158,6 +2158,15 @@ async function chatFlow(browser, engineName, size, viewport) {
     assert.equal((await asks())[0].before, undefined);
     assert.equal(await page.locator("#preview").count(), 0, "the conversation, not the screen");
     assert(await chat.evaluate((n) => n.scrollHeight - n.clientHeight - n.scrollTop < 24), "newest at the bottom");
+    // A bare address is a link, in a reply and in a prompt (T-704), and a
+    // fenced block carries its Copy: copied where the clipboard allows,
+    // else selected for the phone's own Copy.
+    assert.equal(await chat.locator('.chat-reply a[href="https://example.com/run"]').textContent(), "https://example.com/run");
+    assert.equal(await chat.locator('.chat-prompt a[href="https://example.com/ask"]').count(), 1);
+    await chat.locator(".markdown-code-box .code-copy").click();
+    await until(page, () =>
+      document.querySelector(".code-copy")?.getAttribute("aria-label") === "Copied" ||
+      getSelection().toString().includes("cargo ut --run"));
     // Scrolling up asks for the page before; it lands on top, and the row
     // the reader had in view stays where it was.
     await page.evaluate(() => (fixture.transcriptHold = true));

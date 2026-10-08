@@ -2,12 +2,13 @@
 // it (`tui/src/rich.rs`, T-626): headings, paragraphs and hard breaks,
 // quotes holding blocks (a GitHub alert names itself), nested and task lists,
 // fenced code, pipe tables with their alignment, thematic breaks, and inline
-// code, strong, emphasis, struck text, links and `<br>`. Every element's
+// code, strong, emphasis, struck text, links (a bare web address and
+// `<https://…>` too, T-704) and `<br>`. Every element's
 // children are plain text, never HTML. A picture is named, not fetched
 // (T-532): a markdown image, or the desk's `[Image #N](mesimon-attachment:…)`
 // (T-629), alone on its line or inside one. Reference links, footnotes,
 // setext headings, indented code and HTML (bar `<br>`) are text, as there.
-import { html } from "./html.js";
+import { html, useRef, useState } from "./html.js";
 import { Icon } from "./icons.js";
 
 const PICTURE = /^!\[[^\]]*\]\([^)]*\)$|^\[Image #\d+\]\(mesimon-attachment:[^)]*\)$/;
@@ -305,6 +306,13 @@ export function inline(s) {
     }
     // `<br>` is the one tag read: GFM's break inside a table cell.
     if (c === "<") {
+      const auto = angleUrl(chars, i);
+      if (auto) {
+        push();
+        out.push({ text: auto.url, ...emph, href: auto.url });
+        i = auto.next;
+        continue;
+      }
       const n = brTag(chars, i);
       if (n) {
         cur += "\n";
@@ -320,6 +328,13 @@ export function inline(s) {
         i = found.next;
         continue;
       }
+    }
+    const bare = bareUrl(chars, i);
+    if (bare) {
+      push();
+      out.push({ text: bare.url, ...emph, href: bare.url });
+      i = bare.next;
+      continue;
     }
     if (c === "*" || c === "_" || c === "~") {
       const len = delimLen(chars, i);
@@ -350,6 +365,52 @@ export function inline(s) {
   return out;
 }
 
+// A bare web address (GFM's autolink, T-704): from `http://` or `https://`
+// to the first space or `<`, less the punctuation that ends a sentence or
+// closes emphasis around it, and a `)` it did not open.
+const WEB = /^https?:\/\/[^\s/]/i;
+function bareUrl(chars, i) {
+  if ((chars[i] !== "h" && chars[i] !== "H") || word(chars[i - 1])) return undefined;
+  if (!WEB.test(chars.slice(i, i + 9).join(""))) return undefined;
+  let end = i;
+  while (!space(chars[end]) && chars[end] !== "<") end++;
+  for (;;) {
+    const last = chars[end - 1];
+    const url = chars.slice(i, end);
+    if (/[.,;:!?'"*_~]/.test(last)) end--;
+    else if (last === ")" && url.filter((ch) => ch === ")").length > url.filter((ch) => ch === "(").length) end--;
+    else break;
+  }
+  const url = chars.slice(i, end).join("");
+  return WEB.test(url) ? { url, next: end } : undefined;
+}
+
+// `<https://…>`: CommonMark's autolink, the brackets not drawn.
+function angleUrl(chars, i) {
+  const m = /^<(https?:\/\/[^\s<>]+)>/i.exec(chars.slice(i, i + 2048).join(""));
+  return m ? { url: m[1], next: i + Array.from(m[0]).length } : undefined;
+}
+
+// Plain text with its web addresses followed (T-704): a prompt, drawn as
+// written rather than as markdown.
+export function linked(s) {
+  const chars = Array.from(s || "");
+  const out = [];
+  let from = 0;
+  for (let i = 0; i < chars.length; ) {
+    const bare = bareUrl(chars, i);
+    if (!bare) {
+      i++;
+      continue;
+    }
+    if (i > from) out.push({ text: chars.slice(from, i).join("") });
+    out.push({ text: bare.url, href: bare.url });
+    i = from = bare.next;
+  }
+  if (from < chars.length) out.push({ text: chars.slice(from).join("") });
+  return out;
+}
+
 function brTag(chars, i) {
   const ahead = chars.slice(i, i + 6).join("").toLowerCase();
   return ["<br>", "<br/>", "<br />"].find((t) => ahead.startsWith(t))?.length;
@@ -377,7 +438,9 @@ function link(chars, i, emph) {
   if (!label.trim() && !url) return undefined;
   const href = /^https?:\/\//i.test(url) ? url : undefined;
   const runs = inline(label).map((r) => ({ ...r, em: true, href }));
-  if (url && url !== label.trim()) runs.push({ text: ` ${url}`, ...emph, url: true });
+  // The target is followed as the label is (T-704): on a phone the label
+  // can be the smaller press.
+  if (url && url !== label.trim()) runs.push({ text: " ", ...emph }, { text: url, ...emph, url: true, href });
   return { runs, next: end + 1 };
 }
 
@@ -398,6 +461,42 @@ function Run({ run }) {
   return node;
 }
 const runs = (rs) => rs.map((r) => html`<${Run} run=${r} />`);
+
+export function Linked({ text }) {
+  return runs(linked(text));
+}
+
+// The clipboard, where the page may write it (a secure origin, a press).
+export async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A fenced block with its Copy (T-704): a phone cannot drag a selection
+// across a block that scrolls sideways. Where the clipboard refuses, the
+// block is selected instead, and the phone's own Copy is one press away.
+function Code({ rows }) {
+  const ref = useRef();
+  const [copied, setCopied] = useState(false);
+  const text = rows.join("\n");
+  const copy = async () => {
+    if (await copyText(text)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(ref.current);
+    getSelection()?.removeAllRanges();
+    getSelection()?.addRange(range);
+  };
+  return html`<div class="markdown-code-box"><pre ref=${ref} class="markdown-code">${text}</pre>
+    <button type="button" class="code-copy" aria-label=${copied ? "Copied" : "Copy"} onClick=${copy}><${Icon} name=${copied ? "check" : "copy"} size=${15} /></button></div>`;
+}
 
 function Table({ table }) {
   const cell = (rs, i, Tag) => html`<${Tag} class=${`md-${table.align[i]}`}>${runs(rs)}</${Tag}>`;
@@ -424,7 +523,7 @@ function Blocks({ list }) {
       while (list[i]?.item) items.push(list[i++]);
       i--;
       out.push(html`<ul class="md-list">${items.map((it) => html`<${Item} b=${it} />`)}</ul>`);
-    } else if (b.code) out.push(html`<pre class="markdown-code">${b.code.join("\n")}</pre>`);
+    } else if (b.code) out.push(html`<${Code} rows=${b.code} />`);
     else if (b.picture)
       out.push(html`<p class="markdown-picture"><${Icon} name="image" size=${16} /><span>${b.picture} · open it at your desk</span></p>`);
     else if (b.head) out.push(html`<h4 class=${`md-h${Math.min(b.head, 3)}`}>${runs(b.runs)}</h4>`);

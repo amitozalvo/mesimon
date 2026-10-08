@@ -905,7 +905,7 @@ test("transcript pages join: what was written since appends, an earlier page goe
 
 // T-626: the phone reads markdown as the desk does (`tui/src/rich.rs`).
 test("markdown reads as the desk reads it: tables, quotes, lists, fences and inline marks", async () => {
-  const { blocks, inline } = await import("./markdown.js");
+  const { blocks, inline, linked } = await import("./markdown.js");
   const text = (rs) => rs.map((r) => r.text).join("");
   // A pipe table: alignment from the delimiter row, cells parsed inline,
   // every row the header's width, an escaped pipe kept in its cell.
@@ -946,9 +946,21 @@ test("markdown reads as the desk reads it: tables, quotes, lists, fences and inl
   assert.deepEqual(marks("snake_case_name and 5 * 3"), [["snake_case_name and 5 * 3", ""]]);
   assert.deepEqual(marks("a<br>b"), [["a\nb", ""]]);
   // Links: the label, the target after it; only a web target is followed.
-  const [label, target] = inline("[docs](https://example.com/a)");
-  assert.deepEqual([label.text, label.href, target.text, target.url], ["docs", "https://example.com/a", " https://example.com/a", true]);
+  // The target is followed too (T-704).
+  const [label, gap, target] = inline("[docs](https://example.com/a)");
+  assert.deepEqual([label.text, label.href, gap.text, target.text, target.url, target.href],
+    ["docs", "https://example.com/a", " ", "https://example.com/a", true, "https://example.com/a"]);
   assert.equal(inline("[x](javascript:alert(1))")[0].href, undefined);
+  assert.equal(inline("[x](javascript:alert(1))")[2].href, undefined);
+  // A bare address and `<https://…>` are links (T-704), less the sentence's
+  // punctuation, a `)` they did not open and the emphasis around them.
+  const links = (s) => inline(s).filter((r) => r.href).map((r) => r.href);
+  assert.deepEqual(links("see https://example.com/a_b. done"), ["https://example.com/a_b"]);
+  assert.deepEqual(links("(https://x.io/p(1)) and **https://b.c/d**"), ["https://x.io/p(1)", "https://b.c/d"]);
+  assert.deepEqual(links("<https://a.b/c> and http://q.r"), ["https://a.b/c", "http://q.r"]);
+  assert.deepEqual(links("nohttps://x.com, http:// and `https://in.code`"), []);
+  assert.deepEqual(linked("go https://a.b/c, now"), [{ text: "go " }, { text: "https://a.b/c", href: "https://a.b/c" }, { text: ", now" }]);
+  assert.deepEqual(linked("no address"), [{ text: "no address" }]);
 });
 
 // T-626: a sent prompt is a ghost until the conversation holds it.

@@ -22877,3 +22877,29 @@ holds one word through its retries. The diagnosis now comes a retry later (about
 before. The kept copy (T-497) still reads `relay` from its first frame: the page load itself
 went unanswered for 6 s. UX test: `ticketFlow` fails one socket (`fixture.relayMisses`) after a
 live close and asserts the shell's `data-link` was only `connecting` and `live`.
+
+## Remote Control's transcript: links followed, code copied whole (T-704, 2026-10-08, "remote control transcript links not clickable")
+
+The host's rows carry every URL intact; the page drew only `[label](https://…)` as a link, so
+the bare addresses agents write were plain text, and a phone could not grab a command or a
+path short of a drag-select inside a block that scrolls sideways.
+
+- **A bare `http(s)://` address and `<https://…>` are links** (`markdown.js::bareUrl`,
+  `angleUrl`, GFM's autolink): from the scheme to the first space or `<`, less a sentence's
+  trailing punctuation, the emphasis delimiters around it and a `)` it did not open. Not
+  after a letter or digit (`nohttps://`), never inside a code span. A `[label](url)`'s
+  target, drawn after the label, is followed as well. A prompt row is plain text, so it goes
+  through `linked`/`Linked` (addresses only, no markdown). Notes and a plan get the same
+  links, since they share `Markdown`.
+- **A fenced block has a Copy button** (`Code`, `.code-copy`): 44px, in the block's top right,
+  opaque, since a line scrolled sideways passes under it. `navigator.clipboard.writeText` where
+  the page may write; otherwise the block is selected, and the phone's own Copy is one press
+  away. The check icon and `Copied` label show for 1.5 s.
+- **Inline code and a step's argument are `user-select: all`**: one long-press takes the
+  whole span, so a path or a command is never copied word by word, and a step's argument
+  truncated with an ellipsis copies whole.
+- **Not done:** a Copy on a whole reply. A native selection reaches a reply's prose; a button
+  on every reply was judged as clutter for a rare need.
+
+Tests: `state.test.js` (the link runs, the autolink edges, `linked`); `chatFlow` (a reply's
+and a prompt's link, the code block's Copy, copied or selected).

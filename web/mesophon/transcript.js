@@ -5,7 +5,7 @@
 import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { ghostOf, receiptTick } from "./sessions.js";
-import { Markdown } from "./markdown.js";
+import { Linked, Markdown } from "./markdown.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -91,7 +91,7 @@ function Step({ text }) {
 
 function Row({ row }) {
   if (row.kind === "prompt")
-    return html`<div class="chat-row chat-prompt"><p dir="auto">${row.text}</p></div>`;
+    return html`<div class="chat-row chat-prompt"><p dir="auto"><${Linked} text=${row.text} /></p></div>`;
   if (row.kind === "reply")
     return html`<div class="chat-row chat-reply"><${Markdown} text=${row.text} /></div>`;
   if (row.kind === "tool")

@@ -2003,14 +2003,19 @@ select {
 .markdown .md-h3 {
   color: var(--ink2);
 }
+/* One press takes the whole span (T-704): a path or a command is copied
+   whole, never word by word. */
 .markdown code {
+  -webkit-user-select: all;
+  user-select: all;
   padding: 0 4px;
   border-radius: 5px;
   background: var(--s2);
   font-family: var(--mono);
   font-size: 0.9em;
 }
-.markdown a {
+.markdown a,
+.chat-prompt a {
   color: inherit;
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -2267,6 +2272,8 @@ select {
   color: var(--ink);
 }
 .step-arg {
+  -webkit-user-select: all;
+  user-select: all;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2478,6 +2485,36 @@ select {
   gap: 8px;
   color: var(--ink2);
   font-size: 0.875rem;
+}
+/* A fenced block and its Copy, in the block's top corner (T-704). */
+.markdown-code-box {
+  position: relative;
+  min-width: 0;
+}
+.markdown-code-box .markdown-code {
+  padding-right: 48px;
+}
+/* A whole touch target, as every button on a phone. */
+.code-copy {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  /* Opaque: a line scrolled sideways passes under it. */
+  background: var(--screen);
+  color: var(--out);
+}
+.code-copy svg {
+  opacity: 0.6;
+}
+.code-copy:hover svg,
+.code-copy:focus-visible svg {
+  opacity: 1;
 }
 .markdown-code {
   margin: 0;
