@@ -22553,10 +22553,26 @@ and runs the board's own `Verb::Prompt`, then puts `about "<row>": ` in an empty
 person's words travel, and only an empty field takes the quote (a held ask reopening on its own
 words keeps them).
 
+**The change plays (same day, "show the line animated when it changes").** `remember_summary`
+compares the ticket's cached count before and after a note's parse — counted over the cache
+whatever revision each entry is at, because the snapshot names the new revision before the body
+is read — and a count that moved starts a `SummaryPulse` on the ticket (never on the board's
+first read of a note). The card draws it as the crowning's wave on the underline channel
+(`Theme::summary_wave`, `SUMMARY_SWEEP_MS` = 700): the head in the ramp's brightest ink with a
+glow cooling to the new ink behind it, the new run behind the head, the old ahead; a change that
+ticks the last box crosses the finished run a second time, the glint that says done.
+`App::animating` keeps the frames coming while one plays; `poll_summaries` drops the played-out.
+
+**Settings › Appearance › `Summary on cards`** (same day): `full` (the underline and the rows,
+the default), `hover` (the rows under the selected card's reply alone), `none` (nothing on the
+cards; `^j` lists it whichever is set). `PrefKey::Summary`, `prefs.json`'s `summary`, per machine
+like the replies' rung; `doctor` prints a `summary` line.
+
 **Not built.** A SUMMARY block on the ticket page (the page has the hint and the dialog); the
 list on a phone; agents reading the summary as structure; telling the agent a box was ticked (the
-note nudge and the ask road cover it). The `[-]` half mark is the TUI's and is never written into
-a note.
+note nudge and the ask road cover it); the wave on the rows (an open card with the peek on shows
+the rows and no underline, so a tick there plays nothing). The `[-]` half mark is the TUI's and is
+never written into a note.
 
 Tests: `summary.rs` (the gate, levels, fences, the empty box, `toggle` round trips and refusals);
 `ctrl_j_opens_the_summary_and_space_ticks_a_box` (keymap); `poll_summaries_reads_each_note_once_per_rev`,

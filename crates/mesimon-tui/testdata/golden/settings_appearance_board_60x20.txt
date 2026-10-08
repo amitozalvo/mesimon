@@ -3,7 +3,6 @@
     TODO                               2   2   2   0
 
     Decay treatments                 >1y   I   R   D
-                                           N   E   O
   ╭─ APPEARANCE ∙ THIS BOARD ────────────────────────────╮
   │   Theme: graphite                                    │
   │     inherited ∙ dark: graphite ∙ light: chalk ∙ fol~ │
@@ -11,8 +10,9 @@
   │     (machine) ∙ tmux's bar over an agent's pane      │
   │   Crown's actions: lightning                         │
   │     (machine) ∙ a bolt on each card the crown touch~ │
+  │   Summary on cards: full                             │
+  │     (machine) ∙ underline on every card, rows under~ │
   ╰──── jk select ∙ enter choose ∙ b machine ∙ esc back ─╯
-
 
 
 

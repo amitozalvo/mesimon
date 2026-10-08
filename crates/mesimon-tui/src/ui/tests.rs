@@ -5915,6 +5915,35 @@ fn test_summary_underline_runs_the_done_share_of_the_title() {
     assert!((0..120u16).all(|x| !buf[(x, y)].modifier.contains(Modifier::UNDERLINED)));
 }
 
+/// Settings › Appearance gates what the card shows of its summary (T-696):
+/// `full` is the underline and the rows, `hover` the rows under the
+/// selected card's reply alone, `none` nothing — and `^j` still lists it.
+#[test]
+fn test_summary_show_gates_the_card() {
+    use crate::prefs::SummaryShow;
+    let underlined = |app: &App| {
+        let buf = cells(app, 120, 30);
+        let lines = lines_of(&buf);
+        let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
+        (0..120u16).any(|x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED))
+    };
+    let lists = |app: &App| render(app, 120, 30).iter().any(|l| l.contains("2 more"));
+    let mut app = app_summary();
+    assert!(underlined(&app) && !lists(&app), "full at rest: the underline");
+    app.peek = true;
+    assert!(!underlined(&app) && lists(&app), "full with the peek: the rows");
+    app.peek = false;
+    app.seed_pref(|p| p.summary = SummaryShow::Hover);
+    assert!(!underlined(&app) && !lists(&app), "hover at rest: nothing");
+    app.peek = true;
+    assert!(!underlined(&app) && lists(&app), "hover with the peek: the rows");
+    app.seed_pref(|p| p.summary = SummaryShow::None);
+    assert!(!underlined(&app) && !lists(&app), "none with the peek: nothing");
+    app.peek = false;
+    assert!(!underlined(&app) && !lists(&app), "none at rest: nothing");
+    assert!(app.ctx().ticket_summarised, "^j still lists it");
+}
+
 /// A change to the boxes plays as a wave across the row (T-696): mid-sweep
 /// the head wears the ramp's brightest ink, the cells behind it the new
 /// run, the cells ahead the old one; the board keeps its frames coming
@@ -5937,8 +5966,7 @@ fn test_summary_change_sweeps_the_row() {
         (0..120u16)
             .filter(|x| {
                 let c = &buf[(*x, y)];
-                c.modifier.contains(Modifier::UNDERLINED)
-                    && c.underline_color == app.theme.sel.base
+                c.modifier.contains(Modifier::UNDERLINED) && c.underline_color == app.theme.sel.base
             })
             .count()
     };

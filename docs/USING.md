@@ -220,7 +220,11 @@ reply, and a line with no box is read first, as the one-line summary. `ctrl-j`, 
 a ticket page, lists every row: `space` ticks or unticks a box, `enter` opens a link in the line (a web address first) or, without one, the note at that
 line, `a` (or `shift+enter`) opens the ask field with the line quoted so you can ask the agent
 about it, and `c` copies it. A tick is refused when the agent rewrote the note since the dialog
-read it; open the dialog again.
+read it; open the dialog again. A change to the boxes, yours or the agent's, sweeps across the
+card's underline; a tick that finishes the list sweeps it twice. Settings › Appearance ›
+`Summary on cards` chooses how much the cards show: `full` is the underline and the rows,
+`hover` the rows under the selected card only, `none` nothing on the cards (`ctrl-j` still
+lists it).
 
 ## Filing a ticket from a script
 

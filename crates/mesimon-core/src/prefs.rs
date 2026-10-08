@@ -79,10 +79,14 @@ pub enum PrefKey {
     /// What a card's corner says (T-327): its `age` (the default) or its
     /// ticket's estimated `cost` — `$` on the board flips it.
     CardCorner,
+    /// How a ticket's `Summary` section shows on its card (T-696): the
+    /// underline and the rows, the rows alone, or nothing. Per machine, a
+    /// view preference like the replies' rung.
+    Summary,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 36] = [
+    pub const ALL: [PrefKey; 37] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::SnoozeNeedsYou,
@@ -119,6 +123,7 @@ impl PrefKey {
         PrefKey::UsageClaude,
         PrefKey::UsageCodex,
         PrefKey::CardCorner,
+        PrefKey::Summary,
     ];
 
     /// The JSON key in both files.
@@ -160,6 +165,7 @@ impl PrefKey {
             PrefKey::UsageClaude => "usage_claude",
             PrefKey::UsageCodex => "usage_codex",
             PrefKey::CardCorner => "card_corner",
+            PrefKey::Summary => "summary",
         }
     }
 
@@ -199,6 +205,7 @@ impl PrefKey {
                 | PrefKey::UsageClaude
                 | PrefKey::UsageCodex
                 | PrefKey::CardCorner
+                | PrefKey::Summary
         )
     }
 
@@ -232,6 +239,7 @@ impl PrefKey {
             PrefKey::NotifyDockBounce => "dock bounce",
             PrefKey::NotifyVia => "Delivered by",
             PrefKey::Peek => "replies",
+            PrefKey::Summary => "summary on cards",
             PrefKey::CrownLightning => "crown lightning",
             PrefKey::UsageLine => "usage line",
             PrefKey::UsageFiveHour => "usage line's 5-hour window",
@@ -260,6 +268,7 @@ impl PrefKey {
                 | PrefKey::UsageLine
                 | PrefKey::UsageResets
                 | PrefKey::CardCorner
+                | PrefKey::Summary
         )
     }
 }
@@ -306,6 +315,7 @@ mod tests {
                 PrefKey::UsageClaude,
                 PrefKey::UsageCodex,
                 PrefKey::CardCorner,
+                PrefKey::Summary,
             ]
         );
     }

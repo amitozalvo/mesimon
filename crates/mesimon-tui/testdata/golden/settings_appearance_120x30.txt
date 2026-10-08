@@ -8,7 +8,6 @@
 
 
 
-
                            ╭─ APPEARANCE ───────────────────────────────────────────────────╮
                            │   Theme: graphite                                              │
                            │     dark: graphite ∙ light: chalk ∙ follows the OS             │
@@ -16,8 +15,9 @@
                            │     tmux's bar over an agent's pane                            │
                            │   Crown's actions: lightning                                   │
                            │     a bolt on each card the crown touches                      │
+                           │   Summary on cards: full                                       │
+                           │     underline on every card, rows under the selected card      │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
 
 
 

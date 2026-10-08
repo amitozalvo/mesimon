@@ -401,6 +401,7 @@ pub(super) fn render(
     summary: Option<&crate::app::TicketSummary>,
     summary_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
     summary_pulse: Option<(u64, mesimon_core::summary::Count)>,
+    summary_underline: bool,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -721,7 +722,7 @@ pub(super) fn render(
     // needs-you band, a trail, the delete flash, the move ghost.
     let rows_shown = selected && open && summary.is_some_and(|s| !s.rows.is_empty());
     let under = summary
-        .filter(|s| s.count.total > 0 && !rows_shown)
+        .filter(|s| summary_underline && s.count.total > 0 && !rows_shown)
         .filter(|_| !(doomed || trail || attn_card || held || snooze.is_some()))
         .map(|s| s.count);
     match (&sweep, &landing) {

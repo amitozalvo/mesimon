@@ -31,7 +31,10 @@ in the Esc menu under `Release notes` and on GitHub.
   ticked; with replies shown, the cursor card lists the open boxes.
   `ctrl-j` lists every row: `space` ticks a box, `enter` opens a link in the line or, without one, the note at
   that line, `a` asks the agent about it, `c` copies it. Lines under the
-  heading with no box are read first, as the one-line summary.
+  heading with no box are read first, as the one-line summary. A change to
+  the boxes sweeps across the underline, twice when it finishes the list.
+  Settings › Appearance › `Summary on cards` chooses `full`, `hover` (the
+  rows under the selected card only) or `none`.
 
 ### Changed
 

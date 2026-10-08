@@ -107,6 +107,7 @@ pub use prefs::peek_doctor_line as peek_status;
 /// What `mesimon doctor` says about how a snoozed ticket comes back (T-74).
 pub use prefs::snooze_doctor_line as snooze_status;
 pub use prefs::status_line_doctor_line as status_line_status;
+pub use prefs::summary_doctor_line as summary_status;
 /// What `mesimon doctor` says about the terminal's own tab (T-492).
 pub use prefs::tab_title_doctor_line as terminal_status;
 pub use prefs::train_doctor_line as train_status;

@@ -4990,6 +4990,7 @@ impl App {
             usage_summary: crate::ui::usage::summary(self),
             usage_reading: !self.usage.reading.is_empty(),
             card_cost: self.prefs.card_corner == crate::prefs::CardCorner::Cost,
+            summary_word: self.prefs.summary.key(),
             usage_tickets: self.costs.iter().any(|c| self.board.ticket(c.ticket).is_some()),
             iterm2: matches!(self.terminal, crate::title::Terminal::ITerm2 { .. }),
             iterm2_status: self.terminal == crate::title::Terminal::ITerm2 { status: true },
@@ -5467,6 +5468,19 @@ impl App {
                     crate::prefs::CardCorner::Age => "cards show how long they have sat",
                 };
                 self.set_pref(word, |p| p.card_corner = v);
+            }
+            Verb::SummaryShow => {
+                let v = self.prefs.summary.next();
+                let word = match v {
+                    crate::prefs::SummaryShow::Full => {
+                        "summaries underline every card and list under the selected card"
+                    }
+                    crate::prefs::SummaryShow::Hover => {
+                        "summaries list under the selected card only"
+                    }
+                    crate::prefs::SummaryShow::None => "summaries stay off the cards ∙ ^j lists them",
+                };
+                self.set_pref(word, |p| p.summary = v);
             }
             Verb::UsageRefresh => self.refresh_usage(false),
             Verb::UsageShow => {

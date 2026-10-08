@@ -189,6 +189,27 @@ pref_words!(ring CardCorner {
     Cost => "cost",
 });
 
+/// How a ticket's `Summary` section shows on its card (T-696): the
+/// progress underline on every card and the rows under the selected
+/// card's reply, the rows alone, or nothing on the cards — `^j` lists it
+/// whichever is set. Full by default: the underline is the reason the
+/// section exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SummaryShow {
+    #[default]
+    Full,
+    /// The rows under the selected card's reply only; no underline.
+    Hover,
+    /// Nothing on the cards.
+    None,
+}
+
+pref_words!(ring SummaryShow {
+    Full => "full",
+    Hover => "hover",
+    None => "none",
+});
+
 /// Who posts a banner (T-676): mesimon's own helper, with the mascot, or
 /// the terminal the board runs in, by an escape and signed as itself — so
 /// a managed Mac that audits every launch has nothing of ours to audit.
@@ -368,6 +389,8 @@ pub(crate) struct Prefs {
     pub usage_codex: bool,
     /// What the cards' corner says: age by default, cost on `$` (T-327).
     pub card_corner: CardCorner,
+    /// How a ticket's summary shows on its card (T-696).
+    pub summary: SummaryShow,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -411,6 +434,7 @@ impl Default for Prefs {
             usage_claude: true,
             usage_codex: true,
             card_corner: CardCorner::Age,
+            summary: SummaryShow::Full,
             doc: Map::new(),
         }
     }
@@ -451,6 +475,7 @@ const USAGE_RESETS_KEY: &str = PrefKey::UsageResets.name();
 const USAGE_CLAUDE_KEY: &str = PrefKey::UsageClaude.name();
 const USAGE_CODEX_KEY: &str = PrefKey::UsageCodex.name();
 const CARD_CORNER_KEY: &str = PrefKey::CardCorner.name();
+const SUMMARY_KEY: &str = PrefKey::Summary.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -602,6 +627,7 @@ impl Prefs {
             PrefKey::UsageClaude => onoff(self.usage_claude),
             PrefKey::UsageCodex => onoff(self.usage_codex),
             PrefKey::CardCorner => self.card_corner.key(),
+            PrefKey::Summary => self.summary.key(),
         }
     }
 
@@ -692,6 +718,13 @@ impl Prefs {
             .is_some_and(|v| CardCorner::from_key(v).is_none())
         {
             doc.insert(CARD_CORNER_KEY.into(), Value::from(self.card_corner.key()));
+        }
+        if !doc
+            .get(SUMMARY_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| SummaryShow::from_key(v).is_none())
+        {
+            doc.insert(SUMMARY_KEY.into(), Value::from(self.summary.key()));
         }
         for (key, s) in [
             (NOTIFY_SOUND_NEEDS_YOU_KEY, self.notify_sound_needs_you),
@@ -796,7 +829,8 @@ impl BoardPrefs {
             | PrefKey::UsageResets
             | PrefKey::UsageClaude
             | PrefKey::UsageCodex
-            | PrefKey::CardCorner => false,
+            | PrefKey::CardCorner
+            | PrefKey::Summary => false,
             _ => self.bool(key).is_some(),
         }
     }
@@ -1006,6 +1040,11 @@ pub(crate) fn load(path: &Path) -> Loaded {
         .and_then(Value::as_str)
         .and_then(CardCorner::from_key)
         .unwrap_or_default();
+    let summary = doc
+        .get(SUMMARY_KEY)
+        .and_then(Value::as_str)
+        .and_then(SummaryShow::from_key)
+        .unwrap_or_default();
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
@@ -1043,6 +1082,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         usage_claude,
         usage_codex,
         card_corner,
+        summary,
         doc,
     };
     if schema > SCHEMA {
@@ -1185,6 +1225,16 @@ pub fn peek_doctor_line() -> String {
         PeekLevel::Off => "hidden ∙ p shows the cursor card's latest reply, P every card's".into(),
         PeekLevel::Cursor => "under the cursor card ∙ P widens it to every card, p hides it".into(),
         PeekLevel::All => "under every card ∙ P narrows it to the cursor card, p hides it".into(),
+    }
+}
+
+/// `mesimon doctor`'s `summary` line (T-696): how a ticket's `Summary`
+/// section shows on its card.
+pub fn summary_doctor_line() -> String {
+    match load_home().prefs.summary {
+        SummaryShow::Full => "underline on every card, rows under the selected card's reply".into(),
+        SummaryShow::Hover => "rows under the selected card's reply ∙ no underline".into(),
+        SummaryShow::None => "nothing on the cards ∙ ^j lists it".into(),
     }
 }
 
@@ -1780,5 +1830,26 @@ mod tests {
         assert!(l.prefs.overridden().is_empty());
         assert!(!l.write_barred);
         assert!(l.notice.as_deref().unwrap_or("").contains("unreadable"));
+    }
+
+    /// The summary's showing (T-696) round-trips through the file, reads
+    /// `full` when absent, and keeps a word from a newer build until a
+    /// press replaces it — the week's rule.
+    #[test]
+    fn the_summary_show_round_trips_and_a_foreign_word_survives() {
+        let p = scratch("summary-show");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&p);
+        let mut l = load(&p);
+        assert_eq!(l.prefs.summary, SummaryShow::Full, "absent is full");
+        l.prefs.summary = SummaryShow::Hover;
+        save(&p, &l.prefs).unwrap();
+        assert_eq!(load(&p).prefs.summary, SummaryShow::Hover);
+        assert_eq!(load(&p).prefs.word(PrefKey::Summary), "hover");
+        std::fs::write(&p, r#"{"schema_version":1,"summary":"later"}"#).unwrap();
+        let l = load(&p);
+        assert_eq!(l.prefs.summary, SummaryShow::Full, "unknown reads as the default");
+        save(&p, &l.prefs).unwrap();
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\"later\""), "kept");
     }
 }

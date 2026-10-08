@@ -218,7 +218,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         };
         // The ticket's summary (T-696) and, on the cursor card, the key that
         // opens it, for the fold row.
-        let summary = app.ticket_summary(t.id);
+        let summary = (app.prefs.summary != crate::prefs::SummaryShow::None)
+            .then(|| app.ticket_summary(t.id))
+            .flatten();
         let summary_keys: Vec<&mesimon_core::keymap::Binding> = if selected {
             mesimon_core::keymap::binding_for(
                 app.scope(),
@@ -257,6 +259,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             summary.as_ref(),
             (!summary_keys.is_empty()).then_some((summary_keys.as_slice(), &*keys_ctx)),
             app.summary_pulse(t.id),
+            app.prefs.summary == crate::prefs::SummaryShow::Full,
         );
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are

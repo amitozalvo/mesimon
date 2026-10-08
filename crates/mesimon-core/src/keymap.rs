@@ -605,6 +605,10 @@ pub enum Verb {
     /// `$` on the board, and the Usage settings' last row: a card's corner
     /// shows the ticket's estimated cost rather than its age.
     CardCorner,
+    /// The Appearance row for a ticket's summary on its card (T-696): the
+    /// underline and the rows, the rows alone, or nothing. `prefs.json`,
+    /// per machine.
+    SummaryShow,
     UsageShow,
     UsageFiveHour,
     UsageWeekly,
@@ -1002,7 +1006,9 @@ impl SettingsSection {
 
     pub fn for_verb(verb: Verb) -> Self {
         match verb {
-            Verb::ThemePick | Verb::StatusLine | Verb::CrownLightning => Self::Appearance,
+            Verb::ThemePick | Verb::StatusLine | Verb::CrownLightning | Verb::SummaryShow => {
+                Self::Appearance
+            }
             Verb::TabTitle
             | Verb::TabTitleNeedsYou
             | Verb::TabTitleFocus
@@ -1445,6 +1451,9 @@ pub struct Ctx {
     pub usage_reading: bool,
     /// The cards' corner shows each ticket's cost, not its age (`$`).
     pub card_cost: bool,
+    /// How a ticket's summary shows on its card (T-696): `full`, `hover`
+    /// or `none` — the row's word.
+    pub summary_word: &'static str,
     /// The Usage dialog has ticket rows to select and open.
     pub usage_tickets: bool,
     /// The board runs in iTerm2, directly (no outer tmux): the rows that
@@ -4733,6 +4742,19 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // A ticket's summary on its card (T-696): what the `Summary` section
+    // shows there — everything, the rows alone, or nothing.
+    MenuItem {
+        verb: Verb::SummaryShow,
+        label: |c| format!("Summary on cards: {}", or(c.summary_word, "full")),
+        detail: |c| match or(c.summary_word, "full") {
+            "hover" => "rows under the selected card's reply, no underline".into(),
+            "none" => "nothing on the cards ∙ ^j lists it".into(),
+            _ => "underline on every card, rows under the selected card".into(),
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::CardCorner,
         label: |c| format!("Card corner: {}", if c.card_cost { "cost" } else { "age" }),
@@ -5385,7 +5407,9 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::SettingsTerminal,
             Verb::SettingsUsage,
         ],
-        SettingsSection::Appearance => &[Verb::ThemePick, Verb::StatusLine, Verb::CrownLightning],
+        SettingsSection::Appearance => {
+            &[Verb::ThemePick, Verb::StatusLine, Verb::CrownLightning, Verb::SummaryShow]
+        }
         SettingsSection::Terminal => &[
             Verb::TabTitle,
             Verb::TabTitleNeedsYou,
@@ -5492,6 +5516,7 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::UsageClaude => PrefKey::UsageClaude,
         Verb::UsageCodex => PrefKey::UsageCodex,
         Verb::CardCorner => PrefKey::CardCorner,
+        Verb::SummaryShow => PrefKey::Summary,
         _ => return None,
     })
 }
@@ -9391,7 +9416,7 @@ mod tests {
         for (section, expected) in [
             (
                 SettingsSection::Appearance,
-                vec![Verb::ThemePick, Verb::StatusLine, Verb::CrownLightning],
+                vec![Verb::ThemePick, Verb::StatusLine, Verb::CrownLightning, Verb::SummaryShow],
             ),
             (
                 SettingsSection::Terminal,
@@ -10085,6 +10110,7 @@ mod tests {
             Verb::ThemePick,
             Verb::StatusLine,
             Verb::CrownLightning,
+            Verb::SummaryShow,
             Verb::TabTitle,
             Verb::TabTitleNeedsYou,
             Verb::TabTitleFocus,

@@ -247,6 +247,8 @@ fn environment(repo: &std::path::Path, verbose: bool) -> Section {
     // the next board opens on it, so a board that opens with every card
     // open is answered here.
     records.push(rec(Level::Note, "replies", mesimon_tui::peek_status()));
+    // How a ticket's `Summary` section shows on its card (T-696).
+    records.push(rec(Level::Note, "summary", mesimon_tui::summary_status()));
     // The merge train (2026-09-04): the one standing consent for mesimon to
     // prompt an agent with no per-press gesture, so doctor says when it is on.
     records.push(rec(Level::Note, "merge train", mesimon_tui::train_status()));
