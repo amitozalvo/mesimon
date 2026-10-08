@@ -5879,19 +5879,30 @@ fn test_summary_underline_runs_the_done_share_of_the_title() {
     let x0 = lines[y][..at].width() as u16;
     let y = y as u16;
     let under = |want: Color| {
-        (0..10u16)
-            .filter(|i| {
-                let c = &buf[(x0 + i, y)];
+        (0..120u16)
+            .filter(|x| {
+                let c = &buf[(*x, y)];
                 c.modifier.contains(Modifier::UNDERLINED) && c.underline_color == want
             })
             .count()
     };
-    // Ten cells, two of five done: a four-cell run and a six-cell track.
-    assert_eq!(under(app.theme.sel.dim1), 4);
-    assert_eq!(under(app.theme.sel.dim3), 6);
+    // The run starts at the glyph, one cell after the bar's pad: the pad
+    // is bare, the glyph cell is not. The row runs to the age, which is
+    // on the track, and stops before the trailing pad.
+    let from = x0 - 2;
+    assert!(!buf[(from - 1, y)].modifier.contains(Modifier::UNDERLINED), "the pad");
+    assert!(buf[(from, y)].modifier.contains(Modifier::UNDERLINED), "the glyph");
+    let row = &lines[y as usize];
+    let age = row[..at + row[at..].find(">1y").expect("age")].width() as u16;
+    assert!(buf[(age + 2, y)].modifier.contains(Modifier::UNDERLINED), "the age");
+    assert!(!buf[(age + 3, y)].modifier.contains(Modifier::UNDERLINED), "past the age");
+    // Two of five done over the whole span: the run is the rounded share,
+    // in the calm ink; the rest is the track on the cursor ramp.
+    let span = (age + 3 - from) as usize;
+    let run = under(app.theme.calm);
+    assert_eq!(run, (2 * span + 2) / 5, "span {span}");
+    assert_eq!(under(app.theme.sel.dim3), span - run);
     assert_eq!(under(app.theme.attn), 0);
-    // The fill after the title is not underlined.
-    assert!(!buf[(x0 + 10, y)].modifier.contains(Modifier::UNDERLINED));
     // Open with the peek on, the rows say it and the title is bare.
     let mut open = app_summary();
     open.peek = true;

@@ -22515,11 +22515,15 @@ uncapped; `remember_note` fills it beside the body cache so a fetch for links or
 the card too). A hundred-ticket board is whole in about a second. The alternative — a derived
 field on the snapshot — was kept for when a phone needs the list; nothing here forecloses it.
 
-**On the card.** At rest the title wears the boxes as an underline (`Theme::summary_under`): the
-done share of the title's cells in the row's ramp `dim1`, the rest in `dim3` as the track, the
-grey ramp and nothing saturated. The underline channel is free on the title (tags spend it on the
-bar's two cells, below TrueColor only); 16 colours cannot colour an underline, so that tier draws
-the run alone, and the ladder tiers draw none. Never on a row already saying something louder
+**On the card.** At rest the row wears the boxes as an underline (`Theme::summary_under`,
+`card::underline_row`): from the cell after the bar's pad to the age, the done share of that span
+in the calm register — the done mark's own ink — and the rest in the row ramp's `dim3` as the
+track. It began as the title's cells alone on the grey ramp's `dim1`; the author asked for the
+whole row ("start from 1 cell after the tag cell and also include the age cell") and another
+colour, the same day. Never the accent (`test_tag_underlines_never_spend_the_accent`'s rule).
+The underline channel is free on the row (tags spend it on the bar's two cells, below TrueColor
+only); 16 colours cannot colour an underline, so that tier draws the run alone, and the ladder
+tiers draw none. Never on a row already saying something louder
 (the needs-you band, a trail, the delete flash, the move ghost). Open with the peek on, the cursor
 card lists the rows under the reply instead: the first plain row, then up to three boxes — the
 open ones first, ticked ones after when fewer than three are open — then a fold row `[✓] 2 more`

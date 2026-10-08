@@ -2118,11 +2118,11 @@ impl Theme {
         ('▎', Style::default().fg(self.bar_cursor))
     }
 
-    /// The card title's progress underline (T-696): the ticket's summary
-    /// boxes as a run under the title, the done share in `dim1` and the
-    /// rest of the title — the track — in `dim3`, on the row's own ramp.
-    /// The grey ramp and nothing saturated, so the one-colour law holds;
-    /// the underline channel is free on the title (tags spend it on the
+    /// The card row's progress underline (T-696): the ticket's summary
+    /// boxes as a run from the cell after the bar's pad to the age, the
+    /// done share in the calm register — the done mark's own ink, never
+    /// the accent — and the rest, the track, in `dim3` on the row's ramp.
+    /// The underline channel is free on the row (tags spend it on the
     /// bar's two cells, below TrueColor only). Where the terminal cannot
     /// colour an underline the track would be as loud as the run, so the
     /// 16-colour tier draws the run alone, plain; the ladder tiers draw
@@ -2132,7 +2132,7 @@ impl Theme {
         match self.profile {
             Profile::TrueColor | Profile::Ansi256 => {
                 Some(Style::default().add_modifier(Modifier::UNDERLINED).underline_color(if done {
-                    ramp.dim1
+                    self.calm
                 } else {
                     ramp.dim3
                 }))

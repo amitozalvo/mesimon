@@ -214,8 +214,8 @@ redirect fixed; e2e next
 ```
 
 Only what sits under that heading counts, so an agent's working list under any other heading
-stays in the note. On the board the card's title wears the boxes as an underline, as far along as
-they are ticked; with the replies shown (`p`) the cursor card lists the open boxes under the
+stays in the note. On the board the card wears the boxes as an underline, as far along as they
+are ticked; with the replies shown (`p`) the cursor card lists the open boxes under the
 reply, and a line with no box is read first, as the one-line summary. `ctrl-j`, on the board or on
 a ticket page, lists every row: `space` ticks or unticks a box, `enter` opens the note at that
 line, `a` (or `shift+enter`) opens the ask field with the line quoted so you can ask the agent

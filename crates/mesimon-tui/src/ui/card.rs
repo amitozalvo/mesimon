@@ -712,10 +712,12 @@ pub(super) fn render(
     };
     // The summary (T-696). Open with the peek on, the cursor card lists
     // its rows under the reply; at rest, and under `P` on every other open
-    // card, the title wears the boxes as an underline — the done share in
-    // the ramp's `dim1`, the rest as a fainter track. Never on a row that
-    // is already saying something louder: the inverted needs-you band, a
-    // trail, the delete flash, the move ghost.
+    // card, the row wears the boxes as an underline — from the cell after
+    // the bar's pad to the age, the done share as the run and the rest as a
+    // fainter track (author: "start from 1 cell after the tag cell and
+    // also include the age cell"). Applied to the finished row below. Never
+    // on a row that is already saying something louder: the inverted
+    // needs-you band, a trail, the delete flash, the move ghost.
     let rows_shown = selected && open && summary.is_some_and(|s| !s.rows.is_empty());
     let under = summary
         .filter(|s| s.count.total > 0 && !rows_shown)
@@ -724,12 +726,7 @@ pub(super) fn render(
     match (&sweep, &landing) {
         (Some(run), _) => spans.extend(swept_spans(theme, run, &title, holder_cells)),
         (None, Some(run)) => spans.extend(landed_spans(theme, run, &title)),
-        (None, None) => match under {
-            Some(count) if theme.summary_under(cursorish, true).is_some() => {
-                spans.extend(underlined_title(theme, &title, title_style, cursorish, count))
-            }
-            _ => spans.push(Span::styled(title, title_style)),
-        },
+        (None, None) => spans.push(Span::styled(title, title_style)),
     }
     spans.push(Span::raw(" ".repeat(fill)));
     if let Some((m, tone)) = &wt_mark {
@@ -766,6 +763,11 @@ pub(super) fn render(
         if let Some(a) = &age {
             spans.push(Span::styled(format!(" {a:>3}"), quiet_style));
         }
+    }
+    if let Some(count) = under {
+        let from = BAR_WIDTH + 1;
+        let to = super::spans_width(&spans);
+        spans = underline_row(theme, spans, from, to, cursorish, count);
     }
     spans.push(Span::raw(" ".to_string()));
     let mut lines = vec![Line::from(spans).style(row_style)];
@@ -1086,39 +1088,60 @@ pub(super) fn box_mark(tier: Tier, state: Option<bool>) -> &'static str {
     }
 }
 
-/// The title split at the done share of its width, the run and the track
-/// each under their own underline. A title whose boxes are all ticked is
-/// one run; one with none is one track.
-fn underlined_title(
+/// The row's cells from `from` to `to` underlined as the summary's progress:
+/// the done share of that span as the run, the rest as the track, each in
+/// its own ink (`Theme::summary_under`). A span that straddles the boundary
+/// is split by grapheme; every other span keeps its words and its style
+/// and gains the stroke. Nothing changes where the tier draws no underline.
+fn underline_row(
     theme: &Theme,
-    title: &str,
-    style: Style,
+    spans: Vec<Span<'static>>,
+    from: usize,
+    to: usize,
     cursorish: bool,
     count: mesimon_core::summary::Count,
 ) -> Vec<Span<'static>> {
     use unicode_segmentation::UnicodeSegmentation;
-    let width = title.width();
+    let (Some(run), track) =
+        (theme.summary_under(cursorish, true), theme.summary_under(cursorish, false))
+    else {
+        return spans;
+    };
+    let width = to.saturating_sub(from);
     let done_cells = (count.done * width + count.total / 2).checked_div(count.total).unwrap_or(0);
-    let mut head = String::new();
-    let mut tail = String::new();
-    let mut used = 0;
-    for g in title.graphemes(true) {
-        let w = g.width();
-        if tail.is_empty() && used + w <= done_cells {
-            head.push_str(g);
-            used += w;
+    let edge = from + done_cells;
+    let ink_at = |cell: usize| -> Option<Style> {
+        if cell < from || cell >= to {
+            None
+        } else if cell < edge {
+            Some(run)
         } else {
-            tail.push_str(g);
+            track
         }
-    }
-    let mut out = Vec::new();
-    if !head.is_empty() {
-        let run = theme.summary_under(cursorish, true).unwrap_or_default();
-        out.push(Span::styled(head, style.patch(run)));
-    }
-    if !tail.is_empty() {
-        let track = theme.summary_under(cursorish, false).unwrap_or_default();
-        out.push(Span::styled(tail, style.patch(track)));
+    };
+    let mut out = Vec::with_capacity(spans.len() + 2);
+    let mut at = 0usize;
+    for span in spans {
+        let style = span.style;
+        let mut piece = String::new();
+        let mut piece_ink: Option<Option<Style>> = None;
+        for g in span.content.graphemes(true) {
+            let ink = ink_at(at);
+            if piece_ink.is_some_and(|p| p != ink) {
+                let p = piece_ink.take().flatten();
+                out.push(Span::styled(
+                    std::mem::take(&mut piece),
+                    p.map_or(style, |u| style.patch(u)),
+                ));
+            }
+            piece_ink = Some(ink);
+            piece.push_str(g);
+            at += g.width();
+        }
+        if !piece.is_empty() {
+            let p = piece_ink.flatten();
+            out.push(Span::styled(piece, p.map_or(style, |u| style.patch(u))));
+        }
     }
     out
 }

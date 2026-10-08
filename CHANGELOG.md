@@ -27,8 +27,8 @@ in the Esc menu under `Release notes` and on GitHub.
   the new key, so a Slack command, a launcher or a git hook of your own can
   put a card on a board. `docs/USING.md` has the command and two cautions.
 - **A note section headed `Summary` is the ticket's checklist on the board.**
-  The card's title wears its task boxes as an underline, as far along as
-  they are ticked; with replies shown, the cursor card lists the open boxes.
+  The card wears its task boxes as an underline, as far along as they are
+  ticked; with replies shown, the cursor card lists the open boxes.
   `ctrl-j` lists every row: `space` ticks a box, `enter` opens the note at
   that line, `a` asks the agent about it, `c` copies it. Lines under the
   heading with no box are read first, as the one-line summary.
