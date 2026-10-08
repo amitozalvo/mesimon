@@ -33,6 +33,15 @@ use ratatui::layout::{Position, Size};
 
 pub(crate) struct Quiet<W: Write> {
     inner: CrosstermBackend<W>,
+    /// What the terminal was last told each cell is (T-696). iTerm2 does
+    /// not repaint a cell whose only change is its underline colour — a
+    /// whole line rewritten shows the new colour, one cell rewritten keeps
+    /// the old (measured 2026-10-08, iTerm2 3.6) — and a sweep on the
+    /// underline channel is exactly that, cell by cell. Such a cell is
+    /// written twice in the frame: first without its underline, then as it
+    /// should be, two attribute changes the terminal honours, inside the
+    /// same synchronized update so neither is seen on its own.
+    shadow: std::collections::HashMap<(u16, u16), Cell>,
     /// What the cursor was last told: hidden or shown. `None` until it has
     /// been told anything, so the first frame always says.
     hidden: Option<bool>,
@@ -49,6 +58,7 @@ impl<W: Write> Quiet<W> {
     pub(crate) fn new(writer: W) -> Self {
         Self {
             inner: CrosstermBackend::new(writer),
+            shadow: std::collections::HashMap::new(),
             hidden: None,
             at: None,
             framing: false,
@@ -121,6 +131,16 @@ fn covered_first<'a>(
     out
 }
 
+/// The same glyph, inks and attributes, and a different underline colour:
+/// the one change iTerm2 does not draw.
+fn only_underline_colour_differs(was: &Cell, now: &Cell) -> bool {
+    was.underline_color != now.underline_color
+        && was.symbol() == now.symbol()
+        && was.fg == now.fg
+        && was.bg == now.bg
+        && was.modifier == now.modifier
+}
+
 impl<W: Write> Backend for Quiet<W> {
     type Error = io::Error;
 
@@ -134,7 +154,18 @@ impl<W: Write> Backend for Quiet<W> {
         }
         self.begin()?;
         self.at = None;
-        self.inner.draw(covered_first(content).into_iter())
+        let mut cells: Vec<(u16, u16, Cell)> = Vec::new();
+        for (x, y, cell) in covered_first(content) {
+            if self.shadow.get(&(x, y)).is_some_and(|was| only_underline_colour_differs(was, cell))
+            {
+                let mut bare = cell.clone();
+                bare.modifier.remove(ratatui::style::Modifier::UNDERLINED);
+                cells.push((x, y, bare));
+            }
+            cells.push((x, y, cell.clone()));
+            self.shadow.insert((x, y), cell.clone());
+        }
+        self.inner.draw(cells.iter().map(|(x, y, c)| (*x, *y, c)))
     }
 
     fn append_lines(&mut self, n: u16) -> io::Result<()> {
@@ -185,6 +216,7 @@ impl<W: Write> Backend for Quiet<W> {
     fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
         self.begin()?;
         self.at = None;
+        self.shadow.clear();
         self.inner.clear_region(clear_type)
     }
 
@@ -268,6 +300,43 @@ mod tests {
         assert!(changed.starts_with(BEGIN) && changed.ends_with(END), "{changed:?}");
         assert!(changed.contains('D') && !changed.contains("board"), "only the cell: {changed:?}");
         assert!(!changed.contains("\x1b[?25l"), "still hidden: {changed:?}");
+    }
+
+    /// A cell whose only change is its underline colour is written twice
+    /// (T-696): bare first, then underlined in the new colour — iTerm2
+    /// repaints on the attribute and not on the colour alone. A cell that
+    /// changes anything else is written once, as ever.
+    #[test]
+    fn an_underline_colour_change_is_written_as_two_attribute_changes() {
+        use ratatui::style::{Color, Modifier, Style};
+        use ratatui::text::{Line, Span};
+        let (mut t, tty) = term();
+        let under =
+            |c: Color| Style::default().add_modifier(Modifier::UNDERLINED).underline_color(c);
+        let red = Color::Rgb(255, 60, 60);
+        let blue = Color::Rgb(60, 60, 255);
+        draw(&mut t, |f| f.render_widget(Line::from(Span::styled("ab cd", under(red))), f.area()))
+            .unwrap();
+        let first = tty.take();
+        assert_eq!(first.matches("\x1b[4m").count(), 1, "{first:?}");
+        draw(&mut t, |f| f.render_widget(Line::from(Span::styled("ab cd", under(blue))), f.area()))
+            .unwrap();
+        let recoloured = tty.take();
+        // Five cells, each bare then underlined: the underline is taken per
+        // cell and dropped before the next (the first bare write starts
+        // from nothing, so four drops), and the blue colour rides along.
+        assert_eq!(recoloured.matches("\x1b[24m").count(), 4, "{recoloured:?}");
+        assert_eq!(recoloured.matches("\x1b[4m").count(), 5, "{recoloured:?}");
+        assert!(recoloured.contains("58;2;60;60;255"), "{recoloured:?}");
+        assert!(recoloured.starts_with(BEGIN) && recoloured.ends_with(END), "{recoloured:?}");
+        // Unchanged: nothing. A glyph change: once.
+        draw(&mut t, |f| f.render_widget(Line::from(Span::styled("ab cd", under(blue))), f.area()))
+            .unwrap();
+        assert_eq!(tty.take(), "");
+        draw(&mut t, |f| f.render_widget(Line::from(Span::styled("ab cD", under(blue))), f.area()))
+            .unwrap();
+        let glyph = tty.take();
+        assert!(glyph.contains('D') && !glyph.contains("\x1b[24m"), "{glyph:?}");
     }
 
     #[test]

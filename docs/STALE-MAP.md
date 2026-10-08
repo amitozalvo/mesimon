@@ -22566,6 +22566,14 @@ first read of a note). The card draws it as the crowning's wave on the underline
 glow cooling to the new ink behind it, the new run behind the head, the old ahead; a change that
 ticks the last box crosses the finished run a second time, the glint that says done.
 `App::animating` keeps the frames coming while one plays; `poll_summaries` drops the played-out.
+**And iTerm2 did not draw it** (the author: "no visible animation was running (looks broken)", a
+row frozen in patches): measured with three `printf`s on iTerm2 3.6 — a bold underlined line
+draws its spaces, a line rewritten whole inside a synchronized update takes a new underline
+colour, and ONE cell rewritten with only its underline colour changed keeps the old colour. The
+board rewrites exactly the cells that changed, and in a sweep that is colour alone. `quiet.rs`
+keeps a shadow of what each cell was last told and writes such a cell twice in the frame, bare
+then underlined in the new colour: two attribute changes the terminal honours, inside the same
+`?2026` update so neither shows alone. In CLAUDE.md's traps.
 
 **Settings › Appearance › `Summary on cards`** (same day): `full` (the underline and the rows,
 the default), `hover` (the rows under the selected card's reply alone), `none` (nothing on the
