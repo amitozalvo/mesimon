@@ -256,6 +256,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             app.card_corner(t.id),
             summary.as_ref(),
             (!summary_keys.is_empty()).then_some((summary_keys.as_slice(), &*keys_ctx)),
+            app.summary_pulse(t.id),
         );
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are

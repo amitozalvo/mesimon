@@ -7,7 +7,7 @@ mod images;
 mod summary;
 mod tiers;
 
-pub use summary::{NoteSummary, TicketSummary};
+pub use summary::{NoteSummary, SummaryPulse, TicketSummary};
 pub use tiers::{TierField, TierRow};
 
 use std::cell::Cell;
@@ -1635,6 +1635,10 @@ pub struct App {
     /// note to (T-696): the note and its line, resolved to a rendered row
     /// by the page's draw once the zone's width is known, then cleared.
     pub summary_jump: Cell<Option<(ulid::Ulid, usize)>>,
+    /// Changes to tickets' boxes still playing on their cards (T-696), by
+    /// ticket: started by `remember_summary` on a count that moved, read by
+    /// the card, dropped by `poll_summaries` once played out.
+    pub summary_pulses: std::collections::HashMap<ulid::Ulid, SummaryPulse>,
     /// The ticket page's preview zone: where `{ }` asked it to be, what the
     /// last draw measured, and the page turn in motion (see `Pager`).
     pub preview: Pager,
@@ -1952,6 +1956,7 @@ impl App {
             notes: std::collections::HashMap::new(),
             summaries: std::collections::HashMap::new(),
             summary_jump: Cell::new(None),
+            summary_pulses: std::collections::HashMap::new(),
             preview: Pager::default(),
             rich_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
@@ -2051,6 +2056,7 @@ impl App {
             || self.layout_flashing()
             || self.board.crown.is_some_and(|id| self.crowning_ms(id).is_some())
             || self.striking()
+            || self.summary_pulsing()
     }
 
     /// Does the board draw the crown's lightning (T-544)? The person's
@@ -14328,6 +14334,26 @@ mod tests {
         app.board_mut().tickets[0].notes[0].rev = 2;
         assert!(app.poll_summaries());
         assert_eq!(reads(), 3);
+    }
+
+    /// A note that moved on with a different count starts the card's pulse
+    /// (T-696); the board filling in at first read starts none.
+    #[test]
+    fn a_changed_count_starts_the_cards_pulse_and_a_first_read_does_not() {
+        let (mut app, _sent) =
+            app_with_notes_state(None, &[(90, "## Summary\n- [ ] a\n- [x] b\n")]);
+        app.poll_summaries();
+        assert!(app.summary_pulses.is_empty(), "the first read is not news");
+        app.board_mut().tickets[0].notes[0].rev = 2;
+        app.remember_note(ulid::Ulid(90), 2, Some("## Summary\n- [x] a\n- [x] b\n".into()));
+        let pulse = app.summary_pulses.get(&ulid::Ulid(1)).expect("a pulse");
+        assert_eq!((pulse.from.done, pulse.from.total), (1, 2));
+        assert!(app.summary_pulse(ulid::Ulid(1)).is_some());
+        // The same count again is no change.
+        app.board_mut().tickets[0].notes[0].rev = 3;
+        app.summary_pulses.clear();
+        app.remember_note(ulid::Ulid(90), 3, Some("## Summary\n- [x] a\n- [x] b\nmore".into()));
+        assert!(app.summary_pulses.is_empty());
     }
 
     /// `^j` on the cursor card opens the dialog, Space flips the row's box

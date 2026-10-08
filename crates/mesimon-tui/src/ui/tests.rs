@@ -5915,6 +5915,77 @@ fn test_summary_underline_runs_the_done_share_of_the_title() {
     assert!((0..120u16).all(|x| !buf[(x, y)].modifier.contains(Modifier::UNDERLINED)));
 }
 
+/// A change to the boxes plays as a wave across the row (T-696): mid-sweep
+/// the head wears the ramp's brightest ink, the cells behind it the new
+/// run, the cells ahead the old one; the board keeps its frames coming
+/// while it plays; played out, the row is the plain new state. A tick
+/// that finishes the list crosses a second time over the whole run.
+#[test]
+fn test_summary_change_sweeps_the_row() {
+    use crate::app::SummaryPulse;
+    use crate::theme::SUMMARY_SWEEP_MS;
+    use mesimon_core::summary::Count;
+    let now = mesimon_core::clock::now_ms();
+    let row_of = |app: &App| {
+        let buf = cells(app, 120, 30);
+        let lines = lines_of(&buf);
+        let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
+        (buf, y)
+    };
+    let heads = |app: &App| {
+        let (buf, y) = row_of(app);
+        (0..120u16)
+            .filter(|x| {
+                let c = &buf[(*x, y)];
+                c.modifier.contains(Modifier::UNDERLINED)
+                    && c.underline_color == app.theme.sel.base
+            })
+            .count()
+    };
+    let runs = |app: &App| {
+        let (buf, y) = row_of(app);
+        (0..120u16).filter(|x| buf[(*x, y)].underline_color == app.theme.calm).count()
+    };
+    // Two of five, one of them just ticked: mid-sweep.
+    let mut app = app_summary();
+    let from = Count { done: 1, total: 5 };
+    app.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS / 2, from });
+    assert!(app.animating(), "the board keeps its frames coming");
+    assert!((1..=2).contains(&heads(&app)), "the head, one cell and its brightest glow");
+    let settled = {
+        let mut rest = app_summary();
+        rest.summary_pulses.clear();
+        runs(&rest)
+    };
+    let old = {
+        let mut was = app_summary();
+        was.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now, from });
+        runs(&was)
+    };
+    let mid = runs(&app);
+    assert!(old < mid && mid <= settled, "old {old} < mid {mid} <= settled {settled}");
+    // Played out: the plain new state, and nothing animates.
+    app.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - 10 * SUMMARY_SWEEP_MS, from });
+    assert_eq!(heads(&app), 0);
+    assert_eq!(runs(&app), settled);
+    assert!(!app.animating());
+    // Every box ticked: the second pass glints across the finished run.
+    let mut done = app_summary();
+    done.remember_note(
+        ulid_n(90),
+        2,
+        Some("## Summary\n- [x] a\n- [x] b\n- [x] c\n- [x] d\n- [x] e\n".into()),
+    );
+    done.board_mut().tickets.iter_mut().find(|t| t.id == ulid_n(3)).expect("T-3").notes[0].rev = 2;
+    let from = Count { done: 4, total: 5 };
+    done.summary_pulses
+        .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS * 3 / 2, from });
+    assert!(done.animating());
+    assert!((1..=2).contains(&heads(&done)), "the second pass's head");
+    done.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS * 3, from });
+    assert!(!done.animating());
+}
+
 /// Enter in the dialog opens the note scrolled to the row's line (T-696):
 /// the item heads the zone under the DESCRIPTION heading.
 #[test]

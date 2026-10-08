@@ -28,6 +28,14 @@ pub struct NoteSummary {
     tried: Instant,
 }
 
+/// A change to a ticket's boxes, playing on its card (T-696): when it was
+/// seen and the count before it. The count after is the ticket's now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SummaryPulse {
+    pub at_ms: u64,
+    pub from: Count,
+}
+
 /// One row of a ticket's summary: which note it is in, and the row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SummaryRow {
@@ -73,7 +81,57 @@ impl App {
     /// (`remember_note` calls this on every fetch and every save).
     pub(crate) fn remember_summary(&mut self, id: ulid::Ulid, rev: u64, text: Option<&str>) {
         let rows = text.map(summary::extract);
+        // A change to a ticket's boxes plays on its card — only a CHANGE:
+        // the first read of a note is the board filling in, not news.
+        let owner = self
+            .board
+            .tickets
+            .iter()
+            .find(|t| t.notes.iter().any(|n| n.id == id))
+            .map(|t| t.id)
+            .filter(|_| self.summaries.contains_key(&id));
+        let before = owner.map(|t| self.cached_count(t));
         self.summaries.insert(id, NoteSummary { rev, rows, tried: Instant::now() });
+        if let (Some(ticket), Some(from)) = (owner, before) {
+            let after = self.cached_count(ticket);
+            if after != from {
+                let at_ms = mesimon_core::clock::now_ms();
+                self.summary_pulses.insert(ticket, SummaryPulse { at_ms, from });
+            }
+        }
+    }
+
+    /// The ticket's boxes as the cache holds them, whatever revision each
+    /// note's entry is at: the snapshot names the new revision before the
+    /// body is read, so a count keyed on the match would read the old
+    /// entry as nothing and every change as from zero.
+    fn cached_count(&self, ticket: ulid::Ulid) -> Count {
+        let Some(t) = self.board.ticket(ticket) else {
+            return Count::default();
+        };
+        let rows: Vec<Row> = t
+            .notes
+            .iter()
+            .filter_map(|n| self.summaries.get(&n.id))
+            .filter_map(|s| s.rows.as_ref())
+            .flat_map(|rows| rows.iter().cloned())
+            .collect();
+        Count::of(&rows)
+    }
+
+    /// The change playing on this card, if one is: how long ago it landed
+    /// and the count before it. `None` once the pulse has run its length.
+    pub(crate) fn summary_pulse(&self, ticket: ulid::Ulid) -> Option<(u64, Count)> {
+        let p = self.summary_pulses.get(&ticket)?;
+        let after = self.ticket_summary(ticket).map(|s| s.count).unwrap_or_default();
+        let elapsed = mesimon_core::clock::now_ms().saturating_sub(p.at_ms);
+        (elapsed < Theme::summary_pulse_ms(after)).then_some((elapsed, p.from))
+    }
+
+    /// Is a change playing on some card? What keeps the frames coming.
+    pub(crate) fn summary_pulsing(&self) -> bool {
+        matches!(self.screen, Screen::Board)
+            && self.summary_pulses.keys().any(|t| self.summary_pulse(*t).is_some())
     }
 
     /// The ticket's summary as the cache holds it: `None` while no note of
@@ -150,6 +208,16 @@ impl App {
         for (ticket, id, rev) in wanted.into_iter().take(SUMMARY_READS_PER_TICK) {
             self.fetch_summary_note(ticket, id, rev);
             read = true;
+        }
+        // Pulses that have played out are dropped here, once a tick.
+        let done: Vec<ulid::Ulid> = self
+            .summary_pulses
+            .keys()
+            .filter(|t| self.summary_pulse(**t).is_none())
+            .copied()
+            .collect();
+        for t in done {
+            self.summary_pulses.remove(&t);
         }
         read
     }

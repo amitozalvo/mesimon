@@ -400,6 +400,7 @@ pub(super) fn render(
     corner: Option<String>,
     summary: Option<&crate::app::TicketSummary>,
     summary_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
+    summary_pulse: Option<(u64, mesimon_core::summary::Count)>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -767,7 +768,7 @@ pub(super) fn render(
     if let Some(count) = under {
         let from = BAR_WIDTH + 1;
         let to = super::spans_width(&spans);
-        spans = underline_row(theme, spans, from, to, cursorish, count);
+        spans = underline_row(theme, spans, from, to, cursorish, count, summary_pulse);
     }
     spans.push(Span::raw(" ".to_string()));
     let mut lines = vec![Line::from(spans).style(row_style)];
@@ -1090,9 +1091,11 @@ pub(super) fn box_mark(tier: Tier, state: Option<bool>) -> &'static str {
 
 /// The row's cells from `from` to `to` underlined as the summary's progress:
 /// the done share of that span as the run, the rest as the track, each in
-/// its own ink (`Theme::summary_under`). A span that straddles the boundary
-/// is split by grapheme; every other span keeps its words and its style
-/// and gains the stroke. Nothing changes where the tier draws no underline.
+/// its own ink (`Theme::summary_under_at`), or — while a change plays
+/// (`pulse`: how long ago, and the count before) — the wave that reveals
+/// it (`Theme::summary_wave`). A span that straddles a boundary is split by
+/// grapheme; every other span keeps its words and its style and gains the
+/// stroke. Nothing changes where the tier draws no underline.
 fn underline_row(
     theme: &Theme,
     spans: Vec<Span<'static>>,
@@ -1100,23 +1103,23 @@ fn underline_row(
     to: usize,
     cursorish: bool,
     count: mesimon_core::summary::Count,
+    pulse: Option<(u64, mesimon_core::summary::Count)>,
 ) -> Vec<Span<'static>> {
     use unicode_segmentation::UnicodeSegmentation;
-    let (Some(run), track) =
-        (theme.summary_under(cursorish, true), theme.summary_under(cursorish, false))
-    else {
+    if theme.summary_under(cursorish, true).is_none() {
         return spans;
-    };
+    }
     let width = to.saturating_sub(from);
-    let done_cells = (count.done * width + count.total / 2).checked_div(count.total).unwrap_or(0);
-    let edge = from + done_cells;
     let ink_at = |cell: usize| -> Option<Style> {
         if cell < from || cell >= to {
-            None
-        } else if cell < edge {
-            Some(run)
-        } else {
-            track
+            return None;
+        }
+        let at = cell - from;
+        match pulse {
+            Some((elapsed, before)) => {
+                theme.summary_wave(elapsed, width, at, cursorish, before, count)
+            }
+            None => theme.summary_under_at(cursorish, width, at, count),
         }
     };
     let mut out = Vec::with_capacity(spans.len() + 2);

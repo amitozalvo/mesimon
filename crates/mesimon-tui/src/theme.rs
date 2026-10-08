@@ -1356,6 +1356,9 @@ const CROWN_INK_K: f32 = 0.6;
 /// was done to it (T-411). With the lightning on (T-544) the beat counts
 /// from the bolt's landing; the residue stays until the cursor rests there.
 pub(crate) const CROWN_LIT_MS: u64 = 2_000;
+/// The summary's wave crosses a card row in this long (T-696), whatever
+/// the row's width; a finishing tick crosses twice.
+pub(crate) const SUMMARY_SWEEP_MS: u64 = 700;
 /// The landing's front crosses the struck title in this long (T-544),
 /// whatever the title's length, like the crowning's.
 pub(crate) const LAND_SWEEP_MS: u64 = 600;
@@ -2127,6 +2130,78 @@ impl Theme {
     /// colour an underline the track would be as loud as the run, so the
     /// 16-colour tier draws the run alone, plain; the ladder tiers draw
     /// nothing and the open card's rows carry the count there.
+    /// The underline one cell of the row wears for `count` (T-696): the
+    /// done share of `cells` as the run, the rest as the track, by
+    /// [`Theme::summary_under`]. `None` where the tier draws none.
+    pub fn summary_under_at(
+        &self,
+        cursorish: bool,
+        cells: usize,
+        cell: usize,
+        count: mesimon_core::summary::Count,
+    ) -> Option<Style> {
+        let done_cells =
+            (count.done * cells + count.total / 2).checked_div(count.total).unwrap_or(0);
+        self.summary_under(cursorish, cell < done_cells)
+    }
+
+    /// How long a change to the boxes plays on the row (T-696): the
+    /// crowning's wave (T-442) crosses the row once, revealing the new run
+    /// behind its head; when the change ticked the last box it crosses a
+    /// second time over the finished run, the glint that says done.
+    pub fn summary_pulse_ms(count: mesimon_core::summary::Count) -> u64 {
+        if count.total > 0 && count.done == count.total {
+            2 * SUMMARY_SWEEP_MS
+        } else {
+            SUMMARY_SWEEP_MS
+        }
+    }
+
+    /// One cell of the row's underline while a change plays (author: "show
+    /// the line animated when it changes … flashing it from start to end
+    /// while adding the ticked underline, or when all done, show a nice
+    /// animation that indicates it"). `elapsed` is since the change; ahead
+    /// of the head the cell wears `before`'s underline, behind it `after`'s,
+    /// and the head itself is the ramp's brightest ink with a glow cooling
+    /// back to `after`'s over the cells behind it — the crowning's wave on
+    /// the underline channel. Past the pulse, and on every tier that cannot
+    /// colour an underline, it is the plain `after`.
+    pub fn summary_wave(
+        &self,
+        elapsed: u64,
+        cells: usize,
+        cell: usize,
+        cursorish: bool,
+        before: mesimon_core::summary::Count,
+        after: mesimon_core::summary::Count,
+    ) -> Option<Style> {
+        let at_rest = self.summary_under_at(cursorish, cells, cell, after);
+        let colour = matches!(self.profile, Profile::TrueColor | Profile::Ansi256);
+        if !colour || cells == 0 || elapsed >= Self::summary_pulse_ms(after) {
+            return at_rest;
+        }
+        let pass = elapsed / SUMMARY_SWEEP_MS;
+        let t = (elapsed % SUMMARY_SWEEP_MS) as f32 / SUMMARY_SWEEP_MS as f32;
+        let glow = self.wave_glow(cells);
+        let front = self.wave_front(t, cells);
+        let d = front - cell as f32;
+        // The second pass runs over the finished run: ahead of it the new
+        // state already stands.
+        let ahead =
+            if pass == 0 { self.summary_under_at(cursorish, cells, cell, before) } else { at_rest };
+        if d < 0.0 {
+            return ahead;
+        }
+        let settled = at_rest?;
+        let ramp = if cursorish { &self.sel } else { &self.rest };
+        let k = if d < 1.0 { 1.0 } else { (1.0 - (d - 1.0) / glow).max(0.0).powi(2) };
+        if k <= 0.0 {
+            return Some(settled);
+        }
+        let cool = settled.underline_color.unwrap_or(ramp.dim3);
+        Some(settled.underline_color(mix(ramp.base, cool, k)))
+    }
+
     pub fn summary_under(&self, cursorish: bool, done: bool) -> Option<Style> {
         let ramp = if cursorish { &self.sel } else { &self.rest };
         match self.profile {
