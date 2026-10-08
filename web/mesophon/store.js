@@ -54,6 +54,9 @@ const emptyDraft = (board) => ({
   pictures: [],
   reading: 0,
   sending: "",
+  // Sent with pictures while the terminal was away (T-705): it goes out,
+  // live, when the terminal is back, unless the draft changes first.
+  waiting: false,
 });
 // A draft's held thumbnails, let go with the draft.
 const dropThumbs = (draft) => {
@@ -782,6 +785,11 @@ export class Store {
   get canFilePictures() {
     return this.canFile && !!this.connection?.features?.includes("filed_pictures");
   }
+  // Whether the details offer pictures (T-705): also while the terminal is
+  // away, when it took them last time it was live. They wait in the draft.
+  get offersTicketPictures() {
+    return this.canFilePictures || (!this.live && !!this.active?.filedPictures);
+  }
   // The one draft, for the board on screen; another board starts afresh.
   draft() {
     const board = this.active?.pin.board;
@@ -815,11 +823,13 @@ export class Store {
     if (this.composer.sending) return;
     this.draft()[field] = value;
     this.composer.error = "";
+    this.composer.waiting = false;
     this.emit();
   }
   // One tag per group, as on the board: picking another replaces it.
   toggleTag(tag) {
     const draft = this.draft();
+    draft.waiting = false;
     const worn = draft.tags.some((t) => t.group === tag.group && t.name === tag.name);
     draft.tags = draft.tags.filter((t) => t.group !== tag.group);
     if (!worn) draft.tags.push(tag);
@@ -847,13 +857,15 @@ export class Store {
     const pictures = unlinked(ticket.description).filter((n) => held.has(n)).map((n) => held.get(n));
     if (pictures.length) {
       if (!this.canFilePictures) {
-        draft.error = "Pictures need your terminal online.";
+        if (this.offersTicketPictures) Object.assign(draft, { waiting: true, error: "" });
+        else draft.error = "Pictures need your terminal online.";
         this.emit();
         return;
       }
-      draft.error = "";
+      Object.assign(draft, { waiting: false, error: "" });
       return this.sendPicturedTicket(board, draft, ticket, pictures);
     }
+    draft.waiting = false;
     if (this.collects) return this.sealTicket(board, draft, ticket);
     this.fileTicket(board, draft, ticket);
   }
@@ -1366,7 +1378,8 @@ export class Store {
   // The same for a new ticket's details (T-670).
   async addTicketPictures(files, at) {
     const draft = this.draft();
-    if (!this.canFilePictures) return;
+    if (!this.offersTicketPictures) return;
+    draft.waiting = false;
     return this.readPictures(draft, "description", files, at, () => this.composer === draft);
   }
   // Each file read into `draft`, named in its `field` while `current()`.
@@ -1401,7 +1414,14 @@ export class Store {
     this.dropPicture(this.noteDraft, "text", n);
   }
   removeTicketPicture(n) {
+    this.composer.waiting = false;
     this.dropPicture(this.composer, "description", n);
+  }
+  // The ticket sent while the terminal was away goes out now it is back.
+  sendWaiting() {
+    const draft = this.composer;
+    if (!draft.waiting || draft.board !== this.active?.pin.board || !this.canFilePictures) return;
+    this.sendTicket();
   }
   dropPicture(draft, field, n) {
     if (!draft || draft.sending) return;
@@ -1854,10 +1874,13 @@ export class Store {
     const collects = !!this.connection.features?.includes("mailbox");
     const starts = !!this.connection.features?.includes("start");
     const notes = !!this.connection.features?.includes("notes");
-    if (!!chosen.collects !== collects || !!chosen.starts !== starts || !!chosen.notes !== notes) {
+    const filedPictures = !!this.connection.features?.includes("filed_pictures");
+    if (!!chosen.collects !== collects || !!chosen.starts !== starts || !!chosen.notes !== notes
+      || !!chosen.filedPictures !== filedPictures) {
       chosen.collects = collects;
       chosen.starts = starts;
       chosen.notes = notes;
+      chosen.filedPictures = filedPictures;
       this.persist();
     }
     this.board = this.boards.get(chosen.pin.board);
@@ -1934,6 +1957,7 @@ export class Store {
       this.preview();
       this.foreground();
       this.loadNotes();
+      this.sendWaiting();
     } else if (reply.result === "transcript" && original?.body.op === "transcript") {
       const entry = this.sessions.entries.get(original.context);
       if (entry) {

@@ -8,11 +8,16 @@ import { worktreeWords } from "./lists.js";
 
 // Where the ticket is going, and how it gets there from here (T-497): live,
 // through the relay's mailbox while the terminal is away, or kept in this
-// browser until there is a connection.
-function destination(store) {
+// browser until there is a connection. Pictures go up live only, so a
+// pictured ticket waits in this browser for the terminal (T-705).
+function destination(store, pictured) {
   if (store.live && store.canSend)
     return { link: "live", icon: "terminal", text: "Your terminal is live, so it lands right away.",
       note: "It lands on your board in a moment." };
+  if (pictured && store.canSend)
+    return { link: "held", icon: "moon",
+      text: "Your terminal is out of reach. Pictures go up only while it is live, so this ticket waits in this page.",
+      note: "Keep this page open. It goes out when your terminal is back." };
   if (store.collects && (store.link === "nonet" || store.link === "relay"))
     return { link: "held", icon: "wifiOff",
       text: store.link === "nonet"
@@ -68,7 +73,7 @@ export function NewTicket({ store }) {
     if ((!draft.open || !board) && dialog.open) dialog.close();
   });
   if (!board) return html`<dialog id="new-ticket-sheet" class="compose" ref=${ref}></dialog>`;
-  const dest = destination(store);
+  const dest = destination(store, draft.pictures.length > 0);
   const busy = !!draft.sending || draft.reading > 0;
   const ready = store.canSend && !!draft.title.trim() && !busy;
   const about = board.columnDescriptions[draft.column];
@@ -110,7 +115,7 @@ export function NewTicket({ store }) {
             mark(e);
             store.setComposer("description", e.currentTarget.value);
           }}
-          onPaste=${(e) => pastePictures(e, store.canFilePictures, addPictures, caret)}
+          onPaste=${(e) => pastePictures(e, store.offersTicketPictures, addPictures, caret)}
           onKeyDown=${(e) => {
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
               e.preventDefault();
@@ -118,7 +123,7 @@ export function NewTicket({ store }) {
             }
           }}></textarea></label>
         ${oversize && html`<p class="compose-error">Details must fit in 32 KiB.</p>`}
-        <${PictureBar} id="new-picture" can=${store.canFilePictures} draft=${draft} caret=${caret}
+        <${PictureBar} id="new-picture" can=${store.offersTicketPictures} draft=${draft} caret=${caret}
           onAdd=${addPictures} onRemove=${(n) => store.removeTicketPicture(n)} />
         <fieldset class="choices">
           <legend>Column</legend>
@@ -131,6 +136,7 @@ export function NewTicket({ store }) {
       </div>
       <footer class="compose-foot">
         ${draft.sending && html`<p class="note-sending" role="status"><${Tick} state="clock" /><span>${draft.sending}</span></p>`}
+        ${draft.waiting && html`<p id="ticket-waiting" class="note-sending" role="status"><${Tick} state="clock" /><span>Waiting for your terminal.</span></p>`}
         ${draft.error && html`<p class="compose-error" role="alert">${draft.error}</p>`}
         <button id="send-ticket" type="submit" class="btn btn-pri compose-send" disabled=${!ready}>
           <${Icon} name="send" size=${18} /><span>Send ticket</span></button>
@@ -166,6 +172,7 @@ export function QuickNew({ store }) {
     <button id="quick-send" type="submit" class="send" aria-label="Send ticket" disabled=${!ready}>
       <${Icon} name="up" size=${20} width=${2.2} /></button>
     ${draft.error && !draft.open && html`<p class="quick-error" role="alert">${draft.error}</p>`}
+    ${draft.waiting && !draft.open && html`<p class="quick-waiting" role="status">Waiting for your terminal: it goes out when the terminal is back.</p>`}
   </form>`;
 }
 

@@ -22835,3 +22835,29 @@ no-agent ticket opening on its description, the away strip on a pane, the reload
 (the fold, the step's two spans, the switch in Settings), `workspaceFlow` (the glyph on the
 line, the branch row in the sheet), `tierFlow` and the main flow (the row shows with words).
 `assets/demo/remote-conversation.png` re-shot.
+
+## A new ticket takes pictures while the terminal is away (T-705, 2026-10-08, "Remote control cant attach images in ticket creation")
+
+**Asked.** The title alone. T-705 itself arrived by the relay's mailbox (it and T-704 landed in
+the same 35 ms), so it was written while the terminal was away, which is exactly where T-670
+hid the **Picture** button: no button and no word why.
+
+**Refuted: T-670's "away, the Picture button is not offered".** The bytes still cannot ride a
+letter (128 KiB, and a picture is up to 10 MiB), so the ticket cannot be sealed; but nothing
+stops it waiting in the page. **Built:** `Store::offersTicketPictures` is `canFilePictures`, or
+away when the host said `filed_pictures` the last time it was live (`chosen.filedPictures`,
+kept beside `collects`/`starts`/`notes` in `onReady`). Pictures are picked and pasted as live.
+Send with pictures and no live channel sets `draft.waiting` and seals nothing; the board reply
+that makes the page live calls `sendWaiting`, which sends the draft over T-670's live road.
+Any change to the draft (words, tags, a picture added or removed) clears `waiting`, so only
+what the person pressed Send on goes out by itself. The sheet's destination says the ticket
+waits in this page and to keep it open; the footer and Sent's quick bar say "Waiting for your
+terminal". A ticket without pictures is unchanged (sealed for a mailbox host).
+
+**Not built:** the waiting draft is memory only, as T-670's pictures are: a closed tab loses
+it. A host away that keeps no mail still cannot send at all (`canSend`). A browser paired
+before this ships learns `filedPictures` at its next live connection.
+
+Tests: the UX suite's `notesFlow` takes the terminal away, picks a picture into a new ticket,
+sends, sees `#ticket-waiting` and no deposit, brings the terminal back and asserts one live
+`create` with one upload and the linked words (Chromium and WebKit, desktop, tablet, phone).

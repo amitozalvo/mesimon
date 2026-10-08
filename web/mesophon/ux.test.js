@@ -1232,6 +1232,36 @@ async function notesFlow(browser, engineName, size, viewport) {
     await composer.getByRole("button", { name: "Cancel" }).click();
     await composer.waitFor({ state: "hidden" });
 
+    // The terminal away (T-705): the sheet still offers a picture, and a
+    // pictured ticket waits in the page, never sealed, then goes out live
+    // when the terminal is back.
+    await page.evaluate(() => {
+      fixture.refuse = true;
+      fixture.channel().close();
+    });
+    await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
+    await page.locator(size === "phone" ? "#new-ticket-fab" : "#new-ticket").click();
+    await composer.waitFor({ state: "visible" });
+    await page.locator("#new-title").fill("Pictured while away");
+    await page.locator("#new-picture").setInputFiles({ name: "away.png", mimeType: "image/png", buffer: png });
+    await composer.locator(".note-pic").first().waitFor();
+    assert.match(await composer.locator(".compose-dest").textContent(), /waits in this page/);
+    const creates = await page.evaluate(() => fixture.creates.length);
+    const sealed = await page.evaluate(() => fixture.deposits.length);
+    await page.locator("#send-ticket").click();
+    await page.locator("#ticket-waiting").waitFor();
+    await shot("ticket-picture-away");
+    await page.evaluate(() => {
+      fixture.refuse = false;
+    });
+    await composer.waitFor({ state: "hidden" });
+    await toast("Landed as");
+    const away = await page.evaluate(() => fixture.creates.at(-1));
+    assert.equal(await page.evaluate(() => fixture.creates.length), creates + 1);
+    assert.deepEqual([away.title, away.uploads.length], ["Pictured while away", 1]);
+    assert.match(away.description, /^\[Image #1\]\(mesimon-attachment:/);
+    assert.equal(await page.evaluate(() => fixture.deposits.length), sealed, "a waiting pictured ticket is never sealed");
+
     // A ticket without notes has no note pane: the bar's right end adds a
     // description. One without an agent opens on its description.
     await open("ticket-4");

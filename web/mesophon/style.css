@@ -3259,9 +3259,14 @@ button.sent-bubble:hover {
   border-radius: 50%;
   background: var(--ink2);
 }
-.quick-error {
+.quick-error,
+.quick-waiting {
   flex-basis: 100%;
   padding: 0 4px;
+}
+.quick-waiting {
+  color: var(--ink2);
+  font-size: 0.875rem;
 }
 
 /* the toast: one line about a ticket, above the tab bar */
