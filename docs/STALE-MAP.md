@@ -22738,3 +22738,15 @@ back at 0/844 when the keyboard goes. `sw.js`'s `PAGE` keeps `viewport.js`. The 
 serves this page, so the fix reaches phones with the relay's `ship.sh`. **Owed** at the next
 bump — **Fixed:** on an iPhone, opening the keyboard on Remote Control no longer pushes the page
 out of view. Physical-phone acceptance (`web/mesophon/README.md`) is still what proves it.
+
+## The phone's drawer lists the boards (T-699, 2026-10-08, "Remote Control phone browser show connected boards in the main drawer")
+
+On a phone or a tablet the header's board name opened the drawer, and the board list (T-510) sat
+behind a second press, on the same name under the brand. Now the drawer lists every paired board,
+each board's Forget (T-673) and Pair a board as it opens; the name under the brand is plain words
+there (no `#board-picker`), and the list is a `group` of buttons rather than a `menu`. The desktop
+sidebar keeps the picker: it is always on screen, and an open list there pushes the views down.
+Closing the drawer drops a half-asked Forget (`Store::openSheet`).
+
+Tests: the UX suite's board-picker step (the drawer has no picker and lists the boards at once,
+tablet and phone) and `forgetFlow`, which now forgets from the drawer's list.

@@ -327,6 +327,7 @@ export class Store {
   openSheet(open) {
     this.sheetOpen = open;
     this.boardMenuOpen = false;
+    this.forgetting = undefined;
     this.emit();
   }
   openSettings(open) {

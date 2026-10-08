@@ -1515,10 +1515,13 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.match(await page.locator("#agent-state").textContent(), /Start one at your terminal/);
 
     // The board picker (T-510): the board's name under the brand lists every
-    // paired board and the way to pair one more; Escape closes it.
+    // paired board and the way to pair one more; Escape closes it. The
+    // drawer a phone or a tablet opens lists them as it opens (T-699).
     await overview();
-    if (size !== "desktop") await page.locator("#board-menu").click();
-    await page.locator("#board-picker").click();
+    if (size !== "desktop") {
+      await page.locator("#board-menu").click();
+      assert.equal(await page.locator("#board-picker").count(), 0, "the drawer has no picker to press");
+    } else await page.locator("#board-picker").click();
     await page.locator("#board-list").waitFor();
     assert.equal(
       await page.locator('#board-list .side-board[aria-current="true"] .side-board-name').textContent(),
@@ -2459,8 +2462,7 @@ async function forgetFlow(browser, engineName) {
     );
   const picker = async () => {
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
-    if (!(await page.locator("#board-picker").isVisible())) await page.locator("#board-menu").click();
-    await page.locator("#board-picker").click();
+    if (!(await page.locator("#board-list").isVisible())) await page.locator("#board-menu").click();
     await page.locator("#board-list").waitFor();
   };
   try {
@@ -2492,14 +2494,14 @@ async function forgetFlow(browser, engineName) {
     const rows = page.locator("#board-list .side-board-row");
     assert.equal(await rows.count(), 2);
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-forget-list.png`) });
-    await page.getByRole("menuitem", { name: "Forget Old test board on this browser" }).click();
+    await page.getByRole("button", { name: "Forget Old test board on this browser" }).click();
     assert.match(await page.locator("#board-list .side-board-ask").textContent(), /Forget Old test board here\?/);
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-forget-ask.png`) });
     await page.locator("#board-list .side-board-no").click();
     assert.equal(await rows.count(), 2, "Keep forgets nothing");
-    await page.getByRole("menuitem", { name: "Forget Old test board on this browser" }).click();
+    await page.getByRole("button", { name: "Forget Old test board on this browser" }).click();
     await page.locator("#board-list .side-board-yes").click();
-    await page.locator("#board-list").waitFor({ state: "hidden" });
+    await until(page, () => !document.querySelector("#board-list").textContent.includes("Old test board"));
     assert.match(await page.locator("#connection").textContent(), /Forgot Old test board/);
     assert.deepEqual((await identity()).boards.map((b) => b.pin.board), ["board-a"]);
     assert.equal(
@@ -2519,7 +2521,7 @@ async function forgetFlow(browser, engineName) {
 
     // The last board forgotten: the pairing screen, and nothing kept.
     await picker();
-    await page.getByRole("menuitem", { name: /^Forget .* on this browser$/ }).click();
+    await page.getByRole("button", { name: /^Forget .* on this browser$/ }).click();
     await page.locator("#board-list .side-board-yes").click();
     await until(page, () => !document.querySelector("#pair").disabled);
     assert.deepEqual((await identity()).boards, []);

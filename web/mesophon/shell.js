@@ -236,41 +236,47 @@ function Settings({ store }) {
 
 // The board's name under the brand is the picker (T-510): a press lists
 // every paired board and the way to pair one more, and each board's bin
-// forgets that one on this browser after a second word (T-673).
-function BoardPicker({ store }) {
+// forgets that one on this browser after a second word (T-673). The drawer
+// a phone or a tablet opens from the header lists them already (T-699), so
+// there the name is only words.
+function BoardPicker({ store, drawer }) {
   const open = store.boardMenuOpen;
+  if (drawer)
+    return html`<span class="side-sub side-pick-name">${store.board?.title || store.active?.title || "Paired board"}</span>`;
   return html`<button id="board-picker" type="button" class="side-sub side-pick" aria-haspopup="menu"
     aria-expanded=${String(open)} aria-controls="board-list" onClick=${() => store.openBoardMenu(!open)}>
     <span class="side-pick-name">${store.board?.title || store.active?.title || "Paired board"}</span>
     <${Icon} name="chevronDown" size=${12} width=${2.4} /></button>`;
 }
 
-function BoardMenu({ store }) {
+// In the drawer the list is part of the page, not a menu over it.
+function BoardMenu({ store, drawer }) {
   const boards = store.identity?.boards || [];
   const link = store.link;
-  return html`<div id="board-list" class="board-menu" role="menu" aria-label="Paired boards">
+  const item = drawer ? undefined : "menuitem";
+  return html`<div id="board-list" class="board-menu" role=${drawer ? "group" : "menu"} aria-label="Paired boards">
     ${boards.map((b) => {
       const name = b.title || "Paired board";
       if (store.forgetting === b.pin.board)
-        return html`<div role="none" class="side-board side-board-ask" key=${b.pin.board}>
+        return html`<div role=${drawer ? undefined : "none"} class="side-board side-board-ask" key=${b.pin.board}>
           <span class="side-board-name">Forget ${name} here?</span>
-          <button type="button" role="menuitem" class="btn btn-quiet btn-danger side-board-yes"
+          <button type="button" role=${item} class="btn btn-quiet btn-danger side-board-yes"
             onClick=${() => store.forgetBoard(b.pin.board)}>Forget</button>
-          <button type="button" role="menuitem" class="btn btn-quiet side-board-no"
+          <button type="button" role=${item} class="btn btn-quiet side-board-no"
             onClick=${() => store.askForget(undefined)}>Keep</button>
         </div>`;
-      return html`<div role="none" class="side-board-row" key=${b.pin.board}>
-        <button type="button" role="menuitem" class="side-board"
+      return html`<div role=${drawer ? undefined : "none"} class="side-board-row" key=${b.pin.board}>
+        <button type="button" role=${item} class="side-board"
           aria-current=${String(b === store.active)} onClick=${() => store.switchBoard(b.pin.board)}>
           <span class=${`hop-dot${b === store.active && store.live ? " ok" : ""}`} aria-hidden="true"></span>
           <span class="side-board-name">${name}</span>
           <span class="side-board-state">${b.revoked ? "Access removed" : b === store.active ? linkLabel[link] : ""}</span>
         </button>
-        <button type="button" role="menuitem" class="icon-btn side-board-forget" aria-label=${`Forget ${name} on this browser`}
+        <button type="button" role=${item} class="icon-btn side-board-forget" aria-label=${`Forget ${name} on this browser`}
           title="Forget" onClick=${() => store.askForget(b.pin.board)}><${Icon} name="trash" size=${16} /></button>
       </div>`;
     })}
-    <button id="add-board" type="button" role="menuitem" class="side-board side-board-add" onClick=${() => store.showPairing()}>
+    <button id="add-board" type="button" role=${item} class="side-board side-board-add" onClick=${() => store.showPairing()}>
       <${Icon} name="plus" size=${16} /><span class="side-board-name">Pair a board</span></button>
   </div>`;
 }
@@ -282,13 +288,13 @@ function Sidebar({ store, bp }) {
     <aside id="sidebar" class=${open ? "open" : ""} aria-label="Boards and settings">
       <div class="side-brand">
         <${Shin} scale=${3} light=${lightOf(store)} />
-        <span class="side-brand-text"><span class="side-title">mesimon</span><${BoardPicker} store=${store} /></span>
+        <span class="side-brand-text"><span class="side-title">mesimon</span><${BoardPicker} store=${store} drawer=${open} /></span>
         <button id="side-toggle" type="button" class="icon-btn side-toggle" aria-expanded=${String(!store.rail)}
           aria-label=${store.rail ? "Expand the sidebar" : "Collapse the sidebar"} title=${store.rail ? "Expand" : "Collapse"}
           onClick=${() => store.setRail(!store.rail)}><${Icon} name="panelLeft" size=${18} /></button>
         <button type="button" class="icon-btn side-close" aria-label="Close" onClick=${() => store.openSheet(false)}><${Icon} name="x" size=${20} /></button>
       </div>
-      ${store.boardMenuOpen && html`<${BoardMenu} store=${store} />`}
+      ${(open || store.boardMenuOpen) && html`<${BoardMenu} store=${store} drawer=${open} />`}
       <nav class="side-nav" aria-label="View"><${ModeButtons} store=${store} board=${store.board} /></nav>
       <div class="side-foot">
         <button id="settings" type="button" class="mode" aria-haspopup="dialog" title="Settings"

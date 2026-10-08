@@ -3382,8 +3382,11 @@ button.sent-bubble:hover {
   #sidebar.open .side-close {
     display: inline-flex;
   }
+  /* The drawer lists the boards as it opens (T-699): the sheet's own
+     rise is the motion. */
   #sidebar.open .board-menu {
     background: var(--s2);
+    animation: none;
   }
   #sidebar.open .board-menu .side-board[aria-current="true"] {
     background: var(--s3);
