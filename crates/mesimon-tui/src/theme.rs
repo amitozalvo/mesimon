@@ -1359,6 +1359,13 @@ pub(crate) const CROWN_LIT_MS: u64 = 2_000;
 /// The summary's wave crosses a card row in this long (T-696), whatever
 /// the row's width; a finishing tick crosses twice.
 pub(crate) const SUMMARY_SWEEP_MS: u64 = 700;
+/// The board's first read of a summary fades its underline in over this
+/// long (T-696; the author: "slower reveal and less noticeable, try to fade
+/// easily"): no head, a long soft front easing each cell from the ground's
+/// colour to its resting ink, left to right.
+pub(crate) const SUMMARY_REVEAL_MS: u64 = 1_800;
+/// Cells over which the reveal's front fades a cell in.
+const SUMMARY_REVEAL_FADE: f32 = 12.0;
 /// The landing's front crosses the struck title in this long (T-544),
 /// whatever the title's length, like the crowning's.
 pub(crate) const LAND_SWEEP_MS: u64 = 600;
@@ -2155,7 +2162,9 @@ impl Theme {
         after: mesimon_core::summary::Count,
     ) -> u64 {
         let finished = after.total > 0 && after.done == after.total;
-        if finished && before.is_some_and(|b| b.done != b.total) {
+        if before.is_none() {
+            SUMMARY_REVEAL_MS
+        } else if finished && before.is_some_and(|b| b.done != b.total) {
             2 * SUMMARY_SWEEP_MS
         } else {
             SUMMARY_SWEEP_MS
@@ -2185,6 +2194,27 @@ impl Theme {
         let colour = matches!(self.profile, Profile::TrueColor | Profile::Ansi256);
         if !colour || cells == 0 || elapsed >= Self::summary_pulse_ms(before, after) {
             return at_rest;
+        }
+        // The first read: a slow, soft fade-in. No head; a long front, and
+        // every cell behind it eases from the ground's colour — an
+        // underline nobody sees — to its resting ink. Where the ground is
+        // not a colour there is nothing to ease from, so the front draws
+        // the resting underline as it passes.
+        if before.is_none() {
+            let settled = at_rest?;
+            let t = elapsed as f32 / SUMMARY_REVEAL_MS as f32;
+            let front = -1.0 + (cells as f32 + SUMMARY_REVEAL_FADE + 1.0) * ease(t);
+            let d = front - cell as f32;
+            if d < 0.0 {
+                return None;
+            }
+            let k = (d / SUMMARY_REVEAL_FADE).clamp(0.0, 1.0);
+            let k = k * k * (3.0 - 2.0 * k);
+            let ground = if cursorish { self.selected_bg.or(self.bg) } else { self.bg };
+            let (Some(ground), Some(ink)) = (ground, settled.underline_color) else {
+                return Some(settled);
+            };
+            return Some(settled.underline_color(mix(ink, ground, k)));
         }
         let pass = elapsed / SUMMARY_SWEEP_MS;
         let t = (elapsed % SUMMARY_SWEEP_MS) as f32 / SUMMARY_SWEEP_MS as f32;

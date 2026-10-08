@@ -6019,12 +6019,14 @@ fn test_summary_change_sweeps_the_row() {
     assert!((1..=2).contains(&heads(&done)), "the second pass's head");
     done.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS * 3, from });
     assert!(!done.animating());
-    // The board's first read reveals from bare: ahead of the head nothing,
-    // behind it the resting underline, once, whatever it reveals.
+    // The board's first read fades in from bare, slowly and with no head:
+    // ahead of the front nothing, behind it the resting underline eased
+    // in from the ground's colour, once, whatever it reveals.
+    use crate::theme::SUMMARY_REVEAL_MS;
     let mut fresh = app_summary();
     fresh
         .summary_pulses
-        .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS / 2, from: None });
+        .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_REVEAL_MS / 2, from: None });
     let count_under = |app: &App| {
         let (buf, y) = row_of(app);
         (0..120u16).filter(|x| buf[(*x, y)].modifier.contains(Modifier::UNDERLINED)).count()
@@ -6032,11 +6034,13 @@ fn test_summary_change_sweeps_the_row() {
     let whole = count_under(&app_summary());
     let underlined = count_under(&fresh);
     assert!(underlined > 0 && underlined < whole, "part way: {underlined} of {whole}");
-    assert!(heads(&fresh) >= 1);
+    assert_eq!(heads(&fresh), 0, "no head: the fade is soft");
+    assert!(fresh.animating());
     fresh
         .summary_pulses
-        .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS - 50, from: None });
+        .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_REVEAL_MS - 50, from: None });
     assert!(!fresh.animating(), "one pass");
+    assert_eq!(count_under(&fresh), whole);
 }
 
 /// Enter in the dialog opens the note scrolled to the row's line (T-696):

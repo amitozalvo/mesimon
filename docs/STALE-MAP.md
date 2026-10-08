@@ -22566,10 +22566,11 @@ first read of a note). The card draws it as the crowning's wave on the underline
 glow cooling to the new ink behind it, the new run behind the head, the old ahead; a change that
 ticks the last box crosses the finished run a second time, the glint that says done.
 `App::animating` keeps the frames coming while one plays; `poll_summaries` drops the played-out.
-The board's first read of a summary plays the same wave from bare (`SummaryPulse.from: None`;
-the author: "when first rendering it when loading board, can you do an animation of fade from
-left to right?"), once, whatever it reveals; eight notes a tick, so a full board reveals in a
-short cascade.
+The board's first read of a summary fades the underline in from bare (`SummaryPulse.from:
+None`; the author: "an animation of fade from left to right?", then "slower reveal and less
+noticeable, try to fade easily"): `SUMMARY_REVEAL_MS` = 1.8 s, no head, a twelve-cell front
+easing each cell's underline from the ground's colour to its resting ink, once, whatever it
+reveals; eight notes a tick, so a full board fades in as a short cascade.
 **And iTerm2 did not draw it** (the author: "no visible animation was running (looks broken)", a
 row frozen in patches): measured with three `printf`s on iTerm2 3.6 — a bold underlined line
 draws its spaces, a line rewritten whole inside a synchronized update takes a new underline
