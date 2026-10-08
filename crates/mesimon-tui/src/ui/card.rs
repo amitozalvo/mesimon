@@ -721,8 +721,12 @@ pub(super) fn render(
     // on a row that is already saying something louder: the inverted
     // needs-you band, a trail, the delete flash, the move ghost.
     let rows_shown = selected && open && summary.is_some_and(|s| !s.rows.is_empty());
+    // A change plays on the underline even while the rows show (the tick
+    // from the dialog lands on the cursor card, which is usually open):
+    // the wave crosses, and the row is bare again when it is done.
     let under = summary
-        .filter(|s| summary_underline && s.count.total > 0 && !rows_shown)
+        .filter(|s| summary_underline && s.count.total > 0)
+        .filter(|_| !rows_shown || summary_pulse.is_some())
         .filter(|_| !(doomed || trail || attn_card || held || snooze.is_some()))
         .map(|s| s.count);
     match (&sweep, &landing) {
@@ -1026,11 +1030,11 @@ pub(super) fn render(
         // are open), then a fold row counting the rest with their state —
         // every box ticked, none, or some — and the key that lists them
         // all, through the keymap so a key drawn here is a key that works.
-        // The rows sit one cell in from the glyph column, a cell before the
-        // reply's words (author: "to indicate it's not the transcript"): a
-        // box heads a task, a dash a plain row.
+        // The rows start on the glyph column, two cells before the reply's
+        // words (author: "to indicate it's not the transcript"): a box
+        // heads a task, a dash a plain row.
         if let Some(s) = summary.filter(|_| rows_shown) {
-            let inner = t_cells.saturating_sub(1);
+            let inner = t_cells;
             let (shown, fold) = s.card_rows(SUMMARY_ROWS);
             for r in shown {
                 let words = mesimon_core::text::scrub_cells(&r.text, false);
@@ -1041,10 +1045,10 @@ pub(super) fn render(
                         if done { faint } else { dim },
                     ),
                 };
-                push(vec![Span::styled(format!(" {}", truncate(&row, inner)), style)]);
+                push(vec![Span::styled(truncate(&row, inner), style)]);
             }
             if let Some((n, state)) = fold {
-                let words = format!(" {} {n} more", box_mark(tier, state));
+                let words = format!("{} {n} more", box_mark(tier, state));
                 let mut row = vec![Span::styled(words.clone(), faint)];
                 if let Some((keys, kctx)) = summary_keys {
                     let budget = t_cells.saturating_sub(words.width() + 1);

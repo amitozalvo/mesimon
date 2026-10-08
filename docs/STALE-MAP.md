@@ -22532,9 +22532,11 @@ tiers draw none. Never on a row already saying something louder
 card lists the rows under the reply instead: the first plain row, then up to three boxes — the
 open ones first, ticked ones after when fewer than three are open — then a fold row `[✓] 2 more`
 whose box is the hidden boxes' state (`[-]` for some), with `^j summary` on its right through
-`chrome::hint_spans`, so a key drawn there is a key that works. The rows sit one cell in from
-the glyph column, a cell before the reply's words, a dash heading a plain row (author: "to
-indicate it's not the transcript"); the dialog's plain rows wear the dash too. Under `P` every other open card
+`chrome::hint_spans`, so a key drawn there is a key that works. The rows start on the glyph
+column, two cells before the reply's words, a dash heading a plain row (author: "to indicate
+it's not the transcript", then "the checkboxes should rest on the glyph column"); the dialog's
+plain rows wear the dash too. A change plays its wave on the open card too, over the rows,
+since the dialog's tick lands on the cursor card, which is usually open. Under `P` every other open card
 keeps its underline: the rows are the selection's, like the session list.
 
 **The dialog.** `^j` (`Key::Ctrl('j')`: a plain Ctrl chord on the legacy floor, `0x0A` in raw

@@ -5979,6 +5979,11 @@ fn test_summary_change_sweeps_the_row() {
     let from = Count { done: 1, total: 5 };
     app.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS / 2, from });
     assert!(app.animating(), "the board keeps its frames coming");
+    // It plays on the open card too, over the rows.
+    let mut open = app_summary();
+    open.peek = true;
+    open.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS / 2, from });
+    assert!(heads(&open) >= 1, "the wave crosses the open card's title");
     assert!((1..=2).contains(&heads(&app)), "the head, one cell and its brightest glow");
     let settled = {
         let mut rest = app_summary();
