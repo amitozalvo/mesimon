@@ -34,8 +34,6 @@ const PAGE_GUESS: usize = 48 * 1024;
 /// How long a stopped agent stays on Now, and its conversation on the
 /// shelf: the page's `RECENT_MS`.
 const RECENT_MS: u64 = 3_600_000;
-/// How long the last write waits for its frames to leave on a clean stop.
-const FLUSH_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub(super) struct Shelf {
@@ -232,46 +230,6 @@ impl Daemon {
         self.control.stored = Some(s);
         self.control.shelf.forget();
         Ok(())
-    }
-
-    /// The last write on a clean stop: what changed since the last build
-    /// goes now, read on this thread, and the worker has `FLUSH_WAIT` to
-    /// hand it on before the process ends.
-    pub(super) fn shelf_flush(&mut self) {
-        if !self.shelf_on() {
-            return;
-        }
-        if self.control.shelf.dirty || self.control.shelf.reading {
-            self.control.shelf.reading = false;
-            if let Some((build, reads)) = self.shelf_plan() {
-                let pages = reads.into_iter().map(Read::run).collect();
-                self.shelf_finish(build, pages);
-            }
-        }
-        if self.control.shelf.outbox.is_empty() {
-            return;
-        }
-        let deadline = Instant::now() + FLUSH_WAIT;
-        let Some(jobs) = self.control.jobs.take() else { return };
-        while let Some(wire) = self.control.shelf.outbox.pop_front() {
-            let mut wire = wire;
-            loop {
-                match jobs.try_send(wire) {
-                    Ok(()) => break,
-                    Err(std::sync::mpsc::TrySendError::Full(back)) if Instant::now() < deadline => {
-                        wire = back;
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(_) => return,
-                }
-            }
-        }
-        drop(jobs);
-        if let Some(worker) = self.control.worker.take() {
-            while !worker.is_finished() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
     }
 
     /// What the shelf holds, in order and inside its budget: the board, the

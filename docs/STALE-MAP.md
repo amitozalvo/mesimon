@@ -22611,15 +22611,31 @@ than the terminal's.
   notes' `notes_stamp` and authors, the transcript's path, length and mtime); conversations are
   read off the writer thread (`Msg::ShelfRead`). Frames leave two per tick: the worker's queue
   is 32 and a full queue drops the connection. A new connection forgets what the relay holds and
-  writes everything again. On a clean stop the daemon writes what changed and gives the worker
-  two seconds (`shelf_flush`, which is why `control_io::spawn` now returns its `JoinHandle`).
+  writes everything again.
+- **Refuted, measured: a last write on a clean stop.** Built, then taken out before merge: the
+  relay handles one connection's frames in order, so the stop's few `Shelve` frames kept the
+  dying host registered as the mail collector a little longer, and a phone's ticket deposited
+  in that window was handed to the leaving host (`mail_waits_for_an_away_host_and_lands_once`
+  read `Sent` where it expects `Waiting`, every run). The copy is at most `SHELF_EVERY` old
+  without it.
 - **The setting is `Keep a copy at the relay` in the Remote Control dialog** (`LocalAction::Shelf
   { on }`, `Info::shelf`, `None` from an older daemon, which shows no row). Off empties every
-  browser's shelf (`Shelve { keep: [] }` per grant). **Stored as `shelf_off` in `mesophon.json`
+  browser's shelf (`Shelve { keep: [] }` per grant), **and so does every later connection
+  while it is off**, so turning it off while the relay is out of reach still empties it.
+  **Stored as `shelf_off` in `mesophon.json`
   with `schema: 2`** only while off: an older build bars a schema-2 file instead of dropping the
   opt-out and leaving a copy on the next upgrade; on, the file stays schema 1 and an older build
-  reads it as before. **Disable now publishes the board with no devices** before the connection
-  drops, so the relay forgets every browser's shelf (and refuses their mail) at once.
+  reads it as before.
+- **Disable retires the board until the relay hears it** (from the commit's security review:
+  disabled while the relay was out of reach, the old code deleted `mesophon.json` and never told
+  the relay, so every browser on the board's last list could read its shelf for seven days).
+  Disable writes `mesophon-retired.json` (board and host) before deleting `mesophon.json`, and
+  the daemon keeps connecting with no board enabled until the relay answers `Published` to the
+  board with no devices; then the file goes. An Enable meanwhile takes the retired id back, and
+  its first publish (no grants yet) does the same. A retirement another identity made is
+  dropped, since the relay takes a board's list from its host alone. **A revoke while away** is
+  closed by the publish on reconnect; until then the revoked browser can read only what was
+  sealed to it while it was paired.
 - **The page** (`shelf.js`, `Store::peekShelf`/`onShelf`/`takeShelved`): one `Peek` per away
   spell on the mailbox socket, once the host channel has failed (`down`). Each item opens only
   under the pinned host key; a newer board replaces the remembered one and is remembered as it

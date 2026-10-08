@@ -1447,8 +1447,6 @@ pub fn run(paths: Paths) -> Result<()> {
     // The crown's ledger on the way down (T-602): whatever the shutdown's
     // own settles owed or held is there for the next daemon.
     d.persist_crown();
-    // The relay's copy, as the board stands now (T-698).
-    d.shelf_flush();
     let _ = d.feed.flush();
     let _ = std::fs::remove_file(d.paths.orch_sock());
     let _ = std::fs::remove_file(d.paths.hook_sock());

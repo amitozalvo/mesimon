@@ -44,6 +44,16 @@ pub(super) struct Stored {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) shelf_off: bool,
 }
+/// A board disabled before the relay heard it had no devices left (T-698):
+/// until the relay acknowledges an empty list for it, its browsers could
+/// still read their shelves there, so the host keeps connecting to say so.
+/// Kept in `mesophon-retired.json` across restarts; a board enabled again
+/// meanwhile takes this id back, and its first publish says the same.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub(super) struct Retired {
+    board: BoardId,
+    host: DeviceId,
+}
 #[derive(Clone, Serialize, Deserialize)]
 struct NoteFiled {
     envelope: ObjectId,
@@ -58,6 +68,8 @@ struct Filed {
     key: String,
     column: String,
 }
+/// Where a retirement the relay has not heard waits (`Retired`).
+const RETIRED_FILE: &str = "mesophon-retired.json";
 /// How many filed envelopes `Stored::filed` remembers.
 const FILED_KEEP: usize = 256;
 /// Past this many bytes a board goes to the browser without its agents'
@@ -221,10 +233,10 @@ struct Pending {
 pub(super) struct Control {
     pub(super) tx: Sender<Msg>,
     pub(super) jobs: Option<SyncSender<Wire>>,
-    /// The worker behind `jobs`, joined on a clean stop (T-698).
-    pub(super) worker: Option<std::thread::JoinHandle<()>>,
     generation: u64,
     pub(super) stored: Option<Stored>,
+    /// A disabled board the relay has not yet heard is empty (T-698).
+    retired: Option<Retired>,
     barred: bool,
     pub(super) keys: Option<mesimon_team::crypto::DeviceKeys>,
     identity: Option<String>,
@@ -276,8 +288,8 @@ impl Control {
         Self {
             tx,
             jobs: None,
-            worker: None,
             generation: 0,
+            retired: None,
             stored: None,
             barred: false,
             keys: None,
@@ -349,6 +361,9 @@ impl Control {
 }
 impl Daemon {
     pub(super) fn control_start(&mut self) {
+        self.control.retired = std::fs::read(self.paths.state_dir.join(RETIRED_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
         match std::fs::read(self.paths.state_dir.join("mesophon.json")) {
             Ok(bytes) => match serde_json::from_slice::<Stored>(&bytes) {
                 Ok(s)
@@ -370,6 +385,19 @@ impl Daemon {
                 self.control.error = Some("could not read Mesophon state".into());
             }
         }
+    }
+    /// Record, or with `None` clear, the board the relay must hear is empty.
+    fn control_retire(&mut self, retired: Option<Retired>) -> anyhow::Result<()> {
+        let path = self.paths.state_dir.join(RETIRED_FILE);
+        match &retired {
+            Some(r) => store::write_atomic(&path, &serde_json::to_string(r)?, 0o600)?,
+            None => match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            },
+        }
+        self.control.retired = retired;
+        Ok(())
     }
     pub(super) fn control_save(&self, s: &Stored) -> anyhow::Result<()> {
         store::write_atomic(
@@ -420,9 +448,16 @@ impl Daemon {
                     return fail("device identity unavailable");
                 };
                 if self.control.stored.is_none() {
+                    // A retirement the relay has not heard yet is finished by
+                    // this board's first publish, which lists no device.
+                    let board = self
+                        .control
+                        .retired
+                        .filter(|r| r.host == keys.id())
+                        .map_or_else(BoardId::random, |r| r.board);
                     let s = Stored {
                         schema: 1,
-                        board: BoardId::random(),
+                        board,
                         host: keys.id(),
                         grants: Vec::new(),
                         filed: Vec::new(),
@@ -438,6 +473,15 @@ impl Daemon {
                 self.control_tick();
             }
             LocalAction::Disable => {
+                // The relay forgets this board's browsers, their shelves
+                // included, only once it hears the board has none (T-698):
+                // until it says so, the board stays retired here.
+                if let Some(s) = &self.control.stored {
+                    let retired = Retired { board: s.board, host: s.host };
+                    if self.control_retire(Some(retired)).is_err() {
+                        return fail("could not disable Mesophon");
+                    }
+                }
                 match std::fs::remove_file(self.paths.state_dir.join("mesophon.json")) {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -467,6 +511,8 @@ impl Daemon {
                 self.control.mail = false;
                 self.control.shelf_relay = false;
                 self.control.generation += 1;
+                // The retirement's own connection, at the next tick.
+                self.control.retry = Instant::now();
             }
             LocalAction::Shelf { on } => {
                 if let Err(message) = self.shelf_set(on) {
@@ -533,7 +579,7 @@ impl Daemon {
     pub(super) fn control_tick(&mut self) {
         self.control_expire_permissions();
         self.control_deliver_dialogs();
-        if self.control.stored.is_none() {
+        if self.control.stored.is_none() && self.control.retired.is_none() {
             return;
         }
         let pending: Vec<_> = self.control.pending.keys().copied().collect();
@@ -569,6 +615,14 @@ impl Daemon {
             let Some(keys) = device.keys() else {
                 return;
             };
+            // A retirement another identity made is not this one's to finish:
+            // the relay takes a board's list from its host alone.
+            if self.control.stored.is_none()
+                && self.control.retired.is_some_and(|r| r.host != keys.id())
+            {
+                let _ = self.control_retire(None);
+                return;
+            }
             if self.control.stored.as_ref().is_some_and(|s| s.host != keys.id()) {
                 self.control.error = Some(
                     "this board was enabled by a different identity; disable and pair again".into(),
@@ -579,12 +633,11 @@ impl Daemon {
             self.control.generation += 1;
             let generation = self.control.generation;
             let tx = self.control.tx.clone();
-            let (jobs, worker) = control_io::spawn(device, move |e| {
+            self.control.jobs = Some(control_io::spawn(device, move |e| {
                 let (ack, done) = std::sync::mpsc::channel();
                 tx.send(Msg::Control(generation, e, ack)).is_ok()
                     && done.recv_timeout(Duration::from_secs(5)).is_ok()
-            });
-            (self.control.jobs, self.control.worker) = (Some(jobs), Some(worker));
+            }));
             self.control.retry = Instant::now() + Duration::from_secs(5);
         }
         if self.control.dirty && self.ticks.is_multiple_of(4) {
@@ -603,7 +656,33 @@ impl Daemon {
         self.shelf_tick();
     }
     pub(super) fn on_control(&mut self, generation: u64, event: NetEvent) {
-        if generation != self.control.generation || self.control.stored.is_none() {
+        if generation != self.control.generation {
+            return;
+        }
+        // Disabled with a retirement owed (T-698): the connection exists to
+        // publish the board with no devices, and ends once the relay took it.
+        if self.control.stored.is_none() {
+            let Some(r) = self.control.retired else { return };
+            match event {
+                NetEvent::Online(..) => {
+                    self.control.send(Wire::Host {
+                        board: r.board,
+                        devices: Vec::new(),
+                        invites: Vec::new(),
+                    });
+                }
+                NetEvent::Frame(Wire::Published) => {
+                    if self.control_retire(None).is_ok() {
+                        self.control.jobs = None;
+                        self.control.generation += 1;
+                    }
+                }
+                NetEvent::Offline => {
+                    self.control.jobs = None;
+                    self.control.retry = Instant::now() + Duration::from_secs(5);
+                }
+                NetEvent::Frame(_) => {}
+            }
             return;
         }
         let announce = matches!(
@@ -621,6 +700,24 @@ impl Daemon {
                 self.control.shelf.forget();
                 self.control.error = None;
                 self.control_publish();
+                // Turned off while away (T-698): the relay may still hold
+                // what was there, so every connection empties it again.
+                if shelf {
+                    if let Some(s) = self.control.stored.as_ref().filter(|s| s.shelf_off) {
+                        let empty: Vec<Wire> = s
+                            .grants
+                            .iter()
+                            .map(|g| Wire::Shelve {
+                                device: g.device,
+                                keep: Vec::new(),
+                                item: None,
+                            })
+                            .collect();
+                        for wire in empty {
+                            self.control.send(wire);
+                        }
+                    }
+                }
                 // After the publish, which is what makes this the host.
                 if let Some(board) = self.control.stored.as_ref().map(|s| s.board).filter(|_| mail)
                 {
@@ -656,7 +753,14 @@ impl Daemon {
             NetEvent::Frame(Wire::Gone { peer }) => {
                 self.control.peers.remove(&peer);
             }
-            NetEvent::Frame(Wire::Published) => {}
+            // The board's list reached the relay: a retirement this board
+            // took back is finished (T-698).
+            NetEvent::Frame(Wire::Published) => {
+                let board = self.control.stored.as_ref().map(|s| s.board);
+                if self.control.retired.is_some_and(|r| Some(r.board) == board) {
+                    let _ = self.control_retire(None);
+                }
+            }
             // The relay refused the phone's mail for this Mac's lapsed grant
             // (T-522): the same edge as a refused board write, so a Mac that
             // writes no shared board still renews by itself.

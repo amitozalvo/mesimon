@@ -47,16 +47,16 @@ fn beat(now: Instant, heard: Instant, pinged: Instant) -> Beat {
 pub fn spawn(
     device: DeviceFile,
     report: impl Fn(Event) -> bool + Send + 'static,
-) -> (SyncSender<Wire>, std::thread::JoinHandle<()>) {
+) -> SyncSender<Wire> {
     let (tx, rx) = sync_channel(QUEUE);
-    let worker = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         // A worker owns one generation of the connection. The writer retries
         // by making another worker, so queued commands never cross reconnects.
         if run(device, rx, &report).is_err() {
             let _ = report(Event::Offline);
         }
     });
-    (tx, worker)
+    tx
 }
 fn run(device: DeviceFile, rx: Receiver<Wire>, report: &impl Fn(Event) -> bool) -> Result<(), ()> {
     let client = RelayClient::new(device.relay).map_err(|_| ())?;

@@ -89,7 +89,9 @@ minutes even when nothing changed, so **As of** says when it was last there. A c
 your terminal has not refreshed for 7 days is deleted. **Keep a copy at the relay** in
 the Remote Control dialog turns it off, and the relay deletes every browser's copy;
 turning it on writes them again. Revoking a browser deletes its copy, and disabling
-Remote Control deletes all of them. A relay older than this version keeps no copy.
+Remote Control deletes all of them. Done while the relay is out of reach, each of these
+takes effect as soon as your terminal reaches it again. A relay older than this version
+keeps no copy.
 
 ## Filing a ticket
 
@@ -319,7 +321,9 @@ The daemon stores `mesophon.json` (mode 0600) in its existing per-board state
 directory, containing the opaque board identity, the device grants, whether the board
 keeps a copy at the relay, and the ids of the
 tickets it filed most recently from the relay, with their keys, and of the note edits it
-answered most recently, with their answers. A ticket filed from the
+answered most recently, with their answers. After Remote Control is disabled, and until
+the relay has heard the board has no browsers left, `mesophon-retired.json` (mode 0600)
+holds that board's identity and its host's. A ticket filed from the
 relay also records that id in its own `ticket.toml`, and, once it is picked up, when and
 how (`[picked]`: opened at the desk or an agent started). Pairing
 secrets and delivery receipts live in memory. The browser stores device keys,
