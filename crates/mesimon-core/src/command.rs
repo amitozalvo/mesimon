@@ -420,6 +420,14 @@ pub enum Command {
         #[serde(default)]
         note: Option<ulid::Ulid>,
         text: String,
+        /// The revision the writer read (T-696): a note that moved on since
+        /// is refused rather than overwritten — the summary dialog's tick
+        /// rewrites a body it fetched a moment ago, and the ticket's agent
+        /// may have rewritten it in between. `None` skips the check, which
+        /// is every writer from before the field. The phone road's
+        /// `Request::WriteNote` carries the same.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rev: Option<u64>,
     },
     /// Tell the ticket's live claude that a note changed: mesimon's own
     /// sentence, pasted and submitted like `MergeToAgent`. A human gesture

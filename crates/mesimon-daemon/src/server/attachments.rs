@@ -60,7 +60,7 @@ impl Daemon {
             }
         }
         if matches!(response, Response::Ok) {
-            response = self.write_note(ticket, note, text, by);
+            response = self.write_note(ticket, note, text, None, by);
         }
         if matches!(response, Response::NoteWritten { .. }) {
             self.uploads.committed(&uploads);

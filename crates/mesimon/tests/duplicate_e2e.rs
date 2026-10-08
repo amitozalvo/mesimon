@@ -37,7 +37,12 @@ fn duplicate_copies_content_below_source_without_starting_an_agent() {
     let following = create(&mut c, "Following card");
     for body in ["# Description\n\nExact **markdown**.\n", "# Plan\n\nSecond note ✓\n"] {
         assert!(matches!(
-            c.request(Command::WriteNote { ticket: source, note: None, text: body.into() }),
+            c.request(Command::WriteNote {
+                ticket: source,
+                note: None,
+                text: body.into(),
+                rev: None
+            }),
             Response::NoteWritten { .. }
         ));
     }
@@ -105,7 +110,8 @@ fn duplicate_copies_content_below_source_without_starting_an_agent() {
         c.request(Command::WriteNote {
             ticket: copied,
             note: Some(copy.notes[0].id),
-            text: "Changed copy".into()
+            text: "Changed copy".into(),
+            rev: None,
         }),
         Response::NoteWritten { .. }
     ));

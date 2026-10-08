@@ -341,6 +341,8 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         app.card_tier_word(ticket.id).as_deref(),
         // The preview is a still of the card: its age, whatever `$` says.
         None,
+        None,
+        None,
     );
     let w = inner.width as usize;
     let now = now_ms();

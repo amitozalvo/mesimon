@@ -2438,8 +2438,8 @@ impl Daemon {
                 Draft { column, title, workspace, text, uploads, tags, tier },
             ),
             Command::ReadNote { ticket, note } => self.read_note(ticket, note),
-            Command::WriteNote { ticket, note, text } => {
-                self.write_note(ticket, note, text, &Principal::Local)
+            Command::WriteNote { ticket, note, text, rev } => {
+                self.write_note(ticket, note, text, rev, &Principal::Local)
             }
             Command::NoteToAgent { ticket, note } => self.note_to_agent(ticket, note),
             Command::RestoreTicket { id } => self.restore_ticket(id),
@@ -3947,7 +3947,8 @@ impl Daemon {
         // on a refusal: a plan past the note limit lands cut rather than not
         // at all (the whole plan is in the transcript). Callers are refused.
         let plan = mesimon_core::board::sanitize_note(&plan);
-        let Response::NoteWritten { note: Some(id) } = self.write_note(ticket, existing, plan, &by)
+        let Response::NoteWritten { note: Some(id) } =
+            self.write_note(ticket, existing, plan, None, &by)
         else {
             return false;
         };
@@ -5250,7 +5251,7 @@ impl Daemon {
                 {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
-                let resp = self.write_note(target, note, text, &by);
+                let resp = self.write_note(target, note, text, None, &by);
                 if matches!(resp, Response::NoteWritten { .. }) {
                     self.feed.board(by.actor(), "write_note", Some(target));
                     self.crown_touched(ticket, target, "note");
@@ -9677,6 +9678,7 @@ impl Daemon {
         ticket: ulid::Ulid,
         note: Option<ulid::Ulid>,
         text: String,
+        rev: Option<u64>,
         by: &Principal,
     ) -> Response {
         use mesimon_core::board::{note_name, note_size_error, sanitize_note, NoteMeta};
@@ -9692,8 +9694,16 @@ impl Daemon {
             return no_such_ticket();
         };
         if let Some(id) = note {
-            if t.note(id).is_none() {
+            let Some(meta) = t.note(id) else {
                 return Response::Err { message: "no such note".into() };
+            };
+            // The revision the writer read is not the one on disk (T-696):
+            // someone wrote in between, and a whole-file write would take
+            // their words away. The phone road's `note_gate` is this rule.
+            if rev.is_some_and(|r| r != meta.rev) {
+                return Response::Err {
+                    message: "the note changed since you read it ∙ reopen".into(),
+                };
             }
         }
         let key = t.short_key.clone();

@@ -149,7 +149,7 @@ fn ticket_with_brief(c: &mut TestClient, title: &str, brief: &str) -> ulid::Ulid
         other => panic!("create: {other:?}"),
     };
     assert!(matches!(
-        c.request(Command::WriteNote { ticket, note: None, text: brief.into() }),
+        c.request(Command::WriteNote { ticket, note: None, text: brief.into(), rev: None }),
         Response::NoteWritten { .. }
     ));
     ticket

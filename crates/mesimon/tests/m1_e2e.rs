@@ -181,8 +181,12 @@ fn m1_acceptance_headless() {
 
     // A note rides the ticket through delete + undo: the body is a file
     // under the ticket directory, which delete removes eagerly.
-    let r =
-        c.request(Command::WriteNote { ticket: t.id, note: None, text: "kept across undo".into() });
+    let r = c.request(Command::WriteNote {
+        ticket: t.id,
+        note: None,
+        text: "kept across undo".into(),
+        rev: None,
+    });
     let Response::NoteWritten { note: Some(note) } = r else {
         panic!("expected NoteWritten, got {r:?}")
     };

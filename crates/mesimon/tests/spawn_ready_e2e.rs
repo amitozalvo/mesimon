@@ -95,7 +95,7 @@ fn composed(c: &mut TestClient, h: &Harness, title: &str) -> (ulid::Ulid, uuid::
     });
     let ticket = c.board().tickets.into_iter().find(|t| t.title == title).expect("ticket").id;
     assert!(matches!(
-        c.request(Command::WriteNote { ticket, note: None, text: BRIEF.into() }),
+        c.request(Command::WriteNote { ticket, note: None, text: BRIEF.into(), rev: None }),
         Response::NoteWritten { .. }
     ));
     let sid = match c.request(Command::SpawnSession {

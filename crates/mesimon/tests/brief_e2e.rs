@@ -46,7 +46,7 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
     });
     let ticket = c.board().tickets.first().expect("ticket").id;
     assert!(matches!(
-        c.request(Command::WriteNote { ticket, note: None, text: BRIEF.into() }),
+        c.request(Command::WriteNote { ticket, note: None, text: BRIEF.into(), rev: None }),
         Response::NoteWritten { .. }
     ));
 

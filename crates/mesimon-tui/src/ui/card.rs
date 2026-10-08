@@ -398,6 +398,8 @@ pub(super) fn render(
     crown: CrownMark<'_>,
     tier_word: Option<&str>,
     corner: Option<String>,
+    summary: Option<&crate::app::TicketSummary>,
+    summary_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -708,10 +710,26 @@ pub(super) fn render(
         }
         _ => None,
     };
+    // The summary (T-696). Open with the peek on, the cursor card lists
+    // its rows under the reply; at rest, and under `P` on every other open
+    // card, the title wears the boxes as an underline — the done share in
+    // the ramp's `dim1`, the rest as a fainter track. Never on a row that
+    // is already saying something louder: the inverted needs-you band, a
+    // trail, the delete flash, the move ghost.
+    let rows_shown = selected && open && summary.is_some_and(|s| !s.rows.is_empty());
+    let under = summary
+        .filter(|s| s.count.total > 0 && !rows_shown)
+        .filter(|_| !(doomed || trail || attn_card || held || snooze.is_some()))
+        .map(|s| s.count);
     match (&sweep, &landing) {
         (Some(run), _) => spans.extend(swept_spans(theme, run, &title, holder_cells)),
         (None, Some(run)) => spans.extend(landed_spans(theme, run, &title)),
-        (None, None) => spans.push(Span::styled(title, title_style)),
+        (None, None) => match under {
+            Some(count) if theme.summary_under(cursorish, true).is_some() => {
+                spans.extend(underlined_title(theme, &title, title_style, cursorish, count))
+            }
+            _ => spans.push(Span::styled(title, title_style)),
+        },
     }
     spans.push(Span::raw(" ".repeat(fill)));
     if let Some((m, tone)) = &wt_mark {
@@ -797,7 +815,8 @@ pub(super) fn render(
             || snooze.is_some()
             || owed_row.is_some()
             || raised_row.is_some()
-            || answered_row.is_some());
+            || answered_row.is_some()
+            || rows_shown);
     let opened = !selected && meta_row;
     if accordion || opened {
         let acc_style = if doomed {
@@ -998,6 +1017,47 @@ pub(super) fn render(
                 ]);
             }
         }
+        // The summary rows (T-696), under the reply: the first plain row,
+        // then the open boxes in their order (ticked ones after, when few
+        // are open), then a fold row counting the rest with their state —
+        // every box ticked, none, or some — and the key that lists them
+        // all, through the keymap so a key drawn here is a key that works.
+        if let Some(s) = summary.filter(|_| rows_shown) {
+            let inner = t_cells.saturating_sub(2);
+            let (shown, fold) = s.card_rows(SUMMARY_ROWS);
+            for r in shown {
+                let words = mesimon_core::text::scrub_cells(&r.text, false);
+                let (row, style) = match r.done {
+                    None => (words, dim),
+                    Some(done) => (
+                        format!("{} {words}", box_mark(tier, Some(done))),
+                        if done { faint } else { dim },
+                    ),
+                };
+                push(vec![Span::styled(format!("  {}", truncate(&row, inner)), style)]);
+            }
+            if let Some((n, state)) = fold {
+                let words = format!("  {} {n} more", box_mark(tier, state));
+                let mut row = vec![Span::styled(words.clone(), faint)];
+                if let Some((keys, kctx)) = summary_keys {
+                    let budget = t_cells.saturating_sub(words.width() + 1);
+                    let mut hint = super::chrome::hint_spans(keys, kctx, ramp, budget);
+                    if trail {
+                        for s in &mut hint {
+                            s.style = faint;
+                        }
+                    }
+                    let used = super::spans_width(&hint);
+                    if !hint.is_empty() {
+                        row.push(Span::raw(
+                            " ".repeat(t_cells.saturating_sub(words.width() + used)),
+                        ));
+                        row.extend(hint);
+                    }
+                }
+                push(row);
+            }
+        }
         return lines;
     }
     if selected {
@@ -1009,6 +1069,58 @@ pub(super) fn render(
     // the aggregate glyph — a resting card is one line, plus its stripe.
     // Per-session detail lives in the accordion and the ticket rail.
     lines
+}
+
+/// How many summary boxes the open card lists before the fold (T-696).
+const SUMMARY_ROWS: usize = 3;
+
+/// A box as the card and the dialog draw it: ticked wears the board's own
+/// check (the note draws it the same, `rich.rs`), open is empty, and the
+/// fold row's "some of them" is a dash. ASCII keeps `[x]`.
+pub(super) fn box_mark(tier: Tier, state: Option<bool>) -> &'static str {
+    match state {
+        Some(true) if tier == Tier::Ascii => "[x]",
+        Some(true) => "[\u{2713}]",
+        Some(false) => "[ ]",
+        None => "[-]",
+    }
+}
+
+/// The title split at the done share of its width, the run and the track
+/// each under their own underline. A title whose boxes are all ticked is
+/// one run; one with none is one track.
+fn underlined_title(
+    theme: &Theme,
+    title: &str,
+    style: Style,
+    cursorish: bool,
+    count: mesimon_core::summary::Count,
+) -> Vec<Span<'static>> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let width = title.width();
+    let done_cells = (count.done * width + count.total / 2).checked_div(count.total).unwrap_or(0);
+    let mut head = String::new();
+    let mut tail = String::new();
+    let mut used = 0;
+    for g in title.graphemes(true) {
+        let w = g.width();
+        if tail.is_empty() && used + w <= done_cells {
+            head.push_str(g);
+            used += w;
+        } else {
+            tail.push_str(g);
+        }
+    }
+    let mut out = Vec::new();
+    if !head.is_empty() {
+        let run = theme.summary_under(cursorish, true).unwrap_or_default();
+        out.push(Span::styled(head, style.patch(run)));
+    }
+    if !tail.is_empty() {
+        let track = theme.summary_under(cursorish, false).unwrap_or_default();
+        out.push(Span::styled(tail, style.patch(track)));
+    }
+    out
 }
 
 /// Does this card need you — a usable-confidence attention session, the

@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+
+    Decay treatments      >1y     ⠋ Fix OSC-11          >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
+
+    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
+
+
+
+
+                           ╭─ SUMMARY ∙ T-3 ∙ 6 ────────────────────────────────────────────╮
+                           │ query fixed; e2e next                                          │
+                           │ [✓] run the query once                                         │
+                           │ [✓] unit test for the parser                                   │
+                           │ [ ] add the e2e for the attach                                 │
+                           │ [ ] write the STALE-MAP block                                  │
+                           │ [ ] release note                                               │
+                           ╰─── jk select ∙ space tick ∙ enter open ∙ a ask agent ∙ c copy ─╯
+
+
+
+
+
+
+
+
+
+
+ SUMMARY  jk select ∙ space tick ∙ enter open ∙ a ask agent ∙ c copy ∙ esc close                                 ? keys

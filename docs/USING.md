@@ -201,6 +201,26 @@ number when one is written), other tickets, and pasted pictures. `enter` opens o
 address in your browser, a text file in your editor, another ticket by moving to it. `c` copies
 it instead.
 
+A note section headed `Summary` is the ticket's checklist. Write it in the description or let the
+agent write it in a note of its own:
+
+```markdown
+## Summary
+redirect fixed; e2e next
+- [x] rewrite the redirect to keep the return path
+- [ ] add the e2e for the return path
+- [ ] release note
+```
+
+Only what sits under that heading counts, so an agent's working list under any other heading
+stays in the note. On the board the card's title wears the boxes as an underline, as far along as
+they are ticked; with the replies shown (`p`) the cursor card lists the open boxes under the
+reply, and a line with no box is read first, as the one-line summary. `ctrl-j`, on the board or on
+a ticket page, lists every row: `space` ticks or unticks a box, `enter` opens the note at that
+line, `a` (or `shift+enter`) opens the ask field with the line quoted so you can ask the agent
+about it, and `c` copies it. A tick is refused when the agent rewrote the note since the dialog
+read it; open the dialog again.
+
 ## Filing a ticket from a script
 
 `mesimon ticket create` puts a card on a board from the shell, the way the composer does, and

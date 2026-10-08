@@ -1852,7 +1852,7 @@ mod tests {
             Command::ArchiveTicket { id },
             Command::UnarchiveTicket { id },
             Command::DeleteTicket { id, discard_worktree: false },
-            Command::WriteNote { ticket: id, note: None, text: "n".into() },
+            Command::WriteNote { ticket: id, note: None, text: "n".into(), rev: None },
             Command::DuplicateTicket { id },
             Command::ArchiveAll,
         ];

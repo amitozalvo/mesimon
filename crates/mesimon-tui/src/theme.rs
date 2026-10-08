@@ -2117,6 +2117,30 @@ impl Theme {
         }
         ('▎', Style::default().fg(self.bar_cursor))
     }
+
+    /// The card title's progress underline (T-696): the ticket's summary
+    /// boxes as a run under the title, the done share in `dim1` and the
+    /// rest of the title — the track — in `dim3`, on the row's own ramp.
+    /// The grey ramp and nothing saturated, so the one-colour law holds;
+    /// the underline channel is free on the title (tags spend it on the
+    /// bar's two cells, below TrueColor only). Where the terminal cannot
+    /// colour an underline the track would be as loud as the run, so the
+    /// 16-colour tier draws the run alone, plain; the ladder tiers draw
+    /// nothing and the open card's rows carry the count there.
+    pub fn summary_under(&self, cursorish: bool, done: bool) -> Option<Style> {
+        let ramp = if cursorish { &self.sel } else { &self.rest };
+        match self.profile {
+            Profile::TrueColor | Profile::Ansi256 => {
+                Some(Style::default().add_modifier(Modifier::UNDERLINED).underline_color(if done {
+                    ramp.dim1
+                } else {
+                    ramp.dim3
+                }))
+            }
+            Profile::Ansi16 => done.then(|| Style::default().add_modifier(Modifier::UNDERLINED)),
+            Profile::Ansi8 | Profile::Mono => None,
+        }
+    }
 }
 
 const MONO_RAMP: Ramp =

@@ -211,6 +211,12 @@ pub enum Scope {
     /// `^k` opens it; Enter opens the row. A list dialog like the archived
     /// one, and like it a list the board is not.
     Links,
+    /// The summary dialog (T-696): the rows of the ticket's notes' `Summary`
+    /// sections — the boxes and the plain lines — one row each, over the
+    /// board or the ticket page. `^j` opens it; Space ticks a box, Enter
+    /// opens the row's line in its note, `a` asks the agent about it. The
+    /// links dialog's shapes with one key that mutates.
+    Summary,
     /// The column settings dialog (T-117): one column's every setting in a
     /// list of its own, reached from the column's header or the menu. The
     /// Settings list's shapes, plus `h`/`l` on its sort row. Its Name row
@@ -264,7 +270,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 31] = [
+    pub const ALL: [Scope; 32] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -296,6 +302,7 @@ impl Scope {
         Scope::Tiers,
         Scope::TierEdit,
         Scope::Usage,
+        Scope::Summary,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -319,7 +326,8 @@ impl Scope {
             | Scope::Sharing
             | Scope::Tiers
             | Scope::TierEdit
-            | Scope::Usage => Some(Scope::Global),
+            | Scope::Usage
+            | Scope::Summary => Some(Scope::Global),
             Scope::Global
             | Scope::Move
             | Scope::DiffView
@@ -363,6 +371,7 @@ impl Scope {
             Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
+            Scope::Summary => "SUMMARY",
             Scope::ColumnSettings => "COLUMN",
             Scope::Header => "HEADER",
             Scope::Search => "SEARCH",
@@ -463,6 +472,17 @@ pub enum Verb {
     /// `c` in the links dialog: copy the row's target. Native clipboard locally,
     /// terminal request remotely; keep the dialog open for manual selection.
     LinkCopy,
+    /// `^j` on the board or the ticket page: the SUMMARY dialog over the
+    /// ticket's notes' `Summary` sections (T-696). Nothing to list is a
+    /// status line, never an empty dialog — the links dialog's rule.
+    Summary,
+    /// Space in the summary dialog: flip the row's box and write the note.
+    /// The one key in the dialog that mutates; inert on a plain row.
+    SummaryTick,
+    /// `a` (and Shift+Enter where the terminal can spell it) in the summary
+    /// dialog: close it and open the ticket's prompt field with the row's
+    /// words quoted, for the person to finish and send.
+    SummaryAsk,
     /// Open the settings submenu from the menu: the preferences, one level
     /// down, so a menu row is either an action or the door to the settings
     /// and never a toggle between actions.
@@ -1192,6 +1212,13 @@ pub struct Ctx {
     /// might be a link" — one that holds none still gets a status line,
     /// never an empty dialog.
     pub ticket_linkable: bool,
+    /// The subject ticket's notes hold a `Summary` section with at least one
+    /// row (T-696), as the TUI's cache last read them — never the disk. What
+    /// `^j` gates on.
+    pub ticket_summarised: bool,
+    /// The summary dialog's cursor row is a box (a task item), so Space has
+    /// something to flip. False on a plain row, where it is inert.
+    pub summary_on_task: bool,
     // ---- ticket screen ----
     /// The rail has a selected session.
     pub sel_session: bool,
@@ -2471,6 +2498,23 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // The ticket's summary (T-696): the boxes and lines its notes put
+        // under a `Summary` heading, listed and ticked. `^k`'s neighbour on
+        // the keyboard and its twin in every other way — overlay-only, the
+        // dialog closes on the key that opened it. Inert, and unhinted,
+        // while the notes hold no section: the underline that would show
+        // one is not on the card either.
+        keys: &[Key::Ctrl('j')],
+        verb: Verb::Summary,
+        show: "^j",
+        hint: |_| "summary",
+        avail: |c| c.has_ticket && c.ticket_summarised,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
         // The picker's digit, reached without the picker: one press steps the
         // selected card along that group's tags and off the end back to
         // untagged. Overlay-only (`prio: 0`) on the Nudge precedent — it is an
@@ -3034,6 +3078,18 @@ static TICKET: &[Binding] = &[
         show: "^K",
         hint: |_| "open first link",
         avail: |c| c.ticket_linkable && c.rich_keys,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        // The board's summary key on the ticket's own page (T-696).
+        keys: &[Key::Ctrl('j')],
+        verb: Verb::Summary,
+        show: "^j",
+        hint: |_| "summary",
+        avail: |c| c.ticket_summarised,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -5990,6 +6046,93 @@ static LINKS: &[Binding] = &[
     },
 ];
 
+/// The summary dialog (T-696): the links dialog's shapes, plus Space on a
+/// box, `a` to ask the agent about a row, and `^j` as a second spelling of
+/// `Back`. Space is the one key here that mutates — it writes the note —
+/// and it is inert on a plain row, which has no box to flip.
+static SUMMARY: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Space],
+        verb: Verb::SummaryTick,
+        show: "space",
+        hint: |_| "tick",
+        avail: |c| c.summary_on_task,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 15,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "open",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        // The legacy-floor spelling of the ask, hinted; Shift+Enter below is
+        // the board's own gesture for the same thing where the terminal can
+        // report it.
+        keys: &[Key::Char('a')],
+        verb: Verb::SummaryAsk,
+        show: "a",
+        hint: |_| "ask agent",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: false,
+        prio: 25,
+    },
+    Binding {
+        keys: &[Key::ShiftEnter],
+        verb: Verb::SummaryAsk,
+        show: "shift+enter",
+        hint: |_| "ask agent",
+        avail: |c| c.rich_keys,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Char('c')],
+        verb: Verb::LinkCopy,
+        show: "c",
+        hint: |_| "copy",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc, Key::Ctrl('j')],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "close",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The board's own top row (T-305), reached by `k` off a column header. It is
 /// a cursor position, not a screen: nothing is drawn over the board, the
 /// cursor column keeps its painted band, and `j` walks straight back into it.
@@ -6945,6 +7088,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
+        Scope::Summary => SUMMARY,
         Scope::ColumnSettings => COLUMN,
         Scope::Header => HEADER,
         Scope::Search => SEARCH,
@@ -7289,6 +7433,7 @@ mod tests {
                 Scope::Tiers => 28,
                 Scope::TierEdit => 29,
                 Scope::Usage => 30,
+                Scope::Summary => 31,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -7459,6 +7604,31 @@ mod tests {
         // Inside the dialog the key that opened it closes it.
         assert_eq!(resolve(Scope::Links, Key::Ctrl('k'), &Ctx::default()), Some(Verb::Back));
         assert_eq!(resolve(Scope::Links, Key::Char('c'), &Ctx::default()), Some(Verb::LinkCopy));
+    }
+
+    /// `^j` is the summary dialog (T-696) on both screens, gated on the
+    /// cache holding a section — never on the terminal's tier, since the
+    /// atom is a plain Ctrl chord on the legacy floor — and inside the
+    /// dialog Space flips a box only while the cursor row has one.
+    #[test]
+    fn ctrl_j_opens_the_summary_and_space_ticks_a_box() {
+        let on = Ctx { has_ticket: true, ticket_summarised: true, ..Default::default() };
+        let off = Ctx { has_ticket: true, ..Default::default() };
+        for scope in [Scope::Board, Scope::Ticket] {
+            assert_eq!(resolve(scope, Key::Ctrl('j'), &on), Some(Verb::Summary), "{scope:?}");
+            assert_eq!(resolve(scope, Key::Ctrl('j'), &off), None, "{scope:?}");
+            assert_eq!(hint_for(scope, Verb::Summary, &off), None, "{scope:?}");
+        }
+        let task = Ctx { summary_on_task: true, rich_keys: true, ..Default::default() };
+        let plain = Ctx { rich_keys: false, ..Default::default() };
+        assert_eq!(resolve(Scope::Summary, Key::Space, &task), Some(Verb::SummaryTick));
+        assert_eq!(resolve(Scope::Summary, Key::Space, &plain), None);
+        assert_eq!(resolve(Scope::Summary, Key::Enter, &plain), Some(Verb::Act));
+        assert_eq!(resolve(Scope::Summary, Key::Char('a'), &plain), Some(Verb::SummaryAsk));
+        assert_eq!(resolve(Scope::Summary, Key::ShiftEnter, &task), Some(Verb::SummaryAsk));
+        assert_eq!(resolve(Scope::Summary, Key::ShiftEnter, &plain), None);
+        assert_eq!(resolve(Scope::Summary, Key::Ctrl('j'), &plain), Some(Verb::Back));
+        assert_eq!(resolve(Scope::Summary, Key::Char('c'), &plain), Some(Verb::LinkCopy));
     }
 
     /// The ambiguity clause itself: every binding on `atom` must be
@@ -9601,6 +9771,7 @@ mod tests {
             Scope::Settings,
             Scope::Releases,
             Scope::Links,
+            Scope::Summary,
             Scope::ColumnSettings,
             Scope::Header,
             Scope::Sharing,

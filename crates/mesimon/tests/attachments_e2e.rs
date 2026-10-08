@@ -82,7 +82,8 @@ fn pictures_survive_duplicate_delete_undo_archive_and_daemon_restart() {
         c.request(Command::WriteNote {
             ticket: id,
             note: Some(note),
-            text: "description changed".into()
+            text: "description changed".into(),
+            rev: None,
         }),
         Response::NoteWritten { .. }
     ));
@@ -104,6 +105,7 @@ fn pictures_survive_duplicate_delete_undo_archive_and_daemon_restart() {
             ticket: id,
             note: Some(note),
             text: format!("[Image #1]({})", mesimon_core::attachment::target(absent)),
+            rev: None,
         }),
         Response::NoteWritten { .. }
     ));

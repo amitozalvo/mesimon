@@ -253,7 +253,9 @@ normalised, same limit.
 **Notes are markdown files under the ticket, and `notes[0]` is the description.**
 `Ticket.notes: Vec<NoteMeta>` is the metadata; the body is `notes/<ULID>.md`, read by
 `Command::ReadNote` (never in the snapshot) and written whole by `WriteNote` (blank on an
-existing note deletes). Adding a `NoteMeta` field is `#[serde(default)]` like everything else.
+existing note deletes). Adding a `NoteMeta` field is `#[serde(default)]` like everything else. **A `Summary` section's
+rows (T-696) are derived in the TUI** from the bodies (`core/src/summary.rs`, `App::summaries`),
+never on the snapshot; a `WriteNote` carrying `rev` is refused when the note moved on.
 
 **Git, in the daemon,** is `crate::git::git(repo)`, never `Command::new("git")`: it scrubs the
 `GIT_*` targeting variables a dogfooding daemon inherits.

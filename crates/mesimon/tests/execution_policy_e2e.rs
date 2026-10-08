@@ -89,7 +89,8 @@ fn owner_only_import_is_inert_and_copies_keep_the_restriction() {
         c.request(Command::WriteNote {
             ticket: id,
             note: Some(note),
-            text: "Private working reply".into()
+            text: "Private working reply".into(),
+            rev: None,
         }),
         Response::NoteWritten { .. }
     ));

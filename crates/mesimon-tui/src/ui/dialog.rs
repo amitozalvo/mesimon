@@ -412,6 +412,32 @@ pub(super) fn draw_links(
     list(f, app, &format!("LINKS ∙ {key}"), true, Scope::Links, idx, &rows);
 }
 
+/// The summary dialog (T-696): one row per line of the ticket's `Summary`
+/// sections, a box before each task — the card's own marks — and nothing
+/// before a plain row. Read off the cache each frame, so a tick shows on
+/// the frame it lands; `idx` is clamped to the rows there are.
+pub(super) fn draw_summary(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: usize) {
+    let key = app.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+    let Some(s) = app.ticket_summary(ticket) else {
+        return;
+    };
+    let tier = app.theme.glyph_tier();
+    let rows: Vec<ListRow> = s
+        .rows
+        .iter()
+        .map(|r| {
+            let words = crate::text::one_line(&mesimon_core::text::scrub_cells(&r.text, false));
+            let head = match r.done {
+                Some(done) => format!("{} {words}", super::card::box_mark(tier, Some(done))),
+                None => words,
+            };
+            ListRow { lead: " ".into(), head, right: String::new(), detail: None, heading: false }
+        })
+        .collect();
+    let idx = idx.min(rows.len().saturating_sub(1));
+    list(f, app, &format!("SUMMARY ∙ {key}"), true, Scope::Summary, idx, &rows);
+}
+
 /// The merge dialog (T-431). Two rows under a `MERGE ∙ T-n` title: what the
 /// next `m` does and the reason to stay on this page, with the keys in the
 /// bottom edge from the `MergeChord` scope — which go quiet while the merge

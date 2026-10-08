@@ -425,12 +425,15 @@ pub fn tools() -> Vec<Value> {
             // The plan clause (T-459): agents saved their approved plan here
             // by hand, a second copy of the note `record_plan` had already
             // written off the same approval.
+            // The summary clause (T-696): the one place an agent learns that
+            // a `Summary` heading is what puts a checklist on the card.
             "description": "Creates a markdown note on this session's ticket, or with key \
                             another ticket's (crown only), or replaces the whole text of an \
                             existing one. The first note is the ticket's description. Empty \
                             text deletes an existing note. Text past 32 KiB is refused, not \
-                            cut; the refusal names both sizes. A plan from plan mode is \
-                            already a note, saved by the board and revised on each re-plan.",
+                            cut. A plan from plan mode is already a note, revised on each \
+                            re-plan. Task boxes under a `Summary` heading show on the card \
+                            as progress.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2646,10 +2649,7 @@ mod tests {
         let registry = tools();
         let tool = registry.iter().find(|t| t["name"] == "write_note").unwrap();
         let description = tool["description"].as_str().unwrap();
-        assert!(
-            description.contains("A plan from plan mode is already a note, saved by the board"),
-            "{description}"
-        );
+        assert!(description.contains("A plan from plan mode is already a note"), "{description}");
         assert!(description.contains("revised on each re-plan"), "{description}");
     }
 
@@ -3055,7 +3055,7 @@ mod tests {
             Command::NoteToAgent { ticket: t, note: t },
             // The ticket-addressed forms; the agent forms are the tier.
             Command::ReadNote { ticket: t, note: t },
-            Command::WriteNote { ticket: t, note: None, text: "x".into() },
+            Command::WriteNote { ticket: t, note: None, text: "x".into(), rev: None },
         ];
         // The tier's other-ticket writers (T-411) are admitted here and
         // judged by the crown in the daemon; the id-addressed forms above

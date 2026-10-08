@@ -22496,3 +22496,62 @@ is not on this machine); the diagnosis is the screenshot, the tags and the code.
 
 Tests: `a turn reads the list again: a changed one is registered, an unchanged one is not, a
 dropped tool is not served` (mod); `mod_plugin` on Claude Code 2.1.294.
+
+## A ticket's notes carry its summary (T-696, 2026-10-08)
+
+**Built.** A note section headed `Summary` — any level, any case, closed by the next heading of
+the same or a higher level, fenced blocks skipped — is the ticket's summary: its GFM task items
+are a checklist and every other line a plain row. The parser is `core/src/summary.rs::extract`
+(pure, document order, the row's source line kept) and `toggle` flips one box in a body. The
+heading is the gate the brief asked for ("a conscious decision if this line should be presented
+to the user"): an agent's working list under any other heading stays the note's own. Agents learn
+it from one clause in `write_note`'s description (the cap bit: the plan clause lost "saved by the
+board" to fit 820 bytes).
+
+**Derived in the TUI, never on the snapshot** — T-256's road for links, scaled to every card.
+`App::poll_summaries` reads the bodies the cache lacks through `Command::ReadNote`, eight per
+tick, the cursor column first, and keeps one parse per `(note, rev)` (`App::summaries`,
+uncapped; `remember_note` fills it beside the body cache so a fetch for links or the page feeds
+the card too). A hundred-ticket board is whole in about a second. The alternative — a derived
+field on the snapshot — was kept for when a phone needs the list; nothing here forecloses it.
+
+**On the card.** At rest the title wears the boxes as an underline (`Theme::summary_under`): the
+done share of the title's cells in the row's ramp `dim1`, the rest in `dim3` as the track, the
+grey ramp and nothing saturated. The underline channel is free on the title (tags spend it on the
+bar's two cells, below TrueColor only); 16 colours cannot colour an underline, so that tier draws
+the run alone, and the ladder tiers draw none. Never on a row already saying something louder
+(the needs-you band, a trail, the delete flash, the move ghost). Open with the peek on, the cursor
+card lists the rows under the reply instead: the first plain row, then up to three boxes — the
+open ones first, ticked ones after when fewer than three are open — then a fold row `[✓] 2 more`
+whose box is the hidden boxes' state (`[-]` for some), with `^j summary` on its right through
+`chrome::hint_spans`, so a key drawn there is a key that works. Under `P` every other open card
+keeps its underline: the rows are the selection's, like the session list.
+
+**The dialog.** `^j` (`Key::Ctrl('j')`: a plain Ctrl chord on the legacy floor, `0x0A` in raw
+mode, unbound anywhere until now, `^k`'s neighbour) opens `SUMMARY ∙ T-n` on the board and the
+ticket page, overlay-only, gated on `Ctx::ticket_summarised` (the cache, never the disk); nothing
+to list is a status line. Unlike `Mode::Links` the list is not frozen at open: the dialog re-reads
+the cache each frame with `idx` clamped, so a tick shows on the frame it lands. Space is the one
+key that mutates: it reads the body again now, `toggle`s the line, and sends `WriteNote` with the
+new optional `rev` — **the one daemon change**: a revision that moved since is refused ("the note
+changed since you read it ∙ reopen") instead of overwriting what the ticket's agent wrote in
+between (the phone road's `note_gate` already did this for `Request::WriteNote`; absent, the
+field is every older writer). Enter opens the ticket page on the row's note with the zone scrolled
+to its line: `App::summary_jump` carries the ask and `ui::ticket` resolves it to a rendered row
+once it knows the width, as the rows the text before the line renders to. `a` — and Shift+Enter
+where the terminal can spell it, gated on `rich_keys` as every Shift+Enter is — closes the dialog
+and runs the board's own `Verb::Prompt`, then puts `about "<row>": ` in an empty field: the
+person's words travel, and only an empty field takes the quote (a held ask reopening on its own
+words keeps them).
+
+**Not built.** A SUMMARY block on the ticket page (the page has the hint and the dialog); the
+list on a phone; agents reading the summary as structure; telling the agent a box was ticked (the
+note nudge and the ask road cover it). The `[-]` half mark is the TUI's and is never written into
+a note.
+
+Tests: `summary.rs` (the gate, levels, fences, the empty box, `toggle` round trips and refusals);
+`ctrl_j_opens_the_summary_and_space_ticks_a_box` (keymap); `poll_summaries_reads_each_note_once_per_rev`,
+`ctrl_j_lists_the_summary_and_space_ticks_a_box`, `a_in_the_summary_dialog_opens_the_prompt_with_the_row_quoted`
+(app); `test_summary_underline_runs_the_done_share_of_the_title`,
+`test_summary_enter_scrolls_the_note_to_the_line`, goldens `board_summary_120x30` and
+`summary_dialog_120x30` (ui); the stale-revision refusal in `notes_e2e`.

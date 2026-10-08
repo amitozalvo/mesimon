@@ -5775,6 +5775,108 @@ fn app_links() -> App {
     app
 }
 
+const SUMMARY_NOTE: &str = "# Fix OSC-11\n\nThe query raced the attach.\n\n## Summary\n\
+    query fixed; e2e next\n- [x] run the query once\n- [x] unit test for the parser\n\
+    - [ ] add the e2e for the attach\n- [ ] write the STALE-MAP block\n- [ ] release note\n\n\
+    ## Notes\n\nOne line of notes.\n\nAnother.\n\nAnother.\n\nAnother.\n\nAnother.\n\nAnother.\n\n\
+    Another.\n\nAnother.\n\nAnother.\n\nAnother.\n\nAnother.\n\nAnother.\n\nAnother.\n\nThe end.\n";
+
+/// T-3 with a summary in its description (T-696): one plain row, two of
+/// five boxes ticked. The cursor is on it.
+fn app_summary() -> App {
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        // Ten cells, so the card shows it whole and the underline test can
+        // count: two of five done is a four-cell run and a six-cell track.
+        t.title = "Fix OSC-11".into();
+        t.notes.push(note_meta(90, "Fix OSC-11", "local"));
+    }
+    let mut app = app_graphite(b);
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(SUMMARY_NOTE)));
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    app
+}
+
+/// The open cursor card lists the plain row, the three open boxes and a
+/// fold row with the two ticked ones behind it and the key that lists all.
+#[test]
+fn golden_board_summary_120() {
+    let mut app = app_summary();
+    app.peek = true;
+    golden("board_summary_120x30", &render(&app, 120, 30));
+}
+
+/// The dialog over T-3, the cursor on the first open box.
+#[test]
+fn golden_summary_dialog_120() {
+    let mut app = app_summary();
+    app.mode = Mode::Summary { ticket: ulid_n(3), idx: 3 };
+    golden("summary_dialog_120x30", &render(&app, 120, 30));
+}
+
+/// At rest the title wears the boxes as an underline (T-696): the done
+/// share of its cells in the ramp's `dim1`, the rest in `dim3` — the
+/// cursor card's ramp here — never the accent, and the ladder tiers draw
+/// none. Goldens capture symbols only, so this is the test that looks.
+#[test]
+fn test_summary_underline_runs_the_done_share_of_the_title() {
+    let app = app_summary();
+    let buf = cells(&app, 120, 30);
+    let lines = lines_of(&buf);
+    let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
+    let at = lines[y].find("Fix OSC-11").expect("title");
+    let x0 = lines[y][..at].width() as u16;
+    let y = y as u16;
+    let under = |want: Color| {
+        (0..10u16)
+            .filter(|i| {
+                let c = &buf[(x0 + i, y)];
+                c.modifier.contains(Modifier::UNDERLINED) && c.underline_color == want
+            })
+            .count()
+    };
+    // Ten cells, two of five done: a four-cell run and a six-cell track.
+    assert_eq!(under(app.theme.sel.dim1), 4);
+    assert_eq!(under(app.theme.sel.dim3), 6);
+    assert_eq!(under(app.theme.attn), 0);
+    // The fill after the title is not underlined.
+    assert!(!buf[(x0 + 10, y)].modifier.contains(Modifier::UNDERLINED));
+    // Open with the peek on, the rows say it and the title is bare.
+    let mut open = app_summary();
+    open.peek = true;
+    let buf = cells(&open, 120, 30);
+    assert!(!buf[(x0, y)].modifier.contains(Modifier::UNDERLINED));
+    // Mono draws nothing on the title.
+    let mut mono = app_summary();
+    mono.theme = Theme::new(Flavor::Graphite, Profile::Mono);
+    let buf = cells(&mono, 120, 30);
+    assert!((0..120u16).all(|x| !buf[(x, y)].modifier.contains(Modifier::UNDERLINED)));
+}
+
+/// Enter in the dialog opens the note scrolled to the row's line (T-696):
+/// the item heads the zone under the DESCRIPTION heading.
+#[test]
+fn test_summary_enter_scrolls_the_note_to_the_line() {
+    let mut app = app_summary();
+    // The rail: T-3's two sessions, then the note.
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 2 };
+    let line = mesimon_core::summary::extract(SUMMARY_NOTE)
+        .into_iter()
+        .find(|r| r.text.starts_with("add the e2e"))
+        .expect("the row")
+        .line;
+    app.summary_jump.set(Some((ulid_n(90), line)));
+    let lines = render(&app, 120, 30);
+    let head = lines.iter().position(|l| l.contains("DESCRIPTION")).expect("heading");
+    assert!(
+        lines[head + 2].contains("add the e2e for the attach"),
+        "the asked line heads the zone:\n{}",
+        lines.join("\n")
+    );
+    assert_eq!(app.summary_jump.get(), None, "asked once");
+}
+
 #[test]
 fn golden_links_120() {
     golden("links_120x30", &render(&app_links(), 120, 30));

@@ -4,7 +4,10 @@
 //! SESSIONS rail now).
 
 mod images;
+mod summary;
 mod tiers;
+
+pub use summary::{NoteSummary, TicketSummary};
 pub use tiers::{TierField, TierRow};
 
 use std::cell::Cell;
@@ -474,6 +477,14 @@ pub enum Mode {
     Links {
         ticket: ulid::Ulid,
         links: Vec<TicketLink>,
+        idx: usize,
+    },
+    /// The summary dialog (T-696): the ticket's `Summary` rows, over the
+    /// board or the ticket page. Unlike the links the list is NOT captured
+    /// at open — a tick rewrites a note, and the dialog re-reads the cache
+    /// each frame with `idx` clamped to what is there.
+    Summary {
+        ticket: ulid::Ulid,
         idx: usize,
     },
     /// The column settings dialog (T-117): a list over `keymap::column_items`
@@ -1612,6 +1623,15 @@ pub struct App {
     /// ride the snapshot; `poll_notes` fetches the ones on screen, once per
     /// `(id, rev)`, and a save seeds it from our own text.
     pub notes: std::collections::HashMap<ulid::Ulid, NoteText>,
+    /// Every note's `Summary` rows as last parsed (T-696), by note id —
+    /// what the card's underline and the `^j` dialog read. Filled beside
+    /// `notes` on every fetch and save, and by `poll_summaries` for the
+    /// board's cards; never capped, one small parse per note.
+    pub summaries: std::collections::HashMap<ulid::Ulid, NoteSummary>,
+    /// A line the summary dialog's Enter asked the ticket page to scroll a
+    /// note to (T-696): the note and its line, resolved to a rendered row
+    /// by the page's draw once the zone's width is known, then cleared.
+    pub summary_jump: Cell<Option<(ulid::Ulid, usize)>>,
     /// The ticket page's preview zone: where `{ }` asked it to be, what the
     /// last draw measured, and the page turn in motion (see `Pager`).
     pub preview: Pager,
@@ -1927,6 +1947,8 @@ impl App {
             spoke_subject: None,
             pickup_page: None,
             notes: std::collections::HashMap::new(),
+            summaries: std::collections::HashMap::new(),
+            summary_jump: Cell::new(None),
             preview: Pager::default(),
             rich_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
@@ -2891,6 +2913,7 @@ impl App {
         if wire {
             dirty |= self.poll_shell_tail();
             dirty |= self.poll_notes();
+            dirty |= self.poll_summaries();
             self.poll_pickup();
         }
         // The spoke marks: a redraw, never a snapshot — nothing on the wire
@@ -3270,6 +3293,7 @@ impl App {
     }
 
     pub(crate) fn remember_note(&mut self, id: ulid::Ulid, rev: u64, text: Option<String>) {
+        self.remember_summary(id, rev, text.as_deref());
         if self.notes.len() >= NOTE_CACHE_MAX && !self.notes.contains_key(&id) {
             if let Some(oldest) = self.notes.iter().min_by_key(|(_, n)| n.tried).map(|(k, _)| *k) {
                 self.notes.remove(&oldest);
@@ -4612,6 +4636,7 @@ impl App {
             Mode::TierEdit { .. } => Scope::TierEdit,
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
+            Mode::Summary { .. } => Scope::Summary,
             Mode::Search(_) => Scope::Search,
             // Naming a column IS a text field (the tag picker's rule), and
             // saying so is what puts `enter save ∙ esc cancel` in the edge.
@@ -4795,6 +4820,8 @@ impl App {
                 _ => 0,
             },
             ticket_linkable: subject.is_some_and(|t| self.ticket_linkable(t)),
+            ticket_summarised: subject.is_some_and(|t| self.ticket_summarised(t)),
+            summary_on_task: self.summary_cursor().is_some_and(|(_, r)| r.done.is_some()),
             sel_sleeping: selected.is_some_and(|s| matches!(s.state, SessionState::Sleeping)),
             sel_dead: selected.is_some_and(|s| !s.state.is_live()),
             sel_shell: selected.is_some_and(|s| s.kind == SessionKind::Bash && s.state.has_pane()),
@@ -6587,6 +6614,9 @@ impl App {
                 }
             }
             Verb::Links => self.open_links(),
+            Verb::Summary => self.open_summary(),
+            Verb::SummaryTick => return self.summary_tick(),
+            Verb::SummaryAsk => return self.summary_ask(key, ctx),
             Verb::LinkFirst => {
                 if let Some(ticket) = self.subject() {
                     let links = self.fetch_links(ticket);
@@ -6600,6 +6630,7 @@ impl App {
                 // Keep the target visible so terminal-only copies can be selected manually.
                 let text = match &self.mode {
                     Mode::Links { links, idx, .. } => links.get(*idx).map(|l| l.text.clone()),
+                    Mode::Summary { .. } => self.summary_cursor().map(|(_, r)| r.text),
                     _ => None,
                 };
                 if let Some(text) = text {
@@ -6907,6 +6938,17 @@ impl App {
                     *idx = step(*idx, links.len(), down);
                 }
             }
+            Scope::Summary => {
+                let len = match &self.mode {
+                    Mode::Summary { ticket, .. } => {
+                        self.ticket_summary(*ticket).map_or(0, |s| s.rows.len())
+                    }
+                    _ => 0,
+                };
+                if let Mode::Summary { idx, .. } = &mut self.mode {
+                    *idx = step(*idx, len, down);
+                }
+            }
             Scope::Settings => {
                 let Mode::Settings { idx } = self.mode else {
                     return;
@@ -7190,6 +7232,10 @@ impl App {
                 if let Some(link) = pick {
                     self.open_link(link);
                 }
+                Ok(())
+            }
+            Scope::Summary => {
+                self.summary_open_line();
                 Ok(())
             }
             Scope::Theme => {
@@ -9480,7 +9526,7 @@ impl App {
             }
         };
         let command = if uploads.is_empty() {
-            Command::WriteNote { ticket, note, text: body.clone() }
+            Command::WriteNote { ticket, note, text: body.clone(), rev: None }
         } else {
             Command::SaveNoteWithAttachments {
                 ticket,
@@ -9563,6 +9609,7 @@ impl App {
                         ticket,
                         note: Some(note),
                         text: String::new(),
+                        rev: None,
                     }) {
                         Response::NoteWritten { .. } => {
                             self.notes.remove(&note);
@@ -12099,7 +12146,7 @@ pub(crate) mod test_support {
                         _ => Response::Err { message: "no such note".into() },
                     });
                 }
-                Command::WriteNote { ticket, note, text }
+                Command::WriteNote { ticket, note, text, .. }
                 | Command::SaveNoteWithAttachments { ticket, note, text, .. } => {
                     let Some(t) = self.board.tickets.iter_mut().find(|t| t.id == ticket) else {
                         return Ok(Response::Err { message: "no such ticket".into() });
@@ -14218,6 +14265,77 @@ mod tests {
         app.board_mut().tickets[0].notes[0].rev = 2;
         assert!(app.poll_notes());
         assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 2);
+    }
+
+    /// The board reads every note body once per revision for its cards'
+    /// summaries (T-696), and a note with no section costs the same one read
+    /// and is then known to have none.
+    #[test]
+    fn poll_summaries_reads_each_note_once_per_rev() {
+        let (mut app, sent) = app_with_notes_state(
+            None,
+            &[(90, "## Summary\n- [ ] a\n- [x] b\n"), (91, "no section here")],
+        );
+        let reads = || sent.borrow().iter().filter(|c| c.contains("ReadNote")).count();
+        assert!(app.poll_summaries());
+        assert_eq!(reads(), 2);
+        assert!(!app.poll_summaries(), "steady state asks nothing");
+        assert_eq!(reads(), 2);
+        let s = app.ticket_summary(ulid::Ulid(1)).expect("a section");
+        assert_eq!(s.rows.len(), 2);
+        assert_eq!((s.count.done, s.count.total), (1, 2));
+        assert!(app.ticket_summarised(ulid::Ulid(1)));
+        assert!(!app.ticket_summarised(ulid::Ulid(2)));
+        // A new revision on the snapshot is the edge.
+        app.board_mut().tickets[0].notes[0].rev = 2;
+        assert!(app.poll_summaries());
+        assert_eq!(reads(), 3);
+    }
+
+    /// `^j` on the cursor card opens the dialog, Space flips the row's box
+    /// through a write that carries the revision read, the dialog shows the
+    /// tick on the same frame, and `^j` closes it (T-696).
+    #[test]
+    fn ctrl_j_lists_the_summary_and_space_ticks_a_box() {
+        let (mut app, sent) = app_with_notes_state(None, &[(90, "## Summary\n- [ ] a\n- [x] b\n")]);
+        app.poll_summaries();
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Summary { idx: 0, .. }), "{:?}", app.mode);
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        let write =
+            sent.borrow().iter().find(|c| c.contains("WriteNote")).cloned().expect("written");
+        assert!(write.contains("rev: Some(1)"), "{write}");
+        assert!(write.contains("- [x] a"), "{write}");
+        assert!(matches!(app.mode, Mode::Summary { .. }), "{:?}", app.mode);
+        let s = app.ticket_summary(ulid::Ulid(1)).expect("still listed");
+        assert_eq!(s.rows[0].done, Some(true));
+        assert_eq!(app.status, "ticked");
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        // A ticket with no section gets a status line, never a dialog.
+        app.cursor_row = Some(1);
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    /// `a` in the dialog closes it and opens the ticket's prompt field with
+    /// the row's words quoted, for the person to finish (T-696).
+    #[test]
+    fn a_in_the_summary_dialog_opens_the_prompt_with_the_row_quoted() {
+        let (mut app, _sent) = app_with_notes_state(
+            Some(SessionState::Running),
+            &[(90, "## Summary\n- [ ] add the e2e\n")],
+        );
+        app.poll_summaries();
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL).unwrap();
+        press(&mut app, 'a');
+        match &app.mode {
+            Mode::Input { purpose: InputPurpose::Prompt { target, .. }, buffer } => {
+                assert_eq!(*target, AskTarget::Ticket(ulid::Ulid(1)));
+                assert_eq!(buffer.as_str(), "about \"add the e2e\": ");
+            }
+            other => panic!("not the prompt field: {other:?}"),
+        }
     }
 
     /// A phone's ticket, opened here (T-497): arriving on its page tells the

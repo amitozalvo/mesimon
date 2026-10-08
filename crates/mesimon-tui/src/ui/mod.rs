@@ -138,6 +138,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         if let Mode::Links { links, idx, ticket } = &app.mode {
             dialog::draw_links(f, app, *ticket, links, *idx);
         }
+        if let Mode::Summary { ticket, idx } = &app.mode {
+            dialog::draw_summary(f, app, *ticket, *idx);
+        }
         // The merge dialog (T-431): the m flow's question, wait and answer,
         // over the page whose branch it is about.
         if let Some(d) = &app.merge_dialog {
@@ -200,6 +203,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if let Mode::Links { links, idx, ticket } = &app.mode {
         dialog::draw_links(f, app, *ticket, links, *idx);
+    }
+    if let Mode::Summary { ticket, idx } = &app.mode {
+        dialog::draw_summary(f, app, *ticket, *idx);
     }
     if let Mode::Menu { idx } = &app.mode {
         menu::draw(f, app, *idx);

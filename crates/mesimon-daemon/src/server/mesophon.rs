@@ -2519,7 +2519,7 @@ impl Daemon {
             Ok(note) => note,
             Err(gate) => return gate.reply(ticket, |meta| self.control_author(meta)),
         };
-        let written = self.write_note(id, note, text, by);
+        let written = self.write_note(id, note, text, None, by);
         self.control_note_written(by, id, ticket, written)
     }
 

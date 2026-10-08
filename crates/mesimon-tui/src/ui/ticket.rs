@@ -917,6 +917,24 @@ fn draw_preview(
                 let width = (area.width as usize).saturating_sub(4);
                 let key = note_key(meta);
                 let rows = rendered(app, key, width, text, Newline::of_note(meta));
+                // Enter in the summary dialog (T-696) asked for one of this
+                // note's lines: the rows above it are what the text before
+                // the line renders to at this width, so that is the window's
+                // top. Asked once; the pager keeps it until the keys move.
+                if let Some((note, line)) = app.summary_jump.get() {
+                    if note == meta.id {
+                        let at = text.split_inclusive('\n').take(line).map(str::len).sum::<usize>();
+                        let above = crate::rich::render_all(
+                            &text[..at],
+                            width,
+                            &app.theme,
+                            Newline::of_note(meta),
+                        )
+                        .len();
+                        app.preview.request.set(Some((key, above)));
+                        app.summary_jump.set(None);
+                    }
+                }
                 let shown = window(app, Some(key), &rows, budget, width, false);
                 for row in shown {
                     let mut spans = vec![Span::raw("   ")];

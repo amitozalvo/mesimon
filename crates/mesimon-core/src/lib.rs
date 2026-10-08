@@ -38,6 +38,7 @@ pub mod road;
 pub mod search;
 pub mod shellenv;
 pub mod snooze;
+pub mod summary;
 pub mod team;
 pub mod text;
 pub mod tier;

@@ -42,6 +42,7 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
         ticket,
         note: None,
         text: "# Why this\n\nBecause the peek\tlied.\u{202e}\n".into(),
+        rev: None,
     }) {
         Response::NoteWritten { note: Some(id) } => id,
         other => panic!("write failed: {other:?}"),
@@ -79,13 +80,28 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     // Blank on a fresh note is nothing to save; the agent forms need an
     // agent.
     err_containing(
-        c.request(Command::WriteNote { ticket, note: None, text: "  \n".into() }),
+        c.request(Command::WriteNote { ticket, note: None, text: "  \n".into(), rev: None }),
         "nothing to save",
     );
     err_containing(
         c.request(Command::AgentWriteNote { note: None, text: "x".into(), key: None }),
         "agent principal",
     );
+    // A write that names the revision it read is refused once the note has
+    // moved on (T-696): the summary dialog's tick never overwrites a rewrite
+    // it did not see. The board says 1, so 0 is stale, and the file and the
+    // revision are untouched by the refusal.
+    err_containing(
+        c.request(Command::WriteNote {
+            ticket,
+            note: Some(desc),
+            text: "# Why this\n\nstale\n".into(),
+            rev: Some(0),
+        }),
+        "changed since",
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), body);
+    assert_eq!(c.board().tickets[0].notes[0].rev, 1);
 
     // ---- no agent yet: telling one is refused, not swallowed -------------
     err_containing(c.request(Command::NoteToAgent { ticket, note: desc }), "no live agent");
@@ -170,11 +186,15 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
         tier: None,
     });
     let other = c.board().tickets.iter().find(|t| t.title == "other").unwrap().id;
-    let foreign =
-        match c.request(Command::WriteNote { ticket: other, note: None, text: "mine".into() }) {
-            Response::NoteWritten { note: Some(id) } => id,
-            other => panic!("{other:?}"),
-        };
+    let foreign = match c.request(Command::WriteNote {
+        ticket: other,
+        note: None,
+        text: "mine".into(),
+        rev: None,
+    }) {
+        Response::NoteWritten { note: Some(id) } => id,
+        other => panic!("{other:?}"),
+    };
     let refused =
         shim.call_err("write_note", json!({"note": foreign.to_string(), "text": "stolen"}));
     assert!(refused.contains("no such note"), "{refused}");
@@ -307,7 +327,12 @@ fn an_approved_plan_is_the_agents_note_on_the_ticket() {
     // The user deletes the note; the next approval mints a fresh one rather
     // than resurrecting the old id.
     assert!(matches!(
-        c.request(Command::WriteNote { ticket, note: Some(first.id), text: String::new() }),
+        c.request(Command::WriteNote {
+            ticket,
+            note: Some(first.id),
+            text: String::new(),
+            rev: None
+        }),
         Response::NoteWritten { note: None }
     ));
     assert!(c.board().tickets[0].notes.is_empty());
@@ -354,7 +379,12 @@ fn a_note_past_the_limit_is_refused_and_the_existing_note_stays_whole() {
     // Exactly the limit fits, and lands whole.
     let exact = format!("# Exact\n{}", "x".repeat(NOTE_MAX_BYTES - "# Exact\n".len()));
     assert_eq!(exact.len(), NOTE_MAX_BYTES);
-    let id = match c.request(Command::WriteNote { ticket, note: None, text: exact.clone() }) {
+    let id = match c.request(Command::WriteNote {
+        ticket,
+        note: None,
+        text: exact.clone(),
+        rev: None,
+    }) {
         Response::NoteWritten { note: Some(id) } => id,
         other => panic!("exactly the limit is accepted: {other:?}"),
     };
@@ -365,7 +395,7 @@ fn a_note_past_the_limit_is_refused_and_the_existing_note_stays_whole() {
     // and no second file appears.
     let over = format!("{exact}y");
     let Response::Err { message } =
-        c.request(Command::WriteNote { ticket, note: None, text: over.clone() })
+        c.request(Command::WriteNote { ticket, note: None, text: over.clone(), rev: None })
     else {
         panic!("one byte over is refused")
     };
@@ -377,7 +407,7 @@ fn a_note_past_the_limit_is_refused_and_the_existing_note_stays_whole() {
     // A refused replacement leaves the existing note whole, revision and all.
     let before = c.board().tickets[0].notes[0].clone();
     assert!(matches!(
-        c.request(Command::WriteNote { ticket, note: Some(id), text: over }),
+        c.request(Command::WriteNote { ticket, note: Some(id), text: over, rev: None }),
         Response::Err { .. }
     ));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), exact);
@@ -388,7 +418,7 @@ fn a_note_past_the_limit_is_refused_and_the_existing_note_stays_whole() {
     // Bytes, not characters: Hebrew is two bytes a letter.
     let hebrew = "ש".repeat(NOTE_MAX_BYTES / 2 + 1);
     let Response::Err { message } =
-        c.request(Command::WriteNote { ticket, note: None, text: hebrew })
+        c.request(Command::WriteNote { ticket, note: None, text: hebrew, rev: None })
     else {
         panic!("a multi-byte note over the limit is refused")
     };
