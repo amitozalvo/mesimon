@@ -22469,3 +22469,30 @@ person's own and live outside this repository (no `contrib/`, no manifest).
 Tests: `ticket_create_e2e` (the real binary against the harness daemon through the new
 `Harness::command`: the whole shape, stdin, `--repo` from elsewhere, three refusals), four unit
 tests on the parser and the two lookups.
+
+## The mod reads its tool list again at each turn (T-695, 2026-10-08, "crown bug workspace advertising")
+
+A crown on another machine was refused by `create_ticket` five times running ("the crown files a
+ticket with its workspace decided") and concluded the tool had no `workspace` field and the
+plugin was broken. The schema has carried `workspace` since T-583 (every release since), and the
+refusal came from a daemon that had it: the **session's registered list was older than its
+daemon**. The mod registered the tools once per process from `mesimon mcp --list`; an update
+renames the new binary over `MESIMON_MOD_BIN` and hands the daemon over (`U`), and a session that
+lives through it keeps every schema it registered at spawn. Nothing local was inspected (the board
+is not on this machine); the diagnosis is the screenshot, the tags and the code.
+
+- **At each `turn.start` the mod runs `--list` again** (`refreshTools`, not awaited: the engine
+  offers a registration "from the next prompt on", so holding the turn buys nothing) and registers
+  the list again only when its text differs from the last one registered whole (`$.tool.register`
+  replaces a name registered again). A tool the new list leaves out is no longer served; one whose
+  registration throws keeps what it had and the next turn tries again. Cost: one process run per
+  turn, no registration when nothing changed.
+- **Still stale until it lands:** a session's mod is the one laid at its launch, so a session
+  already running keeps registering once; sleep and wake (or `/reload-plugins`) re-registers it.
+  **The hook-set road is unchanged**: its stdio `mesimon mcp` is the old binary's image for the
+  session's whole life, and its `tools/list` answer with it.
+- **Refuted: making the daemon lenient** for a crown's create without `workspace`. T-583's rule
+  (the crown decides on purpose) is right; the listing was wrong.
+
+Tests: `a turn reads the list again: a changed one is registered, an unchanged one is not, a
+dropped tool is not served` (mod); `mod_plugin` on Claude Code 2.1.294.

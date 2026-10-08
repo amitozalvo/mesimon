@@ -617,6 +617,50 @@ test('a tool this session did not register is not served', async ($, on) => {
   expect(runs.filter(r => r.argv.includes('--call')).length).toBe(0)
 })
 
+test('a turn reads the list again: a changed one is registered, an unchanged one is not, a dropped tool is not served', async ($, on) => {
+  mock.env(on, TOOLS_ENV)
+  mock.clock(on)
+  // T-695: the binary an update renamed over the old one lists a schema the
+  // session registered before it.
+  let specs: any[] = SPECS
+  const runs: Run[] = []
+  on('process.run', ($: any, e: any) => {
+    runs.push({ argv: e.argv, stdin: e.init?.stdin ?? '' })
+    if (e.argv.includes('--list')) return { value: { exitCode: 0, stdout: JSON.stringify(specs) + '\n', stderr: '' } }
+    return { value: { exitCode: 0, stdout: JSON.stringify({ content: [], isError: false }), stderr: '' } }
+  })
+  const got: any[] = []
+  on('tool.register', ($: any, e: any) => {
+    got.push(e)
+    return { value: { tool: `mcp__mesimon__${e.name}` } }
+  })
+  on('process.spawn', async function* () {
+    return { value: { code: 3, signal: null } }
+  } as any)
+  on('session.start', () => ({ cwd: '/repo' }) as any)
+  on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }) as any)
+  on('tool.call', () => ({ result: 'theirs' }) as any)
+  await $.session.start({ cwd: '/repo' } as any)
+  await settle()
+  expect(got.length).toBe(2)
+  // The same list: read, nothing registered again.
+  await $.turn.start({ text: 'go', turnId: 't1' } as any)
+  await settle()
+  expect(runs.filter(r => r.argv.includes('--list')).length).toBe(2)
+  expect(got.length).toBe(2)
+  // A new schema for one tool, the other gone.
+  const wider = { ...SPECS[0], inputSchema: { type: 'object', properties: { key: { type: 'string' }, workspace: { type: 'string' } } } }
+  specs = [wider]
+  await $.turn.start({ text: 'retry', turnId: 't2' } as any)
+  await settle()
+  expect(got.slice(2).map(g => ({ name: g.name, description: g.description, inputSchema: g.inputSchema }))).toEqual([wider])
+  const dropped: any = await $.tool.call({ tool: 'mcp__mesimon__read_attachment', tool_use_id: 'toolu_9' } as any)
+  expect(dropped.result).toBe('theirs')
+  expect(runs.filter(r => r.argv.includes('--call')).length).toBe(0)
+  await $.tool.call({ tool: 'mcp__mesimon__get_ticket', tool_use_id: 'toolu_10' } as any)
+  expect(runs.filter(r => r.argv.includes('--call')).length).toBe(1)
+})
+
 test('a gate whose roots cannot be read refuses, and the next write reads them again', async ($, on) => {
   let reads = 0
   on('env.get', ($: any, e: any) => {

@@ -7,6 +7,7 @@
 //  - TOOLS: the board's tools for this session's tier, registered at
 //    session.start with `$.tool.register` by the names, descriptions and
 //    schemas `mesimon mcp --list` prints (the shim's own, `doctor --mcp`),
+//    and again at a turn's start when that list changed (an update, T-695),
 //    and each call served by `mesimon mcp --call`, which asks the daemon as
 //    the shim does. The daemon checks the tier and the session at every call
 //    (T-577): a registered tool runs without Claude Code's permission check.
@@ -193,6 +194,10 @@ const registered = new Set<string>()
 // the registration in flight.
 let toolsDone = false
 let toolsRun: Promise<void> | undefined
+// The tier the tools were listed for, and the list last registered whole,
+// as `mesimon mcp --list` printed it (T-695).
+let tier: string | undefined
+let listed: string | undefined
 // The subagent each dialog tool's call ran in, by its tool_use_id, from the
 // `tool.call` beneath its `classic.PreToolUse` (which carries none).
 const agents = new Map<string, string>()
@@ -372,29 +377,68 @@ async function bringUp($: any, c: Config) {
 
 async function registerOnce($: any, c: Config) {
   try {
-    const tier = await $.env.get('MESIMON_MOD_TOOLS')
+    tier = await $.env.get('MESIMON_MOD_TOOLS')
     if (!tier) {
       toolsDone = true
       return
     }
-    const out = await $.process.run([c.bin, 'mcp', '--list', '--tools', tier], { timeoutMs: 10000 })
-    const specs = JSON.parse(String(out?.stdout ?? '[]'))
+    await registerList($, c, tier)
     toolsDone = true
-    if (!Array.isArray(specs)) return
-    for (const spec of specs) {
-      try {
-        const r = await $.tool.register({ name: spec.name, description: spec.description, inputSchema: spec.inputSchema })
-        if (r && typeof r.tool === 'string') registered.add(r.tool)
-      } catch {
-        // That one tool is missing; the others stand.
-      }
-    }
   } catch {
     // The list was not read: the next event tries again, and the session
     // works without the tools meanwhile.
   } finally {
     toolsRun = undefined
   }
+}
+
+/**
+ * The list as `mesimon mcp --list` prints it now, registered when it is not
+ * the one registered last; a name registered again is replaced. The binary
+ * at `MESIMON_MOD_BIN` is the one an update renames over, so a session that
+ * outlives an update reads the new schemas here (T-695: a crown registered
+ * before `create_ticket` took a workspace was refused for omitting it). A
+ * tool the new list leaves out is no longer served. Throws when the list
+ * cannot be read.
+ */
+async function registerList($: any, c: Config, t: string) {
+  const out = await $.process.run([c.bin, 'mcp', '--list', '--tools', t], { timeoutMs: 10000 })
+  const text = String(out?.stdout ?? '[]').trim()
+  if (text === listed) return
+  const specs = JSON.parse(text)
+  if (!Array.isArray(specs)) return
+  let whole = true
+  const now = new Set<string>()
+  for (const spec of specs) {
+    try {
+      const r = await $.tool.register({ name: spec.name, description: spec.description, inputSchema: spec.inputSchema })
+      if (r && typeof r.tool === 'string') now.add(r.tool)
+    } catch {
+      // That one tool keeps what it had (missing, or its last schema); the
+      // others stand, and the next turn registers the list again.
+      whole = false
+      if (registered.has(`${TOOL_PREFIX}${spec.name}`)) now.add(`${TOOL_PREFIX}${spec.name}`)
+    }
+  }
+  registered.clear()
+  for (const name of now) registered.add(name)
+  listed = whole ? text : undefined
+}
+
+/**
+ * At each turn's start, the list read again: what a refresh registers the
+ * engine offers from the next prompt on, so the turn is not held for it. A
+ * read that fails leaves the tools as they stand.
+ */
+async function refreshTools($: any) {
+  if (!toolsDone || !tier || !config || toolsRun) return
+  const c = config
+  const t = tier
+  toolsRun = registerList($, c, t)
+    .catch(() => undefined)
+    .finally(() => {
+      toolsRun = undefined
+    })
 }
 
 /**
@@ -955,6 +999,7 @@ export const register: Register = on => {
     return next(e)
   })
   on('turn.start', async ($, e, next) => {
+    void refreshTools($)
     if (await nativeRoad($, 'turn.start')) {
       let id: string | undefined
       try {
