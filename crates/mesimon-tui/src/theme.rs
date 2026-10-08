@@ -2148,9 +2148,14 @@ impl Theme {
     /// How long a change to the boxes plays on the row (T-696): the
     /// crowning's wave (T-442) crosses the row once, revealing the new run
     /// behind its head; when the change ticked the last box it crosses a
-    /// second time over the finished run, the glint that says done.
-    pub fn summary_pulse_ms(count: mesimon_core::summary::Count) -> u64 {
-        if count.total > 0 && count.done == count.total {
+    /// second time over the finished run, the glint that says done. The
+    /// first read (`before` none) crosses once whatever it reveals.
+    pub fn summary_pulse_ms(
+        before: Option<mesimon_core::summary::Count>,
+        after: mesimon_core::summary::Count,
+    ) -> u64 {
+        let finished = after.total > 0 && after.done == after.total;
+        if finished && before.is_some_and(|b| b.done != b.total) {
             2 * SUMMARY_SWEEP_MS
         } else {
             SUMMARY_SWEEP_MS
@@ -2161,7 +2166,8 @@ impl Theme {
     /// the line animated when it changes … flashing it from start to end
     /// while adding the ticked underline, or when all done, show a nice
     /// animation that indicates it"). `elapsed` is since the change; ahead
-    /// of the head the cell wears `before`'s underline, behind it `after`'s,
+    /// of the head the cell wears `before`'s underline — none at all on
+    /// the board's first read of the summary — behind it `after`'s,
     /// and the head itself is the ramp's brightest ink with a glow cooling
     /// back to `after`'s over the cells behind it — the crowning's wave on
     /// the underline channel. Past the pulse, and on every tier that cannot
@@ -2172,12 +2178,12 @@ impl Theme {
         cells: usize,
         cell: usize,
         cursorish: bool,
-        before: mesimon_core::summary::Count,
+        before: Option<mesimon_core::summary::Count>,
         after: mesimon_core::summary::Count,
     ) -> Option<Style> {
         let at_rest = self.summary_under_at(cursorish, cells, cell, after);
         let colour = matches!(self.profile, Profile::TrueColor | Profile::Ansi256);
-        if !colour || cells == 0 || elapsed >= Self::summary_pulse_ms(after) {
+        if !colour || cells == 0 || elapsed >= Self::summary_pulse_ms(before, after) {
             return at_rest;
         }
         let pass = elapsed / SUMMARY_SWEEP_MS;
@@ -2187,8 +2193,11 @@ impl Theme {
         let d = front - cell as f32;
         // The second pass runs over the finished run: ahead of it the new
         // state already stands.
-        let ahead =
-            if pass == 0 { self.summary_under_at(cursorish, cells, cell, before) } else { at_rest };
+        let ahead = if pass == 0 {
+            before.and_then(|b| self.summary_under_at(cursorish, cells, cell, b))
+        } else {
+            at_rest
+        };
         if d < 0.0 {
             return ahead;
         }

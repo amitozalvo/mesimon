@@ -29,11 +29,15 @@ pub struct NoteSummary {
 }
 
 /// A change to a ticket's boxes, playing on its card (T-696): when it was
-/// seen and the count before it. The count after is the ticket's now.
+/// seen and the count before it — `None` when there was no underline
+/// before, the board's first read of the summary, which the wave reveals
+/// from bare (author: "when first rendering it when loading board, can
+/// you do an animation of fade from left to right?"). The count after is
+/// the ticket's now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SummaryPulse {
     pub at_ms: u64,
-    pub from: Count,
+    pub from: Option<Count>,
 }
 
 /// One row of a ticket's summary: which note it is in, and the row.
@@ -81,22 +85,19 @@ impl App {
     /// (`remember_note` calls this on every fetch and every save).
     pub(crate) fn remember_summary(&mut self, id: ulid::Ulid, rev: u64, text: Option<&str>) {
         let rows = text.map(summary::extract);
-        // A change to a ticket's boxes plays on its card — only a CHANGE:
-        // the first read of a note is the board filling in, not news.
-        let owner = self
-            .board
-            .tickets
-            .iter()
-            .find(|t| t.notes.iter().any(|n| n.id == id))
-            .map(|t| t.id)
-            .filter(|_| self.summaries.contains_key(&id));
-        let before = owner.map(|t| self.cached_count(t));
+        // What plays on the card: the underline's arrival, revealed from
+        // bare, when the ticket had no boxes known before; a change, from
+        // the count before, when it had. A read that leaves the count as
+        // it was plays nothing.
+        let owner =
+            self.board.tickets.iter().find(|t| t.notes.iter().any(|n| n.id == id)).map(|t| t.id);
+        let before = owner.map(|t| self.cached_count(t)).filter(|c| c.total > 0);
         self.summaries.insert(id, NoteSummary { rev, rows, tried: Instant::now() });
-        if let (Some(ticket), Some(from)) = (owner, before) {
+        if let Some(ticket) = owner {
             let after = self.cached_count(ticket);
-            if after != from {
+            if after.total > 0 && before != Some(after) {
                 let at_ms = mesimon_core::clock::now_ms();
-                self.summary_pulses.insert(ticket, SummaryPulse { at_ms, from });
+                self.summary_pulses.insert(ticket, SummaryPulse { at_ms, from: before });
             }
         }
     }
@@ -121,11 +122,11 @@ impl App {
 
     /// The change playing on this card, if one is: how long ago it landed
     /// and the count before it. `None` once the pulse has run its length.
-    pub(crate) fn summary_pulse(&self, ticket: ulid::Ulid) -> Option<(u64, Count)> {
+    pub(crate) fn summary_pulse(&self, ticket: ulid::Ulid) -> Option<(u64, Option<Count>)> {
         let p = self.summary_pulses.get(&ticket)?;
         let after = self.ticket_summary(ticket).map(|s| s.count).unwrap_or_default();
         let elapsed = mesimon_core::clock::now_ms().saturating_sub(p.at_ms);
-        (elapsed < Theme::summary_pulse_ms(after)).then_some((elapsed, p.from))
+        (elapsed < Theme::summary_pulse_ms(p.from, after)).then_some((elapsed, p.from))
     }
 
     /// Is a change playing on some card? What keeps the frames coming.

@@ -5843,6 +5843,8 @@ fn app_summary() -> App {
     }
     let mut app = app_graphite(b);
     app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(SUMMARY_NOTE)));
+    // At rest: the first read's reveal has played.
+    app.summary_pulses.clear();
     app.cursor_col = 1;
     app.cursor_row = Some(0);
     app
@@ -5976,7 +5978,7 @@ fn test_summary_change_sweeps_the_row() {
     };
     // Two of five, one of them just ticked: mid-sweep.
     let mut app = app_summary();
-    let from = Count { done: 1, total: 5 };
+    let from = Some(Count { done: 1, total: 5 });
     app.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS / 2, from });
     assert!(app.animating(), "the board keeps its frames coming");
     // It plays on the open card too, over the rows.
@@ -6010,13 +6012,31 @@ fn test_summary_change_sweeps_the_row() {
         Some("## Summary\n- [x] a\n- [x] b\n- [x] c\n- [x] d\n- [x] e\n".into()),
     );
     done.board_mut().tickets.iter_mut().find(|t| t.id == ulid_n(3)).expect("T-3").notes[0].rev = 2;
-    let from = Count { done: 4, total: 5 };
+    let from = Some(Count { done: 4, total: 5 });
     done.summary_pulses
         .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS * 3 / 2, from });
     assert!(done.animating());
     assert!((1..=2).contains(&heads(&done)), "the second pass's head");
     done.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS * 3, from });
     assert!(!done.animating());
+    // The board's first read reveals from bare: ahead of the head nothing,
+    // behind it the resting underline, once, whatever it reveals.
+    let mut fresh = app_summary();
+    fresh
+        .summary_pulses
+        .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS / 2, from: None });
+    let count_under = |app: &App| {
+        let (buf, y) = row_of(app);
+        (0..120u16).filter(|x| buf[(*x, y)].modifier.contains(Modifier::UNDERLINED)).count()
+    };
+    let whole = count_under(&app_summary());
+    let underlined = count_under(&fresh);
+    assert!(underlined > 0 && underlined < whole, "part way: {underlined} of {whole}");
+    assert!(heads(&fresh) >= 1);
+    fresh
+        .summary_pulses
+        .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS - 50, from: None });
+    assert!(!fresh.animating(), "one pass");
 }
 
 /// Enter in the dialog opens the note scrolled to the row's line (T-696):
@@ -10162,6 +10182,7 @@ fn header_chips_record_their_cells_and_the_ends_step_down_under_them() {
 /// fake daemon, so the tick reads and writes the note as the real one does.
 #[test]
 fn test_a_dialog_tick_starts_the_cards_pulse() {
+    use mesimon_core::summary::Count;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut b = fixture(false);
     if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
@@ -10180,7 +10201,7 @@ fn test_a_dialog_tick_starts_the_cards_pulse() {
     app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
     assert_eq!(app.status, "ticked");
     let pulse = app.summary_pulses.get(&ulid_n(3)).expect("the pulse");
-    assert_eq!((pulse.from.done, pulse.from.total), (2, 5));
+    assert_eq!(pulse.from, Some(Count { done: 2, total: 5 }));
     assert!(app.animating());
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
     let buf = cells(&app, 120, 30);

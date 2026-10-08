@@ -400,7 +400,7 @@ pub(super) fn render(
     corner: Option<String>,
     summary: Option<&crate::app::TicketSummary>,
     summary_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
-    summary_pulse: Option<(u64, mesimon_core::summary::Count)>,
+    summary_pulse: Option<(u64, Option<mesimon_core::summary::Count>)>,
     summary_underline: bool,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
@@ -1112,7 +1112,7 @@ fn underline_row(
     to: usize,
     cursorish: bool,
     count: mesimon_core::summary::Count,
-    pulse: Option<(u64, mesimon_core::summary::Count)>,
+    pulse: Option<(u64, Option<mesimon_core::summary::Count>)>,
 ) -> Vec<Span<'static>> {
     use unicode_segmentation::UnicodeSegmentation;
     if theme.summary_under(cursorish, true).is_none() {

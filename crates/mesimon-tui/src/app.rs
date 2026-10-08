@@ -14382,18 +14382,21 @@ mod tests {
         assert_eq!(reads(), 3);
     }
 
-    /// A note that moved on with a different count starts the card's pulse
-    /// (T-696); the board filling in at first read starts none.
+    /// The board's first read of a summary starts the card's reveal, from
+    /// nothing; a note that moved on with a different count starts a pulse
+    /// from the count before (T-696).
     #[test]
-    fn a_changed_count_starts_the_cards_pulse_and_a_first_read_does_not() {
+    fn a_first_read_reveals_and_a_changed_count_pulses() {
         let (mut app, _sent) =
             app_with_notes_state(None, &[(90, "## Summary\n- [ ] a\n- [x] b\n")]);
         app.poll_summaries();
-        assert!(app.summary_pulses.is_empty(), "the first read is not news");
+        let reveal = app.summary_pulses.get(&ulid::Ulid(1)).expect("the reveal");
+        assert_eq!(reveal.from, None);
+        assert!(app.summary_pulse(ulid::Ulid(1)).is_some());
         app.board_mut().tickets[0].notes[0].rev = 2;
         app.remember_note(ulid::Ulid(90), 2, Some("## Summary\n- [x] a\n- [x] b\n".into()));
         let pulse = app.summary_pulses.get(&ulid::Ulid(1)).expect("a pulse");
-        assert_eq!((pulse.from.done, pulse.from.total), (1, 2));
+        assert_eq!(pulse.from, Some(mesimon_core::summary::Count { done: 1, total: 2 }));
         assert!(app.summary_pulse(ulid::Ulid(1)).is_some());
         // The same count again is no change.
         app.board_mut().tickets[0].notes[0].rev = 3;
