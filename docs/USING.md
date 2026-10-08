@@ -217,7 +217,7 @@ Only what sits under that heading counts, so an agent's working list under any o
 stays in the note. On the board the card wears the boxes as an underline, as far along as they
 are ticked; with the replies shown (`p`) the cursor card lists the open boxes under the
 reply, and a line with no box is read first, as the one-line summary. `ctrl-j`, on the board or on
-a ticket page, lists every row: `space` ticks or unticks a box, `enter` opens the note at that
+a ticket page, lists every row: `space` ticks or unticks a box, `enter` opens a link in the line (a web address first) or, without one, the note at that
 line, `a` (or `shift+enter`) opens the ask field with the line quoted so you can ask the agent
 about it, and `c` copies it. A tick is refused when the agent rewrote the note since the dialog
 read it; open the dialog again.

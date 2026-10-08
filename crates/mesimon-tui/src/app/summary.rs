@@ -242,14 +242,32 @@ impl App {
         }
     }
 
-    /// Enter in the dialog: the ticket page, on the row's note, scrolled so
-    /// the row's line heads the zone (`ui::ticket` resolves the line to a
-    /// rendered row once it knows the zone's width).
+    /// The link a row would open (author: "enter should open a link if one
+    /// exists in the line, prioritise URL"): the row's words through the
+    /// links recogniser and the same resolution the links dialog does — a
+    /// URL first, else the first other target that leads somewhere.
+    pub(crate) fn summary_link(&self, ticket: ulid::Ulid, text: &str) -> Option<TicketLink> {
+        let dir = self.link_dir(ticket);
+        let mut found = Vec::new();
+        self.push_links(ticket, &dir, text, &mut found);
+        let url = found.iter().position(|l| matches!(l.target, LinkTarget::Url(_)));
+        let at = url.or_else(|| (!found.is_empty()).then_some(0))?;
+        Some(found.swap_remove(at))
+    }
+
+    /// Enter in the dialog: a link in the row opens as the links dialog
+    /// would open it; otherwise the ticket page, on the row's note, scrolled
+    /// so the row's line heads the zone (`ui::ticket` resolves the line to
+    /// a rendered row once it knows the zone's width).
     pub(crate) fn summary_open_line(&mut self) {
         let Some((ticket, row)) = self.summary_cursor() else {
             return;
         };
         self.mode = Mode::Normal;
+        if let Some(link) = self.summary_link(ticket, &row.text) {
+            self.open_link(link);
+            return;
+        }
         let rail_idx = self
             .rail_rows(ticket)
             .iter()

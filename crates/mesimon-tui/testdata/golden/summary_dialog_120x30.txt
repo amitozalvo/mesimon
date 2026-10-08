@@ -16,7 +16,7 @@
                            │ [ ] add the e2e for the attach                                 │
                            │ [ ] write the STALE-MAP block                                  │
                            │ [ ] release note                                               │
-                           ╰─── jk select ∙ space tick ∙ enter open ∙ a ask agent ∙ c copy ─╯
+                           ╰─── jk select ∙ space tick ∙ enter note ∙ a ask agent ∙ c copy ─╯
 
 
 
@@ -27,4 +27,4 @@
 
 
 
- SUMMARY  jk select ∙ space tick ∙ enter open ∙ a ask agent ∙ c copy ∙ esc close                                 ? keys
+ SUMMARY  jk select ∙ space tick ∙ enter note ∙ a ask agent ∙ c copy ∙ esc close                                 ? keys

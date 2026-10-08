@@ -29,7 +29,7 @@ in the Esc menu under `Release notes` and on GitHub.
 - **A note section headed `Summary` is the ticket's checklist on the board.**
   The card wears its task boxes as an underline, as far along as they are
   ticked; with replies shown, the cursor card lists the open boxes.
-  `ctrl-j` lists every row: `space` ticks a box, `enter` opens the note at
+  `ctrl-j` lists every row: `space` ticks a box, `enter` opens a link in the line or, without one, the note at
   that line, `a` asks the agent about it, `c` copies it. Lines under the
   heading with no box are read first, as the one-line summary.
 

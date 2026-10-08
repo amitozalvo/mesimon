@@ -1219,6 +1219,10 @@ pub struct Ctx {
     /// The summary dialog's cursor row is a box (a task item), so Space has
     /// something to flip. False on a plain row, where it is inert.
     pub summary_on_task: bool,
+    /// The summary dialog's cursor row holds a link the links dialog would
+    /// list — a URL first, else a ticket key, a file, a picture — so Enter
+    /// opens that rather than the note's line.
+    pub summary_on_link: bool,
     // ---- ticket screen ----
     /// The rail has a selected session.
     pub sel_session: bool,
@@ -6092,7 +6096,7 @@ static SUMMARY: &[Binding] = &[
         keys: &[Key::Enter],
         verb: Verb::Act,
         show: "enter",
-        hint: |_| "open",
+        hint: |c| if c.summary_on_link { "link" } else { "note" },
         avail: always,
         class: Class::Plain,
         group: Group::Navigate,
@@ -7639,6 +7643,9 @@ mod tests {
         assert_eq!(resolve(Scope::Summary, Key::Space, &task), Some(Verb::SummaryTick));
         assert_eq!(resolve(Scope::Summary, Key::Space, &plain), None);
         assert_eq!(resolve(Scope::Summary, Key::Enter, &plain), Some(Verb::Act));
+        assert_eq!(hint_for(Scope::Summary, Verb::Act, &plain), Some(("enter", "note")));
+        let linked = Ctx { summary_on_link: true, ..Default::default() };
+        assert_eq!(hint_for(Scope::Summary, Verb::Act, &linked), Some(("enter", "link")));
         assert_eq!(resolve(Scope::Summary, Key::Char('a'), &plain), Some(Verb::SummaryAsk));
         assert_eq!(resolve(Scope::Summary, Key::ShiftEnter, &task), Some(Verb::SummaryAsk));
         assert_eq!(resolve(Scope::Summary, Key::ShiftEnter, &plain), None);

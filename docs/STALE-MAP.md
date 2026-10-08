@@ -22544,8 +22544,9 @@ key that mutates: it reads the body again now, `toggle`s the line, and sends `Wr
 new optional `rev` — **the one daemon change**: a revision that moved since is refused ("the note
 changed since you read it ∙ reopen") instead of overwriting what the ticket's agent wrote in
 between (the phone road's `note_gate` already did this for `Request::WriteNote`; absent, the
-field is every older writer). Enter opens the ticket page on the row's note with the zone scrolled
-to its line: `App::summary_jump` carries the ask and `ui::ticket` resolves it to a rendered row
+field is every older writer). Enter opens a link the row holds as the links dialog would (`links::extract` over the row's
+words, a URL before any other kind — the author's "prioritise URL"), else the ticket page on
+the row's note with the zone scrolled to its line: `App::summary_jump` carries the ask and `ui::ticket` resolves it to a rendered row
 once it knows the width, as the rows the text before the line renders to. `a` — and Shift+Enter
 where the terminal can spell it, gated on `rich_keys` as every Shift+Enter is — closes the dialog
 and runs the board's own `Verb::Prompt`, then puts `about "<row>": ` in an empty field: the

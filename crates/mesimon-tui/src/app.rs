@@ -4825,6 +4825,9 @@ impl App {
             ticket_linkable: subject.is_some_and(|t| self.ticket_linkable(t)),
             ticket_summarised: subject.is_some_and(|t| self.ticket_summarised(t)),
             summary_on_task: self.summary_cursor().is_some_and(|(_, r)| r.done.is_some()),
+            summary_on_link: self
+                .summary_cursor()
+                .is_some_and(|(t, r)| self.summary_link(t, &r.text).is_some()),
             sel_sleeping: selected.is_some_and(|s| matches!(s.state, SessionState::Sleeping)),
             sel_dead: selected.is_some_and(|s| !s.state.is_live()),
             sel_shell: selected.is_some_and(|s| s.kind == SessionKind::Bash && s.state.has_pane()),
@@ -14351,6 +14354,31 @@ mod tests {
         app.cursor_row = Some(1);
         app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    /// Enter on a row that holds a link opens the link, a URL before any
+    /// other kind; a row without one opens the note at its line (T-696).
+    #[test]
+    fn enter_in_the_summary_dialog_opens_the_rows_link_first() {
+        let (mut app, _sent) = app_with_notes_state(
+            None,
+            &[(90, "## Summary\n- [ ] merge T-2 at https://git.example/mr/7\n- [ ] plain\n")],
+        );
+        app.opener = Some("open".into());
+        app.poll_summaries();
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.ctx().summary_on_link);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.pending_open, Some(vec!["open".into(), "https://git.example/mr/7".into()]));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(matches!(app.screen, Screen::Board), "a link opens from where the person stands");
+        // The plain row: the note, at its line.
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL).unwrap();
+        press(&mut app, 'j');
+        assert!(!app.ctx().summary_on_link);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.screen, Screen::Ticket { .. }));
+        assert_eq!(app.summary_jump.get(), Some((ulid::Ulid(90), 2)));
     }
 
     /// `a` in the dialog closes it and opens the ticket's prompt field with
