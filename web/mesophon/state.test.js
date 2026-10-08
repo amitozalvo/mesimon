@@ -8,6 +8,7 @@ import { crownSentence } from "./detail.js";
 import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
 import { mergePage, tailAsk } from "./transcript.js";
 import { Peeks, shelfItem } from "./shelf.js";
+import { viewportVars } from "./viewport.js";
 const ticket = (id, session) => ({
   id,
   key: id,
@@ -1019,4 +1020,15 @@ test("a board from the shelf is remembered as the terminal's, as of when it was 
   assert.equal(kept.promptable, false);
   board.update({ title: "B", columns: ["TODO"], tickets: [] });
   assert.equal(board.shelved, false, "a live board is the host's own");
+});
+// T-700: the page follows the visual viewport, its height and where it was scrolled to.
+test("the page is the visual viewport's height, moved down to where the keyboard scrolled it", () => {
+  assert.deepEqual(viewportVars(undefined, 844), { "--viewport-height": "844px", "--viewport-top": "0px" });
+  assert.deepEqual(viewportVars({ height: 844, pageTop: 0 }, 700), { "--viewport-height": "844px", "--viewport-top": "0px" });
+  // iOS Safari with the keyboard up: the visual viewport is shorter and sits lower.
+  assert.deepEqual(viewportVars({ height: 508, pageTop: 336 }, 844), { "--viewport-height": "508px", "--viewport-top": "336px" });
+  // A rubber-band over the top never moves the page up.
+  assert.deepEqual(viewportVars({ height: 844, pageTop: -12 }, 844), { "--viewport-height": "844px", "--viewport-top": "0px" });
+  // An engine with no visual viewport reports the window.
+  assert.deepEqual(viewportVars({ height: 0 }, 640), { "--viewport-height": "640px", "--viewport-top": "0px" });
 });

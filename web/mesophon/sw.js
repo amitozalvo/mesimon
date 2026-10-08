@@ -39,6 +39,7 @@ const PAGE = [
   "./store.js",
   "./transcript.js",
   "./swipe.js",
+  "./viewport.js",
   "./vendor/preact.module.js",
   "./vendor/hooks.module.js",
   "./vendor/htm.module.js",

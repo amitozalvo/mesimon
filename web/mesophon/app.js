@@ -5,6 +5,7 @@ import { openIdentity } from "./identity.js";
 import { Store } from "./store.js";
 import { html, render } from "./html.js";
 import { App } from "./shell.js";
+import { followViewport } from "./viewport.js";
 
 const store = new Store(Browser);
 try {
@@ -20,15 +21,7 @@ document.documentElement.dataset.theme = store.theme;
 // relay's own page can be had (T-497).
 store.kept = document.documentElement.dataset.page === "kept";
 
-function viewport() {
-  document.documentElement.style.setProperty(
-    "--viewport-height",
-    `${window.visualViewport?.height || innerHeight}px`,
-  );
-}
-window.visualViewport?.addEventListener("resize", viewport);
-addEventListener("resize", viewport);
-viewport();
+followViewport();
 
 render(html`<${App} store=${store} />`, document.getElementById("app"));
 

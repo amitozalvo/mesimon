@@ -2533,6 +2533,69 @@ async function forgetFlow(browser, engineName) {
   }
 }
 
+// A phone's keyboard (T-700): iOS Safari shrinks the visual viewport and scrolls
+// it down the layout viewport to show the focused field, resizing nothing else.
+// The page follows it, height and offset both, so the board stays in view with
+// the keyboard up and comes back whole when it goes.
+async function keyboardFlow(browser, engineName) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => {
+    class Visual extends EventTarget {
+      constructor() {
+        super();
+        this.width = 390;
+        this.height = 844;
+        this.offsetTop = 0;
+        this.pageTop = 0;
+      }
+      // What iOS does on focus: a shorter visual viewport, scrolled down.
+      keyboard(up) {
+        this.height = up ? 508 : 844;
+        this.offsetTop = this.pageTop = up ? 336 : 0;
+        this.dispatchEvent(new Event("resize"));
+        this.dispatchEvent(new Event("scroll"));
+      }
+    }
+    Object.defineProperty(window, "visualViewport", { value: new Visual(), configurable: true });
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const body = () =>
+    page.evaluate(() => {
+      const rect = document.body.getBoundingClientRect();
+      return { top: Math.round(rect.top), height: Math.round(rect.height) };
+    });
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    assert.deepEqual(await body(), { top: 0, height: 844 });
+    await page.locator('.ticket[data-id="ticket-0"]').click();
+    await page.locator("#prompt").waitFor();
+    await page.locator("#prompt").focus();
+    await page.evaluate(() => window.visualViewport.keyboard(true));
+    // The page is exactly the visible area: as tall, and as far down.
+    assert.deepEqual(await body(), { top: 336, height: 508 });
+    const prompt = await page.locator("#prompt").boundingBox();
+    assert(prompt.y >= 336 && prompt.y + prompt.height <= 844, `the composer is in view: ${JSON.stringify(prompt)}`);
+    const back = await page.locator("#back").boundingBox();
+    assert(back && back.y >= 336, `the page's top is in view: ${JSON.stringify(back)}`);
+    await page.evaluate(() => window.visualViewport.keyboard(false));
+    assert.deepEqual(await body(), { top: 0, height: 844 });
+    assert.deepEqual(errors, []);
+    console.log(`${engineName}: the page follows the keyboard's viewport passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-keyboard-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 // Home screen and no signal (T-497): the service worker keeps the page, so a
 // load with no network opens the kept copy. It shows the remembered board,
 // takes a ticket with a clock, opens no socket, and becomes the relay's own
@@ -3465,6 +3528,7 @@ try {
       }
       await pairLinkFlow(browser, engineName);
       await backFlow(browser, engineName);
+      await keyboardFlow(browser, engineName);
       await keptFlow(browser, engineName);
       await forgetFlow(browser, engineName);
     } finally {

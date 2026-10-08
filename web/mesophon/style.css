@@ -219,6 +219,8 @@ body {
   height: 100vh;
   height: 100dvh;
   height: var(--viewport-height, 100dvh);
+  /* down to where iOS Safari scrolled the visible area for its keyboard (T-700) */
+  translate: 0 var(--viewport-top, 0px);
   display: flex;
   flex-direction: column;
   overflow: hidden;

@@ -22697,3 +22697,42 @@ keys edge** (this ticket's first build): the author wanted the card's gesture, n
 to read.
 
 Tests: `the_cursors_links_row_scrolls_its_cut_into_view`.
+
+## Remote Control follows a phone's keyboard (T-700, 2026-10-08, "remote control on iphone issue when opening keyboard (pushes all the page out of view)")
+
+**What was wrong.** On an iPhone, focusing any field on Remote Control — the ticket page's
+prompt, the pairing code, a note — pushed the whole page up out of view, blank below it, until
+the keyboard went. Opening a keyboard on iOS Safari resizes nothing: `100dvh` stays, and the
+`interactive-widget=resizes-content` the viewport meta asks for is read by Chrome on Android
+alone. Only the *visual* viewport shrinks, and Safari then scrolls it down the layout viewport
+to show the focused field (`visualViewport.offsetTop`, up to the keyboard's height). The page
+already sized `body` to the visual viewport's height (`--viewport-height`, set on every
+`visualViewport` `resize`) but left it at the top, so a 508 px body sat in the top 508 px of an
+844 px layout viewport while the person saw the bottom 508 px: the page's top third hidden
+above, a blank band the keyboard's height below.
+
+**What shipped.** `web/mesophon/viewport.js`: `viewportVars` is the pure half (height and
+`pageTop`, floored at 0 so a rubber-band never moves the page up; the window's height when the
+engine has no visual viewport), `followViewport` sets both variables on the root on
+`visualViewport`'s `resize` *and* `scroll` — iOS reports the shrink on one and the scroll on
+the other — and the window's `resize`. `body` adds `translate: 0 var(--viewport-top, 0px)`.
+Through the CSSOM, outside the page's CSP, as before. Android's resized layout viewport
+reports no `pageTop`, so nothing changes there.
+
+**Why `translate`, not `window.scrollTo(0, 0)`.** Safari re-scrolls to the field after every
+reset while the keyboard is up, which fights it frame by frame and still leaves the field under
+the keyboard. Moving the body to where the visible area *is* takes Safari's scroll as the
+fact. A side effect accepted: a transformed `body` is the containing block of its
+`position: fixed` descendants (the toast, the awareness banner, the phone's sidebar sheet and
+scrim). Its padding box is the whole viewport with the keyboard down, so nothing moves at rest;
+with it up they sit inside the visible area, above the keyboard, where they were behind it.
+The `<dialog>` sheets are top layer and unaffected.
+
+**Tests.** `state.test.js` on `viewportVars`; `ux.test.js::keyboardFlow` in Chromium and WebKit
+replaces `window.visualViewport` with one that does what iOS does (508 px tall, 336 px down,
+both events) around a focused composer and reads `body`'s rect, the composer's and the Back
+button's: the body is the visible area exactly, both ends of the page are in it, and the body is
+back at 0/844 when the keyboard goes. `sw.js`'s `PAGE` keeps `viewport.js`. The hosted relay
+serves this page, so the fix reaches phones with the relay's `ship.sh`. **Owed** at the next
+bump — **Fixed:** on an iPhone, opening the keyboard on Remote Control no longer pushes the page
+out of view. Physical-phone acceptance (`web/mesophon/README.md`) is still what proves it.
