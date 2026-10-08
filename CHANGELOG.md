@@ -6,6 +6,45 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.3 — 2026-10-08
+
+### Added
+
+- **A note section headed `Summary` is the ticket's checklist on the board.**
+  The card wears its task boxes as an underline, as far along as they are
+  ticked, and `ctrl-j` lists every row: `space` ticks a box, `enter` opens
+  the link in the line or the note at that line, `a` asks the agent about
+  it, `c` copies it. Settings › Appearance › `Summary on cards` chooses
+  `full`, `hover` (the selected card only) or `none`.
+- **`mesimon ticket create` files a ticket from the shell.** It takes the
+  column, the title, a description (or `-` for stdin) and tags, starts the
+  board's daemon when none is running, and prints the new key;
+  `docs/USING.md` has the command and two cautions.
+- **Remote Control shows your boards while the terminal is away.** The
+  phone reads the board, the notes and the latest conversations as they were
+  last sent, marked `As of` that time; turning Remote Control off for a board
+  empties that copy.
+- **`m` on a board card opens the merge dialog** the ticket page has, with
+  the same stages and refusals.
+
+### Changed
+
+- **Remote Control's ticket page is built for a phone.** The conversation
+  takes the screen, with three or more tool steps in a row folded to one
+  line, and a permission, question or plan waiting on you is its last row.
+  Swipe left for the description and each note; the composer is one line
+  until you type, and Settings › **Terminal screen switch** puts the **Raw**
+  switch back.
+
+### Fixed
+
+- **On iOS Safari, opening the keyboard in Remote Control no longer pushes
+  the page out of view.**
+- **Remote Control's drawer lists the paired boards as soon as it opens.**
+- **An agent started before an update can still file tickets after it.**
+- **In a list dialog, the selected row's cut-off text scrolls into view,** as
+  a card title does.
+
 ## v0.1.0-beta.2 — 2026-10-07
 
 ### Added
@@ -21,35 +60,9 @@ in the Esc menu under `Release notes` and on GitHub.
   reaches you.
 - **The Esc menu's `Archive N finished tickets` row says how much disk it
   frees.** Only the worktrees the archive removes are counted.
-- **`mesimon ticket create` files a ticket from the shell.** It takes the
-  column, the title, a description (or `-` for stdin) and tags the board
-  already has, starts the board's daemon when none is running, and prints
-  the new key, so a Slack command, a launcher or a git hook of your own can
-  put a card on a board. `docs/USING.md` has the command and two cautions.
-- **A note section headed `Summary` is the ticket's checklist on the board.**
-  The card wears its task boxes as an underline, as far along as they are
-  ticked; with replies shown, the cursor card lists the open boxes.
-  `ctrl-j` lists every row: `space` ticks a box, `enter` opens a link in the line or, without one, the note at
-  that line, `a` asks the agent about it, `c` copies it. Lines under the
-  heading with no box are read first, as the one-line summary. A change to
-  the boxes sweeps across the underline, twice when it finishes the list.
-  Settings › Appearance › `Summary on cards` chooses `full`, `hover` (the
-  rows under the selected card only) or `none`.
 
 ### Changed
 
-- **Remote Control's ticket page is built for a phone.** The title and key
-  share one row, the tags, column and worktree glyph the next, with the shin
-  beside them while an agent is on the ticket, and the conversation takes
-  the rest of the screen in larger type: replies in the page's ink, each
-  tool step as its name and what it took, and three or more steps in a row
-  folded to one line a press opens. A permission, a question or a plan
-  waiting on you is the conversation's last row. The notes are pages beside
-  the conversation: swipe left for the description and each note, or press
-  the divider's ends, which say where you are. The composer is one line
-  until you type; Queue, Steer and the tier appear with your words. The
-  **Raw** switch is gone from the page; Settings › **Terminal screen switch**
-  puts it back on the divider.
 - **On macOS the private tmux server now answers to macOS for itself.** The
   first agent you start after this update may ask once whether `mesimon-tmux`
   may access your Documents, Desktop or Downloads folder; allow it.
