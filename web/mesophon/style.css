@@ -1857,6 +1857,16 @@ select {
   overflow: hidden;
   touch-action: pan-y;
 }
+/* A scroller's own `touch-action` is the one a finger on it obeys, not the
+   track's (T-708): sideways is the swipe, never a pan. A code block or a
+   table wider than it shows keeps its own sideways scroll. */
+.panes .detail-scroll,
+.panes .note-pane,
+.panes .chat,
+.panes #preview,
+.panes .markdown [data-fits] {
+  touch-action: pan-y pinch-zoom;
+}
 .pane-track {
   --pane: 0;
   --drag: 0px;
@@ -1883,13 +1893,14 @@ select {
   flex-direction: column;
 }
 .detail-scroll {
+  --gutter: 20px;
   flex: 1;
   min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 8px 20px 16px;
+  padding: 8px var(--gutter) 16px;
 }
 /* A note's pane (T-701): the whole note, who wrote it, its edit's state,
    and Edit and + Note at the foot. */
@@ -2117,9 +2128,10 @@ select {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  /* The transcript takes the pane's whole width (T-701). */
-  margin: 0 -20px;
-  padding: 0 20px;
+  /* The transcript takes the pane's whole width (T-701): the gutter it
+     cancels is the pane's own, or it stands past both edges (T-708). */
+  margin: 0 calc(-1 * var(--gutter, 20px));
+  padding: 0 var(--gutter, 20px);
 }
 .output-body {
   position: relative;
@@ -3657,7 +3669,8 @@ button.sent-bubble:hover {
     font-size: 1.1875rem;
   }
   .detail-scroll {
-    padding: 0 12px 12px;
+    --gutter: 12px;
+    padding: 0 var(--gutter) 12px;
   }
   .composer-area {
     padding: 8px 12px 10px;

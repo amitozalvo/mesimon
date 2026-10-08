@@ -8,7 +8,7 @@
 // (T-532): a markdown image, or the desk's `[Image #N](mesimon-attachment:…)`
 // (T-629), alone on its line or inside one. Reference links, footnotes,
 // setext headings, indented code and HTML (bar `<br>`) are text, as there.
-import { html, useRef, useState } from "./html.js";
+import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon } from "./icons.js";
 
 const PICTURE = /^!\[[^\]]*\]\([^)]*\)$|^\[Image #\d+\]\(mesimon-attachment:[^)]*\)$/;
@@ -476,12 +476,29 @@ export async function copyText(text) {
   }
 }
 
+// A box that scrolls sideways (a code block, a table) takes a finger's
+// sideways drag only while it is wider than it shows (T-708): one that fits
+// is marked `data-fits`, and a ticket page's swipe between panes has it.
+const fits = typeof ResizeObserver === "function" &&
+  new ResizeObserver((seen) => seen.forEach(({ target }) => mark(target)));
+const mark = (node) => node.toggleAttribute("data-fits", node.scrollWidth <= node.clientWidth);
+function useFits(ref) {
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node || !fits) return;
+    mark(node);
+    fits.observe(node);
+    return () => fits.unobserve(node);
+  });
+}
+
 // A fenced block with its Copy (T-704): a phone cannot drag a selection
 // across a block that scrolls sideways. Where the clipboard refuses, the
 // block is selected instead, and the phone's own Copy is one press away.
 function Code({ rows }) {
   const ref = useRef();
   const [copied, setCopied] = useState(false);
+  useFits(ref);
   const text = rows.join("\n");
   const copy = async () => {
     if (await copyText(text)) {
@@ -499,11 +516,19 @@ function Code({ rows }) {
 }
 
 function Table({ table }) {
+  const ref = useRef();
+  useFits(ref);
   const cell = (rs, i, Tag) => html`<${Tag} class=${`md-${table.align[i]}`}>${runs(rs)}</${Tag}>`;
-  return html`<div class="md-table" tabindex="0"><table>
+  return html`<div ref=${ref} class="md-table" tabindex="0"><table>
     <thead><tr>${table.head.map((rs, i) => cell(rs, i, "th"))}</tr></thead>
     <tbody>${table.rows.map((row) => html`<tr>${row.map((rs, i) => cell(rs, i, "td"))}</tr>`)}</tbody>
   </table></div>`;
+}
+
+function Raw({ text }) {
+  const ref = useRef();
+  useFits(ref);
+  return html`<pre ref=${ref} class="md-raw">${text}</pre>`;
 }
 
 function Item({ b }) {
@@ -530,7 +555,7 @@ function Blocks({ list }) {
     else if (b.para) out.push(html`<p>${runs(b.para)}</p>`);
     else if (b.quote) out.push(html`<blockquote class="md-quote"><${Blocks} list=${b.quote} /></blockquote>`);
     else if (b.table) out.push(html`<${Table} table=${b.table} />`);
-    else if (b.raw !== undefined) out.push(html`<pre class="md-raw">${b.raw}</pre>`);
+    else if (b.raw !== undefined) out.push(html`<${Raw} text=${b.raw} />`);
     else if (b.rule) out.push(html`<hr class="md-rule" />`);
   }
   return out;

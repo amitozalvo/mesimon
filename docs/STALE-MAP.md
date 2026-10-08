@@ -22980,3 +22980,27 @@ the facts parser's new column, and `bash_mode_e2e` (a stub that spawns a shell c
 launch and a second on a `go` file: the launch-time one is never a foreground, the young one
 is `sleep` on the snapshot with the state still `Idle` and `state_word` `working`, nothing on
 disk, and it clears on `stop`), on both roads.
+
+## The transcript pane takes a swipe and never scrolls sideways (T-708, 2026-10-09, "Remote control transcript section swipe right / left to cycle notes not working")
+
+Two faults in T-701's panes, both on a phone. **A swipe on the transcript did nothing**:
+`.panes` carried `touch-action: pan-y`, but a finger obeys the `touch-action` of the elements
+from the one it pressed up to the **nearest scroll container**, and `.detail-scroll`, `.chat`,
+`.note-pane` and `#preview` are each one, at `auto`. The browser took the sideways drag for a
+pan and sent `pointercancel` before `swipePanes` could step (a note's pane swiped only when its
+body was too short to scroll). Those four now carry `pan-y pinch-zoom` themselves. **The pane
+scrolled sideways by 16 px**: `.output` cancelled a 20 px gutter with `margin: 0 -20px`, and
+the phone's `.detail-scroll` gutter is 12 px. Both now read `--gutter` from `.detail-scroll`.
+
+A code block, a table or a raw block is a sideways scroller of its own and keeps `auto`, so a
+wide one still scrolls under a finger; one that fits is marked `data-fits` by a shared
+`ResizeObserver` in `markdown.js` and takes `pan-y` too, so a swipe that starts on it steps.
+**Refuted: JS in `pointerdown`.** The browser settles a touch's `touch-action` at its start,
+before the page hears the pointer, so a style set there is too late. **Not built:**
+`@container scroll-state(scrollable: x)` would mark the fitting boxes in CSS alone; Safari
+lacks it.
+
+Tests: `ux.test.js`'s conversation flow asserts nothing in the transcript's pane stands past
+its edges, and (Chromium, through CDP touch events, since the mouse never meets
+`touch-action`) that a sideways touch drag on the conversation reaches the page with no
+`pointercancel`. Each fails on the code before this change.

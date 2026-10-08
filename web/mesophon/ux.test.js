@@ -543,6 +543,31 @@ async function swipe(page, locator, dx, dy = 0) {
   await page.mouse.up();
 }
 
+// The same swipe as a touchscreen sends it (T-708), in Chromium alone: the
+// mouse's never meets `touch-action`, which decides whether the browser
+// takes the drag for a pan and cancels the page's pointer. Says whether it
+// did.
+async function touchSwipe(page, locator, dx) {
+  const box = await locator.boundingBox();
+  const x = box.x + box.width / 2;
+  const y = box.y + Math.min(box.height / 2, 40);
+  await page.evaluate(() => {
+    window.cancelled = false;
+    addEventListener("pointercancel", () => (window.cancelled = true), { capture: true, once: true });
+  });
+  const cdp = await page.context().newCDPSession(page);
+  const touch = (type, at) =>
+    cdp.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x: at, y }] });
+  await touch("touchStart", x);
+  for (let i = 1; i <= 8; i++) {
+    await touch("touchMove", x + (dx * i) / 8);
+    await new Promise((resolve) => setTimeout(resolve, 16));
+  }
+  await touch("touchEnd", x + dx);
+  await cdp.detach();
+  return page.evaluate(() => window.cancelled);
+}
+
 // Tickets from this browser (T-497): the sheet and Sent over a host that
 // keeps mail, live and away; the clock while this browser is offline; a
 // reload with tickets on their way; unsend and edit; a forged receipt; a
@@ -2158,6 +2183,19 @@ async function chatFlow(browser, engineName, size, viewport) {
     assert.equal((await asks())[0].before, undefined);
     assert.equal(await page.locator("#preview").count(), 0, "the conversation, not the screen");
     assert(await chat.evaluate((n) => n.scrollHeight - n.clientHeight - n.scrollTop < 24), "newest at the bottom");
+    // Nothing in the transcript's pane stands past its edges, so it never
+    // scrolls sideways; a finger's sideways drag on the conversation is the
+    // swipe between panes, not a pan the browser takes (T-708).
+    assert.deepEqual(await page.evaluate(() => {
+      const pane = document.querySelector(".pane-transcript").getBoundingClientRect();
+      const scroll = document.querySelector(".pane-transcript .detail-scroll");
+      return [...scroll.querySelectorAll("*")]
+        .filter((n) => !n.parentElement.closest(".markdown-code, .md-table, .md-raw") && n.getClientRects().length)
+        .map((n) => n.getBoundingClientRect())
+        .filter((r) => r.width && (r.left < pane.left - 0.5 || r.right > pane.right + 0.5)).length +
+        (scroll.scrollWidth > scroll.clientWidth ? 1 : 0);
+    }), 0, "nothing past the pane's edges");
+    if (engineName === "chromium") assert.equal(await touchSwipe(page, chat, -160), false, "the swipe is the page's");
     // A bare address is a link, in a reply and in a prompt (T-704), and a
     // fenced block carries its Copy: copied where the clipboard allows,
     // else selected for the phone's own Copy.
