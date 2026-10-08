@@ -6,7 +6,8 @@ import { BoardState, RECENT_MS } from "./board.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
 import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
-import { mergePage, tailAsk } from "./transcript.js";
+import { foldWords, groupRows, mergePage, stepParts, tailAsk } from "./transcript.js";
+import { animOf } from "./shin.js";
 import { Peeks, shelfItem } from "./shelf.js";
 import { viewportVars } from "./viewport.js";
 const ticket = (id, session) => ({
@@ -1031,4 +1032,35 @@ test("the page is the visual viewport's height, moved down to where the keyboard
   assert.deepEqual(viewportVars({ height: 844, pageTop: -12 }, 844), { "--viewport-height": "844px", "--viewport-top": "0px" });
   // An engine with no visual viewport reports the window.
   assert.deepEqual(viewportVars({ height: 0 }, 640), { "--viewport-height": "640px", "--viewport-top": "0px" });
+});
+
+test("a step splits into its tool's name and what it took; three or more in a row fold (T-701)", () => {
+  assert.deepEqual(stepParts("Read src/main.rs"), { name: "Read", arg: "src/main.rs" });
+  assert.deepEqual(stepParts("Bash(cargo test -p core)"), { name: "Bash", arg: "cargo test -p core" });
+  assert.deepEqual(stepParts("mcp__mesimon__get_ticket"), { name: "mcp__mesimon__get_ticket", arg: "" });
+  assert.deepEqual(stepParts("(no name)"), { name: "", arg: "(no name)" });
+  const tool = (at, text) => ({ at, kind: "tool", text });
+  const rows = [
+    { at: 0, kind: "prompt", text: "go" },
+    tool(10, "Read a.rs"), tool(20, "Read b.rs"),
+    { at: 30, kind: "reply", text: "ok" },
+    tool(40, "Edit a.rs"), tool(50, "Bash(cargo test)"), tool(60, "Edit b.rs"), tool(70, "Read c.rs"),
+  ];
+  const items = groupRows(rows);
+  // Two steps stay two rows; four fold to one item at the first's index.
+  assert.deepEqual(items.map((i) => (i.run ? `run@${i.i}:${i.run.length}` : `row@${i.i}`)), ["row@0", "row@1", "row@2", "row@3", "run@4:4"]);
+  assert.equal(foldWords(items[4].run), "4 steps · Edit, Bash, Read");
+});
+test("the shin's animation follows the agent's state, a tool in flight apart from a turn with none (T-701)", () => {
+  assert.equal(animOf(undefined), undefined);
+  assert.equal(animOf({ state: "working", doing: "Edit a.rs" }), "working");
+  assert.equal(animOf({ state: "working" }), "thinking");
+  assert.equal(animOf({ state: "needs attention" }), "needs");
+  assert.equal(animOf({ state: "starting" }), "starting");
+  assert.equal(animOf({ state: "sleeping" }), "sleeping");
+  assert.equal(animOf({ state: "failed" }), "failed");
+  assert.equal(animOf({ state: "exited" }), "failed");
+  assert.equal(animOf({ state: "rate limited" }), "throttled");
+  assert.equal(animOf({ state: "idle" }), "idle");
+  assert.equal(animOf({ state: "unknown" }), "idle");
 });

@@ -22758,3 +22758,75 @@ Closing the drawer drops a half-asked Forget (`Store::openSheet`).
 
 Tests: the UX suite's board-picker step (the drawer has no picker and lists the boards at once,
 tablet and phone) and `forgetFlow`, which now forgets from the drawer's list.
+## Remote Control's ticket page, simplified for the phone (T-701, 2026-10-08, "remote control simplify ticket page")
+
+**Shipped.** The page is two rows about the ticket, a divider, the transcript with the notes
+as panes beside it, and a one-line composer. The brief named every piece; the design was
+agreed on a mockup first (the artifact in the ticket's conversation), with three answers:
+the description is one swipe away and never peeks, tool runs fold, and the dialog waiting
+on you is part of the transcript.
+
+- **The head is two rows** (`detail.js::Title`, `TicketLine`). The title is clamped to two
+  lines (`.clamp`, `-webkit-line-clamp`) with the key at its right; the rename field shows
+  the whole of it, as before. The second row is the small shin at 2x (24 cells) while a
+  record exists, then the tags, the column chip and the worktree glyph. The glyph is the
+  card's own `WorktreeMark`, given `count` so `↑` carries the commits to merge, and the
+  branch row (`WorkspaceLine`) moved into the card sheet the row opens. The workspace chip
+  (shared/worktree while the choice is open, T-642) is gone from the row: a planned
+  worktree draws the card's dormant `·` glyph (`WorktreeMark` infers `planned` from
+  `kind: "worktree"` with no branch), a shared checkout draws nothing, and the sheet still
+  offers the choice. The start receipt moved to the transcript's top.
+- **The shin animates by state** (`shin.js::animOf`, the TUI's `Anim::of` in the host's
+  words): `working` is the host's `doing` set, `thinking` is `working` with none, `needs`,
+  `starting`, `sleeping`, `failed` (failed or exited), `throttled`, else `idle`. The
+  animations are CSS under `data-anim` (bob, glance, hop, a pulsing light), all off under
+  reduced motion; the sprite's light takes the state's colour, `err` added.
+- **The divider is the notes' tab bar** (`PaneBar`, `#pane-bar`, `data-pane`): the pane's
+  name at the left (`#pane-name`, a press back), a dotted rule, and the right end
+  (`#pane-next`): `N notes ›` on the transcript, `k/N ›` on a note, `+ note` when there are
+  none and the host takes notes. `Store::panesOf` lists the panes: the transcript, each
+  listed note (the description first, named `Description`, the rest `Note · <name>`), one
+  `unread` pane while the host counts notes this browser has not listed, and each note of
+  this browser's still on its way (`NoteMail::fresh`) with its tick and Unsend.
+  `Store::paneAt` picks: the chosen pane, else the transcript while an agent holds the seat
+  and the description when none does. `showPane` sets `reading` for a note pane so
+  `loadNotes`, `editNote` and `reopenNote` work unchanged; `openNote`/`closeNote`/`walkNote`
+  are pane moves now, and the history push a note read used to make is gone (Back closes
+  the ticket). A new note written here lands on its pane (`pane.at = Infinity`, clamped).
+  The track is one flex row translated by `--pane` (`.pane-track`), the finger's offset by
+  `--drag` during a swipe (`swipe.js::swipePanes`, the notice swipe's slop, FAR and flick
+  rules, sideways only when the drag is 1.5× more sideways than upright, so a transcript
+  scroll never turns into a swipe). A pane not shown is `inert` and `aria-hidden`.
+- **The notes card, the reader page and the all-notes sheet are gone** (`NotesCard`,
+  `NoteReader`, `NotesSheet`, T-532/T-627/T-633): a note's pane (`notepad.js::NotePane`) is
+  the reader, with the author and age, the edit's strip, Edit and + Note at the foot.
+- **The transcript's type** (`.chat`, `.chat-reply`, `.chat-tool`): the card is gone and the
+  rows take the pane's width; replies in `--ink` at 1rem/1.55 to a 62ch measure (they were
+  `--ink2` at 0.906rem in a card with 14px of its own padding, about 42 characters a line);
+  a step is its tool's name in the body face at 0.8125rem and its argument in mono
+  (`transcript.js::stepParts`: `Bash(cargo test)` splits at the first `(`). **A run of three
+  or more tool rows folds** to one `.chat-run` button, `N steps · Read, Edit, Bash`
+  (`groupRows`, `foldWords`, `FOLD_FROM`), opened by a press for the page's life. The "hard
+  to read" complaint was never about the typeface: it was the secondary ink on the one row
+  that matters, the 11.5px mono steps, the short measure, and the Raw screen one tap away.
+- **The dialog waiting on you is the conversation's last row**: `Chat` takes `tail` and
+  draws `Attention` after the rows and the ghost, before the step line; on the Raw screen it
+  sits above the lines as before. `.chat .attention` stretches across.
+- **Raw is behind Settings** (`Store::rawSwitch`, `mesophon-raw-switch`, the
+  `Terminal screen switch` row, `#raw-switch`): off, `chatShown` is the conversation whatever
+  `outputView` remembers; on, the small `raw` pill (`#output-view`, `aria-pressed`) sits on
+  the divider. The pill is still gone for a parked agent and while away (T-698).
+- **The composer is one line until there are words** (`.composer[data-open]`): a grid with
+  the field and the arrow, and with a draft the delivery row (`#prompt-mode`, the tier, the
+  help) comes in under the field, the arrow at its end, so it is always at the bottom
+  right. `#steer-why` shows only with words too. The field is `field-sizing: content`,
+  one row, up to 25vh. The 44px targets stay (the keyboard-viewport test).
+- **Refuted: the description peeking under the divider.** Asked and declined: the brief wants
+  the transcript whole.
+
+Tests: `state.test.js` (`stepParts`/`groupRows`/`foldWords`, `animOf`); the UX suite's
+`notesFlow` rewritten for panes (swipe both ways, the bar's ends, a new note's pane, the
+no-agent ticket opening on its description, the away strip on a pane, the reload), `chatFlow`
+(the fold, the step's two spans, the switch in Settings), `workspaceFlow` (the glyph on the
+line, the branch row in the sheet), `tierFlow` and the main flow (the row shows with words).
+`assets/demo/remote-conversation.png` re-shot.

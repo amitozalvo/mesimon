@@ -1,7 +1,6 @@
-// A ticket's notes on its page (T-532): the description and the note rows
-// under the title (past two, the latest and a sheet of all, T-627), a note
-// read in place of the agent's output, and the edit sheet. Bodies render as
-// text nodes through `Markdown`, never as HTML.
+// A ticket's notes on its page (T-532): since T-701 each is a pane beside
+// the transcript, the description first, and the edit sheet. Bodies render
+// as text nodes through `Markdown`, never as HTML.
 import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Markdown } from "./markdown.js";
@@ -13,153 +12,11 @@ import { NOTE_MAX_BYTES, ago } from "./notes.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const waitTick = { sending: "clock", local: "clock", relay: "one" };
-// Past this many notes besides the description, the page lists only the
-// latest, and All opens the rest in a sheet (T-627).
-const ROWS = 2;
-
 // What one note's own edit, if any, says about it.
 function PendingMark({ item }) {
   if (!item) return null;
   if (waitTick[item.status]) return html`<${Tick} state=${waitTick[item.status]} />`;
   return html`<span class="note-flag">Not saved</span>`;
-}
-
-function NoteRowButton({ store, ticket, row, pending, latest = false }) {
-  return html`<li><button type="button" class="note-row" onClick=${() => store.openNote(ticket.id, row.id)}>
-    <${Icon} name="file" size=${18} />
-    <span class="note-row-text"><span class="note-name" dir="auto">${row.name || "Untitled"}</span>
-      <span class="note-meta">${latest ? "latest · " : ""}${row.by} · ${ago(row.at)}</span></span>
-    <${PendingMark} item=${pending} />
-    <${Icon} name="chevronRight" size=${16} cls="note-go" />
-  </button></li>`;
-}
-
-// The description under the title, with no heading of its own (T-633): the
-// whole of it is one press that opens it in the reader, where Edit is. It
-// fades out at the foot exactly when the clamp hides some of it, measured,
-// since a line count cannot know the width.
-function Description({ body, breaks, onOpen }) {
-  const ref = useRef();
-  useLayoutEffect(() => {
-    const box = ref.current;
-    if (!box) return;
-    const measure = () => {
-      box.dataset.clipped = String(box.scrollHeight > box.clientHeight + 1);
-    };
-    measure();
-    const watch = new ResizeObserver(measure);
-    watch.observe(box);
-    if (box.firstElementChild) watch.observe(box.firstElementChild);
-    return () => watch.disconnect();
-  });
-  return html`<div class="notes-description" ref=${ref}>
-    <${Markdown} text=${body} breaks=${breaks} />
-    <button id="open-description" type="button" class="notes-description-open" aria-label="Open the description"
-      onClick=${onOpen}></button>
-  </div>`;
-}
-
-export function NotesCard({ store, ticket }) {
-  if (!ticket || !store.notesHere) return null;
-  const board = store.active.pin.board;
-  const entry = store.noteBook().entry(ticket.id);
-  const rows = entry?.rows || [];
-  const count = rows.length || ticket.notes || 0;
-  const writes = store.canWriteNotes;
-  const fresh = store.noteMail.fresh(board, ticket.id);
-  if (!count && !fresh.length && !writes) return null;
-  const description = rows[0];
-  const body = description && store.noteBook().body(ticket.id, description.id);
-  const away = !store.live;
-  const asOf = away && entry?.at ? `as of ${clock(entry.at)}` : "";
-  const awake = ticket.agent && ticket.agent.state !== "sleeping";
-  const descPending = description && store.noteMail.pending(board, ticket.id, description.id);
-  const others = rows.slice(1);
-  // Past ROWS, the latest written stays, and any whose own edit is on its
-  // way or did not save, so that is never out of sight.
-  const pendingOf = (row) => store.noteMail.pending(board, ticket.id, row.id);
-  const brief = others.length > ROWS;
-  const latest = brief ? others.reduce((a, b) => ((b.at || 0) >= (a.at || 0) ? b : a)) : undefined;
-  const shown = brief ? others.filter((row) => row === latest || pendingOf(row)) : others;
-  return html`<section id="notes" class="notes-card" aria-label="Description and notes" data-awake=${String(!!awake)}>
-    ${description
-      ? html`${(asOf || descPending) && html`<div class="notes-meta">
-          <span class="label">${asOf}</span><${PendingMark} item=${descPending} />
-        </div>`}
-        ${body !== undefined
-          ? html`<${Description} body=${body} breaks=${byPerson(description)} onOpen=${() => store.openNote(ticket.id, description.id)} />`
-          : html`<p class="notes-empty">${away ? "Needs your terminal." : "Loading…"}</p>`}`
-      : !count && writes && !fresh.length &&
-        html`<button id="add-description" type="button" class="btn btn-quiet notes-add-first"
-          onClick=${() => store.editNote(ticket.id)}><${Icon} name="plus" size=${16} /><span>Add a description</span></button>`}
-    ${!description && count > 0 && html`<p class="notes-empty">${count} ${count === 1 ? "note" : "notes"} · ${away ? "needs your terminal" : "loading…"}</p>`}
-    ${(others.length > 0 || fresh.length > 0 || (description && writes)) && html`<div class="notes-list">
-      <div class="notes-head">
-        <h3 class="label">Notes${others.length ? ` · ${others.length}` : ""}</h3>
-        ${writes && description && html`<button id="add-note" type="button" class="btn btn-quiet notes-add"
-          onClick=${() => store.editNote(ticket.id)}><${Icon} name="plus" size=${16} /><span>Note</span></button>`}
-        ${brief && html`<button id="all-notes" type="button" class="btn btn-quiet notes-add" aria-haspopup="dialog"
-          onClick=${() => store.openNotesSheet(ticket.id)}><span>All</span><${Icon} name="chevronRight" size=${16} /></button>`}
-      </div>
-      <ul class="note-rows">
-        ${shown.map((row) => html`<${NoteRowButton} key=${row.id} store=${store} ticket=${ticket} row=${row}
-          pending=${pendingOf(row)} latest=${row === latest} />`)}
-        ${fresh.map((item) => html`<li key=${item.id}><div class="note-row note-row-fresh">
-          <${Icon} name="file" size=${18} />
-          <span class="note-row-text"><span class="note-name" dir="auto">${item.name || "New note"}</span>
-            <span class="note-meta">${item.status === "stale" || item.status === "rejected" || item.status === "unknown"
-              ? item.message || "Not saved"
-              : "New"}</span></span>
-          <${PendingMark} item=${item} />
-          ${["local", "relay"].includes(item.status)
-            ? html`<button type="button" class="btn btn-quiet" onClick=${() => store.retractNote(item.id)}>Unsend</button>`
-            : !waitTick[item.status] &&
-              html`<button type="button" class="btn btn-quiet" onClick=${() => store.dropNote(item.id)}>Discard</button>`}
-        </div></li>`)}
-      </ul>
-    </div>`}
-  </section>`;
-}
-
-// Every note of a ticket past ROWS (T-627), the description aside, in their
-// order: a row opens the note in place of the page, as the card's rows do.
-export function NotesSheet({ store }) {
-  const ref = useRef();
-  const ticket = store.notesSheet && store.board?.tickets.find((t) => t.id === store.notesSheet);
-  useLayoutEffect(() => {
-    const dialog = ref.current;
-    if (!dialog) return;
-    if (ticket && !dialog.open) dialog.showModal();
-    if (!ticket && dialog.open) dialog.close();
-  });
-  if (!ticket) return html`<dialog id="notes-sheet" class="compose" ref=${ref}></dialog>`;
-  const board = store.active.pin.board;
-  const others = (store.noteBook().entry(ticket.id)?.rows || []).slice(1);
-  const writes = store.canWriteNotes;
-  return html`<dialog id="notes-sheet" class="compose notes-sheet" ref=${ref} aria-labelledby="notes-heading"
-      onCancel=${(e) => {
-        e.preventDefault();
-        store.closeNotesSheet();
-      }}
-      onClose=${() => store.closeNotesSheet()}
-      onClick=${(e) => {
-        if (e.target === e.currentTarget) store.closeNotesSheet();
-      }}>
-    <div class="compose-form">
-      <header class="compose-head">
-        ${writes
-          ? html`<button id="notes-sheet-add" type="button" class="btn btn-quiet notes-add" onClick=${() => store.editNote(ticket.id)}>
-              <${Icon} name="plus" size=${16} /><span>Note</span></button>`
-          : html`<span></span>`}
-        <h2 id="notes-heading">Notes · ${ticket.key}</h2>
-        <button id="notes-done" type="button" class="btn btn-quiet compose-send-top" onClick=${() => store.closeNotesSheet()}>Done</button>
-      </header>
-      <ul class="note-rows notes-sheet-rows">
-        ${others.map((row) => html`<${NoteRowButton} key=${row.id} store=${store} ticket=${ticket} row=${row}
-          pending=${store.noteMail.pending(board, ticket.id, row.id)} />`)}
-      </ul>
-    </div>
-  </dialog>`;
 }
 
 // One's own edit of the open note, as it stands: on its way, or not saved.
@@ -188,40 +45,52 @@ function PendingStrip({ store, item }) {
   </div>`;
 }
 
-export function NoteReader({ store, ticket }) {
-  const reading = store.reading;
+// One note as a pane beside the transcript (T-701): the whole of it, who
+// wrote it and when, one's own edit of it as it stands, and the presses
+// that edit it or add the next. A note on its way (`fresh`) is a pane too,
+// with its tick, until the host lists it. Bodies render as text nodes
+// through `Markdown`, never as HTML.
+export function NotePane({ store, ticket, pane, shown }) {
   const board = store.active.pin.board;
   const entry = store.noteBook().entry(ticket.id);
-  const rows = entry?.rows || [];
-  const at = rows.findIndex((r) => r.id === reading.note);
-  const row = rows[at];
-  const pending = store.noteMail.pending(board, ticket.id, reading.note);
-  const body = pending ? pending.text : store.noteBook().body(ticket.id, reading.note);
   const away = !store.live;
-  const what = at === 0 ? "Description" : `Note ${at} of ${rows.length - 1}`;
+  const asOf = away && entry?.at ? ` · as of ${clock(entry.at)}` : "";
+  if (pane.kind === "fresh") {
+    const item = pane.item;
+    const unsent = ["local", "relay"].includes(item.status);
+    return html`<div class="note-pane" data-fresh="true">
+      <p class="note-pane-meta"><${PendingMark} item=${item} /><span>${item.status === "stale" || item.status === "rejected" || item.status === "unknown"
+        ? item.message || "Not saved"
+        : unsent ? "On its way · waits for your terminal" : "Saving…"}</span></p>
+      <div class="note-pane-body"><${Markdown} text=${item.text} breaks=${true} /></div>
+      <div class="note-pane-foot">
+        ${unsent
+          ? html`<button type="button" class="btn btn-quiet" onClick=${() => store.retractNote(item.id)}>Unsend</button>`
+          : !waitTick[item.status] &&
+            html`<button type="button" class="btn btn-quiet" onClick=${() => store.dropNote(item.id)}>Discard</button>`}
+      </div>
+    </div>`;
+  }
+  if (pane.kind === "unread")
+    return html`<div class="note-pane"><p class="notes-empty">${pane.count} ${pane.count === 1 ? "note" : "notes"} · ${away ? "needs your terminal" : "loading…"}</p></div>`;
+  const row = pane.row;
+  const pending = store.noteMail.pending(board, ticket.id, row.id);
+  const body = pending ? pending.text : store.noteBook().body(ticket.id, row.id);
   const editable = store.canWriteNotes && (body !== undefined || !!pending) && pending?.status !== "sending";
-  return html`<article id="note-reader" class="note-reader" aria-labelledby="note-title">
-    <header class="note-reader-head">
-      <button id="note-back" type="button" class="btn btn-quiet note-back" onClick=${() => store.closeNote()}>
-        <${Icon} name="back" size=${20} /><span>${ticket.key}</span></button>
-      ${store.canWriteNotes && html`<button id="edit-note" type="button" class="btn" disabled=${!editable}
-        onClick=${() => store.editNote(ticket.id, reading.note)}><${Icon} name="pencil" size=${17} /><span>Edit</span></button>`}
-    </header>
-    <div class="note-reader-body">
-      <p class="label">${what}${row ? ` · ${row.by} · ${ago(row.at)}` : ""}${away && entry?.at ? ` · as of ${clock(entry.at)}` : ""}</p>
-      <h2 id="note-title" tabindex="-1" class="sr-only">${row?.name || what}</h2>
-      <${PendingStrip} store=${store} item=${pending} />
-      ${body !== undefined
-        ? html`<${Markdown} text=${body} breaks=${byPerson(row)} />`
-        : html`<p class="notes-empty">${row ? (away ? "Needs your terminal." : "Loading…") : "This note is gone."}</p>`}
-    </div>
-    ${rows.length > 1 && at >= 0 && html`<footer class="note-reader-foot">
-      <button id="note-prev" type="button" class="btn btn-quiet" onClick=${() => store.walkNote(-1)}>
-        <${Icon} name="back" size=${18} /><span>Previous</span></button>
-      <button id="note-next" type="button" class="btn btn-quiet note-next" onClick=${() => store.walkNote(1)}>
-        <span>Next</span><${Icon} name="chevronRight" size=${18} /></button>
-    </footer>`}
-  </article>`;
+  const writes = store.canWriteNotes;
+  return html`<div class="note-pane" data-note=${row.id}>
+    <p class="note-pane-meta"><span>${row.by} · ${ago(row.at)}${asOf}</span></p>
+    <${PendingStrip} store=${store} item=${pending} />
+    ${body !== undefined
+      ? html`<div class="note-pane-body"><${Markdown} text=${body} breaks=${byPerson(row)} /></div>`
+      : html`<p class="notes-empty">${away ? "Needs your terminal." : "Loading…"}</p>`}
+    ${writes && html`<div class="note-pane-foot">
+      <button id=${shown ? "edit-note" : undefined} type="button" class="btn" disabled=${!editable}
+        onClick=${() => store.editNote(ticket.id, row.id)}><${Icon} name="pencil" size=${16} /><span>Edit</span></button>
+      <button id=${shown ? "add-note" : undefined} type="button" class="btn btn-quiet notes-add" onClick=${() => store.editNote(ticket.id)}>
+        <${Icon} name="plus" size=${16} /><span>Note</span></button>
+    </div>`}
+  </div>`;
 }
 
 // A picked picture as the sheet shows it (T-629): its bitmap drawn on a

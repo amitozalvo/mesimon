@@ -68,10 +68,17 @@ const WT_MARK = {
   ahead: ["↑", "ready", "commits to merge"],
   clean: ["", "quiet", "worktree"],
 };
-export function WorktreeMark({ ticket }) {
-  const mark = WT_MARK[ticket.workspace?.state];
+// With `count` (the ticket page's line, T-701) the glyph to merge carries
+// how many commits, and the title says what the page's branch row said.
+export function WorktreeMark({ ticket, count = false }) {
+  const ws = ticket.workspace;
+  // A worktree chosen and not cut yet is planned, whether or not the host
+  // says so.
+  const mark = WT_MARK[ws?.state || (ws?.kind === "worktree" && !ws.branch ? "planned" : "")];
   if (!mark) return null;
-  return html`<span class=${`wt-mark wt-${mark[1]}`} title=${mark[2]}><${Icon} name="branch" size=${13} width=${2.2} />${mark[0] && html`<span aria-hidden="true">${mark[0]}</span>`}<span class="sr-only">${mark[2]}</span></span>`;
+  const glyph = count && ws.state === "ahead" && ws.ahead ? `${mark[0]}${ws.ahead}` : mark[0];
+  const words = count ? [mark[2], ws.branch, worktreeWords(ws)].filter(Boolean).join(" · ") : mark[2];
+  return html`<span class=${`wt-mark wt-${mark[1]}`} title=${words}><${Icon} name="branch" size=${13} width=${2.2} />${glyph && html`<span aria-hidden="true">${glyph}</span>`}<span class="sr-only">${words}</span></span>`;
 }
 
 // The ticket page's words for its worktree (T-642), the TUI's branch row:

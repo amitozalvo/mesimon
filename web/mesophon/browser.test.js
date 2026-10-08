@@ -102,8 +102,10 @@ for (const [name, engine] of [
         await card.click();
         // The conversation is the ticket page's first view (T-626); this
         // pass reads the pane's screen through the sealed road, so it turns
-        // to the raw view, which the page then remembers.
+        // on the switch Settings keeps (T-701) and then to the raw view,
+        // which the page then remembers.
         await page.locator("#chat").waitFor();
+        await page.evaluate(() => document.querySelector("#raw-switch").click());
         await page.locator("#output-view").click();
         await page.waitForFunction(() =>
           document

@@ -8,7 +8,7 @@ import { swipeAway } from "./swipe.js";
 import { NowList, BoardList, SentList, ColumnTabs, lastSeen } from "./lists.js";
 import { Detail } from "./detail.js";
 import { NewTicket, QuickNew, StartSheet, CardSheet } from "./compose.js";
-import { NoteSheet, NotesSheet } from "./notepad.js";
+import { NoteSheet } from "./notepad.js";
 
 // Subscribe during the commit, not after paint: a fast boot can emit before
 // a deferred effect runs, and that change would never reach the page.
@@ -222,6 +222,8 @@ function Settings({ store }) {
           <option value="graphite">Graphite</option>
           <option value="chalk">Chalk</option>
         </select></label>
+        <label class="field setting-switch"><span>Terminal screen switch<small>A <b>raw</b> switch on the ticket page shows the agent's terminal screen. The conversation is the default either way.</small></span>
+          <input id="raw-switch" type="checkbox" checked=${store.rawSwitch} onChange=${(e) => store.setRawSwitch(e.currentTarget.checked)} /></label>
         <div class="settings-actions">
           <${Install} store=${store} />
           <button id="alerts" type="button" class="btn btn-quiet" onClick=${() => store.enableAlerts()}><${Icon} name="bell" size=${16} /><span>Enable alerts</span></button>
@@ -426,7 +428,7 @@ export function App({ store }) {
       want === "selection"
         ? document.getElementById("selection")
         : want === "note"
-          ? document.getElementById("note-title")
+          ? document.getElementById("pane-name")
         : want === "row"
           ? document.querySelector('#tickets .ticket[aria-pressed="true"]')
           : document.getElementById(
@@ -435,7 +437,6 @@ export function App({ store }) {
                 pair: "pair",
                 rename: "rename-title",
                 "card-line": "card-line",
-                "all-notes": "all-notes",
               }[want] || "code",
             );
     if (target?.getClientRects().length) target.focus({ preventScroll: true });
@@ -446,7 +447,6 @@ export function App({ store }) {
     <${NewTicket} store=${store} />
     <${StartSheet} store=${store} />
     <${CardSheet} store=${store} />
-    <${NotesSheet} store=${store} />
     <${NoteSheet} store=${store} />
     <${Settings} store=${store} />
     <${Toast} store=${store} />`;

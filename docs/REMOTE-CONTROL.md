@@ -162,19 +162,30 @@ browser leaves it running. A terminal older than this version offers no button.
 
 ## Reading an agent
 
-A ticket's page shows its agent's **conversation**: your prompts, the agent's replies and
-the progress notes it writes between steps, one line per tool call, and where the
-conversation was interrupted, compacted or cleared. The newest is at the bottom; scroll up
-for earlier, a page at a time. While the agent works, its current step sits under the last
-row. It is read from the session's transcript on your Mac, so a sleeping agent's
-conversation reads too. After `/clear` or `/resume` the page follows the new conversation.
+A ticket's page is two rows about the ticket and then its agent's **conversation**. The
+first row is the title, two lines of it at most, with the key at its right; a press on the
+title opens the whole of it to rename. The second row is the shin while an agent holds the
+seat, moving as the agent's state does (working, thinking, asking you, asleep), then the
+tags, the column and, once a worktree is cut, a branch glyph with one mark: `↑3` commits to
+merge, `↓` main moved, `✓` merged, `!` or `×` something wrong. A press on that row opens the
+sheet that moves and tags the ticket, where the branch and its state are spelled out.
+
+Under a divider that reads **TRANSCRIPT** is the conversation: your prompts, the agent's
+replies, one line per tool call (three or more in a row fold to one line that says how
+many and which tools, and a press opens them), and where the conversation was interrupted,
+compacted or cleared. A permission, a question or a plan waiting on you is the
+conversation's last row. The newest is at the bottom; scroll up for earlier, a page at a
+time. While the agent works, its current step sits under the last row. It is read from the
+session's transcript on your Mac, so a sleeping agent's conversation reads too. After
+`/clear` or `/resume` the page follows the new conversation.
 
 Replies read as they do at your desk: headings, lists and task lists, quotes, code blocks,
 tables, bold, emphasis, struck text and links.
 
-**Raw**, in the panel's corner, shows the agent's terminal screen instead, its last 50 lines,
-as it looked at your desk; a sleeping agent has none. The page remembers which one you
-chose. A subagent's conversation is not shown.
+Settings has a **Terminal screen switch** row, off by default. On, a small **raw** switch on
+the divider shows the agent's terminal screen instead, its last 50 lines, as it looked at
+your desk; a sleeping agent has none. The page remembers which one you chose. A subagent's
+conversation is not shown.
 
 ## Sending a prompt
 
@@ -280,9 +291,13 @@ completion.
 
 ## Notes
 
-A ticket's page shows its description under the title, then its other notes as rows. A row
-opens the note; **Previous** and **Next** walk the ticket's notes in order. **Edit** opens the
-whole note in a sheet; **+ Note** adds one; **Delete** removes a note (never the
+A ticket's notes are the pages beside its transcript: swipe left on the transcript for the
+description, then each other note in order, and swipe right to come back. The divider says
+where you are: **TRANSCRIPT · 2 notes ›** on the transcript, **‹ DESCRIPTION · 1/2 ›** on a
+note, and its two ends are presses that go the same ways. A ticket with no agent opens on
+its description; the transcript page then holds the **Start agent** button. A note's page
+shows the whole note, who wrote it and when. **Edit** opens it in a sheet; **+ Note** adds
+one, which becomes the last page; **Delete** removes a note (never the
 description) after a second press. A save names the version of the note it was opened at: if
 the note changed at your terminal since, nothing is written, your words stay, and the note
 offers **Keep theirs** or **Save mine**. After a save, **Tell claude** (or codex) points an

@@ -4,6 +4,7 @@ import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { PictureBar, pastePictures } from "./notepad.js";
 import { DESCRIPTION_MAX_BYTES, PROMPT_MAX_BYTES } from "./store.js";
+import { worktreeWords } from "./lists.js";
 
 // Where the ticket is going, and how it gets there from here (T-497): live,
 // through the relay's mailbox while the terminal is away, or kept in this
@@ -269,6 +270,22 @@ function WorkspaceChoice({ store, ticket }) {
   </fieldset>`;
 }
 
+// Where the ticket's code lives once its worktree is cut (T-642), the TUI
+// page's branch row: the branch, then what it waits on or what is wrong.
+// Since T-701 it is in the sheet the ticket's line opens, under the line's
+// glyph.
+function WorkspaceLine({ ticket }) {
+  const ws = ticket?.workspace;
+  if (!ws?.branch) return null;
+  const words = worktreeWords(ws);
+  const tone = ["error", "conflict"].includes(ws.state) ? " wt-err" : ["ahead", "behind"].includes(ws.state) ? " wt-ready" : "";
+  return html`<p id="workspace-line" class="workspace-line">
+    <${Icon} name="branch" size=${14} width=${2.2} />
+    <span class="workspace-branch" title=${ws.branch}>${ws.branch}</span>
+    ${words && html`<span class=${`workspace-state${tone}`}>${words}</span>`}
+  </p>`;
+}
+
 // A ticket's column and tags (T-530), opened from the ticket page's line:
 // each press goes to the board as it is made, as the board's own keys do,
 // and Done closes the sheet. Only the board's own tags are offered.
@@ -301,6 +318,7 @@ export function CardSheet({ store }) {
       </header>
       <div class="compose-body">
         <p class="start-title" dir="auto">${ticket.title}</p>
+        <${WorkspaceLine} ticket=${ticket} />
         <fieldset class="choices" disabled=${!store.canEdit("move")}>
           <legend>Column</legend>
           <div class="choice-row">${board.columns.map((column) => html`<label class="choice" key=${column}>

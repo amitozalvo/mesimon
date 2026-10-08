@@ -12,6 +12,7 @@ try {
   store.theme = localStorage.getItem("mesophon-theme") || "system";
   store.rail = localStorage.getItem("mesophon-sidebar") === "rail";
   store.outputView = localStorage.getItem("mesophon-output") === "raw" ? "raw" : "chat";
+  store.rawSwitch = localStorage.getItem("mesophon-raw-switch") === "on";
 } catch {
   /* System appearance remains usable when preferences are unavailable. */
 }

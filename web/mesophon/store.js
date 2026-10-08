@@ -95,6 +95,9 @@ export class Store {
     // The ticket page's output (T-626): the conversation (`chat`) or the
     // pane's screen (`raw`); app.js reads the remembered choice in.
     this.outputView = "chat";
+    // Whether the ticket page offers the screen at all (T-701): a Settings
+    // row, off by default; app.js reads the remembered choice in.
+    this.rawSwitch = false;
     this.remembered = new Map(); // board id -> signature of the stored snapshot
     this.sent = new Sent();
     this.sentLoaded = new Set(); // boards whose stored Sent list is read
@@ -113,8 +116,9 @@ export class Store {
     this.notesLoaded = new Set(); // boards whose stored notes are read
     this.reading = undefined;
     this.noteDraft = undefined;
-    // The sheet listing every note of a ticket past two (T-627).
-    this.notesSheet = undefined;
+    // The pane the ticket page shows (T-701): { ticket, at }, 0 the
+    // transcript and n the nth note; none, and the page picks.
+    this.pane = undefined;
     this.toast = undefined;
     this.depositing = new Set(); // ids handed to the mailbox socket, unanswered
     // The shelf (T-698): the boards this away spell asked the relay about.
@@ -276,6 +280,7 @@ export class Store {
     if (!this.board) return;
     if (this.board.selected !== id) this.renaming = undefined;
     this.reading = undefined;
+    this.pane = undefined;
     this.board.selected = id;
     this.active.selected = id;
     this.persist();
@@ -288,6 +293,7 @@ export class Store {
   }
   back() {
     this.reading = undefined;
+    this.pane = undefined;
     if (history.state?.detail) history.back();
     else this.detail(false);
     this.focus = "row";
@@ -295,7 +301,6 @@ export class Store {
   }
   popstate(state) {
     this.detail(!!state?.detail);
-    if (!state?.note) this.reading = undefined;
     this.sync();
   }
   setMode(mode) {
@@ -436,7 +441,7 @@ export class Store {
   }
   // Away, the screen is the terminal's to show: the conversation held reads.
   get chatShown() {
-    return this.chatCapable && (this.outputView !== "raw" || (!this.live && !!this.entry?.chat));
+    return this.chatCapable && (this.outputView !== "raw" || !this.rawSwitch || (!this.live && !!this.entry?.chat));
   }
   // The page before the held part of the conversation, one ask at a time;
   // asked again once the ask in flight lands.
@@ -1221,7 +1226,9 @@ export class Store {
     } else if (!book.current(ticket.id, stamp) && !c.has("notes"))
       c.request({ op: "notes", ticket: ticket.id }, `notes:${ticket.id}:${stamp}`);
     const rows = book.entry(ticket.id)?.rows || [];
-    const wanted = this.reading?.ticket === ticket.id ? this.reading.note : rows[0]?.id;
+    // The body the pane shown wants (T-701); the description's otherwise.
+    const shown = this.panesOf(ticket)[this.paneAt(ticket)];
+    const wanted = shown?.kind === "note" ? shown.row.id : rows[0]?.id;
     if (wanted && rows.some((r) => r.id === wanted) && book.body(ticket.id, wanted) === undefined && !c.has("note"))
       c.request({ op: "note", ticket: ticket.id, note: wanted }, `note:${ticket.id}`);
   }
@@ -1246,36 +1253,53 @@ export class Store {
     }
     this.emit();
   }
-  // Every note of a ticket, in a sheet (T-627): the ticket page shows only
-  // the latest once it has more than two.
-  openNotesSheet(ticket) {
-    if (!this.board?.tickets.some((t) => t.id === ticket)) return;
-    this.notesSheet = ticket;
+  // The ticket page's panes (T-701): the transcript, then the ticket's
+  // notes in their order, the description first, then any note of this
+  // browser's still on its way. Notes the host lists but this browser has
+  // not read yet are one pane that says so.
+  panesOf(ticket) {
+    const board = this.active?.pin.board;
+    const entry = this.noteBook().entry(ticket.id);
+    const rows = entry?.rows || [];
+    const panes = [{ kind: "transcript", name: "Transcript", key: "transcript" }];
+    rows.forEach((row, i) =>
+      panes.push({ kind: "note", name: i === 0 ? "Description" : `Note · ${row.name || "Untitled"}`, key: row.id, row }),
+    );
+    if (!rows.length && ticket.notes > 0) panes.push({ kind: "unread", name: "Notes", key: "unread", count: ticket.notes });
+    if (board)
+      for (const item of this.noteMail.fresh(board, ticket.id))
+        panes.push({ kind: "fresh", name: `Note · ${item.name || "New note"}`, key: item.id, item });
+    return panes;
+  }
+  // Which pane is shown: the one chosen, else the transcript while an agent
+  // holds the seat and the description when none does.
+  paneAt(ticket) {
+    const n = this.panesOf(ticket).length;
+    const at = this.pane?.ticket === ticket.id ? this.pane.at : ticket.agent ? 0 : Math.min(1, n - 1);
+    return Math.max(0, Math.min(n - 1, at));
+  }
+  showPane(ticketId, at) {
+    const ticket = this.board?.tickets.find((t) => t.id === ticketId);
+    if (!ticket) return;
+    const panes = this.panesOf(ticket);
+    at = Math.max(0, Math.min(panes.length - 1, at));
+    this.pane = { ticket: ticketId, at };
+    const pane = panes[at];
+    this.reading = pane.kind === "note" ? { ticket: ticketId, note: pane.row.id } : undefined;
+    this.focus = at === 0 ? "selection" : "note";
     this.loadNotes();
     this.emit();
   }
-  closeNotesSheet() {
-    if (!this.notesSheet) return;
-    this.notesSheet = undefined;
-    this.focus = "all-notes";
-    this.emit();
-  }
-  // A note opened, or one written, from the sheet closes it first.
+  // A note opened by id: its pane.
   openNote(ticket, note) {
-    this.notesSheet = undefined;
-    this.reading = { ticket, note };
-    if (narrow() && !history.state?.note) history.pushState({ detail: true, note: true }, "");
-    this.focus = "note";
-    this.loadNotes();
-    this.emit();
+    const t = this.board?.tickets.find((x) => x.id === ticket);
+    if (!t) return;
+    const at = this.panesOf(t).findIndex((p) => p.kind === "note" && p.row.id === note);
+    this.showPane(ticket, at < 0 ? 0 : at);
   }
-  // Closed at once: `history.back` lands later, and a second close before it
-  // would pop the ticket too.
   closeNote() {
     if (!this.reading) return;
-    this.reading = undefined;
-    if (history.state?.note) history.back();
-    this.emit();
+    this.showPane(this.reading.ticket, 0);
   }
   // Prev and Next walk the ticket's notes in order, the description first,
   // and come round again, as the desk's Tab does in its note editor.
@@ -1283,9 +1307,7 @@ export class Store {
     const rows = this.noteBook().entry(this.reading?.ticket)?.rows || [];
     const at = rows.findIndex((r) => r.id === this.reading?.note);
     if (at < 0 || rows.length < 2) return;
-    this.reading = { ticket: this.reading.ticket, note: rows[(at + step + rows.length) % rows.length].id };
-    this.loadNotes();
-    this.emit();
+    this.openNote(this.reading.ticket, rows[(at + step + rows.length) % rows.length].id);
   }
   // The edit sheet, on the words the note has, or on an edit of this
   // browser's that did not land. One still on its way is taken back first.
@@ -1293,7 +1315,6 @@ export class Store {
     const board = this.active?.pin.board;
     const t = this.board?.tickets.find((x) => x.id === ticket);
     if (!board || !t || !this.canWriteNotes) return;
-    this.notesSheet = undefined;
     const pending = note ? this.noteMail.pending(board, ticket, note) : undefined;
     if (pending && ["local", "relay"].includes(pending.status)) return this.retractNote(pending.id, true);
     if (pending?.status === "sending") return;
@@ -1553,6 +1574,9 @@ export class Store {
       this.noteMail.remove(item.id);
       book.written(item.ticket, deleted, reply, item.text, item.name);
       if (!reply.note && this.reading?.note === deleted) this.closeNote();
+      // A note written here is shown once the host lists it (T-701): the
+      // last pane, which it will be.
+      if (reply.note && !deleted && item.ticket === this.board?.current?.id) this.pane = { ticket: item.ticket, at: Infinity };
       const agent = this.board?.tickets.find((t) => t.id === item.ticket)?.agent;
       const awake = this.live && agent?.promptable && agent.state !== "sleeping";
       if (reply.note && awake)
@@ -1722,7 +1746,7 @@ export class Store {
     this.boardMenuOpen = false;
     this.composer.open = false;
     this.startAsk = undefined;
-    this.renaming = this.cardSheet = this.notesSheet = undefined;
+    this.renaming = this.cardSheet = this.pane = undefined;
     clearAlerts();
     this.identity.lastBoard = chosen.pin.board;
     this.persist();
@@ -1757,7 +1781,7 @@ export class Store {
     this.sentLoaded.clear();
     this.starts = new Starts();
     this.edits = new Edits();
-    this.renaming = this.cardSheet = this.notesSheet = undefined;
+    this.renaming = this.cardSheet = this.pane = undefined;
     this.noteBooks.clear();
     this.noteMail = new NoteMail();
     this.notesLoaded.clear();
@@ -2099,6 +2123,17 @@ export class Store {
     document.documentElement.dataset.theme = theme;
     try {
       localStorage.setItem("mesophon-theme", theme);
+    } catch {
+      /* In-memory choice still applies. */
+    }
+    this.emit();
+  }
+  // The screen's switch on the ticket page (T-701). Off, the conversation
+  // is shown whatever was chosen last.
+  setRawSwitch(on) {
+    this.rawSwitch = !!on;
+    try {
+      localStorage.setItem("mesophon-raw-switch", on ? "on" : "off");
     } catch {
       /* In-memory choice still applies. */
     }

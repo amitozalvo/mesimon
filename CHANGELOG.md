@@ -38,6 +38,18 @@ in the Esc menu under `Release notes` and on GitHub.
 
 ### Changed
 
+- **Remote Control's ticket page is built for a phone.** The title and key
+  share one row, the tags, column and worktree glyph the next, with the shin
+  beside them while an agent is on the ticket, and the conversation takes
+  the rest of the screen in larger type: replies in the page's ink, each
+  tool step as its name and what it took, and three or more steps in a row
+  folded to one line a press opens. A permission, a question or a plan
+  waiting on you is the conversation's last row. The notes are pages beside
+  the conversation: swipe left for the description and each note, or press
+  the divider's ends, which say where you are. The composer is one line
+  until you type; Queue, Steer and the tier appear with your words. The
+  **Raw** switch is gone from the page; Settings › **Terminal screen switch**
+  puts it back on the divider.
 - **On macOS the private tmux server now answers to macOS for itself.** The
   first agent you start after this update may ask once whether `mesimon-tmux`
   may access your Documents, Desktop or Downloads folder; allow it.

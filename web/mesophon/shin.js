@@ -14,7 +14,7 @@ const sprites = {
     glint: "M2 5h1v1h-1zM8 5h1v1h-1z",
     closed: "M2 6h2v1h-2zM8 6h2v1h-2z",
     mouth: "M5 7h2v1h-2z",
-    surprised: "M5 7h2v1h-2z",
+    surprised: "M5 6h2v2h-2z",
     light: "M9 0h1v1h-1z",
   },
   medium: {
@@ -33,12 +33,42 @@ const sprites = {
   },
 };
 
-// mood: awake | asleep | surprised. light: calm | attn | dim.
-export function Shin({ size = "small", scale = 2, mood = "awake", light = "calm" }) {
+// What the creature does in each of the host's agent states (T-701), as the
+// TUI's `Anim::of` has it: a tool in flight is `working`, a turn with none
+// is `thinking`, and the host's `doing` tells them apart.
+export function animOf(agent) {
+  if (!agent) return undefined;
+  switch (agent.state) {
+    case "starting":
+      return "starting";
+    case "working":
+      return agent.doing ? "working" : "thinking";
+    case "needs attention":
+      return "needs";
+    case "sleeping":
+      return "sleeping";
+    case "failed":
+    case "exited":
+      return "failed";
+    case "rate limited":
+      return "throttled";
+    default:
+      return "idle";
+  }
+}
+const ANIM_LIGHT = { starting: "calm", working: "calm", thinking: "calm", needs: "attn", failed: "err", throttled: "attn" };
+
+// mood: awake | asleep | surprised. light: calm | attn | dim | err. `anim`
+// (T-701) sets both, and the CSS animation, from the agent's state.
+export function Shin({ size = "small", scale = 2, mood = "awake", light = "calm", anim }) {
   const s = sprites[size];
   const [, , w, h] = s.box.split(" ").map(Number);
+  if (anim) {
+    mood = anim === "sleeping" ? "asleep" : anim === "needs" ? "surprised" : "awake";
+    light = ANIM_LIGHT[anim] || "dim";
+  }
   const asleep = mood === "asleep";
-  return html`<span class=${`shin shin-${mood}`} aria-hidden="true">
+  return html`<span class=${`shin shin-${mood}`} data-anim=${anim} aria-hidden="true">
     <svg width=${w * scale} height=${h * scale} viewBox=${s.box} shape-rendering="crispEdges">
       <path class="sh-body" d=${s.body} />
       <path class="sh-hi" d=${s.hi} />

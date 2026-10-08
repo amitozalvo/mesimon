@@ -1,15 +1,17 @@
-// One ticket: its agent, the dialog waiting on you, the periodic output and
-// the composer. Every element keeps its place in the DOM even when empty, so
-// revocation visibly clears protected content rather than removing it.
+// One ticket: two rows about it, then the transcript, with its notes as the
+// panes beside it (T-701), and the composer. Every element keeps its place
+// in the DOM even when empty, so revocation visibly clears protected content
+// rather than removing it.
 import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
-import { Shin } from "./shin.js";
+import { Shin, animOf } from "./shin.js";
 import { Attention } from "./dialogs.js";
-import { CrownMark, StartButton, StartReceipt, Tags, ageWords, crownTouch, stateAge, worktreeWords } from "./lists.js";
-import { NotesCard, NoteReader } from "./notepad.js";
+import { CrownMark, StartButton, StartReceipt, Tags, WorktreeMark, ageWords, crownTouch, stateAge } from "./lists.js";
+import { NotePane } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
 import { queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Chat } from "./transcript.js";
+import { swipePanes } from "./swipe.js";
 
 // The pane's width in cells, for drawing its lines as the screen they came
 // from (T-506). An older host names none: the longest line stands in, which
@@ -30,20 +32,21 @@ const screenRows = (text) => {
   );
 };
 
-// The conversation or the pane's screen (T-626): one small switch in the
-// panel's corner, naming the view it turns to. A parked agent's
-// conversation is still its file; its screen is gone, so it has no switch,
-// nor while the terminal is away (T-698).
-function OutputView({ store, ticket }) {
+// The conversation or the pane's screen (T-626), a small switch on the
+// divider that Settings puts there (T-701): most people never want the
+// screen, so by default there is no switch and the conversation is all. A
+// parked agent's conversation is still its file; its screen is gone, so it
+// has no switch, nor while the terminal is away (T-698).
+function OutputView({ store, ticket, at = 0 }) {
   const chat = store.chatShown;
-  if (!store.chatCapable || !store.live || ticket?.agent?.state === "sleeping") return null;
+  if (at !== 0 || !store.rawSwitch || !store.chatCapable || !store.live || !ticket?.agent || ticket.agent.state === "sleeping") return null;
   return html`<button id="output-view" type="button" class="view-toggle" aria-pressed=${String(!chat)}
     aria-label=${chat ? "Show the terminal screen" : "Show the conversation"}
     onClick=${() => store.setOutputView(chat ? "raw" : "chat")}>
-    <${Icon} name=${chat ? "terminal" : "inbox"} size=${13} /><span>${chat ? "Raw" : "Chat"}</span></button>`;
+    <${Icon} name="terminal" size=${11} width=${2.4} /><span>raw</span></button>`;
 }
 
-function Output({ store, ticket, entry }) {
+function Output({ store, ticket, entry, live }) {
   const chat = store.chatShown;
   const ref = useRef();
   const shown = useRef();
@@ -67,16 +70,20 @@ function Output({ store, ticket, entry }) {
           : "");
   const following = chat ? entry?.chatFollowing !== false : entry?.following;
   const unread = chat ? entry?.chatUnread : entry?.unread;
+  // The dialog waiting on you is the conversation's last row (T-701): the
+  // permission, the question or the plan sits where the agent stopped. On
+  // the screen it sits above the lines.
+  const attention = html`<${Attention} store=${store} ticket=${ticket} entry=${entry} live=${live} />`;
   // The screen (T-506): the lines at the pane's own width, the type sized by
   // CSS so that width fills the panel, and a line the capture joined wrapped
   // back where the pane had it. Where the pane is wider than the panel can
   // show legibly, the lines reflow at the panel's width and the rules stay
   // one row each (`.screen-lines`).
   return html`<section class="output" aria-label="Output" hidden=${!ticket?.agent || (ticket.agent.state === "sleeping" && !chat)}>
+    ${!chat && attention}
     <div class="output-body">
-      <${OutputView} store=${store} ticket=${ticket} />
       ${chat
-        ? html`<${Chat} store=${store} entry=${entry} doing=${ticket?.agent?.doing} />`
+        ? html`<${Chat} store=${store} entry=${entry} doing=${ticket?.agent?.doing} tail=${attention} />`
         : html`<pre id="preview" ref=${ref} class="screen" style=${{ "--cols": screenCols(entry) }} aria-label="Agent output" tabindex="0"
         onScroll=${(e) => store.outputScrolled(e.currentTarget)}><span class="screen-lines">${screenRows(text)}</span></pre>`}
       <button id="latest" type="button" class="latest" hidden=${!entry || following}
@@ -104,6 +111,18 @@ function Composer({ store, ticket, entry, live }) {
   // In the conversation a sent prompt is its ghost, then its own row
   // (T-626): no line says it was submitted.
   const ghost = store.chatShown && !!sentPrompt(entry) && entry.latest === entry.receipt;
+  // One line until there are words (T-701): the field alone with its arrow,
+  // and the delivery row beneath once something is typed.
+  const open = !!entry?.draft;
+  // The field grows to its words (`field-sizing: content`); an engine
+  // without it is measured by hand.
+  const field = useRef();
+  useLayoutEffect(() => {
+    const node = field.current;
+    if (!node || CSS.supports("field-sizing", "content")) return;
+    node.style.height = "";
+    node.style.height = `${node.scrollHeight}px`;
+  }, [entry?.draft]);
   return html`<footer class="composer-area">
     <section id="queued-row" class="bubble-row" aria-label="Queued prompt" hidden=${ticket?.queued == null}>
       <div class="bubble">
@@ -129,8 +148,8 @@ function Composer({ store, ticket, entry, live }) {
       <p id="target" class="sr-only">${agent
         ? `Message ${agent.provider} on ${ticket.key} · session ${agent.session.slice(0, 8)}`
         : "No agent selected"}</p>
-      <div class="composer">
-        <textarea id="prompt" aria-label="Prompt" aria-describedby="target" rows="2" dir="auto"
+      <div class="composer" data-open=${String(open)}>
+        <textarea id="prompt" ref=${field} aria-label="Prompt" aria-describedby="target" rows="1" dir="auto"
           placeholder=${agent ? `Message ${agent.provider}…` : "No agent to message"} required disabled=${!agent}
           value=${entry?.draft || ""} onInput=${(e) => store.setDraft(e.currentTarget.value)}
           onKeyDown=${(e) => {
@@ -139,7 +158,7 @@ function Composer({ store, ticket, entry, live }) {
               e.currentTarget.form.requestSubmit();
             }
           }}></textarea>
-        <div class="composer-row">
+        <div class="composer-row" hidden=${!open}>
           <fieldset id="prompt-mode" class="segmented" disabled=${!agent}>
             <legend class="sr-only">Delivery</legend>
             <label class=${mode === "queue" ? "on" : ""}><input type="radio" name="prompt-mode" value="queue"
@@ -152,10 +171,10 @@ function Composer({ store, ticket, entry, live }) {
               ${tiers.map((t) => html`<option key=${t.id} value=${t.id}>${t.name}</option>`)}
             </select></label>`}
           <p class="mode-help">${mode === "steer" ? "Goes in now, mid-turn." : "Waits for the turn to end."}</p>
-          <button id="send" type="submit" class="send" disabled=${sendOff}
-            aria-label=${mode === "steer" ? "Send prompt" : "Queue prompt"}><${Icon} name="up" size=${20} width=${2.2} /></button>
         </div>
-        <p id="steer-why" class="steer-why" hidden=${!steerOff}>${switching
+        <button id="send" type="submit" class="send" disabled=${sendOff}
+          aria-label=${mode === "steer" ? "Send prompt" : "Queue prompt"}><${Icon} name="up" size=${20} width=${2.2} /></button>
+        <p id="steer-why" class="steer-why" hidden=${!steerOff || !open}>${switching
           ? `Restarts on ${store.board?.tierNamed(pick)?.name || pick} when the turn ends, then sends.`
           : "Steer is off while the agent waits on you · answer it first. Queue still works."}</p>
       </div>
@@ -164,8 +183,9 @@ function Composer({ store, ticket, entry, live }) {
   </footer>`;
 }
 
-// The heading, and the rename it opens (T-530): a press on the title
-// writes over it, Enter saves and Escape puts it back.
+// The heading, two lines of it at most (T-701), and the rename it opens
+// (T-530): a press on the title writes over it, whole, Enter saves and
+// Escape puts it back.
 function Title({ store, ticket }) {
   const ask = ticket && store.renaming?.ticket === ticket.id ? store.renaming : undefined;
   const field = useRef();
@@ -196,50 +216,39 @@ function Title({ store, ticket }) {
       </div>
     </form>`;
   const renames = !!ticket && store.canEdit("rename") && !store.editWaiting(ticket, "rename");
-  return html`<h2 id="selection" class=${ticket?.crown ? "crowned" : undefined} tabindex="-1" dir="auto">${!ticket
-    ? "Select a ticket"
-    : renames
-      ? html`<button id="rename" type="button" class="title-button" aria-describedby="rename-hint"
-          onClick=${() => store.startRename()}><${CrownMark} ticket=${ticket} size=${20} />${ticket.title}</button>`
-      : html`<${CrownMark} ticket=${ticket} size=${20} />${ticket.title}`}</h2>
-    ${renames && html`<span id="rename-hint" class="sr-only">Rename</span>`}`;
+  return html`<div class="title-row">
+    <h2 id="selection" class=${`${renames ? "" : "clamp"}${ticket?.crown ? " crowned" : ""}`} tabindex="-1" dir="auto">${!ticket
+      ? "Select a ticket"
+      : renames
+        ? html`<button id="rename" type="button" class="title-button clamp" aria-describedby="rename-hint"
+            onClick=${() => store.startRename()}><${CrownMark} ticket=${ticket} size=${18} />${ticket.title}</button>`
+        : html`<${CrownMark} ticket=${ticket} size=${18} />${ticket.title}`}</h2>
+    ${ticket && html`<span class="selection-key">${ticket.key}</span>`}
+    ${renames && html`<span id="rename-hint" class="sr-only">Rename</span>`}
+  </div>`;
 }
 
 // Whether the card sheet offers this ticket's workspace (T-642): a host
 // that takes the choice, and a choice still open, as the TUI's Shift+Tab.
 export const choosesWorkspace = (store, ticket) => store.canEdit("workspace") && !!ticket?.workspace?.open;
 
-// The ticket's tags and column (T-510), and with a host that takes the
-// card edits (T-530) one button that opens the sheet moving and tagging it.
-// A workspace not cut yet is a chip of its own (T-642): the choice the
-// sheet changes while it is open.
+// The ticket's line (T-510, T-701): the shin while an agent holds the seat,
+// then the tags, the column and the worktree's glyph, and with a host that
+// takes the card edits (T-530) the whole of it one button that opens the
+// sheet moving and tagging it, where the branch and its state are spelled
+// out. The glyph is the card's (`WorktreeMark`), with the count to merge.
 function TicketLine({ store, ticket }) {
   const moves = store.canEdit("move");
   const tags = store.canEdit("tag") && store.board.allowedTags.length > 0;
   const add = tags && !ticket.tags?.length;
-  const ws = ticket.workspace;
   const chooses = choosesWorkspace(store, ticket);
-  const chips = html`<${Tags} ticket=${ticket} />${add && html`<span class="chip chip-quiet add-tag"><${Icon} name="plus" size=${12} width=${2.4} /><span>Tag</span></span>`}<span class="chip chip-column">${ticket.column}${moves && html`<${Icon} name="chevronDown" size=${12} width=${2.4} />`}</span>${ws && !ws.branch && html`<span class="chip chip-quiet chip-workspace"><${Icon} name="branch" size=${12} width=${2.4} /><span>${ws.kind === "shared" ? "shared" : ws.kind}</span></span>`}`;
+  const chips = html`<${Tags} ticket=${ticket} />${add && html`<span class="chip chip-quiet add-tag"><${Icon} name="plus" size=${12} width=${2.4} /><span>Tag</span></span>`}<span class="chip chip-column">${ticket.column}${moves && html`<${Icon} name="chevronDown" size=${12} width=${2.4} />`}</span><${WorktreeMark} ticket=${ticket} count=${true} />`;
   if (!moves && !tags && !chooses) return html`<div class="chips">${chips}</div>`;
   const edits = moves && tags ? "Move or tag this ticket" : moves ? "Move this ticket" : tags ? "Tag this ticket" : "";
   const hint = !chooses ? edits : edits ? `${edits}, or choose its workspace` : "Choose this ticket’s workspace";
   return html`<button id="card-line" type="button" class="chips chips-edit" aria-haspopup="dialog" aria-describedby="card-line-hint"
       onClick=${() => store.openCardSheet(ticket.id)}>${chips}</button>
     <span id="card-line-hint" class="sr-only">${hint}</span>`;
-}
-
-// Where the ticket's code lives once its worktree is cut (T-642), the TUI
-// page's branch row: the branch, then what it waits on or what is wrong.
-function WorkspaceLine({ ticket }) {
-  const ws = ticket?.workspace;
-  if (!ws?.branch) return null;
-  const words = worktreeWords(ws);
-  const tone = ["error", "conflict"].includes(ws.state) ? " wt-err" : ["ahead", "behind"].includes(ws.state) ? " wt-ready" : "";
-  return html`<p id="workspace-line" class="workspace-line">
-    <${Icon} name="branch" size=${14} width=${2.2} />
-    <span class="workspace-branch" title=${ws.branch}>${ws.branch}</span>
-    ${words && html`<span class=${`workspace-state${tone}`}>${words}</span>`}
-  </p>`;
 }
 
 // What the crown did, in a sentence (T-623), by the card's word. A word
@@ -267,7 +276,7 @@ export function crownSentence(touch) {
   return touch.by ? `${touch.by}’s agent ${did}` : `The crown ${did}`;
 }
 
-// A ticket the crown touched says what it did, on its page (T-623).
+// A ticket the crown touched says what it did, at the transcript's top (T-623).
 function CrownLine({ store, ticket }) {
   const touch = ticket && crownTouch(store.board, ticket);
   if (!touch) return null;
@@ -287,54 +296,92 @@ function seatWords(store, agent) {
   return store.live ? what : `${what} ${agent ? "Waking" : "Starting"} ${it} needs your terminal back.`;
 }
 
+// The divider between the ticket and its panes (T-701): the pane's name at
+// the left, what a swipe reaches at the right, and both are presses too.
+// On the transcript it says how many notes lie to the right; on a note,
+// which one this is of them.
+function PaneBar({ store, ticket, panes, at }) {
+  const notes = panes.length - 1;
+  const last = at === panes.length - 1;
+  const writes = store.canWriteNotes;
+  const name = at === 0 ? "Transcript" : panes[at].name;
+  const rhs = at === 0
+    ? notes
+      ? `${notes} ${notes === 1 ? "note" : "notes"}`
+      : writes
+        ? "note"
+        : ""
+    : `${at}/${notes}`;
+  const next = () => (at === 0 && !notes ? store.editNote(ticket.id) : store.showPane(ticket.id, at + 1));
+  return html`<div id="pane-bar" class="pane-bar" data-pane=${at}>
+    <button id="pane-name" type="button" class="pane-name" disabled=${at === 0} aria-label=${at === 0 ? name : `${name} · back`}
+      onClick=${() => store.showPane(ticket.id, at - 1)}>
+      ${at > 0 && html`<span class="pane-arrow" aria-hidden="true">‹</span>`}<span dir="auto">${name}</span></button>
+    <span class="pane-rule" aria-hidden="true"></span>
+    <${OutputView} store=${store} ticket=${ticket} at=${at} />
+    <button id="pane-next" type="button" class="pane-next" disabled=${last && !(at === 0 && !notes && writes)} hidden=${!rhs}
+      aria-label=${at === 0 ? (notes ? `${rhs} · swipe left to read them` : "Add a description") : last ? rhs : `${rhs} · next note`}
+      onClick=${next}>${at === 0 && !notes && writes && html`<${Icon} name="plus" size=${11} width=${2.6} />`}<span>${rhs}</span>${(at === 0 ? notes > 0 : !last) && html`<span class="pane-arrow" aria-hidden="true">›</span>`}</button>
+  </div>`;
+}
+
 export function Detail({ store, bp }) {
   const ticket = store.board?.current;
   const entry = store.entry;
   const live = store.live;
   const agent = ticket?.agent;
   const asleep = agent?.state === "sleeping";
-  const light = agent?.state === "needs attention" ? "attn" : ["starting", "working"].includes(agent?.state) ? "calm" : "dim";
   const since = store.board && stateAge(store.board, agent);
   const start = store.startOf(ticket);
   // The seat a start reaches (T-510): empty, or a parked agent it wakes.
   const seatOpen = !!ticket && (!agent || asleep);
-  // A note open for reading takes the page (T-532); Back returns to it.
-  if (ticket && store.reading?.ticket === ticket.id)
-    return html`<article id="detail" aria-labelledby="note-title"><${NoteReader} store=${store} ticket=${ticket} /></article>`;
-  // The head (T-510): the shin, the title, then one line with the tags and
-  // the column at its left and the key at its right, as the TUI's page. A
-  // start that took sits beside the column (T-547); one still on its way, or
-  // refused, stays under the button it came from.
-  const started = start?.status === "started";
+  // The panes (T-701): the transcript, then the notes in their order, the
+  // description first, and a note on its way last. Which one is shown is
+  // the store's, so a swipe, the bar and Back agree.
+  const panes = ticket ? store.panesOf(ticket) : [{ kind: "transcript", name: "Transcript" }];
+  const at = ticket ? store.paneAt(ticket) : 0;
+  const track = useRef();
+  useLayoutEffect(() => {
+    const node = track.current;
+    if (!node || !ticket) return;
+    return swipePanes(node, (step) => store.showPane(ticket.id, at + step));
+  }, [ticket?.id, at]);
+  const anim = animOf(agent);
   return html`<article id="detail" aria-labelledby="selection">
     <header class="detail-head">
       <button id="back" type="button" class="icon-btn" aria-label="Back" onClick=${() => store.back()}><${Icon} name="back" size=${22} /></button>
       <button id="close-detail" type="button" class="icon-btn" aria-label="Close" onClick=${() => store.back()}><${Icon} name="x" size=${20} /></button>
-      <div class="detail-shin" hidden=${!ticket}>
-        <${Shin} scale=${3} light=${light} mood=${agent && !asleep ? "awake" : "asleep"} />
-        ${agent && html`<span id="agent-word" class="sr-only">${agent.provider} · ${agent.state}${since ? ` · ${since}` : ""}</span>`}
-      </div>
       <div class="detail-title">
         <${Title} store=${store} ticket=${ticket} />
         ${ticket && html`<div class="ticket-line">
+          <span class="detail-shin" hidden=${!agent}>
+            ${agent && html`<${Shin} scale=${2} anim=${anim} />
+              <span id="agent-word" class="sr-only">${agent.provider} · ${agent.state}${since ? ` · ${since}` : ""}</span>`}
+          </span>
           <${TicketLine} store=${store} ticket=${ticket} />
-          ${started && html`<${StartReceipt} item=${start} agent=${agent} />`}
-          <span class="selection-key">${ticket.key}</span>
         </div>`}
-        <${WorkspaceLine} ticket=${ticket} />
       </div>
     </header>
-    <div class="detail-scroll">
-      <${CrownLine} store=${store} ticket=${ticket} />
-      ${seatOpen && html`<div class="agent-line" role="group" aria-label="Agent">
-        <p id="agent-state">${seatWords(store, agent)}</p>
-        ${store.startsAgents && html`<${StartButton} store=${store} ticket=${ticket} />`}
-      </div>`}
-      ${ticket && !started && html`<${StartReceipt} item=${start} agent=${agent} />`}
-      <${Attention} store=${store} ticket=${ticket} entry=${entry} live=${live} />
-      <${NotesCard} store=${store} ticket=${ticket} />
-      <${Output} store=${store} ticket=${ticket} entry=${entry} />
-      ${!ticket && html`<div class="detail-empty"><${Shin} size="medium" scale=${4} /><p>Pick a ticket to read its agent’s output and send it a prompt.</p></div>`}
+    ${ticket && html`<${PaneBar} store=${store} ticket=${ticket} panes=${panes} at=${at} />`}
+    <div class="panes" ref=${track}>
+      <div class="pane-track" style=${{ "--pane": at }}>
+        <section class="pane pane-transcript" aria-label="Transcript" aria-hidden=${String(at !== 0)} inert=${at !== 0 || undefined}>
+          <div class="detail-scroll">
+            <${CrownLine} store=${store} ticket=${ticket} />
+            ${seatOpen && html`<div class="agent-line" role="group" aria-label="Agent">
+              <p id="agent-state">${seatWords(store, agent)}</p>
+              ${store.startsAgents && html`<${StartButton} store=${store} ticket=${ticket} />`}
+            </div>`}
+            ${ticket && html`<${StartReceipt} item=${start} agent=${agent} />`}
+            <${Output} store=${store} ticket=${ticket} entry=${entry} live=${live} />
+            ${!ticket && html`<div class="detail-empty"><${Shin} size="medium" scale=${4} /><p>Pick a ticket to read its agent’s output and send it a prompt.</p></div>`}
+          </div>
+        </section>
+        ${ticket && panes.slice(1).map((pane, i) => html`<section class="pane pane-note" key=${pane.key} aria-label=${pane.name}
+            aria-hidden=${String(at !== i + 1)} inert=${at !== i + 1 || undefined}>
+          <${NotePane} store=${store} ticket=${ticket} pane=${pane} shown=${at === i + 1} />
+        </section>`)}
+      </div>
     </div>
     <${Composer} store=${store} ticket=${ticket} entry=${entry} live=${live} />
   </article>`;

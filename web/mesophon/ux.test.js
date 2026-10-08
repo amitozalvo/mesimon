@@ -982,8 +982,20 @@ async function notesFlow(browser, engineName, size, viewport) {
   page.on("pageerror", (error) => errors.push(String(error)));
   const toast = (text) => until(page, (text) => document.querySelector("#toast").textContent.includes(text), text);
   const sheet = page.locator("#note-sheet");
-  const reader = page.locator("#note-reader");
-  const notes = page.locator("#notes");
+  // The notes are panes beside the transcript (T-701): `pane` is the one
+  // shown, the bar's right end goes to the next and its left end back,
+  // and `at` is where the bar says the page is.
+  const pane = page.locator('.pane-note[aria-hidden="false"] .note-pane');
+  const at = (n) => until(page, (n) => document.querySelector("#pane-bar")?.dataset.pane === String(n), n);
+  const next = () => page.locator("#pane-next").click();
+  const back = () => page.locator("#pane-name").click();
+  const named = () => page.locator("#pane-name").textContent();
+  // Back to the transcript, then right until the pane named `text` is shown.
+  const goTo = async (text) => {
+    for (let i = 0; i < 8 && !(await page.locator("#pane-name").isDisabled()); i++) await back();
+    for (let i = 0; i < 8 && !(await named()).includes(text); i++) await next();
+    assert.match(await named(), new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  };
   const shot = (name) =>
     page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
   const open = async (id) => {
@@ -1004,23 +1016,24 @@ async function notesFlow(browser, engineName, size, viewport) {
     await page.locator('.ticket[data-id="ticket-0"]').waitFor();
     await open("ticket-0");
 
-    // The description under the title, clamped while the agent works, and
-    // the note as a row; nothing in a body becomes markup.
-    await notes.locator(".notes-description").waitFor();
-    assert.match(await notes.locator(".notes-description").textContent(), /read well on a phone/);
-    assert.equal(await notes.locator("script").count(), 0);
-    assert.equal(await notes.getAttribute("data-awake"), "true");
-    // No heading and no pen (T-633): the description itself is the press,
-    // faded at the foot because the clamp cut it.
-    assert.equal(await notes.locator("h3").filter({ hasText: "Description" }).count(), 0);
-    assert.equal(await notes.locator("#edit-description").count(), 0);
-    assert.equal(await notes.locator(".notes-description").getAttribute("data-clipped"), "true");
-    const row = notes.locator(".note-row").filter({ hasText: "Plan: retry the train" });
-    assert.match(await row.textContent(), /agent · 14m/);
+    // The transcript first while an agent works, the bar counting the notes
+    // to its right; a swipe reaches the description, whole, and nothing in
+    // a body becomes markup.
+    await page.locator("#pane-bar").waitFor();
+    await at(0);
+    assert.equal(await named(), "Transcript");
+    assert.match(await page.locator("#pane-next").textContent(), /2 notes/);
+    await swipe(page, page.locator(".panes"), -200);
+    await at(1);
+    assert.match(await named(), /Description/);
+    await until(page, () => /read well on a phone/.test(document.querySelector('.pane-note[aria-hidden="false"]').textContent));
+    assert.equal(await pane.locator("script").count(), 0);
+    assert.match(await page.locator("#pane-next").textContent(), /1\/2/);
+    assert.match(await pane.locator(".note-pane-meta").textContent(), /you · 2h/);
     if (size === "phone") {
-      const short = await notes.evaluate((node) =>
+      const short = await page.locator("#detail").evaluate((node) =>
         [...node.querySelectorAll("button")]
-          .filter((n) => n.getClientRects().length && n.getBoundingClientRect().height < 44)
+          .filter((n) => n.getClientRects().length && n.getBoundingClientRect().height < 44 && !n.closest(".pane-bar"))
           .map((n) => n.id || n.textContent),
       );
       assert.deepEqual(short, []);
@@ -1028,16 +1041,23 @@ async function notesFlow(browser, engineName, size, viewport) {
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await shot("notes-ticket");
 
-    // A note read in place of the output, walked like the desk's Tab.
-    await row.click();
-    await reader.waitFor();
-    assert.match(await reader.locator(".markdown").textContent(), /Re-read the tip/);
-    assert.match(await reader.locator(".markdown-picture").textContent(), /open it at your desk/);
-    assert.match(await reader.locator(".label").first().textContent(), /Note 1 of 1 · agent/);
-    await page.locator("#note-next").click();
-    await until(page, () => /Description/.test(document.querySelector("#note-reader .label").textContent));
-    await page.locator("#note-prev").click();
-    await until(page, () => /Note 1 of 1/.test(document.querySelector("#note-reader .label").textContent));
+    // The note after it, walked by the bar, and back again; a swipe the
+    // other way returns too.
+    await next();
+    await at(2);
+    assert.match(await named(), /Note · Plan: retry the train/);
+    await until(page, () => /Re-read the tip/.test(document.querySelector('.pane-note[aria-hidden="false"]').textContent));
+    assert.match(await pane.locator(".markdown-picture").textContent(), /open it at your desk/);
+    assert.match(await pane.locator(".note-pane-meta").textContent(), /agent · 14m/);
+    assert.match(await page.locator("#pane-next").textContent(), /2\/2/);
+    assert(await page.locator("#pane-next").isDisabled(), "the last note");
+    await back();
+    await at(1);
+    await swipe(page, page.locator(".panes"), 200);
+    await at(0);
+    assert.equal(await named(), "Transcript");
+    await goTo("Plan: retry the train");
+    await at(2);
     await shot("notes-reader");
 
     // Edited and saved through the mailbox, with the revision it opened;
@@ -1054,7 +1074,7 @@ async function notesFlow(browser, engineName, size, viewport) {
     await page.locator("#toast-action").click();
     await until(page, () => fixture.told.length === 1);
     assert.deepEqual(await page.evaluate(() => fixture.told[0]), { op: "tell_agent", ticket: "ticket-0", note: "plan-0" });
-    await until(page, () => /tip first/.test(document.querySelector("#note-reader .markdown").textContent));
+    await until(page, () => /tip first/.test(document.querySelector('.pane-note[aria-hidden="false"] .markdown').textContent));
 
     // Changed at the terminal while the sheet was open: refused as stale,
     // the words kept, and Save mine writes them over.
@@ -1067,23 +1087,22 @@ async function notesFlow(browser, engineName, size, viewport) {
     });
     await save("# Plan: retry the train\n\nMine.");
     await toast("Not saved: agent changed it");
-    await reader.locator(".note-strip-conflict").waitFor();
-    assert.match(await reader.locator(".markdown").textContent(), /Mine\./);
+    await pane.locator(".note-strip-conflict").waitFor();
+    assert.match(await pane.locator(".markdown").textContent(), /Mine\./);
     await page.locator("#save-mine").click();
     await toast("Saved");
     assert.match(await page.evaluate(() => fixture.notes["ticket-0"][1].text), /Mine\./);
-    await reader.locator(".note-strip-conflict").waitFor({ state: "detached" });
+    await pane.locator(".note-strip-conflict").waitFor({ state: "detached" });
 
-    // A new note, then deleted: the delete asks once more.
-    await page.locator("#note-back").click();
-    await notes.waitFor();
+    // A new note is the last pane, shown once it lands; then deleted, and
+    // the delete asks once more.
     await page.locator("#add-note").click();
     assert.equal(await page.locator("#note-heading").textContent(), "New note · T-0");
     await save("Second thoughts\n\nmore");
     await toast("Saved");
-    const fresh = notes.locator(".note-row").filter({ hasText: "Second thoughts" });
-    await fresh.waitFor();
-    await fresh.click();
+    await until(page, () => /Second thoughts/.test(document.querySelector("#pane-name").textContent));
+    await at(3);
+    assert.match(await page.locator("#pane-next").textContent(), /3\/3/);
     await page.locator("#edit-note").click();
     await sheet.waitFor({ state: "visible" });
     await page.locator("#delete-note").click();
@@ -1096,26 +1115,20 @@ async function notesFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator(".toast-body").evaluate((el) => el.style.translate), "");
     await swipe(page, page.locator(".toast-body"), -160);
     await until(page, () => !document.querySelector(".toast-body"), undefined, 1500);
-    await notes.waitFor();
-    await fresh.waitFor({ state: "detached" });
+    await until(page, () => document.querySelectorAll(".pane-note").length === 2);
     assert.equal(await page.evaluate(() => fixture.notes["ticket-0"].length), 2);
 
-    // A press on the description opens it whole, and its own sheet, from
-    // there, has no delete.
-    await page.locator("#open-description").click();
-    await reader.waitFor();
-    assert.match(await reader.locator(".label").first().textContent(), /Description/);
+    // The description's own sheet has no delete.
+    await goTo("Description");
     await page.locator("#edit-note").click();
     await sheet.waitFor({ state: "visible" });
     assert.equal(await page.locator("#note-heading").textContent(), "Description · T-0");
     assert.equal(await page.locator("#delete-note").count(), 0);
     await sheet.getByRole("button", { name: "Cancel" }).click();
     await sheet.waitFor({ state: "hidden" });
-    await page.locator("#note-back").click();
-    await notes.waitFor();
 
-    // Past two notes the page lists the latest written, and All opens a
-    // sheet of every one (T-627); a row there opens the note.
+    // More notes are more panes, in the host's order, and the bar counts
+    // them; one gone takes its pane with it.
     await page.evaluate(() => {
       const hour = 3_600_000;
       fixture.notes["ticket-0"].push(
@@ -1124,38 +1137,22 @@ async function notesFlow(browser, engineName, size, viewport) {
       );
       fixture.stampNotes();
     });
-    const notesSheet = page.locator("#notes-sheet");
-    await page.locator("#all-notes").waitFor();
-    assert.equal(await notes.locator(".note-row").count(), 1);
-    assert.match(await notes.locator(".note-row").textContent(), /Plan: retry the train.*latest · /);
-    await page.locator("#all-notes").click();
-    await notesSheet.waitFor({ state: "visible" });
-    assert.deepEqual(await notesSheet.locator(".note-name").allTextContents(), [
-      "Plan: retry the train",
-      "Older thoughts",
-      "Oldest thoughts",
-    ]);
+    await until(page, () => document.querySelectorAll(".pane-note").length === 4);
+    assert.match(await page.locator("#pane-next").textContent(), /1\/4/);
+    await goTo("Oldest thoughts");
+    await at(4);
+    await until(page, () => /Oldest thoughts/.test(document.querySelector('.pane-note[aria-hidden="false"] .markdown')?.textContent));
     await shot("notes-all");
-    await notesSheet.locator(".note-row").filter({ hasText: "Oldest thoughts" }).click();
-    await notesSheet.waitFor({ state: "hidden" });
-    await reader.waitFor();
-    assert.match(await reader.locator(".label").first().textContent(), /Note 3 of 3/);
-    await page.locator("#note-back").click();
-    await page.locator("#all-notes").click();
-    await notesSheet.waitFor({ state: "visible" });
-    await page.locator("#notes-done").click();
-    await notesSheet.waitFor({ state: "hidden" });
-    assert.equal(await page.evaluate(() => document.activeElement?.id), "all-notes");
     await page.evaluate(() => {
       fixture.notes["ticket-0"].splice(2);
       fixture.stampNotes();
     });
-    await page.locator("#all-notes").waitFor({ state: "detached" });
+    await until(page, () => document.querySelectorAll(".pane-note").length === 2);
+    await at(2);
 
     // A picture in a new note (T-629): picked, named [Image #1] in the
     // words, shown as a thumbnail; a second one removed again; then sent
     // in pieces over the live channel ahead of the note that links it.
-    await notes.waitFor();
     await page.locator("#add-note").click();
     await sheet.waitFor({ state: "visible" });
     await page.locator("#note-text").fill("Screenshot of the bug\n\n");
@@ -1179,10 +1176,8 @@ async function notesFlow(browser, engineName, size, viewport) {
     const upload = await page.evaluate(() => fixture.uploads["pic-0"]);
     assert(upload.complete && upload.pieces >= 2, JSON.stringify(upload));
     assert.equal(Object.keys(await page.evaluate(() => fixture.uploads)).length, 1, "the removed picture never went up");
-    const withPicture = notes.locator(".note-row").filter({ hasText: "Screenshot of the bug" });
-    await withPicture.click();
-    await reader.waitFor();
-    assert.match(await reader.locator(".markdown-picture").textContent(), /Image #1 · open it at your desk/);
+    await until(page, () => /Screenshot of the bug/.test(document.querySelector("#pane-name").textContent));
+    await until(page, () => /Image #1 · open it at your desk/.test(document.querySelector('.pane-note[aria-hidden="false"]').textContent));
     // Picked before the cursor was ever placed, a picture goes at the end;
     // Cancel sends nothing.
     await page.locator("#edit-note").click();
@@ -1193,13 +1188,11 @@ async function notesFlow(browser, engineName, size, viewport) {
     await sheet.getByRole("button", { name: "Cancel" }).click();
     await sheet.waitFor({ state: "hidden" });
     assert.equal(Object.keys(await page.evaluate(() => fixture.uploads)).length, 1);
-    await page.locator("#note-back").click();
-    await notes.waitFor();
     await page.evaluate(() => {
       fixture.notes["ticket-0"].splice(2);
       fixture.stampNotes();
     });
-    await withPicture.waitFor({ state: "detached" });
+    await until(page, () => document.querySelectorAll(".pane-note").length === 2);
 
     // A picture in a new ticket's details (T-670): picked into the New
     // ticket sheet, sent in pieces that name no ticket, then the create
@@ -1239,40 +1232,66 @@ async function notesFlow(browser, engineName, size, viewport) {
     await composer.getByRole("button", { name: "Cancel" }).click();
     await composer.waitFor({ state: "hidden" });
 
-    // A ticket without notes offers a description.
+    // A ticket without notes has no note pane: the bar's right end adds a
+    // description. One without an agent opens on its description.
     await open("ticket-4");
-    await page.locator("#add-description").waitFor();
-    assert.equal(await notes.locator(".note-row").count(), 0);
+    await at(0);
+    assert.equal(await page.locator(".pane-note").count(), 0);
+    assert.match(await page.locator("#pane-next").textContent(), /note/);
+    await page.locator("#pane-next").click();
+    await sheet.waitFor({ state: "visible" });
+    assert.equal(await page.locator("#note-heading").textContent(), "Description · T-4");
+    await sheet.getByRole("button", { name: "Cancel" }).click();
+    await sheet.waitFor({ state: "hidden" });
+    await page.evaluate(() => {
+      fixture.notes["ticket-3"] = [{ id: "desc-3", name: "Quiet ticket", by: "you", at: Date.now(), rev: 1, text: "# Quiet ticket\n\nNo agent here." }];
+      fixture.stampNotes();
+    });
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+    await page.locator('button[data-mode="board"]').locator("visible=true").click();
+    if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
+    await page.locator('.ticket[data-id="ticket-3"]').click();
+    await at(1);
+    assert.match(await named(), /Description/);
+    await until(page, () => /No agent here/.test(document.querySelector('.pane-note[aria-hidden="false"]').textContent));
+    await back();
+    await at(0);
+    assert.match(await page.locator("#agent-state").textContent(), /^No agent on this ticket\./);
+    if (size === "desktop" && (await page.locator(".detail-scrim").count()))
+      await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+    await page.locator('button[data-mode="agents"]').locator("visible=true").click();
 
     // The terminal away: the notes read stay readable, as of when, and an
     // edit waits at the relay with one tick until it is back.
     await open("ticket-0");
-    await notes.locator(".notes-description").waitFor();
+    await at(0);
     await page.evaluate(() => {
       fixture.refuse = true;
       fixture.channel().close();
     });
     await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
-    await until(page, () => /as of/.test(document.querySelector("#notes .label").textContent));
-    await notes.locator(".note-row").first().click();
+    await goTo("Plan: retry the train");
+    await until(page, () => /as of/.test(document.querySelector('.pane-note[aria-hidden="false"] .note-pane-meta').textContent));
     await page.locator("#edit-note").click();
     await sheet.waitFor({ state: "visible" });
     assert.match(await sheet.locator(".compose-dest").textContent(), /Saves when your terminal is back/);
     await save("# Plan: retry the train\n\nWritten away.");
-    await reader.locator(".note-strip").filter({ hasText: "Waits for your terminal" }).waitFor();
-    assert.match(await reader.locator(".markdown").textContent(), /Written away/);
+    await pane.locator(".note-strip").filter({ hasText: "Waits for your terminal" }).waitFor();
+    assert.match(await pane.locator(".markdown").textContent(), /Written away/);
     await shot("notes-away");
     // A reload keeps the notes read and the edit on its way; the page
     // reopens the ticket it was on.
     await page.reload();
-    await notes.locator(".notes-description").waitFor();
-    assert.match(await notes.locator(".notes-description").textContent(), /read well on a phone/);
-    await notes.locator(".note-row .tick").waitFor();
+    await page.locator("#pane-bar").waitFor();
+    await goTo("Plan: retry the train");
+    await until(page, () => /Written away/.test(document.querySelector('.pane-note[aria-hidden="false"]').textContent));
+    await pane.locator(".note-strip .tick").waitFor();
     await page.evaluate(() => {
       fixture.refuse = false;
       fixture.collect();
     });
-    await until(page, () => document.querySelectorAll("#notes .note-row .tick").length === 0);
+    await until(page, () => document.querySelectorAll('.pane-note[aria-hidden="false"] .note-strip').length === 0);
     assert.match(await page.evaluate(() => fixture.notes["ticket-0"][1].text), /Written away/);
 
     // A host that keeps no mail takes the edit over the live channel.
@@ -1282,14 +1301,14 @@ async function notesFlow(browser, engineName, size, viewport) {
     });
     await until(page, () => document.querySelector("#connection").textContent !== "Connected");
     await until(page, () => document.querySelector("#connection").textContent === "Connected");
-    await notes.locator(".note-row").first().click();
+    await goTo("Plan: retry the train");
     await page.locator("#edit-note").click();
     await save("# Plan: retry the train\n\nLive op.");
     await toast("Saved");
     const live = await page.evaluate(() => fixture.noteWrites.at(-1));
     assert.deepEqual([live.op, live.note, live.text.includes("Live op.")], ["write_note", "plan-0", true]);
     assert.deepEqual(errors, []);
-    console.log(`${engineName} ${size}: notes read, walked, edited, told, stale, added, deleted, listed, pictured, away, kept and live passed`);
+    console.log(`${engineName} ${size}: notes as panes read, swiped, walked, edited, told, stale, added, deleted, pictured, away, kept and live passed`);
   } catch (error) {
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-notes-failure.png`) });
     throw error;
@@ -1421,8 +1440,8 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator("#toast .tick path").count(), 2, "two ticks");
     await receiptIs("started");
     assert.match(await receipt.textContent(), /Started from this browser · \d/);
-    // A start that took sits beside the tags and the column (T-547).
-    assert.equal(await page.locator("#detail .ticket-line .start-receipt").count(), 1);
+    // A start that took sits at the transcript's top (T-547, T-701).
+    assert.equal(await page.locator("#detail .pane-transcript .start-receipt").count(), 1);
     assert.equal(await receipt.locator(".tick path").count(), 2);
     assert.equal(await pageStart.count(), 0, "a ticket with an agent offers no start");
     await shot("start-started");
@@ -1616,15 +1635,19 @@ async function tierFlow(browser, engineName, size, viewport) {
     await mode("agents");
     await page.locator('.ticket[data-id="ticket-0"]').click();
     const pick = page.locator("#prompt-tier");
+    // The delivery row, the tier in it, shows with words (T-701).
+    assert.equal(await page.locator("#prompt-tier").count(), 1);
+    assert(await pick.isHidden(), "no words, no row");
+    await page.locator("#prompt").fill("same tier");
     await pick.waitFor();
     assert.deepEqual(await pick.locator("option").allTextContents(), ["claude", "coder"]);
     assert.equal(await pick.inputValue(), "claude");
     assert(await page.locator("#steer-why").isHidden());
-    await page.locator("#prompt").fill("same tier");
     await page.locator("#send").click();
     await until(page, () => fixture.prompts.length === 1);
     assert.equal(await page.evaluate(() => fixture.prompts[0].tier), undefined);
     await until(page, () => !document.querySelector("#send").disabled || !document.querySelector("#prompt").value);
+    await page.locator("#prompt").fill("on coder");
     await pick.selectOption("01K");
     await until(page, () => !document.querySelector("#steer-why").hidden);
     assert.match(await page.locator("#steer-why").textContent(), /Restarts on coder when the turn ends/);
@@ -1928,13 +1951,15 @@ async function workspaceFlow(browser, engineName, size, viewport) {
     // Its page says the branch and what it waits on, and the sheet says
     // why the choice is settled rather than offering it.
     await page.locator('.ticket[data-id="ticket-5"]').click();
-    await page.locator("#workspace-line").waitFor();
-    assert.equal(await page.locator("#workspace-line .workspace-branch").textContent(), "msmn/T-5-agent-task-5");
-    assert.equal(await page.locator("#workspace-line .workspace-state").textContent(), "2 to merge");
-    assert.equal(await page.locator("#card-line .chip-workspace").count(), 0);
+    await page.locator("#card-line .wt-mark").waitFor();
+    assert.equal(await page.locator("#card-line .wt-mark").textContent(), "↑2commits to merge · msmn/T-5-agent-task-5 · 2 to merge");
+    assert.match(await page.locator("#card-line .wt-mark").getAttribute("class"), /wt-ready/);
     await shot("workspace-cut");
     await page.locator("#card-line").click();
     await sheet.waitFor({ state: "visible" });
+    await page.locator("#workspace-line").waitFor();
+    assert.equal(await page.locator("#workspace-line .workspace-branch").textContent(), "msmn/T-5-agent-task-5");
+    assert.equal(await page.locator("#workspace-line .workspace-state").textContent(), "2 to merge");
     assert(await sheet.getByRole("radio", { name: "Shared checkout", exact: true }).isDisabled());
     assert(await sheet.getByRole("radio", { name: "Own worktree", exact: true }).isChecked());
     assert.equal(await page.locator("#card-workspace .field-note").textContent(), "Its worktree is cut, so this stays.");
@@ -1945,16 +1970,17 @@ async function workspaceFlow(browser, engineName, size, viewport) {
     // the press. The card wears the pick at once.
     await overview();
     await page.locator('.ticket[data-id="ticket-3"]').click();
-    await page.locator("#card-line .chip-workspace").waitFor();
-    assert.equal(await page.locator("#card-line .chip-workspace").textContent(), "shared");
+    await page.locator("#card-line").waitFor();
+    assert.equal(await page.locator("#card-line .wt-mark").count(), 0, "a shared checkout wears no glyph");
     assert.equal(await page.locator("#workspace-line").count(), 0);
     assert.equal(await page.locator("#card-line-hint").textContent(), "Move or tag this ticket, or choose its workspace");
     await page.locator("#card-line").click();
     await sheet.waitFor({ state: "visible" });
+    assert.equal(await page.locator("#workspace-line").count(), 0, "no branch yet");
     assert(await sheet.getByRole("radio", { name: "Shared checkout", exact: true }).isChecked());
     await sheet.getByRole("radio", { name: "Own worktree", exact: true }).check();
     assert.deepEqual(await lastEdit(), { op: "workspace", ticket: "ticket-3", worktree: true });
-    await until(page, () => document.querySelector("#card-line .chip-workspace").textContent === "worktree");
+    await until(page, () => document.querySelector("#card-line .wt-mark")?.classList.contains("wt-dormant"));
     assert.equal(await page.locator("#card-workspace .field-note").textContent(), "Its worktree is cut when its agent starts.");
     if (size !== "phone" || !(await page.locator("#back").isVisible()))
       await until(page, () => document.querySelector('.ticket.card[data-id="ticket-3"] .wt-mark')?.classList.contains("wt-dormant"));
@@ -2003,7 +2029,7 @@ async function workspaceFlow(browser, engineName, size, viewport) {
       fixture.features = fixture.features.filter((f) => f !== "workspace");
       fixture.channel().close();
     });
-    await until(page, () => document.querySelector("#connection").textContent === "Connected" && !document.querySelector(".chip-workspace"));
+    await until(page, () => document.querySelector("#connection").textContent === "Connected" && !document.querySelector("#card-line .wt-mark"));
     await page.locator("#card-line").click();
     await sheet.waitFor({ state: "visible" });
     assert.equal(await page.locator("#card-workspace").count(), 0);
@@ -2129,6 +2155,21 @@ async function chatFlow(browser, engineName, size, viewport) {
     await until(page, () => !document.querySelector("#chat .chat-ghost"));
     assert.equal(await chat.locator(".chat-prompt").last().textContent(), "ghost-canary");
     assert(await page.locator("#delivery").isHidden());
+    // Three steps or more in a row fold to one line that says how many and
+    // which tools (T-701); a press opens them. A step reads as its tool's
+    // name and what it took.
+    await page.evaluate(() => fixture.transcript.push(
+      { at: 430, kind: "tool", text: "Read src/main.rs" },
+      { at: 440, kind: "tool", text: "Edit src/main.rs" },
+      { at: 450, kind: "tool", text: "Bash(cargo test fold-canary)" },
+    ));
+    await chat.locator(".chat-run").waitFor();
+    assert.equal(await chat.locator(".chat-run").textContent(), "3 steps · Read, Edit, Bash");
+    assert(!(await chat.textContent()).includes("fold-canary"), "folded steps are not drawn");
+    await chat.locator(".chat-run").click();
+    await until(page, () => document.querySelector("#chat").textContent.includes("fold-canary"));
+    assert.equal(await chat.locator(".chat-run").count(), 0);
+    assert.deepEqual(await chat.locator(".chat-tool").last().locator("span").allTextContents(), ["Bash", "cargo test fold-canary"]);
     // A new conversation (`/clear`) starts over at its tail.
     await page.evaluate(() => {
       fixture.conversation = "conversation-b";
@@ -2137,13 +2178,24 @@ async function chatFlow(browser, engineName, size, viewport) {
     await until(page, () => document.querySelector("#chat").textContent.includes("Fresh start"));
     assert.equal(await rowCount(), 2);
     assert((await chat.textContent()).includes("Start of the conversation"));
-    // The raw view is the pane's screen, and the choice is remembered.
-    assert.equal(await page.locator("#output-view").textContent(), "Raw");
+    // The raw view is the pane's screen, behind a switch Settings puts on
+    // the divider (T-701); the choice is remembered.
+    assert.equal(await page.locator("#output-view").count(), 0, "no switch until Settings says so");
+    await page.evaluate(() => document.querySelector("#raw-switch").click());
+    await page.locator("#output-view").waitFor();
+    assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-raw-switch")), "on");
+    assert.equal(await page.locator("#output-view").getAttribute("aria-pressed"), "false");
     await page.locator("#output-view").click();
     await until(page, () => document.querySelector("#preview")?.textContent.includes("line 49"));
     assert.equal(await chat.count(), 0);
     assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-output")), "raw");
-    assert.equal(await page.locator("#output-view").textContent(), "Chat");
+    assert.equal(await page.locator("#output-view").getAttribute("aria-pressed"), "true");
+    // Switched off in Settings, the conversation is back whatever was chosen.
+    await page.evaluate(() => document.querySelector("#raw-switch").click());
+    await chat.waitFor();
+    assert.equal(await page.locator("#output-view").count(), 0);
+    await page.evaluate(() => document.querySelector("#raw-switch").click());
+    await page.locator("#output-view").waitFor();
     await page.locator("#output-view").click();
     await chat.waitFor();
     // A parked agent's conversation is still its file; its screen is gone.
@@ -2218,8 +2270,10 @@ async function shelfFlow(browser, engineName, size, viewport) {
     assert(!(await page.locator("body").textContent()).includes("Forged board"), "the relay's own copy is not read");
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
     await page.locator('.ticket[data-id="shelf-1"]').locator("visible=true").click();
-    await until(page, () => document.querySelector("#notes")?.textContent.includes("Shelf description canary"));
-    assert.match(await page.locator("#notes").textContent(), /as of/);
+    await page.locator("#pane-next").click();
+    await until(page, () => document.querySelector('.pane-note[aria-hidden="false"]')?.textContent.includes("Shelf description canary"));
+    assert.match(await page.locator('.pane-note[aria-hidden="false"] .note-pane-meta').textContent(), /as of/);
+    await page.locator("#pane-name").click();
     await until(page, () => document.querySelector("#chat")?.textContent.includes("Shelf reply canary"));
     assert.match(await page.locator("#chat-as-of").textContent(), /As of/);
     assert.match(await page.locator("#chat").textContent(), /Earlier parts need your terminal/);
@@ -2714,8 +2768,11 @@ try {
         };
         const mode = (name) =>
           page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
-        const delivery = (value) =>
-          page.locator(`input[name="prompt-mode"][value="${value}"]`).check();
+        // The delivery row shows once there are words (T-701).
+        const delivery = async (value) => {
+          if (!(await page.locator("#prompt").inputValue())) await page.locator("#prompt").fill("…");
+          await page.locator(`input[name="prompt-mode"][value="${value}"]`).check();
+        };
         const attention = (name) =>
           page.locator("#attention").getByRole("button", { name, exact: true });
         try {
@@ -3387,8 +3444,8 @@ try {
             fixture.update();
           });
           await until(page, () => document.querySelector("#attention").textContent.includes("Which shade?"));
-          assert(await page.locator("#steer-why").isVisible());
           await page.locator("#prompt").fill("after the answer");
+          assert(await page.locator("#steer-why").isVisible());
           await page.locator("#send").click();
           await page.locator("#queued-row").waitFor({ state: "visible" });
           assert.equal(await page.evaluate(() => fixture.prompts.at(-1).queued), true);
