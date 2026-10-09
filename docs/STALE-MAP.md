@@ -23187,3 +23187,21 @@ bucket; it is now priced on the 1 s bucket after a board change (`archive_due`, 
 `broadcast`) and every 60 s otherwise (`ARCHIVE_TICKS`), since what a quiet board waits for is a
 ticket ageing past the hour. The note read stays the last filter, so a ticket younger than the
 threshold never costs one. `X` still takes a fresh scan at the keypress.
+
+## A ticket's agent calls it "this ticket" (T-715, 2026-10-10)
+
+**The report.** A worker told the person "Nothing new needed from you beyond the open items on
+the T-132 card" on T-132's own page: the key sends the person to look up the ticket already in
+view.
+
+**Built.** A session's read of its own ticket carries `key_about` beside `key`
+(`mcp::KEY_ABOUT`): words to the person about this ticket call it "this ticket", since the person
+reads the session beside it (pane, page, notes), and a key is for naming another ticket. Own read
+only: the crown's keyed read of a worker leaves it off, where the key is the right name. Result
+data the agent asked for, so promise 3 holds (T-614's argument), and it instructs: the first
+wording only described the reader, passed the lint, and the rig's Sonnet worker read it and still
+wrote "Nothing is still open on T-1". The plain rule passed the rig's K1 twice. The tool
+descriptions and the brief are untouched.
+
+Tests: `notes_e2e` (the field on an own read), the rig's K1 (`no_own_key`: no reply of the
+worker's spells its key; its last reply names the ticket).

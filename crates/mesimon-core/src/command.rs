@@ -2018,6 +2018,12 @@ pub enum Response {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTicketView {
     pub key: String,
+    /// On a session's read of its own ticket (T-715): that the person reads
+    /// the session beside this ticket, so "this ticket" names it and the
+    /// key names another (`mcp::KEY_ABOUT`). Beside `key`, where the key is
+    /// learned. Absent on the crown's keyed read and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_about: Option<String>,
     pub title: String,
     pub column: String,
     /// `worktree` | `shared_checkout` | `adopt_existing`.
@@ -3247,6 +3253,7 @@ mod tests {
         assert_eq!(back.repos, w.repos);
         let mut t = AgentTicketView {
             key: "T-1".into(),
+            key_about: None,
             title: "t".into(),
             column: "TODO".into(),
             workspace: "worktree".into(),

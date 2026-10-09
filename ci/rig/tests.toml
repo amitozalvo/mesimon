@@ -55,7 +55,8 @@
 #              prompt is the title, a blank line and the brief, byte for byte,
 #              and no <pasted_content> wraps it), fed:<cmd> / not_fed:<cmd> (a
 #              board feed line for the ticket, or none, since the test began),
-#              summary:<done>/<total> (T-710: the worker's own notes carry a
+#              no_own_key (T-715: no reply of the worker's spells its own
+#              ticket's key), summary:<done>/<total> (T-710: the worker's own notes carry a
 #              `Summary` section with that many boxes ticked of that many,
 #              read as the card reads them; the observed line names the
 #              headings it used instead),
@@ -586,5 +587,18 @@ checks = ["road:mod", "started_by_crown", "tools:write_note", "summary:2/3", "re
 
   [[test.steps]]
   crown = "S1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: S1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: S1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "K1"
+title = "K1 · say what is still open on this ticket: do the steps below"
+workspace = "worktree"
+brief = "Call get_ticket. Then end your turn with one sentence to the person about the ticket: what is still open on it and whether anything is needed from them. Read no file and run no command."
+expect = "a worker speaking to the person about its own ticket calls it this ticket and never by its key: get_ticket's key_about says the person reads the session beside the ticket. Its replies spell no key of its own and its last one names the ticket."
+checks = ["road:mod", "started_by_crown", "tools:get_ticket", "no_own_key", "reply:ticket"]
+
+  [[test.steps]]
+  crown = "K1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: K1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: K1 seen."
   until = { stops = 1, state = "idle" }
   wake = true

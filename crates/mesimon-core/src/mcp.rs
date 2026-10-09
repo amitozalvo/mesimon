@@ -237,6 +237,17 @@ pub const SUMMARY_ABOUT: &str = "A note section headed `Summary` is what the tic
      task that is theirs, progress worth seeing from the board; a working list stays under \
      another heading.";
 
+/// What the ticket's own key is to the person (T-715), on a session's read
+/// of its own ticket (`key_about`): everything the session says is read
+/// beside the ticket, so its key is a lookup for the card already in view.
+/// A worker wrote "the open items on the T-132 card" on T-132's own page.
+/// Transient result data, so it may instruct: the first wording only
+/// described the reader, and the rig's Sonnet worker read it and wrote
+/// "Nothing is still open on T-1" all the same.
+pub const KEY_ABOUT: &str = "Words to the person about this ticket call it \"this ticket\", not \
+     its key: the person reads this session beside it, in its pane, its page and its notes, \
+     where the key is one more lookup. A key is for naming another ticket.";
+
 pub const WORKER_UNDER_CROWN: &str = "The board's crown, the agent coordinating this board \
      from another ticket, started this session. Under a crown the merge is the board's: the \
      merge train lands a finished branch, else the crown does, and the board asks for its \

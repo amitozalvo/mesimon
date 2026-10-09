@@ -138,6 +138,8 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     assert!(t["summary"]["about"].as_str().unwrap().contains("`Summary`"), "{t}");
     assert!(t["summary"]["about"].as_str().unwrap().contains("`- [ ] …`"), "{t}");
     assert!(t["summary"].get("rows").is_none(), "{t}");
+    // …and what the key is to the person reading beside it (T-715).
+    assert!(t["key_about"].as_str().unwrap().contains("\"this ticket\""), "{t}");
 
     // read_note is the body itself, not JSON around it.
     assert_eq!(shim.call_ok_text("read_note", json!({"note": desc.to_string()})), body);

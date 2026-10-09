@@ -1494,6 +1494,10 @@ Reply with the single word ready and end your turn."""
             elif name == "pings":
                 ok = record["pings"] and all(p.endswith(" ms") for p in record["pings"])
                 check(c, ok, "pong " + ", then ".join(record["pings"]))
+            elif name == "no_own_key":
+                said = [r for r in replies(rows) if key in r]
+                check(c, not said, f"{key} in {said[0][:80]!r}" if said
+                      else f"{key} in none of {len(replies(rows))} replies")
             elif name == "reply":
                 said = last_reply(rows)
                 check(c, arg.lower() in said.lower(), f"said {said[:60]!r}")
