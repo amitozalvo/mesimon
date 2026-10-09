@@ -55,6 +55,10 @@
 #              prompt is the title, a blank line and the brief, byte for byte,
 #              and no <pasted_content> wraps it), fed:<cmd> / not_fed:<cmd> (a
 #              board feed line for the ticket, or none, since the test began),
+#              summary:<done>/<total> (T-710: the worker's own notes carry a
+#              `Summary` section with that many boxes ticked of that many,
+#              read as the card reads them; the observed line names the
+#              headings it used instead),
 #              mod_report:<event>:<reason> (a report the worker's mod relayed),
 #              prompts:N (user prompts in its transcript, a background
 #              task's notification not counted), held (its second prompt
@@ -569,5 +573,18 @@ checks = ["road:mod", "mod_report:ModUsage:answer", "cost_by_mod", "quota_by_mod
 
   [[test.steps]]
   crown = "C4: call ask_agent for {key} with the words: Reply with the single word two and end your turn. Then end your turn with the single line: C4 asked. When the board wakes you because {key}'s agent finished, end your turn with the single line: C4 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "S1"
+title = "S1 · put a checklist on this ticket that the board's card shows: do the steps below"
+workspace = "worktree"
+brief = "Put a three-item checklist on this ticket, as the board's card shows one, with the first two items ticked and the third not, and one line above it saying how far along the work is. Then reply with the single word written and end your turn. Read no file and run no command."
+expect = "a worker given a bare ask for a checklist the card shows finds the convention in its tool text (write_note's description, or get_ticket's summary line) and never by guessing or by reading files: its own note carries a Summary section with three boxes, two ticked, and the worker answers written. Which of the two taught it is not checked: the first run's worker went straight to write_note."
+checks = ["road:mod", "started_by_crown", "tools:write_note", "summary:2/3", "reply:written"]
+
+  [[test.steps]]
+  crown = "S1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: S1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: S1 seen."
   until = { stops = 1, state = "idle" }
   wake = true

@@ -23063,6 +23063,19 @@ Tests: `ux.test.js` `startFlow` (the field on an empty seat, its words, a refuse
 leaves the draft gone and the button to try again; a parked agent's wake with words from the
 field; the field off while the terminal is away and on an older host), six engine × size runs.
 
+**And the rig (same day, the author: "at least to make sure we are not shooting in the dark").**
+`ci/rig/tests.toml`'s `S1` gives a Sonnet worker the bare ask — a three-item checklist the card
+shows, two ticked, a line above it, no file read, no command — and the new `summary:<done>/<total>`
+check reads the worker's own notes off the board's disk as the card does (`rig.py::summary_rows`,
+the same heading, fence and box rules as `summary.rs`), naming the headings it used instead when
+it put the list elsewhere. Two runs on claude 2.1.295: both workers wrote `## Summary`, a plain
+status line and `[x] [x] [ ]`, from `write_note`'s description alone — neither called
+`get_ticket` first, so the first run's `tools:get_ticket,write_note` check was the rig's error and
+became `tools:write_note`. **The rule, now in CLAUDE.md and AGENTS.md:** a change to what an
+agent or the crown is told or does gets a rig test and one run before the ticket is done, beside
+the e2e, and never on every build or release — the e2e was green here while a real worker had
+guessed.
+
 ## The crown watches a ticket it did not start (T-712, 2026-10-09, "Crown can watch a ticket it did not start and wake on its finish")
 
 **Seen on T-711.** The person told the crown "adding T-709, wait until it's finished then

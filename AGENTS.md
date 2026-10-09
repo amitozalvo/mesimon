@@ -169,7 +169,9 @@ Additional targeted gates:
   `msmn/` branch) lays a board there and drives Sonnet sessions through that board's crown, one
   test of `ci/rig/tests.toml` at a time; `--lay` starts nothing, `--only T` runs a group,
   `--failed` re-runs the last table's failures, `--reset` stops it all. It
-  costs cents per run and needs the author's Claude Code login.
+  costs cents per run and needs the author's Claude Code login. A change to what an agent or
+  the crown is told or does (tool text, `get_ticket`'s answer, the brief, a crown wake, a turn
+  road) adds a test there and runs it once before the ticket is done, never on every build.
 - Linux release artifacts: `ci/build-linux.sh`.
 - Release rehearsal: `ci/release.sh --dry-run`; follow the script's current Docker policy and
   never publish as part of an ordinary development task. The author releases with one command,

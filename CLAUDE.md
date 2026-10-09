@@ -34,6 +34,12 @@ ticket worktrees, 11 red, 10 of them load flakes and 0 caught by a rebase):
   the e2e harness — the one real catch was a schema bump an unrelated e2e pinned. A TUI-, docs-
   or `ci/`-only diff never needs it.
 - The release gate (`ci/test-run.py`, both roads) is the full-suite backstop and is unchanged.
+- **A change to what an agent or the crown is told or does** — tool text, `get_ticket`'s
+  answer, the brief, a crown wake, a turn road — also gets a rig test in `ci/rig/tests.toml`
+  (a bare ask, the acceptance as a check) and one `python3 -B ci/rig.py --only <id>` run on the
+  real Sonnet before the ticket is done, with the e2e beside it: a stub proves the wire, not
+  that a model finds the words (T-710: the e2e was green and a worker guessed). Never on every
+  build or release; only when such behaviour changes.
 
 In a ticket worktree, never `git checkout main` (it will fail — main belongs to another worktree) and never
 merge or push to main yourself: the user merges through mesimon, fast-forward only, so a green

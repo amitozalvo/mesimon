@@ -7,7 +7,7 @@ real Claude Code on the mod road, one test at a time, through its own crown.
     python3 -B ci/rig.py --lay      the same up to the crown filed and crowned;
                                     nothing starts, nothing costs
     python3 -B ci/rig.py --only R3  run the named tests (a comma list); a
-                                    letter alone names its group (R, P, D, T, C)
+                                    letter alone names its group (R, P, D, T, C, S)
     python3 -B ci/rig.py --failed   run again only what the last run's
                                     verdicts.md lists as FAIL
     python3 -B ci/rig.py --reset    park and archive the rig's tickets, stop its
@@ -227,6 +227,40 @@ def filler(size=10_000):
                    f"an apostrophe's turn, a `backtick`, $HOME written as text, and the "
                    f"number {n} so no two lines read alike.")
     return "\n\n".join(out)
+
+
+def summary_rows(body):
+    """The rows of a note's `Summary` sections as `core/src/summary.rs`
+    reads them: (ticked | None for a plain row, text), plus the headings
+    the note used, for the verdict of a note that put its list elsewhere."""
+    rows, headings, open_level, fenced = [], [], None, False
+    for line in body.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        m = re.match(r" {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*#*[ \t]*$", line)
+        if m:
+            level, text = len(m.group(1)), (m.group(2) or "").strip()
+            headings.append(text)
+            if open_level is not None and level <= open_level:
+                open_level = None
+            if open_level is None and text.lower() == "summary":
+                open_level = level
+            continue
+        if open_level is None or not line.strip():
+            continue
+        item = re.match(r"\s*(?:[-*+]|\d{1,9}[.)]) (.*)$", line)
+        if item:
+            box = re.match(r"\[( |x|X)\](?: (.*))?$", item.group(1))
+            if box:
+                rows.append((box.group(1) != " ", (box.group(2) or "").strip()))
+                continue
+            rows.append((None, item.group(1).strip()))
+        else:
+            rows.append((None, line.strip()))
+    return rows, headings
 
 
 def tool_calls(rows):
@@ -1377,6 +1411,32 @@ Reply with the single word ready and end your turn."""
                     held = None
                 ok = held is not None and test.get("brief_file", "") in held
                 check(c, ok, f"{arg}: {held.strip()[:40]!r}" if held is not None else f"no {arg}")
+            elif name == "summary":
+                # T-710: the worker's own notes (not the rig's two), read
+                # off the board's disk as the card reads them.
+                want = arg
+                ticket = self.ticket(board, tid)
+                notes = [n for n in ticket.get("notes", []) if str(n.get("created_by", "")).startswith("agent:")]
+                found, used = None, []
+                for n in notes:
+                    path = os.path.join(self.repo, ".mesimon", "board", "tickets", key, "notes", f"{n['id']}.md")
+                    try:
+                        with open(path, encoding="utf-8") as f:
+                            got, heads = summary_rows(f.read())
+                    except OSError:
+                        continue
+                    used += heads
+                    if got:
+                        found = got
+                        break
+                if found is None:
+                    check(c, False, f"no Summary section in {len(notes)} agent note(s); headings {used!r}")
+                else:
+                    boxes = [d for d, _ in found if d is not None]
+                    plain = sum(1 for d, _ in found if d is None)
+                    have = f"{sum(boxes)}/{len(boxes)}"
+                    check(c, have == want, f"{have} boxes, {plain} plain row(s): "
+                          + "; ".join(f"[{'x' if d else ' '}] {t[:24]}" if d is not None else f"- {t[:24]}" for d, t in found))
             elif name == "exists" or name == "absent":
                 there = os.path.exists(os.path.join(rec["cwd"], arg))
                 check(c, there == (name == "exists"), f"{arg} {'exists' if there else 'absent'}")
