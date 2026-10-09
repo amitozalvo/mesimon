@@ -53,6 +53,11 @@ impl Count {
         })
     }
 
+    /// The boxes not ticked yet.
+    pub fn open(self) -> usize {
+        self.total - self.done
+    }
+
     /// Nothing, some or every box ticked — the fold row's own box.
     pub fn state(self) -> Option<bool> {
         if self.total == 0 {
@@ -241,6 +246,7 @@ mod tests {
         );
         assert_eq!(rows[1].line, 6);
         assert_eq!(Count::of(&rows), Count { done: 2, total: 4 });
+        assert_eq!(Count::of(&rows).open(), 2);
     }
 
     #[test]

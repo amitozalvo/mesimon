@@ -8327,9 +8327,12 @@ impl Daemon {
     /// what the keystroke would refuse) and are untouched past the hour:
     /// sleeping sessions all asleep that long, or — with no live sessions at
     /// all (none, or exited corpses only) — the newest of created_at and any
-    /// corpse's last change that old. Pure board scan, no forks — cheap
-    /// enough for the 1 s bucket, which it must use: the RSS bucket's
-    /// no-pane early-return fires precisely when archive candidates exist.
+    /// corpse's last change that old — and no summary box left unticked
+    /// (T-713: the archive refuses one, so the offer never names it). A
+    /// board scan plus one small note read per ticket that passed the rest,
+    /// no forks — cheap enough for the 1 s bucket, which it must use: the
+    /// RSS bucket's no-pane early-return fires precisely when archive
+    /// candidates exist.
     fn archive_figures(&self) -> usize {
         self.archive_candidates().len()
     }
@@ -8365,6 +8368,8 @@ impl Daemon {
                     })
                 }
             })
+            // Last, so only a ticket the cheap gates passed costs a read.
+            .filter(|t| self.open_boxes(t.id) == 0)
             .map(|t| t.id)
             .collect()
     }
@@ -11407,11 +11412,30 @@ impl Daemon {
         if self.board.ticket_awake_sessions(id) > 0 {
             return Response::Err { message: "sessions still awake — sleep them first".into() };
         }
+        if let Some(message) = open_boxes_refusal(self.open_boxes(id)) {
+            return Response::Err { message };
+        }
         self.archive_one(id, now_iso(), by.note_author());
         // Re-price now — a taken offer must not linger until the next bucket.
         self.archive_cache = self.archive_figures();
         self.broadcast();
         Response::Ok
+    }
+
+    /// The boxes still unticked in the ticket's `Summary` sections (T-713),
+    /// over every note, read from disk as `get_ticket` reads them. What the
+    /// card counts as left to do: a ticket that holds one is not finished,
+    /// so the archive refuses it and the offer never prices it. A snooze is
+    /// a return and is not asked. A note that cannot be read counts nothing.
+    fn open_boxes(&self, id: ulid::Ulid) -> usize {
+        let Some(t) = self.board.ticket(id) else { return 0 };
+        t.notes
+            .iter()
+            .filter_map(|n| store::read_note(&self.paths, &t.short_key, n.id).ok())
+            .map(|body| {
+                mesimon_core::summary::Count::of(&mesimon_core::summary::extract(&body)).open()
+            })
+            .sum()
     }
 
     /// One ticket off the board, whichever gesture asked — `a a` or the
@@ -14677,6 +14701,16 @@ fn mod_bridge_wait_ms() -> u64 {
 }
 
 /// Test seam only — e2e cannot wait out the real hour.
+/// The archive's refusal over unticked summary boxes (T-713), one wording
+/// for every road: `a a`, the crown's `archive_ticket`.
+fn open_boxes_refusal(open: usize) -> Option<String> {
+    match open {
+        0 => None,
+        1 => Some("1 summary box is unticked — tick it or take it out first".into()),
+        n => Some(format!("{n} summary boxes are unticked — tick them or take them out first")),
+    }
+}
+
 fn archive_suggest_ms() -> u64 {
     std::env::var("MESIMON_ARCHIVE_SUGGEST_MS")
         .ok()

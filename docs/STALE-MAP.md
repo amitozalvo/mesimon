@@ -23157,3 +23157,26 @@ nobody unwatched, the watch is refused off and on the crown's own ticket, lands 
 its feed line and its `crown.json` entry, then the ticket's delivery, finish and hand each wake
 the crown with a started worker's line, a hand merge wakes it `merged` and ends the watch, an
 unwatch ends one by hand, and the row turned off ends a standing one.
+
+## T-713: no archive over an unticked summary box (2026-10-09)
+
+**Before:** a ticket whose `Summary` still listed `- [ ]` boxes was archived like any other —
+by `a a`, by the Esc menu's offer (which priced it as finished once its sessions slept past the
+hour) and by the crown's `archive_ticket`. The card's underline said work was left; the archive
+said it was done.
+
+**Built:** `Daemon::open_boxes` counts the unticked boxes over every note's `Summary` sections
+(`summary::extract`, `Count::open`), read from disk as `get_ticket` reads them. `archive_ticket`
+refuses on any (`1 summary box is unticked — tick it or take it out first`), which covers `a a`,
+the crown and every other caller of the one gate; `archive_candidates` drops such a ticket, so
+the offer's count, its disk price and `ArchiveAll` never name it. The note read is the last
+filter, so only a ticket that passed the column, pane and age gates costs a read on the 1 s
+bucket. `archive_ticket`'s tool text names the refusal.
+
+**Kept:** a snooze is a return and is not asked; a restore is not asked; a note that cannot be
+read counts nothing. `ci/rig.py --reset` reports such a ticket as `could not archive` and goes
+on. No rig test: the rig's crown is told never to archive, and the refusal is the daemon's
+whatever the model does.
+
+Tests: `archive_e2e` step 2b (an unticked box drops the ticket from the offer and refuses the
+archive; ticked, it is offered again); `Count::open` in `summary.rs`.

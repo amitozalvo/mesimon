@@ -614,8 +614,9 @@ pub fn tools() -> Vec<Value> {
             "description": "Archives another mesimon ticket (crown only, if the board lets \
                             it: Crown archives tickets, off unless a person turned it on), or \
                             with restore brings an archived one back to its column. Refused \
-                            while that is off, or while a session on it is awake; sleep_agent \
-                            parks one the crown started. Agents cannot delete a ticket; this \
+                            while that is off, while a session on it is awake (sleep_agent \
+                            parks one the crown started), or while a box in its summary is \
+                            unticked. Agents cannot delete a ticket; this \
                             is the reversible form, and the person can restore it too.",
             "inputSchema": {
                 "type": "object",

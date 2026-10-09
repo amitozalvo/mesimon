@@ -177,7 +177,9 @@ The board is deliberately quiet — exactly one saturated colour exists, and it 
 session is waiting on you*.
 
 `x` sleeps a ticket's sessions and wakes them again. When finished agents sit idle in DONE, `X`
-sleeps them all. The Esc menu archives finished tickets and lists the archive. **Closing the board
+sleeps them all. The Esc menu archives finished tickets and lists the archive. A ticket whose
+`Summary` still has an unticked box is not finished: it is never offered and cannot be archived
+until the box is ticked or taken out. **Closing the board
 does not stop your agents** — that is the point of the daemon.
 
 The footer names the main keys for whatever you are looking at; `?` opens the complete key

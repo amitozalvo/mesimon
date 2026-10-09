@@ -162,6 +162,42 @@ fn archive_gates_suggests_and_restores() {
         std::thread::sleep(Duration::from_millis(200));
     }
 
+    // 2b. A summary box left unticked (T-713): the offer drops the ticket
+    // and the archive refuses it; ticked, it is offered again.
+    let wait_archive = |c: &mut TestClient, archive| {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            let (_, resources) = snapshot_of(c.request(Command::Snapshot));
+            if resources.archive_tickets == archive {
+                break;
+            }
+            assert!(Instant::now() < deadline, "offer did not become archive={archive}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let empty = board.tickets.iter().find(|t| t.title == "empty").unwrap().id;
+    let note = match c.request(Command::WriteNote {
+        ticket: empty,
+        note: None,
+        text: "## Summary\n- [x] done\n- [ ] left\n".into(),
+        rev: None,
+    }) {
+        Response::NoteWritten { note: Some(id) } => id,
+        other => panic!("note write failed: {other:?}"),
+    };
+    wait_archive(&mut c, 1);
+    err_containing(c.request(Command::ArchiveTicket { id: empty }), "1 summary box is unticked");
+    assert!(matches!(
+        c.request(Command::WriteNote {
+            ticket: empty,
+            note: Some(note),
+            text: "## Summary\n- [x] done\n- [x] left\n".into(),
+            rev: None,
+        }),
+        Response::NoteWritten { .. }
+    ));
+    wait_archive(&mut c, 2);
+
     // 3. Archive: field on disk, off the board's columns, offer re-priced.
     assert!(matches!(c.request(Command::ArchiveTicket { id: cold }), Response::Ok));
     let (board, resources) = snapshot_of(c.request(Command::Snapshot));
