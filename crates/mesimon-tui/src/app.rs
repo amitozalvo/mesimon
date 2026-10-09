@@ -28,7 +28,8 @@ use mesimon_core::keymap::{self, Ctx, HeaderChip, Key, Scope, Verb};
 use mesimon_core::prefs::PrefKey;
 use mesimon_core::snooze::Preset;
 use ratatui::crossterm::event::{
-    self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+    MouseEvent, MouseEventKind,
 };
 
 use crate::client::Transport;
@@ -691,6 +692,10 @@ fn history_field(text: &str) -> EditBuffer {
 }
 
 /// One step through a list of `n` rows, clamped at both ends.
+/// Rows a reading zone moves per notch of the wheel (T-716): a notch is a
+/// small gesture, and one row a notch reads as stuck.
+const WHEEL_ROWS: isize = 3;
+
 fn step(idx: usize, n: usize, down: bool) -> usize {
     if down {
         (idx + 1).min(n.saturating_sub(1))
@@ -1656,6 +1661,13 @@ pub struct App {
     /// how `test_no_drawn_structure` tells a frame's box glyph, which the L1
     /// law admits, from one that leaked in anywhere else, which it bans.
     pub frames: std::cell::RefCell<Vec<ratatui::layout::Rect>>,
+    /// What the last frame put where, for the mouse (T-716): its cards,
+    /// rows, headers and visible key hints, and its dialogs' layers.
+    /// Draw-side, like `frames`; `ui::draw` clears it.
+    pub hits: std::cell::RefCell<crate::mouse::Map>,
+    /// Where the pointer last moved to, for the hover. `None` until the
+    /// terminal reports a move, and again once the terminal loses focus.
+    pub pointer: Cell<Option<(u16, u16)>>,
     /// This frame's `Ctx`, built on the first `frame_ctx` read and shared
     /// by every draw fn after it (T-255): a board frame used to build it
     /// three times and a ticket-page frame six, each build a sort and a
@@ -1961,6 +1973,8 @@ impl App {
             rich_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
             frames: std::cell::RefCell::new(Vec::new()),
+            hits: std::cell::RefCell::new(crate::mouse::Map::default()),
+            pointer: Cell::new(None),
             frame_ctx: std::cell::RefCell::new(None),
             columns_sorted,
             mascot: std::cell::RefCell::new(None),
@@ -2948,6 +2962,8 @@ impl App {
             // Bracketed paste (armed by `lib.rs::init_terminal`): the whole
             // clipboard as one event, never as keystrokes.
             TermEvent::Paste(text) => return Ok(self.on_paste(&text)? || dirty),
+            // The mouse (T-716, armed by `lib.rs` while the setting is on).
+            TermEvent::Mouse(m) => return Ok(self.on_mouse(m)? || dirty),
             // The terminal saying whether anybody is looking (T-282, armed by
             // `lib.rs::init_terminal`). From the first one of these on, it is
             // the only source the presence rule consults.
@@ -2957,7 +2973,9 @@ impl App {
             }
             TermEvent::FocusLost => {
                 self.saw_focus(false);
-                return Ok(dirty);
+                // The pointer went with the focus: no hover on a board
+                // nobody is pointing at.
+                return Ok(self.pointer.take().is_some() || dirty);
             }
             _ => return Ok(dirty),
         };
@@ -3005,6 +3023,17 @@ impl App {
             crate::osc::Feed::Swallowed => return Ok(false),
             crate::osc::Feed::Pass(keys) => keys,
         };
+        self.person(|app| {
+            for (code, mods) in keys {
+                app.handle_key(code, mods)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// What a person did — keys, or a click (T-716) — with what any act of
+    /// a person's does around it. Returns whether anything was handled.
+    fn person(&mut self, act: impl FnOnce(&mut Self) -> Result<()>) -> Result<bool> {
         // A key is a person (T-282). It stands in for focus on a terminal
         // that reports none — after the swallow, because our own colour
         // query's late reply is the one thing on stdin that is not the user.
@@ -3019,12 +3048,311 @@ impl App {
         self.merge_note.clear();
         // The page a raised hand may be standing on, before the key moves us.
         let page = self.ticket_page();
-        for (code, mods) in keys {
-            self.handle_key(code, mods)?;
-        }
+        act(self)?;
         self.ack_woke()?;
         self.ack_hand(page)?;
         Ok(true)
+    }
+
+    /// Keys a click stands for (T-716): pressed as a person presses them,
+    /// past the reply swallow — a click is never a terminal's reply.
+    fn press(&mut self, keys: &[Key]) -> Result<bool> {
+        let keys: Vec<(KeyCode, KeyModifiers)> =
+            keys.iter().map(|k| crate::keys::from_key(*k)).collect();
+        self.person(|app| {
+            for (code, mods) in keys {
+                app.handle_key(code, mods)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// One mouse report (T-716), armed by `lib.rs` while the Mouse setting
+    /// is on. Nothing here acts on its own: a click presses the key its
+    /// spot stands for (`mouse::Map`) or puts the cursor where it landed,
+    /// the first click on a thing selects it and the second acts — so a
+    /// double-click opens — and a click off a dialog is its Esc. The wheel
+    /// walks what is under it; a move only moves the hover. Returns
+    /// whether the screen changed.
+    pub fn on_mouse(&mut self, ev: MouseEvent) -> Result<bool> {
+        if !self.prefs.mouse {
+            return Ok(false);
+        }
+        let at = (ev.column, ev.row);
+        match ev.kind {
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                Ok(self.pointer.replace(Some(at)) != Some(at))
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.pointer.set(Some(at));
+                self.click(at)
+            }
+            MouseEventKind::ScrollDown => self.wheel(at, 1),
+            MouseEventKind::ScrollUp => self.wheel(at, -1),
+            _ => Ok(false),
+        }
+    }
+
+    fn click(&mut self, at: (u16, u16)) -> Result<bool> {
+        use crate::mouse::{Hit, Target};
+        // The help card goes on any key, and so on any click; a pending
+        // move is a two-key confirmation that anything else cancels.
+        if self.help || matches!(self.mode, Mode::Move { .. }) {
+            return self.press(&[Key::Esc]);
+        }
+        let hit = self.hits.borrow().at(at.0, at.1);
+        let Hit::Spot(spot) = hit else {
+            // A field typed in place (a relay, a column's name, a tag's)
+            // drops its words on Esc without asking, so a stray click off
+            // the dialog leaves it be. The editor asks before it drops
+            // anything, and the search query is not work to lose.
+            let typing = (self.text_field()
+                && !matches!(self.mode, Mode::Editor(_) | Mode::Search(_)))
+                || self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some());
+            return match hit {
+                Hit::Outside if !typing => self.press(&[Key::Esc]),
+                _ => Ok(false),
+            };
+        };
+        // A chord's tail owns the next key; a click on anything but a key
+        // is the "never mind" any other key would be.
+        let chord = matches!(
+            self.scope(),
+            Scope::DeleteChord | Scope::ArchiveChord | Scope::SnoozeChord | Scope::DuplicateChord
+        );
+        if chord && !matches!(spot.target, Target::Key(_)) {
+            return self.press(&[Key::Esc]);
+        }
+        match spot.target {
+            Target::Key(k) => self.press(&[k]),
+            Target::Row(i) => self.point_row(i),
+            Target::Card(id) => self.point_card(id),
+            Target::Column(ci) => self.point_column(ci),
+            Target::Chip(chip) => self.point_chip(chip),
+            Target::Rail(i) => self.point_rail(i),
+            Target::Tag(row, col) => self.point_tag(row, col),
+            Target::File(i) => self.point_file(i),
+            Target::Lane(_) => Ok(false),
+        }
+    }
+
+    /// A click on a diff's file row: the file opens in the pane, walked to
+    /// by `n` and `N` so the pane resets the way a key resets it.
+    fn point_file(&mut self, to: usize) -> Result<bool> {
+        if self.scope() != Scope::Diff {
+            return Ok(false);
+        }
+        let at = |app: &Self| app.diff.as_ref().map(|d| d.file_idx);
+        let Some(from) = at(self) else { return Ok(false) };
+        if from == to {
+            return Ok(false);
+        }
+        let step = crate::keys::from_key(Key::Char(if to > from { 'n' } else { 'N' }));
+        self.person(|app| {
+            let mut now = from;
+            while now != to {
+                app.handle_key(step.0, step.1)?;
+                match at(app) {
+                    Some(next) if next != now => now = next,
+                    _ => break,
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// A click on a tag picker cell: the cursor lands on it, and a click on
+    /// the cell it is on is its Enter (wear it, or take it off). Not while
+    /// a name is being typed: that field owns the keys until it is done.
+    fn point_tag(&mut self, row: usize, col: usize) -> Result<bool> {
+        let Some(arm) = self.tag_armed.as_ref() else { return Ok(false) };
+        if arm.naming.is_some() {
+            return Ok(false);
+        }
+        if (arm.row, arm.col) == (row, col) {
+            return self.press(&[Key::Enter]);
+        }
+        self.person(|app| {
+            if let Some(arm) = app.tag_armed.as_mut() {
+                (arm.row, arm.col, arm.forget_armed) = (row, col, false);
+            }
+            app.tag_clamp();
+            Ok(())
+        })
+    }
+
+    /// The board's own scope is up: no field, chord or dialog over it.
+    fn board_at_rest(&self) -> bool {
+        matches!(self.screen, Screen::Board) && matches!(self.scope(), Scope::Board | Scope::Header)
+    }
+
+    /// The open list's cursor, by the list's own count — what a click on
+    /// one of its rows (`mouse::Target::Row`) is measured against. `None`
+    /// with no list open, or with a row of it being typed into.
+    fn list_idx(&self) -> Option<usize> {
+        match &self.mode {
+            Mode::External { idx }
+            | Mode::Archived { idx }
+            | Mode::Menu { idx }
+            | Mode::Theme { idx, .. }
+            | Mode::Settings { idx }
+            | Mode::Notifications { idx }
+            | Mode::Usage { idx }
+            | Mode::Prompts { idx, editing: None }
+            | Mode::Sharing { idx, editing: None, .. }
+            | Mode::Tiers { idx, naming: None }
+            | Mode::TierEdit { idx, field: None, .. }
+            | Mode::Links { idx, .. }
+            | Mode::Summary { idx, .. }
+            | Mode::ColumnSettings { idx, naming: None, describing: None, .. } => Some(*idx),
+            Mode::Search(s) => Some(s.idx),
+            _ => None,
+        }
+    }
+
+    /// A click on a list row: Enter on the row the cursor is on, else the
+    /// cursor walks there by the list's own ↓ and ↑ — so a theme previews,
+    /// a heading is stepped over and nothing a key does on the way is
+    /// skipped.
+    fn point_row(&mut self, to: usize) -> Result<bool> {
+        let Some(from) = self.list_idx() else { return Ok(false) };
+        if from == to {
+            return self.press(&[Key::Enter]);
+        }
+        let step = crate::keys::from_key(if to > from { Key::Down } else { Key::Up });
+        self.person(|app| {
+            let mut now = from;
+            while now != to {
+                app.handle_key(step.0, step.1)?;
+                match app.list_idx() {
+                    Some(next) if next != now => now = next,
+                    _ => break,
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// A click on a card: the cursor lands on it, and a click on the
+    /// cursor's own card opens its page.
+    fn point_card(&mut self, id: ulid::Ulid) -> Result<bool> {
+        if !self.board_at_rest() {
+            return Ok(false);
+        }
+        if !self.header_focus && self.selected_ticket().is_some_and(|t| t.id == id) {
+            return self.press(&[Key::Space]);
+        }
+        self.person(|app| {
+            app.header_focus = false;
+            app.select_ticket(id);
+            Ok(())
+        })
+    }
+
+    /// A click on a column's header: the cursor stands on it, and a click
+    /// on the header it already stands on is its Enter (the column's
+    /// settings). A folded column opens as the cursor enters it.
+    fn point_column(&mut self, ci: usize) -> Result<bool> {
+        if !self.board_at_rest() {
+            return Ok(false);
+        }
+        if self.cursor_col == ci && self.on_column_header() {
+            return self.press(&[Key::Enter]);
+        }
+        self.person(|app| {
+            app.header_focus = false;
+            app.cursor_col = ci;
+            app.cursor_row = None;
+            app.clamp_cursor();
+            Ok(())
+        })
+    }
+
+    /// A click on a chip of the board's top row: the cursor steps onto it,
+    /// and a click on the chip it is on is its Enter.
+    fn point_chip(&mut self, chip: HeaderChip) -> Result<bool> {
+        if !self.board_at_rest() {
+            return Ok(false);
+        }
+        if self.header_focus && self.header_chip == chip {
+            return self.press(&[Key::Enter]);
+        }
+        self.person(|app| {
+            app.header_focus = true;
+            app.header_chip = chip;
+            Ok(())
+        })
+    }
+
+    /// A click on a ticket page's rail row: the cursor lands on it, and a
+    /// click on the row it is on is its Enter.
+    fn point_rail(&mut self, to: usize) -> Result<bool> {
+        let Screen::Ticket { ticket, rail_idx } = self.screen else { return Ok(false) };
+        if self.scope() != Scope::Ticket {
+            return Ok(false);
+        }
+        if rail_idx == to {
+            return self.press(&[Key::Enter]);
+        }
+        self.person(|app| {
+            app.screen = Screen::Ticket { ticket, rail_idx: to };
+            Ok(())
+        })
+    }
+
+    /// The wheel: a dialog's list walks under it, a board column walks its
+    /// cards (never past the top card onto the header — the header is a
+    /// click away), a rail walks its rows, and a reading zone scrolls.
+    fn wheel(&mut self, at: (u16, u16), dir: isize) -> Result<bool> {
+        use crate::mouse::{Hit, Spot, Target};
+        if self.help {
+            return Ok(false);
+        }
+        let key = if dir > 0 { Key::Down } else { Key::Up };
+        let hit = self.hits.borrow().at(at.0, at.1);
+        if self.hits.borrow().dialog() {
+            let on_it = matches!(hit, Hit::Spot(_) | Hit::Nothing);
+            return if on_it && self.list_idx().is_some() { self.press(&[key]) } else { Ok(false) };
+        }
+        let target = match hit {
+            Hit::Spot(Spot { target, .. }) => Some(target),
+            _ => None,
+        };
+        match self.screen {
+            Screen::Board => {
+                if !self.board_at_rest() {
+                    return Ok(false);
+                }
+                let col = match target {
+                    Some(Target::Lane(ci) | Target::Column(ci)) => Some(ci),
+                    Some(Target::Card(id)) => self.locate(id).map(|(ci, _)| ci),
+                    _ => None,
+                };
+                let Some(ci) = col else { return Ok(false) };
+                let step = crate::keys::from_key(key);
+                self.person(|app| {
+                    app.header_focus = false;
+                    if app.cursor_col != ci {
+                        app.cursor_col = ci;
+                        app.cursor_row = Some(0);
+                        app.clamp_cursor();
+                    }
+                    if dir < 0 && app.cursor_row.is_none_or(|r| r == 0) {
+                        return Ok(());
+                    }
+                    app.handle_key(step.0, step.1)
+                })
+            }
+            Screen::Ticket { .. } if self.scope() != Scope::Ticket => Ok(false),
+            Screen::Ticket { .. } if matches!(target, Some(Target::Rail(_))) => self.press(&[key]),
+            Screen::Diff if self.on_commit_list() => self.press(&[key]),
+            _ => self.person(|app| {
+                if let Some(p) = app.pager() {
+                    p.scroll(dir * WHEEL_ROWS);
+                }
+                Ok(())
+            }),
+        }
     }
 
     /// One bracketed paste from the terminal, as one event. Only a text
@@ -4794,6 +5122,7 @@ impl App {
             theme_light: self.prefs.light.name(),
             theme_os_barred: self.appearance_barred,
             crown_lightning: self.prefs.crown_lightning,
+            mouse: self.prefs.mouse,
             preview_scrolls: self.preview.view.get().max > 0,
             update_ready: self.update_ready(),
             // A binary already waiting on disk outranks a download: reload
@@ -6207,6 +6536,17 @@ impl App {
                     "the crown's actions hold still ∙ the card still says what was done"
                 };
                 self.set_pref(word, |p| p.crown_lightning = on);
+            }
+            // T-716. No push: `lib.rs`'s loop turns the terminal's mouse
+            // reports on or off to match, every frame.
+            Verb::Mouse => {
+                let on = !self.prefs.mouse;
+                let word = if on {
+                    "the board reads the mouse ∙ ⌥ or shift held selects text"
+                } else {
+                    "the mouse is the terminal's again"
+                };
+                self.set_pref(word, |p| p.mouse = on);
             }
             // T-492. No push either: the BOARD writes to its own stdout,
             // and `lib.rs`'s loop reads every one of these each frame — off

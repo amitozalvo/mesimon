@@ -264,9 +264,19 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
         if win.start > 0 {
             spans.push(Span::styled(MORE.to_string(), theme.dim3()));
         }
-        for cell in &cells[win.start..win.end] {
+        for (k, cell) in cells[win.start..win.end].iter().enumerate() {
+            let at = super::spans_width(&spans);
             if let Some(off) = cell.cursor {
-                cursor = Some(super::spans_width(&spans) + off);
+                cursor = Some(at + off);
+            }
+            // Each cell is the mouse's to pick (T-716).
+            if row < area.height as usize {
+                let x = area.x.saturating_add(at as u16);
+                let w = (cell.width() as u16).min(area.right().saturating_sub(x));
+                app.hits.borrow_mut().record(
+                    Rect { x, y: area.y + row as u16, width: w, height: 1 },
+                    crate::mouse::Target::Tag(row, win.start + k),
+                );
             }
             spans.extend(cell.spans.iter().cloned());
         }

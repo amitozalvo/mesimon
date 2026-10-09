@@ -36,6 +36,12 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
         match geom.slots[ci] {
             Slot::Expanded { x, width } => {
                 let rect = Rect { x: area.x + x, y: area.y, width, height: area.height };
+                // The wheel turns the column under it; its header row is
+                // the column's own spot (T-716). The cards land on top.
+                let mut hits = app.hits.borrow_mut();
+                hits.record(rect, crate::mouse::Target::Lane(ci));
+                hits.record(Rect { height: 1, ..rect }, crate::mouse::Target::Column(ci));
+                drop(hits);
                 app.spots.borrow_mut().columns.push((ci, rect.x, width));
                 app.spots.borrow_mut().heads.push((
                     name.clone(),
@@ -46,6 +52,8 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
             }
             Slot::Spine { x } => {
                 let rect = Rect { x: area.x + x, y: area.y, width: 1, height: area.height };
+                // A folded column is all header: a click opens it.
+                app.hits.borrow_mut().record(rect, crate::mouse::Target::Column(ci));
                 app.spots.borrow_mut().columns.push((ci, rect.x, 1));
                 app.spots.borrow_mut().heads.push((name.clone(), rect.x, rect.y));
                 draw_spine(f, rect, app, name);
@@ -388,7 +396,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                                                                  // Each card's first flat line, its ticket, on the holder the crown
                                                                  // mark's column, and whether it is a trail: the bolts' spots once the
                                                                  // window is known.
-    let mut card_starts: Vec<(usize, ulid::Ulid, Option<u16>, bool)> = Vec::new();
+    let mut card_starts: Vec<(usize, usize, ulid::Ulid, Option<u16>, bool)> = Vec::new();
     let crown_glyph = crate::glyphs::crown(theme.glyph_tier());
     let mut cursor_range: Option<(usize, usize)> = None;
     let mut edit_at: Option<(usize, u16)> = None; // (flat line idx, x offset)
@@ -417,7 +425,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             } else {
                 None
             };
-            card_starts.push((start, id, mark, g.trail));
+            card_starts.push((start, end, id, mark, g.trail));
         }
     }
     lines.pop(); // no trailing blank after the last card
@@ -699,7 +707,18 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // (T-544). A card scrolled out of the window has no spot.
     {
         let mut spots = app.spots.borrow_mut();
-        for &(start, id, mark, trail) in &card_starts {
+        let mut hits = app.hits.borrow_mut();
+        let row_of =
+            |line: usize| area.y + head_rows as u16 + (top_cue_rows + line - content_start) as u16;
+        for &(start, end, id, mark, trail) in &card_starts {
+            // The card's rows on screen are the mouse's to pick (T-716);
+            // a trail is where the card was, not where it is.
+            let (lo, hi) = (start.max(content_start), end.min(content_end));
+            if !trail && lo < hi {
+                let rect =
+                    Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
+                hits.record(rect, crate::mouse::Target::Card(id));
+            }
             if start >= content_start && start < content_end {
                 let spot = crate::strike::CardSpot {
                     id,

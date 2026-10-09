@@ -229,6 +229,11 @@ the row is inert), never what Enter does and never the label again; empty is fin
 spellings name Enter: `∙ enter again confirms`, `{error} ∙ enter tries again`, `∙ enter copies
 it` (`keymap::HINT_ENTER_WORDS`; `a_hint_never_explains_enter` reads the source, T-677).
 
+**Something the mouse can pick** (T-716): record a `mouse::Target` over its rect with
+`app.hits.borrow_mut().record` as it is drawn, and a `point_*` arm in `App::click` that presses
+the key a keyboard would (`App::press`), never a second road. A key hint needs nothing: every
+hint `chrome::hint_spans` spells is clickable wherever it is left whole on the frame.
+
 **A card or ticket-page visual:** `tui/src/ui/card.rs` / `ticket.rs` / `tags.rs`, plus a golden
 in `tui/src/ui/tests.rs`. The L1 law tests (`test_no_banned_sgr`, `test_no_drawn_structure`) and
 the colour laws in `theme.rs` run in `cargo ut` and say what is wrong.

@@ -1,5 +1,4 @@
  BOARD   mesimon › kanban-tui   6 tickets
-
   ╭─ BEHAVIOUR ──────────────────────────────────────────╮
   │   Auto merge: on                                     │
   │     merges quiet REVIEW branches, asks idle agents ~ │
@@ -15,6 +14,7 @@
   │     where an agent's create_ticket lands unplaced    │
   │   Follow-ups: Queue                                  │
   │     Queue waits for the agent's idle ∙ Steer sends ~ │
+  │   Mouse: on                                          │
+  │     ⌥ or shift held lets the terminal select text    │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
  SETTINGS                                            ? keys

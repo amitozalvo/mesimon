@@ -270,6 +270,20 @@ answer is no. On iTerm2 the usual cause is a key binding on Shift+Enter — Clau
 Bindings and Profiles → Keys, then start mesimon again, in an iTerm2 tab rather than inside your
 own tmux.
 
+## The mouse
+
+The board reads the mouse. A click puts the cursor on a card, a column's header, a list row, a
+rail row, a tag or a file; a click on the one the cursor is already on acts on it, so a
+double-click opens a card's page, focuses a session or toggles a setting. A key hint is a
+button: `? keys` in the footer opens the key list, `enter` on a dialog's edge presses Enter. A
+click outside a dialog closes it, the way `esc` does: the note editor asks first when it holds
+unsaved text, and a field being typed into (a column's name, a tag's) keeps the dialog open. The wheel walks the column or list under the pointer, and scrolls the
+ticket page's preview, the diff and the release notes. Whatever the pointer is over lights up.
+
+While the board reads the mouse, the terminal selects text only with a modifier held: `⌥`
+(Option) in iTerm2, `shift` in most others. Settings › Behaviour › `Mouse` turns it off and
+gives the terminal its selection back.
+
 ## Agents and follow-ups
 
 Choose the provider for new sessions with **Settings › Agents › Default tier**: `claude` runs

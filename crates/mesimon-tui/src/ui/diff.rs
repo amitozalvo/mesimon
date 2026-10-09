@@ -529,6 +529,13 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
         .saturating_sub(visible.saturating_sub(1) / 2)
         .min(d.files.len().saturating_sub(visible));
     for (i, entry) in d.files.iter().enumerate().skip(first).take(visible) {
+        // Each row is the mouse's to pick (T-716).
+        let y = area.y + lines.len() as u16;
+        if y < area.bottom() {
+            app.hits
+                .borrow_mut()
+                .record(Rect { y, height: 1, ..area }, crate::mouse::Target::File(i));
+        }
         let selected = i == d.file_idx;
         let stable = if entry.status.is_empty() { "·" } else { entry.status.as_str() };
         // The in-flight column says what the committed state does not know

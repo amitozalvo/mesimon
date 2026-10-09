@@ -274,6 +274,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     let probe = dialog::centred(f.area(), rows_guess, dialog::MAX_W);
     let w = probe.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line<'static>> = vec![Line::default()];
+    // The ticket rows' lines, for the mouse (T-716): line, then index.
+    let mut picks: Vec<(usize, usize)> = Vec::new();
     // Left words, right words, right-aligned with two cells of margin.
     let split = |left: Vec<Span<'static>>, right: Vec<Span<'static>>| -> Line<'static> {
         let lw = super::spans_width(&left);
@@ -427,6 +429,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
                 line.spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
                 line = line.style(theme.selected_row());
             }
+            picks.push((lines.len(), i));
             lines.push(line);
         }
     }
@@ -445,4 +448,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         },
     );
     f.render_widget(Paragraph::new(lines), inner);
+    let mut hits = app.hits.borrow_mut();
+    for (line, i) in picks {
+        if line < inner.height as usize {
+            let y = inner.y + line as u16;
+            hits.record(
+                ratatui::layout::Rect { y, height: 1, ..inner },
+                crate::mouse::Target::Row(i),
+            );
+        }
+    }
 }

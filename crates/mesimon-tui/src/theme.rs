@@ -2067,6 +2067,34 @@ impl Theme {
         }
     }
 
+    /// The ground under the pointer (T-716): halfway from the page to the
+    /// cursor card's surface, so a hovered row reads as reachable and never
+    /// as selected. True colour only — an indexed profile has no halfway
+    /// it was authored with, and the hover there is the ink's lift alone.
+    pub fn hover_bg(&self) -> Option<Color> {
+        match (self.profile, self.bg, self.selected_bg) {
+            (Profile::TrueColor, Some(bg), Some(sel)) => Some(mix(sel, bg, 0.5)),
+            _ => None,
+        }
+    }
+
+    /// `fg` one step up its ramp (T-716's hover): `dim3` to `dim2` and so
+    /// on to `base`. `None` for a colour on no ramp's dim steps — a full
+    /// ink, a state hue, the needs-you colour — which the hover leaves be.
+    pub fn lift(&self, fg: Color) -> Option<Color> {
+        [&self.rest, &self.sel].into_iter().find_map(|r| {
+            if fg == r.dim1 && r.dim1 != r.base {
+                Some(r.base)
+            } else if fg == r.dim2 && r.dim2 != r.dim1 {
+                Some(r.dim1)
+            } else if fg == r.dim3 && r.dim3 != r.dim2 {
+                Some(r.dim2)
+            } else {
+                None
+            }
+        })
+    }
+
     /// The cursor card's surface + title treatment pieces (06 §7): callers
     /// combine `selected_row` (surface) with `sel` ramp text and BOLD.
     pub fn selected_row(&self) -> Style {

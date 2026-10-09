@@ -185,6 +185,12 @@ fn draw_list(f: &mut Frame, app: &App, s: &Search, area: Rect) -> Option<(u16, u
         .map(|(i, hit)| row(theme, hit, top + i == s.idx, w, key_w, title_w, trail_w))
         .collect();
     f.render_widget(Paragraph::new(lines), body);
+    // Each drawn row is the mouse's to pick (T-716).
+    let mut hits = app.hits.borrow_mut();
+    for i in 0..rows.min(s.hits.len() - top) {
+        let y = body.y + i as u16;
+        hits.record(Rect { y, height: 1, ..body }, crate::mouse::Target::Row(top + i));
+    }
     Some(cursor)
 }
 
@@ -297,6 +303,9 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         &theme.rest,
         Edges { title: dialog::title(&theme.rest, ticket.short_key.clone()), tail: Vec::new() },
     );
+    // The preview is the picker's other half, not a dialog over it: a
+    // click on it is inside the picker (T-716).
+    app.hits.borrow_mut().join_top();
     let ctx = CardCtx {
         theme,
         width: inner.width,

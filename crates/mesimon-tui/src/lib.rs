@@ -20,6 +20,7 @@ mod handover;
 mod layout;
 mod localtime;
 mod mascot;
+mod mouse;
 mod notification_app;
 mod notifier;
 mod notify;
@@ -45,7 +46,7 @@ use anyhow::Result;
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
@@ -323,6 +324,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
     // lands inside a frame or a banner. `finish` before every exit and
     // every suspend gives the terminal its own state back.
     let mut tab = title::Tab::default();
+    let mut mouse = Capture::default();
     loop {
         {
             let _held = console.as_deref().map(crate::notify::Console::drawing);
@@ -338,6 +340,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
                 app.icons = title::shin_icons(&app.repo_root).ok();
             }
             tab.sync(&mut out, &app.tab_frame(false))?;
+            mouse.sync(&mut out, app.prefs.mouse)?;
         }
 
         app.tick()?;
@@ -371,6 +374,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
                 libc::raise(libc::SIGTSTP);
             }
             *terminal = init_terminal()?;
+            mouse = Capture::default();
             app.saw_board(true);
             terminal.clear()?;
         }
@@ -392,6 +396,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
             // Alt screen back up FIRST — the drain's settle sleep must not
             // leave the primary screen (stale logs) on display.
             *terminal = init_terminal()?;
+            mouse = Capture::default();
             app.saw_board(true);
             handover::drain_stdin();
             if let Err(e) = ho {
@@ -411,6 +416,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
             blank_primary_screen()?;
             let out = external::edit_dir(&app.repo_root).and_then(|d| external::run(&req, &d));
             *terminal = init_terminal()?;
+            mouse = Capture::default();
             app.saw_board(true);
             handover::drain_stdin();
             app.external_edit_done(out)?;
@@ -433,11 +439,32 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
 
 type Term = ratatui::Terminal<quiet::Quiet<std::io::Stdout>>;
 
+/// Whether the terminal reports the mouse (T-716): on while the Mouse
+/// setting is, so the setting takes at once. `restore_terminal` turns it
+/// off before every handover — a tmux client or an editor sets its own —
+/// and a fresh `Capture` after each `init_terminal` turns it back on.
+#[derive(Default)]
+struct Capture(bool);
+
+impl Capture {
+    fn sync(&mut self, out: &mut impl std::io::Write, want: bool) -> Result<()> {
+        if self.0 != want {
+            if want {
+                execute!(out, EnableMouseCapture)?;
+            } else {
+                execute!(out, DisableMouseCapture)?;
+            }
+            self.0 = want;
+        }
+        Ok(())
+    }
+}
+
 fn init_terminal() -> Result<Term> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    // No EnableMouseCapture: we handle no mouse events, and capture steals the
-    // terminal's native text selection.
+    // No EnableMouseCapture here: the Mouse setting decides, and the loop's
+    // `Capture` turns it on after every init (T-716).
     // Bracketed paste: the clipboard arrives as ONE `Event::Paste`, so a
     // multi-line paste into the composer is one title and a paste on the
     // board is inert, instead of both being typed as keystrokes (the

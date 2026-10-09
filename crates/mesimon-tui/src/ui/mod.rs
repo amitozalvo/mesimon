@@ -65,6 +65,19 @@ pub(crate) struct RichCache {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
+    app.hits.borrow_mut().clear(f.area());
+    crate::mouse::forget_hints();
+    draw_screen(f, app);
+    // The mouse's half (T-716): the hints the frame left whole are what a
+    // click presses, and the hover lights what the pointer is over.
+    let mut hits = app.hits.borrow_mut();
+    crate::mouse::scrape_hints(f.buffer_mut(), &mut hits);
+    if let (true, Some(at)) = (app.prefs.mouse, app.pointer.get()) {
+        crate::mouse::paint_hover(f.buffer_mut(), &hits, at, &app.theme);
+    }
+}
+
+fn draw_screen(f: &mut Frame, app: &App) {
     // Paint the page ground first (a transparent ground would ride the
     // terminal's own theme under a mismatched palette).
     if let Some(bg) = app.theme.bg {

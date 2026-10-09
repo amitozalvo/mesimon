@@ -1444,6 +1444,8 @@ fn draw_rail(
     head.push(Span::raw(" ".repeat(w.saturating_sub(used))));
     head.push(Span::styled(right, theme.dim2()));
     let mut lines: Vec<Line<'static>> = vec![Line::from(head), Line::default()];
+    // Each row's lines and its `rail_idx`, for the mouse (T-716).
+    let mut owners: Vec<(usize, usize, usize)> = Vec::new();
 
     // The sessions' keys sit under the sessions (T-158): the empty state
     // names the two spawn verbs (07 §16.2) and a populated rail adds the
@@ -1485,6 +1487,7 @@ fn draw_rail(
     };
     for (i, s) in rail.iter().enumerate() {
         let selected = i == rail_idx;
+        let at = lines.len();
         let (g, reg) = glyphs::session_glyph(s, tier, app.spin_frame());
         let glyph_style = match reg {
             glyphs::Register::Attn => theme.attn_text(),
@@ -1572,6 +1575,7 @@ fn draw_rail(
                 );
             }
         }
+        owners.push((at, lines.len(), i));
     }
 
     // The ticket's `!` terminal, alive and not yet adopted (T-366): a ghost
@@ -1582,6 +1586,7 @@ fn draw_rail(
     // does: adopt it, on the second press.
     if let Some(t) = ghost {
         let selected = rail.len() == rail_idx;
+        let at = lines.len();
         let busy = t.foreground.is_some();
         let g = if busy {
             glyphs::spinner(tier, app.spin_frame())
@@ -1615,6 +1620,7 @@ fn draw_rail(
             Line::from(vec![Span::styled(text, theme.dim2()), Span::raw(" ".repeat(pad))])
                 .style(row_style),
         );
+        owners.push((at, lines.len(), rail.len()));
     }
 
     // The offer to start the ticket's claude (T-300), under the sessions and
@@ -1625,6 +1631,7 @@ fn draw_rail(
     // two words before either meant anything.
     if offer {
         let selected = offer_at == rail_idx;
+        owners.push((lines.len(), lines.len() + 1, offer_at));
         let name = truncate(&format!("+ {} session", keymap::AGENT_WORD), w.saturating_sub(2));
         let style = if selected {
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
@@ -1661,6 +1668,7 @@ fn draw_rail(
         lines.push(Line::default());
         for (j, n) in notes.iter().enumerate() {
             let selected = notes_start + j == rail_idx;
+            owners.push((lines.len(), lines.len() + 1, notes_start + j));
             let who = author_word(&n.edited_by, app);
             let age = created_at_epoch_ms(&n.edited_at)
                 .map(|ms| age_slot(now, ms, false))
@@ -1695,4 +1703,11 @@ fn draw_rail(
     }
 
     f.render_widget(Paragraph::new(lines), area);
+    let mut hits = app.hits.borrow_mut();
+    for (from, to, idx) in owners {
+        let y = area.y.saturating_add(from as u16);
+        let h = (to - from) as u16;
+        let rect = Rect { y, height: h, ..area }.intersection(area);
+        hits.record(rect, crate::mouse::Target::Rail(idx));
+    }
 }

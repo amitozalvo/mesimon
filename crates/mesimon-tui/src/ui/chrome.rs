@@ -197,6 +197,14 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
                 .filter(|c| c.2 > 0)
                 .map(|(chip, x, w)| (chip, area.x.saturating_add(x as u16), w as u16)),
         );
+        // And the mouse's (T-716): a click steps onto the chip.
+        for (chip, x, w) in cells.into_iter().filter(|c| c.2 > 0) {
+            let x = area.x.saturating_add(x as u16);
+            app.hits.borrow_mut().record(
+                Rect { x, y: area.y, width: w as u16, height: 1 },
+                crate::mouse::Target::Chip(chip),
+            );
+        }
         let used = used + git_w;
         if offer_w > 0 {
             let pad = (area.width as usize).saturating_sub(used + offer_w + 1);
@@ -555,6 +563,10 @@ pub(super) fn hint_spans(
         out.push(Span::styled(b.show.to_string(), key));
         out.push(Span::styled(format!(" {hint}"), word));
         used += add;
+        // Spelled, so clickable wherever it lands whole (T-716).
+        if let Some(k) = keymap::click_key(b) {
+            crate::mouse::note_hint(b.show, hint, k);
+        }
     }
     out
 }

@@ -134,6 +134,7 @@ pub(super) fn frame(
         Rect { x: area.x + area.width - 1, y: area.y + 1, width: 1, height: area.height - 2 },
     );
     app.frames.borrow_mut().push(area);
+    app.hits.borrow_mut().open(area);
     Rect { x: area.x + 1, y: area.y + 1, width: area.width - 2, height: area.height - 2 }
 }
 
@@ -246,7 +247,17 @@ pub(super) fn list(
         },
     );
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // Each drawn row is the mouse's to pick (T-716), by the cursor's own
+    // count: the rows a cursor can stand on, headings skipped.
+    let mut hits = app.hits.borrow_mut();
+    let mut ordinal = rows[..first].iter().filter(|r| !r.heading).count();
     for (i, row) in rows.iter().enumerate().take(last).skip(first) {
+        if !row.heading {
+            let y = inner.y + lines.len() as u16;
+            let h = (per as u16).min(inner.bottom().saturating_sub(y));
+            hits.record(Rect { y, height: h, ..inner }, crate::mouse::Target::Row(ordinal));
+            ordinal += 1;
+        }
         if row.heading {
             // One cell in, its rows three: the indent is the group, the
             // way the sharing dialog's headings read.

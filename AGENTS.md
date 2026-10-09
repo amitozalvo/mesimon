@@ -66,6 +66,10 @@ Preserve these boundaries:
   it costs, or why the row is inert), never what Enter does and never the label again; empty is
   fine. Three spellings name Enter: `∙ enter again confirms`, `{error} ∙ enter tries again`,
   `∙ enter copies it` (`keymap::HINT_ENTER_WORDS`; `a_hint_never_explains_enter`, T-677).
+- Anything the mouse can pick records a `mouse::Target` over its rect as it is drawn and is
+  handled by a `point_*` arm in `App::click` that presses the key a keyboard would
+  (`App::press`, T-716). Key hints need nothing: every hint `chrome::hint_spans` spells is
+  clickable wherever the finished frame shows it whole.
 - The mascot's pixels live in `assets/mascot/shin.txt` and its engine in
   `crates/mesimon-tui/src/creature.rs`; the notification PNGs and the installer's welcome are
   that engine's goldens (`MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`).

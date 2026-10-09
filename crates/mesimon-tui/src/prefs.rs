@@ -375,6 +375,10 @@ pub(crate) struct Prefs {
     /// crowned agent without opening its pane. Per machine — motion on a
     /// screen is about the person watching it, not about a repo.
     pub crown_lightning: bool,
+    /// The board reads the mouse (T-716): clicks, the wheel and hover. ON
+    /// by default; off leaves the terminal its own text selection. Per
+    /// machine — it is about the terminal.
+    pub mouse: bool,
     /// The subscription quota line above the board's keys (T-327) and what it
     /// may use: silent until a provider warns by default, every window and
     /// both providers on, a reset time beside a warning. Per machine — a
@@ -426,6 +430,7 @@ impl Default for Prefs {
             notify_via: NotifyVia::Mesimon,
             peek: PeekLevel::Off,
             crown_lightning: true,
+            mouse: true,
             usage_line: UsageLine::Near,
             usage_5h: true,
             usage_week: true,
@@ -467,6 +472,7 @@ const NOTIFY_SOUND_NEEDS_YOU_KEY: &str = PrefKey::NotifySoundNeedsYou.name();
 const NOTIFY_SOUND_DONE_KEY: &str = PrefKey::NotifySoundDone.name();
 const PEEK_KEY: &str = PrefKey::Peek.name();
 const CROWN_LIGHTNING_KEY: &str = PrefKey::CrownLightning.name();
+const MOUSE_KEY: &str = PrefKey::Mouse.name();
 const USAGE_LINE_KEY: &str = PrefKey::UsageLine.name();
 const USAGE_5H_KEY: &str = PrefKey::UsageFiveHour.name();
 const USAGE_WEEK_KEY: &str = PrefKey::UsageWeekly.name();
@@ -619,6 +625,7 @@ impl Prefs {
             PrefKey::NotifyVia => self.notify_via.key(),
             PrefKey::Peek => self.peek.key(),
             PrefKey::CrownLightning => onoff(self.crown_lightning),
+            PrefKey::Mouse => onoff(self.mouse),
             PrefKey::UsageLine => self.usage_line.key(),
             PrefKey::UsageFiveHour => onoff(self.usage_5h),
             PrefKey::UsageWeekly => onoff(self.usage_week),
@@ -680,6 +687,7 @@ impl Prefs {
         doc.insert(NOTIFY_CROWN_KEY.into(), Value::from(self.notify_crown));
         doc.insert(NOTIFY_WORDS_KEY.into(), Value::from(self.notify_words));
         doc.insert(CROWN_LIGHTNING_KEY.into(), Value::from(self.crown_lightning));
+        doc.insert(MOUSE_KEY.into(), Value::from(self.mouse));
         for (key, v) in [
             (USAGE_5H_KEY, self.usage_5h),
             (USAGE_WEEK_KEY, self.usage_week),
@@ -996,6 +1004,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let tab_icon = flag(TAB_ICON_KEY, true);
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
     let crown_lightning = flag(CROWN_LIGHTNING_KEY, true);
+    let mouse = flag(MOUSE_KEY, true);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
@@ -1074,6 +1083,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         notify_via,
         peek,
         crown_lightning,
+        mouse,
         usage_line,
         usage_5h,
         usage_week,
@@ -1195,6 +1205,9 @@ pub fn tab_title_doctor_line() -> String {
     parts.push(format!("needs-you colour {}", p.tab_color.key()));
     parts.push(format!("subtitle {}", onoff(p.tab_subtitle)));
     parts.push(format!("icon {}", onoff(p.tab_icon)));
+    // The mouse is the terminal's too (T-716): while the board reads it,
+    // a drag selects text only with ⌥ or shift held.
+    parts.push(format!("mouse {}", onoff(p.mouse)));
     match crate::title::terminal() {
         crate::title::Terminal::ITerm2 { status: true } => {
             parts.push("iTerm2 3.7 ∙ every row answers".into())
@@ -1515,6 +1528,25 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["crown_lightning"], false);
         assert!(!PrefKey::CrownLightning.board_overridable());
+    }
+
+    /// The mouse (T-716): absent is on, an off round-trips, and a board
+    /// cannot take it — which terminal reads the mouse is the machine's.
+    #[test]
+    fn mouse_defaults_on_and_round_trips() {
+        let p = scratch("mouse");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.mouse, "absent is the default: on");
+        assert_eq!(l.prefs.word(PrefKey::Mouse), "on");
+        l.prefs.mouse = false;
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert!(!l.prefs.mouse);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["mouse"], false);
+        assert!(!PrefKey::Mouse.board_overridable());
     }
 
     /// The status line's side (T-264): absent is the bottom (tmux's own

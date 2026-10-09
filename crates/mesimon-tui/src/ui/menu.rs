@@ -391,6 +391,13 @@ fn draw_rows_with(
         };
         // A heading sits one cell in, its rows three: the indent is the
         // section, the way the settings groups read.
+        // Each row is the mouse's to pick (T-716); a heading is a label.
+        if !heading && (i as u16) < rows_area.height {
+            app.hits.borrow_mut().record(
+                Rect { y: rows_area.y + i as u16, height: 1, ..rows_area },
+                crate::mouse::Target::Row(i),
+            );
+        }
         let lead = if heading { " " } else { "   " };
         let pad = inner_w.saturating_sub(lead.len() + text.width() + hint.width());
         lines.push(

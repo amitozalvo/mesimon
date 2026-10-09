@@ -499,6 +499,9 @@ pub enum Verb {
     /// The crown's actions strike their tickets with a bolt (T-544): a
     /// switch on the Appearance list, on by default, per machine.
     CrownLightning,
+    /// The board reads the mouse (T-716): a switch on the Behaviour list,
+    /// on by default, per machine.
+    Mouse,
     // ---- columns (T-117) ----
     /// `O`: a new column after the cursor's, named first in the same dialog.
     AddColumn,
@@ -1036,7 +1039,8 @@ impl SettingsSection {
             | Verb::WeekStart
             | Verb::FollowUpMode
             | Verb::DefaultColumn
-            | Verb::KeepAwake => Self::Behaviour,
+            | Verb::KeepAwake
+            | Verb::Mouse => Self::Behaviour,
             Verb::SystemPrompt
             | Verb::McpTools
             | Verb::DefaultTier
@@ -1154,6 +1158,8 @@ pub struct Ctx {
     pub theme_os_barred: bool,
     /// The crown's actions strike their tickets with a bolt (T-544).
     pub crown_lightning: bool,
+    /// The board reads the mouse (T-716).
+    pub mouse: bool,
     /// The ticket page's preview zone holds more rows than it can show, so
     /// there is somewhere to page to. Measured by the last draw (the zone's
     /// height is a fact of the frame, not of the board), which is also what
@@ -4691,6 +4697,24 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The mouse (T-716). On by default: a click puts the cursor where it
+    // lands and a second click acts, the wheel walks, a click off a dialog
+    // closes it. Reading the mouse takes the terminal's own text selection,
+    // which most terminals hand back while ⌥ or shift is held — and off is
+    // for whoever would rather have it back outright.
+    MenuItem {
+        verb: Verb::Mouse,
+        label: |c| if c.mouse { "Mouse: on".into() } else { "Mouse: off".into() },
+        detail: |c| {
+            if c.mouse {
+                "⌥ or shift held lets the terminal select text".into()
+            } else {
+                "keys only ∙ the terminal selects text as usual".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // The usage line (T-327): what it shows, then what it may use. Every row
     // is a switch or a ring, and nothing is read for a provider that is off.
     MenuItem {
@@ -5473,6 +5497,8 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::WeekStart,
             Verb::DefaultColumn,
             Verb::FollowUpMode,
+            // How the board is driven: by keys alone, or the mouse too.
+            Verb::Mouse,
         ],
         SettingsSection::Agents => &[
             Verb::DefaultTier,
@@ -5522,6 +5548,7 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
         Verb::MergeTrainNotice => PrefKey::MergeTrainNotice,
         Verb::StatusLine => PrefKey::StatusTop,
         Verb::CrownLightning => PrefKey::CrownLightning,
+        Verb::Mouse => PrefKey::Mouse,
         Verb::TabTitle => PrefKey::TabTitle,
         Verb::TabTitleNeedsYou => PrefKey::TabTitleNeedsYou,
         Verb::TabTitleFocus => PrefKey::TabTitleFocus,
@@ -7197,6 +7224,16 @@ pub fn resolve(scope: Scope, key: Key, ctx: &Ctx) -> Option<Verb> {
         }
     }
     None
+}
+
+/// The key a click on `b`'s hint presses (T-716): its first atom, when every
+/// atom it lists does the same thing. A hint that spells several moves at
+/// once (`hjkl move`, `{ } page`) names no one key, so a click on it presses
+/// nothing rather than guessing a direction.
+pub fn click_key(b: &Binding) -> Option<Key> {
+    let first = *b.keys.first()?;
+    let verb = directional(b.verb, first);
+    b.keys.iter().all(|k| directional(b.verb, *k) == verb).then_some(first)
 }
 
 /// Multi-key bindings whose verb depends on which atom arrived. Keeping this
@@ -9471,6 +9508,7 @@ mod tests {
                     Verb::WeekStart,
                     Verb::DefaultColumn,
                     Verb::FollowUpMode,
+                    Verb::Mouse,
                 ],
             ),
             (
@@ -10166,6 +10204,7 @@ mod tests {
             Verb::UsageClaude,
             Verb::UsageCodex,
             Verb::CardCorner,
+            Verb::Mouse,
         ];
         for item in SETTINGS_ITEMS {
             let expect = prefs.contains(&item.verb);
@@ -10204,5 +10243,32 @@ mod tests {
         assert!(fixed.starts_with("(machine) ∙ "), "{fixed}");
         let door = item_detail(row(Verb::McpTools), &board);
         assert_eq!(door, (row(Verb::McpTools).detail)(&board), "board state has no scope words");
+    }
+
+    /// A clicked hint presses one key (T-716): a binding's first atom when
+    /// every atom does the same thing, nothing when its hint spells several
+    /// directions at once.
+    #[test]
+    fn a_click_presses_a_hint_only_when_it_names_one_move() {
+        let find = |scope: Scope, verb: Verb| {
+            bindings(scope).iter().find(|b| b.verb == verb).expect("bound")
+        };
+        assert_eq!(click_key(find(Scope::Board, Verb::Act)), Some(Key::Enter));
+        assert_eq!(click_key(find(Scope::Board, Verb::CursorLeft)), None, "hjkl is four moves");
+        assert_eq!(click_key(find(Scope::Diff, Verb::PageDown)), None, "{{ }} is two");
+        assert_eq!(click_key(find(Scope::Global, Verb::Help)), Some(Key::Char('?')));
+        // Every hint a footer can show either presses its first key or
+        // names a move it cannot pick: a click never lands on a wrong verb.
+        for scope in Scope::ALL {
+            for b in bindings(scope) {
+                if let Some(k) = click_key(b) {
+                    assert_eq!(k, b.keys[0], "{:?}", b.verb);
+                    assert!(b
+                        .keys
+                        .iter()
+                        .all(|a| directional(b.verb, *a) == directional(b.verb, k)));
+                }
+            }
+        }
     }
 }

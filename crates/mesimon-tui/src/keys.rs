@@ -61,6 +61,40 @@ pub fn to_key(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
     })
 }
 
+/// The keypress an atom is spelled by: the inverse of [`to_key`], for a
+/// click that presses a key (T-716). `to_key(from_key(k)) == Some(k)`.
+pub fn from_key(key: Key) -> (KeyCode, KeyModifiers) {
+    let none = KeyModifiers::NONE;
+    match key {
+        Key::Char(c) if c.is_ascii_uppercase() => (KeyCode::Char(c), KeyModifiers::SHIFT),
+        Key::Char(c) => (KeyCode::Char(c), none),
+        Key::Ctrl(c) if c.is_ascii_uppercase() => {
+            (KeyCode::Char(c.to_ascii_lowercase()), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        }
+        Key::Ctrl(c) => (KeyCode::Char(c), KeyModifiers::CONTROL),
+        Key::Enter => (KeyCode::Enter, none),
+        Key::ShiftEnter => (KeyCode::Enter, KeyModifiers::SHIFT),
+        Key::Esc => (KeyCode::Esc, none),
+        Key::Tab => (KeyCode::Tab, none),
+        Key::BackTab => (KeyCode::BackTab, KeyModifiers::SHIFT),
+        Key::Space => (KeyCode::Char(' '), none),
+        Key::Backspace => (KeyCode::Backspace, none),
+        Key::Delete => (KeyCode::Delete, none),
+        Key::AltLeft => (KeyCode::Left, KeyModifiers::ALT),
+        Key::AltRight => (KeyCode::Right, KeyModifiers::ALT),
+        Key::AltUp => (KeyCode::Up, KeyModifiers::ALT),
+        Key::AltDown => (KeyCode::Down, KeyModifiers::ALT),
+        Key::Left => (KeyCode::Left, none),
+        Key::Right => (KeyCode::Right, none),
+        Key::Up => (KeyCode::Up, none),
+        Key::Down => (KeyCode::Down, none),
+        Key::Home => (KeyCode::Home, none),
+        Key::End => (KeyCode::End, none),
+        Key::PageUp => (KeyCode::PageUp, none),
+        Key::PageDown => (KeyCode::PageDown, none),
+    }
+}
+
 /// The same conversion, as a text field reads it: Alt there is the "by word"
 /// modifier ([`word_wise`]), never an atom of its own — a composer that let
 /// `alt+←` become [`Key::AltLeft`] would stop jumping by word, and the board's

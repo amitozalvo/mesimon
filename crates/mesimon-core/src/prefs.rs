@@ -83,10 +83,14 @@ pub enum PrefKey {
     /// underline and the rows, the rows alone, or nothing. Per machine, a
     /// view preference like the replies' rung.
     Summary,
+    /// The board reads the mouse (T-716): clicks, the wheel and hover. On
+    /// by default; off gives the terminal its own text selection back,
+    /// which reading the mouse takes. Per machine: it is about the terminal.
+    Mouse,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 37] = [
+    pub const ALL: [PrefKey; 38] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::SnoozeNeedsYou,
@@ -124,6 +128,7 @@ impl PrefKey {
         PrefKey::UsageCodex,
         PrefKey::CardCorner,
         PrefKey::Summary,
+        PrefKey::Mouse,
     ];
 
     /// The JSON key in both files.
@@ -166,6 +171,7 @@ impl PrefKey {
             PrefKey::UsageCodex => "usage_codex",
             PrefKey::CardCorner => "card_corner",
             PrefKey::Summary => "summary",
+            PrefKey::Mouse => "mouse",
         }
     }
 
@@ -206,6 +212,7 @@ impl PrefKey {
                 | PrefKey::UsageCodex
                 | PrefKey::CardCorner
                 | PrefKey::Summary
+                | PrefKey::Mouse
         )
     }
 
@@ -249,6 +256,7 @@ impl PrefKey {
             PrefKey::UsageClaude => "usage line's claude",
             PrefKey::UsageCodex => "usage line's codex",
             PrefKey::CardCorner => "card corner",
+            PrefKey::Mouse => "mouse",
         }
     }
 
@@ -316,6 +324,7 @@ mod tests {
                 PrefKey::UsageCodex,
                 PrefKey::CardCorner,
                 PrefKey::Summary,
+                PrefKey::Mouse,
             ]
         );
     }

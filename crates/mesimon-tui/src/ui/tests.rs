@@ -10213,3 +10213,217 @@ fn test_a_dialog_tick_starts_the_cards_pulse() {
     let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
     assert!((0..120u16).any(|x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED)));
 }
+
+// ---- the mouse (T-716) --------------------------------------------------
+
+/// Where `needle` first appears on a rendered frame, in cells.
+fn spot_of(lines: &[String], needle: &str) -> (u16, u16) {
+    for (y, line) in lines.iter().enumerate() {
+        if let Some(i) = line.find(needle) {
+            return (line[..i].width() as u16, y as u16);
+        }
+    }
+    panic!("{needle:?} is not on screen: {lines:#?}");
+}
+
+fn mouse(app: &mut App, kind: ratatui::crossterm::event::MouseEventKind, at: (u16, u16)) {
+    let ev = ratatui::crossterm::event::MouseEvent {
+        kind,
+        column: at.0,
+        row: at.1,
+        modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+    };
+    app.on_mouse(ev).expect("mouse");
+}
+
+fn click(app: &mut App, at: (u16, u16)) {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    mouse(app, MouseEventKind::Down(MouseButton::Left), at);
+}
+
+/// A click lands the cursor on a card; a click on the cursor's card opens
+/// its page — so a double-click opens it.
+#[test]
+fn a_click_selects_a_card_and_a_second_opens_its_page() {
+    let mut app = app_graphite(fixture(false));
+    let at = spot_of(&render(&app, 120, 30), "Grapheme truncation");
+    click(&mut app, at);
+    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(5)));
+    assert!(matches!(app.screen, Screen::Board), "the first click only selects");
+    render(&app, 120, 30);
+    click(&mut app, at);
+    assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid_n(5)));
+}
+
+/// A key hint that is drawn is a key that clicks: `? keys` in the footer
+/// opens the overlay, and any click closes it, as any key does.
+#[test]
+fn a_click_on_a_drawn_hint_presses_its_key() {
+    let mut app = app_graphite(fixture(false));
+    let at = spot_of(&render(&app, 120, 30), "? keys");
+    click(&mut app, (at.0 + 3, at.1));
+    assert!(app.help, "the hint's word clicks as well as its key");
+    render(&app, 120, 30);
+    click(&mut app, (0, 0));
+    assert!(!app.help);
+}
+
+/// A click off a dialog is its Esc; inside it, a row's first click puts
+/// the cursor there and a second acts on it.
+#[test]
+fn a_click_off_a_dialog_closes_it_and_a_row_is_picked_then_acted_on() {
+    let mut app = app_graphite(fixture(false));
+    app.mode = Mode::Menu { idx: 0 };
+    render(&app, 120, 30);
+    click(&mut app, (0, 10));
+    assert!(matches!(app.mode, Mode::Normal), "off the menu closes it");
+
+    app.settings_section = mesimon_core::keymap::SettingsSection::Behaviour;
+    app.mode = Mode::Settings { idx: 0 };
+    let at = spot_of(&render(&app, 120, 30), "Mouse: on");
+    click(&mut app, at);
+    let row = app.settings_row(mesimon_core::keymap::Verb::Mouse);
+    assert!(matches!(app.mode, Mode::Settings { idx } if idx == row), "walked to the row");
+    assert!(app.prefs.mouse, "the first click only selects");
+    render(&app, 120, 30);
+    click(&mut app, at);
+    assert!(!app.prefs.mouse, "the second toggles: {}", app.status);
+    // And off, the board no longer reads the mouse at all.
+    render(&app, 120, 30);
+    click(&mut app, (0, 10));
+    assert!(matches!(app.mode, Mode::Settings { .. }));
+}
+
+/// The wheel walks the column under the pointer, and never climbs off the
+/// top card onto the header.
+#[test]
+fn the_wheel_walks_the_column_under_it() {
+    use ratatui::crossterm::event::MouseEventKind;
+    let mut app = app_graphite(fixture(false));
+    let lines = render(&app, 120, 30);
+    let at = spot_of(&lines, "Fix OSC");
+    mouse(&mut app, MouseEventKind::ScrollDown, at);
+    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(4)), "into the column, one down");
+    render(&app, 120, 30);
+    mouse(&mut app, MouseEventKind::ScrollUp, at);
+    mouse(&mut app, MouseEventKind::ScrollUp, at);
+    assert_eq!(app.cursor_row, Some(0), "the wheel stops at the top card");
+}
+
+/// The hover lights what the pointer is over and nothing else: a hint's
+/// word one step up the ramp (the footer is already on the raised
+/// surface, so its ground stays), a card on the ground between the page
+/// and the cursor's surface — and a card under a dialog not at all.
+#[test]
+fn the_hover_lights_the_spot_under_the_pointer() {
+    let mut app = app_graphite(fixture(false));
+    let lines = render(&app, 120, 30);
+    let hint = spot_of(&lines, "? keys");
+    let card = spot_of(&lines, "Keymap validator");
+    let hover = app.theme.hover_bg().expect("true colour has a hover ground");
+    let rest = cells(&app, 120, 30);
+    assert!(rest.content().iter().all(|c| c.bg != hover), "no pointer, no hover");
+
+    app.pointer.set(Some((hint.0 + 2, hint.1)));
+    let lit = cells(&app, 120, 30);
+    assert!(lit[(hint.0 + 3, hint.1)].fg != rest[(hint.0 + 3, hint.1)].fg, "the word lifts");
+    let changed: Vec<u16> = (0..120).filter(|x| lit[(*x, hint.1)] != rest[(*x, hint.1)]).collect();
+    assert!(
+        !changed.is_empty() && changed.iter().all(|x| (hint.0..hint.0 + 6).contains(x)),
+        "exactly the hint: {changed:?}"
+    );
+
+    app.pointer.set(Some(card));
+    let lit = cells(&app, 120, 30);
+    assert_eq!(lit[card].bg, hover, "a card off the cursor takes the hover ground");
+    assert!(lit[(card.0, card.1 + 3)].bg != hover, "and the row under it stays");
+
+    app.mode = Mode::Menu { idx: 0 };
+    let under = cells(&app, 120, 30);
+    assert!(under.content().iter().all(|c| c.bg != hover), "a dialog covers the board");
+}
+
+/// A tag picker cell is a click away: the first puts the picker's cursor
+/// on it, the second is its Enter — the tag goes to the daemon.
+#[test]
+fn a_click_picks_a_tag_then_wears_it() {
+    let (mut app, sent) = App::for_test_logged(
+        fixture_tagged(),
+        Theme::new(Flavor::Graphite, Profile::TrueColor),
+        false,
+    );
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    app.tag_armed = Some(crate::app::TagArm::new(Some(ulid_n(3))));
+    let at = spot_of(&render(&app, 120, 30), "REGR");
+    click(&mut app, at);
+    let arm = app.tag_armed.as_ref().expect("still open");
+    assert_eq!((arm.row, arm.col), (0, 2));
+    assert!(sent.borrow().iter().all(|c| !c.contains("Tag")), "{:?}", sent.borrow());
+    render(&app, 120, 30);
+    click(&mut app, at);
+    assert!(sent.borrow().iter().any(|c| c.contains("Tag")), "{:?}", sent.borrow());
+}
+
+/// The ticket page's rail: a click lands on a row, the wheel walks it, and
+/// anywhere else the wheel scrolls nothing it should not.
+#[test]
+fn a_click_and_the_wheel_walk_the_rail() {
+    use ratatui::crossterm::event::MouseEventKind;
+    let mut app = app_graphite(fixture(false));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    let (x, y) = spot_of(&lines, "SESSIONS");
+    // The second session row: one line each, under the heading and a blank.
+    click(&mut app, (x + 2, y + 3));
+    assert!(matches!(app.screen, Screen::Ticket { rail_idx: 1, .. }), "{:?}", app.screen);
+    render(&app, 120, 30);
+    mouse(&mut app, MouseEventKind::ScrollUp, (x + 2, y + 3));
+    assert!(matches!(app.screen, Screen::Ticket { rail_idx: 0, .. }), "{:?}", app.screen);
+}
+
+/// A diff's file list: a click opens the file in the pane.
+#[test]
+fn a_click_opens_a_diff_file() {
+    let mut app = app_graphite(fixture(false));
+    install_diff(&mut app);
+    let at = spot_of(&render(&app, 120, 30), "tool.sh");
+    click(&mut app, at);
+    assert_eq!(app.diff.as_ref().map(|d| d.file_idx), Some(2));
+}
+
+/// The search picker: its rows pick as any list's do, and its preview is
+/// part of it — a click there is inside, not a click away.
+#[test]
+fn the_search_picker_takes_clicks_on_both_halves() {
+    let mut app = app_graphite(fixture(false));
+    app.mode = Mode::Search(crate::app::Search::new());
+    if let Mode::Search(s) = &mut app.mode {
+        s.hits = mesimon_core::search::Searcher::new().rank(&app.board, "", true);
+    }
+    let lines = render(&app, 120, 30);
+    let second = match &app.mode {
+        Mode::Search(s) => s.hits[1].key.text.clone(),
+        _ => unreachable!(),
+    };
+    let at = spot_of(&lines, &format!(" {second} "));
+    click(&mut app, (at.0 + 1, at.1));
+    assert!(matches!(&app.mode, Mode::Search(s) if s.idx == 1), "the row is picked");
+    let frames = app.frames.borrow().clone();
+    assert_eq!(frames.len(), 2, "a list and a preview");
+    let preview = frames[1];
+    click(&mut app, (preview.x + 2, preview.y + 2));
+    assert!(matches!(&app.mode, Mode::Search(_)), "the preview is inside the picker");
+}
+
+/// A click off a dialog whose row is being typed into keeps the words: Esc
+/// would drop them unasked, and a stray click is not a decision.
+#[test]
+fn a_click_off_a_dialog_spares_a_field_being_typed() {
+    let mut app = app_graphite(fixture(false));
+    app.mode = Mode::Tiers { idx: 0, naming: Some(crate::text::EditBuffer::new(64)) };
+    render(&app, 120, 30);
+    assert_eq!(app.hits.borrow().at(0, 10), crate::mouse::Hit::Outside, "the click is off it");
+    click(&mut app, (0, 10));
+    assert!(matches!(app.mode, Mode::Tiers { naming: Some(_), .. }), "the field stays");
+}

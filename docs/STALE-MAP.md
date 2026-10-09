@@ -23205,3 +23205,47 @@ descriptions and the brief are untouched.
 
 Tests: `notes_e2e` (the field on an own read), the rig's K1 (`no_own_key`: no reply of the
 worker's spells its key; its last reply names the ticket).
+
+## The board reads the mouse (T-716, 2026-10-10)
+
+**The ask.** "cursor support: everywhere that will benefit, include hover indications, out of
+dialog clicks to cancel."
+
+**Built.** `lib.rs` turns the terminal's mouse reports on while the `Mouse` setting is (a
+machine pref, on by default, Settings › Behaviour; a `Capture` in the loop re-arms it after every
+handover, since `restore_terminal` turns it off for tmux and the editor). The draw records what a
+pointer can stand on in `App::hits` (`mouse::Map`): cards, column headers and lanes, the top
+row's chips, list dialog rows (`dialog::list`, `menu::draw_rows_with`, usage, search), rail rows,
+tag picker cells and diff files. Key hints are not recorded by their callers:
+`chrome::hint_spans` notes each one it spells, and after the frame `mouse::scrape_hints` finds
+those left whole and bold on the buffer, so a hint covered by a dialog or cut by a frame edge is
+not clickable and a new surface that spells keys is clickable for free. `keymap::click_key` is
+the key a hint presses: none for a hint that names several moves (`hjkl`, `{ }`).
+
+**The rules.** Nothing acts on its own: a click presses keys through `handle_key` (`App::press`,
+past the reply swallow) or moves a cursor the way the matching key does — a list row is walked to
+by ↓/↑ so a theme previews and a heading is skipped, a diff file by `n`/`N`. The first click on a
+thing selects it and a click on the selected one is its Enter (Space for a card: its page, never
+the agent's pane), which makes a double-click "open" with no timer. Each `dialog::frame` opens a
+layer and only the top layer answers; a click off it is Esc, except on the footer row, whose keys
+stay live, and except while a field typed in place is open (its Esc drops the words unasked); the
+note editor's own Esc asks before dropping text. The search preview is joined to its list's
+layer. A chord tail takes a click on anything but a key as its "never mind". The wheel walks the
+list or board column under it (never off the top card onto the header), walks the rail, and
+scrolls a reading zone three rows a notch.
+
+**Hover.** The spot under the pointer gets its ink one step up the ramp and, in true colour, a
+ground halfway between the page and the cursor card's surface (`Theme::hover_bg`), painted only
+on cells on the page ground, so a selected row, a tag bar or the needs-you row keeps its own. An
+indexed profile has no authored halfway and gets the ink alone. Not a second surface in the 06
+sense: it exists only under the pointer.
+
+**Refuted / left.** Underline for hover (SGR 4 already carries tags and the summary's progress).
+Single-click activation in menus (a stray click would toggle a setting; select-then-act keeps the
+detail line readable first). Placing the text cursor by click inside a field, and dragging a card
+between columns, are not built.
+
+Tests: `mouse.rs` (layers, joined frames, hint scraping), `ui::tests` (card select/open, hint
+click, dialog close and row pick-then-act, wheel, hover, tag picker, rail, diff files, search
+halves, a typed field spared), `keymap::a_click_presses_a_hint_only_when_it_names_one_move`,
+`prefs::mouse_defaults_on_and_round_trips`.
