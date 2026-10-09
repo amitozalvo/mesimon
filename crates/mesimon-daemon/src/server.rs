@@ -232,6 +232,11 @@ const RSS_TICKS: u64 = 40;
 /// How often the tickets' transcripts are read for their cost (T-327) when
 /// no turn's end asked sooner: 30 s, so a long turn's figure still moves.
 const COST_TICKS: u64 = 120;
+/// How often the archive offer is priced again when nothing on the board
+/// changed (T-713): 60 s. What it waits for is a ticket ageing past the
+/// hour, which a minute's lateness does not change; a board change prices
+/// it at the next 1 s bucket (`archive_due`).
+const ARCHIVE_TICKS: u64 = 240;
 /// A sleep-safe ticket whose sessions have all been asleep this long feeds
 /// the header's archive suggestion (same offer-not-action shape as sleep).
 const ARCHIVE_SUGGEST_MS: u64 = 3_600_000;
@@ -572,9 +577,14 @@ pub struct Daemon {
     /// header suggestion, recomputed on the RSS bucket.
     reclaim_cache: (u64, usize),
     /// Tickets currently archive-suggestable — recomputed on the 1 s bucket
-    /// (NOT the RSS bucket: refresh_rss early-returns when no pane exists,
-    /// which is exactly the all-asleep scenario archive looks for).
+    /// when `archive_due`, else every `ARCHIVE_TICKS` (NOT the RSS bucket:
+    /// refresh_rss early-returns when no pane exists, which is exactly the
+    /// all-asleep scenario archive looks for).
     archive_cache: usize,
+    /// The board changed since the offer was last priced: set by every
+    /// broadcast, so a move, a sleep, a ticked box or a column's offers
+    /// reach the header within the second, not the minute.
+    archive_due: bool,
     /// The disk the archive offer frees (T-679): the sum of `tree_sizes`
     /// over the trees it would tear down, on the same 1 s bucket.
     archive_bytes: u64,
@@ -1176,6 +1186,7 @@ pub fn run(paths: Paths) -> Result<()> {
         terminals: terminals_in(&snap),
         reclaim_cache: (0, 0),
         archive_cache: 0,
+        archive_due: true,
         archive_bytes: 0,
         tree_sizes: HashMap::new(),
         trees_sizing: false,
@@ -2804,12 +2815,15 @@ impl Daemon {
                 stage!("queue_cost_scan", self.queue_cost_scan());
             }
             // One candidate scan serves the count and the disk figure.
-            let candidates = stage!("archive_figures", self.archive_candidates());
-            if candidates.len() != self.archive_cache {
-                self.archive_cache = candidates.len();
-                changed = true;
+            if self.archive_due || self.ticks.is_multiple_of(ARCHIVE_TICKS) {
+                self.archive_due = false;
+                let candidates = stage!("archive_figures", self.archive_candidates());
+                if candidates.len() != self.archive_cache {
+                    self.archive_cache = candidates.len();
+                    changed = true;
+                }
+                changed |= stage!("price_archive", self.price_archive(&candidates));
             }
-            changed |= stage!("price_archive", self.price_archive(&candidates));
         }
         if self.ticks.is_multiple_of(TAIL_POLL_TICKS) {
             changed |= stage!("poll_tails", self.poll_tails());
@@ -8329,10 +8343,11 @@ impl Daemon {
     /// all (none, or exited corpses only) — the newest of created_at and any
     /// corpse's last change that old — and no summary box left unticked
     /// (T-713: the archive refuses one, so the offer never names it). A
-    /// board scan plus one small note read per ticket that passed the rest,
-    /// no forks — cheap enough for the 1 s bucket, which it must use: the
-    /// RSS bucket's no-pane early-return fires precisely when archive
-    /// candidates exist.
+    /// board scan plus one small note read per ticket that passed the rest
+    /// (a ticket younger than the threshold costs no read), no forks, on the
+    /// 1 s bucket after a board change and once a minute otherwise
+    /// (`ARCHIVE_TICKS`) — never the RSS bucket, whose no-pane early-return
+    /// fires precisely when archive candidates exist.
     fn archive_figures(&self) -> usize {
         self.archive_candidates().len()
     }
@@ -8536,6 +8551,7 @@ impl Daemon {
 
     fn broadcast(&mut self) {
         self.board_version = self.board_version.wrapping_add(1);
+        self.archive_due = true;
         // Keep the focused status line's `!N` live while a session holds focus
         // (attention transitions land here via persist_and_notify).
         self.refresh_status_line();

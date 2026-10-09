@@ -23181,3 +23181,9 @@ whatever the model does.
 
 Tests: `archive_e2e` step 2b (an unticked box drops the ticket from the offer and refuses the
 archive; ticked, it is offered again); `Count::open` in `summary.rs`.
+
+**And the offer's cadence (same day, the author's ask).** The offer was priced on every 1 s
+bucket; it is now priced on the 1 s bucket after a board change (`archive_due`, set by every
+`broadcast`) and every 60 s otherwise (`ARCHIVE_TICKS`), since what a quiet board waits for is a
+ticket ageing past the hour. The note read stays the last filter, so a ticket younger than the
+threshold never costs one. `X` still takes a fresh scan at the keypress.
