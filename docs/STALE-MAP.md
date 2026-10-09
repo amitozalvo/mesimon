@@ -23011,8 +23011,9 @@ its edges, and (Chromium, through CDP touch events, since the mouse never meets
 the card would show. The agent searched the plugin's files for how summaries are output, found
 nothing, called the convention undocumented and guessed `## Summary` with `- [x]` items from the
 person's own hint. T-696 had put the convention in `write_note`'s description the day before;
-that session's tool text predated it (the daemons on that machine were still beta.2 builds, and a
-hook-set session reads `tools/list` once), and the description said "boxes" without spelling one.
+a session whose tool text predates it (a build before beta.3, or a hook-set session started
+before an update, which reads `tools/list` once) has no clause at all, and the description said
+"boxes" without spelling one. The machine was another person's; nothing on it was read.
 Two things were wrong at once: the agent was looking in the wrong place for a convention that can
 only live in the tool text, and the tool text did not say enough where it was looked for.
 
