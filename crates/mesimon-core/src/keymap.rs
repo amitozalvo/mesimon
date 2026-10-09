@@ -714,6 +714,11 @@ pub enum Verb {
     /// restore tickets (`archive_ticket`). Board state like `CrownMode`,
     /// off by default; Enter toggles it.
     CrownArchives,
+    /// The Settings row under it (T-712): whether the crown may watch
+    /// tickets it did not start (`watch_ticket`), so the board wakes it for
+    /// them. Board state like `CrownArchives`, off by default; Enter
+    /// toggles it.
+    CrownWatches,
     /// The Settings row under it (T-224): whether every claude mesimon
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
@@ -1039,6 +1044,7 @@ impl SettingsSection {
             | Verb::CrownBudget
             | Verb::CrownMode
             | Verb::CrownArchives
+            | Verb::CrownWatches
             | Verb::AgentPrompts => Self::Agents,
             _ => Self::Root,
         }
@@ -1066,6 +1072,8 @@ pub struct Ctx {
     pub crown_mode: crate::board::CrownMode,
     /// `Board::crown_archives` (T-590), for the row under that.
     pub crown_archives: bool,
+    /// `Board::crown_watches` (T-712), for the row under that.
+    pub crown_watches: bool,
     pub column_agents: bool,
     pub col_naming: bool,
     pub col_offers_word: &'static str,
@@ -4946,6 +4954,30 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // Whether the crown may watch a ticket it did not start (T-712). Off by
+    // default: `watch_ticket` is refused and the crown hears only of the
+    // agents it started. On, a watched ticket's delivery, finished turn,
+    // raised hand and merge wake it, and nothing is sent to that agent.
+    // Off again ends every watch.
+    MenuItem {
+        verb: Verb::CrownWatches,
+        label: |c| {
+            if c.crown_watches {
+                "Crown watches tickets: on".into()
+            } else {
+                "Crown watches tickets: off".into()
+            }
+        },
+        detail: |c| {
+            if c.crown_watches {
+                "a watched ticket's finish, hand and merge wake it ∙ its agent hears nothing".into()
+            } else {
+                "it hears only of the agents it started".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::McpTools,
         label: |c| {
@@ -5451,6 +5483,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::CrownBudget,
             Verb::CrownMode,
             Verb::CrownArchives,
+            Verb::CrownWatches,
         ],
     };
     verbs
@@ -9451,6 +9484,7 @@ mod tests {
                     Verb::CrownBudget,
                     Verb::CrownMode,
                     Verb::CrownArchives,
+                    Verb::CrownWatches,
                 ],
             ),
         ] {

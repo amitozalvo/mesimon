@@ -458,7 +458,9 @@ will not compile until someone decides whether an agent may send it. That is the
 the never-tier — no spawn, no kill, no delete/archive/rename, no workspace, no merge, no diff,
 no tag registry writes, no session read at any tier. The crown's keyed tools are the named
 exceptions; its `archive_ticket` is further gated by a board switch a person turns on
-(`Board::crown_archives`, T-590, off by default). `authorize()` is real for `Agent`:
+(`Board::crown_archives`, T-590, off by default), and so is its `watch_ticket`
+(`Board::crown_watches`, T-712, off by default), which has the board wake the crown for a
+person's ticket and sends that ticket's agent nothing. `authorize()` is real for `Agent`:
 `Resource::Session` is denied outright and so is `Mutate` on `Resource::Board`.
 
 **Schema evolution.** Every new `SessionRecord` field must be `#[serde(default)]` — the defaults

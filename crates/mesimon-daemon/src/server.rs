@@ -746,6 +746,12 @@ pub struct Daemon {
     /// told of (T-599, `hear_lingering`), forgotten on the record's next
     /// foreground turn. Kept in `crown.json` (T-602).
     lingered: std::collections::HashSet<uuid::Uuid>,
+    /// Tickets the crown watches (T-712, `watch_ticket`): ones it did not
+    /// start, whose delivery, finished turn, raised hand and merge wake it
+    /// as a worker it started does (`crownwake::crown_hears`). A watch ends
+    /// at the merge, with `unwatch`, when the ticket leaves the board, when
+    /// the row is turned off, and with the crown. Kept in `crown.json`.
+    crown_watched: std::collections::BTreeSet<ulid::Ulid>,
     /// The session whose dialog the `answer_agent` call in hand queued an
     /// answer for (T-569): the writer loop parks that call's reply with the
     /// delivery (`control_park_reply`), which answers it when it settles.
@@ -1226,6 +1232,7 @@ pub fn run(paths: Paths) -> Result<()> {
         late_asks: HashMap::new(),
         turns_open: std::collections::HashSet::new(),
         lingered: std::collections::HashSet::new(),
+        crown_watched: std::collections::BTreeSet::new(),
         answer_waits: None,
         modroad,
         mod_park: None,
@@ -1949,6 +1956,15 @@ fn crown_archive_off(key: &str, restore: bool) -> String {
     }
 }
 
+/// The crown's watch while the row is off (T-712): the row, and the road
+/// that stays — a person's own word when the ticket is done.
+fn crown_watch_off(key: &str) -> String {
+    format!(
+        "Settings → Agents → Crown watches tickets is off; a person turns it on, or says when \
+         {key} is done"
+    )
+}
+
 /// The crown's next step at a branch behind its base (T-613): the words
 /// `merge_ticket`'s refusal ends on, the same whether the flags read it
 /// before the merge or the merge itself answered `NeedsRebase`.
@@ -2472,6 +2488,7 @@ impl Daemon {
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
             Command::SetCrownMode { mode } => self.set_crown_mode(mode),
             Command::SetCrownArchives { on } => self.set_crown_archives(on),
+            Command::SetCrownWatches { on } => self.set_crown_watches(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetUsageWants { claude, codex } => {
                 if self.usage.set_wants(conn_key(stream), Wants { claude, codex }) {
@@ -2675,6 +2692,7 @@ impl Daemon {
             | Command::AgentArchiveTicket { .. }
             | Command::AgentStartTicket { .. }
             | Command::AgentSleepTicket { .. }
+            | Command::AgentWatchTicket { .. }
             | Command::AgentMergeTicket { .. }
             | Command::AgentAskTicket { .. }
             | Command::AgentAnswerTicket { .. }
@@ -5174,6 +5192,7 @@ impl Daemon {
                 match self.agent_ticket_view(target) {
                     Some(mut view) => {
                         view.asked = self.crown_asked_view(ticket, target);
+                        view.watched = target != ticket && self.crown_watched.contains(&target);
                         Response::AgentTicket { ticket: view }
                     }
                     None => no_such_ticket(),
@@ -5855,6 +5874,67 @@ impl Daemon {
                 self.agent_ticket_view(target)
                     .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
             }
+            // The crown's watch (T-712): a ticket a person started, heard of
+            // as a worker the crown started is — delivered, finished its
+            // turn, raised its hand, merged — with nothing sent to it.
+            // Behind the board's `crown_watches`, judged at each call after
+            // the key and the stamp resolve; a worker the crown started is
+            // refused, since the board already wakes it for that one. The
+            // watch ends at the merge (`crownwake::owe_wake`), with
+            // `unwatch`, when the ticket leaves the board (`drop_crown_if`),
+            // when the row is turned off, and with the crown.
+            Command::AgentWatchTicket { key, unwatch, seen } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                if target == ticket {
+                    return Response::Err {
+                        message: format!(
+                            "{key} is this session's own ticket; watch_ticket is for another \
+                             ticket"
+                        ),
+                    };
+                }
+                if !self.board.crown_watches {
+                    return Response::Err { message: crown_watch_off(&key) };
+                }
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                let word = if unwatch {
+                    if !self.crown_watched.remove(&target) {
+                        return Response::Err { message: format!("{key} is not watched") };
+                    }
+                    "unwatched"
+                } else {
+                    if self.board.started_by_crown(target) {
+                        return Response::Err {
+                            message: format!(
+                                "{key}'s agent was started by the crown, and the board already \
+                                 wakes this session for it; watch_ticket is for a ticket a \
+                                 person started"
+                            ),
+                        };
+                    }
+                    self.crown_watched.insert(target);
+                    "watched"
+                };
+                self.persist_crown();
+                let cmd = if unwatch { "unwatch_ticket" } else { "watch_ticket" };
+                self.feed.board(by.actor(), cmd, Some(target));
+                self.crown_touched(ticket, target, word);
+                match self.agent_ticket_view(target) {
+                    Some(mut view) => {
+                        view.watched = !unwatch;
+                        Response::AgentTicket { ticket: view }
+                    }
+                    None => no_such_ticket(),
+                }
+            }
             // The crown's merge (T-613): `m` on a worker's page, for the
             // branches the train will not land. The road is `merge_ticket`'s
             // own — ff-only, refused under a working agent — under the
@@ -6411,8 +6491,12 @@ impl Daemon {
 
     /// A crowned ticket leaving the board — deleted, archived — takes the
     /// crown with it: a seat nobody can see is not a seat. Said in the
-    /// feed as the daemon's own doing.
+    /// feed as the daemon's own doing. A watched ticket leaving takes its
+    /// watch (T-712): nothing more will happen to it.
     fn drop_crown_if(&mut self, id: ulid::Ulid) {
+        if self.crown_watched.remove(&id) {
+            self.feed.board("automation", "watch_ended", Some(id));
+        }
         if self.board.crown == Some(id) {
             self.drop_crown_wakes();
             self.hold_crown_sends();
@@ -7118,6 +7202,7 @@ impl Daemon {
                     .collect(),
             }),
             crowned: self.board.is_crowned(id),
+            watched: false,
             crown: self.board.is_crowned(id).then(|| mesimon_core::mcp::CROWN_WAKES.to_string()),
             under_crown: None,
             background: self.agent_background(id),
@@ -11607,6 +11692,24 @@ impl Daemon {
         }
         if self.board.crown_archives != on {
             self.board.crown_archives = on;
+            self.persist_and_notify();
+        }
+        Response::Ok
+    }
+
+    /// `Command::SetCrownWatches` (T-712): whether the crown's `watch_ticket`
+    /// watches. Judged at each call, and an off ends every watch standing:
+    /// the row is the person's stop, not a gate on the next call alone.
+    fn set_crown_watches(&mut self, on: bool) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.crown_watches != on {
+            self.board.crown_watches = on;
+            if !on && !self.crown_watched.is_empty() {
+                self.crown_watched.clear();
+                self.feed.board("automation", "crown_watch_dropped", self.board.crown);
+            }
             self.persist_and_notify();
         }
         Response::Ok

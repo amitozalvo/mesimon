@@ -23062,3 +23062,85 @@ old words, since `active.starts` is what it said when live. No daemon, wire or r
 Tests: `ux.test.js` `startFlow` (the field on an empty seat, its words, a refused start that
 leaves the draft gone and the button to try again; a parked agent's wake with words from the
 field; the field off while the terminal is away and on an older host), six engine × size runs.
+
+## The crown watches a ticket it did not start (T-712, 2026-10-09, "Crown can watch a ticket it did not start and wake on its finish")
+
+**Seen on T-711.** The person told the crown "adding T-709, wait until it's finished then
+release". T-709 was the person's own worker, and the crown's wake ledger owes wakes only for
+workers the crown started (T-414, T-469, T-527); the crown could not poll either, since a crown
+in a wait loop reads as busy, which holds the merge train (T-554) and its own wake (T-537). The
+person had to come back and say "merged".
+
+**Shipped: `watch_ticket`**, the crown's nineteenth tool and twentieth keyed command
+(`Command::AgentWatchTicket { key, unwatch, seen }`), behind a new board switch,
+`Board::crown_watches`, Settings → Agents → **Crown watches tickets: off|on** under **Crown
+archives tickets** (`Verb::CrownWatches`, `Ctx::crown_watches`, `Command::SetCrownWatches`,
+doctor's `crown watches` line, a `columns.toml` scalar written either way), and
+`Daemon::crown_watched`, the set of tickets the crown watches, kept in `crown.json` (T-602) as
+`watched` so a restart keeps the wait.
+
+- **What a watch hears.** `crownwake::crown_hears` is now the claim every wake but an answer
+  makes: the worker was started by THIS crown (`started_by_crown`, T-414, unchanged), or THIS
+  crown watches the ticket. The turn probe, the merge verdict, the restart's look and the hold
+  for a merge step all ask it, so a watched ticket's **delivery, finished turn (T-591), raised
+  hand and merge** make the same lines a started worker's make, with the same deltas and the
+  same holds for the train and the merge step. **Not heard: its question, its plan, its
+  lingering.** `note_crown_wake` narrows a watch to those four: a watched agent is a person's,
+  so `answer_agent`, `accept_plan` and `sleep_agent` refuse it by provenance and the crown could
+  do nothing with the wake but read it, while the card's needs-you already calls the person; a
+  lingering wake exists so the crown asks the worker, which it cannot on a person's agent
+  (autonomous mode holds the crown's words to a person's agent for `^y`).
+- **Nothing reaches the watched agent.** A watch is a listener, not a road: no words, no park,
+  no merge, no notice. The person's banners (T-678) read `started_by_crown` alone and stay as
+  they were — a watched ticket's news is still the person's, and the crown's hearing it does not
+  take it from them.
+- **The watch ends** at the merge (`owe_wake`: a `Merged` line, or any line whose `to` reads
+  `merged`, feed `watch_ended`), with `unwatch`, when the ticket leaves the board
+  (`drop_crown_if`, archived or deleted), when the row is turned off (every watch,
+  `crown_watch_dropped`), and with the crown (`drop_crown_wakes`). A shared-checkout ticket has
+  no merge, so its watch ends by one of the other four. Watching again is idempotent; an
+  unwatch of a ticket not watched is refused in words.
+- **Refused:** while the row is off, before anything changes, `Settings → Agents → Crown
+  watches tickets is off; a person turns it on, or says when T-5 is done`; the crown's own
+  ticket; a ticket whose agent the crown started (`started_by_crown`), which already wakes it.
+  Each keyed call takes `seen`, as every keyed writer does.
+- **The receipt and the read.** `AgentTicketView::watched` (`#[serde(default,
+  skip_serializing_if)]`, false off the wire) on the crown's keyed `get_ticket` and on the
+  watch's own receipt; the card lights `♛ watched` / `♛ unwatched`.
+- **The words.** `CROWN_WAKES` gained one sentence: where the row is on, `watch_ticket` on a
+  ticket a person started has the board wake the crown as for an agent it started, the watch
+  ends at the merge or with unwatch, the person's agent gets nothing, and a crown asked to wait
+  for such a ticket watches it and ends its turn — a loop that polls keeps the session busy,
+  which holds the merge train and the wake itself. The tool's description says the same, at
+  the byte cap (its `key` and `seen` blurbs dropped, read as every keyed sibling's).
+  `docs/USING.md` has the row's paragraph and the crown section names it; promise 3's list of
+  the crown's edits says the watch is where the person turns it on.
+
+**OFF by default, argued.** The ticket left it open. A watch spends the crown's turns on tickets
+the crown was not asked about: a person's own worker finishing every turn is a crown turn each,
+and a crown that watched the board over would be D10's money fire with one more fuse. T-610 made
+the crown's mode autonomous by default because that mode spends on the crown's OWN workers,
+which the person handed it; a watch reaches the person's. And off-by-default is the shape that
+needs **no `COLUMNS_SCHEMA` bump**, T-590's argument once more: an older build has no watch to
+hand its crown, and back on this build a dropped key reads off, which only ends the watches. A
+default-on consent flag would be `mcp_tools`'s case — a downgrade losing `false` widens — and
+would have bumped the schema for every board. The cost is one refusal on a board's first "wait
+for T-x", naming the row, and the person decides per board, once.
+
+**Not built.** The watch on `list_board` (the crown reads a ticket's `watched` through
+`get_ticket` with its key); a watch filed by a person from the board (the person's own word
+"wait for T-x" to the crown is the road); a timeout on a watch (it ends with the ticket).
+
+**Tests.** `board::tests::crown_watches_defaults_off_and_an_on_is_kept`;
+`store::tests::crown_watches_is_off_unless_the_file_says_on` and the registry round-trip;
+`crownledger::tests::the_ledger_round_trips_and_a_newer_one_is_refused` carries `watched`;
+`mcp::tests::the_crown_watches_where_a_person_lets_it` (the parse, the gate's words, the four
+events, the no-polling sentence, cap and lint), `exactly_nineteen_tools`,
+`the_tier_is_exactly_twenty_commands` and the never-tier list; `keymap`'s Agents row list;
+`app::tests::crown_watches_setting_toggles_through_board_command`; doctor's
+`the_crown_watches_line_names_the_row`; the four Settings › Agents goldens (8 → 9 rows);
+`crown_e2e::the_crown_watches_a_ticket_a_person_started`: a person's worktree worker wakes
+nobody unwatched, the watch is refused off and on the crown's own ticket, lands with its touch,
+its feed line and its `crown.json` entry, then the ticket's delivery, finish and hand each wake
+the crown with a started worker's line, a hand merge wakes it `merged` and ends the watch, an
+unwatch ends one by hand, and the row turned off ends a standing one.

@@ -605,6 +605,13 @@ pub enum Command {
     SetCrownArchives {
         on: bool,
     },
+    /// Whether the crown may watch tickets it did not start with
+    /// `watch_ticket` (`Board::crown_watches`, T-712). Local only: a watch
+    /// spends the crown's turns on a person's tickets, and only the person
+    /// hands that over. Turned off, every watch ends.
+    SetCrownWatches {
+        on: bool,
+    },
     /// Project default for newly accepted agent starts. Existing sessions
     /// retain their provider. Local only: agents cannot choose who runs
     /// subsequent sessions on the board.
@@ -1023,6 +1030,20 @@ pub enum Command {
         #[serde(default)]
         seen: Option<String>,
     },
+    /// Watch another ticket, by key (T-712), or with `unwatch` stop: the
+    /// board then wakes the crown for it as for a worker the crown started —
+    /// delivered, finished its turn, raised its hand, merged — and the watch
+    /// ends at the merge. Crown only, behind `Board::crown_watches`; refused
+    /// on the crown's own ticket and on one whose agent the crown started,
+    /// which already wakes it. A question or a plan a watched agent stops
+    /// on stays the person's, as does the agent: nothing is sent to it.
+    AgentWatchTicket {
+        key: String,
+        #[serde(default)]
+        unwatch: bool,
+        #[serde(default)]
+        seen: Option<String>,
+    },
     /// Merge another ticket's worktree branch, by key (T-613): the ff-only
     /// road a person's `m` and the merge train take (`Daemon::merge_ticket`),
     /// then the merged notice into its agent where the merged-notice pref is
@@ -1411,6 +1432,7 @@ impl Command {
             | SetCrownBudget { .. }
             | SetCrownMode { .. }
             | SetCrownArchives { .. }
+            | SetCrownWatches { .. }
             | SetSystemPrompt { .. }
             | SetFollowUpMode { .. }
             | SetDefaultColumn { .. }
@@ -1448,6 +1470,7 @@ impl Command {
             | AgentArchiveTicket { .. }
             | AgentStartTicket { .. }
             | AgentSleepTicket { .. }
+            | AgentWatchTicket { .. }
             | AgentMergeTicket { .. }
             | AgentAskTicket { .. }
             | AgentAnswerTicket { .. }
@@ -2075,6 +2098,11 @@ pub struct AgentTicketView {
     /// explicitly: an absent key would leave the model guessing.
     #[serde(default)]
     pub crowned: bool,
+    /// The crown watches this ticket (T-712): the board wakes it for the
+    /// ticket as for a worker it started. On the crown's keyed read only,
+    /// and off the wire while false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub watched: bool,
     /// On the crowned ticket only (T-537): how the board wakes its agent
     /// (`mcp::CROWN_WAKES`), so a crown learns it on its first read and not
     /// from a monitor of its own. Absent everywhere else.
@@ -3237,6 +3265,7 @@ mod tests {
             notes: vec![],
             summary: None,
             crowned: false,
+            watched: false,
             crown: None,
             under_crown: None,
             background: None,

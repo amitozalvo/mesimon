@@ -754,6 +754,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         });
 
         records.push(crown_archives(cols.crown_archives));
+        records.push(crown_watches(cols.crown_watches));
 
         // The columns and what each one DOES (T-117): every automation is a
         // column setting now, so this line is the whole answer to "why did
@@ -843,6 +844,18 @@ fn crown_archives(on: bool) -> Record {
     } else {
         rec(Level::Ok, "crown archives", "off - the crown may not archive or restore tickets")
             .advice("A DONE ticket keeps its merged worktree until you archive it. Settings > Agents > Crown archives tickets lets the crown archive and restore tickets.")
+    }
+}
+
+/// Whether the crown watches tickets it did not start (T-712): off by
+/// default, printed either way.
+fn crown_watches(on: bool) -> Record {
+    if on {
+        rec(Level::Note, "crown watches", "on - the crown may watch tickets it did not start")
+            .advice("watch_ticket has the board wake the crown when a ticket you started delivers, finishes a turn, raises its hand or is merged, as it does for the agents the crown started; nothing is sent to that ticket's agent, and its questions stay yours. The watch ends at the merge. Settings > Agents > Crown watches tickets turns it off, which ends every watch.")
+    } else {
+        rec(Level::Ok, "crown watches", "off - the crown hears only of the agents it started")
+            .advice("A crown asked to wait for a ticket you started cannot be woken for it; it is refused in words naming the row. Settings > Agents > Crown watches tickets lets it watch such a ticket.")
     }
 }
 
@@ -1525,6 +1538,20 @@ mod tests {
             super::tiers_line(&Book::new(&machine, &board)).as_deref(),
             Some("quick (docs, renames) ∙ deep (the daemon's writer) ∙ plain")
         );
+    }
+
+    /// T-712: and the crown's watch switch.
+    #[test]
+    fn the_crown_watches_line_names_the_row() {
+        let off = super::crown_watches(false);
+        assert_eq!(off.label, "crown watches");
+        assert!(off.value.starts_with("off - "), "{}", off.value);
+        let on = super::crown_watches(true);
+        assert!(on.value.starts_with("on - "), "{}", on.value);
+        for r in [off, on] {
+            let advice = r.advice.unwrap();
+            assert!(advice.contains("Settings > Agents > Crown watches tickets"), "{advice}");
+        }
     }
 
     /// T-590: doctor prints the crown's archive switch either way, naming

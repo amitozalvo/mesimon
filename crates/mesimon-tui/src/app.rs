@@ -4710,6 +4710,7 @@ impl App {
             crown_budget: self.board.crown_budget,
             crown_mode: self.board.crown_mode,
             crown_archives: self.board.crown_archives,
+            crown_watches: self.board.crown_watches,
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
             col_offers_word: cs.offers().word(),
@@ -5944,6 +5945,22 @@ impl App {
                             "crown archives on ∙ it may archive and restore tickets".into()
                         } else {
                             "crown archives off ∙ it may not archive or restore tickets".into()
+                        };
+                    }
+                }
+            }
+            Verb::CrownWatches => {
+                let on = !self.board.crown_watches;
+                match self.client.request(Command::SetCrownWatches { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh()?;
+                        // Whose tickets wake the crown (T-712).
+                        self.status = if on {
+                            "crown watches on ∙ a ticket it watches wakes it as its own workers do"
+                                .into()
+                        } else {
+                            "crown watches off ∙ it hears only of the agents it started".into()
                         };
                     }
                 }
@@ -12620,6 +12637,10 @@ pub(crate) mod test_support {
                     self.board.crown_archives = on;
                     Ok(Response::Ok)
                 }
+                Command::SetCrownWatches { on } => {
+                    self.board.crown_watches = on;
+                    Ok(Response::Ok)
+                }
                 Command::SetFollowUpMode { mode } => {
                     self.board.follow_up_mode = mode;
                     Ok(Response::Ok)
@@ -15913,6 +15934,27 @@ mod tests {
         );
         assert!(app.status.contains("may not archive"), "{}", app.status);
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownArchives")).count(), 2);
+    }
+
+    /// The crown's watch switch (T-712) is OFF on a fresh board, sits under
+    /// the archives row, and toggles through its own board command.
+    #[test]
+    fn crown_watches_setting_toggles_through_board_command() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Agents;
+        let idx = app.settings_row(Verb::CrownWatches);
+        assert_eq!(idx, app.settings_row(Verb::CrownArchives) + 1, "under the archives row");
+        app.mode = Mode::Settings { idx };
+        assert!(!app.board.crown_watches && !app.ctx().crown_watches, "off by default");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.crown_watches && app.ctx().crown_watches);
+        assert!(app.status.contains("wakes it as its own workers do"), "{}", app.status);
+        assert_eq!(app.mode, Mode::Settings { idx });
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.board.crown_watches && !app.ctx().crown_watches);
+        assert!(!app.board.crown_archives, "the archives switch is its own");
+        assert!(app.status.contains("hears only of the agents it started"), "{}", app.status);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownWatches")).count(), 2);
     }
 
     /// The crown's lightning (T-544): a touch first seen fresh strikes once,

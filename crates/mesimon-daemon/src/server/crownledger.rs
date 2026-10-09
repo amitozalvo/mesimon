@@ -55,6 +55,11 @@ pub(super) struct Ledger {
     /// `Daemon::lingered`: a stretch told is not told again (T-599).
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     lingered: BTreeSet<uuid::Uuid>,
+    /// `Daemon::crown_watched` (T-712): the tickets the crown watches, so a
+    /// restart keeps the wait. Same schema: a build that drops the field
+    /// ends the watches, and narrows nothing else.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    watched: BTreeSet<ulid::Ulid>,
 }
 
 /// Startup loader: the ledger, any notices, and whether writes are barred.
@@ -79,6 +84,7 @@ impl Daemon {
             turns_open: self.turns_open.iter().copied().collect(),
             asks: self.turn_asks.iter().map(|(w, a)| (*w, *a)).collect(),
             lingered: self.lingered.iter().copied().collect(),
+            watched: self.crown_watched.iter().copied().collect(),
         }
     }
 
@@ -116,6 +122,8 @@ impl Daemon {
             .filter(|id| self.board.sessions.iter().any(|s| s.id == *id))
             .collect();
         self.turns_open = ledger.turns_open.into_iter().filter(on_board).collect();
+        self.crown_watched =
+            ledger.watched.into_iter().filter(|w| *w != crown && on_board(w)).collect();
         self.turn_asks = ledger.asks.into_iter().filter(|(w, _)| on_board(w)).collect();
         self.crown_wakes = ledger
             .wakes
@@ -162,6 +170,7 @@ mod tests {
         ledger.crown = Some(ulid::Ulid::from_parts(1, 1));
         ledger.turns_open.insert(w);
         ledger.asks.insert(w, TurnAsk::Crown(ulid::Ulid::from_parts(1, 1)));
+        ledger.watched.insert(ulid::Ulid::from_parts(1, 9));
         let text = serde_json::to_string_pretty(&ledger).unwrap();
         let back = parse(&text).unwrap();
         assert_eq!(serde_json::to_string_pretty(&back).unwrap(), text);
@@ -170,5 +179,6 @@ mod tests {
         assert!(matches!(parse("{"), Err((None, _))));
         // An empty file of this schema is an empty ledger.
         assert!(parse("{\"schema_version\": 1}").unwrap().heard.is_empty());
+        assert!(parse("{\"schema_version\": 1}").unwrap().watched.is_empty());
     }
 }

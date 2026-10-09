@@ -192,7 +192,14 @@ pub const CROWN_WAKES: &str = concat!(
      crown's last on that ticket. \
      An ask dropped before it was sent (a person replaced it, took it back or talked past it, \
      or its agent went first) reads asked: dropped on that ticket's get_ticket, with who \
-     dropped it. ",
+     dropped it. \
+     A ticket a person started wakes this session only once watched: where Settings → Agents \
+     → Crown watches tickets is on, watch_ticket on it has the board wake this session when it \
+     delivers, finishes a turn, raises its hand or is merged, as for an agent the crown \
+     started, and the watch ends at the merge or with unwatch; its question or plan stays the \
+     person's, and nothing is sent to its agent. Asked to wait for such a ticket, the crown \
+     watches it and ends its turn: a loop that polls keeps this session busy, which holds the \
+     merge train and the wake itself. ",
     crown_tiers!(),
     persons_plans!(),
     " ",
@@ -784,6 +791,34 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        // The crown's watch (T-712): the board's wake for a ticket the crown
+        // did not start. Nothing goes to that ticket's agent — a watch is a
+        // listener, not a road — so a person's agent stays the person's.
+        json!({
+            "name": "watch_ticket",
+            // At the byte cap: the refusals (this session's ticket, an agent
+            // the crown started) are in words, and `key` and `seen` read as
+            // every keyed sibling's.
+            "description": "Watches another mesimon ticket (crown only, if the board lets \
+                            it: Crown watches tickets, off unless a person turned it on), \
+                            one a person started: the board then wakes this session when \
+                            it delivers, finishes a turn, raises its hand or is merged, as \
+                            for an agent the crown started; the watch ends at the merge or \
+                            with unwatch. Its agent gets nothing; its question or plan \
+                            stays the person's. Asked to wait for a ticket, the crown \
+                            watches it and ends its turn: a loop that polls holds the \
+                            merge train.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string" },
+                    "unwatch": { "type": "boolean", "description": "Optional. True stops watching." },
+                    "seen": { "type": "string" },
+                },
+                "required": ["key", "seen"],
+                "additionalProperties": false,
+            },
+        }),
     ]
 }
 
@@ -868,6 +903,12 @@ pub enum ToolCall {
     /// The crown's merge (T-613).
     MergeTicket {
         key: String,
+        seen: String,
+    },
+    /// The crown's watch (T-712), or with `unwatch` its end.
+    WatchTicket {
+        key: String,
+        unwatch: bool,
         seen: String,
     },
     AskAgent {
@@ -1072,6 +1113,11 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
         "merge_ticket" => {
             Ok(ToolCall::MergeTicket { key: word(args, "key")?, seen: word(args, "seen")? })
         }
+        "watch_ticket" => Ok(ToolCall::WatchTicket {
+            key: word(args, "key")?,
+            unwatch: flag(args, "unwatch")?,
+            seen: word(args, "seen")?,
+        }),
         "ask_agent" => Ok(ToolCall::AskAgent {
             key: word(args, "key")?,
             text: args
@@ -1256,7 +1302,7 @@ fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Eighteen tools, nineteen commands (`get_ticket` with a
+        // The tier. Nineteen tools, twenty commands (`get_ticket` with a
         // key is its own command on the wire).
         Command::AgentGetTicket
         | Command::AgentListBoard
@@ -1290,6 +1336,11 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // ticket id — and the merge is admitted here so a supervised
         // board's refusal names its row.
         | Command::AgentMergeTicket { .. }
+        // The crown's watch (T-712): the board's own wake, asked for on a
+        // ticket the crown did not start, behind the board's
+        // `crown_watches` — judged by the daemon at each call, admitted here
+        // so a refusal names the row. Nothing reaches the watched agent.
+        | Command::AgentWatchTicket { .. }
         // The crown's ask (T-413): words HELD on another ticket's card until
         // a person sends them. `PromptSession` itself stays below: the
         // person's send is the road, and there is no other.
@@ -1471,6 +1522,9 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // T-590: the crown taking a card off the board is the person's
         // gesture handed over. Only the person may hand it over.
         | Command::SetCrownArchives { .. }
+        // T-712: the crown spending its turns on a person's tickets is the
+        // person's to allow, per board.
+        | Command::SetCrownWatches { .. }
         // Where the status line sits over the user's own panes: chrome, and
         // theirs. An agent moving it would be redecorating a screen it is
         // not looking at.
@@ -1565,6 +1619,7 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
         | Command::AgentStartTicket { .. }
         | Command::AgentSleepTicket { .. }
         | Command::AgentMergeTicket { .. }
+        | Command::AgentWatchTicket { .. }
         | Command::AgentAskTicket { .. }
         | Command::AgentAnswerTicket { .. }
         | Command::AgentAcceptPlan { .. } => AgentTools::Full,
@@ -1578,8 +1633,8 @@ pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
         "get_ticket" | "list_board" | "read_note" | "read_attachment" => AgentTools::Read,
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket" | "create_ticket" | "rename_ticket" | "set_workspace" | "archive_ticket"
-        | "start_agent" | "sleep_agent" | "merge_ticket" | "ask_agent" | "answer_agent"
-        | "accept_plan" => AgentTools::Full,
+        | "start_agent" | "sleep_agent" | "merge_ticket" | "watch_ticket" | "ask_agent"
+        | "answer_agent" | "accept_plan" => AgentTools::Full,
         _ => return None,
     })
 }
@@ -1753,6 +1808,10 @@ mod tests {
             (Command::AgentSleepTicket { key: "T-1".into(), seen: None }, "sleep_agent"),
             (Command::AgentMergeTicket { key: "T-1".into(), seen: None }, "merge_ticket"),
             (
+                Command::AgentWatchTicket { key: "T-1".into(), unwatch: false, seen: None },
+                "watch_ticket",
+            ),
+            (
                 Command::AgentAskTicket {
                     key: "T-1".into(),
                     text: "x".into(),
@@ -1844,9 +1903,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_eighteen_tools() {
+    fn exactly_nineteen_tools() {
         let t = tools();
-        assert_eq!(t.len(), 18);
+        assert_eq!(t.len(), 19);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -1868,7 +1927,8 @@ mod tests {
                 "ask_agent",
                 "answer_agent",
                 "accept_plan",
-                "merge_ticket"
+                "merge_ticket",
+                "watch_ticket"
             ]
         );
     }
@@ -2537,6 +2597,59 @@ mod tests {
         }
     }
 
+    /// T-712: the crown watches a ticket it did not start only where a person
+    /// lets it. The tool parses like its keyed siblings, says it is gated and
+    /// what it wakes for, and `CROWN_WAKES` tells a crown asked to wait to
+    /// watch and end its turn rather than poll; all inside the cap and the
+    /// lint.
+    #[test]
+    fn the_crown_watches_where_a_person_lets_it() {
+        assert_eq!(
+            parse_tool_call("watch_ticket", &json!({ "key": " T-4 ", "seen": "abc" })),
+            Ok(ToolCall::WatchTicket { key: "T-4".into(), unwatch: false, seen: "abc".into() })
+        );
+        assert_eq!(
+            parse_tool_call(
+                "watch_ticket",
+                &json!({ "key": "T-4", "seen": "abc", "unwatch": true })
+            ),
+            Ok(ToolCall::WatchTicket { key: "T-4".into(), unwatch: true, seen: "abc".into() })
+        );
+        assert!(parse_tool_call("watch_ticket", &json!({ "key": "T-4" })).is_err(), "seen");
+        assert!(parse_tool_call("watch_ticket", &json!({ "seen": "abc" })).is_err(), "key");
+        assert!(
+            parse_tool_call("watch_ticket", &json!({ "key": "T-4", "seen": "a", "unwatch": "y" }))
+                .is_err(),
+            "unwatch is a boolean"
+        );
+        let registry = tools();
+        let watch = registry.iter().find(|t| t["name"] == "watch_ticket").unwrap();
+        let description = watch["description"].as_str().unwrap();
+        for words in [
+            "crown only",
+            "Crown watches tickets",
+            "off unless a person turned it on",
+            "delivers, finishes a turn, raises its hand or is merged",
+            "ends at the merge or with unwatch",
+            "a loop that polls holds the merge train",
+        ] {
+            assert!(description.contains(words), "watch_ticket says {words:?}");
+        }
+        assert_eq!(watch["inputSchema"]["required"], json!(["key", "seen"]));
+        assert_eq!(tier_needed_by_tool("watch_ticket"), Some(AgentTools::Full));
+        for words in [
+            "Settings → Agents → Crown watches tickets is on",
+            "watch_ticket on it has the board wake this session",
+            "its question or plan stays the person's",
+            "watches it and ends its turn",
+        ] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+        for text in [description, CROWN_WAKES] {
+            lint_tool_text(text).unwrap();
+        }
+    }
+
     /// T-568: the crown learns where an ask of its that never went is read.
     #[test]
     fn the_crown_is_told_where_a_dropped_ask_is_read() {
@@ -2790,10 +2903,10 @@ mod tests {
 
     /// Every tool has a command, and every allowed command has a tool. A
     /// command an agent may send that no tool can reach would be a hole nobody
-    /// is looking at. Nineteen commands for eighteen tools: `get_ticket`
+    /// is looking at. Twenty commands for nineteen tools: `get_ticket`
     /// with a key rides its own command (T-411).
     #[test]
-    fn the_tier_is_exactly_nineteen_commands() {
+    fn the_tier_is_exactly_twenty_commands() {
         let allowed = [
             Command::AgentGetTicket,
             Command::AgentReadTicket { key: "T-1".into() },
@@ -2835,6 +2948,7 @@ mod tests {
             },
             Command::AgentSleepTicket { key: "T-1".into(), seen: None },
             Command::AgentMergeTicket { key: "T-1".into(), seen: None },
+            Command::AgentWatchTicket { key: "T-1".into(), unwatch: false, seen: None },
             Command::AgentAskTicket {
                 key: "T-1".into(),
                 text: "x".into(),
@@ -2959,6 +3073,7 @@ mod tests {
             Command::SetCrownBudget { budget: 3 },
             Command::SetCrownMode { mode: crate::board::CrownMode::Autonomous },
             Command::SetCrownArchives { on: true },
+            Command::SetCrownWatches { on: true },
             Command::SetTicketTier { id: t, tier: Some("claude".into()) },
             Command::SaveTier {
                 scope: crate::tier::TierScope::Machine,

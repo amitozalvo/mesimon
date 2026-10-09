@@ -2042,6 +2042,15 @@ pub struct Board {
     /// archive back, which is that build's own behaviour, not a misread.
     #[serde(default)]
     pub crown_archives: bool,
+    /// The crown watches (T-712): `watch_ticket`, which has the board wake
+    /// the crown for a ticket a person started as it does for one the crown
+    /// started, is refused while this is off, and every watch ends when it
+    /// is turned off. OFF by default, T-590's shape: a watch spends the
+    /// crown's turns on tickets it was not asked about, and the person
+    /// decides per board whether it may. A build that drops it has no watch
+    /// to give back, so no schema bump.
+    #[serde(default)]
+    pub crown_watches: bool,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
     /// The tag registry: the vocabulary each axis offers, in the order it was
@@ -2214,6 +2223,7 @@ impl Default for Board {
             crown_budget: DEFAULT_CROWN_BUDGET,
             crown_mode: CrownMode::default(),
             crown_archives: false,
+            crown_watches: false,
             next_key: 0,
             tags: Vec::new(),
             tags_seeded: false,
@@ -3160,6 +3170,18 @@ mod tests {
         assert!(!serde_json::from_value::<Board>(wire.clone()).unwrap().crown_archives);
         wire["crown_archives"] = serde_json::json!(true);
         assert!(serde_json::from_value::<Board>(wire).unwrap().crown_archives);
+    }
+
+    /// T-712: a board from before the field leaves the crown hearing only of
+    /// the agents it started, and one that turned watching on keeps it on.
+    #[test]
+    fn crown_watches_defaults_off_and_an_on_is_kept() {
+        assert!(!Board::default().crown_watches);
+        let mut wire = serde_json::to_value(Board::default()).unwrap();
+        wire.as_object_mut().unwrap().remove("crown_watches");
+        assert!(!serde_json::from_value::<Board>(wire.clone()).unwrap().crown_watches);
+        wire["crown_watches"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Board>(wire).unwrap().crown_watches);
     }
 
     /// T-543: a column opts its tickets into the idle park, taking an agent

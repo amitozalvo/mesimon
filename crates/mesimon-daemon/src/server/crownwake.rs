@@ -68,6 +68,15 @@
 //! delayed: words queued behind it do not hold it (T-591). A merge with no
 //! step in flight — no live agent, a merge the train could not notify, a
 //! person's `m` whose notice is not sent yet — is heard at once.
+//!
+//! **Whose worker (T-712).** Every event above is heard for a worker THIS
+//! crown started (`started_by_crown`), and — behind the board's
+//! `crown_watches` — for a ticket the crown watches (`watch_ticket`,
+//! `Daemon::crown_watched`): a person's worker the crown was told to wait
+//! for. A watched ticket is heard delivered, finished, raised and merged,
+//! and the watch ends at the merge; its question and its plan stay the
+//! person's (the crown cannot answer a person's agent), and so does its
+//! lingering (the crown cannot ask it). `crown_hears` is the one claim.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -772,6 +781,23 @@ impl Daemon {
             && self.board.started_by_crown(worker)
     }
 
+    /// THIS crown watches the ticket (T-712): `watch_ticket` put it on the
+    /// list, and `crown` still wears it. The person's banners do not read
+    /// this one: a watched ticket is a person's, and its news stays theirs
+    /// too.
+    fn watched_by_crown(&self, worker: ulid::Ulid, crown: ulid::Ulid) -> bool {
+        self.board.crown_holder().is_some_and(|t| t.id == crown)
+            && self.crown_watched.contains(&worker)
+    }
+
+    /// The crown is owed the worker's news: it started the worker, or it
+    /// watches the ticket (T-712). The one claim every wake but an answer
+    /// makes — `note_crown_wake` narrows a watch to what a person's agent
+    /// gives the crown to act on.
+    fn crown_hears(&self, worker: ulid::Ulid, crown: ulid::Ulid) -> bool {
+        self.started_by_crown(worker, crown) || self.watched_by_crown(worker, crown)
+    }
+
     /// The words just pasted or parked on `ticket`'s claude were asked for
     /// this reason: stamped on the owed entry, so its ack — the words
     /// reaching the agent — is what marks the turn. The crown's ask wins
@@ -927,7 +953,7 @@ impl Daemon {
             ProbeWhy::Turn { asked: Some(TurnAsk::Crown(c)), .. }
                 | ProbeWhy::Restart { asked: Some(TurnAsk::Crown(c)), .. } if c == crown
         );
-        if !answered && !self.started_by_crown(worker, crown) {
+        if !answered && !self.crown_hears(worker, crown) {
             return;
         }
         let branch = self.worktrees.get(&worker).filter(|b| !b.branch.is_empty()).cloned();
@@ -1013,7 +1039,7 @@ impl Daemon {
                 return;
             }
         };
-        let started = self.started_by_crown(p.worker, p.crown);
+        let started = self.crown_hears(p.worker, p.crown);
         let heard = self.crown_heard.entry(p.worker).or_default();
         if matches!(p.why, ProbeWhy::Baseline) {
             heard.judged.get_or_insert(now);
@@ -1044,7 +1070,7 @@ impl Daemon {
             }
             Due::Step(cause) => {
                 // Held, so the claim is judged now, when the turn's look did.
-                if held.is_some() || self.started_by_crown(p.worker, p.crown) {
+                if held.is_some() || self.crown_hears(p.worker, p.crown) {
                     self.hold_for_step(p.worker, cause, now);
                 }
                 return;
@@ -1242,8 +1268,8 @@ impl Daemon {
             let heard = self.crown_heard.get(&worker).cloned().unwrap_or_default();
             // A delivery held for the train is this crown's to hear (T-554),
             // whatever became of the seat since.
-            let started = worker != crown
-                && (heard.deferred.is_some() || self.started_by_crown(worker, crown));
+            let started =
+                worker != crown && (heard.deferred.is_some() || self.crown_hears(worker, crown));
             let cause = merge_verdict(started, &heard, &now);
             match due(cause, None, &self.pending_on(worker, None)) {
                 Due::Step(cause) => self.hold_for_step(worker, cause, now),
@@ -1266,10 +1292,13 @@ impl Daemon {
 
     /// Record that the crown is owed a wake about `worker`, and try to
     /// deliver it now. Only while the crown is worn, and — an answer aside,
-    /// which the crown asked for — only for an agent THIS crown started.
-    /// The feed line names both tickets and the cause, never the sentence;
-    /// the crown's card lights `woke` the way it lights for the crown's own
-    /// touches.
+    /// which the crown asked for — only for an agent THIS crown started, or
+    /// a ticket it watches (T-712), whose delivery, finished turn, hand and
+    /// merge are the crown's to hear and whose question or plan is not: a
+    /// person's agent is answered by the person, and its card's needs-you
+    /// already calls them. The feed line names both tickets and the cause,
+    /// never the sentence; the crown's card lights `woke` the way it lights
+    /// for the crown's own touches.
     pub(super) fn note_crown_wake(
         &mut self,
         worker: ulid::Ulid,
@@ -1282,7 +1311,13 @@ impl Daemon {
             return;
         }
         if cause != WakeCause::Answered && !self.started_by_crown(worker, crown) {
-            return;
+            let watched_news = matches!(
+                cause,
+                WakeCause::Delivered | WakeCause::Finished | WakeCause::Merged | WakeCause::Raised
+            );
+            if !(watched_news && self.watched_by_crown(worker, crown)) {
+                return;
+            }
         }
         self.owe_crown_wake(crown, worker, cause, from, to, false);
     }
@@ -1317,6 +1352,8 @@ impl Daemon {
     ) {
         let Owed { finished, linger, late } = owed;
         let late = late || self.crown_heard.get(&worker).is_some_and(|h| h.restored);
+        let landed =
+            cause == WakeCause::Merged || to.as_ref().is_some_and(|t| t.merge == Some("merged"));
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
             w.fold(cause, from, to);
             w.finished |= finished;
@@ -1324,6 +1361,11 @@ impl Daemon {
             w.late |= late;
         } else {
             self.crown_wakes.push(CrownWake { worker, cause, from, to, finished, linger, late });
+        }
+        // A watch ends at the merge (T-712): the wait it was for is over,
+        // and the line that says so is its last.
+        if landed && self.crown_watched.remove(&worker) {
+            self.feed.board("automation", "watch_ended", Some(worker));
         }
         self.feed.crown_wake(crown, worker, cause.word());
         self.crown_touched(worker, crown, "woke");
@@ -1379,6 +1421,7 @@ impl Daemon {
         self.crown_heard.clear();
         self.crown_landed.clear();
         self.crown_recheck.clear();
+        self.crown_watched.clear();
         if self.crown_wakes.is_empty() {
             return;
         }

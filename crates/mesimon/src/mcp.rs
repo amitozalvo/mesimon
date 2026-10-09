@@ -191,6 +191,9 @@ fn tool_result(params: &Value, sock: &PathBuf, session: uuid::Uuid) -> Value {
         },
         ToolCall::SleepAgent { key, seen } => Command::AgentSleepTicket { key, seen: Some(seen) },
         ToolCall::MergeTicket { key, seen } => Command::AgentMergeTicket { key, seen: Some(seen) },
+        ToolCall::WatchTicket { key, unwatch, seen } => {
+            Command::AgentWatchTicket { key, unwatch, seen: Some(seen) }
+        }
         ToolCall::AskAgent { key, text, seen, plan, deliver } => {
             Command::AgentAskTicket { key, text, seen: Some(seen), plan, deliver }
         }

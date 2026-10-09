@@ -1,7 +1,5 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ AGENTS ∙ 8/8 ───────────────────────────────────────╮
-  │   Tiers: none yet                                    │
-  │     a name for a launch: provider, model, effort ∙ ~ │
+  ╭─ AGENTS ∙ 9/9 ───────────────────────────────────────╮
   │   Agent brief: off                                   │
   │     one line: read the ticket first ∙ shown to you ~ │
   │   Agent tools: on                                    │
@@ -15,6 +13,8 @@
   │     its agents take its asks and answers without yo~ │
   │   Crown archives tickets: off                        │
   │     only a person archives                           │
+  │   Crown watches tickets: off                         │
+  │     it hears only of the agents it started           │
   │                                                      │
   ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
  SETTINGS                                            ? keys

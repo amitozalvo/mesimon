@@ -17,7 +17,10 @@
 //! names a workspace on every start and every filing (T-583): an unstarted
 //! ticket takes it, a worktree or a parked agent keeps its own, the shared
 //! checkout is refused while another ticket's agent holds it, and a start
-//! on a worker the crown parked is that worker's wake.
+//! on a worker the crown parked is that worker's wake. The crown watches a
+//! ticket a person started only where Settings → Agents → Crown watches
+//! tickets is on (T-712): the board then wakes it for that ticket as for a
+//! worker it started, and the watch ends at the merge.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -830,12 +833,14 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let touch = touch.expect("the crown's filing is a touch");
     assert_eq!((touch.action.as_str(), touch.from), ("created", Some(a)));
 
-    // ---- the shim: eighteen tools, and `get_ticket` with a key ---------------
+    // ---- the shim: nineteen tools, and `get_ticket` with a key ---------------
     let mut shim = Shim::start(&sock, sa);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
     let listed = shim.rpc("tools/list", json!({}));
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 18);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 19);
+    let r = shim.call("watch_ticket", json!({ "key": kb }));
+    assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
     let r = shim.call("merge_ticket", json!({ "key": kb }));
     assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
     let r = shim.call("answer_agent", json!({ "key": kb, "seen": "x", "index": 0 }));
@@ -4942,4 +4947,262 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
     // P is nobody's worker under the crown: its merge woke nothing (a wake
     // line quotes the title; P's own typed title carries no quotes).
     assert!(lines_with("a person's own\" ").is_empty());
+}
+
+/// The crown watches a ticket it did not start (T-712): a person's worker on
+/// a worktree. Unwatched, its delivery wakes nobody (T-527's rule). The
+/// watch is refused while Settings → Agents → Crown watches tickets is off,
+/// in words naming the row, and on the crown's own ticket; on, the watched
+/// ticket's delivery, finished turn and raised hand wake the crown with the
+/// lines a started worker's make, a hand merge wakes it `merged` and ends
+/// the watch, `get_ticket` with the key reads `watched`, `unwatch` ends one
+/// by hand, the row turned off ends every one, and `crown.json` carries the
+/// watch.
+#[test]
+fn the_crown_watches_a_ticket_a_person_started() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_watch",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_watch");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let feed_has = |cmd: &str, ticket: ulid::Ulid| {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| {
+                l.contains(&format!("\"cmd\":\"{cmd}\""))
+                    && l.contains(&format!("\"ticket\":\"{ticket}\""))
+            })
+        })
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    // The probe of a turn's end and the flags' sample run off the writer;
+    // give both time to land before asserting that nothing did.
+    let settle = || std::thread::sleep(std::time::Duration::from_millis(2500));
+
+    let a = create(&mut c, "coordinate");
+    let w = create(&mut c, "mesimon-probe-93 watched");
+    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    // W: the person's own, spawned by hand.
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket: w,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false
+        }),
+        Response::Provisioning
+    ));
+    let wt = wait_attached(&mut c, w);
+    let path = std::path::PathBuf::from(wt.path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    assert!(c.board().live_agent(w).unwrap().started_by.is_none(), "a person's agent");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = format!("{kw} \"mesimon-probe-93 watched\"");
+    let watch = |c: &mut TestClient, key: &str, unwatch: bool| {
+        let v = read(c, sa, key).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentWatchTicket { key: key.into(), unwatch, seen: v.seen },
+        )
+    };
+    let off_words = format!(
+        "Settings → Agents → Crown watches tickets is off; a person turns it on, or says when \
+         {kw} is done"
+    );
+
+    // ---- 1. unwatched, a person's worker wakes nobody (T-527) ---------------
+    commit(&path, "one.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    settle();
+    assert!(lines_with(&worker).is_empty(), "{}", std::fs::read_to_string(&got).unwrap());
+
+    // ---- 2. the row is off: refused in words naming it, nothing watched -----
+    assert!(!c.board().crown_watches, "off by default");
+    match watch(&mut c, &kw, false) {
+        Response::Err { message } => assert_eq!(message, off_words),
+        other => panic!("a watch while the row is off: {other:?}"),
+    }
+    assert!(!read(&mut c, sa, &kw).unwrap().watched);
+    assert!(touches(&mut c).iter().all(|t| t.ticket != w), "no touch for a refusal");
+
+    // ---- 3. on: the crown's own ticket is refused, so is an unwatch of a
+    // ticket not watched; the watch lands, reads back, and is in the ledger
+    assert!(matches!(c.request(Command::SetCrownWatches { on: true }), Response::Ok));
+    assert!(c.board().crown_watches);
+    assert!(mesimon_daemon::store::read_columns_scalars(&h.paths).crown_watches);
+    let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
+    assert!(file.contains("crown_watches = true"), "{file}");
+    match watch(&mut c, &ka, false) {
+        Response::Err { message } => assert!(message.contains("own ticket"), "{message}"),
+        other => panic!("watching the crown's own ticket: {other:?}"),
+    }
+    match watch(&mut c, &kw, true) {
+        Response::Err { message } => assert_eq!(message, format!("{kw} is not watched")),
+        other => panic!("unwatching an unwatched ticket: {other:?}"),
+    }
+    match watch(&mut c, &kw, false) {
+        Response::AgentTicket { ticket } => assert!(ticket.watched, "the receipt says so"),
+        other => panic!("watch: {other:?}"),
+    }
+    assert!(read(&mut c, sa, &kw).unwrap().watched, "the keyed read says so");
+    assert_eq!(
+        touches(&mut c).iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
+        Some("watched"),
+        "the card lights"
+    );
+    wait_until(std::time::Duration::from_secs(5), "the watch in crown.json", || {
+        std::fs::read_to_string(h.paths.crown_file())
+            .is_ok_and(|t| t.contains("\"watched\"") && t.contains(&w.to_string()))
+    });
+    wait_until(std::time::Duration::from_secs(5), "the watch's feed line", || {
+        feed_has("watch_ticket", w)
+    });
+    // Watching again changes nothing.
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicket { .. }));
+
+    // ---- 4. a delivery the crown never heard of: delivered -----------------
+    commit(&path, "two.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    // The crown's first paste lands behind its launch words (the title,
+    // typed with no Enter), so the first line is read by its tail.
+    let line = lines_with(&worker).remove(0);
+    assert!(line.contains(&format!("{worker} delivered (merge_state ahead, merge: ")), "{line}");
+    assert!(line.ends_with(&format!("∙ get_ticket key={kw} for state and notes")), "{line}");
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 5. a turn with nothing new: finished (T-591) ----------------------
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the finish's wake", || {
+        lines_with(&worker).len() == 2
+    });
+    assert!(
+        lines_with(&worker)[1].starts_with(&format!("{worker} finished its turn (nothing new")),
+        "{:?}",
+        lines_with(&worker)
+    );
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 6. its hand goes up: raised, the reason never on the line ---------
+    match c.send(
+        Principal::Agent { session: ws },
+        Command::AgentRaiseHand { reason: "mesimon-probe-94 the reason".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand on W: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(10), "the hand's wake", || {
+        lines_with(&worker).len() == 3
+    });
+    assert!(lines_with(&worker)[2].starts_with(&format!("{worker} raised its hand")));
+    assert!(!std::fs::read_to_string(&got).unwrap().contains("mesimon-probe-94"));
+    assert!(matches!(c.request(Command::LowerHand { id: w }), Response::Ok));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- 7. merged in a terminal: one merged line, and the watch ends ------
+    wait_until(std::time::Duration::from_secs(10), "the flags to read the branch ahead", || {
+        wt_of(&mut c, w).is_some_and(|x| x.ahead > 0 && !x.merged && !x.needs_rebase)
+    });
+    git(&h.repo, &["merge", "--ff-only", "-q", &wt.branch]);
+    wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
+        lines_with(&worker).len() == 4
+    });
+    assert_eq!(
+        lines_with(&worker)[3],
+        format!(
+            "{worker} merged (merge_state ahead → merged) ∙ get_ticket key={kw} for state and \
+             notes"
+        )
+    );
+    wait_until(std::time::Duration::from_secs(5), "the watch's end in the feed", || {
+        feed_has("watch_ended", w)
+    });
+    assert!(!read(&mut c, sa, &kw).unwrap().watched, "the merge ended the watch");
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    // A turn after the merge, unwatched: silent.
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    settle();
+    assert_eq!(lines_with(&worker).len(), 4, "{:?}", lines_with(&worker));
+
+    // ---- 8. watched again and unwatched by hand: silent after --------------
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicket { .. }));
+    match watch(&mut c, &kw, true) {
+        Response::AgentTicket { ticket } => assert!(!ticket.watched),
+        other => panic!("unwatch: {other:?}"),
+    }
+    assert_eq!(
+        touches(&mut c).iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
+        Some("unwatched")
+    );
+    wait_until(std::time::Duration::from_secs(5), "the unwatch's feed line", || {
+        feed_has("unwatch_ticket", w)
+    });
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    settle();
+    assert_eq!(lines_with(&worker).len(), 4, "unwatched, so silent");
+
+    // ---- 9. the row turned off ends a standing watch -----------------------
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicket { .. }));
+    assert!(matches!(c.request(Command::SetCrownWatches { on: false }), Response::Ok));
+    assert!(!read(&mut c, sa, &kw).unwrap().watched, "off ends every watch");
+    wait_until(std::time::Duration::from_secs(5), "the drop in the feed", || {
+        std::fs::read_to_string(&feed_path)
+            .is_ok_and(|feed| feed.contains("\"cmd\":\"crown_watch_dropped\""))
+    });
+    match watch(&mut c, &kw, false) {
+        Response::Err { message } => assert_eq!(message, off_words),
+        other => panic!("a watch after the row went off: {other:?}"),
+    }
+    // Nothing of the crown's reached W's pane: its only words there are
+    // the wake lines, which name W and land at the crown.
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert!(!feed.contains("mesimon-probe-93"), "the feed never carries the words:\n{feed}");
 }

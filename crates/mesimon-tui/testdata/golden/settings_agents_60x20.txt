@@ -1,5 +1,5 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ AGENTS ∙ 1/8 ───────────────────────────────────────╮
+  ╭─ AGENTS ∙ 1/9 ───────────────────────────────────────╮
   │   Default tier: claude                               │
   │     what a ticket starts on unless ^n picks its own~ │
   │   Tiers: none yet                                    │

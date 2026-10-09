@@ -309,7 +309,8 @@ Press `ctrl-o` on a ticket to crown it. Its agent can then work on every other t
 board tools: move, retitle and tag them, write their notes, set their workspace, start an agent on
 one, and leave words for another ticket's agent, which wait on that card until you send them. It
 archives a ticket only where you let it (**Crown archives tickets**, below); otherwise it moves a
-finished ticket to DONE and you archive it. Each edit is checked against the ticket as the agent last read it, and the card it lands on
+finished ticket to DONE and you archive it. It watches a ticket you started only where you let it
+(**Crown watches tickets**, below). Each edit is checked against the ticket as the agent last read it, and the card it lands on
 lights with what was done (`♛ moved`, `♛ tagged`, `♛ started`). One ticket wears the crown at a
 time. Only you can give it, and `ctrl-o` on the crowned card takes it back.
 
@@ -366,6 +367,15 @@ crown presses nothing.
 restore an archived one. While it is off, the crown is refused in words that name this row, and it
 moves a finished ticket to DONE instead; you decide when the card leaves the board and when its
 merged worktree is reclaimed. Turned off, it holds from the crown's next call.
+
+**Settings › Agents › Crown watches tickets** (off by default) lets the crown watch a ticket you
+started yourself. The board then wakes the crown for that ticket as it does for the agents the
+crown started: when it delivers, finishes a turn, raises its hand or is merged, one sentence
+saying so is sent into the crown's session, and the watch ends at the merge. Nothing is sent to
+that ticket's agent, which stays yours: its questions and plans wait for you, and the crown
+cannot answer, park or merge it. Tell the crown to wait for a ticket and it watches that ticket
+and ends its turn instead of polling, which would hold the merge train. While the row is off, the
+crown is refused in words that name it, and says so to you. Turned off, every watch ends.
 
 The crown picks the agent tier for each ticket it files or starts, and it picks by your words.
 Give each tier a description in **Settings › Agents › Tiers**: when to use it, in your own words

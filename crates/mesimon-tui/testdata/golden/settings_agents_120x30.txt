@@ -2,10 +2,9 @@
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
-    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-                           ╭─ AGENTS ───────────────────────────────────────────────────────╮
-    Keymap validator      >│   Default tier: claude                                         │
-                           │     what a ticket starts on unless ^n picks its own ∙ Claude ~ │
+    Decay treatments      >╭─ AGENTS ───────────────────────────────────────────────────────╮
+                           │   Default tier: claude                                         │
+    Keymap validator      >│     what a ticket starts on unless ^n picks its own ∙ Claude ~ │
                            │   Tiers: none yet                                              │
                            │     a name for a launch: provider, model, effort ∙ ^n cycles ~ │
                            │   Agent brief: off                                             │
@@ -21,8 +20,9 @@
                            │     its agents take its asks and answers without you ∙ yours ~ │
                            │   Crown archives tickets: off                                  │
                            │     only a person archives                                     │
+                           │   Crown watches tickets: off                                   │
+                           │     it hears only of the agents it started                     │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
 
 
 

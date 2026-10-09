@@ -149,6 +149,13 @@ struct ColumnsFile {
     /// reads off, which only takes authority away.
     #[serde(default)]
     crown_archives: bool,
+    /// The crown watches tickets it did not start (`Board::crown_watches`,
+    /// T-712). Absent means OFF, written either way, no bump: T-590's
+    /// argument once more — an older build has no watch to hand its crown,
+    /// and back on this build a dropped key reads off, which only ends the
+    /// watches.
+    #[serde(default)]
+    crown_watches: bool,
     /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
     /// so it sits here, before the tables. Absent on every file written
     /// before 2026-09-04, which is what makes an existing board's first load
@@ -580,6 +587,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 crown_budget: cf.crown_budget,
                                 crown_mode: cf.crown_mode,
                                 crown_archives: cf.crown_archives,
+                                crown_watches: cf.crown_watches,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
                                 mcp_tools: cf.mcp_tools,
@@ -784,6 +792,8 @@ pub struct ColumnsScalars {
     pub crown_mode: CrownMode,
     /// `Board::crown_archives` (T-590).
     pub crown_archives: bool,
+    /// `Board::crown_watches` (T-712).
+    pub crown_watches: bool,
     /// `Board::mcp_tools` (T-217).
     pub mcp_tools: bool,
     /// `Board::system_prompt` (T-224).
@@ -809,6 +819,7 @@ impl Default for ColumnsScalars {
             crown_budget: mesimon_core::board::DEFAULT_CROWN_BUDGET,
             crown_mode: CrownMode::default(),
             crown_archives: false,
+            crown_watches: false,
             mcp_tools: true,
 
             system_prompt: false,
@@ -842,6 +853,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
         crown_budget: cf.crown_budget,
         crown_mode: cf.crown_mode,
         crown_archives: cf.crown_archives,
+        crown_watches: cf.crown_watches,
         mcp_tools: cf.mcp_tools,
         system_prompt: cf.system_prompt,
         default_column,
@@ -877,6 +889,7 @@ fn columns_text(board: &Board) -> Result<String> {
         crown_mode: board.crown_mode,
         legacy_crown_answers: (!board.crown_mode.answers()).then_some(false),
         crown_archives: board.crown_archives,
+        crown_watches: board.crown_watches,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
         claude_md_ignored: board.claude_md_ignored,
@@ -1275,6 +1288,38 @@ mod tests {
         save_columns(&paths, &on).unwrap();
         let text = std::fs::read_to_string(&cols).unwrap();
         assert!(text.contains("crown_archives = false"), "written either way: {text}");
+        cleanup(&dir, &paths);
+    }
+
+    /// T-712: the crown's watch switch rides the same shape — absent reads
+    /// off in the daemon and in doctor, an on survives a save, an off is
+    /// written.
+    #[test]
+    fn crown_watches_is_off_unless_the_file_says_on() {
+        let (dir, paths) = scratch("crownwatches");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        write(
+            &cols,
+            &format!(
+                "schema_version = {COLUMNS_SCHEMA}\nnext_key = 2\ncrown_archives = true\n\n\
+                 [[columns]]\nname = \"TODO\"\norder = \"a0\"\n"
+            ),
+        );
+        assert!(!read_columns_scalars(&paths).crown_watches, "doctor reads it off");
+        let l = load(&paths).unwrap();
+        assert!(!l.board.crown_watches, "an older file leaves the crown hearing of its own");
+        assert!(l.board.crown_archives, "the scalar beside it survives");
+        let mut on = l.board;
+        on.crown_watches = true;
+        save_columns(&paths, &on).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("crown_watches = true"), "{text}");
+        assert!(load(&paths).unwrap().board.crown_watches, "an on is kept");
+        assert!(read_columns_scalars(&paths).crown_watches);
+        on.crown_watches = false;
+        save_columns(&paths, &on).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("crown_watches = false"), "written either way: {text}");
         cleanup(&dir, &paths);
     }
 
@@ -2303,6 +2348,7 @@ order = "a0"
             crown_mode: CrownMode::Supervised,
             legacy_crown_answers: Some(false),
             crown_archives: true,
+            crown_watches: true,
             tags_seeded: true,
             mcp_tools: false,
             claude_md_ignored: true,
@@ -2390,6 +2436,9 @@ order = "a0"
         // T-590: and so is the crown's archive switch.
         assert!(back.crown_archives, "{text}");
         assert!(text.find("crown_archives").unwrap() < text.find("[[columns]]").unwrap());
+        // T-712: and the crown's watch switch.
+        assert!(back.crown_watches, "{text}");
+        assert!(text.find("crown_watches").unwrap() < text.find("[[columns]]").unwrap());
         assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());
 
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");
