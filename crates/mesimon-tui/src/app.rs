@@ -1676,6 +1676,9 @@ pub struct App {
     /// card the pointer has stayed on for `HOVER_PEEK` floats its latest
     /// reply. A key clears it — the keyboard has the board again.
     pub hover: Cell<Option<(crate::mouse::Target, Instant)>>,
+    /// The card the pointer opened, until it rests on something else
+    /// (`hover_peek`).
+    peeked: Cell<Option<ulid::Ulid>>,
     /// Where the left button went down, until it comes up: a release in the
     /// same cell is a click, a drag in between is a text selection.
     press_at: Cell<Option<(u16, u16)>>,
@@ -1992,6 +1995,7 @@ impl App {
             hits: std::cell::RefCell::new(crate::mouse::Map::default()),
             pointer: Cell::new(None),
             hover: Cell::new(None),
+            peeked: Cell::new(None),
             press_at: Cell::new(None),
             selection: Cell::new(None),
             selected_text: std::cell::RefCell::new(String::new()),
@@ -2996,6 +3000,7 @@ impl App {
                 // The pointer went with the focus: no hover on a board
                 // nobody is pointing at.
                 self.hover.set(None);
+                self.peeked.set(None);
                 return Ok(self.pointer.take().is_some() || dirty);
             }
             _ => return Ok(dirty),
@@ -3044,9 +3049,10 @@ impl App {
             crate::osc::Feed::Swallowed => return Ok(false),
             crate::osc::Feed::Pass(keys) => keys,
         };
-        // The keyboard has the board: a peek the pointer floated goes, and
-        // comes back only when the pointer moves again.
+        // The keyboard has the board: a card the pointer opened closes, and
+        // opens again only when the pointer moves again.
         self.hover.set(None);
+        self.peeked.set(None);
         self.person(|app| {
             for (code, mods) in keys {
                 app.handle_key(code, mods)?;
@@ -3305,18 +3311,26 @@ impl App {
         })
     }
 
-    /// The card whose reply floats under the pointer (T-716): one the
-    /// pointer has rested on for `HOVER_PEEK`, on a board at rest. The draw
-    /// floats it over the cards below rather than opening the card in
-    /// place, which would move every card under the pointer.
+    /// The card the pointer opened (T-716), in place, as `p` opens the
+    /// cursor's: the last thing the pointer rested on for `HOVER_PEEK`,
+    /// when that was a card, on a board at rest. It stays open until the
+    /// pointer rests on something else — so leaving it for the card below
+    /// moves nothing until the pointer has settled there — and it changes
+    /// only on a move: a pointer that holds still while the cards shift
+    /// under it opens nothing new.
     pub(crate) fn hover_peek(&self) -> Option<ulid::Ulid> {
         if !self.prefs.mouse || !self.board_at_rest() || !matches!(self.mode, Mode::Normal) {
             return None;
         }
-        match self.hover.get()? {
-            (crate::mouse::Target::Card(id), since) if since.elapsed() >= HOVER_PEEK => Some(id),
-            _ => None,
+        if let Some((target, since)) = self.hover.get() {
+            if since.elapsed() >= HOVER_PEEK {
+                self.peeked.set(match target {
+                    crate::mouse::Target::Card(id) => Some(id),
+                    _ => None,
+                });
+            }
         }
+        self.peeked.get()
     }
 
     /// The board's own scope is up: no field, chord or dialog over it.

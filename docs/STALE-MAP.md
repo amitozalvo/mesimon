@@ -23288,3 +23288,11 @@ ground, the page as letters, painted rather than SGR 7 (the reverse attribute st
 8-colour only); where the full ink is the terminal's default (16 colours), the two greys stand
 in. `a_selection_reads_on_every_surface` drags corner to corner in every flavor and profile and
 holds every cell to letters unlike their ground, off the cursor's surface.
+
+**The hover peek opens in place after all (same day, the author: "peaked ticket (on hover) is
+hiding ticket below it").** The float covered the cards under it, which is what a peek must not
+do. The pointer's card now opens in place as `p` opens the cursor's (`board.rs`, `pointed`), and
+the jump the float was built to avoid is held off by two rules in `App::hover_peek`: the open card
+stays open until the pointer rests (`HOVER_PEEK`) on something else, so leaving it moves nothing
+until the pointer has settled; and the dwell target changes only on a move, so a pointer that
+holds still while the cards shift under it opens nothing new. A key closes it (`App::peeked`).

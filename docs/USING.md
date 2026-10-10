@@ -289,8 +289,9 @@ terminal's own selection still works with a modifier held: `⌥` (Option) in iTe
 most others. Settings › Behaviour › `Mouse` turns the mouse off and gives the terminal its
 selection back.
 
-Rest the pointer on a card for a moment and its latest reply floats over the cards below it;
-any key or moving off the card puts the board back.
+Rest the pointer on a card for a moment and it opens with its latest reply, the way `p` opens
+the selected card; the cards below move down. It stays open until the pointer rests on
+something else, and any key closes it.
 
 ## Agents and follow-ups
 
