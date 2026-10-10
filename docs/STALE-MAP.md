@@ -23377,3 +23377,34 @@ an older iTerm2 sees none of them in the preview either.
 estimate), `r` reads again, and its first row, `Details`, is the old dialog (resets, pace, the
 costliest tickets), whose Esc returns to that row. The menu row's headline words
 (`usage::summary`, `Ctx::usage_summary`) and the dialog's `s` went with it.
+
+## A resting card shows its agent's new reply (T-720, 2026-10-10, "when unpeaked ticket has new transcript (agent message), show under the single line ticket a single line preview of that message")
+
+The author: "to make the board more alive and show updates to the user without having to hover
+the tickets … nicely animated and with a muted color so that it won't be too hectic." A closed
+card whose agent said something the person has not been on the card for draws those words on
+one line under its title, indented to the title's first cell, cut with `~` to the card.
+
+**"New" is the done mark's answer, not a second one.** The row shows exactly while
+`App::spoke_unseen` holds (T-173's `Spoke`: the reply key against the one the cursor was on the
+card for), so the heavy check and the row arrive and leave together: the cursor reaching the
+card, or its page opening, acks both. A fresh board shows the row on every card whose reply it
+has not seen, as it shows the heavy check. The words are `peek_for` over the `Spoke`'s own path,
+through the draw cache (a map lookup a frame), flattened with `text::one_line`.
+
+**Never on an open card** (the reply is drawn whole there, `p`/`P` or the pointer's open), the
+cursor card, the move ghost, a trail or the delete flash. Cards below move down a row while it
+shows; that is the cost of saying it without a hover, and the switch is the answer to it.
+
+**The motion is the summary's first read, at a reader's pace.** `Spoke.since_ms` is stamped when
+the key first moves to a new reply (or on first sight); for `REPLY_REVEAL_MS` (1.4 s) a soft
+front eases each cell from the ground to the quiet ink (`Theme::reply_reveal`, `rest.dim2`),
+left to right, with no head. A cell ahead of the front is blank. Where the ground or the ink is
+not an RGB colour it steps from `dim3` to `dim2`, so every tier reveals. `App::animating` asks
+for frames only while a reveal runs (`reply_revealing`). A newer reply on a card still unseen
+fades in again.
+
+**The switch** is Settings › Appearance › `New replies` (`PrefKey::NewReplies`, JSON
+`new_replies`), on by default, per machine like the summary's showing: how a person reads a
+board is not a repo's. Off keeps every resting card to its one line and the heavy check alone
+says there is news. Doctor's `replies` line says which.

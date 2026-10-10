@@ -5,15 +5,15 @@
     De│  Theme              the crowned card            a card it moved                                          │
       │                                                                              ╭─ an agent's pane ───────╮ │
     Ke│▎ Appearance            ♛ Plan the beta     3h      Fix the parser ♛ moved    │ ⏺ Reading src/osc.rs    │ │
-      │                         -  one pass over the~                                │ T-2 Fix the parser      │ │
+      │                         -  one pass over the~      Parser fixed, tests g~    │ T-2 Fix the parser      │ │
       │  Notifications         [ ] parse it                                          ╰─────────────────────────╯ │
       │                        [✓] read the reply                                                                │
       │  Behaviour                                                                                               │
       │                      Status line        ○ top         ● bottom                                           │
       │  Agents              Crown's actions    ● lightning   ○ still                                            │
       │                      Summary on cards   ● full        ○ hover    ○ none                                  │
-      │  Crown               Card corner        ● age         ○ cost                                             │
-      │                                                                                                          │
+      │  Crown               New replies        ● on                                                             │
+      │                      Card corner        ● age         ○ cost                                             │
       │  Terminal                                                                                                │
       │                                                                                                          │
       │  Usage                                                                                                   │

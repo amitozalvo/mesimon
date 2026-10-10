@@ -402,6 +402,7 @@ pub(super) fn render(
     summary_keys: Option<(&[&'static mesimon_core::keymap::Binding], &mesimon_core::keymap::Ctx)>,
     summary_pulse: Option<(u64, Option<mesimon_core::summary::Count>)>,
     summary_underline: bool,
+    fresh: Option<(&str, u64)>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -777,6 +778,33 @@ pub(super) fn render(
     }
     spans.push(Span::raw(" ".to_string()));
     let mut lines = vec![Line::from(spans).style(row_style)];
+
+    // A resting card's new reply (T-720): what its agent said that the
+    // person has not been on the card for, one line under the title in the
+    // quiet ink, fading in from the ground left to right as it arrives
+    // (`Theme::reply_reveal`). Closed cards only — an open one shows the
+    // reply whole — and never on the cursor, the move ghost, a trail or the
+    // delete flash: the first two are being looked at, the others are
+    // saying something else.
+    if let Some((words, ago)) = fresh.filter(|_| !(open || cursorish || trail || doomed)) {
+        use unicode_segmentation::UnicodeSegmentation;
+        let words = truncate(words, t_cells.saturating_sub(glyph_cells));
+        let cells = words.width();
+        let mut row = bar_spans();
+        row.push(Span::raw(" ".repeat(1 + glyph_cells)));
+        let mut at = 0;
+        for g in words.graphemes(true) {
+            let w = g.width();
+            row.push(match theme.reply_reveal(ago, cells, at) {
+                Some(style) => Span::styled(g.to_string(), style),
+                None => Span::raw(" ".repeat(w)),
+            });
+            at += w;
+        }
+        let used = super::spans_width(&row);
+        row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used))));
+        lines.push(Line::from(row));
+    }
 
     if held {
         return lines;

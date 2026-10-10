@@ -519,7 +519,8 @@ fn appearance(app: &App, width: usize) -> Preview<'_> {
 
 /// A sample card as the board draws it, `width` cells wide, with the
 /// corner, the summary and its underline as the Appearance rows set them;
-/// the cursor's card opens to its summary rows.
+/// the cursor's card opens to its summary rows, and the other wears its
+/// agent's new reply while `New replies` is on (T-720), at rest.
 fn sample_card(
     app: &App,
     width: u16,
@@ -580,6 +581,8 @@ fn sample_card(
         None,
         None,
         p.summary == crate::prefs::SummaryShow::Full,
+        (p.new_replies && !selected)
+            .then_some(("Parser fixed, tests green.", crate::theme::REPLY_REVEAL_MS)),
     )
 }
 

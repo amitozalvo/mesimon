@@ -395,6 +395,10 @@ pub(crate) struct Prefs {
     pub card_corner: CardCorner,
     /// How a ticket's summary shows on its card (T-696).
     pub summary: SummaryShow,
+    /// A resting card shows what its agent said since the person last
+    /// looked, one muted line under its title (T-720). ON by default; per
+    /// machine, a view preference like the summary's.
+    pub new_replies: bool,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -440,6 +444,7 @@ impl Default for Prefs {
             usage_codex: true,
             card_corner: CardCorner::Age,
             summary: SummaryShow::Full,
+            new_replies: true,
             doc: Map::new(),
         }
     }
@@ -482,6 +487,7 @@ const USAGE_CLAUDE_KEY: &str = PrefKey::UsageClaude.name();
 const USAGE_CODEX_KEY: &str = PrefKey::UsageCodex.name();
 const CARD_CORNER_KEY: &str = PrefKey::CardCorner.name();
 const SUMMARY_KEY: &str = PrefKey::Summary.name();
+const NEW_REPLIES_KEY: &str = PrefKey::NewReplies.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -626,6 +632,7 @@ impl Prefs {
             PrefKey::Peek => self.peek.key(),
             PrefKey::CrownLightning => onoff(self.crown_lightning),
             PrefKey::Mouse => onoff(self.mouse),
+            PrefKey::NewReplies => onoff(self.new_replies),
             PrefKey::UsageLine => self.usage_line.key(),
             PrefKey::UsageFiveHour => onoff(self.usage_5h),
             PrefKey::UsageWeekly => onoff(self.usage_week),
@@ -688,6 +695,7 @@ impl Prefs {
         doc.insert(NOTIFY_WORDS_KEY.into(), Value::from(self.notify_words));
         doc.insert(CROWN_LIGHTNING_KEY.into(), Value::from(self.crown_lightning));
         doc.insert(MOUSE_KEY.into(), Value::from(self.mouse));
+        doc.insert(NEW_REPLIES_KEY.into(), Value::from(self.new_replies));
         for (key, v) in [
             (USAGE_5H_KEY, self.usage_5h),
             (USAGE_WEEK_KEY, self.usage_week),
@@ -1005,6 +1013,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
     let crown_lightning = flag(CROWN_LIGHTNING_KEY, true);
     let mouse = flag(MOUSE_KEY, true);
+    let new_replies = flag(NEW_REPLIES_KEY, true);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
@@ -1084,6 +1093,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         peek,
         crown_lightning,
         mouse,
+        new_replies,
         usage_line,
         usage_5h,
         usage_week,
@@ -1232,13 +1242,21 @@ pub fn tab_title_doctor_line() -> String {
 }
 
 /// `mesimon doctor`'s `replies` line (T-365): the rung the board's reply
-/// row was left on — `p` and `P` set it, and the next board opens on it.
+/// row was left on — `p` and `P` set it, and the next board opens on it —
+/// and whether a resting card shows a new one (T-720).
 pub fn peek_doctor_line() -> String {
-    match load_home().prefs.peek {
+    let prefs = load_home().prefs;
+    let rung: String = match prefs.peek {
         PeekLevel::Off => "hidden ∙ p shows the cursor card's latest reply, P every card's".into(),
         PeekLevel::Cursor => "under the cursor card ∙ P widens it to every card, p hides it".into(),
         PeekLevel::All => "under every card ∙ P narrows it to the cursor card, p hides it".into(),
-    }
+    };
+    let fresh = if prefs.new_replies {
+        "a new one under its resting card"
+    } else {
+        "no new one under a resting card"
+    };
+    format!("{rung} ∙ {fresh} ∙ Settings › Appearance")
 }
 
 /// `mesimon doctor`'s `summary` line (T-696): how a ticket's `Summary`
@@ -1528,6 +1546,26 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["crown_lightning"], false);
         assert!(!PrefKey::CrownLightning.board_overridable());
+    }
+
+    /// New replies on resting cards (T-720): absent is on, an off
+    /// round-trips, and a board cannot take it — how a person reads a
+    /// board is the machine's, like the summary's showing.
+    #[test]
+    fn new_replies_default_on_and_round_trip() {
+        let p = scratch("new-replies");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.new_replies, "absent is the default: on");
+        assert_eq!(l.prefs.word(PrefKey::NewReplies), "on");
+        l.prefs.new_replies = false;
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert!(!l.prefs.new_replies);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["new_replies"], false);
+        assert!(!PrefKey::NewReplies.board_overridable());
     }
 
     /// The mouse (T-716): absent is on, an off round-trips, and a board

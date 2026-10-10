@@ -97,13 +97,17 @@ impl ShellTail {
 /// (`peek::Peek::reply_key`) and `seen` the one the cursor was on the card
 /// for; they differ exactly while the card's done mark stays calm
 /// (`card.rs` greys it once seen). `session` and `path` say WHICH
-/// transcript that is: a different one starts a fresh entry.
+/// transcript that is: a different one starts a fresh entry. `kind` is the
+/// session's, for the reader; `since_ms` when `key` was first seen, the
+/// clock of the resting card's new-reply row's reveal (T-720).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Spoke {
     pub(crate) session: uuid::Uuid,
+    pub(crate) kind: SessionKind,
     pub(crate) path: String,
     pub(crate) key: u64,
     pub(crate) seen: u64,
+    pub(crate) since_ms: u64,
 }
 
 /// What the last draw of a reading zone measured: which document it
@@ -2084,8 +2088,9 @@ impl App {
     /// Whether something on screen is mid-motion and wants the next frame
     /// sooner than the spinner's cadence: the composer dialog growing, the
     /// screen's reading zone turning a page, a refused card shaking, the
-    /// layout pause flashing the footer, the crowning sweeping a title, or
-    /// the crown's lightning striking a card.
+    /// layout pause flashing the footer, the crowning sweeping a title, the
+    /// crown's lightning striking a card, a summary's underline changing,
+    /// or a new reply fading in under a resting card.
     pub fn animating(&self) -> bool {
         matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
             || self.pager().is_some_and(Pager::animating)
@@ -2095,6 +2100,7 @@ impl App {
             || self.striking()
             || self.summary_pulsing()
             || self.settings_striking()
+            || self.reply_revealing()
     }
 
     /// Is the Appearance page's preview striking (T-717)? While its page
@@ -3655,6 +3661,33 @@ impl App {
         self.spoke.get(&ticket).is_some_and(|e| e.key != e.seen)
     }
 
+    /// What a resting card's new-reply row says (T-720), and how long ago
+    /// it arrived: the agent's latest words, flattened to one line, while
+    /// they are words the cursor has not been on the card for and the
+    /// person's switch is on. Read through the draw cache, so a frame costs
+    /// a map lookup; `None` with nothing on the transcript to say.
+    pub(crate) fn fresh_reply(&self, ticket: ulid::Ulid) -> Option<(String, u64)> {
+        if !self.prefs.new_replies || !self.spoke_unseen(ticket) {
+            return None;
+        }
+        let e = self.spoke.get(&ticket)?;
+        let peek = self.peek_cache.peek_for(e.kind, &e.path)?;
+        let words = crate::text::one_line(peek.text.as_deref()?);
+        let ago = mesimon_core::clock::now_ms().saturating_sub(e.since_ms);
+        (!words.is_empty()).then_some((words, ago))
+    }
+
+    /// Is a new reply fading in on some resting card? What keeps the frames
+    /// coming while it does.
+    fn reply_revealing(&self) -> bool {
+        let now = mesimon_core::clock::now_ms();
+        self.prefs.new_replies
+            && matches!(self.screen, Screen::Board)
+            && self.spoke.values().any(|e| {
+                e.key != e.seen && now.saturating_sub(e.since_ms) < crate::theme::REPLY_REVEAL_MS
+            })
+    }
+
     /// One card's half of the spoke scan: read what its paned claude has
     /// said and settle the ticket's entry against it. The session is
     /// `Board::pane_target`'s — the one the daemon's prompt delivery and
@@ -3683,8 +3716,9 @@ impl App {
                 // `None` is the user's own prompt on top: the agent has not
                 // spoken since, and what it said before is still what it
                 // last said.
-                if let Some(k) = peek.reply_key {
+                if let Some(k) = peek.reply_key.filter(|k| *k != e.key) {
                     e.key = k;
+                    e.since_ms = mesimon_core::clock::now_ms();
                 }
             }
             _ => {
@@ -3696,7 +3730,8 @@ impl App {
                 // "No words yet" is 0, which `seen` matches, so an agent that
                 // has not spoken owes nothing.
                 let key = peek.reply_key.unwrap_or(0);
-                self.spoke.insert(ticket, Spoke { session, path, key, seen: 0 });
+                let since_ms = mesimon_core::clock::now_ms();
+                self.spoke.insert(ticket, Spoke { session, kind, path, key, seen: 0, since_ms });
             }
         }
         self.spoke_unseen(ticket) != before
@@ -5309,6 +5344,7 @@ impl App {
             theme_os_barred: self.appearance_barred,
             crown_lightning: self.prefs.crown_lightning,
             mouse: self.prefs.mouse,
+            new_replies: self.prefs.new_replies,
             preview_scrolls: self.preview.view.get().max > 0,
             update_ready: self.update_ready(),
             // A binary already waiting on disk outranks a download: reload
@@ -6660,6 +6696,16 @@ impl App {
                     "the crown's actions hold still ∙ the card still says what was done"
                 };
                 self.set_pref(word, |p| p.crown_lightning = on);
+            }
+            // T-720. Read on every frame; nothing to push.
+            Verb::NewReplies => {
+                let on = !self.prefs.new_replies;
+                let word = if on {
+                    "a resting card shows its agent's new reply"
+                } else {
+                    "resting cards keep to one line ∙ the heavy check says there is news"
+                };
+                self.set_pref(word, |p| p.new_replies = on);
             }
             // T-716. No push: `lib.rs`'s loop turns the terminal's mouse
             // reports on or off to match, every frame.

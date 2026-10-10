@@ -598,6 +598,10 @@ pub enum Verb {
     /// underline and the rows, the rows alone, or nothing. `prefs.json`,
     /// per machine.
     SummaryShow,
+    /// The Appearance row for a resting card's new reply (T-720): what its
+    /// agent said since the person last looked, one muted line under the
+    /// title. On by default, per machine.
+    NewReplies,
     UsageShow,
     UsageFiveHour,
     UsageWeekly,
@@ -1012,9 +1016,11 @@ impl SettingsSection {
     /// The section a row lives in; `Theme` for anything that is not a row.
     pub fn for_verb(verb: Verb) -> Self {
         match verb {
-            Verb::StatusLine | Verb::CrownLightning | Verb::SummaryShow | Verb::CardCorner => {
-                Self::Appearance
-            }
+            Verb::StatusLine
+            | Verb::CrownLightning
+            | Verb::SummaryShow
+            | Verb::NewReplies
+            | Verb::CardCorner => Self::Appearance,
             Verb::NotifyToggle
             | Verb::NotifyVia
             | Verb::NotifyDone
@@ -1162,6 +1168,8 @@ pub struct Ctx {
     pub crown_lightning: bool,
     /// The board reads the mouse (T-716).
     pub mouse: bool,
+    /// A resting card shows its agent's new reply under its title (T-720).
+    pub new_replies: bool,
     /// The ticket page's preview zone holds more rows than it can show, so
     /// there is somewhere to page to. Measured by the last draw (the zone's
     /// height is a fact of the frame, not of the board), which is also what
@@ -4787,6 +4795,23 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // A resting card's new reply (T-720): the board says what an agent
+    // said without the person opening the card. On by default; off keeps
+    // every resting card to its one line, the heavy check alone saying
+    // there is something new.
+    MenuItem {
+        verb: Verb::NewReplies,
+        label: |_| "New replies".into(),
+        detail: |c| {
+            if c.new_replies {
+                "a line under a card whose agent said something you have not seen".into()
+            } else {
+                "the heavy check alone says a card has news".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::CardCorner,
         label: |_| "Card corner".into(),
@@ -5330,9 +5355,13 @@ pub fn is_suggested(verb: Verb, ctx: &Ctx) -> bool {
 pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     let verbs: &[Verb] = match ctx.settings_section {
         SettingsSection::Theme => &[],
-        SettingsSection::Appearance => {
-            &[Verb::StatusLine, Verb::CrownLightning, Verb::SummaryShow, Verb::CardCorner]
-        }
+        SettingsSection::Appearance => &[
+            Verb::StatusLine,
+            Verb::CrownLightning,
+            Verb::SummaryShow,
+            Verb::NewReplies,
+            Verb::CardCorner,
+        ],
         SettingsSection::Notifications => &[
             Verb::NotifyToggle,
             Verb::NotifyVia,
@@ -5446,6 +5475,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::StatusLine => pick(&["top", "bottom"], !c.status_top),
         Verb::CrownLightning => pick(&["lightning", "still"], !c.crown_lightning),
         Verb::SummaryShow => choice(&["full", "hover", "none"], or(c.summary_word, "full")),
+        Verb::NewReplies => Value::Switch(c.new_replies),
         Verb::CardCorner => pick(&["age", "cost"], c.card_cost),
         Verb::NotifyToggle => Value::Switch(c.notify),
         Verb::NotifyVia => pick(&["mesimon", "your terminal"], c.notify_via_terminal),
@@ -5569,6 +5599,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::UsageCodex => PrefKey::UsageCodex,
         Verb::CardCorner => PrefKey::CardCorner,
         Verb::SummaryShow => PrefKey::Summary,
+        Verb::NewReplies => PrefKey::NewReplies,
         _ => return None,
     })
 }
@@ -9469,7 +9500,13 @@ mod tests {
         for (section, expected) in [
             (
                 SettingsSection::Appearance,
-                vec![Verb::StatusLine, Verb::CrownLightning, Verb::SummaryShow, Verb::CardCorner],
+                vec![
+                    Verb::StatusLine,
+                    Verb::CrownLightning,
+                    Verb::SummaryShow,
+                    Verb::NewReplies,
+                    Verb::CardCorner,
+                ],
             ),
             (SettingsSection::Notifications, vec![Verb::NotifyToggle]),
             (
@@ -10169,6 +10206,7 @@ mod tests {
             Verb::StatusLine,
             Verb::CrownLightning,
             Verb::SummaryShow,
+            Verb::NewReplies,
             Verb::TabTitle,
             Verb::TabTitleNeedsYou,
             Verb::TabTitleFocus,

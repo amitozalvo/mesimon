@@ -1366,6 +1366,12 @@ pub(crate) const SUMMARY_SWEEP_MS: u64 = 700;
 pub(crate) const SUMMARY_REVEAL_MS: u64 = 1_800;
 /// Cells over which the reveal's front fades a cell in.
 const SUMMARY_REVEAL_FADE: f32 = 12.0;
+/// A resting card's new reply (T-720) fades in over this long: no head, a
+/// soft front easing each cell from the ground to the row's muted ink, left
+/// to right, the summary reveal's motion at a reader's pace.
+pub(crate) const REPLY_REVEAL_MS: u64 = 1_400;
+/// Cells over which the reply's front fades a cell in.
+const REPLY_REVEAL_FADE: f32 = 10.0;
 /// The landing's front crosses the struck title in this long (T-544),
 /// whatever the title's length, like the crowning's.
 pub(crate) const LAND_SWEEP_MS: u64 = 600;
@@ -2210,6 +2216,32 @@ impl Theme {
     /// behind its head; when the change ticked the last box it crosses a
     /// second time over the finished run, the glint that says done. The
     /// first read (`before` none) crosses once whatever it reveals.
+    /// One cell of a resting card's new reply (T-720), `elapsed` after the
+    /// reply was seen arrive, in a row `cells` wide: `None` ahead of the
+    /// front (the cell is not written yet), the row's quiet ink once the
+    /// front is a fade's length past. Between the two the cell eases from
+    /// the ground's colour; where the ground or the ink is not a colour it
+    /// steps from the faintest ink to the quiet one, so every tier reveals.
+    pub fn reply_reveal(&self, elapsed: u64, cells: usize, cell: usize) -> Option<Style> {
+        let settled = self.dim2();
+        if cells == 0 || elapsed >= REPLY_REVEAL_MS {
+            return Some(settled);
+        }
+        let t = elapsed as f32 / REPLY_REVEAL_MS as f32;
+        let front = -1.0 + (cells as f32 + REPLY_REVEAL_FADE + 1.0) * ease(t);
+        let d = front - cell as f32;
+        if d < 0.0 {
+            return None;
+        }
+        let k = (d / REPLY_REVEAL_FADE).clamp(0.0, 1.0);
+        let k = k * k * (3.0 - 2.0 * k);
+        Some(match (self.bg, self.rest.dim2) {
+            (Some(g @ Color::Rgb(..)), ink @ Color::Rgb(..)) => Style::default().fg(mix(ink, g, k)),
+            _ if k < 0.5 => self.dim3(),
+            _ => settled,
+        })
+    }
+
     pub fn summary_pulse_ms(
         before: Option<mesimon_core::summary::Count>,
         after: mesimon_core::summary::Count,

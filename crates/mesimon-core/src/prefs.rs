@@ -83,6 +83,10 @@ pub enum PrefKey {
     /// underline and the rows, the rows alone, or nothing. Per machine, a
     /// view preference like the replies' rung.
     Summary,
+    /// A resting card names what its agent said since the person last
+    /// looked, one muted line under its title (T-720). On by default; per
+    /// machine, a view preference like the summary's.
+    NewReplies,
     /// The board reads the mouse (T-716): clicks, the wheel and hover. On
     /// by default; off gives the terminal its own text selection back,
     /// which reading the mouse takes. Per machine: it is about the terminal.
@@ -90,7 +94,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 38] = [
+    pub const ALL: [PrefKey; 39] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::SnoozeNeedsYou,
@@ -128,6 +132,7 @@ impl PrefKey {
         PrefKey::UsageCodex,
         PrefKey::CardCorner,
         PrefKey::Summary,
+        PrefKey::NewReplies,
         PrefKey::Mouse,
     ];
 
@@ -171,6 +176,7 @@ impl PrefKey {
             PrefKey::UsageCodex => "usage_codex",
             PrefKey::CardCorner => "card_corner",
             PrefKey::Summary => "summary",
+            PrefKey::NewReplies => "new_replies",
             PrefKey::Mouse => "mouse",
         }
     }
@@ -212,6 +218,7 @@ impl PrefKey {
                 | PrefKey::UsageCodex
                 | PrefKey::CardCorner
                 | PrefKey::Summary
+                | PrefKey::NewReplies
                 | PrefKey::Mouse
         )
     }
@@ -247,6 +254,7 @@ impl PrefKey {
             PrefKey::NotifyVia => "Delivered by",
             PrefKey::Peek => "replies",
             PrefKey::Summary => "summary on cards",
+            PrefKey::NewReplies => "new replies on cards",
             PrefKey::CrownLightning => "crown lightning",
             PrefKey::UsageLine => "usage line",
             PrefKey::UsageFiveHour => "usage line's 5-hour window",
@@ -324,6 +332,7 @@ mod tests {
                 PrefKey::UsageCodex,
                 PrefKey::CardCorner,
                 PrefKey::Summary,
+                PrefKey::NewReplies,
                 PrefKey::Mouse,
             ]
         );

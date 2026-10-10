@@ -4,15 +4,15 @@
   │ the crowned card           a card it moved           │
   │                                                      │
   │    ♛ Plan the beta    3h      Fix the pars~ ♛ moved  │
-  │     -  one pass over th~                             │
+  │     -  one pass over th~      Parser fixed, tests ~  │
   │    [ ] parse it                                      │
   │    [✓] read the reply                                │
   │                                                      │
   │  Status line        ○ top         ● bottom  machine  │
   │  Crown's actions    ● lightning   ○ still   machine  │
   │  Summary on cards   full                    machine  │
+  │  New replies        ● on                    machine  │
   │  Card corner        ● age         ○ cost    machine  │
-  │                                                      │
   │                                                      │
   │                                                      │
   │ tmux's bar over an agent's pane                      │

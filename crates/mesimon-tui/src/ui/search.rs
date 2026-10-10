@@ -356,6 +356,8 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         None,
         None,
         false,
+        // Open, so the reply is drawn whole: no new-reply row.
+        None,
     );
     let w = inner.width as usize;
     let now = now_ms();

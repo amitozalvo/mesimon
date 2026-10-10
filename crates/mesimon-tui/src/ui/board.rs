@@ -228,6 +228,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // ghost (both `cursorish`, and their ticket is the subject being
         // acked), so the frame between a cursor move and the ack agrees.
         let unseen = !(selected || held) && app.spoke_unseen(t.id);
+        // What that agent said, for a resting card's new-reply row (T-720).
+        let fresh = if unseen && !left { app.fresh_reply(t.id) } else { None };
         // A held ask's keys ride the cursor card (T-551) — the subject the
         // frame's `Ctx` was built for, so the keys it names act on THIS card.
         let keys_ctx = app.frame_ctx();
@@ -281,6 +283,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 (!summary_keys.is_empty()).then_some((summary_keys.as_slice(), &*keys_ctx)),
                 app.summary_pulse(t.id),
                 app.prefs.summary == crate::prefs::SummaryShow::Full,
+                fresh.as_ref().map(|(words, ago)| (words.as_str(), *ago)),
             )
         };
         let mut lines = render(open, peek.as_deref());

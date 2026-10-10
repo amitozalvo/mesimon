@@ -7992,8 +7992,93 @@ const DONE_UNREAD: &str = "✔";
 fn seed_spoke(app: &mut App, ticket: ulid::Ulid) {
     app.spoke.insert(
         ticket,
-        crate::app::Spoke { session: uuid_n(0), path: String::new(), key: 1, seen: 0 },
+        crate::app::Spoke {
+            session: uuid_n(0),
+            kind: SessionKind::Claude,
+            path: String::new(),
+            key: 1,
+            seen: 0,
+            since_ms: 0,
+        },
     );
+}
+
+/// T-720: a resting card whose agent said something the person has not
+/// been on the card for shows those words, one line under its title, in the
+/// quiet ink. Seen, opened, under the cursor or switched off, it is gone.
+#[test]
+fn a_resting_card_shows_its_agents_new_reply_under_its_title() {
+    let path = write_transcript(
+        "fresh-reply",
+        &reply_record("Fixed the OSC-11 race:\nthe query now runs once before raw mode."),
+    );
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.scan_spoke();
+    // Past the reveal: the row stands whole.
+    app.spoke.get_mut(&ulid_n(3)).expect("T-3 spoke").since_ms = 0;
+    let row = |app: &App| {
+        let lines = render(app, 120, 30);
+        let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("T-3");
+        (y, lines[y + 1].clone())
+    };
+    golden("board_new_reply_120x30", &render(&app, 120, 30));
+    let (y, under) = row(&app);
+    assert!(
+        under.trim_start().starts_with("Fixed the OSC-11 race:") && under.ends_with('~'),
+        "one line, cut to the card: {under:?}"
+    );
+    let buf = cells(&app, 120, 30);
+    let line = &render(&app, 120, 30)[y + 1];
+    let x = line[..line.find("Fixed").expect("words")].chars().count() as u16;
+    assert_eq!(buf[(x, (y + 1) as u16)].fg, app.theme.rest.dim2, "the quiet ink, never louder");
+    assert!(!app.animating(), "a settled row asks for no frames");
+
+    // Seen: the cursor was on the card.
+    let e = app.spoke.get_mut(&ulid_n(3)).expect("T-3 spoke");
+    e.seen = e.key;
+    assert!(!row(&app).1.contains("Fixed the OSC"), "a seen reply leaves the card");
+    let e = app.spoke.get_mut(&ulid_n(3)).expect("T-3 spoke");
+    e.seen = 0;
+    assert!(row(&app).1.contains("Fixed the OSC"));
+
+    // The switch off: every resting card keeps to its one line.
+    app.seed_pref(|p| p.new_replies = false);
+    assert!(!row(&app).1.contains("Fixed the OSC"), "off is off");
+    app.seed_pref(|p| p.new_replies = true);
+
+    // An open card draws the reply whole, never twice.
+    app.peek_all = true;
+    let lines = render(&app, 120, 30);
+    assert_eq!(lines.iter().filter(|l| l.contains("Fixed the OSC-11 race")).count(), 1);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// T-720: the new reply fades in left to right as it arrives — nothing
+/// written on its first frame, its head before its tail midway — and the
+/// board asks for frames while it does.
+#[test]
+fn a_new_reply_fades_in_left_to_right() {
+    let path = write_transcript("fresh-reveal", &reply_record("Rebased onto main, tests green."));
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.scan_spoke();
+    let under = |app: &App| {
+        let lines = render(app, 120, 30);
+        let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("T-3");
+        lines[y + 1].clone()
+    };
+    let now = mesimon_core::clock::now_ms();
+    app.spoke.get_mut(&ulid_n(3)).expect("T-3 spoke").since_ms = now;
+    assert!(app.animating(), "the reveal wants frames");
+    assert!(!under(&app).contains("Rebased"), "nothing written on the first frame");
+    app.spoke.get_mut(&ulid_n(3)).expect("T-3 spoke").since_ms =
+        now - crate::theme::REPLY_REVEAL_MS / 2;
+    let mid = under(&app);
+    assert!(mid.contains("Reb") && !mid.contains("green."), "head first: {mid:?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
 /// The done mark on T-5's row (the finished agent in `review`): its glyph
