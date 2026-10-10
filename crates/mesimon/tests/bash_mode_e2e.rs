@@ -19,7 +19,9 @@ use mesimon_core::board::{SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 
 /// The stub agent: it spawns one shell child at launch, as Claude spawns its
-/// MCP servers, and then watches for two files beside itself — `go` spawns
+/// MCP servers, marks `ready` beside itself (the test sends no hook before
+/// that shell exists, or under load it is born after the idle spell began),
+/// and then watches for two files beside itself — `go` spawns
 /// a second shell child running `sleep`, the way bash mode runs a command
 /// (a shell, then the command under it; `; true` keeps `sh -c` from exec'ing
 /// the command in the shell's place), and `stop` ends that shell. The
@@ -27,6 +29,7 @@ use mesimon_core::command::{Command, Response};
 const STUB: &str = "#!/bin/sh\n\
     d=$(dirname \"$0\")\n\
     sh -c 'sleep 120; true' &\n\
+    : > \"$d/ready\"\n\
     pid=\n\
     trap 'exit 0' TERM\n\
     while true; do\n\
@@ -68,6 +71,11 @@ fn a_bash_mode_command_under_an_idle_claude_is_its_foreground() {
             .clone()
     };
 
+    let stub_dir = h.stub.as_ref().unwrap().parent().unwrap().to_path_buf();
+    wait_until(Duration::from_secs(30), "the stub to spawn its launch-time shell", || {
+        stub_dir.join("ready").exists()
+    });
+
     // A turn runs and ends: the seat is idle, with the launch-time shell
     // child (the "MCP server") older than the idle spell.
     hook_send(&hook_sock, &sid_s, "SessionStart", r#"{"source":"startup"}"#);
@@ -89,7 +97,6 @@ fn a_bash_mode_command_under_an_idle_claude_is_its_foreground() {
     // The person types `! sleep 600`: a shell younger than the spell, with
     // the command under it — the foreground names the command, on the
     // snapshot, while the state stays idle (no hook fired, no turn began).
-    let stub_dir = h.stub.as_ref().unwrap().parent().unwrap().to_path_buf();
     std::fs::write(stub_dir.join("go"), "").unwrap();
     wait_until(Duration::from_secs(10), "the `!` command to be read as the foreground", || {
         foreground(&mut c).as_deref() == Some("sleep")
