@@ -1,9 +1,9 @@
  BOARD   mesimon › kanban-tui   6 tickets
   ╭─ SETTINGS ∙ APPEARANCE ──────────────────────────────╮
   │                                                      │
-  │ the crowned card           a card it moved           │
+  │ the cursor's card          another card              │
   │                                                      │
-  │    ♛ Plan the beta    3h      Fix the pars~ ♛ moved  │
+  │    Plan the beta      3h      Fix the parser     3h  │
   │     -  one pass over th~      Parser fixed, tests ~  │
   │    [ ] parse it                                      │
   │    [✓] read the reply                                │

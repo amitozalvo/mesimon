@@ -2,9 +2,9 @@
 
     TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-    De│  Theme              the crowned card            a card it moved                                          │
+    De│  Theme              the cursor's card           another card                                             │
       │                                                                              ╭─ an agent's pane ───────╮ │
-    Ke│▎ Appearance            ♛ Plan the beta     3h      Fix the parser ♛ moved    │ ⏺ Reading src/osc.rs    │ │
+    Ke│▎ Appearance            Plan the beta       3h      Fix the parser      3h    │ ⏺ Reading src/osc.rs    │ │
       │                         -  one pass over the~      Parser fixed, tests g~    │ T-2 Fix the parser      │ │
       │  Notifications         [ ] parse it                                          ╰─────────────────────────╯ │
       │                        [✓] read the reply                                                                │

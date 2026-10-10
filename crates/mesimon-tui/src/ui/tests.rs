@@ -833,7 +833,6 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
     for section in SettingsSection::ALL.into_iter().skip(1) {
         let name = section.name().to_lowercase();
         let mut app = app_graphite(fixture_archived());
-        app.now = settled_strike;
         app.settings_section = section;
         let count = mesimon_core::keymap::settings_items(&app.ctx()).len();
         for (w, h) in [(60, 20), (120, 30)] {
@@ -859,21 +858,21 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
     }
 }
 
-/// A clock the Appearance preview's strike loop reads as past its bolt:
-/// the moved card's word stands and nothing moves, so a golden holds.
-fn settled_strike() -> u64 {
-    3_000
-}
-
-/// The Appearance preview's strike (T-717): with the lightning on, the
-/// bolt runs from the crowned card's mark to the moved card while the loop
-/// is early, and the moved card says what was done once it has landed;
-/// with it off, the word stands and no bolt is drawn. Both crown cards
-/// wear the crown's tint either way.
+/// The Appearance preview's crown (T-717): the crowned card's ♛ and the
+/// crown's tint show only while `Crown's actions` is the row under the
+/// cursor; turning it to lightning strikes the bolt between the two cards
+/// once, and nothing moves otherwise.
 #[test]
-fn the_appearance_preview_strikes_on_a_loop() {
-    fn early() -> u64 {
-        400
+fn the_appearance_preview_strikes_once_when_the_row_turns_lightning_on() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    fn at_turn() -> u64 {
+        10_000
+    }
+    fn mid_strike() -> u64 {
+        10_400
+    }
+    fn after() -> u64 {
+        13_000
     }
     let braille = |app: &App| {
         let buf = cells(app, 120, 30);
@@ -887,22 +886,28 @@ fn the_appearance_preview_strikes_on_a_loop() {
             })
         })
     };
+    let crowned = |app: &App| render(app, 120, 30).iter().any(|r| r.contains("♛"));
     let mut app = app_graphite(fixture_archived());
     app.settings_section = mesimon_core::keymap::SettingsSection::Appearance;
-    app.mode = Mode::Sections;
-    app.now = early;
-    assert!(app.animating(), "the page asks for fast frames while it strikes");
+    app.mode = Mode::Settings { idx: 0 };
+    app.now = at_turn;
+    assert!(!crowned(&app), "another row: plain cards");
+    let row = app.settings_row(mesimon_core::keymap::Verb::CrownLightning);
+    app.mode = Mode::Settings { idx: row };
+    assert!(crowned(&app), "its row: the crown and its tint");
+    assert!(!braille(&app) && !app.animating(), "and nothing moves on its own");
+    // Off, then on again: the turn to lightning strikes, once.
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert!(!app.prefs.crown_lightning && !app.animating(), "turned off, no strike");
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert!(app.prefs.crown_lightning);
+    app.now = mid_strike;
+    assert!(app.animating(), "the strike wants fast frames");
     assert!(braille(&app), "the bolt is on its way");
-    app.now = settled_strike;
-    assert!(!braille(&app), "the bolt has cooled");
-    assert!(render(&app, 120, 30).iter().any(|r| r.contains("♛ moved")), "the word stands");
-    app.seed_pref(|p| p.crown_lightning = false);
-    app.now = early;
-    assert!(!braille(&app), "off, no bolt");
-    assert!(!app.animating());
+    app.now = after;
+    assert!(!app.animating() && !braille(&app), "and it ran its course");
     let rows = render(&app, 120, 30);
-    assert!(rows.iter().any(|r| r.contains("♛ moved")), "off, the word stands: {rows:#?}");
-    assert!(rows.iter().any(|r| r.contains("♛ Plan the beta")), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.contains("♛ moved")), "the word stands: {rows:#?}");
 }
 
 /// The Terminal list (T-492) with the title on, so its two gated rows
@@ -965,7 +970,6 @@ fn golden_settings_behaviour_board_120() {
 #[test]
 fn golden_settings_appearance_board_60() {
     let mut app = app_graphite(fixture_archived());
-    app.now = settled_strike;
     app.settings_section = mesimon_core::keymap::SettingsSection::Appearance;
     app.settings_board_scope = true;
     app.mode = Mode::Settings { idx: app.settings_row(mesimon_core::keymap::Verb::StatusLine) };

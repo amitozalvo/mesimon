@@ -1679,6 +1679,9 @@ pub struct App {
     /// card the pointer has stayed on for `HOVER_PEEK` floats its latest
     /// reply. A key clears it — the keyboard has the board again.
     pub hover: Cell<Option<(crate::mouse::Target, Instant)>>,
+    /// When the Appearance page's `Crown's actions` row was last turned to
+    /// lightning, on `App::now` (T-717): the preview strikes once from then.
+    pub preview_strike: Option<u64>,
     /// The card the pointer opened, until it rests on something else
     /// (`hover_peek`).
     peeked: Cell<Option<ulid::Ulid>>,
@@ -1998,6 +2001,7 @@ impl App {
             hits: std::cell::RefCell::new(crate::mouse::Map::default()),
             pointer: Cell::new(None),
             hover: Cell::new(None),
+            preview_strike: None,
             peeked: Cell::new(None),
             press_at: Cell::new(None),
             selection: Cell::new(None),
@@ -2103,12 +2107,20 @@ impl App {
             || self.reply_revealing()
     }
 
-    /// Is the Appearance page's preview striking (T-717)? While its page
-    /// is on screen with the lightning on, the strike loops.
+    /// Is the Appearance page's preview striking (T-717)? Once, from the
+    /// moment its row turned the lightning on, while the page is up.
     fn settings_striking(&self) -> bool {
         self.motion()
             && self.settings_section == keymap::SettingsSection::Appearance
             && matches!(self.mode, Mode::Sections | Mode::Settings { .. })
+            && self.preview_strike_ms().is_some()
+    }
+
+    /// Ms into the preview's one strike, while it has not run its course.
+    pub(crate) fn preview_strike_ms(&self) -> Option<u64> {
+        let since = (self.now)().saturating_sub(self.preview_strike?);
+        let course = crate::strike::LEADER_MS + crate::theme::CROWN_LIT_MS;
+        (since < course).then_some(since)
     }
 
     /// Does the board draw the crown's lightning (T-544)? The person's
@@ -7712,10 +7724,17 @@ impl App {
                     return Ok(());
                 };
                 let verb = item.verb;
-                if self.board_scope_takes(verb) {
-                    return Ok(());
+                let done = if self.board_scope_takes(verb) {
+                    Ok(())
+                } else {
+                    self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
+                };
+                // Turned to lightning: the preview shows what that means,
+                // once (T-717).
+                if verb == Verb::CrownLightning && self.motion() {
+                    self.preview_strike = Some((self.now)());
                 }
-                self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
+                done
             }
             // A prompt row opens its template as a field in place; the list
             // stays and the row relabels off the snapshot when it saves.

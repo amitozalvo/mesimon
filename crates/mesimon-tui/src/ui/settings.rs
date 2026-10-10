@@ -418,14 +418,12 @@ fn sample_ticket(n: u128, key: &str, title: &str) -> mesimon_core::board::Ticket
     }
 }
 
-/// How long one strike of the preview's loop takes, bolt to rest.
-const STRIKE_LOOP_MS: u64 = 3_600;
-
-/// Appearance, as the board draws it: the crowned card, the cursor's, with
-/// its summary and its corner as the rows set them; a card the crown just
-/// moved, the bolt striking it on a loop while the lightning is on; and an
-/// agent's pane with tmux's bar at its top or its bottom. Both crown cards
-/// wear the crown's tint either way.
+/// Appearance, as the board draws it: the cursor's card with its summary
+/// and its corner as the rows set them, a card beside it, and an agent's
+/// pane with tmux's bar at its top or its bottom. While `Crown's actions`
+/// is the row under the cursor or the pointer, the two are the crowned card
+/// and a card the crown moved, in the crown's tint; turning it to lightning
+/// strikes the bolt between them once.
 fn appearance(app: &App, width: usize) -> Preview<'_> {
     use crate::ui::{CrownMark, Land};
     let p = &app.prefs;
@@ -435,6 +433,7 @@ fn appearance(app: &App, width: usize) -> Preview<'_> {
     // The cursor card opens to its summary rows, which set the height.
     let shows = p.summary != crate::prefs::SummaryShow::None;
     let height = if shows { 6 } else { 4 };
+    let crown = on_crown_row(app);
     Preview {
         height,
         draw: Box::new(move |f, at| {
@@ -445,37 +444,38 @@ fn appearance(app: &App, width: usize) -> Preview<'_> {
                 let r = Rect { x: at.x + x, y: at.y, width: card_w, height: 1 };
                 f.render_widget(Paragraph::new(Span::styled(words.to_string(), theme.dim3())), r);
             };
-            caption(f, 0, "the crowned card");
-            caption(f, card_w + 2, "a card it moved");
+            let (first, second) = if crown {
+                ("the crowned card", "a card it moved")
+            } else {
+                ("the cursor's card", "another card")
+            };
+            caption(f, 0, first);
+            caption(f, card_w + 2, second);
             let row = at.y + 2;
             let left = Rect { x: at.x, y: row, width: card_w, height: at.bottom() - row };
             let right = Rect { x: at.x + card_w + 2, ..left };
-            // Lightning on: the strike loops, the word landing as the bolt
-            // arrives. Off: the word stands. On the app's clock, so a test
-            // can hold it still.
-            let t = (app.now)() % STRIKE_LOOP_MS;
-            let land = app
-                .motion()
-                .then(|| Land {
-                    kind: crate::theme::LandKind::of("moved"),
-                    ms: t as i64 - crate::strike::LEADER_MS as i64,
-                })
-                .filter(|l| l.ms < crate::theme::CROWN_LIT_MS as i64);
-            let holder =
-                sample_card(app, card_w, &crowned, true, CrownMark::Holder { sweep: None });
-            let touched = CrownMark::Touched { action: "moved", land };
+            // The one strike the row's change started, if it is running:
+            // the word lands as the bolt arrives; otherwise it stands.
+            let strike = app.preview_strike_ms().filter(|_| crown && app.motion());
+            let land = strike.map(|t| Land {
+                kind: crate::theme::LandKind::of("moved"),
+                ms: t as i64 - crate::strike::LEADER_MS as i64,
+            });
+            let (mark, touched) = if crown {
+                (CrownMark::Holder { sweep: None }, CrownMark::Touched { action: "moved", land })
+            } else {
+                (CrownMark::None, CrownMark::None)
+            };
+            let holder = sample_card(app, card_w, &crowned, true, mark);
             let struck = sample_card(app, card_w, &moved, false, touched);
             f.render_widget(Paragraph::new(holder), left);
             f.render_widget(Paragraph::new(struck), right);
             // The bolt, from the crown's mark to the moved card's title,
             // arcing through the row above them.
-            if app.motion() {
+            if let Some(t) = strike {
                 let bar = crate::tags::BAR_WIDTH as u16 + 1;
-                let dots = crate::strike::bolt(
-                    0x5EED,
-                    &[(left.x + bar, row), (right.x + bar, row)],
-                    at.y + 1,
-                );
+                let stops = [(left.x + bar, row), (right.x + bar, row)];
+                let dots = crate::strike::bolt(0x5EED, &stops, at.y + 1);
                 let skip = |_x: u16, y: u16| y == row;
                 let sky = Rect { x: at.x, y: at.y + 1, width: 2 * card_w + 2, height: 2 };
                 crate::strike::paint(f.buffer_mut(), sky, theme, &[(dots, t)], &skip);
@@ -515,6 +515,16 @@ fn appearance(app: &App, width: usize) -> Preview<'_> {
             }
         }),
     }
+}
+
+/// Is `Crown's actions` the Appearance row under the cursor, or under the
+/// pointer?
+fn on_crown_row(app: &App) -> bool {
+    let items = keymap::settings_items(&app.frame_ctx());
+    let is_crown = |i: usize| items.get(i).is_some_and(|m| m.verb == keymap::Verb::CrownLightning);
+    let cursor = matches!(app.mode, Mode::Settings { idx } if is_crown(idx));
+    let pointer = matches!(app.hover.get(), Some((crate::mouse::Target::Row(i), _)) if is_crown(i));
+    cursor || pointer
 }
 
 /// A sample card as the board draws it, `width` cells wide, with the

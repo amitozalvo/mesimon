@@ -23360,12 +23360,16 @@ heading with a blank line before the rest. The section list stands on a painted 
 halfway: painted, never drawn (L1).
 
 The Appearance preview draws the board's own cards (`card::render` on two sample tickets): the
-crowned card, the cursor's, with its summary and corner as the rows set them, and a card the
-crown moved. Both wear the crown's tint in either mode, as on the board. With the lightning on,
-the real bolt (`strike::bolt`, `strike::paint`) loops between them every 3.6 s and the moved
-card's word lands with it (`App::settings_striking` keeps the frames fast while the page is
-up). The loop reads `App::now`, so a test pins it (`settled_strike`). An agent's pane, its own
-recorded frame, carries tmux's bar at the top or the bottom.
+cursor's card, with its summary and corner as the rows set them, and a card beside it. Only
+while `Crown's actions` is the row under the cursor or the pointer (`on_crown_row`) are they the
+crowned card and a card the crown moved, both in the crown's tint, as on the board; the author:
+"don't show the glyph and blue text if not hovering the relevant settings". Turning that row to
+lightning strikes the real bolt (`strike::bolt`, `strike::paint`) between them once
+(`App::preview_strike`, on `App::now`, so a test pins it), the moved card's word landing with
+it, and `App::settings_striking` keeps the frames fast only for that strike. A strike that
+looped every 3.6 s shipped first and was refuted the same day ("animate the lighting only when
+changing the relevant settings, not all the time"). An agent's pane, its own recorded frame,
+carries tmux's bar at the top or the bottom.
 
 The Terminal preview draws the tab as a tab: one framed tab as the board stands now, and the
 same tab while a ticket needs you, each on the colour iTerm2 would give it and with only what
