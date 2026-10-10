@@ -23460,3 +23460,24 @@ Tests: `ask_queue_e2e`'s two `…owed_across…restart…` cases (resent to an u
 `unsent{brief}` on disk across the restart, no abandon line; kept for a seat whose transcript
 exists) and `crown_e2e`'s two `…after_a_restart_is_not_heard_as_a_finished_turn` cases (resent,
 and left unsent: no wake until the brief's own turn, then `finished its turn`).
+
+## The archive offer counts what removing a tree frees, not what `du` counts (T-723, 2026-10-10, "storage restored on archive is inflated")
+
+The offer read `frees ~106.4GiB on disk` for two finished tickets on a 460 GiB disk with 33 GiB
+free. `resources::tree_bytes` summed `st_blocks`, which is `du`'s figure, and every worktree's
+`target/` is seeded by `.mesimon-worktree-init.sh` as an APFS clone of the checkout's (`cp -c`):
+T-721's tree read 53.2 GiB that way and held 3.4 GiB of its own, T-717's 50.8 and 1.9.
+
+**A file now counts its private size where the volume keeps one**: `getattrlist` with
+`ATTR_CMNEXT_PRIVATESIZE` (and `ATTR_CMN_RETURNED_ATTRS`, so a volume that keeps no count falls
+back to blocks), on macOS only. A hard-linked file counts once by `(dev, ino)`. Linux keeps
+`st_blocks`: a reflink's sharing is FIEMAP's `SHARED` flag per extent, not asked for here, and
+the seed there is a plain copy on most filesystems.
+
+**The figure is a floor.** Blocks two removed trees share only with each other (the checkout
+rebuilt the file since both were seeded) count in neither. Refused: grouping by
+`ATTR_CMNEXT_CLONEID`, which names a family but not which blocks each member shares. Doctor's
+`archived trees` line takes the same walk and the same correction.
+
+Test: `resources::tests::tree_bytes_counts_what_removing_the_tree_frees` (a hard link counts
+once; a `cp -c` clone of a file outside the tree adds less than a MiB of its 8).

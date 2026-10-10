@@ -132,17 +132,24 @@ pub fn parse_vm_stat(text: &str) -> Option<u64> {
     Some((pages("Pages free") + pages("Pages inactive")) * page_size)
 }
 
-/// Bytes allocated under `root` (what `du` counts; symlinks are not
-/// followed), added to `total`. False when `deadline` came first, and the
-/// total is then a floor: a tree with a `target/` holds hundreds of
-/// thousands of files. Doctor walks under a budget; the archive offer's
-/// pricing (T-679) walks off the writer thread with none.
+/// Bytes that removing `root` would give back (symlinks are not followed),
+/// added to `total`. False when `deadline` came first, and the total is then
+/// a floor: a tree with a `target/` holds hundreds of thousands of files.
+/// Doctor walks under a budget; the archive offer's pricing (T-679) walks off
+/// the writer thread with none.
+///
+/// Not what `du` counts (T-723): a worktree's `target/` is seeded as an APFS
+/// clone of the checkout's, so most of its blocks are the checkout's too and
+/// stay when the tree goes. A file counts its private size where the volume
+/// says one, and a hard-linked file counts once. Blocks two removed trees
+/// share only with each other count in neither, so the figure is a floor.
 pub fn tree_bytes(
     root: &std::path::Path,
     deadline: Option<std::time::Instant>,
     total: &mut u64,
 ) -> bool {
     use std::os::unix::fs::MetadataExt;
+    let mut linked = HashSet::new();
     let mut dirs = vec![root.to_path_buf()];
     while let Some(dir) = dirs.pop() {
         if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
@@ -152,18 +159,97 @@ pub fn tree_bytes(
         for e in rd.flatten() {
             // `DirEntry::metadata` does not traverse a symlink.
             let Ok(m) = e.metadata() else { continue };
-            *total += m.blocks() * 512;
             if m.is_dir() {
+                *total += m.blocks() * 512;
                 dirs.push(e.path());
+                continue;
             }
+            if m.nlink() > 1 && !linked.insert((m.dev(), m.ino())) {
+                continue;
+            }
+            let private = if m.is_file() { private_size(&e.path()) } else { None };
+            *total += private.unwrap_or(m.blocks() * 512);
         }
     }
     true
 }
 
+/// APFS's count of a file's bytes no clone shares (`ATTR_CMNEXT_PRIVATESIZE`);
+/// `None` where the volume keeps no such count.
+#[cfg(target_os = "macos")]
+fn private_size(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    #[repr(C, packed(4))]
+    struct Reply {
+        length: u32,
+        returned: libc::attribute_set_t,
+        private: libc::off_t,
+    }
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: zeroed is a valid bit pattern for both plain C structs.
+    let mut ask: libc::attrlist = unsafe { std::mem::zeroed() };
+    ask.bitmapcount = libc::ATTR_BIT_MAP_COUNT;
+    ask.commonattr = libc::ATTR_CMN_RETURNED_ATTRS;
+    ask.forkattr = libc::ATTR_CMNEXT_PRIVATESIZE;
+    let mut reply: Reply = unsafe { std::mem::zeroed() };
+    // SAFETY: `path` is NUL-terminated, `ask` lives across the call, and the
+    // reply buffer is sized to exactly what is asked for.
+    let rc = unsafe {
+        libc::getattrlist(
+            path.as_ptr(),
+            (&mut ask as *mut libc::attrlist).cast(),
+            (&mut reply as *mut Reply).cast(),
+            std::mem::size_of::<Reply>(),
+            libc::FSOPT_NOFOLLOW | libc::FSOPT_ATTR_CMN_EXTENDED,
+        )
+    };
+    let returned = reply.returned.forkattr;
+    (rc == 0 && returned & libc::ATTR_CMNEXT_PRIVATESIZE != 0).then(|| reply.private.max(0) as u64)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn private_size(_: &std::path::Path) -> Option<u64> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a tree frees, not what `du` counts (T-723): a hard link counts
+    /// once, and on APFS a clone of a file outside the tree counts nothing,
+    /// as a seeded worktree's `target/` is a clone of the checkout's.
+    #[test]
+    fn tree_bytes_counts_what_removing_the_tree_frees() {
+        let base = std::env::temp_dir().join(format!("msmn-tree-bytes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (outside, tree) = (base.join("checkout"), base.join("tree"));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&tree).unwrap();
+        let mib = 1 << 20;
+        std::fs::write(tree.join("own"), vec![b'a'; mib]).unwrap();
+        std::fs::hard_link(tree.join("own"), tree.join("own-again")).unwrap();
+        std::fs::write(outside.join("big"), vec![b'b'; 8 * mib]).unwrap();
+        let mut bytes = 0;
+        assert!(tree_bytes(&tree, None, &mut bytes));
+        assert!(bytes >= mib as u64 && bytes < 2 * mib as u64, "a hard link counts once: {bytes}");
+
+        let cloned = std::process::Command::new("cp")
+            .args(["-c"])
+            .arg(outside.join("big"))
+            .arg(tree.join("clone"))
+            .status()
+            .is_ok_and(|s| s.success());
+        if cfg!(target_os = "macos") && cloned {
+            let mut with_clone = 0;
+            assert!(tree_bytes(&tree, None, &mut with_clone));
+            assert!(
+                with_clone < bytes + mib as u64,
+                "a clone frees none of what it shares: {with_clone} against {bytes}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn ps_aggregate_filters_by_pgid() {
