@@ -23523,3 +23523,21 @@ between scans stamps such a card** (`App::restamp_spoke`, over unseen entries on
 draw's own windowed read), so the blank lasts a tick, not a scan.
 
 Test: `app::tests::a_reply_ahead_of_its_scan_waits_for_its_reveal`.
+
+## A pane silent while Claude Code calls the turn busy is not quiet (T-729, 2026-10-11, "ticket incorrectly marked as interrupted, still running for quite long")
+
+An axiom worker on `--model fable --effort xhigh` was one 65-minute turn, and its card wore
+`⊘` interrupted four times in fifteen minutes, each time put back by the next `PostToolUse`. The
+feed named the mover: `PaneQuiet`, 60.7 s after a tool result. The transcript's next record (a
+`thinking` block) landed 119 s after that result: the model reasoned for two minutes with the
+pane still and nothing written, so `tail::turn_in_flight` (T-439) found a tool result older than
+the quiet threshold and let the probe speak.
+
+**Claude Code's session file read `status: busy` the whole time**, stamped at the turn's start.
+The activity probe now holds `PaneQuiet` while that file reads `busy`, through the status
+probe's own lookup (`ClaudeRecovery::session_file`, shared with `status_observation`). An Esc
+flips the file at the keypress (the recordless-Esc catch, `StatusFileIdle`), so a turn really
+over still gets past it; a Claude Code with no session file is judged on silence as before.
+
+Test: `recovery_tests::a_silent_pane_claude_code_calls_busy_is_not_quiet` (a tool result two
+minutes old, `busy` holds, `idle` speaks).

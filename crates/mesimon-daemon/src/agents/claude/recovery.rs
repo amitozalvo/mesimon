@@ -169,6 +169,18 @@ impl AgentRecovery for ClaudeRecovery {
                 if in_flight {
                     return Vec::new();
                 }
+                // Nor while Claude Code's own session file calls the turn
+                // busy (T-729): a model at high effort thought for two
+                // minutes after a tool result, pane and transcript both
+                // still, and the card read "interrupted" each time. An Esc
+                // flips the file at the keypress, so only a turn that is
+                // really over gets past this.
+                if self
+                    .session_file(record, now)
+                    .is_some_and(|pf| pf.status.as_deref() == Some("busy"))
+                {
+                    return Vec::new();
+                }
                 vec![observation(Signal::PaneQuiet, "activity")]
             }
             RecoverySample::Status => self.status_observation(record, now).into_iter().collect(),
@@ -178,13 +190,10 @@ impl AgentRecovery for ClaudeRecovery {
 }
 
 impl ClaudeRecovery {
-    fn status_observation(
-        &mut self,
-        record: &SessionRecord,
-        now: u64,
-    ) -> Option<RecoveryObservation> {
+    /// Claude Code's own session file for this record, found once and
+    /// re-looked-for every `STATUS_FILE_RETRY_MS` while it is missing.
+    fn session_file(&mut self, record: &SessionRecord, now: u64) -> Option<SessionsPidFile> {
         let claude_id = record.claude_session_id.unwrap_or(record.id);
-        let since = record.state_changed_at.unwrap_or(now);
         let probe = self.status.get_or_insert(StatusProbe {
             path: None,
             looked_at: 0,
@@ -205,6 +214,17 @@ impl ClaudeRecovery {
             probe.path = None;
             return None;
         }
+        Some(pf)
+    }
+
+    fn status_observation(
+        &mut self,
+        record: &SessionRecord,
+        now: u64,
+    ) -> Option<RecoveryObservation> {
+        let since = record.state_changed_at.unwrap_or(now);
+        let pf = self.session_file(record, now)?;
+        let probe = self.status.as_mut()?;
         // A park the hooks have gone quiet on is still earned while Claude
         // Code calls the session busy: a subagent deep in one reasoning step
         // sends nothing at all (T-724).
@@ -992,6 +1012,43 @@ mod recovery_tests {
         assert_eq!(observations[0].source, "activity");
         // No transcript to ask: silence decides, as it always did.
         record.transcript_path = None;
+        let observations = recovery.poll(&record, silent(), now);
+        assert!(matches!(observations[0].signal, Signal::PaneQuiet));
+    }
+
+    /// T-729: a model thinking past the threshold after a tool result leaves
+    /// pane and transcript both still; the session file's `busy` holds the
+    /// probe, and its `idle` lets it speak.
+    #[test]
+    fn a_silent_pane_claude_code_calls_busy_is_not_quiet() {
+        let history = History::new();
+        history.append(serde_json::json!({"uuid":"res", "type":"user",
+            "timestamp":"2026-09-23T08:33:11.000Z",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}));
+        let file = History::new();
+        let mut record = record(SessionState::Running);
+        record.transcript_path = Some(history.0.display().to_string());
+        let claude_id = record.id;
+        let write = |status: &str| {
+            let body = serde_json::json!({
+                "pid": 1, "sessionId": claude_id, "status": status, "statusUpdatedAt": 900,
+            });
+            std::fs::write(&file.0, body.to_string()).unwrap();
+        };
+        let mut recovery = ClaudeRecovery {
+            status: Some(StatusProbe {
+                path: Some(file.0.clone()),
+                looked_at: 0,
+                near_idle: None,
+                waiting_spell: None,
+            }),
+            ..ClaudeRecovery::default()
+        };
+        let now = 1_790_152_511_076; // two minutes past the tool result
+        let silent = || RecoverySample::Activity { last_output_ms: 1_790_152_391_000 };
+        write("busy");
+        assert!(recovery.poll(&record, silent(), now).is_empty(), "Claude Code calls it busy");
+        write("idle");
         let observations = recovery.poll(&record, silent(), now);
         assert!(matches!(observations[0].signal, Signal::PaneQuiet));
     }

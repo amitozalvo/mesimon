@@ -333,7 +333,9 @@ pub enum Signal {
     /// remains the fallback for a record that never lands — and the daemon
     /// holds it while the transcript shows a tool in flight or a fresh reply
     /// (`tail::turn_in_flight`, T-439): a live Claude Code pane can write no
-    /// byte for over a minute while a tool runs.
+    /// byte for over a minute while a tool runs. It holds too while Claude
+    /// Code's session file reads `busy` (T-729): a model thinking past the
+    /// threshold after a tool result writes neither pane nor transcript.
     PaneQuiet,
     /// Daemon-side probe while `Running`: Claude Code's own
     /// `~/.claude/sessions/<pid>.json` reads `status: idle`, stamped after
