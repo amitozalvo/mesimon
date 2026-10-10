@@ -6,6 +6,59 @@ notes, and the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-beta.4 — 2026-10-10
+
+### Added
+
+- **The board works with the mouse.** Click a card, a column header, a list
+  row or a key hint to select or press it; clicking the selected item again
+  opens it, so a double-click opens a card's page. The wheel scrolls the
+  column or list under the pointer, a click outside a dialog closes it, and
+  dragging over text copies it when you let go. Rest the pointer on a card to
+  open it with its latest reply. Settings › Behaviour › `Mouse` turns this off
+  and gives the terminal its own text selection back.
+- **A card shows its agent's new reply on a line under the title** until you
+  move the cursor onto the card. Settings › Appearance › `New replies` turns
+  it off.
+- **Settings › Agents › `Crown watches tickets` lets the crown wait on a
+  ticket you started.** Off by default. When on, the crown hears when that
+  ticket's agent finishes a turn, raises its hand or is merged; the agent is
+  sent nothing, and its questions and plans stay yours.
+- **In Remote Control, the composer on a ticket with no agent, or a parked
+  one, starts or wakes the agent with what you typed.**
+- **In Remote Control, plain web addresses in a conversation are links, and
+  each code block has a Copy button.**
+- **In Remote Control, a new ticket can carry pictures while the terminal is
+  away.** The ticket waits on the page and is sent when the terminal is back.
+
+### Changed
+
+- **Settings is one dialog.** The sections (Theme, Appearance, Notifications,
+  Behaviour, Agents, Crown, Terminal, Usage) are listed on the left and the
+  selected section's page is on the right; `enter` or `l` steps into a page,
+  `esc` or `h` steps out, and `,` opens Settings from the board or a ticket
+  page. Theme shows a preview of the board in the highlighted theme. Usage
+  has moved from the menu to Settings › Usage, where `r` reads it again. The
+  Follow-ups and Default column rows are gone from Settings; a value a board
+  already holds keeps applying.
+- **A ticket whose `Summary` has an unticked box cannot be archived** and is
+  left out of the archive offer. Tick the box or remove it to archive the
+  ticket.
+
+### Fixed
+
+- **The crown's lightning now strikes a card when the crown watches it or
+  puts its agent to sleep.** Before, the bolt was skipped unless something
+  else on the board changed at the same moment.
+- **A card shows its agent as working while a `!` shell command runs in
+  Claude Code,** and the session is not put to sleep under it.
+- **In Remote Control, swiping sideways on a conversation reaches the notes,**
+  and the conversation no longer scrolls sideways on a phone.
+- **In Remote Control, the connection status reads `connecting` during a
+  retry** and reports the terminal or relay as unreachable only after two
+  failed attempts.
+- **On iOS, no empty band shows above the Remote Control keyboard.**
+
 ## v0.1.0-beta.3 — 2026-10-08
 
 ### Added
