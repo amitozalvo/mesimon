@@ -23279,3 +23279,12 @@ composer's title (`Target::Title`, which takes the keys from the body) and a not
 `move_rows` does, before a soft break) are the editor's own. `EditBuffer::place` puts the cursor
 after a wide cluster from its right half. A field's row is never lit by the hover; a drag in
 one still selects screen text.
+
+**The selection is inverted, not the cursor's surface (same day, the author: "selection uses
+same background color as some elements in the TUI which renders it impossible to read").** On
+the footer band, the cursor card and every selected row, the cursor's surface IS the ground, so
+a selection painted on it showed nothing. `Theme::selection` inverts instead: the full ink as
+ground, the page as letters, painted rather than SGR 7 (the reverse attribute stays Mono and
+8-colour only); where the full ink is the terminal's default (16 colours), the two greys stand
+in. `a_selection_reads_on_every_surface` drags corner to corner in every flavor and profile and
+holds every cell to letters unlike their ground, off the cursor's surface.

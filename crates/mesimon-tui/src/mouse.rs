@@ -263,9 +263,9 @@ pub(crate) fn paint_hover(buf: &mut Buffer, map: &Map, at: (u16, u16), theme: &T
 
 /// The text selection (T-716): the cells from `a` to `b` in reading order,
 /// the way a terminal selects — the first row from `a` on, the rows between
-/// whole, the last row up to `b`. Painted on the cursor's surface (bold
-/// where the profile paints none), and returned as the text it covers, one
-/// line a row, trailing blanks trimmed.
+/// whole, the last row up to `b`. Painted inverted (`Theme::selection`),
+/// and returned as the text it covers, one line a row, trailing blanks
+/// trimmed.
 pub(crate) fn paint_selection(
     buf: &mut Buffer,
     a: (u16, u16),
@@ -274,10 +274,7 @@ pub(crate) fn paint_selection(
 ) -> String {
     let area = buf.area;
     let (from, to) = if (a.1, a.0) <= (b.1, b.0) { (a, b) } else { (b, a) };
-    let mut style = theme.selected_row();
-    if style == ratatui::style::Style::default() {
-        style = style.add_modifier(Modifier::BOLD);
-    }
+    let style = theme.selection();
     let mut rows: Vec<String> = Vec::new();
     for y in from.1.max(area.top())..=to.1.min(area.bottom().saturating_sub(1)) {
         let first = if y == from.1 { from.0 } else { area.left() };

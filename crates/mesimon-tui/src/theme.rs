@@ -2095,6 +2095,31 @@ impl Theme {
         })
     }
 
+    /// A text selection being dragged (T-716): the text inverted — the full
+    /// ink as its ground, the page as its letters — so it reads on every
+    /// surface the board paints, the cursor's own included, which a
+    /// selection on that surface did not. Painted, not SGR 7, wherever the
+    /// profile has colour; the reverse attribute where it is the only tool.
+    pub fn selection(&self) -> Style {
+        if self.reverse_allowed() {
+            return Style::default().add_modifier(Modifier::REVERSED);
+        }
+        let dark = self.flavor.ground() == Ground::Dark;
+        // A ramp whose full ink is the terminal's own default (16 colours)
+        // has no colour to make a ground of: the two greys stand in.
+        let ink = match self.rest.base {
+            Color::Reset if dark => Color::Indexed(7),
+            Color::Reset => Color::Indexed(0),
+            c => c,
+        };
+        let letters = match self.bg {
+            Some(bg) if self.rest.base != Color::Reset => bg,
+            _ if dark => Color::Indexed(0),
+            _ => Color::Indexed(15),
+        };
+        Style::default().bg(ink).fg(letters).underline_color(letters)
+    }
+
     /// The cursor card's surface + title treatment pieces (06 §7): callers
     /// combine `selected_row` (surface) with `sel` ramp text and BOLD.
     pub fn selected_row(&self) -> Style {

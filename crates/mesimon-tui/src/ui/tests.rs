@@ -10491,7 +10491,8 @@ fn a_drag_selects_text_and_the_release_copies_it() {
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), at);
     mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), (at.0 + 8, at.1));
     let buf = cells(&app, 120, 30);
-    assert_eq!(buf[(at.0 + 4, at.1)].bg, app.theme.selected_bg.expect("painted"), "lit");
+    assert_eq!(buf[(at.0 + 4, at.1)].bg, app.theme.rest.base, "lit: the ink is its ground");
+    assert_eq!(buf[(at.0 + 4, at.1)].fg, app.theme.bg.expect("painted"), "the page its letters");
     assert_eq!(app.selected_text.borrow().as_str(), "Grapheme");
     mouse(&mut app, MouseEventKind::Up(MouseButton::Left), (at.0 + 8, at.1));
     let copied = crate::clipboard::COPIED.with(|c| c.borrow().last().cloned());
@@ -10562,4 +10563,35 @@ fn a_click_places_the_cursor_in_a_dialog_field() {
     click(&mut app, spot_of(&lines, "cheap"));
     let Mode::Tiers { naming: Some(buf), .. } = &app.mode else { panic!("still naming") };
     assert_eq!(buf.width_before_cursor(), "fast and ".len());
+}
+
+/// A selection reads on every surface (T-716): on the footer band and the
+/// cursor card — both on the cursor's surface, which the selection first
+/// wore and vanished into — its cells differ from that surface, and their
+/// letters from their ground, in every flavor and profile.
+#[test]
+fn a_selection_reads_on_every_surface() {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    for flavor in Flavor::ALL {
+        for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Mono] {
+            let mut app = App::for_test(fixture(false), Theme::new(flavor, profile));
+            render(&app, 120, 30);
+            // Corner to corner: the header, the cursor card, the footer.
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), (0, 0));
+            mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), (119, 29));
+            let buf = cells(&app, 120, 30);
+            for c in buf.content() {
+                if profile == Profile::Mono {
+                    assert!(c.modifier.contains(Modifier::REVERSED), "{flavor:?}");
+                    continue;
+                }
+                assert_ne!(c.fg, c.bg, "{flavor:?} {profile:?}: letters on their own ground");
+                assert!(c.bg != Color::Reset && c.fg != Color::Reset, "{flavor:?} {profile:?}");
+                assert!(
+                    Some(c.bg) != app.theme.selected_bg,
+                    "{flavor:?} {profile:?}: the cursor's surface"
+                );
+            }
+        }
+    }
 }
