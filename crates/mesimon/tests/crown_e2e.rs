@@ -2017,6 +2017,141 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
     assert!(c.board().ticket(w).is_some());
 }
 
+/// A restart between a worker's launch and its first prompt (T-722): the
+/// crown started it, its `SessionStart` came, and the daemon went down (a
+/// person's `U`) before the brief was pasted. The new daemon used to call
+/// the brief abandoned and tell the crown at once that the worker `finished
+/// its turn (nothing new to merge)` — a turn that never ran, on a worker
+/// sitting at an empty composer. Now the brief goes again, and the crown
+/// hears nothing until the turn the brief starts has ended.
+#[test]
+fn a_brief_resent_after_a_restart_is_not_heard_as_a_finished_turn() {
+    owed_across_a_restart("crown_owed", false);
+}
+
+/// The same restart at a worker whose conversation took a prompt in the
+/// window (T-722): nothing is sent again, and its words still unsent are
+/// words pending on the ticket, so the restart's look at it is silent too.
+#[test]
+fn a_brief_left_unsent_after_a_restart_is_not_heard_as_a_finished_turn() {
+    owed_across_a_restart("crown_unsent", true);
+}
+
+fn owed_across_a_restart(name: &str, took: bool) {
+    // A pane started while `slow` exists comes up four seconds late, so the
+    // worker's brief cannot be pasted before the restart; the crown's pane
+    // is up at once.
+    let stub = format!(
+        "#!/bin/sh\n[ -e \"$(dirname \"$0\")/slow\" ] && sleep 4\n{COMPOSER}{}",
+        RECORDING_STUB.trim_start_matches("#!/bin/sh\n")
+    );
+    let Some(h) = Harness::boot_bare(
+        name,
+        Some(&stub),
+        &[
+            ("MESIMON_CLAUDE_ROAD", "hooks"),
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client(name);
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+
+    let a = create(&mut c, "coordinate");
+    let title = "mesimon-probe-722 owed across a restart";
+    let w = create(&mut c, title);
+    let kw = key_of(&mut c, w);
+    let sa = spawn(&mut c, a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+
+    std::fs::write(h.dir.join("slow"), "").unwrap();
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let transcript = h.dir.join(format!("{ws}.jsonl"));
+    let start = format!(
+        r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+        transcript.display()
+    );
+    hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(c.board().live_agent(w).unwrap().pending_submit, "the brief is owed");
+    drop(c);
+
+    h.restart_after(|| {
+        if took {
+            std::fs::write(&transcript, "{}\n").unwrap();
+        }
+    });
+    let mut c = h.client(&format!("{name}_2"));
+    let brief = || lines_with("mesimon-probe-722 owed across a restart");
+    if took {
+        // Past the late pane's composer: nothing goes, and the seat says so.
+        std::thread::sleep(std::time::Duration::from_millis(6000));
+        assert!(brief().is_empty(), "a prompted seat is not sent the brief again");
+        assert!(c.board().live_agent(w).unwrap().unsent.is_some(), "brief not sent");
+    } else {
+        wait_until(std::time::Duration::from_secs(20), "the resent brief", || !brief().is_empty());
+        // Time for a restored worker's look (`hear_restored`) and a wake.
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+    }
+    let worker = format!("{kw} \"{title}\"");
+    assert!(
+        lines_with(&worker).is_empty(),
+        "no wake before the brief's turn:\n{}",
+        std::fs::read_to_string(&got).unwrap()
+    );
+
+    // The brief's turn runs and ends: that is the turn the crown hears of.
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"brief"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    hook_send(&hook_sock, &ws.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(std::time::Duration::from_secs(10), "the finished turn's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    // The crown's pane holds the title its own start typed, so the first
+    // line it reads begins with it.
+    assert!(
+        lines_with(&worker)[0].contains(&format!("{worker} finished its turn")),
+        "{:?}",
+        lines_with(&worker)
+    );
+}
+
 /// The crown sends its own asks (T-550), where the person lets it: in
 /// supervised mode the words wait for `^y` as T-413 built them; autonomous
 /// (the default since T-610), an ask to an agent the crown STARTED goes by

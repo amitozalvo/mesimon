@@ -98,6 +98,9 @@ where the check is off.
 - If no board is open, the next one you start notices that the background daemon is running older
   code and restarts it for you, before drawing anything. Your sessions survive: they live on the
   tmux server, which the daemon does not own.
+- An agent started moments before a restart, whose brief had not reached it yet, is sent the
+  brief again once the board is back. If it had already been given a prompt, its card says
+  `brief not sent` instead, and its Shift+Enter sends it.
 
 ## On the board
 

@@ -931,6 +931,7 @@ pub fn run(paths: Paths) -> Result<()> {
     // that were already persisted as dead, which must stay dead.
     let mut just_exited = Vec::new();
     let mut owed_abandoned = Vec::new();
+    let mut owed_handed = Vec::new();
     for (id, link) in &rec.links {
         if let Some(r) = board.sessions.iter_mut().find(|s| s.id == *id) {
             // Observe-only records (imported, never spawned) have no pane by
@@ -956,9 +957,16 @@ pub fn run(paths: Paths) -> Result<()> {
                 // is memory, on purpose): nothing will press it and nothing
                 // will ack it, so the flag would hold the checkout — and the
                 // card's launching arc — until a kill or a wake (T-244). The
-                // title sits in the box, as a plain spawn leaves it.
+                // title sits in the box, as a plain spawn leaves it. Words
+                // the last daemon handed over on its way out (T-722) are
+                // not abandoned: they are the seat's `unsent`, resent below
+                // where that is safe.
                 r.pending_submit = false;
-                owed_abandoned.push(r.ticket);
+                if r.unsent.is_some() {
+                    owed_handed.push(*id);
+                } else {
+                    owed_abandoned.push(r.ticket);
+                }
             }
             if was_live && matches!(r.state, SessionState::Exited { reason: ExitReason::UserQuit })
             {
@@ -1302,6 +1310,9 @@ pub fn run(paths: Paths) -> Result<()> {
     for ticket in owed_abandoned {
         d.feed.board("daemon", "prompt_submit_abandoned", Some(ticket));
         parked = true;
+    }
+    for id in owed_handed {
+        parked |= d.resend_after_restart(id);
     }
     if parked {
         // The reconcile above already saved the corpse; write the park over
@@ -2899,6 +2910,7 @@ impl Daemon {
         for (id, change) in fired {
             changed |= self.apply_change(id, &change, None, Some("shutdown"));
         }
+        changed |= self.hand_over_owed();
         if changed {
             self.persist_sessions();
             self.broadcast();
@@ -4095,6 +4107,60 @@ impl Daemon {
         true
     }
 
+    /// The owed ledger is memory, and a shutdown takes it (T-722): a launch's
+    /// words still parked — or gone down a mod that never took them — have
+    /// reached no agent, so they are kept on the seat as `unsent` for the
+    /// next daemon, which resends a brief to a seat that never took a prompt
+    /// (`resend_after_restart`) and otherwise lights the card. Words already
+    /// pasted are in the box and may have been submitted; they are not
+    /// guessed at. Codex has no `unsent`, and keeps its own policy.
+    fn hand_over_owed(&mut self) -> bool {
+        let owed: Vec<(uuid::Uuid, Parked)> = self
+            .owed
+            .iter()
+            .filter_map(|(id, o)| {
+                let untaken = o.sent.clone().filter(|_| o.frame.is_some() && !o.taken);
+                o.parked.clone().or(untaken).map(|words| (*id, words))
+            })
+            .collect();
+        let mut changed = false;
+        for (id, words) in owed {
+            changed |= self.mark_unsent(id, Some(words));
+        }
+        changed
+    }
+
+    /// The words the last daemon handed over (`hand_over_owed`), for a seat
+    /// the reconcile found still owed them (T-722). A brief goes again, once,
+    /// to a seat that never took a prompt — the T-603 reading, with the
+    /// handed-over mark allowed — parked as a launch is, so the mod's first
+    /// poll or the composer read decides when, and the mark moves onto the
+    /// owed entry: every failure of that road puts it back. Anything else
+    /// keeps the card's mark and the seat's resend, as a failed start does.
+    fn resend_after_restart(&mut self, id: uuid::Uuid) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
+        let Some(unsent) = rec.unsent.clone().filter(|u| u.brief) else { return false };
+        let history_missing =
+            crate::agents::adapter(rec.kind).is_some_and(|a| a.history_missing(rec));
+        if !restart_resends(rec, history_missing) || self.owed.contains_key(&id) {
+            self.journal.line(&format!("session {id}'s unsent words wait for a person"));
+            return false;
+        }
+        let ticket = rec.ticket;
+        let parked = Parked { text: unsent.text, brief: true, title: true };
+        let mut owed = Owed::launch(ticket, parked, Ack::PROMPT);
+        owed.mod_road = self.on_mod_road(id);
+        owed.next_press = Some(now_ms());
+        owed.clear_first = true;
+        self.owed.insert(id, owed);
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.unsent = None;
+            rec.pending_submit = true;
+        }
+        self.feed.board("daemon", "prompt_resent", Some(ticket));
+        true
+    }
+
     /// The seat's Shift+Enter over unsent words (T-570): park them again on
     /// the owed road, armed now — the pane is long past `SessionStart` — with
     /// the composer wait and one Ctrl+C owed for a box holding what the
@@ -4182,14 +4248,13 @@ impl Daemon {
     /// and no file at the transcript path `SessionStart` named — Claude
     /// Code writes none before the first prompt (measured on 2.1.288).
     fn unprompted_hint(&self, rec: &mesimon_core::board::SessionRecord) -> bool {
-        rec.kind == SessionKind::Claude
+        never_prompted(rec)
             && matches!(
                 rec.state,
                 SessionState::Idle { stop_reason: StopReason::Unknown } | SessionState::Sleeping
             )
             && rec.unsent.is_none()
             && !self.owed.contains_key(&rec.id)
-            && rec.transcript_path.as_deref().is_some_and(|p| !std::path::Path::new(p).is_file())
     }
 
     /// `unprompted_hint`, confirmed the way a wake judges a conversation
@@ -14738,6 +14803,27 @@ fn open_boxes_refusal(open: usize) -> Option<String> {
     }
 }
 
+/// A Claude seat whose conversation never took a prompt (T-603): no file at
+/// the transcript path `SessionStart` named — Claude Code writes none before
+/// the first prompt (measured on 2.1.288). No path is no `SessionStart`, so
+/// nothing is known.
+fn never_prompted(rec: &mesimon_core::board::SessionRecord) -> bool {
+    rec.kind == SessionKind::Claude
+        && rec.transcript_path.as_deref().is_some_and(|p| !std::path::Path::new(p).is_file())
+}
+
+/// Whether a brief the last daemon handed over goes again by itself
+/// (T-722): the seat sits at the composer `SessionStart` left, with a pane,
+/// and its conversation took no prompt by either reading (`history_missing`
+/// is where a wake looks for it). A seat that took one, or stopped on
+/// anything else, keeps the mark for a person.
+fn restart_resends(rec: &mesimon_core::board::SessionRecord, history_missing: bool) -> bool {
+    rec.unsent.as_ref().is_some_and(|u| u.brief)
+        && rec.state == (SessionState::Idle { stop_reason: StopReason::Unknown })
+        && never_prompted(rec)
+        && history_missing
+}
+
 fn archive_suggest_ms() -> u64 {
     std::env::var("MESIMON_ARCHIVE_SUGGEST_MS")
         .ok()
@@ -14838,6 +14924,66 @@ mod status_line_tests {
         // A title cannot open a tmux style: `#` doubles, quotes vanish.
         assert_eq!(ticket_crumb("T-2", "a #[fg=red] 'b'"), "#[bold]T-2#[nobold] a ##[fg=red] b");
         assert_eq!(tmux_text("T-2", 16), "T-2");
+    }
+}
+
+#[cfg(test)]
+mod restart_resend_tests {
+    use super::restart_resends;
+    use mesimon_core::board::{
+        SessionKind, SessionRecord, SessionState, StopReason, UnknownReason, Unsent,
+    };
+
+    fn seat(transcript: Option<&std::path::Path>) -> SessionRecord {
+        let mut rec = SessionRecord::new(
+            uuid::Uuid::from_u128(7),
+            SessionKind::Claude,
+            ulid::Ulid::from_parts(1, 7),
+            vec!["claude".into()],
+            "/tmp".into(),
+            SessionState::Idle { stop_reason: StopReason::Unknown },
+        );
+        rec.transcript_path = transcript.map(|p| p.display().to_string());
+        rec.unsent = Some(Unsent { text: String::new(), brief: true });
+        rec
+    }
+
+    /// T-722: a brief handed over by the last daemon goes again only to a
+    /// claude at the composer `SessionStart` left whose conversation took no
+    /// prompt; anything else keeps the card's mark for a person.
+    #[test]
+    fn a_handed_over_brief_goes_again_only_to_a_seat_that_never_took_a_prompt() {
+        let dir = std::env::temp_dir().join(format!("msmn-t722-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let absent = dir.join("never.jsonl");
+        let present = dir.join("took.jsonl");
+        std::fs::write(&present, "{}\n").unwrap();
+
+        assert!(restart_resends(&seat(Some(&absent)), true));
+        assert!(!restart_resends(&seat(Some(&absent)), false), "found where a wake looks");
+        assert!(!restart_resends(&seat(Some(&present)), true), "the conversation took one");
+        assert!(!restart_resends(&seat(None), true), "no SessionStart, nothing known");
+
+        let mut words = seat(Some(&absent));
+        words.unsent = Some(Unsent { text: "go".into(), brief: false });
+        assert!(!restart_resends(&words, true), "a person's words are theirs to resend");
+        words.unsent = None;
+        assert!(!restart_resends(&words, true), "nothing handed over");
+
+        for state in [
+            SessionState::Running,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
+            SessionState::Sleeping,
+        ] {
+            let mut rec = seat(Some(&absent));
+            rec.state = state.clone();
+            assert!(!restart_resends(&rec, true), "{state:?}");
+        }
+        let mut shell = seat(Some(&absent));
+        shell.kind = SessionKind::Codex;
+        assert!(!restart_resends(&shell, true), "a codex keeps its own policy");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

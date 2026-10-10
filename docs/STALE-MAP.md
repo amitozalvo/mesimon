@@ -23412,3 +23412,51 @@ fades in again.
 `new_replies`), on by default, per machine like the summary's showing: how a person reads a
 board is not a repo's. Off keeps every resting card to its one line and the heavy check alone
 says there is news. Doctor's `replies` line says which.
+
+## A brief owed across a daemon restart is kept and sent again (T-722, 2026-10-10, "A daemon restart between a launch and its first prompt loses the brief; the crown then hears \"finished\"")
+
+Seen on T-721: the crown's worker took its `SessionStart`, a person pressed `U` 1.9 s later, and
+the new daemon's first feed line was `prompt_submit_abandoned`. The owed ledger (`Daemon::owed`)
+is memory on purpose (T-244), so the brief died with it; nothing went on `unsent`, so the card
+did not say `brief not sent`, and the crown's restored look (`hear_restored`, T-602) read the
+spawn's open turn as a finished one and woke the crown with `finished its turn (nothing new to
+merge)` for a worker at an empty composer.
+
+**The shutdown hands the words over.** `begin_shutdown` (the one road for `Shutdown` and
+SIGTERM) calls `hand_over_owed`: every owed entry whose words are still parked, or went down a
+mod whose bridge never took the frame, is `mark_unsent` on its seat before `persist_sessions`.
+Words already pasted are not: they are in the box and may have been submitted, and guessing would
+double a prompt. The reconcile arm that cleared `pending_submit` now feeds
+`prompt_submit_abandoned` only for a record with no `unsent`; one with it is handed over.
+**The placement is the shutdown, not the park.** Writing `unsent` when the launch is owed would
+also cover a crash, but `unsent` is what the card's `brief not sent`, the `!N` chip, the
+notifier's banner and `state_word`'s `unsent` read, so every healthy launch would light all
+four for its first seconds. A crash still loses the brief, as before, and says so in the feed.
+
+**The new daemon sends a brief again, once.** For each handed-over record,
+`resend_after_restart` asks `restart_resends` (pure, unit-tested): `unsent.brief`, the seat at
+the composer `SessionStart` left (`Idle{Unknown}`, kept across a restart by `state_for`), and no
+transcript by either reading — the path `SessionStart` named (`never_prompted`, now shared with
+`unprompted_hint`) and `history_missing`. Then the words are parked as a launch, armed at once,
+on the mod road if the seat is on it (its first poll of the new daemon sends the `submit`, and
+the bridge wait falls back to the paste), else the paste road with its composer read and one
+Ctrl+C for a box holding the typed title; title and brief, as the seat's resend. The mark moves
+from the record onto the owed entry (`rec.unsent = None`, `pending_submit` on), so the card
+draws the launching arc and not a failed start, and every failure of that road puts it back.
+Feed `prompt_resent`, by `daemon`. A seat that took a prompt, or stopped on anything else, keeps
+`unsent`, the card and the Shift+Enter resend.
+
+**The crown counts unsent words as words pending.** `pending_on`'s `words` now also holds for a
+live agent with `unsent_words()`, so a finished turn on that ticket is silent (`due`); with the
+resend owed, the entry itself already counted, and `hear_restored` waits on `pending_submit`.
+The wake comes when the brief's turn ends, in the words it always had. No wording changed, so
+no rig test.
+
+**Codex is unchanged.** `drive_codex_inputs` keeps its own policy: `mark_unsent` is Claude's
+alone, and the reconcile arm's Codex branch still drops `pending_submit` without
+`codex_submit_sent`; the same lines would need an `unsent` Codex does not have.
+
+Tests: `ask_queue_e2e`'s two `…owed_across…restart…` cases (resent to an unprompted seat with
+`unsent{brief}` on disk across the restart, no abandon line; kept for a seat whose transcript
+exists) and `crown_e2e`'s two `…after_a_restart_is_not_heard_as_a_finished_turn` cases (resent,
+and left unsent: no wake until the brief's own turn, then `finished its turn`).

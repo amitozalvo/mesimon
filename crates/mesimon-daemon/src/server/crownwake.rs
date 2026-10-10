@@ -56,9 +56,10 @@
 //!   landing when its worker is finished entirely — merged, notified, and
 //!   its turn ended — and its line says `and finished its turn`;
 //! - **words on their way** — queued for the agent (a person's, or the
-//!   crown's held for `^y` or sent by the queue), or pasted and not yet
-//!   taken: a finished turn is silent, and the turn those words run is
-//!   judged on its own end (T-591);
+//!   crown's held for `^y` or sent by the queue), pasted and not yet
+//!   taken, or a launch's that never reached it (`unsent`: the seat's
+//!   resend, or the one a restart makes, T-722): a finished turn is silent,
+//!   and the turn those words run is judged on its own end (T-591);
 //! - **a turn running**: a finished turn is silent (T-591);
 //! - **its hand up, a question or a plan** — each its own wake: a finished
 //!   turn is silent.
@@ -427,7 +428,8 @@ pub(super) struct Pending {
     /// The merge flow's words pasted and not yet taken, or the turn that
     /// took them still running.
     pub(super) merge_step: bool,
-    /// Other words for the agent: queued, or pasted and not yet taken.
+    /// Other words for the agent: queued, pasted and not yet taken, or a
+    /// launch's that never reached it (`unsent`, T-722).
     pub(super) words: bool,
     /// A turn running on the agent, other than a question or a plan.
     pub(super) turn: bool,
@@ -933,7 +935,11 @@ impl Daemon {
             train: look.is_some_and(|look| self.train_takes(worker, look)),
             merge_step: owed(true)
                 || (working && self.turn_asks.get(&worker) == Some(&TurnAsk::Merge)),
-            words: owed(false) || self.queued.iter().any(|q| q.ticket == worker),
+            // A launch's words that reached no agent (T-570) are still owed
+            // to it, by the seat's resend or the restart's (T-722).
+            words: owed(false)
+                || self.queued.iter().any(|q| q.ticket == worker)
+                || agent.is_some_and(|s| s.unsent_words().is_some()),
             turn: working && !dialog,
             hand: self.board.ticket(worker).is_some_and(|t| t.hand_raised()),
             dialog,

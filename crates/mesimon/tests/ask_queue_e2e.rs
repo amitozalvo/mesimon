@@ -906,3 +906,160 @@ fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
 
     let _ = c.request(Command::Shutdown);
 }
+
+/// Cooked for four seconds — long enough for a `SessionStart` and a daemon
+/// restart before anything could be pasted — then raw, bracketed paste and
+/// the composer, as Claude Code comes up; every byte it reads is kept.
+const SLOW: &str = "#!/bin/sh
+d=\"$(dirname \"$0\")\"
+sleep 4
+stty -icanon -echo 2>/dev/null
+printf '\\033[?2004h\\033[999;1H\\033[3A────────────────────\\n❯ \\n────────────────────\\n  ? for shortcuts'
+exec cat >> \"$d/got.bin\"
+";
+
+const BRIEF: &str = "## Brief\n\nmesimon-probe-722 the brief outlives the daemon";
+
+/// A composed start on `SLOW`, its `SessionStart` sent with a transcript
+/// path under the fixture, and the daemon restarted before the composer
+/// painted — so before any paste and any ack (T-722). `took`: the
+/// conversation took a prompt meanwhile (its transcript is written in the
+/// restart's window). Returns the client on the new daemon, the ticket,
+/// the session and its title.
+fn restart_before_the_brief(
+    h: &Harness,
+    took: bool,
+) -> (TestClient, ulid::Ulid, uuid::Uuid, &'static str) {
+    let title = "mesimon-probe-722 resend me";
+    let mut c = h.client("owed");
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace: None,
+        tier: None,
+    });
+    let ticket = c.board().tickets.into_iter().find(|t| t.title == title).expect("ticket").id;
+    assert!(matches!(
+        c.request(Command::WriteNote { ticket, note: None, text: BRIEF.into(), rev: None }),
+        Response::NoteWritten { .. }
+    ));
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: true,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let transcript = h.dir.join(format!("{sid}.jsonl"));
+    let start = format!(
+        r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+        transcript.display()
+    );
+    hook_send_with(&h.paths.hook_sock(), &sid.to_string(), "SessionStart", Some("startup"), &start);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(
+        c.board().sessions.iter().any(|s| s.id == sid && s.pending_submit),
+        "the brief is owed"
+    );
+    drop(c);
+
+    h.restart_after(|| {
+        let text = std::fs::read_to_string(h.paths.sessions_file()).unwrap();
+        let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let rec = file["sessions"]
+            .as_array()
+            .and_then(|s| s.iter().find(|r| r["id"] == sid.to_string()))
+            .cloned()
+            .expect("the record on disk");
+        assert_eq!(
+            rec["unsent"],
+            serde_json::json!({ "brief": true }),
+            "the brief is kept on the seat across the restart: {rec}"
+        );
+        if took {
+            std::fs::write(&transcript, "{}\n").unwrap();
+        }
+    });
+    (h.client("owed-2"), ticket, sid, title)
+}
+
+fn read_bin(h: &Harness) -> String {
+    String::from_utf8_lossy(&std::fs::read(h.dir.join("got.bin")).unwrap_or_default()).into_owned()
+}
+
+/// The bracketed pastes the stub read, with tmux's CR read back as the
+/// newline the paste carried.
+fn pastes(text: &str) -> Vec<String> {
+    text.split("\x1b[200~")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("\x1b[201~").map(|(body, _)| body.replace('\r', "\n")))
+        .collect()
+}
+
+/// A daemon restart between a launch and its first prompt (T-722): the
+/// owed brief was memory and died with it, the feed said
+/// `prompt_submit_abandoned`, and the worker sat at its composer with the
+/// title typed. Now the shutdown keeps it on the seat as `unsent`, and the
+/// new daemon — the seat at its composer, its conversation never prompted —
+/// sends it again by itself once the composer paints: title and brief, one
+/// paste, `prompt_resent` in the feed, and the agent's ack clears the mark.
+#[test]
+fn a_brief_owed_across_a_daemon_restart_is_resent_to_a_seat_that_took_no_prompt() {
+    let env = [("MESIMON_CLAUDE_ROAD", "hooks"), ("MESIMON_PANE_QUIET_MS", "600000")];
+    let Some(h) = Harness::boot_bare("owedrestart", Some(SLOW), &env) else { return };
+    let (mut c, ticket, sid, title) = restart_before_the_brief(&h, false);
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let text = loop {
+        let text = read_bin(&h);
+        if text.contains("\x1b[201~") {
+            break text;
+        }
+        assert!(Instant::now() < deadline, "the brief was never resent: {text:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(pastes(&text), vec![format!("{title}\n\n{BRIEF}")], "title and brief: {text:?}");
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).unwrap();
+    assert!(rec.pending_submit, "the Enter is owed until the ack");
+    assert!(rec.ticket_read, "the brief went in");
+    assert_eq!(c.board().needs_you_count(), 0, "a resend under way is not a failed start");
+
+    hook_send_with(&h.paths.hook_sock(), &sid.to_string(), "UserPromptSubmit", None, "{}");
+    wait_until(Duration::from_secs(5), "the ack", || {
+        c.board().sessions.iter().any(|s| s.id == sid && !s.pending_submit && s.unsent.is_none())
+    });
+    wait_until(Duration::from_secs(3), "the resend's feed line", || {
+        feed_count(&h, "prompt_resent", ticket) == 1
+            && feed_count(&h, "prompt_submitted", ticket) == 1
+    });
+    assert_eq!(feed_count(&h, "prompt_submit_abandoned", ticket), 0);
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
+/// The same restart at a seat whose conversation took a prompt in the
+/// window (T-722): its transcript exists, so nothing is sent again — a
+/// second brief into a conversation under way is the double prompt T-603
+/// guards — and the seat keeps the card's `brief not sent` and its resend.
+#[test]
+fn a_brief_owed_across_a_restart_is_not_resent_to_a_seat_that_took_a_prompt() {
+    let env = [("MESIMON_CLAUDE_ROAD", "hooks"), ("MESIMON_PANE_QUIET_MS", "600000")];
+    let Some(h) = Harness::boot_bare("owedtook", Some(SLOW), &env) else { return };
+    let (mut c, ticket, sid, _) = restart_before_the_brief(&h, true);
+
+    // Past the stub's composer, and a cadence or two beyond.
+    std::thread::sleep(Duration::from_millis(6000));
+    assert!(pastes(&read_bin(&h)).is_empty(), "nothing is pasted: {:?}", read_bin(&h));
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).unwrap();
+    assert_eq!(
+        rec.unsent,
+        Some(mesimon_core::board::Unsent { text: String::new(), brief: true }),
+        "the mark stays for a person"
+    );
+    assert!(!rec.pending_submit, "nothing is owed");
+    assert_eq!(c.board().needs_you_count(), 1, "the card says so");
+    assert_eq!(feed_count(&h, "prompt_resent", ticket), 0);
+    assert_eq!(feed_count(&h, "prompt_submit_abandoned", ticket), 0);
+    let _ = c.request(Command::KillSession { id: sid });
+}
