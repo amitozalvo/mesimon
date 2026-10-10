@@ -282,7 +282,8 @@ click outside a dialog closes it, the way `esc` does: the note editor asks first
 unsaved text, and a field being typed into (a column's name, a tag's) keeps the dialog open. The wheel walks the column or list under the pointer, and scrolls the
 ticket page's preview, the diff and the release notes. Whatever the pointer is over lights up.
 
-Drag to select text: the selection is copied when you let go, and the footer says so. A
+In a title, a note or any field being typed in, a click puts the text cursor where you
+clicked. Drag to select text: the selection is copied when you let go, and the footer says so. A
 click acts when the button comes up, so the press that starts a drag presses nothing. The
 terminal's own selection still works with a modifier held: `⌥` (Option) in iTerm2, `shift` in
 most others. Settings › Behaviour › `Mouse` turns the mouse off and gives the terminal its

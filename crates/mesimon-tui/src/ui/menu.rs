@@ -417,7 +417,9 @@ fn draw_rows_with(
     lines.push(Line::from(Span::styled(format!("     {body}"), theme.dim3())));
     f.render_widget(Paragraph::new(lines), rows_area);
     if let Some((x, y)) = cursor_at {
-        f.set_cursor_position((x.min(rows_area.x + rows_area.width.saturating_sub(1)), y));
+        let at = (x.min(rows_area.x + rows_area.width.saturating_sub(1)), y);
+        f.set_cursor_position(at);
+        super::field_spot(app, rows_area, at);
     }
     if let Some((place, p)) = placed {
         let at = match place {

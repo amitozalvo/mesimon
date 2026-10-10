@@ -203,7 +203,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         Some(buf) => {
             let budget = title_budget.saturating_sub(1);
             let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
-            f.set_cursor_position((area.x + (1 + cx).min(area.width - 1), area.y + 2));
+            let at = (area.x + (1 + cx).min(area.width - 1), area.y + 2);
+            f.set_cursor_position(at);
+            super::field_spot(app, area, at);
             Line::from(vec![Span::raw(" "), Span::styled(shown, title_style)])
         }
         None => {
@@ -696,7 +698,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 Rect { x, y, width: field_w, height: field_rows },
             );
             // The hardware cursor in the prompt row (06 §5.7), as on the card.
-            f.set_cursor_position((x + (*x_off).min(field_w.saturating_sub(1)), y));
+            let at = (x + (*x_off).min(field_w.saturating_sub(1)), y);
+            f.set_cursor_position(at);
+            super::field_spot(app, Rect { x, y, width: field_w, height: 1 }, at);
         }
     };
     if two_zone {

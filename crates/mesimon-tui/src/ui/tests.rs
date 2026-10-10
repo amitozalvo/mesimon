@@ -10500,3 +10500,66 @@ fn a_drag_selects_text_and_the_release_copies_it() {
     assert_eq!(app.selected_ticket().map(|t| t.id), before, "a drag is not a click");
     assert!(app.selection.get().is_none());
 }
+
+/// A click in text being typed puts the cursor there (T-716): in the
+/// composer's one-line title on its card, then — grown into the dialog —
+/// in its title and in the body, which takes the keys from the title.
+#[test]
+fn a_click_places_the_cursor_in_text_being_typed() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 0;
+    let buffer = crate::text::EditBuffer::from_text(
+        "Ship the diff viewer".into(),
+        mesimon_core::board::TITLE_MAX_BYTES,
+    );
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Create {
+            workspace: None,
+            tags: Vec::new(),
+            description: None,
+            images: Vec::new(),
+            plan: false,
+            tier: None,
+        },
+        buffer,
+    };
+    let lines = render(&app, 120, 30);
+    let at = spot_of(&lines, "diff viewer");
+    click(&mut app, at);
+    let Mode::Input { buffer, .. } = &app.mode else { panic!("still typing") };
+    assert_eq!(buffer.width_before_cursor(), "Ship the ".len(), "before the word clicked");
+
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    if let Mode::Editor(ed) = &mut app.mode {
+        ed.grow =
+            Some((ratatui::layout::Rect::default(), std::time::Instant::now() - crate::app::GROW));
+        ed.body.paste("first line\nsecond line");
+    }
+    let lines = render(&app, 120, 30);
+    click(&mut app, spot_of(&lines, "second line"));
+    let Mode::Editor(ed) = &app.mode else { panic!("the dialog") };
+    assert_eq!(ed.focus, crate::app::Field::Body);
+    assert_eq!(ed.body.cursor(), "first line\n".len());
+
+    let lines = render(&app, 120, 30);
+    let title = spot_of(&lines, "diff viewer");
+    click(&mut app, (title.0 + 5, title.1));
+    let Mode::Editor(ed) = &app.mode else { panic!("the dialog") };
+    assert_eq!(ed.focus, crate::app::Field::Title, "the title takes the keys back");
+    assert_eq!(ed.title.width_before_cursor(), "Ship the diff ".len());
+}
+
+/// A field typed in place in a dialog row takes the click too.
+#[test]
+fn a_click_places_the_cursor_in_a_dialog_field() {
+    let mut app = app_graphite(fixture(false));
+    app.mode = Mode::Tiers {
+        idx: 0,
+        naming: Some(crate::text::EditBuffer::from_text("fast and cheap".into(), 64)),
+    };
+    let lines = render(&app, 120, 30);
+    click(&mut app, spot_of(&lines, "cheap"));
+    let Mode::Tiers { naming: Some(buf), .. } = &app.mode else { panic!("still naming") };
+    assert_eq!(buf.width_before_cursor(), "fast and ".len());
+}

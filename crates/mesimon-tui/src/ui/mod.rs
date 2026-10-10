@@ -56,6 +56,14 @@ pub(super) fn ask_keys(
     verbs.iter().filter_map(|v| binding_for(app.scope(), *v, ctx)).collect()
 }
 
+/// The one-line field being typed in: its cells across `row` on the line
+/// its cursor stands at `at`, for a click to place that cursor (T-716).
+/// Every field that puts the hardware cursor records one.
+pub(super) fn field_spot(app: &App, row: ratatui::layout::Rect, at: (u16, u16)) {
+    let rect = ratatui::layout::Rect { y: at.1, height: 1, ..row };
+    app.hits.borrow_mut().record(rect, crate::mouse::Target::Field { cursor_x: at.0 });
+}
+
 /// One rendered markdown document, kept across frames (`ticket::rendered`).
 pub(crate) struct RichCache {
     pub key: u64,

@@ -103,6 +103,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
             );
             spans.insert(0, Span::raw(" ".repeat(PAGE_PAD as usize)));
             cursor = cx.map(|cx| ((PAGE_PAD + cx).min(area.width.saturating_sub(1)), area.y + 2));
+            title_spot(app, ed, Rect { x: area.x + PAGE_PAD, y: area.y + 2, ..area }, cx);
             vec![Line::default(), Line::default(), Line::from(spans), ctx]
         }
     };
@@ -121,6 +122,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
     if let Some(c) = draw_body(f, ed, body, PAGE_PAD, &theme.rest, body_hint(app, ed)) {
         cursor = Some(c);
     }
+    body_spot(app, ed, body, PAGE_PAD);
     if let Some((x, y)) = cursor {
         f.set_cursor_position((x, y));
     }
@@ -211,6 +213,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     };
     let (spans, cx) = title_spans(ed, inner.width as usize, ink);
     let mut cursor = cx.map(|cx| ((inner.x + cx).min(area.x + area.width - 1), inner.y));
+    title_spot(app, ed, inner, cx);
     let head = vec![Line::from(spans), context_line(app, ed, ink, framed), Line::default()];
     f.render_widget(
         Paragraph::new(head),
@@ -228,6 +231,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     if let Some(c) = draw_body(f, ed, body, 0, ink, body_hint(app, ed)) {
         cursor = Some(c);
     }
+    body_spot(app, ed, body, 0);
     if let Some((x, y)) = cursor {
         f.set_cursor_position((x, y));
     }
@@ -310,6 +314,29 @@ fn lerp_rect(from: Rect, to: Rect, t: f32) -> Rect {
         width: mix(from.width, to.width).max(1),
         height: mix(from.height, to.height).max(1),
     }
+}
+
+/// The composer's title row from `row.x` on, for a click to put the
+/// cursor in it (T-716): `cx` is the cursor's cell while the title has it,
+/// which is how far the field's window has scrolled. A note's title is the
+/// ticket's, not the editor's, and takes no click.
+fn title_spot(app: &App, ed: &Editor, row: Rect, cx: Option<u16>) {
+    if !ed.composing() {
+        return;
+    }
+    let skip = cx.map_or(0, |cx| (ed.title.width_before_cursor() as u16).saturating_sub(cx));
+    app.hits.borrow_mut().record(
+        Rect { height: 1.min(row.height), ..row },
+        crate::mouse::Target::Title { x0: row.x, skip },
+    );
+}
+
+/// The body's rows, for a click to put the cursor in them (T-716).
+fn body_spot(app: &App, ed: &Editor, body: Rect, pad: u16) {
+    let top = u16::try_from(ed.top.get()).unwrap_or(u16::MAX);
+    app.hits
+        .borrow_mut()
+        .record(body, crate::mouse::Target::Body { x0: body.x + pad, y0: body.y, top });
 }
 
 /// The title as spans, and the cursor's cell offset inside it while it is

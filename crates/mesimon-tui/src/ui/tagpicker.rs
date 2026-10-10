@@ -295,7 +295,9 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
         // The naming row is the group row at `arm.row`, inside the frame.
         let y = area.y + arm.row as u16;
         if arm.row < rows {
-            f.set_cursor_position((area.x + (x as u16).min(area.width.saturating_sub(1)), y));
+            let at = (area.x + (x as u16).min(area.width.saturating_sub(1)), y);
+            f.set_cursor_position(at);
+            super::field_spot(app, area, at);
         }
     }
 }

@@ -771,10 +771,12 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     }
     if let Some((line, x)) = edit_at {
         if line >= content_start && line < content_end {
-            f.set_cursor_position((
+            let at = (
                 area.x + x.min(area.width.saturating_sub(1)),
                 area.y + head_rows as u16 + (top_cue_rows + line - content_start) as u16,
-            ));
+            );
+            f.set_cursor_position(at);
+            super::field_spot(app, area, at);
         }
     }
     // The cursor card, where it landed on screen — the composer's phantom
@@ -797,10 +799,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         app.cursor_card.set(None);
     }
     if let Some(x) = header_cursor_x {
-        f.set_cursor_position((
-            area.x + x.min(area.width.saturating_sub(1)),
-            area.y + header_cursor_y,
-        ));
+        let at = (area.x + x.min(area.width.saturating_sub(1)), area.y + header_cursor_y);
+        f.set_cursor_position(at);
+        super::field_spot(app, area, at);
     }
 }
 

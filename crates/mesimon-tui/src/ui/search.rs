@@ -208,7 +208,9 @@ fn draw_prompt(f: &mut Frame, app: &App, s: &Search, inner: Rect) -> (u16, u16) 
         Paragraph::new(Line::from(spans)),
         Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
     );
-    (inner.x + 3 + cx, inner.y)
+    let at = (inner.x + 3 + cx, inner.y);
+    super::field_spot(app, inner, at);
+    at
 }
 
 /// One row: the key, the title, and the words that say where the card is.

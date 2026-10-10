@@ -23241,8 +23241,7 @@ indexed profile has no authored halfway and gets the ink alone. Not a second sur
 sense: it exists only under the pointer.
 
 **Refuted / left.** Underline for hover (SGR 4 already carries tags and the summary's progress).
-Placing the text cursor by click inside a field, and dragging a card
-between columns, are not built.
+Dragging a card between columns is not built.
 
 Tests: `mouse.rs` (layers, joined frames, hint scraping), `ui::tests` (card select/open, hint
 click, dialog close and row pick-then-act, wheel, hover, tag picker, rail, diff files, search
@@ -23269,3 +23268,14 @@ cards below it, on the hover ground, down to the column's last body row; it is t
 while it floats, so the pointer can read down it. Opening it in place was refuted on paper: the
 cards below would move under the pointer, which then lands on another card and moves them
 again. A key clears the dwell (`App::hover`); the next move starts it over.
+
+**A click places the text cursor (same day, the author: "build it").** Every one-line field
+that puts the hardware cursor records its row as `Target::Field { cursor_x }` (`ui::field_spot`):
+the cell the cursor stands on is the one fact every field's draw already has, so a click moves
+the cursor by the cells between, from `width_before_cursor`, with no field's scroll window
+worked out again. `App::line_field` finds the field being typed in, in `on_paste`'s order. The
+composer's title (`Target::Title`, which takes the keys from the body) and a note body
+(`Target::Body`, by displayed row as the text wraps: `TextArea::place` lands the way
+`move_rows` does, before a soft break) are the editor's own. `EditBuffer::place` puts the cursor
+after a wide cluster from its right half. A field's row is never lit by the hover; a drag in
+one still selects screen text.

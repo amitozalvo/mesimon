@@ -346,6 +346,29 @@ impl EditBuffer {
     pub(crate) fn end(&mut self) {
         self.cursor = self.text.len();
     }
+
+    /// Put the cursor `cells` display cells into the text (a click, T-716):
+    /// before the cluster that cell falls in — or, past its middle, after
+    /// it — and at the end past the text.
+    pub(crate) fn place(&mut self, cells: usize) {
+        self.cursor = boundary_at(&self.text, 0, self.text.len(), cells);
+    }
+}
+
+/// The grapheme boundary in `text[start..end]` nearest `cells` display cells
+/// from `start`: a click on a cluster's right half lands after it.
+fn boundary_at(text: &str, start: usize, end: usize, cells: usize) -> usize {
+    let mut at = start;
+    let mut used = 0;
+    for g in text[start..end].graphemes(true) {
+        let w = g.width();
+        if used + w.div_ceil(2) > cells {
+            break;
+        }
+        used += w;
+        at += g.len();
+    }
+    at
 }
 
 /// The visible window of an edit buffer under a `budget` of cells: scrolls
@@ -619,6 +642,23 @@ impl TextArea {
         self.wrapped_rows(width).cursor_row(self.cursor)
     }
 
+    /// Put the cursor at displayed `row`, `col` cells in, as the text wraps
+    /// at `width` (a click, T-716). A row past the last is the last; a cell
+    /// past a row's end is its end — before a soft break, which belongs to
+    /// the row after it, as `move_rows` lands.
+    pub(crate) fn place(&mut self, row: usize, col: usize, width: usize) {
+        let layout = self.wrapped_rows(width);
+        let target = row.min(layout.rows.len() - 1);
+        let r = &layout.rows[target];
+        let end = if layout.rows.get(target + 1).is_some_and(|next| next.start == r.end) {
+            prev_boundary(&self.text, r.end)
+        } else {
+            r.end
+        };
+        self.cursor = boundary_at(&self.text, r.start, end, col);
+        self.want_col = None;
+    }
+
     /// Move through displayed rows, retaining the desired cell column across
     /// short rows. A soft boundary belongs to the following row, so landing
     /// at the end of a continuation must stop before that boundary.
@@ -838,6 +878,39 @@ pub(crate) fn hash64(v: impl std::hash::Hash) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A click places the cursor (T-716): before the cluster under the
+    /// cell, after it from its right half on, at the end past the text —
+    /// and a wide character is two cells.
+    #[test]
+    fn a_click_places_the_one_line_cursor_by_cell() {
+        let mut b = EditBuffer::from_text("ab日c".into(), 64);
+        b.place(0);
+        assert_eq!(b.width_before_cursor(), 0);
+        b.place(1);
+        assert_eq!(b.width_before_cursor(), 1);
+        b.place(2);
+        assert_eq!(b.width_before_cursor(), 2, "the wide one's left half: before it");
+        b.place(3);
+        assert_eq!(b.width_before_cursor(), 4, "its right half: after it");
+        b.place(99);
+        assert_eq!(b.width_before_cursor(), 5, "past the end is the end");
+    }
+
+    /// The note body places by displayed row and cell, as it wraps: a
+    /// click past a wrapped row's end stops before the soft break, and a
+    /// row past the last is the last.
+    #[test]
+    fn a_click_places_the_body_cursor_by_wrapped_row() {
+        let mut t = TextArea::from_text("one two three\nfour", 256);
+        // At width 8: "one two " | "three" | "four".
+        t.place(1, 2, 8);
+        assert_eq!(t.cursor(), "one two th".len());
+        t.place(0, 40, 8);
+        assert_eq!(t.cursor(), "one two".len(), "before the soft break");
+        t.place(9, 1, 8);
+        assert_eq!(t.cursor(), "one two three\nf".len());
+    }
 
     #[test]
     fn exact_fit_is_untouched() {

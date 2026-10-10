@@ -48,12 +48,23 @@ pub(crate) enum Target {
     Tag(usize, usize),
     /// A diff's file row, by `file_idx`.
     File(usize),
+    /// The row of the one-line field being typed in, and the cell its
+    /// cursor stands on: a click moves the cursor by the cells between.
+    Field { cursor_x: u16 },
+    /// The composer's title: cell `x0` shows the title from `skip` cells in.
+    Title { x0: u16, skip: u16 },
+    /// A note body: cell `(x0, y0)` is displayed row `top`'s first cell.
+    Body { x0: u16, y0: u16, top: u16 },
 }
 
 impl Target {
-    /// Whether a hover lights it. A lane is only where the wheel turns.
+    /// Whether a hover lights it. A lane is only where the wheel turns, and
+    /// text being typed is not a button.
     fn lit(self) -> bool {
-        !matches!(self, Target::Lane(_))
+        !matches!(
+            self,
+            Target::Lane(_) | Target::Field { .. } | Target::Title { .. } | Target::Body { .. }
+        )
     }
 }
 

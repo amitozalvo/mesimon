@@ -3188,8 +3188,76 @@ impl App {
             Target::Rail(i) => self.point_rail(i),
             Target::Tag(row, col) => self.point_tag(row, col),
             Target::File(i) => self.point_file(i),
+            Target::Field { cursor_x } => self.point_field(at.0, cursor_x),
+            Target::Title { x0, skip } => self.point_title(at.0, x0, skip),
+            Target::Body { x0, y0, top } => self.point_body(at, (x0, y0), top),
             Target::Lane(_) => Ok(false),
         }
+    }
+
+    /// The one-line field being typed in, whichever it is: the fields
+    /// `on_paste` fills, in the same order.
+    fn line_field(&mut self) -> Option<&mut EditBuffer> {
+        if let Some(arm) = self.tag_armed.as_mut() {
+            return arm.naming.as_mut().map(|(_, buf)| buf);
+        }
+        match &mut self.mode {
+            Mode::Input { buffer, .. } => Some(buffer),
+            Mode::Editor(ed) if ed.focus == Field::Title => Some(&mut ed.title),
+            Mode::Search(s) => Some(&mut s.query),
+            Mode::Sharing { editing: Some(buf), .. }
+            | Mode::Prompts { editing: Some(buf), .. }
+            | Mode::ColumnSettings { naming: Some(buf), .. }
+            | Mode::ColumnSettings { describing: Some(buf), .. }
+            | Mode::Tiers { naming: Some(buf), .. }
+            | Mode::TierEdit { field: Some(buf), .. } => Some(buf),
+            _ => None,
+        }
+    }
+
+    /// A click in the field being typed in: the cursor goes to the cell
+    /// clicked, counted from the cell it stands on now (`Target::Field`).
+    fn point_field(&mut self, x: u16, cursor_x: u16) -> Result<bool> {
+        self.person(|app| {
+            if let Some(buf) = app.line_field() {
+                let from = buf.width_before_cursor() as isize;
+                let to = from + isize::from(x as i16) - isize::from(cursor_x as i16);
+                buf.place(to.max(0) as usize);
+            }
+            Ok(())
+        })
+    }
+
+    /// A click on the composer's title: it takes the keys, its cursor at
+    /// the cell clicked.
+    fn point_title(&mut self, x: u16, x0: u16, skip: u16) -> Result<bool> {
+        if !matches!(&self.mode, Mode::Editor(ed) if ed.composing()) {
+            return Ok(false);
+        }
+        self.person(|app| {
+            if let Mode::Editor(ed) = &mut app.mode {
+                (ed.focus, ed.esc_armed, ed.delete_armed) = (Field::Title, false, false);
+                ed.title.place(usize::from(skip) + usize::from(x.saturating_sub(x0)));
+            }
+            Ok(())
+        })
+    }
+
+    /// A click on a note body: it takes the keys, its cursor at the row and
+    /// cell clicked, as the text wraps on screen.
+    fn point_body(&mut self, at: (u16, u16), origin: (u16, u16), top: u16) -> Result<bool> {
+        if !matches!(self.mode, Mode::Editor(_)) {
+            return Ok(false);
+        }
+        self.person(|app| {
+            if let Mode::Editor(ed) = &mut app.mode {
+                (ed.focus, ed.esc_armed, ed.delete_armed) = (Field::Body, false, false);
+                let row = usize::from(top) + usize::from(at.1.saturating_sub(origin.1));
+                let col = usize::from(at.0.saturating_sub(origin.0));
+                ed.body.place(row, col, ed.body_width.get());
+            }
+            Ok(())
+        })
     }
 
     /// A click on a diff's file row: the file opens in the pane, walked to
