@@ -175,10 +175,7 @@ impl AgentRecovery for ClaudeRecovery {
                 // still, and the card read "interrupted" each time. An Esc
                 // flips the file at the keypress, so only a turn that is
                 // really over gets past this.
-                if self
-                    .session_file(record, now)
-                    .is_some_and(|pf| pf.status.as_deref() == Some("busy"))
-                {
+                if self.claude_busy(record, now) {
                     return Vec::new();
                 }
                 vec![observation(Signal::PaneQuiet, "activity")]
@@ -215,6 +212,13 @@ impl ClaudeRecovery {
             return None;
         }
         Some(pf)
+    }
+
+    /// Claude Code's own session file calls the turn busy. The one word
+    /// for a model thinking past a minute after a tool result, which writes
+    /// neither pane nor transcript while it does (T-729, T-731).
+    fn claude_busy(&mut self, record: &SessionRecord, now: u64) -> bool {
+        self.session_file(record, now).is_some_and(|pf| pf.status.as_deref() == Some("busy"))
     }
 
     fn status_observation(
@@ -300,7 +304,13 @@ impl ClaudeRecovery {
                 closed = Some(observation(Signal::TranscriptTurnEnded, "tail"));
                 None
             } else {
+                // A quiet tail is no rest while Claude Code calls the turn
+                // busy (T-731): a model thinking after a tool result across
+                // a restart seeded `Idle` here, and the crown was told the
+                // turn had finished. The record stays `Unknown` until a
+                // hook or the next line says.
                 resting_hint(&path, now)
+                    .filter(|h| *h != TailHint::StaleQuiet || !self.claude_busy(record, now))
             }
         } else if fresh && abort_only {
             record
@@ -384,6 +394,7 @@ impl ClaudeRecovery {
             && !cursor.tools.is_busy()
             && quiet >= TAIL_QUIET_MS
             && record.state == SessionState::Running
+            && !self.claude_busy(record, now)
         {
             hints.push((TailHint::StaleQuiet, None));
         }
@@ -1051,6 +1062,63 @@ mod recovery_tests {
         write("idle");
         let observations = recovery.poll(&record, silent(), now);
         assert!(matches!(observations[0].signal, Signal::PaneQuiet));
+    }
+
+    /// T-731: the same thinking across a restart. The restart's seed read a
+    /// tool result quiet past the threshold as a turn gone idle, and the
+    /// crown was told the turn had finished; while the session file reads
+    /// `busy` the record stays `Unknown`, and an `idle` file seeds as before.
+    #[test]
+    fn a_quiet_tail_claude_code_calls_busy_seeds_no_idle_after_a_restart() {
+        let history = History::new();
+        history.append(serde_json::json!({"uuid":"res", "type":"user",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}));
+        let now = mesimon_core::clock::now_ms();
+        let quiet = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        std::fs::File::options()
+            .write(true)
+            .open(&history.0)
+            .unwrap()
+            .set_modified(quiet)
+            .unwrap();
+        let file = History::new();
+        let mut record = record(SessionState::Unknown { reason: UnknownReason::DaemonRestarted });
+        record.transcript_path = Some(history.0.display().to_string());
+        record.state_changed_at = Some(now - 300_000);
+        let claude_id = record.id;
+        let write = |status: &str| {
+            let body = serde_json::json!({
+                "pid": 1, "sessionId": claude_id, "status": status, "statusUpdatedAt": 900,
+            });
+            std::fs::write(&file.0, body.to_string()).unwrap();
+        };
+        let fresh = || ClaudeRecovery {
+            status: Some(StatusProbe {
+                path: Some(file.0.clone()),
+                looked_at: 0,
+                near_idle: None,
+                waiting_spell: None,
+            }),
+            ..ClaudeRecovery::default()
+        };
+        write("busy");
+        let mut thinking = fresh();
+        assert!(thinking.needs_poll(&record, RecoveryChannel::Transcript, now));
+        let seeded = thinking.poll(&record, RecoverySample::Transcript, now);
+        assert!(seeded.is_empty(), "Claude Code calls it busy: {seeded:?}");
+        write("idle");
+        let mut over = fresh();
+        let seeded = over.poll(&record, RecoverySample::Transcript, now);
+        assert!(
+            matches!(
+                seeded[..],
+                [RecoveryObservation {
+                    signal: Signal::TranscriptHint { kind: TailHint::StaleQuiet },
+                    ..
+                }]
+            ),
+            "{seeded:?}"
+        );
     }
 
     /// T-659: a native failed turn whose frame beat the transcript's write

@@ -23606,3 +23606,27 @@ to the reply that closed the turn.
 Tests: `docs/state-scenarios/idle-compact.json` (fails before the fix at every step),
 `history::tests::a_compaction_while_idle_keeps_the_closing_reply`, and the summary cases in
 `adopt::tests`.
+
+## A turn thinking across a restart is not a finished turn (T-731, 2026-10-11, "crown was awoken even though ticket didn't finish it's turn")
+
+The axiom board, 2026-10-10 21:40:55Z: a `U` handover while the crown's worker sat 55 s after a
+tool result, the model thinking (its next block was written at 21:41:02). The new daemon's
+restart seed (`recovery::resting_hint`) read the trailing `tool_result`, quiet past
+`TAIL_QUIET_MS`, as `StaleQuiet` → `Idle{Unknown}` at Low; `turn_ended`'s restart branch takes an
+end "at any confidence" as the T-602 look, and took `turns_open` with it, so the crown was told
+the worker `finished its turn (nothing new to merge, … after a restart)`. Twenty seconds later
+the worker's `PostToolUse` put it back to `Running`. T-729 gave the pane probe Claude Code's
+`busy` session file; the tail's two `StaleQuiet` sites never asked it.
+
+**Both `StaleQuiet` sites hold while the session file reads `busy`** (`ClaudeRecovery::claude_busy`,
+shared with T-729's pane probe): the restart's record stays `Unknown` until a hook or the next
+line speaks, and `hear_restored` leaves an `Unknown` to its turn's end. **And the restart's look
+says `finished` only on a turn's end that is one**: `fresh` is taken from `turns_open` only on an
+`EndTurn` at Medium or better, the bar the live road already held — T-663's proven close in the
+gap is Medium. A guessed idle still looks (a merge while down is said), with the turn left open
+for the end that is one. No session file (an older Claude Code) still seeds the guess; the crown
+no longer reads it as a finish.
+
+Tests: `recovery_tests::a_quiet_tail_claude_code_calls_busy_seeds_no_idle_after_a_restart` and
+`crown_e2e::a_turn_thinking_across_a_restart_is_not_heard_as_finished` (fails at its second phase
+without the crown half).

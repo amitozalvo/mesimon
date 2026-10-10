@@ -850,8 +850,12 @@ impl Daemon {
         let asked = self.turn_asks.remove(&worker).or(late);
         // A worker the restart has yet to look at (T-602): this end, at any
         // confidence — the transcript's re-derivation is Low — is that look.
+        // Only a turn's end that is one says the turn finished (T-731): the
+        // tail's guess at a quiet turn read a model still thinking as idle,
+        // and the crown was told it had finished. The turn stays open for
+        // the end that is one; a proven close in the gap is Medium (T-663).
         if let Some(owed) = self.crown_recheck.remove(&worker) {
-            let fresh = self.turns_open.remove(&worker);
+            let fresh = end_turn && self.turns_open.remove(&worker);
             let u = owed.join(Unjudged { asked, fresh });
             self.probe_turn(worker, ProbeWhy::Restart { asked: u.asked, fresh: u.fresh });
             return;
