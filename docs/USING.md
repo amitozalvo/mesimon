@@ -316,9 +316,8 @@ its dialog either way.
 Follow-ups default to **Queue**: they wait for the current turn to end, including
 approval stops. A question holds them instead: words queued before or while the agent asks one
 wait for your answer and then your Ctrl+Y (`agent asked ∙ you send`), and an ask behind another
-ticket's question says so (`queued ∙ after T-3's answer`). Choose **Steer** in
-**Settings › Behaviour › Follow-ups** to send now by default, or cycle a composer with
-Shift+Tab: `now`, `queued`, and on a Claude agent `immediately`. Sent `now`, a working agent
+ticket's question says so (`queued ∙ after T-3's answer`). Cycle a composer with
+Shift+Tab to send otherwise: `now`, `queued`, and on a Claude agent `immediately`. Sent `now`, a working agent
 reads your words at its next step (on the mod road, after its turn ends). Sent `immediately`,
 mesimon puts them in Claude Code's prompt box and presses its send-now (Ctrl+X Ctrl+S), so a
 working agent reads them before its running command ends. That command keeps running in the
@@ -354,7 +353,7 @@ it archived burns away before its column closes up. When an agent it started rep
 bolt runs the other way, from that card to the crown. **Settings › Appearance › Crown's
 actions** turns the lightning off for this machine; the card still says what was done.
 
-**Settings › Agents › Crown mode** is autonomous by default; supervised keeps the crown's words,
+**Settings › Crown › Mode** is autonomous by default; supervised keeps the crown's words,
 and every question and plan, for you. Autonomous lets the crown's words go without your `^y` to an
 agent the crown started, and lets the crown answer a question, and accept a plan, that such an
 agent stops on. Its words reach that agent by the queue once the agent is idle, the card lights
@@ -388,12 +387,12 @@ the agent's. The crown is told that a plan it would change, or one that reaches 
 is yours: it raises its hand on its own card, and you answer the dialog. If you answer first, the
 crown presses nothing.
 
-**Settings › Agents › Crown archives tickets** (off by default) lets the crown archive a ticket and
+**Settings › Crown › Archives tickets** (off by default) lets the crown archive a ticket and
 restore an archived one. While it is off, the crown is refused in words that name this row, and it
 moves a finished ticket to DONE instead; you decide when the card leaves the board and when its
 merged worktree is reclaimed. Turned off, it holds from the crown's next call.
 
-**Settings › Agents › Crown watches tickets** (off by default) lets the crown watch a ticket you
+**Settings › Crown › Watches tickets** (off by default) lets the crown watch a ticket you
 started yourself. The board then wakes the crown for that ticket as it does for the agents the
 crown started: when it delivers, finishes a turn, raises its hand or is merged, one sentence
 saying so is sent into the crown's session, and the watch ends at the merge. Nothing is sent to
@@ -412,8 +411,8 @@ tier. Other agents can read the descriptions but cannot choose a tier for a tick
 that choice stays with you when you pick the ticket up. mesimon does not judge how hard a ticket
 is. The crown makes the choice, against what you wrote.
 
-At most three agents the crown started may be awake at once; **Settings › Agents** changes the
-number or turns starting off. A ticket the crown started can never be crowned itself. The crown
+At most three agents the crown started may be awake at once; **Settings › Crown › Starts
+agents** changes the number or turns starting off. A ticket the crown started can never be crowned itself. The crown
 may put an agent it started to sleep once that agent is idle, the same park as `x` on its card:
 the conversation is kept, `c` wakes it, and while it sleeps its seat is free for another start.
 The crown chooses each ticket's workspace when it files or starts it, a worktree of its own or the
@@ -504,11 +503,11 @@ read beside it as a check; `mesimon doctor`'s `costs` line says where the two di
 ## Light and dark themes
 
 The board has two theme slots, one for a dark terminal and one for a light one.
-**Settings › Appearance** opens on this board's settings, so a theme picked there is this
-board's alone; `b` switches the list to the machine's, which every board without its own
-pick wears. **Theme** opens saving one theme for both states; Tab switches the pick to the
-state you are in, then to the other, so the two slots can hold different themes. Moving the
-cursor previews the theme on the board behind the picker.
+**Settings › Theme** lists every theme beside a small board drawn in the one under the cursor;
+Enter keeps it and the board repaints. It opens saving one theme for both states; Tab switches
+the pick to the state you are in, then to the other, so the two slots can hold different themes.
+Settings opens on the machine's settings, which every board without its own pick wears; `b`
+switches the dialog to this board's, so a theme picked then is this board's alone.
 
 While the two slots hold different themes, the board switches between them as macOS or your
 Linux desktop switches between light and dark, while the board is open. It asks the OS,
@@ -539,8 +538,7 @@ cleanup after Mesimon is killed.
 
 ## Notifications
 
-**Settings › Notifications** opens the list that chooses which events post a
-banner and whether a sound plays: banner on or off, whether a finished turn counts as well as a
+**Settings › Notifications** chooses which events post a banner and whether a sound plays: banner on or off, whether a finished turn counts as well as a
 blocked agent, whether the agent's words are quoted, the two sounds, whether a focused board or
 the agent's own pane still speaks, and iTerm2's dock bounce. The master switch is on by default;
 the rows under it keep their own defaults.
@@ -549,7 +547,7 @@ A finished turn on a ticket the merge train will take is announced once, when th
 with it: after the merge and the agent's reply to the merged notice, or when the train cannot take
 it (a refused merge, a rebase that did not catch up). On an agent the crown started, a finished
 turn, a question or plan the crown answers, and a raised hand go to the crown and not to you;
-**Agents the crown started** in the same list turns them back on. A permission prompt always
+**Crown's agents** in the same section turns them back on. A permission prompt always
 reaches you.
 
 **Settings › Terminal** names and marks the terminal's own tab: the title is `mesimon ∙ <project>`

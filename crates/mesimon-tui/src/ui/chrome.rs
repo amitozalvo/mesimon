@@ -579,7 +579,7 @@ fn dialog_open(app: &App) -> bool {
             app.mode,
             Mode::Menu { .. }
                 | Mode::Settings { .. }
-                | Mode::Notifications { .. }
+                | Mode::Sections
                 | Mode::Usage { .. }
                 | Mode::Theme { .. }
                 | Mode::Archived { .. }

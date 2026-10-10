@@ -214,9 +214,11 @@ goldens are colourless.
    whether `board_overridable` — machine-only is for a key about the terminal or the person.
 2. `tui/src/prefs.rs`: the `Prefs` field, `load`, `body` (a named value gets the foreign-value
    clause), `word`, and `overlay` if a board may set it; a round-trip test.
-3. The `Ctx` field and `App::ctx()`; the `MenuItem` in `SETTINGS_ITEMS`/`NOTIFY_ITEMS` and its
-   place in `settings_items`; the `Verb` and its arm through `set_pref`. `keymap::pref_key`
-   names the row's key, and board scope then cycles it with no further code.
+3. The `Ctx` field and `App::ctx()`; the `MenuItem` in `SETTINGS_ITEMS`/`NOTIFY_ITEMS` (its
+   `label` is the name alone), its place in `settings_items` and `SettingsSection::for_verb`,
+   and its `keymap::value` arm — what the Settings page draws beside the name; the `Verb` and
+   its arm through `set_pref`. `keymap::pref_key` names the row's key, and board scope then
+   cycles it with no further code.
 4. The push, if anything outside the TUI consumes it: a `push_*`/`reconcile_*` pair for the
    daemon, `From<&Prefs>` in `notifier.rs` for the notifier, `drive_caffeine` for power. A value
    that must hold with no board open (a kill switch) is read by the daemon from both files

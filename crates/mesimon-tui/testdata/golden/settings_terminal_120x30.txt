@@ -1,30 +1,30 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
-
-    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-
-    Keymap validator      >╭─ TERMINAL ─────────────────────────────────────────────────────╮
-                           │   Tab title: mesimon ∙ project name                            │
-                           │                                                                │
-                           │   Tab title counts needs-you: off                              │
-                           │     2 need you ∙ project, while any ticket does                │
-                           │   Tab title follows the open session: on                       │
-                           │     the ticket's key and title while you are in its pane or s~ │
-                           │   Tab progress ring: off                                       │
-                           │     spins while an agent works, red while one needs you ∙ iTe~ │
-                           │   Tab colour from the theme: on                                │
-                           │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
-                           │   Tab colour when needs you: the whole tab                     │
-                           │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
-                           │   Tab subtitle: on                                             │
-                           │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
-                           │   Tab icon: the shin                                           │
-                           │     iTerm2 only ∙ this terminal is not iTerm2, so the row is ~ │
-                           ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
-
-
-
+    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
+      │                                                                                                          │
+    De│  Theme               mesimon ∙ kanban-tui                                                                │
+      │                      2 working                                                                           │
+    Ke│  Appearance                                                                                              │
+      │                     TITLE                                                                                │
+      │  Notifications       Tab title                  ○ off   ○ project   ● mesimon ∙ project                  │
+      │                      Counts who needs you       ○ off                                                    │
+      │  Behaviour           Follows the open session   ● on                                                     │
+      │                                                                                                          │
+      │  Agents             TAB                                                                                  │
+      │                      Progress ring              ○ off                                                    │
+      │  Crown               Colour from the theme      ● on                                                     │
+      │                      Colour when needs you      ○ off   ○ dot   ● whole tab                              │
+      │▎ Terminal            Subtitle                   ● on                                                     │
+      │                      Icon                       ● on                                                     │
+      │  Usage                                                                                                   │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      ╰──────────────────────────────────────────────────────────────── jk select ∙ enter change ∙ esc sections ─╯
 
  SETTINGS                                                                                                        ? keys

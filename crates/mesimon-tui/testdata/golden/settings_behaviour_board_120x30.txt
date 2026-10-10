@@ -1,30 +1,30 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
-
-    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-
-    Keymap validator      >╭─ BEHAVIOUR ∙ THIS BOARD ───────────────────────────────────────╮
-                           │   Auto merge: on                                               │
-                           │     set here ∙ machine: on ∙ merges quiet REVIEW branches, as~ │
-                           │   Auto merge tells the agent after a merge                     │
-                           │     inherited ∙ pastes the merged notice into the agent, whic~ │
-                           │   Keep this machine awake: off                                 │
-                           │     inherited ∙ the machine sleeps on its own clock, agents o~ │
-                           │   Snooze returns with needs-you                                │
-                           │     inherited ∙ lit until you look at it                       │
-                           │   Week starts on Monday                                        │
-                           │     (machine) ∙ z's last rung: next Monday 9:00                │
-                           │   Default column: TODO                                         │
-                           │     where an agent's create_ticket lands unplaced              │
-                           │   Follow-ups: Queue                                            │
-                           │     Queue waits for the agent's idle ∙ Steer sends now         │
-                           │   Mouse: on                                                    │
-                           │     (machine) ∙ a drag selects text and copies it              │
-                           ╰────────────── jk select ∙ enter choose ∙ b machine ∙ esc back ─╯
-
-
-
-
+    TO╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
+      │                                                                                                          │
+    De│  Theme               Keep this machine awake   ○ off                                          inherited  │
+      │                      Mouse                     ● on                                             machine  │
+    Ke│  Appearance                                                                                              │
+      │                     SNOOZE                                                                               │
+      │  Notifications       Comes back                ● lit   ○ quiet                                inherited  │
+      │                      Week starts on            Monday                                           machine  │
+      │▎ Behaviour                                                                                               │
+      │                     AUTO MERGE                                                                           │
+      │  Agents              Auto merge                ● on                                            set here  │
+      │                      Tells the agent           ● on                                           inherited  │
+      │  Crown                                                                                                   │
+      │                                                                                                          │
+      │  Terminal                                                                                                │
+      │                                                                                                          │
+      │  Usage                                                                                                   │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                     machine: on ∙ merges quiet REVIEW branches, asks idle agents to rebase ∙ arming… ∙ ~ │
+      ╰──────────────────────────────────────────────────── jk select ∙ enter change ∙ b machine ∙ esc sections ─╯
 
  SETTINGS                                                                                                        ? keys

@@ -1,0 +1,20 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+  ╭─ SETTINGS ───────────────────────────────────────────╮
+  │                                                      │
+  │▎ Theme                                               │
+  │  Appearance                                          │
+  │  Notifications                                       │
+  │  Behaviour                                           │
+  │  Agents                                              │
+  │  Crown                                               │
+  │  Terminal                                            │
+  │  Usage                                               │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  ╰── jk section ∙ enter open ∙ b this board ∙ esc back ─╯
+ SETTINGS                                            ? keys

@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+    TO╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
+      │                                                                                                          │
+    De│  Theme               mesimon                                       ♪ Glass                               │
+      │                      kanban-tui ∙ Fix the OSC parser                                                     │
+    Ke│  Appearance          “Keep the old parser as a fallback?”                                                │
+      │                                                                                                          │
+      │▎ Notifications       Notifications                 ● on                                        set here  │
+      │                      Delivered by                  ● mesimon   ○ your terminal                  machine  │
+      │  Behaviour                                                                                               │
+      │                     WHEN                                                                                 │
+      │  Agents              A turn finishes               ● on                                       inherited  │
+      │                      While the board is in front   ○ banner   ● sound only                    inherited  │
+      │  Crown               In the agent's own pane       ○ said   ● silent                          inherited  │
+      │                      Crown's agents                ○ you too   ● the crown                    inherited  │
+      │  Terminal                                                                                                │
+      │                     BANNER                                                                               │
+      │  Usage               The agent's words             ● quoted   ○ withheld                      inherited  │
+      │                      Dock bounce                   ○ off                                      inherited  │
+      │                                                                                                          │
+      │                     SOUND                                                                                │
+      │                      Needs you                     Glass                                      inherited  │
+      │                      Turn finishes                 Tink                                       inherited  │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                     machine: on ∙ an OS banner and a sound ∙ only while this board is open ∙ inherit la~ │
+      ╰──────────────────────────────────────────────────── jk select ∙ enter change ∙ b machine ∙ esc sections ─╯
+
+ SETTINGS                                                                                                        ? keys

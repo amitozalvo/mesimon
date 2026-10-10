@@ -389,26 +389,25 @@ pub enum Mode {
     Menu {
         idx: usize,
     },
-    /// The theme picker: `idx` is the cursor over `Flavor::ALL`, and the
-    /// live `theme` IS the preview — nothing else is kept in step. `slot`
-    /// is what the pick is saved for (T-485): the board's current ground
-    /// on opening, then whatever Tab cycled to.
+    /// The Theme section's page (T-717): `idx` is the cursor over
+    /// `Flavor::ALL` (an inherit row first in board scope), and the preview
+    /// beside the list draws the flavor under it. `slot` is what the pick
+    /// is saved for (T-485): both grounds on opening, then whatever Tab
+    /// cycled to. Enter keeps the pick and the page stays.
     Theme {
         idx: usize,
         slot: Slot,
     },
-    /// The settings submenu: the preferences, one level under the menu.
-    /// `idx` is the cursor over `keymap::settings_items`. Choosing a row
-    /// keeps the list open (the row relabels itself), Esc returns to the
-    /// menu on the row that opened it.
+    /// The Settings dialog's section list (T-717), one level under the
+    /// menu: the section under its cursor is `App::settings_section`, and
+    /// its page is drawn beside it. Esc returns to the menu on the row that
+    /// opened it.
+    Sections,
+    /// A Settings section's page (T-717): `idx` is the cursor over
+    /// `keymap::settings_items` for `App::settings_section`. Choosing a row
+    /// keeps the page open (the value beside it changes), Esc returns to
+    /// the section list.
     Settings {
-        idx: usize,
-    },
-    /// The notifications list, one level under Settings (T-282). `idx` is
-    /// the cursor over `keymap::notify_items`; like the Settings list it
-    /// STAYS open when a row is chosen, and Esc returns to the Settings row
-    /// that opened it.
-    Notifications {
         idx: usize,
     },
     /// The Usage dialog (T-327), from the menu's Usage row: each provider's
@@ -1940,7 +1939,7 @@ impl App {
             header_focus: false,
             header_chip: HeaderChip::Git,
             last_ticket_up: None,
-            settings_section: keymap::SettingsSection::Root,
+            settings_section: keymap::SettingsSection::Theme,
             column_agents: false,
             team_relay_draft: mesimon_core::team::HOSTED_RELAY.into(),
             team_name_draft: String::new(),
@@ -2822,22 +2821,14 @@ impl App {
                 self.mode = Mode::Menu { idx: n - 1 };
             }
         }
+        // The same for a Settings page, where the rows genuinely do come
+        // and go: turning notifications off retires every row under it.
         if let Mode::Settings { idx } = self.mode {
             let n = keymap::settings_items(&self.ctx()).len();
             if n == 0 {
-                self.mode = Mode::Normal;
+                self.mode = Mode::Sections;
             } else if idx >= n {
                 self.mode = Mode::Settings { idx: n - 1 };
-            }
-        }
-        // The same for the notifications list, where the rows genuinely do
-        // come and go: turning it off retires four of the five.
-        if let Mode::Notifications { idx } = self.mode {
-            let n = keymap::notify_items(&self.ctx()).len();
-            if n == 0 {
-                self.mode = Mode::Normal;
-            } else if idx >= n {
-                self.mode = Mode::Notifications { idx: n - 1 };
             }
         }
         // The prompt list's rows never come and go, but the same clamp keeps
@@ -3188,6 +3179,7 @@ impl App {
         match spot.target {
             Target::Key(k) => self.press(&[k]),
             Target::Row(i) => self.point_row(i),
+            Target::Section(i) => self.point_section(i),
             Target::Card(id) => self.point_card(id),
             Target::Column(ci) => self.point_column(ci),
             Target::Chip(chip) => self.point_chip(chip),
@@ -3348,7 +3340,6 @@ impl App {
             | Mode::Menu { idx }
             | Mode::Theme { idx, .. }
             | Mode::Settings { idx }
-            | Mode::Notifications { idx }
             | Mode::Usage { idx }
             | Mode::Prompts { idx, editing: None }
             | Mode::Sharing { idx, editing: None, .. }
@@ -3371,6 +3362,12 @@ impl App {
     /// over a session somebody started elsewhere, which is not a stray
     /// click's to do.
     fn point_row(&mut self, to: usize) -> Result<bool> {
+        // A row of the Settings page beside the section list (T-717): the
+        // list's Enter steps into the page first, as a person would.
+        if matches!(self.mode, Mode::Sections) {
+            let enter = crate::keys::from_key(Key::Enter);
+            self.person(|app| app.handle_key(enter.0, enter.1))?;
+        }
         let Some(from) = self.list_idx() else { return Ok(false) };
         let act = from == to || !matches!(self.mode, Mode::External { .. });
         let step = crate::keys::from_key(if to > from { Key::Down } else { Key::Up });
@@ -3386,6 +3383,30 @@ impl App {
             }
             if act && now == to {
                 app.handle_key(enter.0, enter.1)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// A click on a section of the Settings dialog (T-717): from a page,
+    /// Esc first; then the cursor steps to it, and a click on the section
+    /// the cursor already stands on is its Enter.
+    fn point_section(&mut self, to: usize) -> Result<bool> {
+        let key = |k| crate::keys::from_key(k);
+        self.person(|app| {
+            let open = matches!(app.mode, Mode::Sections);
+            if !open {
+                let (code, mods) = key(Key::Esc);
+                app.handle_key(code, mods)?;
+            }
+            let from = app.settings_section.index();
+            if open && from == to {
+                let (code, mods) = key(Key::Enter);
+                return app.handle_key(code, mods).map(|_| ());
+            }
+            let (code, mods) = key(if to > from { Key::Down } else { Key::Up });
+            for _ in 0..from.abs_diff(to) {
+                app.handle_key(code, mods)?;
             }
             Ok(())
         })
@@ -3856,17 +3877,15 @@ impl App {
         }
     }
 
-    /// The ground moved. Under the picker the preview stays and the
-    /// picker keeps the slot it opened on; otherwise the board rests on
-    /// the new slot's pick. A watch and a pin never coexist.
+    /// The ground moved: the board rests on the new slot's pick. The
+    /// picker keeps the slot it is on, and its preview is its own (T-717).
+    /// A watch and a pin never coexist.
     fn take_ground(&mut self, ground: Ground) {
         if self.ground == ground {
             return;
         }
         self.ground = ground;
-        if !matches!(self.mode, Mode::Theme { .. }) {
-            self.preview(self.prefs.for_ground(ground));
-        }
+        self.preview(self.prefs.for_ground(ground));
     }
 
     /// Start or stop the OS appearance watch so that it runs exactly while
@@ -3940,9 +3959,9 @@ impl App {
     }
 
     /// Tab in the picker (T-485): the next state. Landing on a ground moves
-    /// the cursor to that ground's saved pick and previews it, so a press
-    /// shows what the other state is set to; landing on `both` keeps the
-    /// cursor, because both is about where the pick goes, not what it is.
+    /// the cursor to that ground's saved pick, so a press shows what the
+    /// other state is set to; landing on `both` keeps the cursor, because
+    /// both is about where the pick goes, not what it is.
     fn cycle_theme_slot(&mut self) {
         let Mode::Theme { idx, slot } = self.mode else {
             return;
@@ -3953,12 +3972,17 @@ impl App {
             Slot::Both => idx,
         };
         self.mode = Mode::Theme { idx, slot: next };
-        let machine = match next {
+    }
+
+    /// The flavor the picker's preview draws (T-717): the row's, or for the
+    /// inherit row the machine's pick for the slot (the board's ground
+    /// under `both`).
+    pub(crate) fn theme_preview(&self, idx: usize, slot: Slot) -> Flavor {
+        let machine = match slot {
             Slot::One(g) => g,
             Slot::Both => self.ground,
         };
-        let flavor = self.theme_at(idx).unwrap_or(self.machine_prefs.for_ground(machine));
-        self.preview(flavor);
+        self.theme_at(idx).unwrap_or(self.machine_prefs.for_ground(machine))
     }
 
     /// The picker's rows: `Flavor::ALL`, with an inherit row first in board
@@ -3990,8 +4014,6 @@ impl App {
             Slot::Both => "dark and light terminals".to_string(),
         };
         let pinned = self.forced.take().is_some();
-        // Back to the settings list, where the Theme row now reads the pick.
-        self.return_to_settings(Verb::ThemePick);
         if self.settings_board_scope {
             match pick {
                 Some(f) => self.set_board_pref(&format!("{} for {word}", f.name()), |b| {
@@ -4037,15 +4059,13 @@ impl App {
 
     /// In board scope, Enter on a preference row cycles this board's
     /// override instead of the machine's value (T-361): true when it did,
-    /// so the caller does not also dispatch. The theme row is the one row
-    /// that still opens its picker, which knows the scope itself. A key the
-    /// machine keeps is set as the machine's (T-625): Appearance opens in
-    /// board scope, and its `(machine)` rows must still answer Enter.
-    fn board_scope_takes(&mut self, verb: Verb, ctx: &Ctx) -> bool {
-        if !self.settings_board_scope || verb == Verb::ThemePick {
+    /// so the caller does not also dispatch. A key the machine keeps is
+    /// set as the machine's (T-625): its `machine` rows still answer Enter.
+    fn board_scope_takes(&mut self, verb: Verb) -> bool {
+        if !self.settings_board_scope {
             return false;
         }
-        let Some(key) = keymap::pref_key(verb, ctx) else {
+        let Some(key) = keymap::pref_key(verb) else {
             return false;
         };
         if !key.board_overridable() {
@@ -5117,7 +5137,7 @@ impl App {
             Mode::Archived { .. } => Scope::Archived,
             Mode::Theme { .. } => Scope::Theme,
             Mode::Settings { .. } => Scope::Settings,
-            Mode::Notifications { .. } => Scope::Notifications,
+            Mode::Sections => Scope::Sections,
             Mode::Usage { .. } => Scope::Usage,
             // Editing a template IS a text field, the Name row's rule.
             Mode::Prompts { editing: Some(_), .. } => Scope::Input,
@@ -5270,7 +5290,6 @@ impl App {
             peek_all: self.peek_all,
             theme_name: self.theme.flavor.name(),
             theme_blurb: self.theme.flavor.blurb(),
-            theme_slot_word: self.ground.word(),
             theme_pinned: self.forced.is_some(),
             theme_tab_word: match self.mode {
                 Mode::Theme { slot, .. } => slot.next(self.ground).word(),
@@ -5502,24 +5521,16 @@ impl App {
             notify_sound_done: self.prefs.notify_sound_done.name(),
             mcp_tools: self.board.mcp_tools,
             system_prompt: self.board.system_prompt,
-            // Spelled as the header spells every column: uppercased.
-            default_column: self.board.landing_column().unwrap_or_default().to_uppercase(),
-            follow_up_mode: self.board.follow_up_mode,
             // The daemon's answer (T-247), computed once beside the switches
             // it depends on; the snapshot after Enter or `i` withdraws it.
             brief_offer: self.claude_md.offer,
             // The Agents section offers it too since T-443: the default
             // tier and the tiers list are the machine's, and a board's.
-            pref_scope_offered: matches!(
-                self.mode,
-                Mode::Notifications { .. } | Mode::Tiers { naming: None, .. }
-            ) || (matches!(self.mode, Mode::Settings { .. })
-                && matches!(
-                    self.settings_section,
-                    keymap::SettingsSection::Appearance
-                        | keymap::SettingsSection::Behaviour
-                        | keymap::SettingsSection::Agents
-                )),
+            pref_scope_offered: matches!(self.mode, Mode::Tiers { naming: None, .. })
+                || (matches!(
+                    self.mode,
+                    Mode::Sections | Mode::Settings { .. } | Mode::Theme { .. }
+                ) && self.settings_section.board_scoped()),
             pref_scope_board: self.settings_board_scope,
             board_overrides: self
                 .board_prefs
@@ -5908,10 +5919,12 @@ impl App {
             Verb::Back => self.back(scope),
             Verb::Quit => self.quit = true,
             Verb::Menu => self.mode = Mode::Menu { idx: 0 },
+            // The dialog opens on its section list, on the first section
+            // and the machine's settings (T-717).
             Verb::Settings => {
-                self.settings_section = keymap::SettingsSection::Root;
+                self.settings_section = keymap::SettingsSection::Theme;
                 self.settings_board_scope = false;
-                self.mode = Mode::Settings { idx: 0 };
+                self.mode = Mode::Sections;
             }
             Verb::PrefScope => {
                 self.settings_board_scope = !self.settings_board_scope;
@@ -5921,24 +5934,11 @@ impl App {
                     "the machine's settings ∙ b sets one for this board".into()
                 };
             }
-            Verb::SettingsAppearance
-            | Verb::SettingsBehaviour
-            | Verb::SettingsAgents
-            | Verb::SettingsTerminal
-            | Verb::SettingsUsage => {
-                // Every section opens on the machine's, as the dialog does
-                // (T-559): the scope is the list's that `b` flipped it in,
-                // and Terminal and Usage have no row a board can set.
-                // Appearance is the one that opens on this board's (T-625):
-                // how a board looks is the setting most often its own.
-                self.settings_board_scope = verb == Verb::SettingsAppearance;
-                self.settings_section = match verb {
-                    Verb::SettingsAppearance => keymap::SettingsSection::Appearance,
-                    Verb::SettingsBehaviour => keymap::SettingsSection::Behaviour,
-                    Verb::SettingsTerminal => keymap::SettingsSection::Terminal,
-                    Verb::SettingsUsage => keymap::SettingsSection::Usage,
-                    _ => keymap::SettingsSection::Agents,
-                };
+            // The Usage dialog's `s`: Settings, open on the line's own page,
+            // whose Esc is the section list as anywhere else in the dialog.
+            Verb::SettingsUsage => {
+                self.settings_board_scope = false;
+                self.settings_section = keymap::SettingsSection::Usage;
                 self.mode = Mode::Settings { idx: 0 };
             }
             // The quota (T-327): the dialog reads again on opening when the
@@ -6481,18 +6481,6 @@ impl App {
                     self.mode = Mode::Brief { from_settings: true };
                 }
             }
-            // The default column (T-279): board state like the tools, so it
-            // goes to the daemon and comes back on the snapshot. Enter walks
-            // the columns in board order from the one the daemon would use
-            // now, wrapping — a fixed ring, like the week's first day.
-            Verb::FollowUpMode => {
-                use mesimon_core::board::FollowUpMode;
-                let mode = if self.board.follow_up_mode == FollowUpMode::Queue { FollowUpMode::Steer } else { FollowUpMode::Queue };
-                match self.client.request(Command::SetFollowUpMode { mode })? {
-                    Response::Err { message } => self.status = message,
-                    _ => self.refresh()?,
-                }
-            }
             Verb::SendQueuedAsk => {
                 if let Some(ticket) = self.subject() {
                     match self.req(Command::SendQueuedAsk { ticket }) {
@@ -6531,28 +6519,6 @@ impl App {
                     self.refresh()?;
                 }
             }
-            Verb::DefaultColumn => {
-                let cols: Vec<String> =
-                    self.board.sorted_columns().iter().map(|c| c.name.clone()).collect();
-                if cols.len() < 2 {
-                    self.status = "the board has one column ∙ everything lands there".into();
-                } else {
-                    let cur = self.board.landing_column();
-                    let at = cur.and_then(|c| cols.iter().position(|n| *n == c)).unwrap_or(0);
-                    let next = cols[(at + 1) % cols.len()].clone();
-                    match self.client.request(Command::SetDefaultColumn { column: Some(next.clone()) })?
-                    {
-                        Response::Err { message } => self.status = message,
-                        _ => {
-                            self.refresh()?;
-                            self.status = format!(
-                                "an agent's create_ticket lands in {} unless it names a column",
-                                next.to_uppercase()
-                            );
-                        }
-                    }
-                }
-            }
             // The offer opens the dialog and does nothing else. The switch is
             // only ever turned from inside it, with the words on the screen.
             Verb::BriefOffer => self.mode = Mode::Brief { from_settings: false },
@@ -6574,7 +6540,6 @@ impl App {
             // Notifications (T-282). The door, then its five rows — every
             // one of them through `set_pref`, the tail every preference
             // takes.
-            Verb::Notifications => self.mode = Mode::Notifications { idx: 0 },
             Verb::AgentPrompts => self.mode = Mode::Prompts { idx: 0, editing: None },
             // ---- board sharing (T-334, T-335) ------------------------------
             // With board sharing held (T-653) the menu row is Remote
@@ -7178,7 +7143,6 @@ impl App {
                     self.status = crate::clipboard::copy_status("link", &text);
                 }
             }
-            Verb::ThemePick => self.open_theme_picker(),
             Verb::ThemeSlot => self.cycle_theme_slot(),
             // ---- columns (T-117) -----------------------------------------
             Verb::AddColumn => {
@@ -7490,19 +7454,29 @@ impl App {
                     *idx = step(*idx, len, down);
                 }
             }
+            // The section list (T-717): the cursor is the section, so the
+            // page beside it follows; `l` steps in as Enter does.
+            Scope::Sections => {
+                if verb == Verb::CursorRight {
+                    if let Err(e) = self.act(scope) {
+                        self.status = e.to_string();
+                    }
+                    return;
+                }
+                let all = keymap::SettingsSection::ALL;
+                let at = step(self.settings_section.index(), all.len(), down);
+                self.settings_section = all[at];
+            }
             Scope::Settings => {
+                if verb == Verb::CursorLeft {
+                    self.back(scope);
+                    return;
+                }
                 let Mode::Settings { idx } = self.mode else {
                     return;
                 };
                 let idx = step(idx, keymap::settings_items(&self.ctx()).len(), down);
                 self.mode = Mode::Settings { idx };
-            }
-            Scope::Notifications => {
-                let Mode::Notifications { idx } = self.mode else {
-                    return;
-                };
-                let idx = step(idx, keymap::notify_items(&self.ctx()).len(), down);
-                self.mode = Mode::Notifications { idx };
             }
             Scope::Prompts => {
                 let n = keymap::prompt_items(&self.ctx()).len();
@@ -7592,21 +7566,18 @@ impl App {
                 Verb::CursorDown => self.header_focus = false,
                 _ => {}
             },
+            // The cursor moves the preview beside the list (T-717); the
+            // board keeps its theme until Enter.
             Scope::Theme => {
+                if verb == Verb::CursorLeft {
+                    self.back(scope);
+                    return;
+                }
                 let Mode::Theme { idx, slot } = self.mode else {
                     return;
                 };
                 let idx = step(idx, self.theme_rows(), down);
                 self.mode = Mode::Theme { idx, slot };
-                // The cursor is the preview; the inherit row previews the
-                // machine's pick for the slot (the board's ground under
-                // `both`).
-                let machine = match slot {
-                    Slot::One(g) => g,
-                    Slot::Both => self.ground,
-                };
-                let flavor = self.theme_at(idx).unwrap_or(self.machine_prefs.for_ground(machine));
-                self.preview(flavor);
             }
             _ => {}
         }
@@ -7665,9 +7636,21 @@ impl App {
                 let ctx = self.ctx();
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
             }
-            // A settings row is a toggle or a picker, so the list STAYS: the
-            // row relabels itself and the change is on the screen. The
-            // picker sets its own mode and comes back here when it closes.
+            // Into the section under the cursor (T-717): Theme's page is
+            // the picker, on the pick the board wears; any other's, its
+            // first row.
+            Scope::Sections => {
+                if self.settings_section == keymap::SettingsSection::Theme {
+                    self.open_theme_picker();
+                } else if !keymap::settings_items(&self.ctx()).is_empty() {
+                    self.mode = Mode::Settings { idx: 0 };
+                }
+                Ok(())
+            }
+            // A settings row is a switch, a choice or a door, so the page
+            // STAYS: the value beside the row changes and the change is on
+            // the screen. A door sets its own mode and comes back here when
+            // it closes.
             Scope::Settings => {
                 let Mode::Settings { idx } = self.mode else {
                     return Ok(());
@@ -7678,24 +7661,7 @@ impl App {
                     return Ok(());
                 };
                 let verb = item.verb;
-                if self.board_scope_takes(verb, &ctx) {
-                    return Ok(());
-                }
-                self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
-            }
-            // The same, one level down: the row relabels itself and the
-            // list stays, and turning the first row off retires four.
-            Scope::Notifications => {
-                let Mode::Notifications { idx } = self.mode else {
-                    return Ok(());
-                };
-                let ctx = self.ctx();
-                let items = keymap::notify_items(&ctx);
-                let Some(item) = items.get(idx.min(items.len().saturating_sub(1))) else {
-                    return Ok(());
-                };
-                let verb = item.verb;
-                if self.board_scope_takes(verb, &ctx) {
+                if self.board_scope_takes(verb) {
                     return Ok(());
                 }
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
@@ -7809,31 +7775,14 @@ impl App {
                     DiffTarget::Checkout | DiffTarget::Commit { .. } => self.to_board(),
                 }
             }
-            Scope::Theme => {
-                // Put it back: whatever was previewed, the board returns to
-                // the theme it rests on. No entry flavor is stored, which is
-                // also what makes a ground flip under the picker right.
-                self.return_to_settings(Verb::ThemePick);
-                self.preview(self.resting_flavor());
-            }
-            // One level up, on the row that opened it.
-            Scope::Settings => {
-                if self.settings_section == keymap::SettingsSection::Root {
-                    self.settings_board_scope = false;
-                    self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) };
-                } else {
-                    // The root offers no `b`, so it never says THIS BOARD.
-                    self.settings_board_scope = false;
-                    let opener = self.settings_section.opener();
-                    self.settings_section = keymap::SettingsSection::Root;
-                    self.mode = Mode::Settings { idx: self.settings_row(opener) };
-                }
-            }
-            // Back to the root, which offers no `b` and so is never THIS
-            // BOARD whatever the list was flipped to.
-            Scope::Notifications => {
+            // A page goes back to the section list, on its own section and
+            // in the scope `b` left it in (T-717).
+            Scope::Theme | Scope::Settings => self.mode = Mode::Sections,
+            // Out of the dialog, on the menu row that opened it; the next
+            // opening starts on the machine's settings again.
+            Scope::Sections => {
                 self.settings_board_scope = false;
-                self.return_to_settings(Verb::Notifications);
+                self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) };
             }
             Scope::Usage => self.mode = Mode::Menu { idx: self.menu_row(Verb::Usage) },
             Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
@@ -15825,7 +15774,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     }
 
-    /// The settings list is a menu row.
+    /// The Settings dialog is a menu row, and opens on its section list.
     fn open_settings(app: &mut App) {
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         let items = keymap::menu_items(&app.ctx());
@@ -15834,35 +15783,42 @@ mod tests {
             press(app, 'j');
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Settings { idx: 0 }), "{:?}", app.mode);
+        assert_eq!(app.mode, Mode::Sections);
+        assert_eq!(app.settings_section, keymap::SettingsSection::Theme);
     }
 
-    /// The theme picker is a settings row, one level further down.
-    /// The picker in the machine's scope: Appearance opens on this
-    /// board's (T-625), and `b` flips it back.
-    fn open_theme_picker(app: &mut App) {
+    /// One section's page, walked to from the section list as a person
+    /// would: `j` to it, Enter into it.
+    fn open_section(app: &mut App, section: keymap::SettingsSection) {
         open_settings(app);
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap(); // Appearance
-        press(app, 'b');
-        assert!(!app.settings_board_scope);
-        let items = keymap::settings_items(&app.ctx());
-        let idx = items.iter().position(|m| m.verb == Verb::ThemePick).expect("the theme row");
-        for _ in 0..idx {
+        for _ in 0..section.index() {
             press(app, 'j');
         }
+        assert_eq!(app.settings_section, section);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     }
 
-    /// Settings is a submenu: Esc pops back onto the menu row that opened
-    /// it, and a toggle row keeps the list open with its new words.
+    /// The theme picker is the Theme section's page, in the machine's
+    /// scope.
+    fn open_theme_picker(app: &mut App) {
+        open_section(app, keymap::SettingsSection::Theme);
+        assert!(!app.settings_board_scope);
+        assert!(matches!(app.mode, Mode::Theme { .. }), "{:?}", app.mode);
+    }
+
+    /// Settings is one level under the menu (T-717): the section list,
+    /// a page Enter steps into, and Esc back up each level onto the row
+    /// that opened it. A toggle keeps the page open with its new value.
     #[test]
     fn settings_is_one_level_under_the_menu_and_a_toggle_keeps_it_open() {
         let mut app = app_three_columns();
         open_settings(&mut app);
-        assert_eq!(app.scope(), Scope::Settings);
-        // Root → Appearance → status line, then back through each parent.
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.scope(), Scope::Sections);
+        press(&mut app, 'j');
         assert_eq!(app.settings_section, keymap::SettingsSection::Appearance);
+        assert_eq!(app.mode, Mode::Sections, "moving shows the page, it does not enter it");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.scope(), Scope::Settings);
         let idx = app.settings_row(Verb::StatusLine);
         app.mode = Mode::Settings { idx };
         let before = app.prefs.status_top;
@@ -15870,8 +15826,13 @@ mod tests {
         assert_ne!(app.prefs.status_top, before);
         assert_eq!(app.mode, Mode::Settings { idx });
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.settings_section, keymap::SettingsSection::Root);
+        assert_eq!(app.settings_section, keymap::SettingsSection::Appearance);
+        assert_eq!(app.mode, Mode::Sections);
+        // `l` steps in as Enter does, `h` back out as Esc does.
+        press(&mut app, 'l');
         assert_eq!(app.mode, Mode::Settings { idx: 0 });
+        press(&mut app, 'h');
+        assert_eq!(app.mode, Mode::Sections);
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         let menu_idx = keymap::menu_items(&app.ctx())
             .iter()
@@ -15882,8 +15843,10 @@ mod tests {
         assert_eq!(app.mode, Mode::Normal);
     }
 
+    /// Every section's page goes back to the list on its own section, and
+    /// the brief's dialog goes back to the Agents row that opened it.
     #[test]
-    fn settings_groups_return_to_their_parent_and_brief_returns_to_agents() {
+    fn settings_sections_return_to_the_list_and_brief_returns_to_agents() {
         let mut app = app_three_columns();
         open_settings(&mut app);
         for section in [
@@ -15891,8 +15854,9 @@ mod tests {
             keymap::SettingsSection::Behaviour,
             keymap::SettingsSection::Agents,
         ] {
-            let idx = app.settings_row(section.opener());
-            app.mode = Mode::Settings { idx };
+            while app.settings_section != section {
+                press(&mut app, 'j');
+            }
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
             assert_eq!(app.settings_section, section);
             assert_eq!(app.mode, Mode::Settings { idx: 0 });
@@ -15906,8 +15870,8 @@ mod tests {
                 assert_eq!(app.mode, Mode::Settings { idx: brief });
             }
             app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-            assert_eq!(app.settings_section, keymap::SettingsSection::Root);
-            assert_eq!(app.mode, Mode::Settings { idx });
+            assert_eq!(app.settings_section, section);
+            assert_eq!(app.mode, Mode::Sections);
         }
     }
 
@@ -16372,7 +16336,7 @@ mod tests {
     #[test]
     fn crown_budget_setting_cycles_through_board_command() {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
-        app.settings_section = keymap::SettingsSection::Agents;
+        app.settings_section = keymap::SettingsSection::Crown;
         let idx = app.settings_row(Verb::CrownBudget);
         app.mode = Mode::Settings { idx };
         assert_eq!(app.board.crown_budget, 3);
@@ -16392,7 +16356,7 @@ mod tests {
     fn crown_mode_setting_toggles_through_board_command() {
         use mesimon_core::board::CrownMode;
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
-        app.settings_section = keymap::SettingsSection::Agents;
+        app.settings_section = keymap::SettingsSection::Crown;
         let idx = app.settings_row(Verb::CrownMode);
         assert_eq!(idx, app.settings_row(Verb::CrownBudget) + 1, "under the budget row");
         app.mode = Mode::Settings { idx };
@@ -16414,7 +16378,7 @@ mod tests {
     #[test]
     fn crown_archives_setting_toggles_through_board_command() {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
-        app.settings_section = keymap::SettingsSection::Agents;
+        app.settings_section = keymap::SettingsSection::Crown;
         let idx = app.settings_row(Verb::CrownArchives);
         assert_eq!(idx, app.settings_row(Verb::CrownMode) + 1, "under the mode row");
         app.mode = Mode::Settings { idx };
@@ -16439,7 +16403,7 @@ mod tests {
     #[test]
     fn crown_watches_setting_toggles_through_board_command() {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
-        app.settings_section = keymap::SettingsSection::Agents;
+        app.settings_section = keymap::SettingsSection::Crown;
         let idx = app.settings_row(Verb::CrownWatches);
         assert_eq!(idx, app.settings_row(Verb::CrownArchives) + 1, "under the archives row");
         app.mode = Mode::Settings { idx };
@@ -16900,25 +16864,24 @@ mod tests {
         assert_eq!(app.ground, Ground::Light);
         assert_eq!(app.theme.flavor, Flavor::Chalk, "the light slot's pick");
         assert!(app.force_redraw, "a retheme repaints from nothing");
-        assert_eq!(app.ctx().theme_slot_word, "light", "the Theme row now edits the light slot");
         // The same answer again is nothing.
         tx.send(Ground::Light).unwrap();
         app.force_redraw = false;
         app.follow_appearance();
         assert!(!app.force_redraw);
-        // Under the picker the preview stays and the picker keeps its slot;
-        // Esc then rests on the NEW ground's pick.
+        // Under the picker the board still follows the ground (T-717: the
+        // preview is the picker's own), and the picker keeps its slot.
         open_theme_picker(&mut app);
         assert_eq!(app.mode, Mode::Theme { idx: 1, slot: Slot::Both });
         press(&mut app, 'j');
-        assert_eq!(app.theme.flavor, Flavor::Blue);
+        assert_eq!(app.theme.flavor, Flavor::Chalk, "browsing repaints only the preview");
+        assert_eq!(app.theme_preview(2, Slot::Both), Flavor::Blue);
         tx.send(Ground::Dark).unwrap();
         app.follow_appearance();
-        assert_eq!(app.theme.flavor, Flavor::Blue, "the preview stays under the picker");
-        assert_eq!(app.mode, Mode::Theme { idx: 2, slot: Slot::Both }, "and so does the slot");
+        assert_eq!(app.theme.flavor, Flavor::Graphite, "the board rests on the dark slot's pick");
+        assert_eq!(app.mode, Mode::Theme { idx: 2, slot: Slot::Both }, "the picker keeps its slot");
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.theme.flavor, Flavor::Graphite, "esc rests on the dark slot's pick");
-        assert_eq!(app.mode, Mode::Settings { idx: app.settings_row(Verb::ThemePick) });
+        assert_eq!(app.mode, Mode::Sections);
     }
 
     /// Tab in the picker (T-485) cycles the state a pick is for: both,
@@ -16942,7 +16905,8 @@ mod tests {
         assert_eq!(app.ctx().theme_tab_word, "light");
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Theme { idx: 2, slot: Slot::One(Ground::Light) }, "on blue");
-        assert_eq!(app.theme.flavor, Flavor::Blue, "the light state's pick is previewed");
+        assert_eq!(app.theme_preview(2, Slot::One(Ground::Light)), Flavor::Blue);
+        assert_eq!(app.theme.flavor, Flavor::Graphite, "the board keeps its own");
         assert_eq!(app.ctx().theme_tab_word, "both");
         press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -16951,12 +16915,13 @@ mod tests {
         assert_eq!(app.theme.flavor, Flavor::Graphite, "the board rests on its own state");
         assert_eq!(app.prefs.light, Flavor::Amber);
         assert_eq!(app.prefs.dark, Flavor::Graphite);
-        assert_eq!(app.mode, Mode::Settings { idx: app.settings_row(Verb::ThemePick) });
+        assert_eq!(app.mode, Mode::Theme { idx: 3, slot: Slot::One(Ground::Light) }, "it stays");
         // Both: the cursor stays where it is, and Enter writes both slots.
-        // (From the Settings list the row is reached by its verb.)
+        // (Back to the section list and into the page again.)
         let reopen = |app: &mut App| {
-            let ctx = app.ctx();
-            app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
+            app.mode = Mode::Sections;
+            app.settings_section = keymap::SettingsSection::Theme;
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         };
         reopen(&mut app);
         for _ in 0..3 {
@@ -16984,19 +16949,21 @@ mod tests {
         app.settings_board_scope = true;
         app.board_prefs.set_flavor(Ground::Dark, Flavor::Amber);
         app.resolve_prefs();
-        let ctx = app.ctx();
-        app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
+        reopen(&mut app);
         assert_eq!(app.mode, Mode::Theme { idx: 4, slot: Slot::Both }, "the board's");
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Theme { idx: 0, slot: Slot::One(Ground::Light) }, "inherit");
-        assert_eq!(app.theme.flavor, Flavor::Blue, "inherit previews the machine's light pick");
+        assert_eq!(
+            app.theme_preview(0, Slot::One(Ground::Light)),
+            Flavor::Blue,
+            "inherit previews the machine's light pick"
+        );
         app.mode = Mode::Theme { idx: 3, slot: Slot::One(Ground::Light) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.board_prefs.flavor(Ground::Light), Some(Flavor::Blue));
         assert_eq!(app.board_prefs.flavor(Ground::Dark), Some(Flavor::Amber), "untouched");
-        let ctx = app.ctx();
-        app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
+        reopen(&mut app);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         app.mode = Mode::Theme { idx: 0, slot: Slot::Both };
@@ -17036,18 +17003,13 @@ mod tests {
         assert_eq!(app.ground, Ground::Light);
         assert_eq!(app.theme.flavor, Flavor::Chalk);
         assert!(!app.ctx().theme_os_barred);
-        let items = keymap::settings_items(&Ctx {
-            settings_section: keymap::SettingsSection::Appearance,
-            ..app.ctx()
-        });
-        let row = items.iter().find(|m| m.verb == Verb::ThemePick).unwrap();
-        let detail = (row.detail)(&app.ctx());
+        let detail = keymap::theme_detail(&app.ctx());
         assert!(detail.ends_with("follows the OS"), "{detail}");
         // One again: the thread's handle goes; the ground stays where it is.
         app.set_pref("graphite for light terminals", |p| p.light = Flavor::Graphite);
         assert!(app.appearance.is_none());
         assert_eq!(app.ground, Ground::Light);
-        assert!((row.detail)(&app.ctx()).contains("for dark and light terminals"));
+        assert!(keymap::theme_detail(&app.ctx()).contains("for dark and light terminals"));
         // A pin keeps the watch down; the pick that clears the pin arms it.
         app.forced = Some(Flavor::Green);
         app.set_pref("chalk for light terminals", |p| p.light = Flavor::Chalk);
@@ -17063,7 +17025,7 @@ mod tests {
         app.arm_appearance();
         assert!(app.appearance.is_some(), "the thread still asks, in case it starts answering");
         assert!(app.ctx().theme_os_barred);
-        let detail = (row.detail)(&app.ctx());
+        let detail = keymap::theme_detail(&app.ctx());
         assert!(detail.contains("did not say"), "{detail}");
     }
 
@@ -17081,19 +17043,21 @@ mod tests {
         assert_eq!(app.theme.flavor, Flavor::Blue, "opening previews nothing");
     }
 
+    /// Browsing repaints only the preview beside the list (T-717): the
+    /// board keeps its theme, and Esc saves nothing.
     #[test]
-    fn moving_the_cursor_previews_and_esc_puts_it_back() {
+    fn moving_the_cursor_moves_the_preview_and_esc_saves_nothing() {
         let mut app = app_three_columns();
         open_theme_picker(&mut app);
         assert_eq!(app.mode, Mode::Theme { idx: 0, slot: Slot::Both });
         press(&mut app, 'j');
-        assert_eq!(app.theme.flavor, Flavor::Chalk, "the cursor is the preview");
         press(&mut app, 'j');
-        assert_eq!(app.theme.flavor, Flavor::Blue);
-        assert!(app.force_redraw, "a retheme repaints from nothing");
+        assert_eq!(app.mode, Mode::Theme { idx: 2, slot: Slot::Both });
+        assert_eq!(app.theme_preview(2, Slot::Both), Flavor::Blue);
+        assert_eq!(app.theme.flavor, Flavor::Graphite, "the board keeps its theme");
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.mode, Mode::Settings { idx: 0 }, "esc pops to the settings list");
-        assert_eq!(app.theme.flavor, Flavor::Graphite, "esc puts the resting theme back");
+        assert_eq!(app.mode, Mode::Sections, "esc goes back to the sections");
+        assert_eq!(app.theme.flavor, Flavor::Graphite);
         assert_eq!(app.prefs.dark, Flavor::Graphite, "nothing was saved");
     }
 
@@ -17111,7 +17075,11 @@ mod tests {
         press(&mut app, 'j');
         press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.mode, Mode::Settings { idx: 0 }, "enter keeps, and pops to settings");
+        assert_eq!(
+            app.mode,
+            Mode::Theme { idx: 3, slot: Slot::One(Ground::Light) },
+            "enter keeps, and the page stays"
+        );
         assert_eq!(app.theme.flavor, Flavor::Amber);
         assert_eq!(app.status, "amber saved for light terminals");
         let back = crate::prefs::load(&path).prefs;
@@ -22001,9 +21969,10 @@ mod tests {
         let mut app = app_three_columns();
         app.seed_pref(|p| p.notify = true);
         assert!(!app.prefs.notify_in_pane, "quiet inside the pane by default");
-        app.mode = Mode::Notifications { idx: 0 };
+        app.settings_section = keymap::SettingsSection::Notifications;
+        app.mode = Mode::Settings { idx: 0 };
         let ctx = app.ctx();
-        app.dispatch(Verb::NotifyInPane, Key::Enter, Scope::Notifications, &ctx).expect("the row");
+        app.dispatch(Verb::NotifyInPane, Key::Enter, Scope::Settings, &ctx).expect("the row");
         assert!(app.prefs.notify_in_pane);
         assert!(app.status.starts_with("said even inside the agent's own pane"), "{}", app.status);
     }
@@ -22016,9 +21985,10 @@ mod tests {
     fn a_sound_row_walks_the_ring() {
         let mut app = app_three_columns();
         app.seed_pref(|p| p.notify = true);
-        app.mode = Mode::Notifications { idx: 0 };
+        app.settings_section = keymap::SettingsSection::Notifications;
+        app.mode = Mode::Settings { idx: 0 };
         let ctx = app.ctx();
-        app.dispatch(Verb::NotifySoundNeedsYou, Key::Enter, Scope::Notifications, &ctx)
+        app.dispatch(Verb::NotifySoundNeedsYou, Key::Enter, Scope::Settings, &ctx)
             .expect("the row");
         assert_eq!(app.prefs.notify_sound_needs_you, Sound::Ping, "the ring moved");
         assert!(app.status.starts_with("needs-you sound: Ping"), "{}", app.status);
@@ -22032,49 +22002,48 @@ mod tests {
     #[test]
     fn the_delivered_by_row_cycles_and_says_when_the_terminal_cannot_post() {
         let mut app = app_three_columns();
+        app.settings_section = keymap::SettingsSection::Notifications;
         let row = |app: &App| {
             let ctx = app.ctx();
-            let item = keymap::notify_items(&ctx)
+            let item = keymap::settings_items(&ctx)
                 .into_iter()
                 .find(|m| m.verb == Verb::NotifyVia)
                 .expect("the row, under the switch");
-            ((item.label)(&ctx), (item.detail)(&ctx))
+            let Some(keymap::Value::Choice { options, at }) = keymap::value(item.verb, &ctx) else {
+                panic!("a choice")
+            };
+            (options[at], (item.detail)(&ctx))
         };
-        assert_eq!(row(&app).0, "Delivered by: mesimon");
+        assert_eq!(row(&app).0, "mesimon");
         assert!(row(&app).1.contains("with the mascot"), "{}", row(&app).1);
         let ctx = app.ctx();
-        app.dispatch(Verb::NotifyVia, Key::Enter, Scope::Notifications, &ctx).expect("the row");
+        app.dispatch(Verb::NotifyVia, Key::Enter, Scope::Settings, &ctx).expect("the row");
         assert_eq!(app.prefs.notify_via, crate::prefs::NotifyVia::Terminal);
-        assert_eq!(row(&app).0, "Delivered by: your terminal");
+        assert_eq!(row(&app).0, "your terminal");
         assert_eq!(row(&app).1, "this terminal cannot post banners; none will show");
         assert!(app.status.contains("none will show"), "{}", app.status);
         app.terminal = crate::title::Terminal::Kitty;
         assert_eq!(row(&app).1, "your terminal posts it, signed as itself; no mascot");
         let ctx = app.ctx();
-        app.dispatch(Verb::NotifyVia, Key::Enter, Scope::Notifications, &ctx).expect("the row");
+        app.dispatch(Verb::NotifyVia, Key::Enter, Scope::Settings, &ctx).expect("the row");
         assert_eq!(app.prefs.notify_via, crate::prefs::NotifyVia::Mesimon);
     }
 
+    /// Notifications is a section (T-717): off, its page is its switch;
+    /// on, the rest appear under it, and Esc goes back to the list.
     #[test]
-    fn the_notifications_door_opens_and_pops_back() {
+    fn the_notifications_section_grows_with_its_switch() {
         let mut app = app_three_columns();
         app.seed_pref(|p| p.notify = false);
-        app.return_to_settings(Verb::Notifications);
-        let enter = |app: &mut App| {
-            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
-        };
-        enter(&mut app);
-        assert!(matches!(app.mode, Mode::Notifications { idx: 0 }), "{:?}", app.mode);
-        assert_eq!(keymap::notify_items(&app.ctx()).len(), 1, "off, the list is its switch");
-        enter(&mut app);
+        open_section(&mut app, keymap::SettingsSection::Notifications);
+        assert_eq!(app.mode, Mode::Settings { idx: 0 });
+        assert_eq!(keymap::settings_items(&app.ctx()).len(), 1, "off, the page is its switch");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
         assert!(app.prefs.notify, "the first row is the switch");
-        assert_eq!(keymap::notify_items(&app.ctx()).len(), 10);
+        assert_eq!(keymap::settings_items(&app.ctx()).len(), 10);
         app.on_key(KeyCode::Esc, KeyModifiers::NONE).expect("esc");
-        assert_eq!(
-            app.mode,
-            Mode::Settings { idx: app.settings_row(Verb::Notifications) },
-            "back onto the row that opened it"
-        );
+        assert_eq!(app.mode, Mode::Sections);
+        assert_eq!(app.settings_section, keymap::SettingsSection::Notifications);
     }
 
     // ---- a joined board (T-335) ----------------------------------------
@@ -22600,11 +22569,10 @@ mod tests {
         app.prefs_path = Some(machine.clone());
         app.board_prefs_path = Some(board.clone());
         app.seed_pref(|p| p.set(Ground::Dark, Flavor::Graphite));
-        app.settings_section = keymap::SettingsSection::Appearance;
+        app.settings_section = keymap::SettingsSection::Theme;
         app.settings_board_scope = true;
         assert_eq!(app.theme_rows(), Flavor::ALL.len() + 1);
-        let ctx = app.ctx();
-        app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
+        app.open_theme_picker();
         assert_eq!(
             app.mode,
             Mode::Theme { idx: 0, slot: Slot::Both },
@@ -22620,8 +22588,7 @@ mod tests {
         assert!(json(&machine).get("dark").is_none());
         assert_eq!(app.theme.flavor, Flavor::Blue);
         // Reopen: the cursor sits on the board's pick, one past inherit.
-        let ctx = app.ctx();
-        app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
+        app.open_theme_picker();
         assert_eq!(app.mode, Mode::Theme { idx: blue, slot: Slot::Both });
         app.mode = Mode::Theme { idx: 0, slot: Slot::One(Ground::Dark) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -22634,7 +22601,9 @@ mod tests {
         assert_eq!(app.theme_at(0), Some(Flavor::ALL[0]));
     }
 
-    /// Opening Settings from the menu always lands in machine scope.
+    /// Opening Settings from the menu always lands in machine scope, and
+    /// `b` is offered on exactly the sections with a row a board can set
+    /// (T-361, T-443): Theme, Appearance, Notifications, Behaviour, Agents.
     #[test]
     fn opening_settings_resets_the_scope() {
         let (mut app, _, _) = app_with_claude(SessionState::Running, false);
@@ -22642,78 +22611,57 @@ mod tests {
         let ctx = app.ctx();
         app.dispatch(Verb::Settings, Key::Enter, Scope::Menu, &ctx).unwrap();
         assert!(!app.settings_board_scope);
-        assert!(!app.ctx().pref_scope_offered, "not at the root");
-        let ctx = app.ctx();
-        app.dispatch(Verb::SettingsBehaviour, Key::Enter, Scope::Settings, &ctx).unwrap();
-        assert!(app.ctx().pref_scope_offered);
-        // The default tier and the tiers are the machine's and a board's
-        // (T-443), so Agents offers the switch too.
-        let ctx = app.ctx();
-        app.dispatch(Verb::SettingsAgents, Key::Enter, Scope::Settings, &ctx).unwrap();
-        assert!(app.ctx().pref_scope_offered, "the tier rows have two scopes");
+        let mut offered = Vec::new();
+        for section in keymap::SettingsSection::ALL {
+            assert_eq!(app.settings_section, section);
+            if app.ctx().pref_scope_offered {
+                offered.push(section);
+            }
+            press(&mut app, 'j');
+        }
+        use keymap::SettingsSection as S;
+        assert_eq!(offered, [S::Theme, S::Appearance, S::Notifications, S::Behaviour, S::Agents]);
     }
 
-    /// Appearance opens on this board's settings (T-625) and `b` reaches
-    /// the machine's; Notifications is a root row of its own, opening on
-    /// the machine's, and its Esc lands on the root in the machine's scope.
+    /// The scope is the dialog's (T-717): `b` on a page flips it, it holds
+    /// while the section list moves, a row the machine keeps still sets the
+    /// machine's, and leaving the dialog drops it — as does the Usage
+    /// dialog's `s`, which opens Settings straight from the menu.
     #[test]
-    fn appearance_opens_on_this_board_and_notifications_sit_at_the_root() {
-        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
-        open_settings(&mut app);
-        let ctx = app.ctx();
-        app.dispatch(Verb::SettingsAppearance, Key::Enter, Scope::Settings, &ctx).unwrap();
-        assert!(app.settings_board_scope && app.ctx().pref_scope_offered);
-        let rows: Vec<Verb> = keymap::settings_items(&app.ctx()).iter().map(|m| m.verb).collect();
-        assert!(!rows.contains(&Verb::Notifications), "{rows:?}");
-        press(&mut app, 'b');
-        assert!(!app.settings_board_scope, "b goes to the machine's");
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        let idx = app.settings_row(Verb::Notifications);
-        assert_eq!(idx, 1, "beside Appearance");
-        app.mode = Mode::Settings { idx };
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Notifications { .. }));
-        assert!(!app.settings_board_scope);
-        press(&mut app, 'b');
-        assert!(app.settings_board_scope);
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.settings_section, keymap::SettingsSection::Root);
-        assert_eq!(app.mode, Mode::Settings { idx });
-        assert!(!app.settings_board_scope, "the root offers no b");
-    }
-
-    /// The scope is the list's that `b` flipped it in (T-559): back at the
-    /// root it is the machine's again, so Terminal opens on rows Enter
-    /// sets — not on `(machine)` rows that are inert with no `b` to leave.
-    #[test]
-    fn leaving_a_section_drops_the_board_scope() {
+    fn the_scope_holds_across_sections_and_leaves_with_the_dialog() {
         let (mut app, _, _) = app_with_claude(SessionState::Running, false);
         let (machine, board) = pref_scratch("leave");
         app.prefs_path = Some(machine.clone());
         app.board_prefs_path = Some(board.clone());
-        app.settings_section = keymap::SettingsSection::Appearance;
-        app.mode = Mode::Settings { idx: 0 };
-        app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE).unwrap();
+        open_section(&mut app, keymap::SettingsSection::Appearance);
+        press(&mut app, 'b');
         assert!(app.settings_board_scope);
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.settings_section, keymap::SettingsSection::Root);
-        assert!(!app.settings_board_scope, "the root offers no b");
-        let ctx = app.ctx();
-        app.dispatch(Verb::SettingsTerminal, Key::Enter, Scope::Settings, &ctx).unwrap();
-        assert!(!app.ctx().pref_scope_board);
+        assert_eq!(app.mode, Mode::Sections);
+        assert!(app.settings_board_scope, "the list keeps the page's scope");
+        while app.settings_section != keymap::SettingsSection::Terminal {
+            press(&mut app, 'j');
+        }
+        assert!(!app.ctx().pref_scope_offered, "no row here is a board's");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let before = app.prefs.tab_title;
         app.mode = Mode::Settings { idx: app.settings_row(Verb::TabTitle) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_ne!(app.prefs.tab_title, before, "the row acts");
+        assert_ne!(app.prefs.tab_title, before, "a machine row acts, on the machine's");
         assert!(machine.exists() && !board.exists());
-        // `s` in the usage dialog opens a section straight from the menu:
-        // a scope left over from anywhere does not follow it in.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Menu { .. }));
+        assert!(!app.settings_board_scope, "out of the dialog, out of the scope");
         app.settings_board_scope = true;
         app.mode = Mode::Usage { idx: 0 };
         let ctx = app.ctx();
         app.dispatch(Verb::SettingsUsage, Key::Char('s'), Scope::Usage, &ctx).unwrap();
         assert_eq!(app.settings_section, keymap::SettingsSection::Usage);
+        assert_eq!(app.mode, Mode::Settings { idx: 0 });
         assert!(!app.settings_board_scope);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Sections, "Esc is the section list, as anywhere in it");
     }
     fn queued_picture(
         app: &mut App,

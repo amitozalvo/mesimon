@@ -34,6 +34,9 @@ pub(crate) enum Target {
     Key(Key),
     /// A row of the open list dialog, by the list's own index.
     Row(usize),
+    /// A section in the Settings dialog's list, by its place in
+    /// `SettingsSection::ALL`.
+    Section(usize),
     /// A board card.
     Card(ulid::Ulid),
     /// A board column's header (or the whole spine of a folded column).

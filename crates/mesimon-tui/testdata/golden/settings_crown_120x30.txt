@@ -2,17 +2,17 @@
 
     TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-    De│  Theme               Default tier    claude                                                              │
-      │                      Tiers           none yet ›                                                          │
-    Ke│  Appearance          Agent tools     ● on                                                                │
-      │                      Agent brief     ○ off                                                               │
-      │  Notifications       Agent prompts   mesimon's words ›                                                   │
+    De│  Theme               Starts agents      3 at once                                                        │
+      │                      Mode               ● autonomous   ○ supervised                                      │
+    Ke│  Appearance          Archives tickets   ○ off                                                            │
+      │                      Watches tickets    ○ off                                                            │
+      │  Notifications                                                                                           │
       │                                                                                                          │
       │  Behaviour                                                                                               │
       │                                                                                                          │
-      │▎ Agents                                                                                                  │
+      │  Agents                                                                                                  │
       │                                                                                                          │
-      │  Crown                                                                                                   │
+      │▎ Crown                                                                                                   │
       │                                                                                                          │
       │  Terminal                                                                                                │
       │                                                                                                          │
@@ -24,7 +24,7 @@
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
-      │                     what a ticket starts on unless ^n picks its own ∙ Claude Code ∙ its own model        │
-      ╰───────────────────────────────────────────────── jk select ∙ enter change ∙ b this board ∙ esc sections ─╯
+      │                     agents the crown may have running at once ∙ a sleeping one frees its seat            │
+      ╰──────────────────────────────────────────────────────────────── jk select ∙ enter change ∙ esc sections ─╯
 
  SETTINGS                                                                                                        ? keys

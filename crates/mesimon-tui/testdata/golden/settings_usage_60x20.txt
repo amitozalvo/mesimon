@@ -1,0 +1,20 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+  ╭─ SETTINGS ∙ USAGE ───────────────────────────────────╮
+  │                                                      │
+  │ quiet until a provider nears a limit                 │
+  │                                                      │
+  │  Show                near a limit                    │
+  │                                                      │
+  │ WINDOWS                                              │
+  │  5-hour window       ● on                            │
+  │  Weekly window       ● on                            │
+  │  Per-model windows   ● on                            │
+  │  Reset times         near a limit                    │
+  │                                                      │
+  │ PROVIDERS                                            │
+  │  Claude              ● on                            │
+  │  Codex               ● on                            │
+  │                                                      │
+  │ silent until a provider warns                        │
+  ╰──────────── jk select ∙ enter change ∙ esc sections ─╯
+ SETTINGS                                            ? keys

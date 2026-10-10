@@ -1532,7 +1532,7 @@ title, column?, description?, idempotency_key? }` → `Daemon::agent_create_tick
 `Resource::Column` (one card appended, the board itself untouched — `authorize` still denies
 `Mutate` on `Board`), refused under the columns bar, `column` absent = the board's DEFAULT column
 (T-279, 2026-09-06: `Board::landing_column` — `Board.default_column`, a name in `columns.toml`
-chosen by the Settings row `Default column: …` / `Command::SetDefaultColumn`, denied to agents;
+chosen by `Command::SetDefaultColumn` (its Settings row went in T-717), denied to agents;
 the first column until one is chosen or once that column is deleted; a rename carries it),
 and the description written through `write_note` so the note carries `agent:<uuid>` as author.
 The receipt is a KEY (`T-9`), never an id, and nothing takes a key back; the new card has no

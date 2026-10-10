@@ -1,12 +1,10 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ SETTINGS ∙ AGENTS ──────────────────────────────────╮
+  ╭─ SETTINGS ∙ CROWN ───────────────────────────────────╮
   │                                                      │
-  │  Default tier    claude                              │
-  │  Tiers           none yet ›                          │
-  │  Agent tools     ● on                                │
-  │  Agent brief     ○ off                               │
-  │  Agent prompts   mesimon's words ›                   │
-  │                                                      │
+  │  Starts agents      3 at once                        │
+  │  Mode               ● autonomous   ○ supervised      │
+  │  Archives tickets   ○ off                            │
+  │  Watches tickets    ○ off                            │
   │                                                      │
   │                                                      │
   │                                                      │
@@ -15,6 +13,8 @@
   │                                                      │
   │                                                      │
   │                                                      │
-  │ what a ticket starts on unless ^n picks its own ∙ C~ │
-  ╰──────────── jk select ∙ enter change ∙ b this board ─╯
+  │                                                      │
+  │                                                      │
+  │ agents the crown may have running at once ∙ a sleep~ │
+  ╰──────────── jk select ∙ enter change ∙ esc sections ─╯
  SETTINGS                                            ? keys

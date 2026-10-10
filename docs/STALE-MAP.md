@@ -23296,3 +23296,45 @@ the jump the float was built to avoid is held off by two rules in `App::hover_pe
 stays open until the pointer rests (`HOVER_PEEK`) on something else, so leaving it moves nothing
 until the pointer has settled; and the dwell target changes only on a move, so a pointer that
 holds still while the cards shift under it opens nothing new. A key closes it (`App::peeked`).
+
+## Settings is one dialog (T-717, 2026-10-10, "better settings UI")
+
+The author: "too much sub menus and options, it's hard for the user to navigate". The menu's
+`Settings` row now opens one large frame (`ui/settings.rs`, inner 106×24 terminal permitting):
+the eight sections down the left (`SettingsSection::ALL`: Theme, Appearance, Notifications,
+Behaviour, Agents, Crown, Terminal, Usage) and, beside them, the page of the one under the
+cursor. Moving the list shows the page without entering it; Enter (or `l`) steps in, Esc (or
+`h`) steps back, Esc on the list returns to the menu. The approved mockup is the artifact on
+the ticket. Modes: `Mode::Sections` (the list, `Scope::Sections`), `Mode::Settings { idx }`
+(a page, `Scope::Settings`), `Mode::Theme` (Theme's page, `Scope::Theme`). The root list of
+doors, its six `Settings*` verbs, `Mode::Notifications`, `Scope::Notifications` and
+`notify_items` are gone; `SettingsUsage` stays as the Usage dialog's `s`.
+
+**A row is its name and its value.** `MenuItem.label` is the name alone; `keymap::value` gives
+the state the page draws beside it: a switch (`● on`/`○ off`), a choice with every option drawn
+and the chosen one marked (the chosen word alone where they do not fit), a word, or a door's
+word and `›`. Only the selected row's detail is shown, on the page's last line, where it
+marquees; every row used to carry a second line. Headings (`settings_heading`: WHEN, BANNER,
+SOUND, SNOOZE, AUTO MERGE, TITLE, TAB, WINDOWS, PROVIDERS) let the names stay short. In board
+scope the row's right edge says `inherited`, `set here` or `machine` (`keymap::scope_word`);
+the detail keeps only the machine's value on a row this board sets. Board scope is the
+dialog's, not a page's: `b` flips it on any section with an overridable row, it holds while
+the list moves, and leaving the dialog drops it. T-625's "Appearance opens on this board" went
+with it: one switch for the dialog cannot also flip as the cursor passes a section.
+
+**Theme browses without repainting the board.** The page lists the flavors beside a small
+board drawn in the one under the cursor (`themes::preview`, its own recorded frame on the
+flavor's ground, joined to the dialog's mouse layer); Enter keeps it, the board repaints, and
+the page stays. Before, the cursor recoloured the whole board and Esc put it back. Four other
+pages open on a preview of what their rows do: the card and tmux's bar (Appearance), the banner
+(Notifications), the tab from the board's own counts (Terminal), and the real quota line
+(Usage). A preview is dropped where the rows would not fit under it.
+
+**Removed rows.** `Follow-ups` (the board's Queue/Steer default) and `Default column` (where an
+agent's unplaced `create_ticket` lands) left Settings, the author: "both are confusing and
+redundant" — Shift+Tab in the composer picks the delivery, and a column is named when a ticket
+is filed. Their verbs and `Ctx` fields went; the board fields, `SetFollowUpMode` and
+`SetDefaultColumn` stay, so a value a board already holds keeps applying.
+
+Narrower than 90 columns the dialog shows one half at a time: the list, or the page with its
+section in the title. A page taller than the dialog scrolls with the cursor.

@@ -1,20 +1,20 @@
  BOARD   mesimon › kanban-tui   6 tickets
-  ╭─ TERMINAL ───────────────────────────────────────────╮
-  │   Tab title: mesimon ∙ project name                  │
+  ╭─ SETTINGS ∙ TERMINAL ────────────────────────────────╮
   │                                                      │
-  │   Tab title counts needs-you: off                    │
-  │     2 need you ∙ project, while any ticket does      │
-  │   Tab title follows the open session: on             │
-  │     the ticket's key and title while you are in its~ │
-  │   Tab progress ring: on                              │
-  │     spins while an agent works, red while one needs~ │
-  │   Tab colour from the theme: on                      │
-  │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
-  │   Tab colour when needs you: the whole tab           │
-  │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
-  │   Tab subtitle: on                                   │
-  │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
-  │   Tab icon: the shin                                 │
-  │     iTerm2 only ∙ this terminal is not iTerm2, so t~ │
-  ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
+  │ TITLE                                                │
+  │  Tab title                  mesimon ∙ project        │
+  │  Counts who needs you       ○ off                    │
+  │  Follows the open session   ● on                     │
+  │                                                      │
+  │ TAB                                                  │
+  │  Progress ring              ● on                     │
+  │  Colour from the theme      ● on                     │
+  │  Colour when needs you      whole tab                │
+  │  Subtitle                   ● on                     │
+  │  Icon                       ● on                     │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  ╰──────────── jk select ∙ enter change ∙ esc sections ─╯
  SETTINGS                                            ? keys

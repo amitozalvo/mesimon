@@ -1,20 +1,20 @@
  BOARD   mesimon › kanban-tui   6 tickets
-
-    TODO                               2   2   2   0
-
-    Decay treatments                 >1y   I   R   D
-  ╭─ APPEARANCE ─────────────────────────────────────────╮
-  │   Theme: graphite                                    │
-  │     dark: graphite ∙ light: chalk ∙ follows the OS   │
-  │   Status line at the bottom                          │
-  │     tmux's bar over an agent's pane                  │
-  │   Crown's actions: lightning                         │
-  │     a bolt on each card the crown touches            │
-  │   Summary on cards: full                             │
-  │     underline on every card, rows under the selecte~ │
-  ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
-
-
-
+  ╭─ SETTINGS ∙ APPEARANCE ──────────────────────────────╮
+  │                                                      │
+  │ ▎ Fix the OSC reply parser           3h              │
+  │   ✓ read the reply ∙ parse it in one pass            │
+  │                                                      │
+  │  Status line        ○ top   ● bottom                 │
+  │  Crown's actions    ● lightning   ○ still            │
+  │  Summary on cards   ● full   ○ hover   ○ none        │
+  │  Card corner        ● age   ○ cost                   │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │ tmux's bar over an agent's pane                      │
+  ╰──────────── jk select ∙ enter change ∙ b this board ─╯
  SETTINGS                                            ? keys

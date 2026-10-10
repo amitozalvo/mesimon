@@ -1,0 +1,20 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+  ╭─ SETTINGS ∙ NOTIFICATIONS ───────────────────────────╮
+  │                                                      │
+  │ WHEN                                                 │
+  │  A turn finishes               ● on                  │
+  │  While the board is in front   sound only            │
+  │  In the agent's own pane       ○ said   ● silent     │
+  │  Crown's agents                the crown             │
+  │                                                      │
+  │ BANNER                                               │
+  │  The agent's words             ● quoted   ○ withheld │
+  │  Dock bounce                   ○ off                 │
+  │                                                      │
+  │ SOUND                                                │
+  │  Needs you                     Glass                 │
+  │  Turn finishes                 Tink                  │
+  │                                                      │
+  │ a pick plays it                                      │
+  ╰──────────── jk select ∙ enter change ∙ b this board ─╯
+ SETTINGS                                            ? keys

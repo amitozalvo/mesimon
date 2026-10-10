@@ -15,6 +15,7 @@ mod help;
 mod menu;
 pub(crate) mod releases;
 mod search;
+mod settings;
 mod tagpicker;
 #[cfg(test)]
 mod tests;
@@ -241,11 +242,8 @@ fn draw_screen(f: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::Brief { .. }) {
         brief::draw(f, app);
     }
-    if let Mode::Settings { idx } = &app.mode {
-        menu::draw_settings(f, app, *idx);
-    }
-    if let Mode::Notifications { idx } = &app.mode {
-        menu::draw_notify(f, app, *idx);
+    if matches!(app.mode, Mode::Sections | Mode::Settings { .. } | Mode::Theme { .. }) {
+        settings::draw(f, app);
     }
     if let Mode::Usage { idx } = &app.mode {
         usage::draw(f, app, *idx);
@@ -264,9 +262,6 @@ fn draw_screen(f: &mut Frame, app: &App) {
     }
     if matches!(app.mode, Mode::ColumnSettings { .. }) {
         menu::draw_column(f, app);
-    }
-    if let Mode::Theme { idx, slot } = &app.mode {
-        themes::draw(f, app, *idx, *slot);
     }
     // The merge dialog, over the card whose branch it is about (T-697): the
     // ticket page's, the same frame and words.

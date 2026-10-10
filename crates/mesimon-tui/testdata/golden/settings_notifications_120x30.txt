@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
+      │                                                                                                          │
+    De│  Theme               mesimon                                       ♪ Glass                               │
+      │                      kanban-tui ∙ Fix the OSC parser                                                     │
+    Ke│  Appearance          “Keep the old parser as a fallback?”                                                │
+      │                                                                                                          │
+      │▎ Notifications       Notifications                 ● on                                                  │
+      │                      Delivered by                  ● mesimon   ○ your terminal                           │
+      │  Behaviour                                                                                               │
+      │                     WHEN                                                                                 │
+      │  Agents              A turn finishes               ● on                                                  │
+      │                      While the board is in front   ○ banner   ● sound only                               │
+      │  Crown               In the agent's own pane       ○ said   ● silent                                     │
+      │                      Crown's agents                ○ you too   ● the crown                               │
+      │  Terminal                                                                                                │
+      │                     BANNER                                                                               │
+      │  Usage               The agent's words             ● quoted   ○ withheld                                 │
+      │                      Dock bounce                   ○ off                                                 │
+      │                                                                                                          │
+      │                     SOUND                                                                                │
+      │                      Needs you                     Glass                                                 │
+      │                      Turn finishes                 Tink                                                  │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                     an OS banner and a sound ∙ only while this board is open                             │
+      ╰───────────────────────────────────────────────── jk select ∙ enter change ∙ b this board ∙ esc sections ─╯
+
+ SETTINGS                                                                                                        ? keys

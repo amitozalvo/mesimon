@@ -46,14 +46,14 @@ write its notes, tag it from the tags you already made, and file a new ticket �
 can see which ticket it is on and what it is about. One ticket per board can wear the
 *crown* (`^o` on its card): its agent may then move, retitle, tag, annotate, set the
 workspace of and start an agent on the other tickets, archive them where you turn on
-*Settings › Agents › Crown archives tickets* (off by default), put an idle agent it
+*Settings › Crown › Archives tickets* (off by default), put an idle agent it
 started to sleep, merge a worktree branch where the merge train will not, under autonomous
-mode, and watch a ticket you started where you turn on *Settings › Agents › Crown watches
+mode, and watch a ticket you started where you turn on *Settings › Crown › Watches
 tickets* (off by default), which sends that ticket's news to the crown and nothing to its
 agent, each edit checked against the ticket as the agent last read it and lit on the card
-as it happens. Starts are capped by a per-board budget (Settings → Agents, three by default),
+as it happens. Starts are capped by a per-board budget (Settings › Crown, three by default),
 a ticket the crown started can never itself be crowned, and an agent you started is yours
-alone to sleep. *Settings › Agents › Crown mode* is autonomous by default: words the crown
+alone to sleep. *Settings › Crown › Mode* is autonomous by default: words the crown
 leaves for an agent it started reach that agent once it is idle, and the crown may answer a
 question that agent stops on, typed into that agent's dialog, or accept a plan that
 agent stops on, with one Enter on the plan dialog's first row (`♛ accepted plan`), each shown

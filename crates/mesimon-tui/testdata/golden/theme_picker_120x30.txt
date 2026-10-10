@@ -1,30 +1,30 @@
  BOARD   mesimon › kanban-tui   6 tickets
-                           ╭─ THEME ∙ for a dark terminal ∙ 1/15 ───────────────────────────╮
-    TODO                   │   graphite                                                dark │ DONE                   0
-                           │     dark, the default                                          │
-    Decay treatments      >│   chalk                                                  light │
-                           │     light, paper                                               │
-    Keymap validator      >│   blue                                                    dark │
-                           │     navy and gold, the Borland look                            │
-                           │   amber                                                   dark │
-                           │     amber on black                                             │
-                           │   green                                                   dark │
-                           │     green-black, white ink, a green glow                       │
-                           │   solarized                                              light │
-                           │     solarized light, cream and blue-grey                       │
-                           │   void                                                    dark │
-                           │     graphite on true black                                     │
-                           │   nord                                                    dark │
-                           │     nord, arctic blue-grey                                     │
-                           │   mocha                                                   dark │
-                           │     catppuccin mocha, lavender ink                             │
-                           │   tokyo                                                   dark │
-                           │     tokyo night, periwinkle ink                                │
-                           │   rose                                                    dark │
-                           │     rosé pine, gold on plum                                    │
-                           │   gruvbox                                                 dark │
-                           │     gruvbox dark, warm cream ink                               │
-                           │   latte                                                  light │
-                           │     catppuccin latte, cool paper                               │
-                           ╰──── jk preview ∙ enter keep ∙ tab for light ∙ esc put it back ─╯
+
+    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
+      │                                                                                                          │
+    De│▎ Theme               ○ dark and light   ● dark   ○ light                                                 │
+      │                                                                                                          │
+    Ke│  Appearance          ● graphite        dark    ╭─ blue ───────────────────────────────────────────────╮  │
+      │                        chalk          light    │ BOARD  kanban ∙ 5 tickets                            │  │
+      │  Notifications         blue            dark    │                                                      │  │
+      │                        amber           dark    │   TODO         2   IN PROGRESS  2   REVIEW       1   │  │
+      │  Behaviour             green           dark    │                                                      │  │
+      │                        solarized      light    │ ▎ Keymap      2d ▎ Fix parser  3h ▎ ✓ Graphemes 1d   │  │
+      │  Agents                void            dark    │                                                      │  │
+      │                        nord            dark    │ ▎ Decay       5h ▎ Drawer      1h                    │  │
+      │  Crown                 mocha           dark    │                                                      │  │
+      │                        tokyo           dark    │ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉                        │  │
+      │  Terminal              rose            dark    ╰─────────────────────────────────────────────── dark ─╯  │
+      │                        gruvbox         dark                                                              │
+      │  Usage                 latte          light                                                              │
+      │                        gruvbox-light  light                                                              │
+      │                        ice             dark                                                              │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                     navy and gold, the Borland look                                                      │
+      ╰───────────────────────────────────────────────── jk preview ∙ enter keep ∙ tab for light ∙ esc sections ─╯
+
  THEME                                                                                                           ? keys

@@ -1,8 +1,8 @@
- BOARD   mesimon › kanban-tui   6 tickets
+ BOARD   mesimon › kanban-tui   7 tickets
 
-    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
+    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   1
       │                                                                                                          │
-    De│  Theme              quiet until a provider nears a limit                                                 │
+    De│  Theme              quiet until a provider nears a limit                                                 │ >1y
       │                                                                                                          │
     Ke│  Appearance          Show                near a limit                                                    │
       │                                                                                                          │

@@ -170,23 +170,20 @@ pub enum Scope {
     Menu,
     Drawer,
     Archived,
-    /// The theme picker, reached from a menu row: a list over the flavors
-    /// whose cursor IS the preview (the board behind it repaints as the
-    /// cursor moves), so Enter keeps and Esc puts the resting theme back.
+    /// The Theme section's page (T-717): the flavors on the left of the
+    /// Settings dialog's page, a small board drawn in the one under the
+    /// cursor beside them. Enter keeps it and the board repaints; Esc goes
+    /// back to the sections.
     Theme,
-    /// The settings submenu, reached from the menu's `Settings` row: the
-    /// preferences (theme, replies, how a snooze returns) in a list of
-    /// their own, so the menu proper stays the list of things to DO. Esc
-    /// pops back to the menu, on the row that opened it.
+    /// A Settings section's page (T-717): its rows, one line each, the
+    /// cursor on one of them. Esc goes back to the sections.
     Settings,
-    /// The notifications list, one level under Settings (T-282). Five rows
-    /// on the same surface with the same three shapes: whether the board
-    /// says anything out loud, which of the two moments, and the two sounds.
-    /// Its own door because `draw_list` sizes a dialog at two lines a row
-    /// and does not scroll — Settings is already at the edge of a `MIN_H`
-    /// terminal, and five more rows there would be five rows nobody can
-    /// reach.
-    Notifications,
+    /// The Settings dialog's section list (T-717), reached from the menu's
+    /// `Settings` row: the page beside it is the section under the cursor,
+    /// and Enter steps into it. The preferences live there, so the menu
+    /// proper stays the list of things to DO. Esc pops back to the menu,
+    /// on the row that opened it.
+    Sections,
     /// The agent-prompt list, one level under Settings (T-353): the three
     /// sentences mesimon itself types into an agent's box, each editable in
     /// place. Its own door for the notifications list's reason — the rows
@@ -286,7 +283,7 @@ impl Scope {
         Scope::Archived,
         Scope::Theme,
         Scope::Settings,
-        Scope::Notifications,
+        Scope::Sections,
         Scope::Prompts,
         Scope::Brief,
         Scope::Releases,
@@ -316,7 +313,7 @@ impl Scope {
             | Scope::Archived
             | Scope::Theme
             | Scope::Settings
-            | Scope::Notifications
+            | Scope::Sections
             | Scope::Prompts
             | Scope::Brief
             | Scope::Releases
@@ -361,8 +358,7 @@ impl Scope {
             Scope::Drawer => "EXTERNAL",
             Scope::Archived => "ARCHIVED",
             Scope::Theme => "THEME",
-            Scope::Settings => "SETTINGS",
-            Scope::Notifications => "NOTIFICATIONS",
+            Scope::Settings | Scope::Sections => "SETTINGS",
             Scope::Prompts => "PROMPTS",
             Scope::Sharing => "SHARING",
             Scope::Tiers => "TIERS",
@@ -385,9 +381,6 @@ impl Scope {
 /// is what proves the table and the handler agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
-    SettingsAppearance,
-    SettingsBehaviour,
-    SettingsAgents,
     // ---- board sharing (T-334, T-335) ----
     /// The menu row that opens the sharing dialog: identity, this board,
     /// the boards this device belongs to.
@@ -487,10 +480,6 @@ pub enum Verb {
     /// down, so a menu row is either an action or the door to the settings
     /// and never a toggle between actions.
     Settings,
-    /// Open the theme picker from the settings submenu. No key of its own: a theme is
-    /// picked once and lived with, the same argument that took `p` off the
-    /// footer.
-    ThemePick,
     /// Tab in the picker (T-485): cycle which state the pick is saved for —
     /// the terminal's current one, the other, both. Both slots are
     /// reachable without changing the terminal, which a board that follows
@@ -594,12 +583,10 @@ pub enum Verb {
     /// The notifications row for who posts the banner (T-676): mesimon's
     /// helper or the terminal.
     NotifyVia,
-    /// The Settings door to the Terminal rows.
-    SettingsTerminal,
     /// The subscription quota (T-327). `Usage` is the menu row that opens
     /// the dialog; `UsageRefresh` its `r`, which reads every provider the
-    /// settings name now; `SettingsUsage` the Settings door to the line's
-    /// rows, and the dialog's `s`. The seven after it are those rows, each a
+    /// settings name now; `SettingsUsage` the dialog's `s`, which opens
+    /// Settings on its Usage section. The seven after it are those rows, each a
     /// `prefs.json` key, per machine: what the line shows, its three
     /// windows, when it names a reset, and its two providers.
     Usage,
@@ -631,13 +618,9 @@ pub enum Verb {
     /// Sunday → Saturday) — what the snooze ring's last rung means by "next
     /// week"; remembered in `prefs.json`.
     WeekStart,
-    /// The Settings row that opens the notifications list (T-282) — a door,
-    /// like Settings itself is a door in the menu.
-    Notifications,
     /// `b` in the Settings dialog (T-361): flips it between the machine's
-    /// preferences and this board's overrides of them. Offered only where a
-    /// row can be overridden — Appearance, Behaviour, the notifications
-    /// list — and inert elsewhere.
+    /// preferences and this board's overrides of them. Offered only on a
+    /// section where a row can be overridden, and inert elsewhere.
     PrefScope,
     /// The Agents row that opens the agent-prompt list (T-353) — another
     /// door, for the four sentences mesimon types into an agent's box.
@@ -726,13 +709,6 @@ pub enum Verb {
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
     SystemPrompt,
-    /// The Settings row under it (T-279): the board's default column, where
-    /// an agent's `create_ticket` lands a card that names no column. Enter
-    /// cycles it through the columns in board order. Board state like
-    /// `McpTools`, in `columns.toml`.
-    DefaultColumn,
-    /// Per-board Queue/Steer default for follow-ups.
-    FollowUpMode,
     /// Deliver a waiting prompt immediately.
     SendQueuedAsk,
     /// Return a waiting prompt to the composer.
@@ -975,14 +951,19 @@ impl HeaderChip {
     }
 }
 
-/// The settings hierarchy; leaf rows keep their existing actions.
+/// The Settings dialog's sections (T-717), in the order the list on its
+/// left names them. The section under that list's cursor is the page drawn
+/// beside it; Theme's page is the picker, every other's is its rows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SettingsSection {
     #[default]
-    Root,
+    Theme,
     Appearance,
+    Notifications,
     Behaviour,
     Agents,
+    /// The crowned agent's reach (T-411, T-590, T-712).
+    Crown,
     /// What the board does to the terminal's own tab (T-492).
     Terminal,
     /// The subscription quota line above the board's keys (T-327).
@@ -990,33 +971,61 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub fn title(self) -> &'static str {
+    pub const ALL: [Self; 8] = [
+        Self::Theme,
+        Self::Appearance,
+        Self::Notifications,
+        Self::Behaviour,
+        Self::Agents,
+        Self::Crown,
+        Self::Terminal,
+        Self::Usage,
+    ];
+
+    /// Its name in the section list.
+    pub fn name(self) -> &'static str {
         match self {
-            Self::Root => "SETTINGS",
-            Self::Appearance => "APPEARANCE",
-            Self::Behaviour => "BEHAVIOUR",
-            Self::Agents => "AGENTS",
-            Self::Terminal => "TERMINAL",
-            Self::Usage => "USAGE",
+            Self::Theme => "Theme",
+            Self::Appearance => "Appearance",
+            Self::Notifications => "Notifications",
+            Self::Behaviour => "Behaviour",
+            Self::Agents => "Agents",
+            Self::Crown => "Crown",
+            Self::Terminal => "Terminal",
+            Self::Usage => "Usage",
         }
     }
 
-    pub fn opener(self) -> Verb {
-        match self {
-            Self::Root => Verb::Settings,
-            Self::Appearance => Verb::SettingsAppearance,
-            Self::Behaviour => Verb::SettingsBehaviour,
-            Self::Agents => Verb::SettingsAgents,
-            Self::Terminal => Verb::SettingsTerminal,
-            Self::Usage => Verb::SettingsUsage,
-        }
+    /// Its place in [`Self::ALL`].
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|s| *s == self).unwrap_or(0)
     }
 
+    /// Whether a row of it can be set for this board (T-361), which is
+    /// where `b` is offered.
+    pub fn board_scoped(self) -> bool {
+        matches!(
+            self,
+            Self::Theme | Self::Appearance | Self::Notifications | Self::Behaviour | Self::Agents
+        )
+    }
+
+    /// The section a row lives in; `Theme` for anything that is not a row.
     pub fn for_verb(verb: Verb) -> Self {
         match verb {
-            Verb::ThemePick | Verb::StatusLine | Verb::CrownLightning | Verb::SummaryShow => {
+            Verb::StatusLine | Verb::CrownLightning | Verb::SummaryShow | Verb::CardCorner => {
                 Self::Appearance
             }
+            Verb::NotifyToggle
+            | Verb::NotifyVia
+            | Verb::NotifyDone
+            | Verb::NotifyFocused
+            | Verb::NotifyInPane
+            | Verb::NotifyCrown
+            | Verb::NotifyWords
+            | Verb::NotifyDockBounce
+            | Verb::NotifySoundNeedsYou
+            | Verb::NotifySoundDone => Self::Notifications,
             Verb::TabTitle
             | Verb::TabTitleNeedsYou
             | Verb::TabTitleFocus
@@ -1031,26 +1040,22 @@ impl SettingsSection {
             | Verb::UsageModel
             | Verb::UsageResets
             | Verb::UsageClaude
-            | Verb::UsageCodex
-            | Verb::CardCorner => Self::Usage,
+            | Verb::UsageCodex => Self::Usage,
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
             | Verb::WeekStart
-            | Verb::FollowUpMode
-            | Verb::DefaultColumn
             | Verb::KeepAwake
             | Verb::Mouse => Self::Behaviour,
             Verb::SystemPrompt
             | Verb::McpTools
             | Verb::DefaultTier
             | Verb::Tiers
-            | Verb::CrownBudget
-            | Verb::CrownMode
-            | Verb::CrownArchives
-            | Verb::CrownWatches
             | Verb::AgentPrompts => Self::Agents,
-            _ => Self::Root,
+            Verb::CrownBudget | Verb::CrownMode | Verb::CrownArchives | Verb::CrownWatches => {
+                Self::Crown
+            }
+            _ => Self::Theme,
         }
     }
 }
@@ -1135,13 +1140,10 @@ pub struct Ctx {
     pub peek_on: bool,
     /// `P` is showing every card's reply, not only the cursor card's.
     pub peek_all: bool,
-    /// The live theme's id (`Flavor::name`), for the menu row's label.
+    /// The live theme's id (`Flavor::name`).
     pub theme_name: &'static str,
-    /// Its one-line blurb, for the row's detail.
+    /// Its one-line blurb, for the Theme section's line.
     pub theme_blurb: &'static str,
-    /// Which slot a pick would set: `"dark"` or `"light"`, the ground the
-    /// terminal currently reports.
-    pub theme_slot_word: &'static str,
     /// `MESIMON_THEME` is pinning the live theme; a pick still saves.
     pub theme_pinned: bool,
     /// Under the picker: the state Tab switches to next — `"dark"`,
@@ -1195,12 +1197,6 @@ pub struct Ctx {
     /// prompt (T-224). Board state, per repo — the Settings row's label and
     /// the offer read it.
     pub system_prompt: bool,
-    /// Where an agent's `create_ticket` lands when it names no column
-    /// (T-279): the chosen default while the board has it, else the first
-    /// column — `Board::landing_column`'s word, so the row says what the
-    /// daemon will do. Empty on a board with no columns.
-    pub default_column: String,
-    pub follow_up_mode: crate::board::FollowUpMode,
     /// The brief is off, the repo's `CLAUDE.md` does not say it either, the
     /// tool it names is on, and the offer was not answered with "never". All
     /// four, because each one alone would offer noise.
@@ -3767,10 +3763,131 @@ static MENU: &[Binding] = &[
     },
 ];
 
-/// The settings submenu's three shapes are the menu's; only the last word
-/// differs — Esc here goes BACK to the menu, not out of it. `b` is the
-/// fourth (T-361): the scope switch, hinted and live only where a row of
-/// the list can be set for this board.
+/// The Settings dialog's section list (T-717): the menu's three shapes,
+/// and `b` (T-361), the scope switch, hinted and live only on a section
+/// with a row a board can set. `l` and → step into the page as Enter does,
+/// and say nothing: Enter is the hinted spelling.
+static SECTIONS: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('b')],
+        verb: Verb::PrefScope,
+        show: "b",
+        hint: |c| if c.pref_scope_board { "machine" } else { "this board" },
+        avail: |c| c.pref_scope_offered,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "section",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Char('l'), Key::Right],
+        verb: Verb::CursorRight,
+        show: "l",
+        hint: |_| "open",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "open",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
+/// A Settings section's page (T-717): the cursor over its rows, Enter
+/// changes the one under it, and Esc goes back to the section list — as do
+/// `h` and ←, unhinted, the mirror of the list's `l`.
+static SETTING_ROWS: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('b')],
+        verb: Verb::PrefScope,
+        show: "b",
+        hint: |c| if c.pref_scope_board { "machine" } else { "this board" },
+        avail: |c| c.pref_scope_offered,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Char('h'), Key::Left],
+        verb: Verb::CursorLeft,
+        show: "h",
+        hint: |_| "sections",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "change",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "sections",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
+/// The agent-prompt list's keys (T-353), the shapes of a list one level
+/// under Settings: Esc goes back to the Agents page.
 static SETTINGS: &[Binding] = &[
     Binding {
         keys: &[Key::Char('b')],
@@ -4088,10 +4205,21 @@ static THEME: &[Binding] = &[
         prio: 30,
     },
     Binding {
+        keys: &[Key::Char('h'), Key::Left],
+        verb: Verb::CursorLeft,
+        show: "h",
+        hint: |_| "sections",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
         keys: &[Key::Char('q'), Key::Esc],
         verb: Verb::Back,
         show: "esc",
-        hint: |_| "put it back",
+        hint: |_| "sections",
         avail: always,
         class: Class::Plain,
         group: Group::Navigate,
@@ -4382,129 +4510,21 @@ static MENU_ITEMS: &[MenuItem] = &[
     },
 ];
 
-/// The settings submenu's rows: every preference, and nothing that acts on
-/// the board. A row here is a toggle or a picker, so choosing one keeps the
-/// submenu open — the row relabels itself and the change is on the screen.
-/// Rows are `MenuItem`s so the two lists draw through one function; none is
-/// ever a suggestion (`every_suggestion_is_a_menu_row` holds them apart).
+/// The Settings dialog's rows (T-717): every preference, and nothing that
+/// acts on the board. A row is a switch, a choice or a door, so choosing
+/// one keeps the page open — the value beside it changes and the change is
+/// on the screen. A row's `label` is its name alone; [`value`] is what the
+/// page draws beside it. Rows are `MenuItem`s so the menu's laws read them;
+/// none is ever a suggestion (`every_suggestion_is_a_menu_row` holds them
+/// apart).
 static SETTINGS_ITEMS: &[MenuItem] = &[
-    MenuItem {
-        verb: Verb::FollowUpMode,
-        label: |c| {
-            format!(
-                "Follow-ups: {}",
-                if c.follow_up_mode == crate::board::FollowUpMode::Queue {
-                    "Queue"
-                } else {
-                    "Steer"
-                }
-            )
-        },
-        detail: |_| "Queue waits for the agent's idle ∙ Steer sends now".into(),
-        avail: always,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::SettingsAppearance,
-        label: |_| "Appearance".into(),
-        detail: |_| "themes, status line, the crown's actions".into(),
-        avail: always,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::SettingsBehaviour,
-        label: |_| "Behaviour".into(),
-        detail: |_| "auto merge, keep awake, snooze, week start, default column".into(),
-        avail: always,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::SettingsAgents,
-        label: |_| "Agents".into(),
-        detail: |_| "provider, brief and tools".into(),
-        avail: always,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::SettingsTerminal,
-        label: |_| "Terminal".into(),
-        detail: |_| "the tab's title, progress ring, colour, subtitle and icon".into(),
-        avail: always,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::SettingsUsage,
-        label: |c| format!("Usage line: {}", or(c.usage_line_word, "near a limit")),
-        detail: |_| "quota above the keys ∙ windows, providers, resets".into(),
-        avail: always,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::ThemePick,
-        label: |c| format!("Theme: {}", c.theme_name),
-        // One theme for both grounds, or two that switch with the OS (T-625):
-        // the OS is followed exactly while the two picks differ, so the row
-        // says which of the two the board is doing. The barred word first.
-        detail: |c| {
-            if c.theme_pinned {
-                "pinned by MESIMON_THEME ∙ a pick here still saves for the next launch".into()
-            } else if c.theme_dark == c.theme_light {
-                format!("{} ∙ for dark and light terminals", c.theme_blurb)
-            } else if c.theme_os_barred {
-                format!(
-                    "dark: {} ∙ light: {} ∙ the OS did not say which",
-                    c.theme_dark, c.theme_light
-                )
-            } else {
-                format!("dark: {} ∙ light: {} ∙ follows the OS", c.theme_dark, c.theme_light)
-            }
-        },
-        avail: always,
-        key: "",
-    },
-    // Where the tmux status line sits over an agent's pane (T-264). A
-    // preference the daemon is told, like the train: it owns the server.
-    // Notifications (T-282). A door, not a switch — five rows do not fit in
-    // this list, and the list under it is where they say what they will do.
-    // A section of the root's own since T-625, beside Appearance: what the
-    // board says outside its window is not how it looks, and Appearance
-    // opens on this board's settings where notifications open on the
-    // machine's.
-    MenuItem {
-        verb: Verb::Notifications,
-        label: |c| {
-            if c.notify {
-                "Notifications: on".into()
-            } else {
-                "Notifications: off".into()
-            }
-        },
-        detail: |c| {
-            if c.notify {
-                format!(
-                    "a banner and a sound when an agent needs you ∙ {}",
-                    or(c.notify_sound_needs_you, "Glass")
-                )
-            } else {
-                "the board says nothing outside its own window".into()
-            }
-        },
-        avail: always,
-        key: "",
-    },
     // Holding the machine awake (T-288). It sits under BEHAVIOUR, beside the
     // merge train: appearance is what the board shows and says, and this is
     // something it DOES outside its own window while it is open — dying with
     // the process the same way the train's arming does.
     MenuItem {
         verb: Verb::KeepAwake,
-        label: |c| {
-            if c.keep_awake {
-                "Keep this machine awake: on".into()
-            } else {
-                "Keep this machine awake: off".into()
-            }
-        },
+        label: |_| "Keep this machine awake".into(),
         // The barred word comes FIRST in both positions: a row promising
         // something this machine cannot do is worse than one that says so.
         detail: |c| {
@@ -4521,13 +4541,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::StatusLine,
-        label: |c| {
-            if c.status_top {
-                "Status line at the top".into()
-            } else {
-                "Status line at the bottom".into()
-            }
-        },
+        label: |_| "Status line".into(),
         detail: |_| "tmux's bar over an agent's pane".into(),
         avail: always,
         key: "",
@@ -4538,13 +4552,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // keeps its word either way, so nothing is hidden by turning it off.
     MenuItem {
         verb: Verb::CrownLightning,
-        label: |c| {
-            if c.crown_lightning {
-                "Crown's actions: lightning".into()
-            } else {
-                "Crown's actions: still".into()
-            }
-        },
+        label: |_| "Crown's actions".into(),
         detail: |c| {
             if c.crown_lightning {
                 "a bolt on each card the crown touches".into()
@@ -4564,7 +4572,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // off.
     MenuItem {
         verb: Verb::TabTitle,
-        label: |c| format!("Tab title: {}", or(c.tab_title_word, "off")),
+        label: |_| "Tab title".into(),
         detail: |c| {
             if c.tab_title {
                 String::new()
@@ -4577,39 +4585,21 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::TabTitleNeedsYou,
-        label: |c| {
-            if c.tab_title_needs_you {
-                "Tab title counts needs-you: on".into()
-            } else {
-                "Tab title counts needs-you: off".into()
-            }
-        },
+        label: |_| "Counts who needs you".into(),
         detail: |_| "2 need you ∙ project, while any ticket does".into(),
         avail: |c| c.tab_title,
         key: "",
     },
     MenuItem {
         verb: Verb::TabTitleFocus,
-        label: |c| {
-            if c.tab_title_focus {
-                "Tab title follows the open session: on".into()
-            } else {
-                "Tab title follows the open session: off".into()
-            }
-        },
+        label: |_| "Follows the open session".into(),
         detail: |_| "the ticket's key and title while you are in its pane or shell".into(),
         avail: |c| c.tab_title,
         key: "",
     },
     MenuItem {
         verb: Verb::TabProgress,
-        label: |c| {
-            if c.tab_progress {
-                "Tab progress ring: on".into()
-            } else {
-                "Tab progress ring: off".into()
-            }
-        },
+        label: |_| "Progress ring".into(),
         detail: |_| {
             "spins while an agent works, red while one needs you ∙ iTerm2, ghostty, kitty, WezTerm"
                 .into()
@@ -4622,13 +4612,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // repaints it. The needs-you row's whole-tab colour paints over it.
     MenuItem {
         verb: Verb::TabTheme,
-        label: |c| {
-            if c.tab_theme {
-                "Tab colour from the theme: on".into()
-            } else {
-                "Tab colour from the theme: off".into()
-            }
-        },
+        label: |_| "Colour from the theme".into(),
         detail: |c| {
             if c.iterm2 {
                 "the whole tab in the theme's hint-line colour".into()
@@ -4641,7 +4625,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::TabColor,
-        label: |c| format!("Tab colour when needs you: {}", or(c.tab_color_word, "off")),
+        label: |_| "Colour when needs you".into(),
         detail: |c| {
             if c.iterm2 && c.iterm2_status {
                 "the theme's attention colour, on the tab's dot or the whole tab".into()
@@ -4656,13 +4640,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::TabSubtitle,
-        label: |c| {
-            if c.tab_subtitle {
-                "Tab subtitle: on".into()
-            } else {
-                "Tab subtitle: off".into()
-            }
-        },
+        label: |_| "Subtitle".into(),
         detail: |c| {
             if c.iterm2 && c.iterm2_status {
                 "under the title: how many need you, how many are working".into()
@@ -4677,13 +4655,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::TabIcon,
-        label: |c| {
-            if c.tab_icon {
-                "Tab icon: the shin".into()
-            } else {
-                "Tab icon: off".into()
-            }
-        },
+        label: |_| "Icon".into(),
         detail: |c| {
             if c.iterm2 && c.iterm2_status {
                 "resting, or the needs-you pose while any ticket does ∙ iTerm2's own is back on quit"
@@ -4704,7 +4676,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // whoever would rather have the terminal's own back outright.
     MenuItem {
         verb: Verb::Mouse,
-        label: |c| if c.mouse { "Mouse: on".into() } else { "Mouse: off".into() },
+        label: |_| "Mouse".into(),
         detail: |c| {
             if c.mouse {
                 "a drag selects text and copies it".into()
@@ -4719,7 +4691,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // is a switch or a ring, and nothing is read for a provider that is off.
     MenuItem {
         verb: Verb::UsageShow,
-        label: |c| format!("Show: {}", or(c.usage_line_word, "near a limit")),
+        label: |_| "Show".into(),
         detail: |c| match or(c.usage_line_word, "near a limit") {
             "near a limit" => "silent until a provider warns".into(),
             "every window" => "each provider's windows, above the keys".into(),
@@ -4731,28 +4703,28 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::UsageFiveHour,
-        label: |c| on_off("5-hour window", c.usage_5h),
+        label: |_| "5-hour window".into(),
         detail: |_| "the rolling session window, 5h on the line".into(),
         avail: always,
         key: "",
     },
     MenuItem {
         verb: Verb::UsageWeekly,
-        label: |c| on_off("Weekly window", c.usage_week),
+        label: |_| "Weekly window".into(),
         detail: |_| "the week over every model".into(),
         avail: always,
         key: "",
     },
     MenuItem {
         verb: Verb::UsageModel,
-        label: |c| on_off("Per-model windows", c.usage_model),
+        label: |_| "Per-model windows".into(),
         detail: |_| "one week per model, named as the provider names it".into(),
         avail: always,
         key: "",
     },
     MenuItem {
         verb: Verb::UsageResets,
-        label: |c| format!("Reset times: {}", or(c.usage_resets_word, "near a limit")),
+        label: |_| "Reset times".into(),
         detail: |c| match or(c.usage_resets_word, "near a limit") {
             "near a limit" => "beside a window the provider warns about".into(),
             _ => String::new(),
@@ -4762,14 +4734,14 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::UsageClaude,
-        label: |c| on_off("Claude", c.usage_claude),
+        label: |_| "Claude".into(),
         detail: |_| "a quiet claude -p asks /usage ∙ no prompt, no tokens".into(),
         avail: always,
         key: "",
     },
     MenuItem {
         verb: Verb::UsageCodex,
-        label: |c| on_off("Codex", c.usage_codex),
+        label: |_| "Codex".into(),
         detail: |_| "a session's own reports, else a quiet app-server".into(),
         avail: always,
         key: "",
@@ -4778,7 +4750,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // shows there — everything, the rows alone, or nothing.
     MenuItem {
         verb: Verb::SummaryShow,
-        label: |c| format!("Summary on cards: {}", or(c.summary_word, "full")),
+        label: |_| "Summary on cards".into(),
         detail: |c| match or(c.summary_word, "full") {
             "hover" => "rows under the selected card's reply, no underline".into(),
             "none" => "nothing on the cards ∙ ^j lists it".into(),
@@ -4789,7 +4761,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::CardCorner,
-        label: |c| format!("Card corner: {}", if c.card_cost { "cost" } else { "age" }),
+        label: |_| "Card corner".into(),
         detail: |c| {
             if c.card_cost {
                 "each ticket's cost at API prices, an estimate ∙ $ on the board".into()
@@ -4803,13 +4775,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // How a snoozed ticket comes back.
     MenuItem {
         verb: Verb::SnoozeQuiet,
-        label: |c| {
-            if c.snooze_needs_you {
-                "Snooze returns with needs-you".into()
-            } else {
-                "Snooze returns quietly".into()
-            }
-        },
+        label: |_| "Comes back".into(),
         detail: |c| {
             if c.snooze_needs_you {
                 "lit until you look at it".into()
@@ -4823,7 +4789,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // Which day "next week" starts on: the snooze ring's last rung.
     MenuItem {
         verb: Verb::WeekStart,
-        label: |c| format!("Week starts on {}", or(c.week_start_word, "Monday")),
+        label: |_| "Week starts on".into(),
         detail: |c| format!("z's last rung: next {} 9:00", or(c.week_start_word, "Monday")),
         avail: always,
         key: "",
@@ -4833,7 +4799,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // preference; on by default since T-610, and this row takes it back.
     MenuItem {
         verb: Verb::MergeTrain,
-        label: |c| if c.merge_train { "Auto merge: on".into() } else { "Auto merge: off".into() },
+        label: |_| "Auto merge".into(),
         detail: |c| {
             if c.merge_train && c.merge_train_armed {
                 "merges quiet REVIEW branches, asks idle agents to rebase ∙ armed while this board is open".into()
@@ -4848,13 +4814,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::MergeTrainNotice,
-        label: |c| {
-            if c.merge_train_notice {
-                "Auto merge tells the agent after a merge".into()
-            } else {
-                "Auto merge stays silent after a merge".into()
-            }
-        },
+        label: |_| "Tells the agent".into(),
         detail: |c| {
             if c.merge_train_notice {
                 "pastes the merged notice into the agent, which starts a turn".into()
@@ -4874,7 +4834,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // and a board may pick its own default over them.
     MenuItem {
         verb: Verb::DefaultTier,
-        label: |c| format!("Default tier: {}", or(&c.tier_default, crate::tier::CLAUDE)),
+        label: |_| "Default tier".into(),
         detail: |c| {
             if !c.pref_scope_board && !c.tier_board_uses.is_empty() {
                 format!("this board uses {} (b) ∙ {}", c.tier_board_uses, c.tier_default_summary)
@@ -4897,13 +4857,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::Tiers,
-        label: |c| {
-            if c.tier_names.is_empty() {
-                "Tiers: none yet".into()
-            } else {
-                format!("Tiers: {}", c.tier_names)
-            }
-        },
+        label: |_| "Tiers".into(),
         detail: |c| {
             if c.pref_scope_board {
                 "this board's tiers, and its own versions of the machine's".into()
@@ -4920,13 +4874,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // is a property of the board, not of the person's terminal.
     MenuItem {
         verb: Verb::CrownBudget,
-        label: |c| {
-            if c.crown_budget == 0 {
-                "Crown starts agents: off".into()
-            } else {
-                format!("Crown may start {} at once", plural(c.crown_budget as usize, "agent"))
-            }
-        },
+        label: |_| "Starts agents".into(),
         detail: |_| {
             "agents the crown may have running at once ∙ a sleeping one frees its seat".into()
         },
@@ -4944,7 +4892,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // person's agent stays the person's under either.
     MenuItem {
         verb: Verb::CrownMode,
-        label: |c| format!("Crown mode: {}", c.crown_mode.word()),
+        label: |_| "Mode".into(),
         detail: |c| {
             if c.crown_mode.sends() {
                 "its agents take its asks and answers without you ∙ yours still wait for you".into()
@@ -4961,13 +4909,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // worktree. The row gates that one tool and says nothing else.
     MenuItem {
         verb: Verb::CrownArchives,
-        label: |c| {
-            if c.crown_archives {
-                "Crown archives tickets: on".into()
-            } else {
-                "Crown archives tickets: off".into()
-            }
-        },
+        label: |_| "Archives tickets".into(),
         detail: |c| {
             if c.crown_archives {
                 "archive and restore, reclaiming a merged worktree".into()
@@ -4985,13 +4927,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // Off again ends every watch.
     MenuItem {
         verb: Verb::CrownWatches,
-        label: |c| {
-            if c.crown_watches {
-                "Crown watches tickets: on".into()
-            } else {
-                "Crown watches tickets: off".into()
-            }
-        },
+        label: |_| "Watches tickets".into(),
         detail: |c| {
             if c.crown_watches {
                 "a watched ticket's finish, hand and merge wake it ∙ its agent hears nothing".into()
@@ -5004,13 +4940,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::McpTools,
-        label: |c| {
-            if c.mcp_tools {
-                "Agent tools: on".into()
-            } else {
-                "Agent tools: off".into()
-            }
-        },
+        label: |_| "Agent tools".into(),
         // Off says the consequence, not the mechanism, and names the one
         // thing that surprises: a pane's argv is fixed at exec, so the
         // sessions already running keep whatever they were born with.
@@ -5031,13 +4961,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // nothing.
     MenuItem {
         verb: Verb::SystemPrompt,
-        label: |c| {
-            if c.system_prompt {
-                "Agent brief: on".into()
-            } else {
-                "Agent brief: off".into()
-            }
-        },
+        label: |_| "Agent brief".into(),
         detail: |c| {
             if !c.mcp_tools {
                 "needs the agent tools on ∙ the brief names get_ticket".into()
@@ -5050,27 +4974,6 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
-    // The default column (T-279): where an agent's `create_ticket` lands a
-    // card that names no column. Board state like the two rows above, so it
-    // acts over the wire and the row relabels itself off the snapshot. The
-    // label names the column the daemon WILL use — the first column until
-    // one is chosen — so an unset default never reads as "none".
-    MenuItem {
-        verb: Verb::DefaultColumn,
-        label: |c| format!("Default column: {}", c.default_column),
-        detail: |c| {
-            if !c.mcp_tools {
-                "needs the agent tools on ∙ create_ticket is one of them".into()
-            } else {
-                "where an agent's create_ticket lands unplaced".into()
-            }
-        },
-        // A board with no columns has nowhere to land: no row rather than a
-        // label with nothing after the colon. (Delete refuses the last
-        // column, so this is a snapshot that has not arrived yet.)
-        avail: |c| !c.default_column.is_empty(),
-        key: "",
-    },
     // The four sentences mesimon itself types into an agent's box (T-353,
     // T-414). A door, like Notifications: rows that are each a text field do
     // not fit a list `draw_list` sizes at two lines a row. Last of the
@@ -5079,10 +4982,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // decides what it says once it does.
     MenuItem {
         verb: Verb::AgentPrompts,
-        label: |c| match c.prompts.custom_count() {
-            0 => "Agent prompts: mesimon's words".into(),
-            n => format!("Agent prompts: {n} of {} yours", crate::prompts::AgentPrompt::ALL.len()),
-        },
+        label: |_| "Agent prompts".into(),
         detail: |_| {
             "what mesimon types at an agent about a rebase, a merge, a note, a crown wake".into()
         },
@@ -5159,13 +5059,7 @@ fn prompt_detail(ctx: &Ctx, which: crate::prompts::AgentPrompt) -> String {
 pub static NOTIFY_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::NotifyToggle,
-        label: |c| {
-            if c.notify {
-                "Notifications: on".into()
-            } else {
-                "Notifications: off".into()
-            }
-        },
+        label: |_| "Notifications".into(),
         // Off names the reach, because a channel out of the board is a thing
         // to consent to and not a thing to discover afterwards.
         detail: |c| {
@@ -5184,13 +5078,7 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
     // a terminal that cannot post shows nothing, and the row says so.
     MenuItem {
         verb: Verb::NotifyVia,
-        label: |c| {
-            if c.notify_via_terminal {
-                "Delivered by: your terminal".into()
-            } else {
-                "Delivered by: mesimon".into()
-            }
-        },
+        label: |_| "Delivered by".into(),
         detail: |c| {
             if !c.notify_via_terminal {
                 "mesimon posts it with the mascot; a managed Mac may audit the launch".into()
@@ -5205,13 +5093,7 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::NotifyDone,
-        label: |c| {
-            if c.notify_done {
-                "Also when a turn finishes".into()
-            } else {
-                "Only when an agent needs you".into()
-            }
-        },
+        label: |_| "A turn finishes".into(),
         detail: |c| {
             if c.notify_done {
                 "the card's ✔, said out loud".into()
@@ -5228,13 +5110,7 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
     // The ticket is never withheld — that half is the feature.
     MenuItem {
         verb: Verb::NotifyWords,
-        label: |c| {
-            if c.notify_words {
-                "The agent's words: quoted".into()
-            } else {
-                "The agent's words: withheld".into()
-            }
-        },
+        label: |_| "The agent's words".into(),
         detail: |c| {
             if c.notify_words {
                 "its last line, on the banner".into()
@@ -5247,29 +5123,21 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::NotifySoundNeedsYou,
-        label: |c| {
-            format!("Sound when an agent needs you: {}", or(c.notify_sound_needs_you, "Glass"))
-        },
+        label: |_| "Needs you".into(),
         detail: |_| "a pick plays it".into(),
         avail: |c| c.notify,
         key: "",
     },
     MenuItem {
         verb: Verb::NotifySoundDone,
-        label: |c| format!("Sound when a turn finishes: {}", or(c.notify_sound_done, "Tink")),
+        label: |_| "Turn finishes".into(),
         detail: |_| "a pick plays it".into(),
         avail: |c| c.notify && c.notify_done,
         key: "",
     },
     MenuItem {
         verb: Verb::NotifyFocused,
-        label: |c| {
-            if c.notify_focused {
-                "Banner while the board is focused: shown".into()
-            } else {
-                "Banner while the board is focused: quiet".into()
-            }
-        },
+        label: |_| "While the board is in front".into(),
         detail: |c| {
             if c.notify_focused {
                 "a banner over a board that already shows it".into()
@@ -5285,13 +5153,7 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
     // inside the agent's own pane there is nowhere left to go.
     MenuItem {
         verb: Verb::NotifyInPane,
-        label: |c| {
-            if c.notify_in_pane {
-                "Inside the agent's own pane: said anyway".into()
-            } else {
-                "Inside the agent's own pane: silent".into()
-            }
-        },
+        label: |_| "In the agent's own pane".into(),
         detail: |c| {
             if c.notify_in_pane {
                 "about the pane you are attached to".into()
@@ -5306,13 +5168,7 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
     // crown's to act on, so the person hears it only on this row's word.
     MenuItem {
         verb: Verb::NotifyCrown,
-        label: |c| {
-            if c.notify_crown {
-                "Agents the crown started: you hear it too".into()
-            } else {
-                "Agents the crown started: the crown hears it".into()
-            }
-        },
+        label: |_| "Crown's agents".into(),
         detail: |c| {
             if c.notify_crown {
                 "the crown is woken as well".into()
@@ -5327,13 +5183,7 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
     // one every other terminal ignores. Under the switch like the rest.
     MenuItem {
         verb: Verb::NotifyDockBounce,
-        label: |c| {
-            if c.notify_dock_bounce {
-                "Dock bounce when an agent needs you: on".into()
-            } else {
-                "Dock bounce when an agent needs you: off".into()
-            }
-        },
+        label: |_| "Dock bounce".into(),
         detail: |c| {
             if c.iterm2 {
                 "iTerm2 bounces its dock icon once ∙ silent while it is in front".into()
@@ -5349,11 +5199,6 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
 /// `3 agents`, `1 agent` — a count and its noun. Every suggestion carries a
 /// number, and `1 tickets` in the header would be the first thing seen.
 use crate::text::plural;
-
-/// A switch's row label: `5-hour window: on`.
-fn on_off(label: &str, on: bool) -> String {
-    format!("{label}: {}", if on { "on" } else { "off" })
-}
 
 /// Whole GiB, or None below a tenth of one — a payoff that rounds to
 /// `~0.0GiB` is not a payoff, so the detail says it in words instead.
@@ -5451,20 +5296,48 @@ pub fn is_suggested(verb: Verb, ctx: &Ctx) -> bool {
     suggestions(ctx).iter().any(|s| s.verb == verb)
 }
 
-/// The settings rows that apply right now — all of them, today, but the
-/// filter is the menu's so a conditional preference costs nothing later.
+/// A Settings section's rows that apply right now, in the page's order.
+/// Theme has none: its page is the picker. A row whose `avail` is false is
+/// not on the page at all (the notifications rows while they are off).
 pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     let verbs: &[Verb] = match ctx.settings_section {
-        SettingsSection::Root => &[
-            Verb::SettingsAppearance,
-            Verb::Notifications,
-            Verb::SettingsBehaviour,
-            Verb::SettingsAgents,
-            Verb::SettingsTerminal,
-            Verb::SettingsUsage,
-        ],
+        SettingsSection::Theme => &[],
         SettingsSection::Appearance => {
-            &[Verb::ThemePick, Verb::StatusLine, Verb::CrownLightning, Verb::SummaryShow]
+            &[Verb::StatusLine, Verb::CrownLightning, Verb::SummaryShow, Verb::CardCorner]
+        }
+        SettingsSection::Notifications => &[
+            Verb::NotifyToggle,
+            Verb::NotifyVia,
+            Verb::NotifyDone,
+            Verb::NotifyFocused,
+            Verb::NotifyInPane,
+            Verb::NotifyCrown,
+            Verb::NotifyWords,
+            Verb::NotifyDockBounce,
+            Verb::NotifySoundNeedsYou,
+            Verb::NotifySoundDone,
+        ],
+        SettingsSection::Behaviour => &[
+            // Beside the train: the other switch over something the board
+            // does outside its own window while it is open, and dead with
+            // the process the same way.
+            Verb::KeepAwake,
+            // How the board is driven: by keys alone, or the mouse too.
+            Verb::Mouse,
+            Verb::SnoozeQuiet,
+            Verb::WeekStart,
+            Verb::MergeTrain,
+            Verb::MergeTrainNotice,
+        ],
+        SettingsSection::Agents => &[
+            Verb::DefaultTier,
+            Verb::Tiers,
+            Verb::McpTools,
+            Verb::SystemPrompt,
+            Verb::AgentPrompts,
+        ],
+        SettingsSection::Crown => {
+            &[Verb::CrownBudget, Verb::CrownMode, Verb::CrownArchives, Verb::CrownWatches]
         }
         SettingsSection::Terminal => &[
             Verb::TabTitle,
@@ -5484,64 +5357,152 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::UsageResets,
             Verb::UsageClaude,
             Verb::UsageCodex,
-            Verb::CardCorner,
-        ],
-        SettingsSection::Behaviour => &[
-            Verb::MergeTrain,
-            Verb::MergeTrainNotice,
-            // Beside the train: the other switch over something the board
-            // does outside its own window while it is open, and dead with
-            // the process the same way.
-            Verb::KeepAwake,
-            Verb::SnoozeQuiet,
-            Verb::WeekStart,
-            Verb::DefaultColumn,
-            Verb::FollowUpMode,
-            // How the board is driven: by keys alone, or the mouse too.
-            Verb::Mouse,
-        ],
-        SettingsSection::Agents => &[
-            Verb::DefaultTier,
-            Verb::Tiers,
-            Verb::SystemPrompt,
-            Verb::McpTools,
-            Verb::AgentPrompts,
-            Verb::CrownBudget,
-            Verb::CrownMode,
-            Verb::CrownArchives,
-            Verb::CrownWatches,
         ],
     };
     verbs
         .iter()
-        .filter_map(|v| SETTINGS_ITEMS.iter().find(|m| m.verb == *v && m.live(ctx)))
+        .filter_map(|v| {
+            SETTINGS_ITEMS.iter().chain(NOTIFY_ITEMS).find(|m| m.verb == *v && m.live(ctx))
+        })
         .collect()
 }
 
-/// The subtitle drawn over a Settings row (T-610): a dim line the list
-/// shows above `verb` and the cursor never lands on, because it is not a
-/// row of `settings_items` — the cursor, `settings_row` and Enter count
-/// rows only. The crown's rows sit under one, as a group of their own.
+/// The heading drawn over a Settings row (T-610, T-717): a quiet line the
+/// page shows above `verb` and the cursor never lands on, because it is
+/// not a row of `settings_items` — the cursor, `settings_row` and Enter
+/// count rows only. It names the group the rows under it share, so their
+/// own names can stay short.
 pub fn settings_heading(verb: Verb) -> Option<&'static str> {
     match verb {
-        Verb::CrownBudget => Some("Crown"),
+        Verb::NotifyDone => Some("WHEN"),
+        Verb::NotifyWords => Some("BANNER"),
+        Verb::NotifySoundNeedsYou => Some("SOUND"),
+        Verb::SnoozeQuiet => Some("SNOOZE"),
+        Verb::MergeTrain => Some("AUTO MERGE"),
+        Verb::TabTitle => Some("TITLE"),
+        Verb::TabProgress => Some("TAB"),
+        Verb::UsageFiveHour => Some("WINDOWS"),
+        Verb::UsageClaude => Some("PROVIDERS"),
         _ => None,
     }
 }
 
-/// The notifications list's rows that apply right now (T-282).
-/// The preference a Settings or notifications row edits (T-361), or `None`
-/// for a door and for board state (`columns.toml` rows are the board's in
-/// every scope). The theme row's key is the slot the terminal is on.
-pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
+/// What a Settings row's page draws beside its name (T-717): the state,
+/// so the name can stay a name. Every row on a page has one
+/// (`every_setting_has_a_value`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value {
+    /// A switch: on or off.
+    Switch(bool),
+    /// One of a few states, every one drawn so the others are in view; the
+    /// row's Enter steps to the next, as it always did.
+    Choice { options: &'static [&'static str], at: usize },
+    /// A state with more steps than fit on the line: its word alone.
+    Word(String),
+    /// A door to a list of its own: what is behind it.
+    Door(String),
+}
+
+/// The value a Settings row shows (T-717), from the same `Ctx` its detail
+/// reads; `None` for a verb that is not a Settings row.
+pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
+    let choice = |options: &'static [&'static str], word: &str| Value::Choice {
+        options,
+        at: options.iter().position(|o| *o == word).unwrap_or(0),
+    };
+    let pick =
+        |options: &'static [&'static str], at: bool| Value::Choice { options, at: usize::from(at) };
     Some(match verb {
-        Verb::ThemePick => {
-            if c.theme_slot_word == "light" {
-                PrefKey::Light
-            } else {
-                PrefKey::Dark
-            }
+        Verb::StatusLine => pick(&["top", "bottom"], !c.status_top),
+        Verb::CrownLightning => pick(&["lightning", "still"], !c.crown_lightning),
+        Verb::SummaryShow => choice(&["full", "hover", "none"], or(c.summary_word, "full")),
+        Verb::CardCorner => pick(&["age", "cost"], c.card_cost),
+        Verb::NotifyToggle => Value::Switch(c.notify),
+        Verb::NotifyVia => pick(&["mesimon", "your terminal"], c.notify_via_terminal),
+        Verb::NotifyDone => Value::Switch(c.notify_done),
+        Verb::NotifyFocused => pick(&["banner", "sound only"], !c.notify_focused),
+        Verb::NotifyInPane => pick(&["said", "silent"], !c.notify_in_pane),
+        Verb::NotifyCrown => pick(&["you too", "the crown"], !c.notify_crown),
+        Verb::NotifyWords => pick(&["quoted", "withheld"], !c.notify_words),
+        Verb::NotifyDockBounce => Value::Switch(c.notify_dock_bounce),
+        Verb::NotifySoundNeedsYou => Value::Word(or(c.notify_sound_needs_you, "Glass").into()),
+        Verb::NotifySoundDone => Value::Word(or(c.notify_sound_done, "Tink").into()),
+        Verb::KeepAwake => Value::Switch(c.keep_awake),
+        Verb::Mouse => Value::Switch(c.mouse),
+        Verb::SnoozeQuiet => pick(&["lit", "quiet"], !c.snooze_needs_you),
+        Verb::WeekStart => Value::Word(or(c.week_start_word, "Monday").into()),
+        Verb::MergeTrain => Value::Switch(c.merge_train),
+        Verb::MergeTrainNotice => Value::Switch(c.merge_train_notice),
+        Verb::DefaultTier => Value::Word(or(&c.tier_default, crate::tier::CLAUDE).into()),
+        Verb::Tiers => Value::Door(or(&c.tier_names, "none yet").into()),
+        Verb::McpTools => Value::Switch(c.mcp_tools),
+        Verb::SystemPrompt => Value::Switch(c.system_prompt),
+        Verb::AgentPrompts => Value::Door(match c.prompts.custom_count() {
+            0 => "mesimon's words".into(),
+            n => format!("{n} of {} yours", crate::prompts::AgentPrompt::ALL.len()),
+        }),
+        Verb::CrownBudget => Value::Word(if c.crown_budget == 0 {
+            "off".into()
+        } else {
+            format!("{} at once", c.crown_budget)
+        }),
+        Verb::CrownMode => choice(&["autonomous", "supervised"], c.crown_mode.word()),
+        Verb::CrownArchives => Value::Switch(c.crown_archives),
+        Verb::CrownWatches => Value::Switch(c.crown_watches),
+        Verb::TabTitle => Value::Choice {
+            options: &["off", "project", "mesimon ∙ project"],
+            at: match c.tab_title_word {
+                "" | "off" => 0,
+                "project name" => 1,
+                _ => 2,
+            },
+        },
+        Verb::TabTitleNeedsYou => Value::Switch(c.tab_title_needs_you),
+        Verb::TabTitleFocus => Value::Switch(c.tab_title_focus),
+        Verb::TabProgress => Value::Switch(c.tab_progress),
+        Verb::TabTheme => Value::Switch(c.tab_theme),
+        Verb::TabColor => Value::Choice {
+            options: &["off", "dot", "whole tab"],
+            at: match c.tab_color_word {
+                "" | "off" => 0,
+                "the tab's dot" => 1,
+                _ => 2,
+            },
+        },
+        Verb::TabSubtitle => Value::Switch(c.tab_subtitle),
+        Verb::TabIcon => Value::Switch(c.tab_icon),
+        Verb::UsageShow => Value::Word(or(c.usage_line_word, "near a limit").into()),
+        Verb::UsageFiveHour => Value::Switch(c.usage_5h),
+        Verb::UsageWeekly => Value::Switch(c.usage_week),
+        Verb::UsageModel => Value::Switch(c.usage_model),
+        Verb::UsageResets => {
+            choice(&["near a limit", "always", "never"], or(c.usage_resets_word, "near a limit"))
         }
+        Verb::UsageClaude => Value::Switch(c.usage_claude),
+        Verb::UsageCodex => Value::Switch(c.usage_codex),
+        _ => return None,
+    })
+}
+
+/// The Theme section's line (T-625): one theme for both grounds, or two
+/// that switch with the OS — which the OS is followed by exactly while the
+/// two picks differ. The barred word first.
+pub fn theme_detail(c: &Ctx) -> String {
+    if c.theme_pinned {
+        "pinned by MESIMON_THEME ∙ a pick here still saves for the next launch".into()
+    } else if c.theme_dark == c.theme_light {
+        format!("{} ∙ for dark and light terminals", c.theme_blurb)
+    } else if c.theme_os_barred {
+        format!("dark: {} ∙ light: {} ∙ the OS did not say which", c.theme_dark, c.theme_light)
+    } else {
+        format!("dark: {} ∙ light: {} ∙ follows the OS", c.theme_dark, c.theme_light)
+    }
+}
+
+/// The preference a Settings row edits (T-361), or `None` for a door and
+/// for board state (`columns.toml` rows are the board's in every scope).
+pub fn pref_key(verb: Verb) -> Option<PrefKey> {
+    Some(match verb {
         Verb::SnoozeQuiet => PrefKey::SnoozeNeedsYou,
         Verb::WeekStart => PrefKey::WeekStart,
         Verb::MergeTrain => PrefKey::MergeTrain,
@@ -5581,37 +5542,40 @@ pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
     })
 }
 
-/// A row's detail with the scope's words before it (T-361) — the ONE place
-/// they are added, so no row's own `detail` knows about scopes. In machine
-/// scope it is the row's own line. In board scope: a machine-only key says
-/// `(machine)`; a key this board sets says `set here` and quotes the
-/// machine's value; an inherited one says `inherited`.
-pub fn item_detail(item: &MenuItem, c: &Ctx) -> String {
-    let base = (item.detail)(c);
+/// Where a row's value comes from in board scope (T-361, T-717): the word
+/// the page draws at the row's right edge — `machine` for a key only the
+/// machine keeps, `set here` for one this board sets, `inherited` for one
+/// it does not. `None` in machine scope and for board state, which is the
+/// board's in every scope.
+pub fn scope_word(item: &MenuItem, c: &Ctx) -> Option<&'static str> {
     if !c.pref_scope_board {
-        return base;
+        return None;
     }
-    let Some(key) = pref_key(item.verb, c) else {
-        return base;
-    };
-    let with =
-        |word: &str| if base.is_empty() { word.to_string() } else { format!("{word} ∙ {base}") };
-    if !key.board_overridable() {
-        return with("(machine)");
-    }
-    // The scope word comes FIRST: a detail longer than the row reveals its
-    // tail marquee-style, and which scope holds the value is the one fact
-    // this dialog exists to show.
-    match c.board_overrides.iter().find(|(k, _)| *k == key) {
-        Some((_, machine)) => {
-            format!("{} ∙ inherit last", with(&format!("set here ∙ machine: {machine}")))
-        }
-        None => with("inherited"),
-    }
+    let key = pref_key(item.verb)?;
+    Some(if !key.board_overridable() {
+        "machine"
+    } else if c.board_overrides.iter().any(|(k, _)| *k == key) {
+        "set here"
+    } else {
+        "inherited"
+    })
 }
 
-pub fn notify_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
-    NOTIFY_ITEMS.iter().filter(|m| m.live(ctx)).collect()
+/// A row's detail, the one line the page shows for the selected row. In
+/// board scope a value this board sets says the machine's beside it, and
+/// that Enter's cycle ends back on it — the one fact `scope_word` cannot
+/// carry. The ONE place scope words join a detail, so no row's own
+/// `detail` knows about scopes.
+pub fn item_detail(item: &MenuItem, c: &Ctx) -> String {
+    let base = (item.detail)(c);
+    let Some(key) = pref_key(item.verb).filter(|_| c.pref_scope_board) else {
+        return base;
+    };
+    match c.board_overrides.iter().find(|(k, _)| *k == key) {
+        Some((_, machine)) if base.is_empty() => format!("machine: {machine} ∙ inherit last"),
+        Some((_, machine)) => format!("machine: {machine} ∙ {base} ∙ inherit last"),
+        None => base,
+    }
 }
 
 /// The agent-prompt list's rows (T-353). All four, always: a sentence
@@ -7184,7 +7148,9 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         // The same three shapes: a list dialog's keys are the list's, and
         // which list Enter is choosing in is the mode's to know, not the
         // keymap's.
-        Scope::Settings | Scope::Notifications | Scope::Prompts => SETTINGS,
+        Scope::Sections => SECTIONS,
+        Scope::Settings => SETTING_ROWS,
+        Scope::Prompts => SETTINGS,
         Scope::Sharing => SHARING,
         Scope::Tiers => TIERS,
         Scope::TierEdit => TIER_EDIT,
@@ -7436,7 +7402,8 @@ mod tests {
             ..Ctx::default()
         };
         let row = settings_items(&ctx).into_iter().find(|r| r.verb == Verb::DefaultTier).unwrap();
-        assert_eq!((row.label)(&ctx), "Default tier: claude");
+        assert_eq!((row.label)(&ctx), "Default tier");
+        assert_eq!(value(Verb::DefaultTier, &ctx), Some(Value::Word("claude".into())));
         assert!((row.detail)(&ctx).contains("Claude Code"));
     }
 
@@ -7448,7 +7415,8 @@ mod tests {
         use crate::prompts::AgentPrompt;
         let mut ctx = Ctx { settings_section: SettingsSection::Agents, ..Default::default() };
         let door = settings_items(&ctx).into_iter().find(|m| m.verb == Verb::AgentPrompts).unwrap();
-        assert_eq!((door.label)(&ctx), "Agent prompts: mesimon's words");
+        assert_eq!((door.label)(&ctx), "Agent prompts");
+        assert_eq!(value(door.verb, &ctx), Some(Value::Door("mesimon's words".into())));
         assert_eq!(SettingsSection::for_verb(Verb::AgentPrompts), SettingsSection::Agents);
 
         let rows = prompt_items(&ctx);
@@ -7465,7 +7433,7 @@ mod tests {
         // One rewritten: that row and the door both say so, and the other
         // two still stand on mesimon's words.
         ctx.prompts.set(AgentPrompt::Merged, Some("done, {branch} is in".into()));
-        assert_eq!((door.label)(&ctx), "Agent prompts: 1 of 4 yours");
+        assert_eq!(value(door.verb, &ctx), Some(Value::Door("1 of 4 yours".into())));
         let rows = prompt_items(&ctx);
         assert_eq!((rows[1].label)(&ctx), "Merged notice: your words");
         assert!((rows[1].detail)(&ctx).ends_with("done, {branch} is in"));
@@ -7531,7 +7499,7 @@ mod tests {
                 Scope::Archived => 12,
                 Scope::Theme => 13,
                 Scope::Settings => 14,
-                Scope::Notifications => 15,
+                Scope::Sections => 15,
                 Scope::Prompts => 16,
                 Scope::Brief => 17,
                 Scope::Releases => 18,
@@ -9450,7 +9418,6 @@ mod tests {
             bulk_archive: 2,
             has_archived: true,
             update_ready: true,
-            default_column: "TODO".into(),
             teams: true,
             ..Default::default()
         };
@@ -9469,25 +9436,17 @@ mod tests {
         ] {
             assert!(verbs.contains(&v), "{v:?} missing from the menu: {verbs:?}");
         }
-        // The preferences are one level down, behind the Settings row, and
-        // not in the menu proper: a menu row is an action or a door.
-        let prefs: Vec<Verb> = settings_items(&ctx).iter().map(|m| m.verb).collect();
-        assert_eq!(
-            prefs,
-            [
-                Verb::SettingsAppearance,
-                Verb::Notifications,
-                Verb::SettingsBehaviour,
-                Verb::SettingsAgents,
-                Verb::SettingsTerminal,
-                Verb::SettingsUsage
-            ]
-        );
+        // The preferences are one level down, in the Settings dialog's
+        // sections, and not in the menu proper: a menu row is an action or a
+        // door. Theme's page is the picker and has no rows.
+        assert!(settings_items(&ctx).is_empty(), "the Theme section opens first");
+        let mut prefs: Vec<Verb> = Vec::new();
         for (section, expected) in [
             (
                 SettingsSection::Appearance,
-                vec![Verb::ThemePick, Verb::StatusLine, Verb::CrownLightning, Verb::SummaryShow],
+                vec![Verb::StatusLine, Verb::CrownLightning, Verb::SummaryShow, Verb::CardCorner],
             ),
+            (SettingsSection::Notifications, vec![Verb::NotifyToggle]),
             (
                 SettingsSection::Terminal,
                 vec![
@@ -9502,13 +9461,11 @@ mod tests {
             (
                 SettingsSection::Behaviour,
                 vec![
-                    Verb::MergeTrain,
                     Verb::KeepAwake,
+                    Verb::Mouse,
                     Verb::SnoozeQuiet,
                     Verb::WeekStart,
-                    Verb::DefaultColumn,
-                    Verb::FollowUpMode,
-                    Verb::Mouse,
+                    Verb::MergeTrain,
                 ],
             ),
             (
@@ -9516,19 +9473,20 @@ mod tests {
                 vec![
                     Verb::DefaultTier,
                     Verb::Tiers,
-                    Verb::SystemPrompt,
                     Verb::McpTools,
+                    Verb::SystemPrompt,
                     Verb::AgentPrompts,
-                    Verb::CrownBudget,
-                    Verb::CrownMode,
-                    Verb::CrownArchives,
-                    Verb::CrownWatches,
                 ],
+            ),
+            (
+                SettingsSection::Crown,
+                vec![Verb::CrownBudget, Verb::CrownMode, Verb::CrownArchives, Verb::CrownWatches],
             ),
         ] {
             let c = Ctx { settings_section: section, ..ctx.clone() };
             assert_eq!(settings_items(&c).iter().map(|m| m.verb).collect::<Vec<_>>(), expected);
             assert!(!settings_items(&c).iter().any(|m| m.verb == Verb::Peek));
+            prefs.extend(expected);
         }
         let on: Vec<Verb> = settings_items(&Ctx {
             settings_section: SettingsSection::Behaviour,
@@ -9538,7 +9496,7 @@ mod tests {
         .iter()
         .map(|m| m.verb)
         .collect();
-        assert_eq!(on[0..2], [Verb::MergeTrain, Verb::MergeTrainNotice]);
+        assert_eq!(on[4..6], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }
@@ -9560,7 +9518,10 @@ mod tests {
             .collect();
         assert!(!stem.contains(&Verb::InstallUpdate), "an offer with no version: {stem:?}");
         // Every menu row that names a key must name one the keymap really has.
-        for m in menu_items(&ctx).into_iter().chain(settings_items(&ctx)) {
+        let every = SettingsSection::ALL
+            .into_iter()
+            .flat_map(|section| settings_items(&Ctx { settings_section: section, ..ctx.clone() }));
+        for m in menu_items(&ctx).into_iter().chain(every) {
             if m.key.is_empty() {
                 continue;
             }
@@ -9688,8 +9649,6 @@ mod tests {
             shell_env_stale: true,
             theme_name: "graphite",
             theme_blurb: "dark, the default",
-            theme_slot_word: "dark",
-            default_column: "TODO".into(),
             team_signed_in: true,
             team_shared: true,
             team_members: 2,
@@ -9956,7 +9915,7 @@ mod tests {
         let scoped = &src[src.find("pub fn item_detail(").unwrap()..];
         let scoped = &scoped[..scoped.find("\n}\n").unwrap()];
         assert!(hints_explaining_enter(scoped).is_empty(), "{scoped}");
-        assert!(details > 80, "only {details} details read: the scan lost its lists");
+        assert!(details > 70, "only {details} details read: the scan lost its lists");
 
         // The scanner itself: the three spellings pass, anything else does not.
         assert!(hints_explaining_enter(r#"x("a ∙ enter again confirms")"#).is_empty());
@@ -10156,14 +10115,18 @@ mod tests {
     }
 
     /// `b` flips the Settings scope (T-361) exactly where a row can be set
-    /// for this board: live and hinted under Appearance, Behaviour and the
-    /// notifications list; inert everywhere else, the prompt list included.
+    /// for this board: live and hinted on the sections that have one, from
+    /// the section list or the page; inert everywhere else, the prompt list
+    /// included.
     #[test]
     fn b_flips_the_settings_scope_only_where_a_row_can_be_overridden() {
         let offered = Ctx { pref_scope_offered: true, ..Default::default() };
         let not = Ctx::default();
         assert_eq!(resolve(Scope::Settings, Key::Char('b'), &offered), Some(Verb::PrefScope));
-        assert_eq!(resolve(Scope::Notifications, Key::Char('b'), &offered), Some(Verb::PrefScope));
+        assert_eq!(resolve(Scope::Sections, Key::Char('b'), &offered), Some(Verb::PrefScope));
+        assert_eq!(resolve(Scope::Sections, Key::Char('b'), &not), None);
+        let board = SettingsSection::ALL.into_iter().filter(|s| s.board_scoped());
+        assert_eq!(board.count(), 5, "Theme, Appearance, Notifications, Behaviour, Agents");
         assert_eq!(resolve(Scope::Settings, Key::Char('b'), &not), None);
         assert_eq!(resolve(Scope::Prompts, Key::Char('b'), &not), None);
         assert_eq!(resolve(Scope::Board, Key::Char('b'), &offered), None);
@@ -10177,9 +10140,7 @@ mod tests {
     /// row names none — so board scope cycles exactly the preferences.
     #[test]
     fn every_preference_row_has_a_pref_key() {
-        let c = Ctx { theme_slot_word: "light", ..Default::default() };
         let prefs = [
-            Verb::ThemePick,
             Verb::StatusLine,
             Verb::CrownLightning,
             Verb::SummaryShow,
@@ -10208,22 +10169,49 @@ mod tests {
         ];
         for item in SETTINGS_ITEMS {
             let expect = prefs.contains(&item.verb);
-            assert_eq!(pref_key(item.verb, &c).is_some(), expect, "{:?}", item.verb);
+            assert_eq!(pref_key(item.verb).is_some(), expect, "{:?}", item.verb);
         }
         for item in NOTIFY_ITEMS {
-            assert!(pref_key(item.verb, &c).is_some(), "{:?}", item.verb);
+            assert!(pref_key(item.verb).is_some(), "{:?}", item.verb);
         }
-        assert_eq!(pref_key(Verb::ThemePick, &c), Some(PrefKey::Light));
-        assert_eq!(pref_key(Verb::ThemePick, &Ctx::default()), Some(PrefKey::Dark));
-        assert_eq!(pref_key(Verb::Notifications, &c), None, "a door");
-        assert_eq!(pref_key(Verb::McpTools, &c), None, "board state");
+        assert_eq!(pref_key(Verb::Tiers), None, "a door");
+        assert_eq!(pref_key(Verb::McpTools), None, "board state");
     }
 
-    /// The detail's scope words: nothing in machine scope; `(machine)`
-    /// first on a key the board cannot take; the machine's value quoted on
-    /// one it has; where the value comes from on one it inherits.
+    /// Every row a Settings page draws has a value beside its name (T-717)
+    /// and lives in the section `for_verb` names, so a door back to it
+    /// lands on its own page; a choice marks one of its own options.
     #[test]
-    fn item_detail_says_inherited_set_or_machine() {
+    fn every_setting_has_a_value() {
+        let full = Ctx {
+            notify: true,
+            notify_done: true,
+            merge_train: true,
+            tab_title: true,
+            ..Default::default()
+        };
+        let mut seen = 0;
+        for section in SettingsSection::ALL {
+            for item in settings_items(&Ctx { settings_section: section, ..full.clone() }) {
+                assert_eq!(SettingsSection::for_verb(item.verb), section, "{:?}", item.verb);
+                match value(item.verb, &full) {
+                    Some(Value::Choice { options, at }) => assert!(at < options.len()),
+                    Some(_) => {}
+                    None => panic!("{:?} has no value", item.verb),
+                }
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, SETTINGS_ITEMS.len() + NOTIFY_ITEMS.len(), "every row is on a page");
+        assert_eq!(value(Verb::Quit, &full), None, "a menu row is not a setting");
+    }
+
+    /// Board scope's words (T-361, T-717): the row's right edge says where
+    /// the value comes from — `machine`, `set here`, `inherited` — and the
+    /// detail quotes the machine's value on a row this board sets. Nothing
+    /// in machine scope, and nothing on board state.
+    #[test]
+    fn scope_words_say_inherited_set_or_machine() {
         let row = |v: Verb| SETTINGS_ITEMS.iter().find(|i| i.verb == v).expect("row");
         let machine = Ctx::default();
         assert_eq!(
@@ -10235,12 +10223,15 @@ mod tests {
             board_overrides: vec![(PrefKey::KeepAwake, "off")],
             ..Default::default()
         };
+        assert_eq!(scope_word(row(Verb::KeepAwake), &machine), None);
         let set = item_detail(row(Verb::KeepAwake), &board);
-        assert!(set.starts_with("set here ∙ machine: off ∙ "), "{set}");
+        assert!(set.starts_with("machine: off ∙ ") && set.ends_with(" ∙ inherit last"), "{set}");
+        assert_eq!(scope_word(row(Verb::KeepAwake), &board), Some("set here"));
+        assert_eq!(scope_word(row(Verb::MergeTrain), &board), Some("inherited"));
         let inherited = item_detail(row(Verb::MergeTrain), &board);
-        assert!(inherited.starts_with("inherited ∙ "), "{inherited}");
-        let fixed = item_detail(row(Verb::StatusLine), &board);
-        assert!(fixed.starts_with("(machine) ∙ "), "{fixed}");
+        assert_eq!(inherited, (row(Verb::MergeTrain).detail)(&board));
+        assert_eq!(scope_word(row(Verb::StatusLine), &board), Some("machine"));
+        assert_eq!(scope_word(row(Verb::McpTools), &board), None, "board state");
         let door = item_detail(row(Verb::McpTools), &board);
         assert_eq!(door, (row(Verb::McpTools).detail)(&board), "board state has no scope words");
     }

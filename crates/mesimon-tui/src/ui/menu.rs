@@ -1,6 +1,7 @@
 //! The Esc menu — everything that acts on the board as a whole, plus the two
-//! lists that are not the board — and the settings list one level under it,
-//! drawn by the same function: the preferences are `MenuItem`s too.
+//! lists that are not the board — and the lists one level under Settings
+//! (the agent prompts, the tiers), which share its row drawing. The
+//! Settings dialog itself is `settings`.
 //!
 //! These actions deliberately have no key of their own: they are rare, they
 //! are not about the selection, and a menu row has room to say what it will do
@@ -27,20 +28,6 @@ use super::dialog::{self, ListRow};
 pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     let items = keymap::menu_items(&app.frame_ctx());
     draw_list(f, app, idx, "MENU", Scope::Menu, &items);
-}
-
-/// The settings submenu: the same surface, its own name and keys. No row
-/// here is ever a suggestion, so the lead never carries the mark.
-pub(super) fn draw_settings(f: &mut Frame, app: &App, idx: usize) {
-    let items = keymap::settings_items(&app.frame_ctx());
-    draw_list(f, app, idx, &scoped(app, app.settings_section.title()), Scope::Settings, &items);
-}
-
-/// The notifications list, one level under it (T-282): the same surface
-/// again, its own name and its own rows.
-pub(super) fn draw_notify(f: &mut Frame, app: &App, idx: usize) {
-    let items = keymap::notify_items(&app.frame_ctx());
-    draw_list(f, app, idx, &scoped(app, "NOTIFICATIONS"), Scope::Notifications, &items);
 }
 
 /// The dialog's name with the scope after it when it is this board's
@@ -455,23 +442,8 @@ fn draw_list(
 ) {
     let ctx = app.frame_ctx();
     let mark = crate::glyphs::suggest_mark(app.theme.glyph_tier());
-    // A subtitle (T-610) is a row of the drawing and not of the list: the
-    // cursor's `idx` moves past every one drawn above it.
     let mut rows: Vec<ListRow> = Vec::new();
-    let mut at = idx;
-    for (i, item) in items.iter().enumerate() {
-        if let Some(heading) = keymap::settings_heading(item.verb) {
-            if i <= idx {
-                at += 1;
-            }
-            rows.push(ListRow {
-                lead: String::new(),
-                head: heading.to_string(),
-                right: String::new(),
-                detail: None,
-                heading: true,
-            });
-        }
+    for item in items {
         rows.push(ListRow {
             lead: if keymap::is_suggested(item.verb, &ctx) {
                 format!(" {mark} ")
@@ -484,5 +456,5 @@ fn draw_list(
             heading: false,
         });
     }
-    dialog::list(f, app, name, false, scope, at, &rows);
+    dialog::list(f, app, name, false, scope, idx, &rows);
 }

@@ -1,20 +1,20 @@
  BOARD   mesimon › kanban-tui   7 tickets
-  ╭─ AGENTS ∙ 1/9 ───────────────────────────────────────╮
-  │   Default tier: claude                               │
-  │     this board uses codex (b) ∙ Claude Code ∙ its o~ │
-  │   Tiers: none yet                                    │
-  │     a name for a launch: provider, model, effort ∙ ~ │
-  │   Agent brief: off                                   │
-  │     one line: read the ticket first ∙ shown to you ~ │
-  │   Agent tools: on                                    │
-  │     the board tools every spawn carries              │
-  │   Agent prompts: mesimon's words                     │
-  │     what mesimon types at an agent about a rebase, ~ │
-  │ Crown                                                │
-  │   Crown may start 3 agents at once                   │
-  │     agents the crown may have running at once ∙ a s~ │
-  │   Crown mode: autonomous                             │
-  │     its agents take its asks and answers without yo~ │
+  ╭─ SETTINGS ∙ AGENTS ──────────────────────────────────╮
   │                                                      │
-  ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
+  │  Default tier    claude                              │
+  │  Tiers           none yet ›                          │
+  │  Agent tools     ● on                                │
+  │  Agent brief     ○ off                               │
+  │  Agent prompts   mesimon's words ›                   │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │ this board uses codex (b) ∙ Claude Code ∙ its own m~ │
+  ╰──────────── jk select ∙ enter change ∙ b this board ─╯
  SETTINGS                                            ? keys

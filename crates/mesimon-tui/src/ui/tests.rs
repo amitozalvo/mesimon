@@ -779,13 +779,23 @@ fn golden_menu_120() {
     golden("menu_120x30", &render(&app, 120, 30));
 }
 
-/// The settings list over the board: the three preferences, the theme row
-/// naming the one worn, no suggestion mark anywhere, `esc back` in its edge.
+/// The Settings dialog as it opens (T-717): the sections down the left,
+/// Theme lit, and its page beside them — the slots, the flavors with the
+/// worn one marked, the preview of it, and what the slots hold at the foot.
+/// On a narrow terminal the list stands alone.
 #[test]
 fn golden_settings_120() {
     let mut app = app_graphite(fixture_archived());
-    app.mode = Mode::Settings { idx: 0 };
-    golden("settings_120x30", &render(&app, 120, 30));
+    app.mode = Mode::Sections;
+    let rows = render(&app, 120, 30);
+    for section in mesimon_core::keymap::SettingsSection::ALL {
+        assert!(rows.iter().any(|r| r.contains(section.name())), "{section:?}: {rows:#?}");
+    }
+    assert!(rows.iter().any(|r| r.contains("dark and light")), "the slots: {rows:#?}");
+    golden("settings_120x30", &rows);
+    let narrow = render(&app, 60, 20);
+    assert!(!narrow.iter().any(|r| r.contains("dark and light")), "the list alone: {narrow:#?}");
+    golden("settings_60x20", &narrow);
 }
 
 #[test]
@@ -808,15 +818,14 @@ fn golden_codex_provider_and_existing_claude() {
     assert!(!rows.iter().any(|r| r.contains("+ agent session")));
 }
 
+/// Every section's page, on a short terminal and a wide one: every row is
+/// drawn, either from the top or with the cursor on the last, where a page
+/// taller than the dialog scrolls (T-717).
 #[test]
 fn golden_settings_groups_fit_short_and_wide_terminals() {
     use mesimon_core::keymap::SettingsSection;
-    for (section, name) in [
-        (SettingsSection::Appearance, "appearance"),
-        (SettingsSection::Behaviour, "behaviour"),
-        (SettingsSection::Agents, "agents"),
-        (SettingsSection::Terminal, "terminal"),
-    ] {
+    for section in SettingsSection::ALL.into_iter().skip(1) {
+        let name = section.name().to_lowercase();
         let mut app = app_graphite(fixture_archived());
         app.settings_section = section;
         let count = mesimon_core::keymap::settings_items(&app.ctx()).len();
@@ -824,9 +833,6 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
             app.mode = Mode::Settings { idx: 0 };
             let rows = render(&app, w, h);
             assert!(!rows.iter().any(|r| r.contains("agent replies")));
-            // A list taller than the terminal scrolls, and says so in its
-            // title (Agents at 60x20 since T-569's ninth row): every row is
-            // drawn either from the top or with the cursor on the last.
             app.mode = Mode::Settings { idx: count - 1 };
             let end = render(&app, w, h);
             let ctx = app.ctx();
@@ -840,7 +846,6 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
             }
             golden(&format!("settings_{name}_{w}x{h}"), &rows);
             if scrolls {
-                assert!(rows[1].contains(&format!("1/{count}")), "{rows:?}");
                 golden(&format!("settings_{name}_{w}x{h}_end"), &end);
             }
         }
@@ -869,17 +874,22 @@ fn golden_settings_terminal_on_fits_short_and_wide_terminals() {
     }
 }
 
-/// The notifications list, one level under Settings (T-282), turned ON so
-/// every row draws: the master switch, the two moments, what a banner is
-/// allowed to SAY (T-292), the two sounds and the two exceptions.
-/// `NOTIFICATIONS` in the frame's top edge and the list's own keys in its
-/// bottom one.
+/// The Notifications section (T-282, a section since T-717), turned ON so
+/// every row draws under its heading: the master switch, who posts, the
+/// moments, what a banner may SAY (T-292), and the two sounds — and the
+/// banner itself above them.
 #[test]
 fn golden_notifications_120() {
     let mut app = app_graphite(fixture_archived());
     app.seed_pref(|p| p.notify = true);
-    app.mode = Mode::Notifications { idx: 0 };
-    golden("notifications_120x30", &render(&app, 120, 30));
+    app.settings_section = mesimon_core::keymap::SettingsSection::Notifications;
+    app.mode = Mode::Settings { idx: 0 };
+    let rows = render(&app, 120, 30);
+    for heading in ["WHEN", "BANNER", "SOUND"] {
+        assert!(rows.iter().any(|r| r.contains(heading)), "{heading}: {rows:#?}");
+    }
+    assert!(rows.iter().any(|r| r.contains("“Keep the old parser")), "the banner: {rows:#?}");
+    golden("settings_notifications_on_120x30", &rows);
 }
 
 /// The Settings dialog in board scope (T-361): `THIS BOARD` in the title,
@@ -898,7 +908,7 @@ fn golden_settings_behaviour_board_120() {
 }
 
 /// Board scope under Appearance, on the status line row: a machine-only
-/// key reads `(machine)` first.
+/// key says `machine` at its right edge.
 #[test]
 fn golden_settings_appearance_board_60() {
     let mut app = app_graphite(fixture_archived());
@@ -916,8 +926,12 @@ fn golden_notifications_board_120() {
     app.settings_board_scope = true;
     app.board_prefs.set_bool(mesimon_core::prefs::PrefKey::Notify, true);
     app.resolve_prefs();
-    app.mode = Mode::Notifications { idx: 0 };
-    golden("notifications_board_120x30", &render(&app, 120, 30));
+    app.settings_section = mesimon_core::keymap::SettingsSection::Notifications;
+    app.mode = Mode::Settings { idx: 0 };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("set here")), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.contains("inherited")), "{rows:#?}");
+    golden("settings_notifications_board_120x30", &rows);
 }
 
 /// The agent-prompt list (T-353), one level under Settings > Agents: the
@@ -1075,19 +1089,20 @@ fn golden_sharing_joining_120() {
     golden("sharing_joining_120x30", &render(&app, 120, 30));
 }
 
-/// Off, the list is a SINGLE row: four settings for a thing that is not
-/// happening are four rows saying nothing.
+/// Off, the page is a SINGLE row: settings for a thing that is not
+/// happening are rows saying nothing.
 #[test]
 fn the_notifications_list_is_one_row_while_it_is_off() {
     let mut app = app_graphite(fixture_archived());
     app.seed_pref(|p| p.notify = false);
-    app.mode = Mode::Notifications { idx: 0 };
+    app.settings_section = mesimon_core::keymap::SettingsSection::Notifications;
+    app.mode = Mode::Settings { idx: 0 };
     let lines = render(&app, 120, 30);
     assert!(
-        lines.iter().any(|l| l.contains("Notifications: off")),
+        lines.iter().any(|l| l.contains("Notifications") && l.contains("○ off")),
         "the master switch is always there: {lines:#?}"
     );
-    for absent in ["Sound when an agent needs you", "Also when a turn finishes", "focused"] {
+    for absent in ["Needs you", "A turn finishes", "While the board is in front", "SOUND"] {
         assert!(
             !lines.iter().any(|l| l.contains(absent)),
             "{absent} is offered for a thing that is off: {lines:#?}"
@@ -1095,54 +1110,56 @@ fn the_notifications_list_is_one_row_while_it_is_off() {
     }
 }
 
-/// A subtitle wider than the dialog reveals itself on the selected row, the
-/// way an overlong card title and an overlong rail name do. A preference's
-/// detail is where it says what it will do, so the half past the `~` is the
-/// half worth reading.
+/// The selected row's detail sits at the page's foot, one line, and a
+/// detail wider than the page reveals itself the way an overlong card
+/// title does. A preference's detail is where it says what it will do, so
+/// the half past the `~` is the half worth reading. Another row selected,
+/// that sentence is gone: only the cursor's row speaks (T-717).
 #[test]
 fn the_settings_subtitle_marquees() {
     let mut app = app_graphite(fixture_archived());
-    // The merge train's row: the longest detail in the list while the train
-    // is off (on by default since T-610), the sentence that explains the
-    // standing consent.
+    // The merge train's row: the longest detail on the page while the train
+    // is off, the sentence that explains the standing consent.
     app.seed_pref(|p| p.merge_train = false);
-    // The first row of BEHAVIOUR, which is where the train sits now; keep
-    // awake is under it, and neither index moves the other.
     app.settings_section = mesimon_core::keymap::SettingsSection::Behaviour;
-    app.mode = Mode::Settings { idx: 0 };
+    let train = app.settings_row(mesimon_core::keymap::Verb::MergeTrain);
+    app.mode = Mode::Settings { idx: train };
     let row = |lines: &[String]| -> String {
         lines
             .iter()
-            .find(|l| l.contains("idle agents to"))
-            .unwrap_or_else(|| panic!("the merge train's subtitle: {lines:#?}"))
+            .find(|l| l.contains("idle agents"))
+            .unwrap_or_else(|| panic!("the merge train's detail: {lines:#?}"))
             .clone()
     };
-    let resting = row(&render(&app, 120, 30));
+    let resting = row(&render(&app, 60, 20));
     assert!(resting.contains("merges quiet REVIEW"), "the pass starts at the start: {resting}");
     assert!(resting.contains('~'), "and it is cut, which is what the walk repairs: {resting}");
     // Past the opening hold: the draw armed the clock, so date it into the
     // past rather than sleeping through six steps of it.
-    let (key, _) = app.menu_marquee.get().expect("an overflowing subtitle arms the clock");
+    let (key, _) = app.menu_marquee.get().expect("an overflowing detail arms the clock");
     app.menu_marquee
         .set(Some((key, std::time::Instant::now() - std::time::Duration::from_millis(2000))));
-    let walked = row(&render(&app, 120, 30));
+    let walked = row(&render(&app, 60, 20));
     assert!(!walked.contains("merges quiet"), "the words have moved: {walked}");
     assert!(!walked.contains('~'), "a walking marquee hard-clips: {walked}");
-    assert!(walked.contains("rebase, wh"), "and it reveals what the cut hid: {walked}");
-    // An unselected row is still cut: one sentence moves, the list is quiet.
-    app.mode = Mode::Settings { idx: 1 };
-    let quiet = row(&render(&app, 120, 30));
-    assert!(quiet.contains("merges quiet REVIEW"), "{quiet}");
-    assert!(quiet.contains('~'), "{quiet}");
+    // Another row: the train's sentence is not on the page at all.
+    app.mode = Mode::Settings { idx: 0 };
+    let quiet = render(&app, 60, 20);
+    assert!(!quiet.iter().any(|l| l.contains("merges quiet")), "{quiet:#?}");
 }
 
-/// The theme picker over the board: six rows, the flavor's ground at the
-/// right edge, and the saved slots named in words on their rows.
+/// The Theme page with the keys (T-717): the slot Tab is on, every flavor
+/// with its ground at the right edge, the saved pick marked, and the
+/// preview of the one under the cursor — blue here, while the board around
+/// it keeps graphite.
 #[test]
 fn golden_theme_picker_120() {
     let mut app = app_graphite(fixture_archived());
-    app.mode = Mode::Theme { idx: 0, slot: crate::theme::Slot::One(crate::theme::Ground::Dark) };
-    golden("theme_picker_120x30", &render(&app, 120, 30));
+    app.mode = Mode::Theme { idx: 2, slot: crate::theme::Slot::One(crate::theme::Ground::Dark) };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("navy and gold")), "the blurb: {rows:#?}");
+    assert_eq!(app.theme.flavor, crate::theme::Flavor::Graphite);
+    golden("theme_picker_120x30", &rows);
 }
 
 /// The picker in board scope (T-361): the inherit row first, naming the
@@ -10132,8 +10149,8 @@ fn golden_usage_settings() {
     app.settings_section = mesimon_core::keymap::SettingsSection::Usage;
     app.mode = Mode::Settings { idx: 0 };
     let rows = render(&app, 120, 30);
-    assert!(rows.iter().any(|r| r.contains("Show: near a limit")), "{rows:?}");
-    golden("settings_usage_120x30", &rows);
+    assert!(rows.iter().any(|r| r.contains("Show") && r.contains("near a limit")), "{rows:?}");
+    golden("usage_settings_120x30", &rows);
 }
 
 /// The top row's `h`/`l` off either end step down onto the column drawn
@@ -10281,7 +10298,7 @@ fn a_click_off_a_dialog_closes_it_and_a_row_click_is_its_enter() {
 
     app.settings_section = mesimon_core::keymap::SettingsSection::Behaviour;
     app.mode = Mode::Settings { idx: 0 };
-    let at = spot_of(&render(&app, 120, 30), "Mouse: on");
+    let at = spot_of(&render(&app, 120, 30), "Mouse");
     click(&mut app, at);
     let row = app.settings_row(mesimon_core::keymap::Verb::Mouse);
     assert!(matches!(app.mode, Mode::Settings { idx } if idx == row), "walked to the row");
@@ -10290,6 +10307,40 @@ fn a_click_off_a_dialog_closes_it_and_a_row_click_is_its_enter() {
     render(&app, 120, 30);
     click(&mut app, (0, 10));
     assert!(matches!(app.mode, Mode::Settings { .. }));
+}
+
+/// The Settings dialog's two halves both take the pointer (T-717): a
+/// section click shows its page and a second opens it; a row click from
+/// the section list steps into the page and is the row's Enter; and a
+/// click on a flavor keeps it, the board repainting in it.
+#[test]
+fn a_click_picks_a_section_a_row_and_a_theme() {
+    use mesimon_core::keymap::SettingsSection;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture(false));
+    app.mode = Mode::Sections;
+    let at = spot_of(&render(&app, 120, 30), "Behaviour");
+    click(&mut app, at);
+    assert_eq!(app.settings_section, SettingsSection::Behaviour);
+    assert_eq!(app.mode, Mode::Sections, "a first click shows the page");
+    let at = spot_of(&render(&app, 120, 30), "Behaviour");
+    click(&mut app, at);
+    assert_eq!(app.mode, Mode::Settings { idx: 0 }, "a second opens it");
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    let at = spot_of(&render(&app, 120, 30), "Mouse");
+    click(&mut app, at);
+    let row = app.settings_row(mesimon_core::keymap::Verb::Mouse);
+    assert_eq!(app.mode, Mode::Settings { idx: row });
+    assert!(!app.prefs.mouse, "the row click is its Enter");
+    app.seed_pref(|p| p.mouse = true);
+    // From a page, a section click goes back to the list first.
+    let at = spot_of(&render(&app, 120, 30), "Theme");
+    click(&mut app, at);
+    assert_eq!((app.mode.clone(), app.settings_section), (Mode::Sections, SettingsSection::Theme));
+    let at = spot_of(&render(&app, 120, 30), "nord");
+    click(&mut app, at);
+    assert!(matches!(app.mode, Mode::Theme { .. }), "{:?}", app.mode);
+    assert_eq!(app.theme.flavor, crate::theme::Flavor::Nord, "kept, and worn");
 }
 
 /// The External drawer is the one list a click only walks: its Enter takes

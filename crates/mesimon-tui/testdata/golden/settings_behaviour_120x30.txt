@@ -1,30 +1,30 @@
  BOARD   mesimon › kanban-tui   6 tickets
 
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
-
-    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-
-    Keymap validator      >╭─ BEHAVIOUR ────────────────────────────────────────────────────╮
-                           │   Auto merge: on                                               │
-                           │     merges quiet REVIEW branches, asks idle agents to rebase ~ │
-                           │   Auto merge tells the agent after a merge                     │
-                           │     pastes the merged notice into the agent, which starts a t~ │
-                           │   Keep this machine awake: off                                 │
-                           │     the machine sleeps on its own clock, agents or not         │
-                           │   Snooze returns with needs-you                                │
-                           │     lit until you look at it                                   │
-                           │   Week starts on Monday                                        │
-                           │     z's last rung: next Monday 9:00                            │
-                           │   Default column: TODO                                         │
-                           │     where an agent's create_ticket lands unplaced              │
-                           │   Follow-ups: Queue                                            │
-                           │     Queue waits for the agent's idle ∙ Steer sends now         │
-                           │   Mouse: on                                                    │
-                           │     a drag selects text and copies it                          │
-                           ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
-
-
-
+    TO╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
+      │                                                                                                          │
+    De│  Theme               Keep this machine awake   ○ off                                                     │
+      │                      Mouse                     ● on                                                      │
+    Ke│  Appearance                                                                                              │
+      │                     SNOOZE                                                                               │
+      │  Notifications       Comes back                ● lit   ○ quiet                                           │
+      │                      Week starts on            Monday                                                    │
+      │▎ Behaviour                                                                                               │
+      │                     AUTO MERGE                                                                           │
+      │  Agents              Auto merge                ● on                                                      │
+      │                      Tells the agent           ● on                                                      │
+      │  Crown                                                                                                   │
+      │                                                                                                          │
+      │  Terminal                                                                                                │
+      │                                                                                                          │
+      │  Usage                                                                                                   │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                     the machine sleeps on its own clock, agents or not                                   │
+      ╰───────────────────────────────────────────────── jk select ∙ enter change ∙ b this board ∙ esc sections ─╯
 
  SETTINGS                                                                                                        ? keys
