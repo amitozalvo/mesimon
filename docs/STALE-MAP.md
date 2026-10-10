@@ -23338,3 +23338,13 @@ is filed. Their verbs and `Ctx` fields went; the board fields, `SetFollowUpMode`
 
 Narrower than 90 columns the dialog shows one half at a time: the list, or the page with its
 section in the title. A page taller than the dialog scrolls with the cursor.
+
+## T-719: every crown touch reaches a broadcast
+
+`watch_ticket` struck no bolt (T-544): its arm flips no board field, so it never broadcast, the
+TUI took no snapshot, and the touch surfaced with the next unrelated change, past
+`CROWN_LIT_MS`, where `absorb_crown_touches` leaves residue and no `Strike`. The arm now
+broadcasts after `crown_touched`. Audit of the other arms: `sleep_agent` (`persist_sessions`
+only) and `tag_ticket` on a tag already worn (no change, no broadcast) had the same gap and
+broadcast the same way; the rest reach `with_ticket`, `persist_and_notify` or their own
+`broadcast`. A new arm that calls `crown_touched` must reach a broadcast on its success path.

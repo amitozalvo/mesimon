@@ -5078,10 +5078,19 @@ fn the_crown_watches_a_ticket_a_person_started() {
         Response::Err { message } => assert_eq!(message, format!("{kw} is not watched")),
         other => panic!("unwatching an unwatched ticket: {other:?}"),
     }
+    // A subscriber hears the watch (T-719): it flips no board field, so the
+    // touch's bolt reaches the TUI only on a broadcast of the arm's own.
+    let mut sub = h.client("crown_watch_sub");
+    assert!(matches!(sub.request(Command::Subscribe), Response::Ok));
+    while sub.next_event(std::time::Duration::from_millis(300)).is_some() {}
     match watch(&mut c, &kw, false) {
         Response::AgentTicket { ticket } => assert!(ticket.watched, "the receipt says so"),
         other => panic!("watch: {other:?}"),
     }
+    assert!(
+        sub.next_event(std::time::Duration::from_secs(5)).is_some(),
+        "the watch broadcasts BoardChanged"
+    );
     assert!(read(&mut c, sa, &kw).unwrap().watched, "the keyed read says so");
     assert_eq!(
         touches(&mut c).iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),

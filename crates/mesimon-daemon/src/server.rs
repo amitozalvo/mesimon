@@ -5888,6 +5888,7 @@ impl Daemon {
                 self.persist_sessions();
                 self.feed.board(by.actor(), "sleep_agent", Some(target));
                 self.crown_touched(ticket, target, "parked");
+                self.broadcast();
                 self.agent_ticket_view(target)
                     .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
             }
@@ -5944,6 +5945,9 @@ impl Daemon {
                 let cmd = if unwatch { "unwatch_ticket" } else { "watch_ticket" };
                 self.feed.board(by.actor(), cmd, Some(target));
                 self.crown_touched(ticket, target, word);
+                // The watch flips no board field, so nothing else tells the
+                // TUI to take a snapshot and strike the bolt (T-719).
+                self.broadcast();
                 match self.agent_ticket_view(target) {
                     Some(mut view) => {
                         view.watched = !unwatch;
@@ -6076,6 +6080,9 @@ impl Daemon {
                 match self.agent_tag_ticket(&by, target, &name, group, remove) {
                     Response::AgentTagged { tags, replaced, board_version, .. } => {
                         let seen = self.crown_touched(ticket, target, "tagged");
+                        // A tag already worn changes nothing and broadcasts
+                        // nothing; the touch still needs its snapshot (T-719).
+                        self.broadcast();
                         Response::AgentTagged { tags, replaced, board_version, seen }
                     }
                     other => other,
