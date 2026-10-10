@@ -5,7 +5,9 @@ use super::tail::{self, TailCursor};
 use crate::agents::{AgentRecovery, RecoveryChannel, RecoveryObservation, RecoverySample};
 use mesimon_core::adopt::{classify_tail_record, SessionsPidFile, TailEvent, TailTool};
 use mesimon_core::attention::{self, Signal, TailHint};
-use mesimon_core::board::{FailReason, Reason, SessionRecord, SessionState, UnknownReason};
+use mesimon_core::board::{
+    FailReason, Reason, SessionRecord, SessionState, StopReason, UnknownReason,
+};
 use std::path::PathBuf;
 
 const TAIL_QUIET_MS: u64 = 45_000;
@@ -20,6 +22,10 @@ const WAIT_AFFIRM_MS: u64 = 60_000;
 /// of two-second reads covers a slow flush and then gives up on `unknown`.
 const FAILURE_REREAD_MS: u64 = 2_000;
 const FAILURE_REREAD_SPELL_MS: u64 = 60_000;
+/// How often a background park is re-proved off Claude Code's session file
+/// while it reads `busy` (T-724). The park clock is ten minutes; a minute
+/// keeps it re-armed with margin and puts one decision a minute in the feed.
+const PARK_AFFIRM_MS: u64 = 60_000;
 
 #[derive(Default)]
 pub(super) struct ClaudeRecovery {
@@ -33,6 +39,8 @@ pub(super) struct ClaudeRecovery {
     rested: bool,
     /// Last time a native `Failed { Unknown }` was re-read for its class.
     failure_read_at: Option<u64>,
+    /// Last time a background park was proved by a `busy` session file.
+    park_affirmed_at: Option<u64>,
 }
 
 /// The transcript's word for a held dialog: the tail event that says THIS
@@ -55,6 +63,11 @@ fn abort_only(record: &SessionRecord) -> bool {
 /// A native failed turn the frame could not class (T-659): the mod relays
 /// `unknown`, and the adapter's read of the tail at the frame found no error
 /// row yet. The re-read below is the only road that corrects it.
+fn parked(record: &SessionRecord) -> bool {
+    !record.observe_only()
+        && record.state == SessionState::Idle { stop_reason: StopReason::Background }
+}
+
 fn failure_unread(record: &SessionRecord) -> bool {
     record.native
         && record.state == SessionState::Failed { reason: FailReason::Unknown }
@@ -87,10 +100,11 @@ impl AgentRecovery for ClaudeRecovery {
                 !record.observe_only() && record.state == SessionState::Running
             }
             RecoveryChannel::Status => {
-                let eligible = !record.observe_only()
-                    && (record.state == SessionState::Running
-                        || record.state
-                            == SessionState::RequiresAction { reason: Reason::Permission });
+                let eligible = parked(record)
+                    || (!record.observe_only()
+                        && (record.state == SessionState::Running
+                            || record.state
+                                == SessionState::RequiresAction { reason: Reason::Permission }));
                 if !eligible {
                     self.status = None;
                 }
@@ -190,6 +204,18 @@ impl ClaudeRecovery {
         if pf.session_id != Some(claude_id) {
             probe.path = None;
             return None;
+        }
+        // A park the hooks have gone quiet on is still earned while Claude
+        // Code calls the session busy: a subagent deep in one reasoning step
+        // sends nothing at all (T-724).
+        if parked(record) {
+            let due =
+                self.park_affirmed_at.is_none_or(|at| now.saturating_sub(at) >= PARK_AFFIRM_MS);
+            if pf.status.as_deref() != Some("busy") || !due {
+                return None;
+            }
+            self.park_affirmed_at = Some(now);
+            return Some(observation(Signal::StatusFileBusy, "status"));
         }
         if record.state != SessionState::Running {
             return probe
@@ -581,6 +607,54 @@ mod recovery_tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
         }
+    }
+
+    /// T-724: a park whose hooks went quiet is re-proved off the session
+    /// file while Claude Code calls it busy, once a minute, and only a park.
+    #[test]
+    fn a_busy_session_file_proves_a_park_once_a_minute() {
+        let file = History::new();
+        let mut parked = record(SessionState::Idle { stop_reason: StopReason::Background });
+        let claude_id = parked.id;
+        let write = |status: &str| {
+            let body = serde_json::json!({
+                "pid": 1,
+                "sessionId": claude_id,
+                "status": status,
+                "statusUpdatedAt": 900,
+            });
+            std::fs::write(&file.0, body.to_string()).unwrap();
+        };
+        let mut recovery = ClaudeRecovery {
+            status: Some(StatusProbe {
+                path: Some(file.0.clone()),
+                looked_at: 0,
+                near_idle: None,
+                waiting_spell: None,
+            }),
+            ..ClaudeRecovery::default()
+        };
+        let busy = |recovery: &mut ClaudeRecovery, record: &SessionRecord, now| {
+            assert!(recovery.needs_poll(record, RecoveryChannel::Status, now));
+            recovery
+                .poll(record, RecoverySample::Status, now)
+                .iter()
+                .any(|o| matches!(o.signal, Signal::StatusFileBusy))
+        };
+        write("busy");
+        assert!(busy(&mut recovery, &parked, 10_000), "the first look proves it");
+        assert!(!busy(&mut recovery, &parked, 10_000 + PARK_AFFIRM_MS - 1), "a minute apart");
+        assert!(busy(&mut recovery, &parked, 10_000 + PARK_AFFIRM_MS));
+        write("idle");
+        assert!(!busy(&mut recovery, &parked, 10_000 + 3 * PARK_AFFIRM_MS), "idle proves nothing");
+        // A finished turn is never re-proved, whatever the file says.
+        write("busy");
+        parked.state = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        assert!(!recovery.needs_poll(
+            &parked,
+            RecoveryChannel::Status,
+            10_000 + 5 * PARK_AFFIRM_MS
+        ));
     }
 
     #[test]

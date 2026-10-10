@@ -354,6 +354,15 @@ pub enum Signal {
     /// The same live session was observed waiting while Permission was held,
     /// then busy at a strictly newer timestamp. Qualified by the daemon.
     StatusFilePermissionResumed,
+    /// Daemon-side probe while `Idle{Background}` (T-724): Claude Code's
+    /// own session file still reads `status: busy`. It does not flip `idle`
+    /// at a `Stop` that leaves background agents running, and a subagent
+    /// thinking through a long reasoning step sends no hook and writes no
+    /// transcript line for as long as it thinks (axiom T-1, 2026-10-10: two
+    /// Fable reviewers twelve minutes into their first answer, the park
+    /// demoted at ten and the ticket moved to REVIEW). It re-arms the park
+    /// clock and moves nothing.
+    StatusFileBusy,
     PreCompact {
         manual: bool,
     },
@@ -1095,6 +1104,8 @@ impl Machine {
                     None
                 }
             }
+            // Proof for the park clock alone (`proves_background`).
+            Signal::StatusFileBusy => None,
             Signal::PaneQuiet | Signal::StatusFileIdle { .. } => {
                 if self.state == S::Running && self.pending.is_none() {
                     let stop_reason = match sig {
@@ -1145,6 +1156,7 @@ fn proves_background(sig: &Signal) -> bool {
         Signal::Stop { has_agent_id, .. } => *has_agent_id,
         Signal::ToolCompleted { nested } | Signal::ToolStarted { nested } => *nested,
         Signal::BackgroundChanged { liveness } => *liveness != crate::background::Liveness::None,
+        Signal::StatusFileBusy => true,
         _ => false,
     }
 }
@@ -1541,6 +1553,21 @@ mod tests {
         assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
     }
 
+    /// T-724. The session file's `busy` is proof for the clock and nothing
+    /// else: it never parks, resumes or ends a turn on its own.
+    #[test]
+    fn a_busy_session_file_moves_nothing() {
+        for state in [
+            SessionState::Running,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Idle { stop_reason: StopReason::Background },
+        ] {
+            let mut m = m(state.clone());
+            assert!(m.apply(&Signal::StatusFileBusy, 1000).is_none(), "{state:?}");
+            assert_eq!(m.state(), &state);
+        }
+    }
+
     /// The other half: a team that is plainly working keeps its park, however
     /// long it takes. Every frame here is one `target` answers `None` to —
     /// that is exactly why the clock reads them itself.
@@ -1552,6 +1579,7 @@ mod tests {
             Signal::TeammateMessaged { name: "reuse".into() },
             Signal::ToolCompleted { nested: true },
             Signal::BackgroundChanged { liveness: crate::background::Liveness::Working },
+            Signal::StatusFileBusy,
         ] {
             let mut m = m(SessionState::Idle { stop_reason: StopReason::Background });
             let mut at = 0;

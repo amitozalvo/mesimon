@@ -23481,3 +23481,31 @@ rebuilt the file since both were seeded) count in neither. Refused: grouping by
 
 Test: `resources::tests::tree_bytes_counts_what_removing_the_tree_frees` (a hard link counts
 once; a `cp -c` clone of a file outside the tree adds less than a MiB of its 8).
+
+## A background park is proved by Claude Code's own `busy` (T-724, 2026-10-10, "ticket with session with subagents running was marked as done with no active indication at all")
+
+On the axiom board T-1's lead started two background reviewers (Fable, xhigh), told the person
+"nothing to do until they report", and stopped: `Stop` parked it at `Idle{Background}` at
+21:34:25. Ten minutes later to the millisecond (21:44:27) `PARK_STALE_MS` (T-403) demoted it to
+`Idle{EndTurn}` at Medium, automove took the ticket to REVIEW, and the card lost its spinner.
+The reviewers were alive: the pane's footer listed both at `12m 33s · ↓ 75.2k tokens` and
+climbing. Neither had written a transcript line since 21:34:19 or sent a single hook. A subagent
+inside one long reasoning step makes no tool call, so nothing the park clock reads
+(`SubagentStop`, a nested tool or `Stop`, a teammate frame) can arrive.
+
+**Claude Code's session file said so the whole time.** `~/.claude/sessions/<pid>.json` read
+`status: busy`, stamped at the turn's `UserPromptSubmit`: it did not flip `idle` at a `Stop`
+that left agents running, as it does at every plain turn's end. `Signal::StatusFileBusy` is that
+read. It is proof for the park clock alone (`proves_background`; `target` answers `None`), sent by
+the Claude adapter's status probe, which now also polls a non-observed session at
+`Idle{Background}` once every `PARK_AFFIRM_MS` (one minute; one decision a minute in the feed).
+
+**What stays T-403's.** A park whose file reads anything but `busy`, or has no file, still times
+out at ten minutes, and `Idle{Monitoring}` still has no clock. Unmeasured: whether a teammate
+that dies on a usage limit (T-403's case) leaves the file `busy`. If it does, the park holds as
+long as Claude Code's own panel calls the session busy, and the board agrees with the pane.
+
+Tests: `attention::tests::a_busy_session_file_moves_nothing`, `StatusFileBusy` in
+`background_frames_keep_a_park_alive`, and
+`recovery_tests::a_busy_session_file_proves_a_park_once_a_minute` (first look proves, a minute
+apart, `idle` proves nothing, a finished turn is never polled).
