@@ -427,6 +427,7 @@ pub fn user_prompt(v: &Value) -> Option<String> {
         || v.get("isMeta").and_then(Value::as_bool) == Some(true)
         || v.get("isSidechain").and_then(Value::as_bool) == Some(true)
         || is_interrupt(v)
+        || is_compact_summary(v)
     {
         return None;
     }
@@ -449,6 +450,15 @@ pub fn user_prompt(v: &Value) -> Option<String> {
         return None;
     }
     Some(text.to_string())
+}
+
+/// The summary a compaction opens the new context with: a plain `user`
+/// record, `isMeta` false, flagged `isCompactSummary` — the harness's words,
+/// written with no turn around them when Claude Code compacts an idle
+/// session (T-728: the card read `> This session is being continued…` under
+/// a spinner, and the tail read a turn opened).
+pub fn is_compact_summary(v: &Value) -> bool {
+    v.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
 }
 
 /// The opening tag of the harness's background-task wake-up, written as a
@@ -514,7 +524,7 @@ pub fn turn_edge(v: &Value) -> TurnEdge {
                 TurnEdge::Open
             }
         }
-        Some("user") => TurnEdge::Open,
+        Some("user") if !is_compact_summary(v) => TurnEdge::Open,
         _ => TurnEdge::Unsaid,
     }
 }
@@ -761,6 +771,12 @@ mod tests {
                 {"type":"text","text":"  <task-notification><task-id>x</task-id></task-notification>"}]}}"#);
         assert_eq!(user_prompt(&v), None);
 
+        // A compaction's summary is the harness's too (T-728, 2.1.296).
+        let v = val(
+            r#"{"uuid":"u10","type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation"}}"#,
+        );
+        assert_eq!(user_prompt(&v), None);
+
         // A subagent's prompt is not the user speaking, and neither is a
         // latch or an empty message.
         let v = val(
@@ -913,6 +929,13 @@ mod tests {
         assert_eq!(turn_edge(&j(r#"{"uuid":"u","type":"attachment"}"#)), TurnEdge::Unsaid);
         assert_eq!(
             turn_edge(&j(r#"{"uuid":"u","type":"system","subtype":"compact_boundary"}"#)),
+            TurnEdge::Unsaid
+        );
+        // T-728: the summary under the boundary opens no turn.
+        assert_eq!(
+            turn_edge(&j(
+                r#"{"uuid":"u","type":"user","isCompactSummary":true,"message":{"content":"This session is being continued"}}"#
+            )),
             TurnEdge::Unsaid
         );
     }

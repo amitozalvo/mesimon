@@ -23581,3 +23581,28 @@ no plain row, reply `written`. S1 (T-710) ran again on the new words and passed 
 Tests: `the_summary_convention_is_in_the_tools` (both texts spell the stage, the tick on
 landing, the person's step and the board's own merge as no box; "merge the MR" and "progress
 worth seeing" are absent), the lint and the byte cap over both.
+
+## A compaction while idle is not a turn (T-728, 2026-10-11, "claudes auto compact while idle feature causing ticket to stay in IN PROGRESS")
+
+Claude Code 2.1.296 compacts an idle session shortly before its prompt cache expires ("Compacted
+while idle, before the prompt cache expired"). The axiom crown's feed, 2026-10-10: at
+`Idle{EndTurn}` in REVIEW, `PreCompact` (trigger `auto`), a `SubagentStop`, `SessionStart{compact}`
+and `PostCompact`, two minutes apart, with no prompt before them and no `Stop` after. mesimon read
+every automatic compaction as a turn's own (2026-09-09's "every compact restart continues a
+turn"): `PreCompact` set `Running` and `on_working` moved the ticket to IN PROGRESS, then the
+status file read `idle` with no turn closed since the spell began, so the card read interrupted
+and the ticket stayed. The peek also showed the compaction's summary (`isCompactSummary`, a plain
+`user` record) as the person's prompt, with the agent thinking under it.
+
+**An automatic compaction that begins at `Idle` is quiet** (`Machine::quiet_compaction`): that
+`PreCompact`, its duplicate, `SessionStart{compact}` and `PostCompact{auto}` move nothing, so no
+column rule fires and the crown hears nothing. It ends where the manual prior does (a prompt, a
+turn, a new conversation); a `PreCompact{auto}` while `Running` is a turn's own compaction and
+keeps the continuation. Auto-park does not wait on it: a quiet compaction never ends with an edge.
+**The summary record is the harness's words** (`adopt::is_compact_summary`): never a prompt
+(`user_prompt`), never a turn opening (`turn_edge` reads it `Unsaid`), so the peek walks past it
+to the reply that closed the turn.
+
+Tests: `docs/state-scenarios/idle-compact.json` (fails before the fix at every step),
+`history::tests::a_compaction_while_idle_keeps_the_closing_reply`, and the summary cases in
+`adopt::tests`.

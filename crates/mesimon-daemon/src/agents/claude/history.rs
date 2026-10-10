@@ -5,7 +5,8 @@
 
 use crate::agents::{AgentActivity, AgentPreview};
 use mesimon_core::adopt::{
-    assistant_text, is_interrupt, narration, record_ms, tool_activity, tool_label, user_prompt,
+    assistant_text, is_compact_summary, is_interrupt, narration, record_ms, tool_activity,
+    tool_label, user_prompt,
 };
 use mesimon_core::mesophon::{RowKind, TranscriptRow};
 use serde_json::Value;
@@ -173,9 +174,7 @@ pub(in crate::agents) fn rows(at: u64, v: &Value) -> Vec<TranscriptRow> {
         }
         // The summary a compaction opens the new context with is the
         // harness's words; the boundary record above it is the row.
-        Some("user") if v.get("isCompactSummary").and_then(Value::as_bool) == Some(true) => {
-            Vec::new()
-        }
+        Some("user") if is_compact_summary(v) => Vec::new(),
         Some("user") => {
             let Some(words) = user_prompt(v) else { return Vec::new() };
             if let Some(command) = super::super::transcript::command_words(&words) {
@@ -312,6 +311,31 @@ mod tests {
         assert_eq!(pk.text.as_deref(), Some("Committed as d5d114e."));
         assert!(pk.reply_key.is_some(), "a closing reply is a reply, and has a key");
         assert_eq!(pk.activity, None);
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// T-728: Claude Code 2.1.296 compacts an idle session before its prompt
+    /// cache expires and writes the boundary, the summary as a plain `user`
+    /// record and a notice under the turn that had ended. The card read the
+    /// summary as the person's prompt, with the agent thinking under it.
+    #[test]
+    fn a_compaction_while_idle_keeps_the_closing_reply() {
+        let p = tmp("idlecompact");
+        std::fs::write(
+            &p,
+            format!(
+                "{}{}{}{}{}",
+                "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"The board will wake me.\"}]}}\n",
+                "{\"uuid\":\"b1\",\"type\":\"system\",\"subtype\":\"compact_boundary\",\"content\":\"Conversation compacted\",\"compactMetadata\":{\"trigger\":\"auto\"}}\n",
+                "{\"uuid\":\"k1\",\"type\":\"user\",\"isCompactSummary\":true,\"message\":{\"role\":\"user\",\"content\":\"This session is being continued from a previous conversation\"}}\n",
+                "{\"uuid\":\"a1\",\"type\":\"attachment\",\"attachment\":{\"type\":\"environment\"}}\n",
+                "{\"uuid\":\"n1\",\"type\":\"system\",\"subtype\":\"informational\",\"content\":\"Compacted while idle, before the prompt cache expired\"}\n",
+            ),
+        )
+        .unwrap();
+        let pk = latest_preview(&p).expect("peek");
+        assert_eq!(pk.text.as_deref(), Some("The board will wake me."));
+        assert_eq!(pk.activity, None, "nobody spoke after the reply: no step to show");
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 

@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "id": "idle-compact",
+  "title": "Compaction while idle leaves a finished turn where it was",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "T-728: a crown session's board feed and transcript, 2026-10-10",
+    "claude_version": "2.1.296",
+    "note": "Order and trigger from the feed (PreCompact, SessionStart compact, PostCompact; no prompt, no Stop) and the transcript's compact_boundary (trigger auto, 122 s); virtual timing. The later turn is synthetic: it proves the quiet compaction ends at the next prompt."
+  },
+  "initial": {
+    "state": "idle",
+    "stop_reason": "end_turn"
+  },
+  "confidence": "high",
+  "column": "REVIEW",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {"source": "hook", "event": "PreCompact", "payload": {"trigger": "auto"}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+    },
+    {
+      "at_ms": 200,
+      "input": {"source": "hook", "event": "PreCompact", "payload": {"trigger": "auto"}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+    },
+    {
+      "at_ms": 121900,
+      "input": {"source": "hook", "event": "SessionStart", "payload": {"source": "compact"}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+    },
+    {
+      "at_ms": 122000,
+      "input": {"source": "hook", "event": "PostCompact", "payload": {"trigger": "auto"}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+    },
+    {
+      "at_ms": 122100,
+      "input": {"source": "hook", "event": "SessionStart", "payload": {"source": "compact"}},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+    },
+    {
+      "at_ms": 130000,
+      "input": {"source": "tick"},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW", "confidence": "high"}
+    },
+    {
+      "at_ms": 200000,
+      "input": {"source": "hook", "event": "UserPromptSubmit", "payload": {}},
+      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS"}
+    },
+    {
+      "at_ms": 200100,
+      "input": {"source": "hook", "event": "PreCompact", "payload": {"trigger": "auto"}},
+      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS"}
+    },
+    {
+      "at_ms": 200200,
+      "input": {"source": "hook", "event": "SessionStart", "payload": {"source": "compact"}},
+      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS"}
+    },
+    {
+      "at_ms": 200300,
+      "input": {"source": "hook", "event": "PostCompact", "payload": {"trigger": "auto"}},
+      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS"}
+    },
+    {
+      "at_ms": 210000,
+      "input": {"source": "hook", "event": "Stop", "payload": {}},
+      "expect": {"state": {"state": "running"}, "column": "IN PROGRESS"}
+    },
+    {
+      "at_ms": 212000,
+      "input": {"source": "tick"},
+      "expect": {"state": {"state": "idle", "stop_reason": "end_turn"}, "column": "REVIEW"}
+    }
+  ]
+}

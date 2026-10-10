@@ -428,6 +428,7 @@ pub struct MachineView {
     pub pinned_until: Option<u64>,
     pub idle_teammates: usize,
     pub manual_compaction_prior: Option<SessionState>,
+    pub quiet_compaction: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -483,6 +484,15 @@ pub struct Machine {
     /// monitoring again, as every background shell did before.
     park_fallback: StopReason,
     manual_compact_prior: Option<(SessionState, Confidence)>,
+    /// An automatic compaction began with no turn open (T-728): Claude Code
+    /// 2.1.296 compacts an idle session before its prompt cache expires
+    /// ("Compacted while idle"), and sends `PreCompact{auto}`,
+    /// `SessionStart{compact}` and `PostCompact{auto}` with no prompt before
+    /// them and no `Stop` after. Read as a turn's own compaction, they put a
+    /// finished session at `Running`, moved its ticket by `on_working`, and
+    /// the status file then called the silence an Esc. None of the three
+    /// moves the state while this holds; it ends where the manual prior does.
+    quiet_compaction: bool,
     /// The wait the stale clock demoted, while the machine still sits in
     /// that demote (T-565). Fifteen quiet minutes say the wait went
     /// unaffirmed, not that its dialog closed: a person who has not
@@ -531,6 +541,7 @@ impl Machine {
             background_at: now,
             park_fallback: StopReason::EndTurn,
             manual_compact_prior: None,
+            quiet_compaction: false,
             stale_wait: None,
         }
     }
@@ -561,6 +572,7 @@ impl Machine {
                 .manual_compact_prior
                 .as_ref()
                 .map(|(state, _)| state.clone()),
+            quiet_compaction: self.quiet_compaction,
             pending: self.pending.as_ref().map(|p| PendingView {
                 state: p.to.clone(),
                 confidence: p.confidence,
@@ -601,7 +613,9 @@ impl Machine {
             } else {
                 "settle_cancelled"
             }
-        } else if before.manual_compaction_prior != after.manual_compaction_prior {
+        } else if before.manual_compaction_prior != after.manual_compaction_prior
+            || before.quiet_compaction != after.quiet_compaction
+        {
             "compaction_updated"
         } else if before.idle_teammates != after.idle_teammates {
             "background_updated"
@@ -668,15 +682,21 @@ impl Machine {
                     self.manual_compact_prior = Some((self.state.clone(), self.confidence));
                 }
             }
-            Signal::PreCompact { manual: false }
-            | Signal::UserPromptSubmit
+            // A duplicate of the quiet one finds the state it left alone.
+            Signal::PreCompact { manual: false } => {
+                self.manual_compact_prior = None;
+                self.quiet_compaction = matches!(self.state, SessionState::Idle { .. });
+            }
+            Signal::UserPromptSubmit
             | Signal::TurnStarted
             | Signal::Ready
             | Signal::ObservationLost => {
                 self.manual_compact_prior = None;
+                self.quiet_compaction = false;
             }
             Signal::SessionStart { source } if *source != StartSource::Compact => {
                 self.manual_compact_prior = None;
+                self.quiet_compaction = false;
             }
             _ => {}
         }
@@ -857,15 +877,17 @@ impl Machine {
             // SessionStart mid-turn and the turn continues.
             // PreCompact makes maintenance visible. Keep the saved state
             // through PostCompact: an async SessionStart may arrive afterward.
+            Signal::PreCompact { manual: false } if self.quiet_compaction => None,
             Signal::PreCompact { .. } => t(S::Running),
             Signal::PostCompact { manual: true } => Some(
                 self.manual_compact_prior
                     .clone()
                     .unwrap_or((S::Idle { stop_reason: StopReason::Unknown }, Confidence::Low)),
             ),
+            Signal::PostCompact { manual: false } if self.quiet_compaction => None,
             Signal::PostCompact { manual: false } => t(S::Running),
             Signal::SessionStart { source: StartSource::Compact } => {
-                if self.manual_compact_prior.is_some() {
+                if self.manual_compact_prior.is_some() || self.quiet_compaction {
                     None
                 } else {
                     t(S::Running)
